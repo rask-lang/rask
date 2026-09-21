@@ -3201,10 +3201,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 existing,
                 existing_span,
             } => {
-                let fix_msg = match (
-                    format!("{}", requested).as_str(),
-                    format!("{}", existing).as_str(),
-                ) {
+                let fix_msg = match (requested.participle(), existing.participle()) {
                     ("written to", "read") => {
                         "wait until the read borrow ends, or pass ownership with `own`"
                     }
@@ -3212,11 +3209,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 };
                 Diagnostic::error(format!(
                     "cannot {} `{}` while it is being {}",
-                    requested, name, existing
+                    requested.verb(), name, existing.participle()
                 ))
                 .with_code("E0801")
-                .with_primary(self.span, format!("{} access here", requested))
-                .with_secondary(*existing_span, format!("{} access here", existing))
+                .with_primary(self.span, format!("{} access here", requested.noun()))
+                .with_secondary(*existing_span, format!("{} access here", existing.noun()))
                 .with_help(fix_msg)
                 .with_fix(fix_msg)
                 .with_why("concurrent read and write access to the same value would be a data race")
