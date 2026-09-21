@@ -59,11 +59,19 @@ fn check_fn_snake_case(
 }
 
 /// style/pascal-case-type: Type names should be PascalCase.
+///
+/// An empty struct is exempt. `struct net { }` is the name `stdlib/net.rk`
+/// hangs `extend net { … }` off, so `net.tcp_listen(…)` reads as a module
+/// call; `struct cstring { }` is a compiler-provided type spelled to match
+/// `string`. Neither declares any data, and in both the lowercase spelling is
+/// the point — "rename to `Net`" was wrong thirteen times out of thirteen in
+/// the stdlib, which is how a rule teaches people to stop reading it.
 pub fn check_pascal_case_type(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
 
     for decl in decls {
         let (name, kind) = match &decl.kind {
+            DeclKind::Struct(s) if s.fields.is_empty() => continue,
             DeclKind::Struct(s) => (&s.name, "struct"),
             DeclKind::Enum(e) => (&e.name, "enum"),
             DeclKind::Trait(t) => (&t.name, "trait"),

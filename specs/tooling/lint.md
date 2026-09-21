@@ -16,10 +16,10 @@ Enforce the naming table from [canonical-patterns.md](../canonical-patterns.md#r
 | **N1: from** | `from_*` returns `Self` or `Self or E` | warning | extend blocks |
 | **N2: into** | `into_*` has `take self` (consuming) | warning | extend blocks |
 | **N3: as** | `as_*` doesn't allocate (heuristic: returns reference or primitive) | warning | extend blocks |
-| **N4: to** | `to_*` returns a different type than `Self` | warning | extend blocks |
+| **N4: to** | `to_*` doesn't consume the source — `take self` makes it `into_*` | warning | extend blocks |
 | **N5: is** | `is_*` returns `bool` | error | extend blocks, standalone funcs |
 | **N6: with** | `with_*` returns `Self` | warning | extend blocks |
-| **N7: try** | `try_*` returns `T or E` | error | extend blocks, standalone funcs |
+| **N7: try** | `try_*` returns `T or E`, or `T?` when there is no error to report | error | extend blocks, standalone funcs |
 | **N8: or_suffix** | `*_or(default)` returns `T` (not `T?` or `T or E`) | warning | extend blocks |
 
 <!-- test: skip -->
@@ -106,7 +106,7 @@ func bad_pure(path: string) -> Config or Error {
 | Rule | Check | Severity |
 |------|-------|----------|
 | **ST1: snake-case-func** | Function names are `snake_case` | warning |
-| **ST2: pascal-case-type** | Type/enum/trait names are `PascalCase` | warning |
+| **ST2: pascal-case-type** | Type/enum/trait names are `PascalCase`. An empty struct is exempt — it declares no data, so it's a namespace (`struct net { }`, which `extend net { … }` hangs off) or a compiler-provided type spelled to match a builtin (`cstring`) | warning |
 | **ST3: public-return-type** | Public functions have explicit return type annotations | error |
 | **ST4: context-clause-count** | Function has >3 `using` clauses | warning |
 
@@ -249,7 +249,18 @@ FIX: delete `duck`. 3 types already match by shape; the "harden duck trait"
 
 **N2 (into consumes):** `into_*` implies conversion that destroys the original. If it borrows `self`, the caller might think the original is consumed when it isn't. Flagging this prevents subtle ownership confusion.
 
-**N5/N7 as errors, not warnings:** `is_*` returning non-bool and `try_*` not returning a Result are strong enough contract violations that they should block — callers rely on these naming conventions for correctness assumptions.
+**N5/N7 as errors, not warnings:** `is_*` returning non-bool and `try_*` answering neither way are strong enough contract violations that they should block — callers rely on these naming conventions for correctness assumptions.
+
+**N4 tests consumption, not the type.** It used to warn when `to_*` returned
+`Self`, which reads plausibly and is wrong: the prefix family is about cost and
+ownership, not about changing type — `as_*` is free, `to_*` allocates, `into_*`
+takes the source away. `canonical-patterns` gives `to_lowercase()` as its
+example of a `to_*`, and a string's lowercase is a string. The old rule fired on
+all six case mappings in the stdlib and on nothing else. What the canon does
+call a violation is a `to_*` that consumes its source, and that is what the rule
+checks now.
+
+**N7 accepts `T?`.** It demanded `T or E` for a while, and reported `Shared.try_read` — which the sync spec defines as yielding `none` when contended (`conc.sync/R3`) — as an error for following its own spec. A `try_*` that fails for exactly one reason has nothing to put in the `E`: an error type carrying "someone else holds the lock" tells the caller what they already know from the shape of the call. `type.errors` draws the line there, and the rule follows it now. What it still catches is the case worth catching, a `try_*` that answers a bare `T` or a bool and makes the caller guess.
 
 **ST3 (public return type):** Public API signatures are documentation. Forcing explicit return types makes the API surface readable without hovering or inference.
 

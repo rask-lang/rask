@@ -4,10 +4,10 @@
 
 ## Reference files to keep open
 
-- [http_api_server.rk](examples/http_api_server.rk) — closest existing pattern (accept loop, `Shared<T>`, routing)
-- [lsm_database/](examples/lsm_database/) — multi-file package structure to copy
-- [stdlib/http.rk](stdlib/http.rk) — all HTTP types: `HttpServer`, `Responder`, `Request`, `Response`, `send_request`, `parse_url`
-- [stdlib/net.rk](stdlib/net.rk) — TCP primitives
+- [http_api_server.rk](../../examples/http_api_server.rk) — closest existing pattern (accept loop, `Shared<T>`, routing)
+- [lsm_database/](../../examples/lsm_database/) — multi-file package structure to copy
+- [stdlib/http.rk](../../stdlib/http.rk) — all HTTP types: `HttpServer`, `Responder`, `Request`, `Response`, `send_request`, `parse_url`
+- [stdlib/net.rk](../../stdlib/net.rk) — TCP primitives
 
 ---
 

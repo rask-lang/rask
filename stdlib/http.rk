@@ -612,6 +612,9 @@ func parse_http_response(raw: string) -> Response or HttpError {
 
 // Connect, send request, read response, close connection.
 // Internal helper — called from extend http {} and extend HttpClient {}.
+// Leading underscore says "not part of the surface", which is the whole
+// reason it isn't plain snake_case.
+@allow(style/snake-case-func)
 func _send_request_impl(method: Method, url: string, body: string, extra_headers: Headers) -> Response or HttpError {
     let (host, port, path) = try parse_url(url)
     let addr = "{host}:{port}"
@@ -654,7 +657,10 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
 // TcpConnection method dispatch, replacing the C HTTP parser.
 
 // Parse HTTP/1.1 request from a TCP connection.
-// Shadows the dispatch entry for TcpConnection_read_http_request.
+// Shadows the dispatch entry for TcpConnection_read_http_request — the name
+// has to be the mangled `Type_method` spelling to land on it, so snake_case
+// is not available here.
+@allow(style/snake-case-func)
 func TcpConnection_read_http_request(conn_fd: i64) -> i64 or HttpError {
     let raw = read_raw(conn_fd, 65536)
     let request = try parse_http_request(raw)
@@ -667,7 +673,9 @@ func TcpConnection_read_http_request(conn_fd: i64) -> i64 or HttpError {
 }
 
 // Write HTTP/1.1 response to a TCP connection.
-// Shadows the dispatch entry for TcpConnection_write_http_response.
+// Shadows the dispatch entry for TcpConnection_write_http_response — same
+// mangled spelling as the reader above, same reason.
+@allow(style/snake-case-func)
 func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or HttpError {
     // The dispatch entry hands the response over as a raw pointer, so reading
     // it back as a `Response` is a reinterpretation, not a conversion. Same
