@@ -483,7 +483,7 @@ FIX: @no_serialize
 
 ### Rationale
 
-**E11 (marker traits):** I wanted Encode/Decode for generic bounds (`T: Encode`) but Rask doesn't have associated types in MVP. A Serializer trait hierarchy (like serde) would need them. Marker traits are the simplest option that enables compile-time checked generic bounds. Format libraries use `comptime for` directly instead of dispatching through trait methods — each format writes ~100 lines, which is acceptable since formats differ genuinely in how they handle nulls, numbers, nesting.
+**E11 (marker traits):** I wanted Encode/Decode for generic bounds (`T: Encode`) and a Serializer trait hierarchy (like serde) needs associated types, which Rask didn't have when this was written. It has them now (`type.associated-types`), so the hierarchy is writable — but the markers work and the rewrite isn't free, so that's its own call, not a consequence of this one. Marker traits are the simplest option that enables compile-time checked generic bounds. Format libraries use `comptime for` directly instead of dispatching through trait methods — each format writes ~100 lines, which is acceptable since formats differ genuinely in how they handle nulls, numbers, nesting.
 
 **E12 (auto-derive with opt-out):** The zero-ceremony path should be the common path. Adding a `File` field to a struct naturally breaks `Encode` — good. The error message tells you exactly which field is the problem.
 

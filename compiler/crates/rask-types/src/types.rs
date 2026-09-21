@@ -81,6 +81,12 @@ pub enum Type {
     /// Union type (error position only): `IoError | ParseError`
     /// Canonical form: sorted alphabetically, deduplicated.
     Union(Vec<Type>),
+    /// AT3: a projection — `Self.Out`, `T.Out`. Resolved by reading the
+    /// associated type off `base`'s conformance, never by solving for it.
+    Assoc {
+        base: Box<Type>,
+        name: std::string::String,
+    },
     /// Type variable (for inference)
     Var(TypeVarId),
     /// Raw pointer type (*T)
@@ -352,6 +358,7 @@ impl fmt::Display for Type {
             Type::RawPtr(inner) => write!(f, "*{}", inner),
             Type::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
             Type::TraitObject { trait_name } => write!(f, "any {}", trait_name),
+            Type::Assoc { base, name } => write!(f, "{}.{}", base, name),
             Type::Var(_) => write!(f, "_"),
             Type::Never => write!(f, "!"),
             Type::None => write!(f, "none"),

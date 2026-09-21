@@ -17,7 +17,7 @@ Any trait can be used with `any`. Individual methods that depend on the concrete
 | **TR1: Per-method restriction** | Methods are checked individually; incompatible methods can't be called through `any`, but don't prevent using the trait with `any` |
 | **TR2: No Self return** | Methods returning `Self` can't be called through `any` |
 | **TR3: No generic methods** | Generic methods can't be called through `any` |
-| **TR4: No associated types** | Methods using associated types can't be called through `any` (MVP) |
+| **TR4: No associated types** | Methods using associated types can't be called through `any` — no vtable slot, rejected at the call site. The "(MVP)" hedge is gone: `type.associated-types/AT9` revisited this and kept it, because a projection has no one answer across the types behind an `any` |
 
 <!-- test: parse -->
 ```rask

@@ -138,6 +138,7 @@ fn generalize_fn(f: &mut FnDecl) {
             is_comptime: false,
             comptime_type: None,
             bounds,
+            default: None,
         });
     }
     if added.is_empty() {
