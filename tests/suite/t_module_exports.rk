@@ -15,7 +15,7 @@ import time.Duration
 import http.Response
 
 test "a plain import registers the module's structs" {
-    let d = Duration.from_millis(3)
+    let d = Duration.millis(3)
     assert d.as_millis() == 3
 }
 

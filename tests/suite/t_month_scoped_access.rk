@@ -55,9 +55,9 @@ test "conc.sync — replace returns the old value in one step" {
     assert c.get() == 3
 }
 
-test "conc.sync — into_inner consumes the Shared" {
+test "conc.sync — take consumes the Shared" {
     let c = Shared.local(99)
-    assert c.into_inner() == 99
+    assert c.take() == 99
 }
 
 test "conc.sync — the Mutex strategy serialises access through with" {

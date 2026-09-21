@@ -23,7 +23,7 @@ means. See `analysis.storage-consolidation` for the argument.
 | `with cell as v { … }` | `with s.write() as v { … }` |
 | read-only `with cell as v { … }` | `with s.read() as v { … }` |
 | `cell.get()` / `cell.set(v)` | unchanged — `s.get()` / `s.set(v)` |
-| `cell.replace(v)` / `cell.into_inner()` | unchanged |
+| `cell.replace(v)` / `cell.take()` | unchanged |
 
 The cost, owned: single-task access gains one method call. In exchange,
 read-versus-write intent becomes visible at every use site, which `Cell` hid —

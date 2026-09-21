@@ -113,7 +113,7 @@ impl Interpreter {
                 }
             }
             // The single-expression shorthands, under every strategy.
-            "get" | "into_inner" if args.is_empty() => {
+            "get" | "take" if args.is_empty() => {
                 let guard = shared.read().map_err(|e| {
                     RuntimeError::Panic(format!("Shared.get: lock poisoned: {}", e))
                 })?;
@@ -375,7 +375,7 @@ impl Interpreter {
                 })?;
                 Ok(guard.clone())
             }
-            "get" | "into_inner" if args.is_empty() => {
+            "get" | "take" if args.is_empty() => {
                 let guard = mutex.lock().map_err(|e| {
                     RuntimeError::Panic(format!("Shared.get: lock poisoned: {}", e))
                 })?;

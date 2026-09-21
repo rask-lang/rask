@@ -8,7 +8,7 @@
 // shape `Random` was in: a constructor handing back a heap block with no free
 // on the list the drop pass reads.
 //
-// `into_inner` did free, because it reads the word and gives the block back in
+// `take` did free, because it reads the word and gives the block back in
 // the same call. That's why the leak hid: the shape a test reaches for to
 // *check* the value is the one shape that cleaned up after itself.
 //
@@ -52,17 +52,17 @@ test "mem.atomics — swap" {
     assert a.load(Ordering.SeqCst) == 9
 }
 
-// `into_inner` frees the block itself, so the frame must not free it again —
+// `take` frees the block itself, so the frame must not free it again —
 // a second free aborts rather than leaking.
-test "mem.atomics — into_inner consumes it" {
+test "mem.atomics — take consumes it" {
     let a = Atomic<i64>.new(4)
-    assert a.into_inner() == 4
+    assert a.take() == 4
 }
 
 test "mem.atomics — one consumed, one dropped, in the same frame" {
     let a = Atomic<i64>.new(1)
     let b = Atomic<i64>.new(2)
-    assert a.into_inner() == 1
+    assert a.take() == 1
     assert b.load(Ordering.SeqCst) == 2
 }
 

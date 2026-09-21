@@ -158,14 +158,7 @@ impl Interpreter {
             // A bounded vector is pre-allocated at its bound (CP3) and keeps
             // its allocation: shrinking one would make a later push reallocate
             // past its own promise.
-            "shrink_to_fit" => {
-                let mut guard = v.lock().unwrap();
-                if guard.bound.is_none() {
-                    guard.items.shrink_to_fit();
-                }
-                Ok(Value::Unit)
-            }
-            "shrink_to" => {
+            "shrink" => {
                 let min_capacity = self.expect_int(&args, 0)? as usize;
                 let mut guard = v.lock().unwrap();
                 if guard.bound.is_none() {
@@ -1458,7 +1451,7 @@ impl Interpreter {
                 let removed = m.lock().unwrap().remove(&MapKey(key));
                 Ok(option_of(removed))
             }
-            "contains" | "contains_key" => {
+            "contains" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 Ok(Value::Bool(m.lock().unwrap().contains_key(&MapKey(key))))
             }
@@ -1943,7 +1936,7 @@ impl Interpreter {
                     })
                 }
             }
-            "into_inner" => Ok(atomic.lock().unwrap().clone()),
+            "take" => Ok(atomic.lock().unwrap().clone()),
             // AT5: the fetch family wraps on overflow and returns the OLD value.
             _ if method.starts_with("fetch_") => {
                 ordering_at(1)?;

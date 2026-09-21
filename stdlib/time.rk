@@ -39,14 +39,6 @@ extend Duration {
     @native("rask_time_Duration_from_secs_f64")
     public func seconds_f64(secs: f64) -> Duration {}
 
-    /// Create a duration from milliseconds (alias).
-    @native("rask_time_Duration_from_millis")
-    public func from_millis(n: i64) -> Duration {}
-
-    /// Create a duration from nanoseconds (alias).
-    @native("rask_time_Duration_from_nanos")
-    public func from_nanos(n: i64) -> Duration {}
-
     /// Whole seconds in this duration.
     @native("rask_time_Duration_as_secs")
     public func as_seconds(self) -> u64 {}
@@ -62,10 +54,6 @@ extend Duration {
     /// Nanoseconds in this duration.
     @native("rask_time_Duration_as_nanos")
     public func as_nanos(self) -> u64 {}
-
-    /// Duration as f32 seconds.
-    @native("rask_time_Duration_as_secs_f32")
-    public func as_seconds_f32(self) -> f64 {}
 
     /// Duration as f64 seconds.
     @native("rask_time_Duration_as_secs_f64")

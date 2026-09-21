@@ -6,7 +6,7 @@
 
 - [http_api_server.rk](../../examples/http_api_server.rk) — closest existing pattern (accept loop, `Shared<T>`, routing)
 - [lsm_database/](../../examples/lsm_database/) — multi-file package structure to copy
-- [stdlib/http.rk](../../stdlib/http.rk) — all HTTP types: `HttpServer`, `Responder`, `Request`, `Response`, `send_request`, `parse_url`
+- [stdlib/http.rk](../../stdlib/http.rk) — all HTTP types: `HttpServer`, `Responder`, `Request`, `Response`, `parse_url`
 - [stdlib/net.rk](../../stdlib/net.rk) — TCP primitives
 
 ---
@@ -35,7 +35,7 @@ Create `examples/tiwaz/build.rk` — copy the pattern from `lsm_database/build.r
 
 1. Build the upstream URL: `"http://{upstream}{req.path()}"`
 2. Grab the method string from `req.method`
-3. Call `http.send_request(method_str, url, req.body, req.headers)` — check what `send_request` actually accepts (read `stdlib/http.rk` line ~585)
+3. Rebuild the `Request` against the upstream url and call `http.request(out)` — `with_headers` carries the original header set over
 4. Return the response
 
 ### Step 4: Test it
@@ -47,7 +47,7 @@ Create `examples/tiwaz/build.rk` — copy the pattern from `lsm_database/build.r
 
 ### Gaps you'll likely hit
 
-- Does `send_request` forward original headers? Or does it build its own?
+- `http.request` sends exactly the `Request` it is given, headers included.
 - What error do you get when the upstream is unreachable?
 - Hop-by-hop headers (Connection, Keep-Alive) — should strip them before forwarding
 

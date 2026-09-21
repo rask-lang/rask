@@ -196,7 +196,7 @@ impl Interpreter {
                     Err(e) => Ok(io_error_result(&e)),
                 }
             }
-            "create" => {
+            "create_file" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::File::create(&path) {
                     Ok(file) => {

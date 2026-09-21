@@ -76,11 +76,11 @@ test "a closure returned from a function" {
 test "std.collections — map and filter" {
     let v: Vec<i32> = [1, 2, 3, 4, 5]
     let doubled = v.map(|x| x * 2).to_vec()
-    assert doubled.count() == 5
+    assert doubled.len() == 5
     assert doubled[0] == 2
     assert doubled[4] == 10
     let evens = v.filter(|x| x % 2 == 0).to_vec()
-    assert evens.count() == 2
+    assert evens.len() == 2
     assert evens[0] == 2
     assert evens[1] == 4
 }
@@ -88,7 +88,7 @@ test "std.collections — map and filter" {
 test "std.collections — map changing the element type" {
     let v: Vec<i32> = [1, 2, 3]
     let labels = v.map(|x| "n{x}").to_vec()
-    assert labels.count() == 3
+    assert labels.len() == 3
     assert labels[0] == "n1"
     assert labels.join(",") == "n1,n2,n3"
 }

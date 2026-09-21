@@ -20,7 +20,7 @@ func temp_path(tag: string) -> string {
 
 test "std.io — create a handle, write through it, close it" {
     let p = temp_path("create-write")
-    mut f = fs.create(p)!
+    mut f = fs.create_file(p)!
     let _ = f.write_text("through a handle")
     let _ = f.close()
     let got = fs.read_text(p) catch _ => "FAILED"
@@ -48,7 +48,7 @@ test "std.io — opening a path that isn't there fails" {
 test "std.io — creating truncates an existing file" {
     let p = temp_path("truncate")
     let _ = fs.write_text(p, "a much longer original body")
-    mut f = fs.create(p)!
+    mut f = fs.create_file(p)!
     let _ = f.write_text("short")
     let _ = f.close()
     let got = fs.read_text(p) catch _ => "FAILED"
@@ -58,7 +58,7 @@ test "std.io — creating truncates an existing file" {
 
 test "std.io — several writes through one handle accumulate" {
     let p = temp_path("several-writes")
-    mut f = fs.create(p)!
+    mut f = fs.create_file(p)!
     let _ = f.write_text("one")
     let _ = f.write_text("-two")
     let _ = f.write_text("-three")
@@ -70,7 +70,7 @@ test "std.io — several writes through one handle accumulate" {
 
 test "std.io — an empty write leaves an empty file" {
     let p = temp_path("empty-write")
-    mut f = fs.create(p)!
+    mut f = fs.create_file(p)!
     let _ = f.write_text("")
     let _ = f.close()
     assert fs.exists(p)
@@ -83,7 +83,7 @@ test "std.io — a handle closed inside a loop, one per iteration" {
     mut written = 0
     for i in 0..3 {
         let p = temp_path("loop-{i}")
-        mut f = fs.create(p)!
+        mut f = fs.create_file(p)!
         let _ = f.write_text("body")
         let _ = f.close()
         if fs.exists(p): written = written + 1

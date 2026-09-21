@@ -61,7 +61,7 @@ test "Map.remove returns the value it removed" {
         assert false, "expected the removed value"
     }
     assert m.len() == 1
-    assert m.contains_key("a") == false
+    assert m.contains("a") == false
 }
 
 test "Map.remove on a missing key is none" {

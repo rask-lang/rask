@@ -196,7 +196,6 @@ Prefer `StringView` when you want the text itself; prefer `Span` when you want p
 |-----------|-------------|-----------------|
 | `"literal"` | `string` | Compile-time |
 | `string.from_utf8(bytes)` | `string or Utf8Error` | Runtime O(n), one-time |
-| `string.from_utf8_unchecked(bytes)` | `string` | None (unsafe block only) |
 
 ## Iteration
 

@@ -141,6 +141,12 @@ impl TypeChecker {
                     .extend(tp.bounds.iter().cloned());
             }
         }
+        // The method's own parameters on top of the extend header's, which
+        // `check_decl` put there. Bounds don't matter here — the question is
+        // only whether the name stands for a caller-chosen type.
+        let saved_params_in_scope = self.type_params_in_scope.clone();
+        self.type_params_in_scope
+            .extend(f.type_params.iter().map(|tp| tp.name.clone()));
 
         // PC2: unknown PascalCase names in the return type are errors.
         self.validate_signature_names(&ret_ty, &sig_type_params, f.span);
@@ -392,6 +398,7 @@ impl TypeChecker {
         self.current_return_type = None;
         self.allowed_warnings = old_allowed;
         self.current_type_param_bounds = saved_type_param_bounds;
+        self.type_params_in_scope = saved_params_in_scope;
         self.in_unsafe = was_unsafe;
 
         // ER20: Restore outer accumulation state

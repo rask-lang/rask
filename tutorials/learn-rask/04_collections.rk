@@ -10,7 +10,7 @@
 //                  scores.insert("alice", 95)
 //
 // Vec methods:  .push(), .pop(), .len(), [i] for indexing
-// Map methods:  .insert(k, v), .get(k), .len(), .contains_key(k)
+// Map methods:  .insert(k, v), .get(k), .len(), .contains(k)
 //
 // The angle brackets in Vec<f64> or Map<string, i32> tell the compiler
 // what types the collection holds. Python lists can hold anything;

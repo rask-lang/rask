@@ -26,7 +26,7 @@ Vec, Map and Set with optional capacity constraints, inline element access, fall
 
 | Rule | Description |
 |------|-------------|
-| **C5: Membership is `contains`** | `s.contains(v)`, not `contains_key`. A set has no keys, and `Vec` and `string` already spell it this way. `Map` keeps `contains_key` because there a key is one of two things you could mean |
+| **C5: Membership is `contains`** | `s.contains(v)`, not `contains`. A set has no keys, and `Vec` and `string` already spell it this way. `Map` keeps `contains` because there a key is one of two things you could mean |
 | **C6: Insert and remove report change** | `s.insert(v)` and `s.remove(v)` return `bool` — whether the set changed. `insert` on a value already present is not an error, it answers `false` |
 | **C7: A Map underneath** | `Set<T>` is `Map<T, bool>`, written in Rask, so both backends run one source and a set's hashing, growth and iteration order are the map's. `T` carries the same key constraints (C-key rules below) |
 | **C8: `to_vec`, not `iter`** | The values come out as `s.to_vec()`. A stored iterator isn't a thing (SEQ31) — an adapter chain terminates in the expression that starts it — so a set hands back what it built and the name says so |
@@ -310,14 +310,14 @@ items.remove_adjacent_duplicates()      // [1, 3, 4, 5]
 
 | Method | Returns | Notes |
 |--------|---------|-------|
-| `map.contains_key(k)` | `bool` | Check key existence without copying value |
+| `map.contains(k)` | `bool` | Check key existence without copying value |
 | `map.keys()` | expression-scoped iterator | Iterate over keys |
 | `map.values()` | expression-scoped iterator | Iterate over values |
 
 <!-- test: parse -->
 ```rask
 let scores = Map.from([["alice", 10], ["bob", 20]])
-scores.contains_key("alice")      // true
+scores.contains("alice")      // true
 for name in scores.keys() { println(name) }
 for score in scores.values() { println(format("{}", score)) }
 ```
@@ -328,23 +328,14 @@ for score in scores.values() { println(format("{}", score)) }
 
 Infallible, best-effort. If the allocator can't provide a smaller block, the collection keeps its current allocation.
 
-<!-- test: parse -->
-```rask
-vec.shrink_to_fit()      // Shrink to len
-vec.shrink_to(n)         // Shrink to at least n capacity
-```
-
-## In-Place Construction
+One method, because `shrink_to_fit()` was `shrink_to(0)` with the argument
+left out, and `std.api/SD5` gives one operation one spelling.
 
 <!-- test: parse -->
 ```rask
-let idx = vec.push_with(|slot| {
-    slot.field1 = compute_expensive()
-    slot.field2 = [0; 1000]
-})
+vec.shrink(0)      // give back everything past len — the old shrink_to_fit
+vec.shrink(n)      // give back everything past n, or past len when that's larger
 ```
-
-Avoids constructing on stack then moving. Useful for large types.
 
 ## Capacity Introspection
 
@@ -354,7 +345,7 @@ Avoids constructing on stack then moving. Useful for large types.
 | `vec.capacity()` | `usize?` | `none` = unbounded, value = max capacity |
 | `vec.is_bounded()` | `bool` | `capacity()?` |
 | `vec.remaining()` | `usize?` | `none` = unbounded, value = slots available |
-| `vec.allocated()` | `usize` | How many elements the buffer has room for — the same unit as `len()`, and a different question from `capacity()`, which is the bound. May exceed `len()`; `shrink_to_fit()` gives the difference back |
+| `vec.allocated()` | `usize` | How many elements the buffer has room for — the same unit as `len()`, and a different question from `capacity()`, which is the bound. May exceed `len()`; `shrink(0)` gives the difference back |
 
 ## Comptime Collections with Freeze
 

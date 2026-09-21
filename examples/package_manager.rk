@@ -643,7 +643,7 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
     }
 
     // Already resolved? Check compatibility.
-    if state.by_name.contains_key(name) {
+    if state.by_name.contains(name) {
         let existing_handle = state.by_name.get(name) ?? {
             return FetchError.Io(IoErrorMsg.Msg("impossible: key exists but get failed"))
         }
@@ -856,7 +856,7 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
     // Write to temp file, rename on success. ensure cleans up on error.
     let tmp_path = "{path}.tmp"
 
-    mut tmp_file = fs.create(tmp_path) catch e => {
+    mut tmp_file = fs.create_file(tmp_path) catch e => {
         return FetchError.Io(IoErrorMsg.Msg("cannot create temp lock file: {e.message()}"))
     }
     ensure fs.remove_file(tmp_path)
@@ -989,7 +989,7 @@ func topo_sort(graph: DepGraph) -> Vec<Handle<ResolvedPkg>> {
 
 func topo_visit(graph: DepGraph, handle: Handle<ResolvedPkg>, mutate visited: Map<string, bool>, mutate order: Vec<Handle<ResolvedPkg>>) {
     let name = graph.packages[handle].meta.name
-    if visited.contains_key(name) { return }
+    if visited.contains(name) { return }
     visited.insert(name, true)
 
     with graph.packages[handle] as pkg {
@@ -1036,7 +1036,7 @@ func print_lock_diff(old_lock: Map<string, LockedPackage>, graph: DepGraph) {
             if pkg.meta.checksum.is_empty() { continue }
             let ver = pkg.meta.version.to_string()
 
-            if old_lock.contains_key(pkg.meta.name) {
+            if old_lock.contains(pkg.meta.name) {
                 let locked = old_lock.get(pkg.meta.name) ?? {
                     continue
                 }
@@ -1234,7 +1234,7 @@ func run(args: CliArgs) -> void or FetchError {
                     if pkg.meta.checksum.is_empty() { continue }
                     let ver = pkg.meta.version.to_string()
 
-                    if old_lock.contains_key(pkg.meta.name) {
+                    if old_lock.contains(pkg.meta.name) {
                         let locked = old_lock.get(pkg.meta.name) ?? {
                             continue
                         }

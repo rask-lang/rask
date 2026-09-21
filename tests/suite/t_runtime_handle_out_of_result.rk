@@ -17,7 +17,7 @@ import fs
 import io.IoError
 
 func write_then_read(path: string) -> string or IoError {
-    mut w = try fs.create(path)
+    mut w = try fs.create_file(path)
     w.write("handle round-trip\n")
     w.close()
 
@@ -38,7 +38,7 @@ test "std.fs — a File out of a `T or E` is the descriptor" {
 
 test "std.fs — reading a file opened for writing is an error, not a crash" {
     let path = "/tmp/rask_t_runtime_handle_wo.txt"
-    mut w = fs.create(path) catch _ => { assert false, "create failed"; return }
+    mut w = fs.create_file(path) catch _ => { assert false, "create failed"; return }
     let result = w.read_text()
     w.close()
     let _ = fs.remove_file(path)

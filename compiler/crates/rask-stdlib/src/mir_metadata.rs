@@ -331,7 +331,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Cell_new", Internal::SameAs("Shared_local")),
     ("Mutex_new", Internal::SameAs("Shared_mutex")),
     ("Cell_set", Internal::SameAs("Shared_set")),
-    ("Cell_into_inner", Internal::SameAs("Shared_into_inner")),
+    ("Cell_into_inner", Internal::SameAs("Shared_take")),
     ("Mutex_set", Internal::SameAs("Shared_set")),
     ("Cell_replace", Internal::SameAs("Shared_replace")),
     ("Mutex_replace", Internal::SameAs("Shared_replace")),
@@ -435,7 +435,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Atomic_fetch_min", Internal::FreshFromReceiver),
     // `into_inner` reads the word and frees the block in the same call, so the
     // frame must not free it again.
-    ("Atomic_into_inner", Internal::ConsumesReceiver),
+    ("Atomic_take", Internal::ConsumesReceiver),
     ("Atomic_free", Internal::ConsumesReceiver),
     ("Pool_free", Internal::ConsumesReceiver),
     // A box's release, which is the same thing one refcount down: the handle
@@ -1308,7 +1308,7 @@ mod tests {
 
         // Read and forgotten: the caller still owns what it passed.
         assert!(!keeps_argument("Map_get", 1), "Map.get only reads the key");
-        assert!(!keeps_argument("Map_contains_key", 1));
+        assert!(!keeps_argument("Map_contains", 1));
         assert!(!keeps_argument("Vec_insert", 1), "the index is a number");
         // The receiver is never "kept" by a borrowing method.
         assert!(!keeps_argument("Vec_push", 0));

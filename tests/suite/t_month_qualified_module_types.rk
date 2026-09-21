@@ -52,12 +52,12 @@ func window_of(s: Slot9) -> time.Duration {
 }
 
 test "a module import reaches its types through the module" {
-    let d: time.Duration = time.Duration.from_millis(250)
+    let d: time.Duration = time.Duration.millis(250)
     assert d.as_millis() == 250
 }
 
 test "the qualified name works in a field and a return type" {
-    let s = Slot9 { window: time.Duration.from_millis(40), how: Method.Store }
+    let s = Slot9 { window: time.Duration.millis(40), how: Method.Store }
     assert window_of(s).as_millis() == 40
 }
 
@@ -71,8 +71,8 @@ test "a program may name a type after one the imported module exports" {
 
 test "the qualified type survives a generic" {
     mut v: Vec<time.Duration> = Vec.new()
-    v.push(time.Duration.from_millis(5))
-    v.push(time.Duration.from_millis(15))
+    v.push(time.Duration.millis(5))
+    v.push(time.Duration.millis(15))
     assert v.len() == 2
     assert v[1].as_millis() == 15
 }

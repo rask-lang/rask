@@ -2,8 +2,8 @@
 //
 // A method the type does have, called wrong.
 //
-// `Atomic<i64>.into_inner(Ordering.SeqCst)` reported "no method `into_inner`
-// found for type `Atomic<i64>`" and then suggested `into_inner` — the name
+// `Atomic<i64>.take(Ordering.SeqCst)` reported "no method `take`
+// found for type `Atomic<i64>`" and then suggested `take` — the name
 // that had just been written. Every arm of the atomic resolver is guarded on
 // the argument count, so a wrong count falls through to "no such method", and
 // the suggestion machine offered the nearest name, which was the exact one.
@@ -41,10 +41,10 @@ func too_few() {
     return
 }
 
-func into_inner_takes_none() {
+func take_takes_none() {
     let a = Atomic<i64>.new(1)
-    // ERROR: `into_inner` reads the word without an ordering — it consumes the atomic
-    println(a.into_inner(Ordering.SeqCst))
+    // ERROR: `take` reads the word without an ordering — it consumes the atomic
+    println(a.take(Ordering.SeqCst))
     return
 }
 
@@ -76,7 +76,7 @@ func no_arithmetic_on_the_payload() {
 func main() {
     too_many()
     too_few()
-    into_inner_takes_none()
+    take_takes_none()
     no_such_name()
     no_arithmetic_on_the_payload()
     return

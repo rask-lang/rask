@@ -32,12 +32,12 @@ pool[h].z = 3
 |------|-------------|
 | **PG1: Best-effort** | Coalescing is best-effort; may conservatively retain checks |
 | **PG2: Semantics-preserving** | Only removes checks that would have succeeded; safe in debug and release |
-| **PG3: Escape hatches** | `with_valid(h, f)` guarantees 1 check; `get_unchecked(h)` (unsafe) guarantees 0 |
+| **PG3: Escape hatches** | `read(h, f)` guarantees 1 check; `get_unchecked(h)` (unsafe) guarantees 0 |
 
 | Guarantee Level | Mechanism | Checks | Use Case |
 |-----------------|-----------|--------|----------|
 | Optimizable to zero | Frozen context iteration (FZ1) | 0 | Read-only hot paths |
-| Guaranteed 1 | `pool.get(h)` / `with_valid(h, f)` | 1 | Random access (safe) |
+| Guaranteed 1 | `pool.get(h)` / `read(h, f)` | 1 | Random access (safe) |
 | Guaranteed zero | `get_unchecked(h)` (unsafe) | 0 | Caller-validated handles |
 | Expected 1 or fewer per handle | Coalescing | 1 or fewer | General code |
 | Worst case | No coalescing | 1/access | Compiler can't prove safety |
@@ -165,7 +165,7 @@ store %slot2.y, 2
 
 **PG1 (best-effort):** Guaranteeing coalescing requires proving no aliasing between handles and no intervening mutations. That may require inter-procedural reasoning, which violates local analysis (GC4). Corner cases need the conservative choice.
 
-**PG3 (escape hatches):** Hot paths where coalescing is insufficient can use `with_valid` (safe, 1 check) or `get_unchecked` (unsafe, 0 checks). See `mem.pools`.
+**PG3 (escape hatches):** Hot paths where coalescing is insufficient can use `read` (safe, 1 check) or `get_unchecked` (unsafe, 0 checks). See `mem.pools`.
 
 ### Patterns & Guidance
 
@@ -213,5 +213,5 @@ pool[h].w = 4    // IDE: [generation check]
 ### See Also
 
 - `comp.codegen` — MIR optimization pipeline where coalescing runs
-- `mem.pools` — Pool and Handle design, `with_valid`, `get_unchecked`
+- `mem.pools` — Pool and Handle design, `read`, `get_unchecked`
 - `mem.borrowing` — Expression-scoped borrowing that motivates per-access checks

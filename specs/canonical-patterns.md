@@ -654,7 +654,7 @@ test "user creation" {
 }
 
 test "file cleanup" {
-    let file = try fs.create("/tmp/test.txt")
+    let file = try fs.create_file("/tmp/test.txt")
     ensure fs.remove_file("/tmp/test.txt")
 
     try file.write_text("hello")

@@ -676,6 +676,27 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
             }
 
+            // `count` walks a sequence. A container already knows, so it has
+            // `len` and never grew a `count` — which is the distinction between
+            // the two words, and not one anybody guesses from the outside.
+            NoSuchMethod { ty, method, span }
+                if method == "count"
+                    && rask_stdlib::registry::type_method_names(type_base(&ty.to_string()))
+                        .contains(&"len") =>
+            {
+                Diagnostic::error(format!("no method `count` on `{}`", ty))
+                    .with_code("E0313")
+                    .with_primary(*span, "a container knows its length without walking")
+                    .with_fix("use `.len()`".to_string())
+                    .with_help(format!("`{}` has `len()` — O(1), same answer", ty))
+                    .with_why(
+                        "`count` is a sequence terminal: it walks and tallies, because a \
+                         sequence has no length to ask for. Offering it on a container too \
+                         would be a second, slower spelling of `len` [std.api/SD5]"
+                            .to_string(),
+                    )
+            }
+
             NoSuchMethod { ty, method, span } => {
                 // "check available methods on `string`" is a dead end when the
                 // caller is one letter off. Nearly every method-not-found in
@@ -3180,10 +3201,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 existing,
                 existing_span,
             } => {
-                let fix_msg = match (
-                    format!("{}", requested).as_str(),
-                    format!("{}", existing).as_str(),
-                ) {
+                let fix_msg = match (requested.participle(), existing.participle()) {
                     ("written to", "read") => {
                         "wait until the read borrow ends, or pass ownership with `own`"
                     }
@@ -3191,11 +3209,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 };
                 Diagnostic::error(format!(
                     "cannot {} `{}` while it is being {}",
-                    requested, name, existing
+                    requested.verb(), name, existing.participle()
                 ))
                 .with_code("E0801")
-                .with_primary(self.span, format!("{} access here", requested))
-                .with_secondary(*existing_span, format!("{} access here", existing))
+                .with_primary(self.span, format!("{} access here", requested.noun()))
+                .with_secondary(*existing_span, format!("{} access here", existing.noun()))
                 .with_help(fix_msg)
                 .with_fix(fix_msg)
                 .with_why("concurrent read and write access to the same value would be a data race")

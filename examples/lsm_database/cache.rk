@@ -51,7 +51,7 @@ extend BlockCache {
 
     func put(mutate self, sst_id: i32, block_id: i32, entries: Vec<KeyValue>) {
         let key = BlockCache.cache_key(sst_id, block_id)
-        if self.by_key.contains_key(key) { return }
+        if self.by_key.contains(key) { return }
 
         if self.blocks.len() >= MAX_CACHE_ENTRIES {
             self.evict_one()

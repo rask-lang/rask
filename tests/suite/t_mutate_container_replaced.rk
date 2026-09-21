@@ -75,7 +75,7 @@ test "a map, not a vector" {
     assert m.len() == 1
     // Reading the value would be `get_clone`, and that doesn't compile for a
     // scalar payload yet (#1210). The length is enough to say which map this is.
-    assert m.contains_key("a key long enough to need the heap")
+    assert m.contains("a key long enough to need the heap")
 }
 
 test "replaced twice" {

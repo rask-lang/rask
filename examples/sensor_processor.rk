@@ -137,7 +137,7 @@ func interrupt_handler(tx: Sender<Reading>, start_time: time.Instant, sample_rat
         }
 
         sequence += 1
-        time.sleep(time.Duration.from_millis(period_ns / 1000000))
+        time.sleep(time.Duration.millis(period_ns / 1000000))
     }
 }
 
@@ -295,7 +295,7 @@ func main() {
         cycle += 1
 
         // Sleep until next cycle
-        time.sleep(time.Duration.from_millis(process_period_ns / 1000000))
+        time.sleep(time.Duration.millis(process_period_ns / 1000000))
     }
 
     // Keep draining until every sample the ISR will ever send has been taken,

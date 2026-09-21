@@ -8,7 +8,7 @@
 import time
 
 func delay_ms() -> u64 {
-    let d = time.Duration.from_millis(250)
+    let d = time.Duration.millis(250)
     return d.as_millis()
 }
 

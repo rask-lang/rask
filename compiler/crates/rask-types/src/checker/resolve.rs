@@ -1994,7 +1994,7 @@ impl TypeChecker {
             method,
             "push" | "pop" | "push_all" | "insert" | "insert_at" | "remove" | "remove_at"
             | "remove_where" | "take_where" | "clear" | "truncate" | "resize"
-            | "reserve" | "shrink_to_fit" | "with_capacity" | "try_insert" | "try_push"
+            | "reserve" | "shrink" | "with_capacity" | "try_insert" | "try_push"
         )
     }
 
@@ -2034,6 +2034,27 @@ impl TypeChecker {
             _ => self.ctx.fresh_var(),
         };
         let type_args = vec![GenericArg::Type(Box::new(elem))];
+        // Through the whole `Vec` resolution, not just its builtin arms.
+        // Calling `resolve_vec_method` straight left the array with the
+        // hardcoded half: `[1, 2, 3].take(2)` worked and `.take_while(p)` said
+        // "no method", because the second one is a declared method on `Vec` and
+        // only the registered path reads those. `resolve_named` turns the shape
+        // into the registered type when there is one, and `resolve_method`
+        // comes back here for anything that isn't declared.
+        let vec_ty = self.resolve_named(&Type::UnresolvedGeneric {
+            name: "Vec".to_string(),
+            args: type_args.clone(),
+        });
+        if matches!(vec_ty, Type::Generic { .. }) {
+            return self.resolve_method(
+                vec_ty,
+                method.to_string(),
+                args.to_vec(),
+                ret.clone(),
+                span,
+                None,
+            );
+        }
         self.resolve_vec_method(&type_args, method, args, ret, span)
     }
 
@@ -2473,7 +2494,7 @@ impl TypeChecker {
                 self.unify(ret, &opt_ty, span)
             }
             // The single-expression shorthands `Cell` had (conc.sync API table).
-            ("Shared", "get" | "into_inner") if args.is_empty() => {
+            ("Shared", "get" | "take") if args.is_empty() => {
                 self.unify(ret, &inner_type, span)
             }
             ("Shared", "set") if args.len() == 1 => {
@@ -3247,10 +3268,6 @@ impl TypeChecker {
                 let opt_ty = Type::option(Type::I64);
                 self.unify(ret, &opt_ty, span)
             }
-            // vec.count() -> u64
-            "count" if args.is_empty() => {
-                self.unify(ret, &Type::U64, span)
-            }
             // vec.take_all() -> Vec<T> (consuming iteration)
             "take_all" if args.is_empty() => {
                 self.unify(ret, &self_ty, span)
@@ -3375,7 +3392,7 @@ impl TypeChecker {
                 self.check_arg_against(&args[1], &val_type, span);
                 self.unify(ret, &Type::I64, span)
             }
-            "contains_key" if args.len() == 1 => {
+            "contains" if args.len() == 1 => {
                 self.check_arg_against(&args[0], &key_type, span);
                 self.unify(ret, &Type::Bool, span)
             }
@@ -3716,7 +3733,7 @@ impl TypeChecker {
             }
 
             // ── Non-atomic access ───────────────────────────
-            "into_inner" if args.is_empty() => {
+            "take" if args.is_empty() => {
                 self.unify(ret, &val_ty, span)
             }
 

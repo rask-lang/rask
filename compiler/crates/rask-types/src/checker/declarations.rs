@@ -1538,10 +1538,14 @@ impl TypeChecker {
                 self.current_impl_type_param_bounds = i.where_bounds.iter()
                     .map(|tp| (tp.name.clone(), tp.bounds.clone()))
                     .collect();
+                // `extend Vec<T>` binds `T` for every method in the block,
+                // whether or not a `where` clause says anything about it.
+                self.type_params_in_scope = header_type_params(&i.target_ty, &self.types);
                 for method in &i.methods {
                     self.check_fn(method);
                 }
                 self.current_impl_type_param_bounds = std::collections::HashMap::new();
+                self.type_params_in_scope.clear();
                 self.current_self_type = None;
             }
             DeclKind::Const(c) => {
@@ -1980,4 +1984,29 @@ pub(super) fn allowed_from(attrs: &[String]) -> Vec<String> {
         .filter_map(|a| a.strip_prefix("allow(").and_then(|r| r.strip_suffix(')')))
         .map(str::to_string)
         .collect()
+}
+
+/// Type parameter names an `extend` header binds: the arguments in
+/// `extend Foo<T, U>` that don't name a real type.
+///
+/// `extend Sequence<(K, V)>` binds `K` and `V`, so the scan goes through the
+/// punctuation rather than splitting on commas.
+pub(super) fn header_type_params(
+    target_ty: &str,
+    types: &crate::TypeTable,
+) -> std::collections::HashSet<String> {
+    let Some(open) = target_ty.find('<') else {
+        return std::collections::HashSet::new();
+    };
+    let inner = target_ty[open + 1..].trim_end_matches('>');
+    let mut out = std::collections::HashSet::new();
+    for word in inner.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        if word.is_empty() || !word.starts_with(|c: char| c.is_ascii_uppercase()) {
+            continue;
+        }
+        if types.get_type_id(word).is_none() {
+            out.insert(word.to_string());
+        }
+    }
+    out
 }
