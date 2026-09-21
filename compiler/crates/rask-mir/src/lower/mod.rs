@@ -1043,6 +1043,17 @@ impl<'a> MirContext<'a> {
                 if name.starts_with("Handle<") {
                     return MirType::Handle;
                 }
+                // A closure, spelled. `type_to_mir` answers this from the
+                // checker's `Type::Fn`; an annotation reaches MIR as a string
+                // and came through here as a bare `Ptr`, so
+                // `let o: func(i64) -> i64? = …` typed its slot the same as any
+                // other address and nothing gave the block back (#1253).
+                if Self::is_callable_ty_str(name)
+                    && !name.starts_with("Sequence<")
+                    && !name.starts_with("SequenceMut<")
+                {
+                    return MirType::FuncPtr(crate::types::SignatureId(0));
+                }
                 if let Some(node) = name.strip_prefix("Link<").and_then(|s| s.strip_suffix('>')) {
                     return match self.resolve_type_str(node.trim()) {
                         MirType::Struct(sid) => MirType::Link(sid),
@@ -1368,8 +1379,14 @@ impl<'a> MirContext<'a> {
                 let type_str = format!("{}", ty);
                 self.resolve_type_str(&type_str)
             }
-            // Raw pointers and function types are pointer-sized
-            Type::RawPtr(_) | Type::Fn { .. } => MirType::Ptr,
+            Type::RawPtr(_) => MirType::Ptr,
+            // A closure is a pointer to its block, and saying so in the type is
+            // what lets a carrier holding one give it back. `MirType::Ptr` is
+            // every other pointer as well, so a tuple element or an optional's
+            // payload spelled that way carried no way to tell a closure from an
+            // address — and nothing freed it (#1253). It is also what makes
+            // `func(…) -> …?` a niche: a present closure is never null.
+            Type::Fn { .. } => MirType::FuncPtr(crate::types::SignatureId(0)),
             // Tuple → struct-like layout with positional fields
             Type::Tuple(fields) => {
                 MirType::Tuple(fields.iter().map(|t| self.type_to_mir(t)).collect())

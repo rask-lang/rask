@@ -431,10 +431,8 @@ t_shared_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hands ba
                         # the file's own header says so. Zero is reachable — it waits on
                         # the elision knowing which box came back.
 
-# A closure held in an optional, a tuple or a box — #1253. The frame drops one
-# it holds by name and a container frees one it holds as an element (#1149); a
-# value behind a tag, at a tuple offset, or inside a box is none of those. None
-# of these shapes compiled before #1151, #1240, #1241 and #1242 landed, so the
-# leak is what those fixes made reachable rather than anything they broke.
-t_callable_out_of_wrapper.rk  # 2 allocations — closures out of an optional and a Map, #1253
-t_function_type_in_a_slot.rk  # 8 allocations — closures in a box and in a tuple, #1253
+# A box holding a box — #1302. The payload kind the runtime keeps on a box says
+# `Vec`, `Map` or closure; a nested box isn't among them, because freeing one
+# means calling the release for *its* strategy and the outer box carries a kind,
+# not a strategy. The rest of this file's leaks were #1253's and are gone.
+t_function_type_in_a_slot.rk  # 2 allocations — a Shared holding a Shared, #1302

@@ -900,6 +900,40 @@ impl<'a> MirLowerer<'a> {
         (MirOperand::Local(result_local), trait_obj_ty)
     }
 
+    /// Wrap a lowered closure into the layers its parameter declares.
+    ///
+    /// Every other argument shape reaches `coerce_into_wrapper` through the
+    /// non-closure branch; a closure literal was lowered and passed straight
+    /// through, so a `func(…) -> … ?` parameter got a bare closure pointer
+    /// where the callee reads a tag. It answered `none` with the closure
+    /// sitting right there — and only when the callee was too big to inline,
+    /// because the inliner substitutes the argument instead of going through
+    /// the ABI (#1275).
+    ///
+    /// Wrapping means *storing* the closure into the option slot, which the
+    /// escape analysis reads as a hand-over: the environment goes on the heap
+    /// and the frame stops owning it. That is what made the first attempt leak
+    /// 32 bytes a call and got it reverted. The slot is the owner now — a
+    /// `FuncPtr` in an aggregate is released with the aggregate (#1253) — so
+    /// the hand-over lands somewhere.
+    fn wrap_closure_arg(
+        &mut self,
+        op: MirOperand,
+        mir_ty: MirType,
+        declared: Option<&String>,
+    ) -> (MirOperand, MirType) {
+        let Some(dst_ty) = declared.map(|s| self.ctx.resolve_type_str(s)) else {
+            return (op, mir_ty);
+        };
+        let op = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::Argument,
+            op,
+            &mir_ty,
+            &dst_ty,
+        );
+        (op, mir_ty)
+    }
+
     /// Parameter types a closure argument at position `i` should take, read off
     /// the callee's declared `func(...)` parameter. Empty when the callee is
     /// unknown or that parameter isn't a function type.
@@ -1847,7 +1881,8 @@ impl<'a> MirLowerer<'a> {
                             // the call that carries it (#963).
                             spawn_boxes_result = self.spawn_result_boxed;
                         }
-                        lowered
+                        let (op, mir_ty) = lowered;
+                        self.wrap_closure_arg(op, mir_ty, callee_params.get(i).and_then(|o| o.as_ref()))
                     } else {
                         let agg_mut = callee_agg_mutate.get(i).copied().unwrap_or(false);
                         let (op, mir_ty) = self.lower_call_arg(&a.expr, smut, agg_mut)?;
@@ -5490,8 +5525,10 @@ impl<'a> MirLowerer<'a> {
                                 let kind = args
                                     .first()
                                     .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).cloned())
-                                    .and_then(|ty| self.head_name(&ty))
-                                    .map(|h| crate::elem_strs::box_payload_kind(&h))
+                                    .map(|ty| {
+                                        let head = self.head_name(&ty);
+                                        crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                                    })
                                     .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
                             }
@@ -5727,7 +5764,10 @@ impl<'a> MirLowerer<'a> {
                 if expected.is_empty() {
                     expected = elem_params.clone();
                 }
-                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id), false)?
+                let (op, mir_ty) = self.lower_closure_expecting(
+                    params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id), false,
+                )?;
+                self.wrap_closure_arg(op, mir_ty, callee_params.get(i + 1).and_then(|o| o.as_ref()))
             } else {
                 let (op, mir_ty) = self.lower_call_arg(&arg.expr, smut, agg_mut)?;
                 let declared = callee_params
@@ -5905,8 +5945,10 @@ impl<'a> MirLowerer<'a> {
             let kind = args
                 .first()
                 .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).cloned())
-                .and_then(|ty| self.head_name(&ty))
-                .map(|head| crate::elem_strs::box_payload_kind(&head))
+                .map(|ty| {
+                    let head = self.head_name(&ty);
+                    crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                })
                 .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
             all_args.push(MirOperand::Constant(MirConst::Int(kind)));
         }

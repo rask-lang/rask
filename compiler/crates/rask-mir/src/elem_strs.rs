@@ -91,6 +91,10 @@ pub fn container_tag(rendered: &str) -> Option<i64> {
 pub const BOX_PAYLOAD_NONE: i64 = 0;
 pub const BOX_PAYLOAD_VEC: i64 = 1;
 pub const BOX_PAYLOAD_MAP: i64 = 2;
+/// A closure block. Same reason as the two byte stores: the box holds the
+/// address and the frame that built the closure gave it away, so the block
+/// comes back when the box's last reference does (#1253).
+pub const BOX_PAYLOAD_CLOSURE: i64 = 3;
 
 /// The payload kind for a rendered type name.
 pub fn box_payload_kind(rendered: &str) -> i64 {
@@ -99,6 +103,19 @@ pub fn box_payload_kind(rendered: &str) -> i64 {
         Some(ELEM_MAP) => BOX_PAYLOAD_MAP,
         _ => BOX_PAYLOAD_NONE,
     }
+}
+
+/// The payload kind for a checker type, with its rendered head where it has
+/// one.
+///
+/// A function type has no head name to render — `head_name` answers `None` for
+/// it — so asking by string alone could only ever say `NONE`, and every
+/// `Shared.local(|x| …)` leaked the closure.
+pub fn box_payload_kind_of(ty: &rask_types::Type, rendered_head: Option<&str>) -> i64 {
+    if matches!(ty, rask_types::Type::Fn { .. }) {
+        return BOX_PAYLOAD_CLOSURE;
+    }
+    rendered_head.map(box_payload_kind).unwrap_or(BOX_PAYLOAD_NONE)
 }
 
 /// The tag for `ty`, or `ELEM_NONE` if it owns no strings this can point at.

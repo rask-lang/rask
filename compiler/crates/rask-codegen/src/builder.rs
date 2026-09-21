@@ -7281,6 +7281,11 @@ impl<'a> FunctionBuilder<'a> {
             // only owning field was an `any Trait` was skipped by the whole
             // walk and the box leaked (#1149's field case).
             MirType::TraitObject { .. } => true,
+            // A closure in a slot is the aggregate's too. The frame frees one
+            // it holds by name (`ClosureDrop`) and a container frees one it
+            // holds as an element (#1149); behind a tag, at a tuple offset or
+            // inside a box it was neither, so it leaked (#1253).
+            MirType::FuncPtr(_) => true,
             MirType::Option(inner) => Self::holds_string_mir(inner, ctx, depth + 1),
             MirType::Result { ok, err } => {
                 Self::holds_string_mir(ok, ctx, depth + 1)
@@ -7416,6 +7421,19 @@ impl<'a> FunctionBuilder<'a> {
             // is what makes this different from `TraitDrop`, which frees the
             // block and leaves the contents to the frame (#1144).
             MirType::TraitObject { .. } => Self::emit_boxed_field_release(builder, base, offset, ctx),
+            // The slot holds the block's address and the block describes
+            // itself — `rask_closure_free` reads its size and its
+            // environment-drop glue out of the header words, so releasing one
+            // needs nothing type-specific. Null is a no-op there, which is what
+            // a niche `none` reads as.
+            //
+            // Only a *heap* closure ever reaches a slot: the escape analysis
+            // makes a store to memory heap-allocate the environment
+            // (`closures::find_escaping_closures`), so there is no stack
+            // address to hand the runtime here.
+            MirType::FuncPtr(_) => {
+                Self::emit_container_release(builder, base, offset, "rask_closure_free", ctx)
+            }
             MirType::Option(inner) => Self::release_tagged(
                 builder, base, offset, crate::layouts::PAYLOAD_OFFSET, ctx,
                 |b, p, ctx| Self::release_strings_mir(b, p, 0, inner, ctx, depth + 1),
