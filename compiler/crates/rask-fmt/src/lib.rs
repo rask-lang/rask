@@ -96,6 +96,18 @@ mod tests {
         assert_eq!(format_source(input), input);
     }
 
+    /// A comment between an attribute and its declaration stayed where it was
+    /// written. The declaration's span starts at the `@`, so the comment sits
+    /// inside it and the top-level flush skipped it — it came back out at the
+    /// next emission point, which is the first statement of the body. That
+    /// matters for an example the book includes by anchor: the `// ANCHOR:`
+    /// line has to stay above `func`, and the formatter was moving it in.
+    #[test]
+    fn keeps_a_comment_between_an_attribute_and_its_function() {
+        let input = "@allow(idiom/match-on-optional)\n// ANCHOR: simplest\nfunc a() -> i32 {\n    return 1\n}\n";
+        assert_eq!(format_source(input), input);
+    }
+
     #[test]
     fn idempotent_on_clean_code() {
         let clean = "func main() {\n    let x = 42\n    println(x.to_string())\n}\n";

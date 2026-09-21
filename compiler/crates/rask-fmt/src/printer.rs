@@ -617,6 +617,16 @@ impl<'a> Printer<'a> {
             self.emit_indent();
         }
 
+        // A comment written between the attributes and `func`. The
+        // declaration's span starts at the first `@`, so the comment sits
+        // *inside* it and the top-level flush leaves it pending — it then came
+        // out at the next emission point, which is the first statement of the
+        // body. `f.span.start` is the `func` keyword, which is the bound that
+        // keeps it where it was written.
+        if !f.attrs.is_empty() {
+            self.emit_standalone_comments_before(f.span.start);
+        }
+
         if f.is_private {
             self.emit("private ");
         } else if f.is_pub {
