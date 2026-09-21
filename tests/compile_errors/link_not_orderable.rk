@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Putting two links in an order is rejected (E0406, mem.racks/RK11).
+//
+// A link is the address of its node, so `<` answers from wherever the
+// allocator put the chunk. Allocate something before the rack is built and
+// the same program gives a different answer — which is the unreproducible
+// failure `determinism/D11` exists to rule out. There is nothing honest to
+// define here: "node A is less than node B" is a statement about malloc.
+//
+// `==` and `!=` stay: two links are equal when they name the same node.
+import memory.Rack
+import memory.Link
+
+struct Node {
+    id: i32
+    next: Link<Node>?
+}
+
+func compare_links(a: Link<Node>, b: Link<Node>) {
+    let _lt = a < b               // ERROR: E0406 — `<` would go by address
+    let _le = a <= b              // ERROR: E0406
+    let _gt = a > b               // ERROR: E0406
+    let _ge = a >= b              // ERROR: E0406
+    let _c = a.compare(b)         // ERROR: E0406 — same order, spelled out
+}
+
+func identity_is_fine(a: Link<Node>, b: Link<Node>) -> bool {
+    let same = a == b             // fine: names the same node or it doesn't
+    let other = a != b            // fine
+    let by_field = a.id < b.id    // fine: the nodes declare `id`
+    return same || other || by_field
+}
+
+func order_a_collection(mutate links: Vec<Link<Node>>) {
+    links.sort()                  // ERROR: E0406 — the element compare is the address one
+    let _lo = links.min()         // ERROR: E0406 — picks by the same order
+    let _hi = links.max()         // ERROR: E0406
+    links.sort_by_key(|l| l.id)   // fine: the key is a field
+}
+
+func main() {
+    println("does not compile")
+}

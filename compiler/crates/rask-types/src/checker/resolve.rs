@@ -147,21 +147,29 @@ impl TypeChecker {
         }
     }
 
-    /// The element type `T` of a `Handle<T>`, or `None` for anything else.
-    /// `WeakHandle` is excluded — it must be `upgrade()`d before field access.
-    pub(super) fn handle_element_type(&self, ty: &Type) -> Option<Type> {
+    /// The first type argument of `container<...>`, or `None` if `ty` is some
+    /// other type. A receiver arrives either already registered (`Generic`) or
+    /// still in the shape the source wrote (`UnresolvedGeneric`), so both spell
+    /// the same container.
+    pub(super) fn first_type_arg(&self, ty: &Type, container: &str) -> Option<Type> {
         let (name, args) = match ty {
             Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
             Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
             _ => return None,
         };
-        if name != "Handle" {
+        if name != container {
             return None;
         }
         match args.first() {
             Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
             _ => None,
         }
+    }
+
+    /// The element type `T` of a `Handle<T>`, or `None` for anything else.
+    /// `WeakHandle` is excluded — it must be `upgrade()`d before field access.
+    pub(super) fn handle_element_type(&self, ty: &Type) -> Option<Type> {
+        self.first_type_arg(ty, "Handle")
     }
 
     /// The node type `T` of a `Link<T>`, or `None` for anything else.
@@ -170,50 +178,17 @@ impl TypeChecker {
     /// names the node directly (analysis.fourth-option), so this is the whole
     /// resolution story rather than the first half of one.
     pub(super) fn link_node_type(&self, ty: &Type) -> Option<Type> {
-        let (name, args) = match ty {
-            Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
-            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
-            _ => return None,
-        };
-        if name != "Link" {
-            return None;
-        }
-        match args.first() {
-            Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
-            _ => None,
-        }
+        self.first_type_arg(ty, "Link")
     }
 
     /// The node type `T` of a `Rack<T>`, or `None` for anything else.
     pub(super) fn rack_node_type(&self, ty: &Type) -> Option<Type> {
-        let (name, args) = match ty {
-            Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
-            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
-            _ => return None,
-        };
-        if name != "Rack" {
-            return None;
-        }
-        match args.first() {
-            Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
-            _ => None,
-        }
+        self.first_type_arg(ty, "Rack")
     }
 
     /// The element type `T` of a `Pool<T>`, or `None` for anything else.
     pub(super) fn pool_element_type(&self, ty: &Type) -> Option<Type> {
-        let (name, args) = match ty {
-            Type::Generic { base, args } => (self.types.type_name(*base), args.as_slice()),
-            Type::UnresolvedGeneric { name, args } => (name.clone(), args.as_slice()),
-            _ => return None,
-        };
-        if name != "Pool" {
-            return None;
-        }
-        match args.first() {
-            Some(GenericArg::Type(t)) => Some(self.resolve_named(t)),
-            _ => None,
-        }
+        self.first_type_arg(ty, "Pool")
     }
 
     pub(super) fn resolve_field(
@@ -636,6 +611,16 @@ impl TypeChecker {
                     });
                 }
             }
+        }
+
+        // RK11. Without this the name falls through to the node type's own
+        // derived `lt`, and MIR lowers that as a machine compare on the link
+        // word — address order, which moves with whatever the program
+        // allocated before the rack existed (#1266). It sits here rather than
+        // in the `Link` and `Vec` arms below because `sort` is a declared stub
+        // and resolves through the registered method table instead.
+        if let Some(err) = self.reject_link_ordering(&ty, &method, &args, &ret, span) {
+            return Err(err);
         }
 
         if method == "clone" && args.is_empty() {
@@ -3274,13 +3259,8 @@ impl TypeChecker {
             "sum" if args.is_empty() => {
                 self.unify(ret, &inner_type, span)
             }
-            // vec.min() -> Option<T>
-            "min" if args.is_empty() => {
-                let opt_ty = Type::option(inner_type);
-                self.unify(ret, &opt_ty, span)
-            }
-            // vec.max() -> Option<T>
-            "max" if args.is_empty() => {
+            // vec.min() / vec.max() -> Option<T>
+            "min" | "max" if args.is_empty() => {
                 let opt_ty = Type::option(inner_type);
                 self.unify(ret, &opt_ty, span)
             }
@@ -4155,6 +4135,63 @@ impl TypeChecker {
             "ge" => ">=",
             _ => "this operator",
         }
+    }
+
+    /// Anything that would put two links in an order (RK11): the comparison
+    /// operators and `compare` on a link itself, and the `Vec` methods that
+    /// pick or arrange by order when the elements are links.
+    ///
+    /// The result type is pinned before answering, for the same reason the
+    /// integer path does it: leaving `ret` open turns one error into two, the
+    /// second being "couldn't work out the type of x" pointing at a binding
+    /// that is fine.
+    fn reject_link_ordering(
+        &mut self,
+        recv: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Option<TypeError> {
+        if self.link_node_type(recv).is_some() && args.len() == 1 {
+            match method {
+                "lt" | "le" | "gt" | "ge" => {
+                    let _ = self.unify(ret, &Type::Bool, span);
+                    return Some(TypeError::LinkNotOrderable {
+                        op: Self::operator_spelling(method).to_string(),
+                        recv: "Link<T>".to_string(),
+                        span,
+                    });
+                }
+                "compare" => {
+                    let ord = self.ordering_type();
+                    let _ = self.unify(ret, &ord, span);
+                    return Some(TypeError::LinkNotOrderable {
+                        op: "compare".to_string(),
+                        recv: "Link<T>".to_string(),
+                        span,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        // One level out: a sort of links uses the same address compare, and
+        // nothing in `sort()` itself said so — the vec came back in allocation
+        // order and looked sorted.
+        if args.is_empty() && matches!(method, "sort" | "min" | "max") {
+            let elem = self
+                .first_type_arg(recv, "Vec")
+                .map(|t| self.ctx.apply(&t));
+            if elem.is_some_and(|t| self.link_node_type(&t).is_some()) {
+                return Some(TypeError::LinkNotOrderable {
+                    op: format!("{}()", method),
+                    recv: "Vec<Link<T>>".to_string(),
+                    span,
+                });
+            }
+        }
+        None
     }
 
     /// Resolve methods on primitive integer types (i8..i128, u8..u128).
