@@ -77,7 +77,10 @@ extend fs {
     }
 
     /// Create a new file at the given path.
-    public func create(path: string) -> File or IoError {
+    ///
+    /// Named for what it makes, beside `create_dir` and `remove_file`. Bare
+    /// `create` in a filesystem module doesn't say which of the two it is.
+    public func create_file(path: string) -> File or IoError {
         let f = fs.create_handle(path)
         if f.is_null() {
             return IoError.last_os_error()

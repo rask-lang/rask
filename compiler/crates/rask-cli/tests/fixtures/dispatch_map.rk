@@ -9,14 +9,14 @@ func main() {
     m.insert("c", 3)
     print(m.len())
     print("\n")
-    print(m.contains_key("b"))
+    print(m.contains("b"))
     print("\n")
     if m.get("b")? as v {
         print(v)
         print("\n")
     }
     m.remove("b")
-    print(m.contains_key("b"))
+    print(m.contains("b"))
     print("\n")
     print(m.len())
     print("\n")

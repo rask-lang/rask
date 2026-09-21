@@ -26,7 +26,7 @@ func describe(d: Duration) -> string {
 }
 
 func make_span(ms: i64) -> Duration {
-    return Duration.from_millis(ms)
+    return Duration.millis(ms)
 }
 
 test "std.structure — a whole-module import, used through its name" {
@@ -35,7 +35,7 @@ test "std.structure — a whole-module import, used through its name" {
 }
 
 test "std.structure — a single-item import needs no module prefix" {
-    let d = Duration.from_millis(1500)
+    let d = Duration.millis(1500)
     assert d.as_millis() == 1500
     assert d.as_seconds() == 1
 }
@@ -73,7 +73,7 @@ test "std.structure — an imported type in a binding annotation" {
 }
 
 test "std.structure — an imported type in a function signature" {
-    assert describe(Duration.from_millis(250)) == "250ms"
+    assert describe(Duration.millis(250)) == "250ms"
     assert make_span(50).as_millis() == 50
 }
 
@@ -88,8 +88,8 @@ test "std.structure — an imported type as a function return" {
 
 test "std.structure — an imported type inside a collection" {
     mut spans: Vec<Duration> = Vec.new()
-    spans.push(Duration.from_millis(10))
-    spans.push(Duration.from_millis(20))
+    spans.push(Duration.millis(10))
+    spans.push(Duration.millis(20))
     assert spans.len() == 2
     mut total = 0
     for s in spans {
@@ -100,7 +100,7 @@ test "std.structure — an imported type inside a collection" {
 
 test "std.structure — an imported type through a Map value" {
     mut m: Map<string, Duration> = Map.new()
-    m.insert("short", Duration.from_millis(5))
+    m.insert("short", Duration.millis(5))
     assert m.get("short")!.as_millis() == 5
     assert m.get("zzz") is none
 }
@@ -121,7 +121,7 @@ test "std.structure — a whole-module import used for a namespaced call" {
 }
 
 test "std.structure — several imported modules in one expression" {
-    let ms = Duration.from_millis(math.hypot(0.0, 40.0).to<i64>()!).as_millis()
+    let ms = Duration.millis(math.hypot(0.0, 40.0).to<i64>()!).as_millis()
     assert ms == 40
 }
 

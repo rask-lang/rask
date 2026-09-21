@@ -163,7 +163,7 @@ extend Document {
 
     // Save document to file
     func save(self, path: string) -> void or fs.IoError {
-        mut file = try fs.create(path)
+        mut file = try fs.create_file(path)
         ensure file.close()
 
         for h in self.line_order {

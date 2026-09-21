@@ -79,7 +79,6 @@ impl Interpreter {
             "as_millis" => Ok(Value::int((nanos / 1_000_000) as i64)),
             "as_micros" => Ok(Value::int((nanos / 1_000) as i64)),
             "as_nanos" => Ok(Value::int(nanos as i64)),
-            "as_seconds_f32" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0, FloatKind::Untyped)),
             "as_seconds_f64" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0, FloatKind::Untyped)),
             // Arithmetic
             "add" => {
@@ -278,20 +277,6 @@ impl Interpreter {
                     .map_err(|e| RuntimeError::TypeError(e))?;
                 let nanos = (secs * 1_000_000_000.0) as u64;
                 Ok(Value::Duration(nanos))
-            }
-            ("Duration", "from_millis") => {
-                let n = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_u64()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                Ok(Value::Duration(n * 1_000_000))
-            }
-            ("Duration", "from_nanos") => {
-                let n = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_u64()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                Ok(Value::Duration(n))
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "type {} has no method '{}'",

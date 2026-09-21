@@ -13,8 +13,8 @@ func main() {
     let ys = Vec.from([10.0, 20.0, 30.0, 40.0]).wide()
     print("{xs.zip_with(ys, |a, b| a * b).sum()}\n")   // 300
 
-    // lazy map, then read back to a Vec
-    print("{xs.map(|x| x * 2.0).read().join(\", \")}\n") // 2, 4, 6, 8
+    // lazy map, then materialize back to a Vec
+    print("{xs.map(|x| x * 2.0).to_vec().join(\", \")}\n") // 2, 4, 6, 8
 
     // reduction family
     print("{xs.min()}\n")                              // 1

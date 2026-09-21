@@ -2,8 +2,8 @@
 // `import X as Y` — #923.
 //
 // An aliased import binds the name and carries none of the type's methods.
-// `Span.from_millis(1500)` is "no method `from_millis` found for type `Span`"
-// while `Duration.from_millis(1500)` through a plain import is fine, and
+// `Span.millis(1500)` is "no method `millis` found for type `Span`"
+// while `Duration.millis(1500)` through a plain import is fine, and
 // annotating doesn't help — instance methods are missing too, so `Span` is a name
 // the checker accepts in a type position with no extend blocks attached.
 //
@@ -23,22 +23,22 @@ func describe(s: Span) -> string {
 }
 
 test "std.structure — a static through an aliased type" {
-    let d = Span.from_millis(1500)
+    let d = Span.millis(1500)
     assert d.as_millis() == 1500
 }
 
 test "std.structure — an instance method through an aliased type" {
-    let d = Span.from_millis(2000)
+    let d = Span.millis(2000)
     assert d.as_seconds() == 2
 }
 
 test "std.structure — an aliased type in an annotation" {
-    let d: Span = Span.from_millis(500)
+    let d: Span = Span.millis(500)
     assert d.as_millis() == 500
 }
 
 test "std.structure — an aliased type in a function signature" {
-    assert describe(Span.from_millis(250)) == "250ms"
+    assert describe(Span.millis(250)) == "250ms"
 }
 
 test "std.structure — a second aliased type" {

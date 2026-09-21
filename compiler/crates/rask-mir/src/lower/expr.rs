@@ -6465,7 +6465,7 @@ impl<'a> MirLowerer<'a> {
             (SharedStrategy::Local, "get") => "Cell_get",
             (SharedStrategy::Local, "set") => "Cell_set",
             (SharedStrategy::Local, "replace") => "Cell_replace",
-            (SharedStrategy::Local, "into_inner") => "Cell_into_inner",
+            (SharedStrategy::Local, "take") => "Cell_into_inner",
             // A plain lock has one mode, so a `read()` under it takes the
             // exclusive lock — slower than `Readers` would be there, never wrong
             // (SH5).
@@ -6477,10 +6477,10 @@ impl<'a> MirLowerer<'a> {
             // type-checked and then failed to link on `Shared_get`.
             (SharedStrategy::Mutex, "get") => "Mutex_get",
             (SharedStrategy::Mutex, "set") => "Mutex_set",
-            (SharedStrategy::Mutex, "replace" | "into_inner") => "Mutex_replace",
+            (SharedStrategy::Mutex, "replace" | "take") => "Mutex_replace",
             (SharedStrategy::Readers, "get") => "Shared_get",
             (SharedStrategy::Readers, "set") => "Shared_set",
-            (SharedStrategy::Readers, "replace" | "into_inner") => "Shared_replace",
+            (SharedStrategy::Readers, "replace" | "take") => "Shared_replace",
             _ => return qualified.to_string(),
         };
         name.to_string()

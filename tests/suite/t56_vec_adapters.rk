@@ -84,11 +84,11 @@ test "float elements are not read as pointers" {
 test "take and skip standing on their own" {
     let v: Vec<i32> = [1, 2, 3, 4, 5]
     let first3 = v.take(3).to_vec()
-    assert first3.count() == 3
+    assert first3.len() == 3
     assert first3[0] == 1
     assert first3[2] == 3
     let rest = v.skip(3).to_vec()
-    assert rest.count() == 2
+    assert rest.len() == 2
     assert rest[0] == 4
 }
 
@@ -101,7 +101,7 @@ test "take more than there is, and take none" {
 test "take keeps string elements alive" {
     let words: Vec<string> = ["alpha", "beta", "gamma"]
     let two = words.take(2).to_vec()
-    assert two.count() == 2
+    assert two.len() == 2
     assert two[0] == "alpha"
     assert two[1] == "beta"
 }
@@ -115,7 +115,7 @@ test "the rest of the sequence surface reaches a Vec" {
     assert v.take_while(|x| x < 4).count() == 3
     assert v.skip_while(|x| x < 4).count() == 2
     assert v.chain(v.as_sequence()).count() == 10
-    assert v.count() == 5
+    assert v.len() == 5
     assert (v.min_by(|a, b| a.compare(b)) ?? 0) == 1
     assert (v.max_by(|a, b| a.compare(b)) ?? 0) == 5
     assert (v.min_by_key(|x| 0 - x) ?? 0) == 5
@@ -131,7 +131,7 @@ test "the rest of the sequence surface reaches a Vec" {
 test "an unannotated array literal reaches them too" {
     let v = [1, 2, 3, 4, 5]
     assert v.take_while(|x| x < 3).count() == 2
-    assert v.count() == 5
+    assert v.len() == 5
 }
 
 // The element of a sequence built inside a generic function used to come back
@@ -155,7 +155,7 @@ test "a Map is its own chain head" {
     m.insert("a", 1)
     m.insert("b", 2)
     m.insert("c", 3)
-    assert m.count() == 3
+    assert m.len() == 3u64
     assert m.filter(|e| e.1 > 1).count() == 2
     assert m.any(|e| e.0 == "b")
     assert m.fold(0, |acc, e| acc + e.1) == 6
@@ -166,7 +166,7 @@ test "a Set is its own chain head" {
     s.insert(1)
     s.insert(2)
     s.insert(3)
-    assert s.count() == 3
+    assert s.len() == 3u64
     assert s.filter(|x| x > 1).count() == 2
     assert s.map(|x| x * 2).to_vec().len() == 3
     assert s.all(|x| x > 0)

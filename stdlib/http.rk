@@ -88,8 +88,8 @@ extend Headers {
     public func set(mutate self, name: string, value: string) -> void {
         self.entries.insert(name.to_lowercase(), value)
     }
-    public func has(self, name: string) -> bool {
-        return self.entries.contains_key(name.to_lowercase())
+    public func contains(self, name: string) -> bool {
+        return self.entries.contains(name.to_lowercase())
     }
     public func remove(mutate self, name: string) -> string? {
         return self.entries.remove(name.to_lowercase())
@@ -118,6 +118,13 @@ extend Request {
     public func with_header(take self, name: string, value: string) -> Request {
         self.headers.set(name, value)
         return self
+    }
+    /// Replace the whole header set, for a request being rebuilt from another
+    /// one. `with_header` adds them one at a time.
+    public func with_headers(take self, headers: Headers) -> Request {
+        mut out = self
+        out.headers = headers
+        return out
     }
     public func with_body(take self, body: string) -> Request {
         return Request {
@@ -800,9 +807,6 @@ extend http {
     }
     public func request(request: Request) -> Response or HttpError {
         return _send_request_impl(request.method, request.url, request.body, request.headers)
-    }
-    public func send_request(method: Method, url: string, body: string, headers: Headers) -> Response or HttpError {
-        return _send_request_impl(method, url, body, headers)
     }
 }
 

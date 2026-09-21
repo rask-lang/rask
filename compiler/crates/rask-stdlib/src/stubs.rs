@@ -786,7 +786,7 @@ mod tests {
         assert!(reg.has_method("fs", "write_text"));
         assert!(reg.has_method("fs", "exists"));
         assert!(reg.has_method("fs", "open"));
-        assert!(reg.has_method("fs", "create"));
+        assert!(reg.has_method("fs", "create_file"));
     }
 
     #[test]
@@ -829,7 +829,7 @@ mod tests {
         // bounded (std.collections/CP4), so each could give exactly one answer.
         let expected = [
             "new", "with_capacity", "len", "is_empty",
-            "insert", "remove", "clear", "get", "get_clone", "contains_key",
+            "insert", "remove", "clear", "get", "get_clone", "contains",
             "read", "modify", "insert_if_missing", "modify_with_default",
             "keys", "values", "freeze",
         ];
@@ -949,7 +949,7 @@ mod tests {
         // These methods must declare return types — not empty string
         let checks = [
             ("Vec", "len"), ("Vec", "pop"), ("Vec", "get"),
-            ("Map", "len"), ("Map", "get"), ("Map", "contains_key"),
+            ("Map", "len"), ("Map", "get"), ("Map", "contains"),
             ("string", "len"), ("string", "contains"),
         ];
         for (ty, method) in &checks {

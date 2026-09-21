@@ -104,11 +104,11 @@ extend Shared<T, S> {
     func get(self) -> T              // copy the value out; Copy types only
     func set(self, value: T)         // replace the value
     func replace(self, value: T) -> T
-    func into_inner(take self) -> T
+    func take(take self) -> T
 }
 ```
 
-`get`/`set`/`replace`/`into_inner` are the single-expression shorthands `Cell`
+`get`/`set`/`replace`/`take` are the single-expression shorthands `Cell`
 had. They work under every strategy and take the appropriate access for one
 operation.
 

@@ -56,7 +56,7 @@ test "an environment variable reaches the child" {
     let out = os.Command.new("sh")
         .arg("-c")
         .arg("echo $RASK_TEST_VAR")
-        .env("RASK_TEST_VAR", "seen")
+        .set_env("RASK_TEST_VAR", "seen")
         .run()!
     assert out.stdout == "seen\n"
 }

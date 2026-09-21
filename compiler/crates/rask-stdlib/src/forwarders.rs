@@ -63,6 +63,13 @@ pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
             if m.params.len() == 1 && m.ret_ty.as_deref() == Some(*header) {
                 continue;
             }
+            // `count` walks to work out something the host already knows: a
+            // collection has `len`, so `v.count()` was a second spelling of it,
+            // and the slower one. A sequence keeps `count` because it genuinely
+            // has to walk — that's the whole difference between the two words.
+            if m.name == "count" && declared.iter().any(|d| d == "len") {
+                continue;
+            }
             block.push_str(&forwarder(m, elem, &host_params));
         }
         if !block.is_empty() {
@@ -302,7 +309,7 @@ mod tests {
     fn a_map_and_a_set_get_the_same_surface() {
         for host in ["Map<K, V>", "Set<T>"] {
             let block = block_for(host);
-            for name in ["filter", "map", "count", "any", "fold"] {
+            for name in ["filter", "map", "any", "fold", "find"] {
                 assert!(
                     block.contains(&format!("public func {}", name)),
                     "`{}` should inherit `{}`:\n{}",
@@ -324,6 +331,17 @@ mod tests {
             "{}",
             block
         );
+    }
+
+    #[test]
+    fn a_container_keeps_len_and_never_grows_count() {
+        // Walking to work out something the host already answers is a second,
+        // slower spelling of `len` (`std.api/SD5`). A `Sequence` keeps `count`
+        // because it genuinely has to walk.
+        for host in ["Vec<T>", "Map<K, V>", "Set<T>"] {
+            let block = block_for(host);
+            assert!(!block.contains("public func count"), "{}", block);
+        }
     }
 
     #[test]

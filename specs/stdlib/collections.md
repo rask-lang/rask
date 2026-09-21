@@ -26,7 +26,7 @@ Vec, Map and Set with optional capacity constraints, inline element access, fall
 
 | Rule | Description |
 |------|-------------|
-| **C5: Membership is `contains`** | `s.contains(v)`, not `contains_key`. A set has no keys, and `Vec` and `string` already spell it this way. `Map` keeps `contains_key` because there a key is one of two things you could mean |
+| **C5: Membership is `contains`** | `s.contains(v)`, not `contains`. A set has no keys, and `Vec` and `string` already spell it this way. `Map` keeps `contains` because there a key is one of two things you could mean |
 | **C6: Insert and remove report change** | `s.insert(v)` and `s.remove(v)` return `bool` — whether the set changed. `insert` on a value already present is not an error, it answers `false` |
 | **C7: A Map underneath** | `Set<T>` is `Map<T, bool>`, written in Rask, so both backends run one source and a set's hashing, growth and iteration order are the map's. `T` carries the same key constraints (C-key rules below) |
 | **C8: `to_vec`, not `iter`** | The values come out as `s.to_vec()`. A stored iterator isn't a thing (SEQ31) — an adapter chain terminates in the expression that starts it — so a set hands back what it built and the name says so |
@@ -310,14 +310,14 @@ items.remove_adjacent_duplicates()      // [1, 3, 4, 5]
 
 | Method | Returns | Notes |
 |--------|---------|-------|
-| `map.contains_key(k)` | `bool` | Check key existence without copying value |
+| `map.contains(k)` | `bool` | Check key existence without copying value |
 | `map.keys()` | expression-scoped iterator | Iterate over keys |
 | `map.values()` | expression-scoped iterator | Iterate over values |
 
 <!-- test: parse -->
 ```rask
 let scores = Map.from([["alice", 10], ["bob", 20]])
-scores.contains_key("alice")      // true
+scores.contains("alice")      // true
 for name in scores.keys() { println(name) }
 for score in scores.values() { println(format("{}", score)) }
 ```

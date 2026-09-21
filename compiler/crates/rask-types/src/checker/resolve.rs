@@ -2494,7 +2494,7 @@ impl TypeChecker {
                 self.unify(ret, &opt_ty, span)
             }
             // The single-expression shorthands `Cell` had (conc.sync API table).
-            ("Shared", "get" | "into_inner") if args.is_empty() => {
+            ("Shared", "get" | "take") if args.is_empty() => {
                 self.unify(ret, &inner_type, span)
             }
             ("Shared", "set") if args.len() == 1 => {
@@ -3268,10 +3268,6 @@ impl TypeChecker {
                 let opt_ty = Type::option(Type::I64);
                 self.unify(ret, &opt_ty, span)
             }
-            // vec.count() -> u64
-            "count" if args.is_empty() => {
-                self.unify(ret, &Type::U64, span)
-            }
             // vec.take_all() -> Vec<T> (consuming iteration)
             "take_all" if args.is_empty() => {
                 self.unify(ret, &self_ty, span)
@@ -3396,7 +3392,7 @@ impl TypeChecker {
                 self.check_arg_against(&args[1], &val_type, span);
                 self.unify(ret, &Type::I64, span)
             }
-            "contains_key" if args.len() == 1 => {
+            "contains" if args.len() == 1 => {
                 self.check_arg_against(&args[0], &key_type, span);
                 self.unify(ret, &Type::Bool, span)
             }
@@ -3737,7 +3733,7 @@ impl TypeChecker {
             }
 
             // ── Non-atomic access ───────────────────────────
-            "into_inner" if args.is_empty() => {
+            "take" if args.is_empty() => {
                 self.unify(ret, &val_ty, span)
             }
 

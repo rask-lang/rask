@@ -54,18 +54,18 @@ struct HasBuilder {
 }
 
 test "std.time — a Duration as the only field" {
-    let a = JustDuration { took: Duration.from_millis(30) }
+    let a = JustDuration { took: Duration.millis(30) }
     assert a.took.as_millis() == 30
 }
 
 test "std.time — a Duration after a string field" {
-    let b = AfterString { label: "build", took: Duration.from_millis(30) }
+    let b = AfterString { label: "build", took: Duration.millis(30) }
     assert b.label == "build"
     assert b.took.as_millis() == 30
 }
 
 test "std.time — a Duration after an integer field" {
-    let c = AfterInt { n: 7, took: Duration.from_millis(30) }
+    let c = AfterInt { n: 7, took: Duration.millis(30) }
     assert c.n == 7
     assert c.took.as_millis() == 30
 }
@@ -76,14 +76,14 @@ test "std.time — an Instant as a struct field" {
 }
 
 test "std.time — a Duration field built from a binding" {
-    let d = Duration.from_millis(45)
+    let d = Duration.millis(45)
     let a = JustDuration { took: d }
     assert a.took.as_millis() == 45
 }
 
 // A bare binding is fine on both backends — it's the field that's wrong.
 test "std.time — a Duration in a local binding is the control" {
-    let d = Duration.from_millis(30)
+    let d = Duration.millis(30)
     assert d.as_millis() == 30
     let i = Instant.now()
     assert i.elapsed().as_millis() >= 0

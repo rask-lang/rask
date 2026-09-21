@@ -20,8 +20,8 @@ test "a missing key is absent, not a panic" {
     m.insert("a", 1)
     assert m.get("zzz") == none
     assert (m.get("zzz") ?? -1) == -1
-    assert !m.contains_key("zzz")
-    assert m.contains_key("a")
+    assert !m.contains("zzz")
+    assert m.contains("a")
 }
 
 // Overwriting a key keeps the map at one entry. What `insert` *returns* — the
@@ -49,7 +49,7 @@ test "remove returns the value and drops the key" {
     m.insert("b", 20)
     assert m.remove("a")! == 10
     assert m.len() == 1
-    assert !m.contains_key("a")
+    assert !m.contains("a")
     assert m.remove("a") == none
 }
 

@@ -24,7 +24,7 @@ func main() {
         let h: TaskHandle<void> = spawn(own || { doomed(tx) })
         h.detach()
         let _ = rx.receive()
-        time.sleep(Duration.from_millis(50))
+        time.sleep(Duration.millis(50))
     }
     println("done")
 }

@@ -406,7 +406,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // closure-callback path, which currently segfaults natively (#441) —
         // see docs/working/native-wide.md — so they run under the interpreter only.
         StdlibEntry::simple("Vec_wide", "rask_vec_clone", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Wide_read", "rask_vec_clone", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Wide_to_vec", "rask_vec_clone", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Wide_sum", "rask_wide_sum", &[types::I64], Some(types::I64), false),
 
         // ── String operations ──────────────────────────────────
@@ -845,7 +845,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
         },
         StdlibEntry {
-            mir_name: "Map_contains_key", c_name: "rask_map_contains",
+            mir_name: "Map_contains", c_name: "rask_map_contains",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1, ret_adapt: RetAdapt::None,
         },
@@ -1075,14 +1075,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Instant_now", "rask_time_Instant_now", &[], Some(types::I64), false),
         StdlibEntry::simple("time_wall_clock_nanos", "rask_time_wall_clock_nanos", &[], Some(types::I64), false),
         StdlibEntry::simple("Instant_elapsed", "rask_time_Instant_elapsed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Duration_from_nanos", "rask_time_Duration_from_nanos", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Duration_from_millis", "rask_time_Duration_from_millis", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_as_nanos", "rask_time_Duration_as_nanos", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_as_seconds", "rask_time_Duration_as_secs", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_as_seconds_f64", "rask_time_Duration_as_secs_f64", &[types::I64], Some(types::F64), false),
         StdlibEntry::simple("Duration_as_millis", "rask_time_Duration_as_millis", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_as_micros", "rask_time_Duration_as_micros", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Duration_as_seconds_f32", "rask_time_Duration_as_secs_f32", &[types::I64], Some(types::F64), false),
         StdlibEntry::simple("Duration_seconds", "rask_time_Duration_seconds", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_millis", "rask_time_Duration_millis", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_micros", "rask_time_Duration_micros", &[types::I64], Some(types::I64), false),
@@ -1669,7 +1666,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             &[types::I64, types::I64, types::I64], Some(types::I64), false,
         ));
     }
-    entries.push(atomic("Atomic_into_inner", "rask_atomic_int_into_inner", &[types::I64], Some(types::I64)));
+    entries.push(atomic("Atomic_take", "rask_atomic_int_into_inner", &[types::I64], Some(types::I64)));
     // The ordinary drop. `into_inner` frees too and hands the value out with
     // it; this is for an atomic that just goes out of scope.
     entries.push(StdlibEntry::simple("Atomic_free", "rask_atomic_int_free", &[types::I64], None, false));
@@ -1966,8 +1963,6 @@ mod tests {
     "Pool.remaining",
     "Pool.snapshot",
     "Pool.weak",
-    "Pool.with_valid",
-    "Pool.with_valid_mut",
     "TaskGroup.join_all",
     "TaskGroup.new",
     "Vec.all",

@@ -296,7 +296,7 @@ mod tests {
         assert!(bm.get_method("fs", "write_text").is_some());
         assert!(bm.get_method("fs", "exists").is_some());
         assert!(bm.get_method("fs", "open").is_some());
-        assert!(bm.get_method("fs", "create").is_some());
+        assert!(bm.get_method("fs", "create_file").is_some());
         assert!(bm.get_method("fs", "append_text").is_some());
     }
 

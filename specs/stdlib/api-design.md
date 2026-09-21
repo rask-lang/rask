@@ -17,6 +17,29 @@ The stdlib is where language size actually hits people. Nobody reads the grammar
 | **SD4: No Rust legacy by reflex** | Every name and shape is justified from how the Rask call site reads, never from what `std` calls it. Rask has `T or E`, `T?`, `Heap`, `Shared<T, S>` — so `Result`, `Option`, `Box`, `Rc`, `RefCell`, `Arc<Mutex<T>>` never appear, and neither do their method idioms (`unwrap`, `expect`, `ok_or`, `and_then`). `Vec`/`Map` survive because they read right in Rask, not because Rust has them |
 | **SD5: One way** | No convenience aliases, no two spellings for one operation (`mem.atomics/GA1` is the precedent). If two functions do the same thing, one of them is deprecated the day the second lands |
 
+## One word per question (SD6)
+
+| Rule | Description |
+|------|-------------|
+| **SD6: One word per question** | A question gets the same word everywhere it's asked. Membership is `contains` on `Vec`, `Map`, `Set`, `string`, `Rack`, `Pool` and `Headers` — not `contains_key` on one of them. Size is `len`. Reading a stored value through a closure is `read`. Consuming a wrapper is `take`. The compounding is the point: the vocabulary is what makes `SD3`'s guess transfer between modules, so a second word for a question already answered costs more than the module it lives in |
+
+A worked pass over the whole stdlib, and what it turned up:
+
+| Was | Is | Why |
+|-----|----|-----|
+| `Map.contains_key(k)` | `Map.contains(k)` | Rust needs `contains_key` because a Rust map's `contains` would have to say which half it means. Every single-argument method on Rask's `Map` takes a key — `get`, `remove`, `read`, `modify` — so one more that does is no ambiguity. Asking about a value is `m.any(\|e\| e.1 == v)` |
+| `Headers.has(name)` | `Headers.contains(name)` | Third spelling of the same question |
+| `Wide.read()` | `Wide.to_vec()` | Every other `read` in the stdlib borrows through a closure. This one runs the plan and builds a `Vec`, which is what `type.sequence/SEQ31` says to name it |
+| `Shared.into_inner()`, `Atomic.into_inner()` | `take()` | `into_inner` was `Cell`'s name, carried forward from a type Rask no longer has. `take` is the parameter mode the receiver already uses |
+| `fs.create(path)` | `fs.create_file(path)` | Bare `create` in a filesystem module doesn't say which of `create_dir` and it you meant |
+| `Command.env(k, v)` | `Command.set_env(k, v)` | `os.env(name)` in the same module *reads* one |
+| `string.from_utf8_unchecked` | *(deleted)* | Marked `unsafe`, named `_unchecked`, documented "without validation" — and it validated and panicked. `from_utf8(bytes)!` is the same thing, spelled honestly |
+| `Duration.as_seconds_f32() -> f64` | *(deleted)* | The name said `f32` and every layer down to codegen returned `f64`. `as_seconds_f64` already covers it |
+| `Duration.from_millis`, `from_nanos` | *(deleted)* | Their own doc comments said "(alias)" — of `millis` and `nanos` |
+| `http.send_request(m, url, body, hdrs)` | `http.request(Request)` | The four-argument one was `request` with the `Request` spelled out. `Request.with_headers` closes the gap that kept it alive |
+| `Pool.with_valid`, `with_valid_mut` | `Pool.read`, `Pool.modify` | Four names for two operations |
+| `Vec.count()`, `Map.count()`, `Set.count()` | `len()` | A container knows its length; `count` walks. Offering both made the second a slower spelling of the first — a sequence keeps `count` because it genuinely has to walk, and that is the whole difference between the two words |
+
 ## Why SD1 is the load-bearing rule
 
 The day-to-day cost of a big stdlib isn't learning it — it's *re-scanning* it. Every "which function do I want" pause is a trip to the docs, and a module with 60 entries makes that trip mandatory; a module with 15 makes it skippable, because the answer is visible in one `rask api` call or one autocomplete popup. Go's stdlib is loved for exactly this: each package holds a dozen things you can keep in your head. Batteries included means every battery *slot* is filled — not that every slot holds six batteries.

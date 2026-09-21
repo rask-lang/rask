@@ -201,7 +201,7 @@ fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         ExprKind::Ident(name) => {
             // Look up variable, or function, or type constructor
             if let Some(val) = self.env.get(name) { return Ok(val.clone()); }
-            if self.functions.contains_key(name) { return Ok(Value::Function { .. }); }
+            if self.functions.contains(name) { return Ok(Value::Function { .. }); }
             // Check for Vec, Map, string, Pool, Channel, etc.
             match base_name {
                 "Vec" => Ok(Value::TypeConstructor { kind: TypeConstructorKind::Vec, .. }),

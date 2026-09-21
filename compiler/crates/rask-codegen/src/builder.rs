@@ -8897,7 +8897,7 @@ impl<'a> FunctionBuilder<'a> {
             // instead made `Atomic<Slot>` an atomic pointer to a temporary, and
             // the load read whatever that address held (mem.atomics).
             "Atomic_new" | "Atomic_store" | "Atomic_swap" | "Atomic_load"
-            | "Atomic_into_inner" | "Atomic_compare_exchange"
+            | "Atomic_take" | "Atomic_compare_exchange"
             | "Atomic_compare_exchange_weak" => {
                 // Argument side: load the word out of an aggregate payload. The
                 // ordering arguments are plain integers and answer `false` to

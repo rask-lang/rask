@@ -73,22 +73,22 @@ test "card: sequence terminals" {
     assert evens.len() == 1u64
 
     assert v.sum() == 6i64
-    assert v.count() == 3u64
+    assert v.len() == 3u64
     // join on a *fixed array* of strings is broken natively (#1021), so the card's
     // `join` claim is pinned here on a Vec; the array case has its own probe.
     let names: Vec<string> = ["a", "b"].to_vec()
     assert names.join("-") == "a-b"
 }
 
-test "card: Map says contains_key, not contains" {
+test "card: Map membership is contains, the same word as every other container" {
     mut m: Map<string, i64> = Map.new()
     assert m.is_empty()
     m.insert("a", 1i64)
     m["b"] = 2i64
     assert m.len() == 2u64
     assert m["a"] == 1i64
-    assert m.contains_key("a")
-    assert !m.contains_key("zz")
+    assert m.contains("a")
+    assert !m.contains("zz")
 
     let ks: Vec<string> = m.keys().to_vec()
     assert ks.len() == 2u64

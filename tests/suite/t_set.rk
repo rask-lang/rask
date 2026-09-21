@@ -9,7 +9,7 @@
 // anyone would do.
 //
 // It's a `Map<T, bool>` written in Rask, so both backends run the same source.
-// The membership test is `contains` and not `contains_key`: a set has no keys,
+// The membership test is `contains`, the same word Vec, string and Map use.
 // and `Vec` and `string` already spell it that way.
 //
 // There is no `iter()`. A stored iterator isn't a thing in Rask — an adapter

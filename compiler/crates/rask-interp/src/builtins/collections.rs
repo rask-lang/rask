@@ -1451,7 +1451,7 @@ impl Interpreter {
                 let removed = m.lock().unwrap().remove(&MapKey(key));
                 Ok(option_of(removed))
             }
-            "contains" | "contains_key" => {
+            "contains" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 Ok(Value::Bool(m.lock().unwrap().contains_key(&MapKey(key))))
             }
@@ -1936,7 +1936,7 @@ impl Interpreter {
                     })
                 }
             }
-            "into_inner" => Ok(atomic.lock().unwrap().clone()),
+            "take" => Ok(atomic.lock().unwrap().clone()),
             // AT5: the fetch family wraps on overflow and returns the OLD value.
             _ if method.starts_with("fetch_") => {
                 ordering_at(1)?;

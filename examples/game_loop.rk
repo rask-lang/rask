@@ -330,7 +330,7 @@ func main() -> void or Error {
             frame_count += 1
 
             // In a real game, we'd sleep here to maintain frame rate
-            // time.sleep(time.Duration.from_millis(16))
+            // time.sleep(time.Duration.millis(16))
         }
     }
 

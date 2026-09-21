@@ -462,8 +462,16 @@ extend Map<K, V> {
     public func get(self, key: K) -> Option<V> {}
 
     /// True if the map contains this key.
+    ///
+    /// Not `contains_key`. Rust needs that because a Rust map's `contains` would
+    /// have to say which half it means; in Rask every single-argument method on
+    /// `Map` takes a key — `get`, `remove`, `read`, `modify` — so one more that
+    /// does is no ambiguity at all. Asking about a value is
+    /// `m.any(|e| e.1 == v)`, which doesn't compete for the name. `Vec`, `Set`,
+    /// `string`, `Rack` and `Pool` all spell membership `contains`, and the
+    /// runtime symbol behind this has been `rask_map_contains` the whole time.
     @native("rask_map_contains")
-    public func contains_key(self, key: K) -> bool {}
+    public func contains(self, key: K) -> bool {}
 
     /// Read value for key through a closure.
     @native
@@ -476,13 +484,13 @@ extend Map<K, V> {
     /// Insert default if key absent, no-op if present. Panics on alloc failure.
     /// Named for what it does — `ensure` is the cleanup keyword.
     ///
-    /// Written in Rask over `contains_key` and `insert`: it's a condition around
+    /// Written in Rask over `contains` and `insert`: it's a condition around
     /// two primitives, and native had no lowering for it at all —
     /// `Map_insert_if_missing` reached codegen as a function nothing emits, while
     /// the interpreter's own copy ran (#886). One source, so the two can't
     /// disagree about it.
     public func insert_if_missing(mutate self, key: K, f: func() -> V) -> void {
-        if self.contains_key(key) {
+        if self.contains(key) {
             return
         }
         self.insert(key, f())
@@ -533,7 +541,7 @@ extend Map<K, V> where V: Cloneable {
 
 /// A staged data-parallel plan over lanes of `T` (conc.data-parallel).
 ///
-/// Built from `some_vec.wide()`. `map`/`zip_with` stage lazily; `read`/`sum`
+/// Built from `some_vec.wide()`. `map`/`zip_with` stage lazily; `to_vec`/`sum`
 /// run the plan on the current backend (the CPU baseline for now).
 public struct Wide<T> { }
 
@@ -574,7 +582,7 @@ extend Wide<T> {
 
     /// Run the plan and materialize the lanes back to a Vec.
     @native("rask_vec_clone")
-    public func read(self) -> Vec<T> {}
+    public func to_vec(self) -> Vec<T> {}
 
     /// Run the plan, reducing the lanes with `+`.
     @native("rask_wide_sum")
@@ -607,9 +615,8 @@ extend Wide<T> {
 /// shape and isn't available: `void` is a type, not a value, so there'd be
 /// nothing to pass to `insert`.)
 ///
-/// The membership test is `contains`, not `contains_key`: a set has no keys,
-/// and `Vec` and `string` both spell it `contains`. `Map` keeps
-/// `contains_key` because there a key is one of two things you could mean.
+/// The membership test is `contains`, the same word `Vec`, `string` and `Map`
+/// use.
 public struct Set<T> {
     entries: Map<T, bool>
 }
@@ -632,7 +639,7 @@ extend Set<T> {
 
     /// Add a value. True if it wasn't already there.
     public func insert(mutate self, take value: T) -> bool {
-        if self.entries.contains_key(value) {
+        if self.entries.contains(value) {
             return false
         }
         self.entries.insert(value, true)
@@ -641,12 +648,12 @@ extend Set<T> {
 
     /// True if the value is in the set.
     public func contains(self, value: T) -> bool {
-        return self.entries.contains_key(value)
+        return self.entries.contains(value)
     }
 
     /// Remove a value. True if it was there.
     public func remove(mutate self, value: T) -> bool {
-        if !self.entries.contains_key(value) {
+        if !self.entries.contains(value) {
             return false
         }
         self.entries.remove(value)

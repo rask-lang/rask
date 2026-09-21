@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // std.collections conformance — Vec and Map operations not already covered by
-// t09_vec.rk (push/len/index/pop/get) and t13_map.rk (insert/get/contains_key/
+// t09_vec.rk (push/len/index/pop/get) and t13_map.rk (insert/get/contains/
 // len/overwrite). Every test passes on BOTH interp and native.
 //
 // Spec: stdlib/collections.rk
@@ -85,8 +85,8 @@ test "std.collections/Map.remove deletes key" {
     m.insert("b", 2)
     m.remove("a")
     assert m.len() == 1
-    assert m.contains_key("a") == false
-    assert m.contains_key("b") == true
+    assert m.contains("a") == false
+    assert m.contains("b") == true
 }
 
 // --- Map: is_empty ---

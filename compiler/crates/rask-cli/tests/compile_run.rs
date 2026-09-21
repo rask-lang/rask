@@ -3343,7 +3343,7 @@ fn api_shows_map_methods() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("Map"), "should show Map type: {}", stdout);
     assert!(stdout.contains("insert"), "should show insert method: {}", stdout);
-    assert!(stdout.contains("contains_key"), "should show contains_key method: {}", stdout);
+    assert!(stdout.contains("contains"), "should show contains method: {}", stdout);
 }
 
 // ─── Stdlib method discoverability via type checker ─────────
@@ -3403,10 +3403,10 @@ fn discover_map_insert_len() {
 }
 
 #[test]
-fn discover_map_contains_key() {
+fn discover_map_contains() {
     assert!(check_succeeds(
-        "func main() {\n    mut m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    m.contains_key(\"a\")\n}"
-    ), "Map.contains_key should pass type check");
+        "func main() {\n    mut m = Map<string, i32>.new()\n    m.insert(\"a\", 1)\n    m.contains(\"a\")\n}"
+    ), "Map.contains should pass type check");
 }
 
 #[test]
@@ -5404,7 +5404,7 @@ func main() {
     let r = http.Response.ok("body")
     println("status={r.status}")
 
-    let d = time.Duration.from_millis(5)
+    let d = time.Duration.millis(5)
     println("ms={d.as_millis()}")
 
     println("json={json.encode(true)}")

@@ -169,7 +169,7 @@ Removing an element whose fields point at other pools usually means removing tho
 
 | Rule | Description |
 |------|-------------|
-| **RW1: Signature** | `pool.remove_with(h, f)` with `f: func(T) -> R` returns `R?` — `none` when the handle is stale, in which case the callback does not run. Mirrors `remove` (PL6) and `with_valid` |
+| **RW1: Signature** | `pool.remove_with(h, f)` with `f: func(T) -> R` returns `R?` — `none` when the handle is stale, in which case the callback does not run. Mirrors `remove` (PL6) and `read` |
 | **RW2: Owned element** | The callback receives the removed element owned — the same consumption shape as `take_all_with` (`mem.resources`). Linearity applies inside: `@resource` fields must be consumed (`mem.linear/L1`) |
 | **RW3: Source pool sealed** | The callback cannot touch the pool it removes from — the receiver is borrowed for the call (`mem.borrowing/B3`), so capturing it is the standard aliasing error. Other pools are unrestricted; cross-pool cleanup is the point |
 | **RW4: Removal precedes callback** | The element leaves the pool before the callback runs. A panic inside the callback leaves the pool valid; the in-flight element follows normal unwinding (`ctrl.panics`) |
@@ -428,13 +428,13 @@ enum InsertError<T> {
 
 ## Performance Escape Hatches
 
-### Safe: Validated Access (`with_valid`)
+### Safe: Validated Access (`read`)
 
 Validates once at entry, then provides unchecked access inside the closure.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `pool.with_valid(h, f)` | `(Handle<T>, \|T\| -> R) -> R?` | One check, then read |
+| `pool.read(h, f)` | `(Handle<T>, \|T\| -> R) -> R?` | One check, then read |
 | `pool.with_valid_mut(h, f)` | `(Handle<T>, \|T\| -> R) -> R?` | One check, then write |
 
 ### Unsafe: Unchecked Access
