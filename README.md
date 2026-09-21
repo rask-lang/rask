@@ -8,13 +8,13 @@
 
 A programming language I'm building around one question: **what if references can't be stored?**
 
-Make references temporary — never in structs, never returned from functions — and lifetime annotations stop being necessary. The cost is more `.clone()` calls, and a rack to own anything you want shared identity for: graphs, entity systems, observers. The benefit is memory safety without annotations, deterministic cleanup without a GC, and function signatures you can read in one pass.
+Make references temporary — not in structs, not returned from functions — and lifetime annotations stop being necessary. One exception earns its place: a `Link` into a `Rack`, which is how graphs, entity systems and observers get shared identity, and the rack owns every node so there is still no lifetime to name. The cost is more `.clone()` calls. The benefit is memory safety without annotations, deterministic cleanup without a GC, and function signatures you can read in one pass.
 
 Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremony. Whether the trade actually works out is what I'm trying to find out.
 
 **[Why a new language?](WHY_RASK.md)**
 
-**Status** (measured 2026-09-11). Compiler (Cranelift backend) and interpreter both run programs, and all five validation programs — including the HTTP JSON server — run natively. Around 80 open issues, mostly codegen getting memory release wrong: see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
+**Status** (measured 2026-09-21, v0.3.0). Compiler (Cranelift backend) and interpreter both run programs, and all five validation programs — including the HTTP JSON server — run natively. 85 open issues, mostly codegen getting memory release wrong: see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
 
 ---
 
@@ -101,7 +101,7 @@ That's most of the cost. What you get back: no lifetime annotations in signature
 - Build system: packages, workspaces, watch mode
 - Tooling: `rask build/check/lint/fmt/test`, LSP
 
-**Next:** the sequence protocol (`Vec.iter()` returning a `Sequence`, [#1046](https://github.com/rask-lang/rask/issues/1046)), native lowering for Rack and Link, and the memory-release bugs in codegen. See [ROADMAP.md](ROADMAP.md) for the order and why.
+**Next:** the sequence protocol (`Vec.iter()` returning a `Sequence`, [#1046](https://github.com/rask-lang/rask/issues/1046)), the value-position matrix that v0.4 is named for, and the memory-release bugs in codegen. See [ROADMAP.md](ROADMAP.md) for the order and why.
 
 ---
 

@@ -2,7 +2,7 @@
 
 Rask asks one question: can you get memory safety without lifetime annotations or garbage collection?
 
-The bet is yes — if you make one structural change: **references can't be stored**. They exist for the duration of an expression or block, then they're gone. No lifetimes to annotate, no GC to pause, no reference counting to cycle-collect.
+The bet is yes — if you make one structural change: **references can't be stored**. They exist for the duration of an expression or block, then they're gone. The one exception is a `Link` into a `Rack`, which can live in a field because the rack owns the node and outlives every link into it — that's what buys you graphs without giving up the property. No lifetimes to annotate, no GC to pause, no reference counting to cycle-collect.
 
 This is a research language. It might not work out. Here's why I think it's worth trying.
 
