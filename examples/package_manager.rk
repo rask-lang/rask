@@ -266,7 +266,11 @@ struct DepGraph {
 
 extend DepGraph {
     func new() -> DepGraph {
-        return DepGraph { packages: Rack.new(), root: none, by_name: Map.new() }
+        return DepGraph {
+            packages: Rack.new(),
+            root: none,
+            by_name: Map.new(),
+        }
     }
 }
 
