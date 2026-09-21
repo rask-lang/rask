@@ -37,16 +37,17 @@ So the budget is being blown by **structure**, not by naming, and two things
 decide whether it can ever be met:
 
 - **The adapters.** `type.sequence/SEQ48` says a collection is its own chain
-  head, which is right — it's what removes Rust's `.iter()`. It is implemented
-  by hand-copying each adapter onto each container, so `Vec` carries 16 of
-  `Sequence`'s 28, is missing 12 (`take_while`, `min_by`, `for_each`, `chain`,
-  …), and `Map` and `Set` carry none at all. Every copy costs a declaration, a
-  checker rule and sometimes a runtime symbol, which is why the set is partial.
-  Routing an unresolved method on a container to `Sequence` would give every
-  container all 28 and take 16 entries off `Vec`'s count at the same time.
+  head, which is right — it's what removes Rust's `.iter()`. It used to be
+  implemented by hand-copying each adapter onto each container, and copies rot:
+  `Vec` carried 16 of `Sequence`'s 21 and was missing `take_while` beside a
+  `take` that worked. They are generated from `extend Sequence<T>` now — a type
+  declares `as_sequence` and gets the rest — so `Vec` declares 14 fewer and the
+  gaps are gone. `Map` and `Set` still declare no `as_sequence`, so they still
+  get nothing; that's now one method each rather than 21.
 - **Whether a container's inherited adapters count against its budget.** If
   they do, no collection can ever meet SD1 while SEQ48 holds, because SEQ48
-  requires them. The count that means something is what the container *adds*.
+  requires them. The count that means something is what the container *adds*,
+  and generated forwarders are the mechanism, not the surface.
 
 SD2 also needs a mechanism the stdlib doesn't have yet: a defaulted parameter
 on a stdlib method is parsed and dropped (rask-lang/rask#1276), so

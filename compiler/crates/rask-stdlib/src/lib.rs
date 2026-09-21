@@ -9,6 +9,7 @@ pub mod types;
 pub mod float_methods;
 pub mod ptr_methods;
 pub mod registry;
+pub mod forwarders;
 pub mod stubs;
 pub mod modules;
 pub mod mir_metadata;
