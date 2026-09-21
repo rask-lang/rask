@@ -1231,7 +1231,7 @@ fn a_type_that_contains_itself_is_rejected() {
     let (failed, out) = compile_error_output("recursive_type_has_no_size.rk");
     assert!(failed, "a type containing itself inline must be rejected: {}", out);
     assert!(
-        out.matches("E0314").count() >= 4,
+        out.matches("E0885").count() >= 4,
         "the struct, the enum, the tuple and the two-type cycle: {}", out,
     );
     assert!(

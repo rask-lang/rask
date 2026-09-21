@@ -476,8 +476,10 @@ ERROR [mem.borrowing/W2]: cannot push to `vec` inside with block — vec can rea
 7  |      vec.push(new_item)
    |      ^^^^^^^^^^^^^^^^^^ structural mutation not allowed inside with block
 
-WHY: Vec/Map can reallocate, invalidating the borrowed element.
-     Pool handles survive reallocation — use Pool if you need insert/remove inside with.
+WHY: Vec/Map can reallocate, and the borrowed element moves with it — that
+     window is what `with` is protecting. A rack has no such window: a node
+     keeps its address for as long as it lives, so a Link<T> stays good across
+     inserts and deletes and needs no `with` at all (mem.racks).
 
 FIX: Move the structural mutation outside the with block:
 

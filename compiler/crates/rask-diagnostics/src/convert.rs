@@ -1246,7 +1246,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             RecursiveTypeHasNoSize { name, through, span } => {
                 Diagnostic::error(format!("`{}` contains itself, so it has no size", name))
-                    .with_code("E0314")
+                    .with_code("E0885")
                     .with_primary(
                         *span,
                         if through.is_empty() {
@@ -3609,10 +3609,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_help("move the structural mutation outside the with block")
                 .with_fix("move the structural mutation outside the with block")
                 .with_why(format!(
-                    "{} can reallocate, and the borrowed element moves with it. \
-                     A rack doesn't: a node keeps its address for as long as it lives, so \
-                     `Rack<T>` + `Link<T>` lets you insert and delete while a link is open \
-                     [mem.racks]",
+                    "{} can reallocate, and the borrowed element moves with it — \
+                     that window is what `with` is protecting. A rack has no such \
+                     window: a node keeps its address for as long as it lives, so a \
+                     `Link<T>` stays good across inserts and deletes and needs no \
+                     `with` at all [mem.racks]",
                     collection
                 ))
             }
