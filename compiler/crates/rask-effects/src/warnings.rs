@@ -9,6 +9,8 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 
+use std::collections::HashSet;
+
 use crate::{EffectMap, EffectWarning};
 
 /// Detect CW1 and CW2 warnings from declarations.
@@ -17,32 +19,38 @@ use crate::{EffectMap, EffectWarning};
 /// uses concurrency. In a single-threaded program there is no other thread to
 /// starve, so the warning is noise. We check the effect map: if any function
 /// has the `async_` effect, the program is concurrent and CW2 applies.
-pub fn detect(decls: &[Decl], effects: &EffectMap) -> Vec<EffectWarning> {
+pub fn detect(
+    decls: &[Decl],
+    effects: &EffectMap,
+    runtime_only: &HashSet<String>,
+) -> Vec<EffectWarning> {
     let mut warnings = Vec::new();
     let program_is_concurrent = effects.values().any(|e| e.async_);
     let mut ctx = WarnContext {
         effects,
+        runtime_only,
         program_is_concurrent,
         in_thread_pool: false,
         in_loop: false,
         in_multitasking: false,
         in_root: false,
+        under_runtime: false,
     };
 
     for decl in decls {
         match &decl.kind {
-            DeclKind::Fn(f) => ctx.check_fn(f, is_root_fn(f), &mut warnings),
+            DeclKind::Fn(f) => ctx.check_fn(&f.name, f, is_root_fn(f), &mut warnings),
             DeclKind::Struct(s) => {
-                for m in &s.methods { ctx.check_fn(m, false, &mut warnings); }
+                for m in &s.methods { ctx.check_fn(&format!("{}.{}", s.name, m.name), m, false, &mut warnings); }
             }
             DeclKind::Enum(e) => {
-                for m in &e.methods { ctx.check_fn(m, false, &mut warnings); }
+                for m in &e.methods { ctx.check_fn(&format!("{}.{}", e.name, m.name), m, false, &mut warnings); }
             }
             DeclKind::Impl(i) => {
-                for m in &i.methods { ctx.check_fn(m, false, &mut warnings); }
+                for m in &i.methods { ctx.check_fn(&format!("{}.{}", i.target_ty, m.name), m, false, &mut warnings); }
             }
             DeclKind::Trait(t) => {
-                for m in &t.methods { ctx.check_fn(m, false, &mut warnings); }
+                for m in &t.methods { ctx.check_fn(&format!("{}.{}", t.name, m.name), m, false, &mut warnings); }
             }
             // A `test` block is a root like `main` is: nothing calls it, so
             // there is no caller for CC2 to blame, and the block it needs has to
@@ -53,6 +61,7 @@ pub fn detect(decls: &[Decl], effects: &EffectMap) -> Vec<EffectWarning> {
                 ctx.in_loop = false;
                 ctx.in_multitasking = false;
                 ctx.in_root = true;
+                ctx.under_runtime = false;
                 ctx.check_stmts(&t.body, &mut warnings);
             }
             DeclKind::Benchmark(b) => {
@@ -60,6 +69,7 @@ pub fn detect(decls: &[Decl], effects: &EffectMap) -> Vec<EffectWarning> {
                 ctx.in_loop = false;
                 ctx.in_multitasking = false;
                 ctx.in_root = true;
+                ctx.under_runtime = false;
                 ctx.check_stmts(&b.body, &mut warnings);
             }
             _ => {}
@@ -80,6 +90,9 @@ fn is_root_fn(f: &FnDecl) -> bool {
 
 struct WarnContext<'a> {
     effects: &'a EffectMap,
+    /// Functions every path to which installs a runtime first — see
+    /// `infer::infer_with_reach`. CW2 stays quiet inside one.
+    runtime_only: &'a HashSet<String>,
     /// True when any function in the program has async effects (spawn, channels, etc.).
     /// CW2 is suppressed entirely when false — no concurrency means no thread-blocking concern.
     program_is_concurrent: bool,
@@ -88,15 +101,18 @@ struct WarnContext<'a> {
     in_multitasking: bool,
     /// Walking a function nothing calls — see `is_root_fn`. CC1 only fires here.
     in_root: bool,
+    /// True while walking a function that can only run under a runtime.
+    under_runtime: bool,
 }
 
 impl<'a> WarnContext<'a> {
-    fn check_fn(&mut self, f: &FnDecl, is_root: bool, warnings: &mut Vec<EffectWarning>) {
+    fn check_fn(&mut self, qname: &str, f: &FnDecl, is_root: bool, warnings: &mut Vec<EffectWarning>) {
         // Reset context per function
         self.in_thread_pool = false;
         self.in_loop = false;
         self.in_multitasking = false;
         self.in_root = is_root;
+        self.under_runtime = self.runtime_only.contains(qname);
         self.check_stmts(&f.body, warnings);
     }
 
@@ -442,7 +458,7 @@ impl<'a> WarnContext<'a> {
         }
 
         // CW2: IO in loop without Multitasking (only in concurrent programs)
-        if self.in_loop && !self.in_multitasking && self.program_is_concurrent {
+        if self.in_loop && !self.in_multitasking && !self.under_runtime && self.program_is_concurrent {
             warnings.push(EffectWarning {
                 code: "comp.effects/CW2",
                 message: format!(
@@ -613,7 +629,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects);
+        let warnings = detect(&decls, &effects, &HashSet::new());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
         assert!(warnings[0].message.contains("println"));
@@ -634,7 +650,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects);
+        let warnings = detect(&decls, &effects, &HashSet::new());
         assert!(warnings.is_empty(), "CW1 should not fire for IO outside a spawn closure");
     }
 
@@ -654,7 +670,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println");
-        let warnings = detect(&decls, &effects);
+        let warnings = detect(&decls, &effects, &HashSet::new());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
     }
@@ -675,7 +691,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io("println"); // no async_ effect anywhere
-        let warnings = detect(&decls, &effects);
+        let warnings = detect(&decls, &effects, &HashSet::new());
         assert!(warnings.is_empty(), "CW2 should not fire in single-threaded programs");
     }
 
@@ -704,7 +720,7 @@ mod tests {
         })];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println");
-        let warnings = detect(&decls, &effects);
+        let warnings = detect(&decls, &effects, &HashSet::new());
         assert!(warnings.is_empty(), "No CW2 inside Multitasking context");
     }
 
@@ -723,7 +739,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = HashMap::new(); // add has no effects
-        let warnings = detect(&decls, &effects);
+        let warnings = detect(&decls, &effects, &HashSet::new());
         assert!(warnings.is_empty());
     }
 
@@ -740,8 +756,75 @@ mod tests {
         })];
         let decls = vec![make_fn("bad", body)];
         let effects = effects_with_io("File.read");
-        let warnings = detect(&decls, &effects);
+        let warnings = detect(&decls, &effects, &HashSet::new());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
+    }
+    /// rask-lang/rask#1263. `serve_client` loops on I/O and nothing but a
+    /// `spawn` closure calls it, so the runtime is already installed when that
+    /// loop runs. CW2 told its author to install a second one, which segfaults
+    /// (#524). Uses the real pipeline, because the answer comes from the call
+    /// graph rather than from anything visible in `serve_client` itself.
+    #[test]
+    fn cw2_silent_in_a_function_only_a_spawn_reaches() {
+        // func serve_client() { loop { File.read() } }
+        // func main() { using Multitasking { spawn(|| serve_client()) } }
+        let handler = make_fn("serve_client", vec![Stmt {
+            id: NodeId(0),
+            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("File", "read"))] },
+            span: sp(),
+        }]);
+        let main = make_fn("main", vec![expr_stmt(Expr {
+            id: NodeId(0),
+            kind: ExprKind::UsingBlock {
+                name: "Multitasking".into(),
+                args: vec![],
+                body: vec![expr_stmt(Expr {
+                    id: NodeId(0),
+                    kind: ExprKind::Call {
+                        func: Box::new(Expr { id: NodeId(0), kind: ExprKind::Ident("spawn".into()), span: sp() }),
+                        args: vec![rask_ast::expr::CallArg {
+                            name: None,
+                            mode: rask_ast::expr::ArgMode::Default,
+                            expr: call("serve_client"),
+                        }],
+                    },
+                    span: sp(),
+                })],
+            },
+            span: sp(),
+        })]);
+
+        let (_, warnings) = crate::infer_effects(&[handler, main]);
+        assert!(
+            warnings.iter().all(|w| w.code != "comp.effects/CW2"),
+            "CW2 fired inside a spawn-only function: {:?}",
+            warnings.iter().map(|w| &w.message).collect::<Vec<_>>(),
+        );
+    }
+
+    /// The other half of #1263: the same loop, reached the ordinary way, still
+    /// warns. Without this the fix could be "delete CW2" and pass.
+    #[test]
+    fn cw2_still_fires_when_a_plain_call_reaches_the_loop() {
+        let handler = make_fn("serve_client", vec![Stmt {
+            id: NodeId(0),
+            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("File", "read"))] },
+            span: sp(),
+        }]);
+        let main = make_fn("main", vec![
+            expr_stmt(call("serve_client")),
+            expr_stmt(Expr {
+                id: NodeId(0),
+                kind: ExprKind::Spawn { body: vec![expr_stmt(call("tick"))] },
+                span: sp(),
+            }),
+        ]);
+
+        let (_, warnings) = crate::infer_effects(&[handler, main]);
+        assert!(
+            warnings.iter().any(|w| w.code == "comp.effects/CW2"),
+            "CW2 should still fire when the loop is reachable without a runtime",
+        );
     }
 }

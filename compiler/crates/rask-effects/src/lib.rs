@@ -107,8 +107,8 @@ pub struct EffectWarning {
 /// Returns the per-function effect map and any warnings (CW1/CW2).
 /// Call after type checking — no AST modifications.
 pub fn infer_effects(decls: &[Decl]) -> (EffectMap, Vec<EffectWarning>) {
-    let effects = infer::infer(decls);
-    let warnings = warnings::detect(decls, &effects);
+    let (effects, runtime_only) = infer::infer_with_reach(decls);
+    let warnings = warnings::detect(decls, &effects, &runtime_only);
     (effects, warnings)
 }
 
