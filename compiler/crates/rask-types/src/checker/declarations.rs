@@ -1432,6 +1432,106 @@ impl TypeChecker {
         }
     }
 
+    /// A struct or enum whose fields reach itself with nothing in between.
+    ///
+    /// Every field is stored inline, so room for a `Node` inside a `Node`
+    /// means room for another one inside that. No size satisfies it. The
+    /// checker used to accept these: layout then shrugged (`unknown type
+    /// 'Node' in layout, defaulting to pointer size`) and what happened next
+    /// was luck — `enum Tree { Node(Tree) }` ran with an 8-byte layout that
+    /// any real payload would have written past, and `next: Node?` reached MIR
+    /// and died there blaming itself for a compiler bug (#1280).
+    ///
+    /// Only inline carriers are walked: fields, variant payloads, `T?`, tuples
+    /// and arrays. `Heap<T>`, `Link<T>`, `Vec` and the rest put the value
+    /// somewhere else and hold an address, which is exactly what breaks the
+    /// cycle — and what the message tells the author to reach for.
+    ///
+    /// A generic carrier (`struct Wrap<T> { v: T }`, then `Wrap<Node>`) is not
+    /// walked: the field's declared type is `T`, so seeing through it needs the
+    /// substitution, which isn't done here. That case still reaches layout.
+    fn reject_recursive_type(&mut self, owner: crate::types::TypeId, ty: &Type, span: Span) {
+        let mut chain: Vec<String> = Vec::new();
+        let mut seen: Vec<crate::types::TypeId> = Vec::new();
+        if !self.reaches_inline(ty, owner, &mut seen, &mut chain) {
+            return;
+        }
+        let name = match self.types.get(owner) {
+            Some(TypeDef::Struct { name, .. }) | Some(TypeDef::Enum { name, .. }) => name.clone(),
+            _ => return,
+        };
+        let through = if chain.is_empty() {
+            String::new()
+        } else {
+            format!("{} -> {}", chain.join(" -> "), name)
+        };
+        self.errors.push(TypeError::RecursiveTypeHasNoSize { name, through, span });
+    }
+
+    /// Does `ty` store an `owner` inline, directly or through other types?
+    ///
+    /// `chain` collects the type names the walk went through, so the message
+    /// can spell `Node -> Edge -> Node` rather than pointing at a field whose
+    /// own type looks innocent.
+    fn reaches_inline(
+        &self,
+        ty: &Type,
+        owner: crate::types::TypeId,
+        seen: &mut Vec<crate::types::TypeId>,
+        chain: &mut Vec<String>,
+    ) -> bool {
+        match ty {
+            Type::Named(id) => {
+                if *id == owner {
+                    return true;
+                }
+                if seen.contains(id) {
+                    return false;
+                }
+                seen.push(*id);
+                let (name, inner): (String, Vec<Type>) = match self.types.get(*id) {
+                    Some(TypeDef::Struct { name, fields, .. }) => (
+                        name.clone(),
+                        fields.iter().map(|(_, t)| t.clone()).collect(),
+                    ),
+                    Some(TypeDef::Enum { name, variants, .. }) => (
+                        name.clone(),
+                        variants.iter().flat_map(|(_, tys)| tys.clone()).collect(),
+                    ),
+                    Some(TypeDef::Union { name, fields }) => (
+                        name.clone(),
+                        fields.iter().map(|(_, t)| t.clone()).collect(),
+                    ),
+                    // A nominal alias is the underlying type wearing a new
+                    // name, so it stores whatever that does.
+                    Some(TypeDef::NominalAlias { name, underlying, .. }) => {
+                        (name.clone(), vec![underlying.clone()])
+                    }
+                    _ => return false,
+                };
+                chain.push(name);
+                for t in &inner {
+                    if self.reaches_inline(t, owner, seen, chain) {
+                        return true;
+                    }
+                }
+                chain.pop();
+                false
+            }
+            // `T?` and `T or E` are a tag beside the payload, not a pointer to
+            // it, so both sides are inline.
+            Type::Result { ok, err } => {
+                self.reaches_inline(ok, owner, seen, chain)
+                    || self.reaches_inline(err, owner, seen, chain)
+            }
+            Type::Tuple(elems) => {
+                elems.iter().any(|e| self.reaches_inline(e, owner, seen, chain))
+            }
+            Type::Array { elem, .. } => self.reaches_inline(elem, owner, seen, chain),
+            _ => false,
+        }
+    }
+
     pub(super) fn check_decl(&mut self, decl: &Decl) {
         match &decl.kind {
             DeclKind::Fn(f) => self.check_fn(f),
@@ -1448,10 +1548,14 @@ impl TypeChecker {
                 // is, with a message telling you to declare `u16be`.
                 let allowed: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
                 if !s.attrs.iter().any(|a| a == "binary") {
+                    let owner = self.types.get_type_id(&s.name);
                     for field in &s.fields {
                         if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
                             self.validate_signature_names(&ty, &allowed, field.name_span);
                             self.reject_non_optional_link(&ty, field.name_span);
+                            if let Some(owner) = owner {
+                                self.reject_recursive_type(owner, &ty, field.name_span);
+                            }
                         }
                     }
                 }
@@ -1464,11 +1568,15 @@ impl TypeChecker {
             DeclKind::Enum(e) => {
                 // PC2: variant payload types must name declared types
                 let allowed: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
+                let owner = self.types.get_type_id(&e.name);
                 for variant in &e.variants {
                     for field in &variant.fields {
                         if let Ok(ty) = parse_type_string(&field.ty, &self.types) {
                             self.validate_signature_names(&ty, &allowed, field.name_span);
                             self.reject_non_optional_link(&ty, field.name_span);
+                            if let Some(owner) = owner {
+                                self.reject_recursive_type(owner, &ty, field.name_span);
+                            }
                         }
                     }
                 }

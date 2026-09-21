@@ -1244,6 +1244,31 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
             }
 
+            RecursiveTypeHasNoSize { name, through, span } => {
+                Diagnostic::error(format!("`{}` contains itself, so it has no size", name))
+                    .with_code("E0314")
+                    .with_primary(
+                        *span,
+                        if through.is_empty() {
+                            format!("this field is a `{}`, the type being declared", name)
+                        } else {
+                            format!("this field reaches `{}` again: {}", name, through)
+                        },
+                    )
+                    .with_help(format!(
+                        "store it in its own block: `Heap<{}>?`, or give the nodes identity with a `Rack` and `Link<{}>?`",
+                        name, name
+                    ))
+                    .with_fix(format!(
+                        "`Heap<{}>?` when each one has a single owner, or a `Rack` and `Link<{}>?` when they point at each other",
+                        name, name
+                    ))
+                    .with_why(format!(
+                        "a field is stored inline, so `{name}` needs room for the `{name}` inside it, which needs room for the one inside that, and no size satisfies it. `Heap<T>` puts the value in a block of its own and leaves the address in the field — that is the one for a list or a tree, where each node has a single owner. `Rack` plus `Link<T>?` is the one for nodes that point at each other or need identity [mem.racks]. `T?` and a tuple are inline too, so neither of them breaks the cycle on its own",
+                        name = name
+                    ))
+            }
+
             LinkNotOrderable { op, recv, span } => {
                 Diagnostic::error(format!("`{}` on `{}` would go by address", op, recv))
                     .with_code("E0406")

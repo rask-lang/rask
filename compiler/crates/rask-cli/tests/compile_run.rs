@@ -1218,6 +1218,33 @@ fn try_without_an_error_branch_is_rejected() {
     );
 }
 
+#[test]
+fn a_type_that_contains_itself_is_rejected() {
+    // #1280: the frontend accepted a type it can never lay out. Layout then
+    // guessed pointer size and printed a warning, and what happened next was
+    // luck — an enum ran with an 8-byte layout any real payload would have
+    // written past, and a struct through `T?` reached MIR and died there
+    // blaming itself for a compiler bug.
+    //
+    // The message also has to name the door: `Heap<T>` for a single owner,
+    // `Rack` + `Link<T>?` for nodes that point at each other.
+    let (failed, out) = compile_error_output("recursive_type_has_no_size.rk");
+    assert!(failed, "a type containing itself inline must be rejected: {}", out);
+    assert!(
+        out.matches("E0314").count() >= 4,
+        "the struct, the enum, the tuple and the two-type cycle: {}", out,
+    );
+    assert!(
+        out.contains("Heap<Node>") && out.contains("Rack") && out.contains("Link<Node>"),
+        "should name both containers that break the cycle: {}", out,
+    );
+    // The cycle through a second type names the path, since the field's own
+    // type looks innocent.
+    assert!(
+        out.contains("Vertex -> Edge"),
+        "should spell the chain for an indirect cycle: {}", out,
+    );
+}
 
 #[test]
 fn error_catch_void_body_blames_itself_not_a_later_use() {
