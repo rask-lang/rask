@@ -3609,8 +3609,10 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_help("move the structural mutation outside the with block")
                 .with_fix("move the structural mutation outside the with block")
                 .with_why(format!(
-                    "{} can reallocate, invalidating the borrowed element. \
-                     Pool handles survive reallocation — use Pool if you need insert/remove inside with",
+                    "{} can reallocate, and the borrowed element moves with it. \
+                     A rack doesn't: a node keeps its address for as long as it lives, so \
+                     `Rack<T>` + `Link<T>` lets you insert and delete while a link is open \
+                     [mem.racks]",
                     collection
                 ))
             }
