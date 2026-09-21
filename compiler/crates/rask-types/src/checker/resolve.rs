@@ -2034,6 +2034,27 @@ impl TypeChecker {
             _ => self.ctx.fresh_var(),
         };
         let type_args = vec![GenericArg::Type(Box::new(elem))];
+        // Through the whole `Vec` resolution, not just its builtin arms.
+        // Calling `resolve_vec_method` straight left the array with the
+        // hardcoded half: `[1, 2, 3].take(2)` worked and `.take_while(p)` said
+        // "no method", because the second one is a declared method on `Vec` and
+        // only the registered path reads those. `resolve_named` turns the shape
+        // into the registered type when there is one, and `resolve_method`
+        // comes back here for anything that isn't declared.
+        let vec_ty = self.resolve_named(&Type::UnresolvedGeneric {
+            name: "Vec".to_string(),
+            args: type_args.clone(),
+        });
+        if matches!(vec_ty, Type::Generic { .. }) {
+            return self.resolve_method(
+                vec_ty,
+                method.to_string(),
+                args.to_vec(),
+                ret.clone(),
+                span,
+                None,
+            );
+        }
         self.resolve_vec_method(&type_args, method, args, ret, span)
     }
 
