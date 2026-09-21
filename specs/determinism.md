@@ -9,7 +9,7 @@ Determinism is a property of an execution mode, not a tax on the language. Produ
 
 This file is the promise. The machine that keeps it — scheduler, virtual clock, fault vocabulary, replay output — is [sim.md](sim.md).
 
-This is the foundation for commitment 3 of [NORTH_STAR.md](../NORTH_STAR.md): no unreproducible failures. Prior art: FoundationDB's simulation, TigerBeetle's VOPR. Rask's design makes this cheaper than it was for them — I/O is stdlib-mediated (no function coloring means every syscall goes through the runtime), tasks run on a runtime-owned scheduler, and user code cannot observe addresses (no storable references).
+This is the foundation for commitment 3 of [NORTH_STAR.md](../NORTH_STAR.md): no unreproducible failures. Prior art: FoundationDB's simulation, TigerBeetle's VOPR. Rask's design makes this cheaper than it was for them — I/O is stdlib-mediated (no function coloring means every syscall goes through the runtime), tasks run on a runtime-owned scheduler, and user code cannot read an address as a number (D11).
 
 ## The promise
 
@@ -31,10 +31,10 @@ Every source is listed here. A source not listed is a spec bug.
 | **D5: Time** | `Instant`, `SystemTime`, timers, sleep | Virtual clock in sim, advanced by the scheduler. Already runtime-mediated |
 | **D6: Randomness** | `random` module | All generators derive from the sim seed |
 | **D7: Map iteration order** | Hash order | Seeded hash order, seed owned by the mode: production seeds per process (HashDoS mitigation; accidental order-dependence can't take root), sim derives the seed from the sim seed (replay-exact, and seed search varies the order so order-dependent code fails under test). No mode guarantees an observable order — code that needs one sorts explicitly. Insertion-ordered Map was considered and rejected: order-preserving removal costs O(n) or compaction pauses, and the index layer taxes every lookup |
-| **D8: Pool/handle allocation** | Slot and generation assignment | Deterministic function of the operation sequence. Handles are indices, never addresses |
+| **D8: Container slot allocation** | Which slot an insert takes, and a handle's generation | Deterministic function of the operation sequence. This is what a round trip preserves (`mem.relocatable/NP1`) and what a rack's `slot_index` records (`mem.racks/RK10`) |
 | **D9: I/O** | Network, disk, file system | Sim substitutes simulated implementations behind the same stdlib surface. Fault injection (partitions, slow disks, torn writes) is driven by the seed |
 | **D10: External inputs** | Env, args, stdin, wall-clock start | Fixed or recorded as part of the sim scenario |
-| **D11: Addresses** | Pointer values leaking into logic | Impossible by construction outside `unsafe` — no storable references, no address-of. Nothing to virtualize. Holds for Rask code only: linked C can hash or sort by a pointer freely, so sim gives the C side a fixed-base allocator (`sim/B8`) |
+| **D11: Addresses** | Pointer values leaking into logic | No operation yields a reference's numeric value: there is no address-of, and the one storable reference (`Link<T>`, `mem.racks/RK2`) exposes identity but not magnitude, so nothing can hash or bucket by where a node landed. **Open:** `<` is currently defined on `Link<T>` and compares addresses, which chunk boundaries make depend on heap history — rask-lang/rask#1266. Holds for Rask code only: linked C can hash or sort by a pointer freely, so sim gives the C side a fixed-base allocator (`sim/B8`) |
 | **D12: Floats** | FP evaluation | Deterministic within one binary on one platform (fixed evaluation, no contraction variance between runs). Cross-platform bit-exactness is **out of scope** — that's Raido's domain (32.32 fixed point) |
 | **D13: OS threads** | `Thread.spawn`, true parallelism | Outside the contract. Sim mode rejects raw thread spawns; `ThreadPool` work is scheduled deterministically like tasks. Production parallelism is nondeterministic by nature — the promise is that sim explores the interleavings, not that production replays them |
 | **D14: FFI / unsafe** | C calls, raw pointers | Outside the contract. The capability metadata (`struct.build`) already tracks which code reaches `ffi`/`unsafe`; sim mode reports or rejects it. Recorded shims are future work |

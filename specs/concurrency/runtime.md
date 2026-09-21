@@ -152,7 +152,7 @@ spawn(|| {
 - Stack traces are real stack traces.
 - No need to track pause points at compile time — any function call site is potentially a park point, but the runtime handles it transparently.
 
-**No `Pin` required.** Rask's "no storable references" rule (CORE_DESIGN.md §3) already prevented self-referential state-machine patterns. With stackful fibers, the question is moot — there is no state machine.
+**No `Pin` required.** A task holds only owned values — a closure can't capture a borrow cross-task (`mem.closures/SL2`) and a link can't cross at all (`mem.ownership/T2`) — so nothing in a task points into a frame that could move. With stackful fibers the question is moot anyway: there is no state machine.
 
 **Current interpreter:** No state machine transform. Closures execute on real OS thread stacks. Full transform planned for compiled version.
 

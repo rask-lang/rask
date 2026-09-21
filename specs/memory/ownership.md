@@ -56,10 +56,10 @@ Tasks are isolated. No shared mutable memory.
 |------|-------------|
 | **T1: Send transfers** | Sending on channel transfers ownership |
 | **T2: No shared mut** | Cannot share mutable references across tasks |
-| **T2.1: Closure-based OK** | `Shared<T>` and `Mutex<T>` provide cross-task mutable access via closures |
+| **T2.1: Scoped access OK** | `Shared<T, S>` provides cross-task mutable access through a scope — an inline expression or a `with` block (`conc.sync/WS1`) |
 | **T3: Borrows don't cross** | Block-scoped views cannot be sent to other tasks |
 
-Rule T2.1 clarification: `Shared<T>` and `Mutex<T>` don't violate T2 because they provide *operation-scoped* access through closures, not storable mutable references. When the closure returns, access is released. See `conc.sync`.
+Rule T2.1 clarification: `Shared<T, S>` doesn't violate T2 because access is *scoped*, not storable — the inner value is reachable only inside the `with` block or inline expression, and access is released when the scope ends. `Mutex<T>` is not a separate type for this; it's one of `S`'s strategies (`mem.shared-rack-heap`). See `conc.sync`.
 
 <!-- test: skip -->
 ```rask

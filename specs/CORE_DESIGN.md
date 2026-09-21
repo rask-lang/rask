@@ -47,7 +47,7 @@ There's no `Box<T>` because there's no need to distinguish "heap-allocated value
 
 **Honest carve-out: a small fixed set of language primitives with shared semantics.** `string` (with its substring view `StringView`), `Shared<T, S>`, and `Atomic<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define, and that set is closed on purpose — see [Shared, Rack and Heap](memory/shared-rack-heap.md) for the disciplines (`Shared`, `Rack`+`Link`, `Heap`, the deprecated `Pool`, plus `Atomic` as adjacent) and for why I don't hand out a way to build more of them (`mem.shared-rack-heap/BX1`–`BX4`). Short version: those types don't use a secret type-system feature, they have permission to run code on assignment, on scope exit, and at borrow boundaries — three places I keep free of user code so cost stays readable and cleanup stays visible. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
 
-**Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Pool`+`Handle` for graphs, disjoint field borrowing for partial borrows, and context clauses for implicit state threading — solutions to problems that pure MVS hits once you go beyond simple value passing.
+**Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Rack`+`Link` for graphs, disjoint field borrowing for partial borrows, and context clauses for implicit state threading — solutions to problems that pure MVS hits once you go beyond simple value passing. Pure MVS answers "these things point at each other" with projections, or with an index into an array that the programmer maintains by hand; the rack is that index, owned by the language and checked by it.
 
 ### 3. No Storable References
 
@@ -285,44 +285,37 @@ I'm not pretending there aren't costs to these choices. Every design has tradeof
 
 **When this is fine:** Most code. String-heavy code (CLI parsing, HTTP routing) has near-zero ceremony now that strings are Copy. The remaining clone calls are localized to API boundaries for collections.
 
-### Pool Handle Overhead
+### Graphs cost an edge write, not a read
 
-**Decision:** Graph structures use `Pool<T>` + `Handle<T>` instead of references.
+**Decision:** Graph structures use `Rack<T>` + `Link<T>` (`mem.racks`). `Pool<T>` + `Handle<T>` did this job and is deprecated — the retirement is sequenced in rask-lang/rask#908.
 
-**Cost:** Each handle access involves:
-1. Pool ID check (is this the right pool?)
-2. Generation check (is this handle stale?)
-3. Index lookup
+**Cost:** Reads are free — a link is the node's address, so `node.health` is the same base+offset load any field gets. Writes are not: assigning a link into an edge writes the *target* too, because the rack records the incoming edge so delete can find it later. Measured at ~2.6 ns against ~2.9 ns for a raw pointer store.
 
-Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses, this adds up.
+**Benefit:** No dangling links, by construction rather than by checking. `rack.delete(n)` sets every `Link<T>?` field pointing at `n` to `none` before it returns, so the invalid state doesn't exist and a read needs no test for it (`mem.racks/RK3`, RK4). A *local* link the rack can't reach is a compile error to use after the delete (RK5), not a runtime panic.
 
-**Benefit:** No dangling pointers — a handle is an integer, not an address, so there's nothing to dangle. Use-after-free through a stale handle *is* possible to write, and the generation check turns it into a panic at the access instead of a read of whatever now occupies the slot. Iterator invalidation is the same mechanism. Self-referential structures work without unsafe code.
+**When to reach for a rack:** Many instances of one type that point at each other — scene trees, ECS entities, anything with cycles or parent pointers. A single value shared by several names is `Shared<T, S>`; one owner behind an indirection is `Heap<T>`.
 
-**When to use pools:** Graph structures, ECS entities, caches with stable identity, anything with cycles or parent pointers.
+### One Storable Reference
 
-**When to avoid pools:** Tight inner loops where every nanosecond matters. For these cases, copy data out, process in batch, write back.
-
-### No Storable References
-
-**Decision:** References cannot be stored in structs or returned from functions.
+**Decision:** A reference cannot be stored in a struct or returned from a function, with exactly one exception: `Link<T>`, which names a node in a rack that owns it (`mem.racks/RK2`). That exception is what makes the rule payable — a graph needs stored references, and confining them to one type with one owner is what keeps the rest of the language free of lifetimes.
 
 **Cost:** Some patterns require restructuring:
-- Parent pointers → store `Handle<Parent>` instead
+- Parent pointers → a `Link<Parent>?` field, in a rack that owns both
 - String slices in structs → `StringView` (zero-copy, refcounted) or `Span` indices
-- Caches holding references → use `Pool<T>` with handles
+- Caches holding references → own the values, hand out links
 
 **Benefit:** Removes entire categories of bugs — two of them by construction, one by making it loud:
 - Dangling pointers — impossible; references can't escape their scope, so there's nothing to leave behind
 - Use-after-free — a stale handle still compiles, but the generation check catches it at the access. Detection, not impossibility; the point is that it can't be silent
-- Iterator invalidation — same check, same guarantee: a handle invalidated mid-loop panics instead of being followed
+- Iterator invalidation — a link into a rack mutated mid-loop is the same story as the delete above: the rack nulls the edges it can reach, and a local link is a compile error to use
 
 No lifetime annotations needed. Function signatures are simple. Reasoning about ownership is local.
 
 **Concrete benefit — relocatable state:** Because a container preserves its slot layout, graph state can be serialized and sent across processes: every reference is written as the slot number it names and resolved back on arrival. The graph survives; a reference held across the boundary does not, so name a node with an id field if it has to be found again. See `mem.relocatable` for the full specification.
 
-**Concrete benefit — no Pin in async:** State machines from spawn closures only hold owned values (closures can't capture borrows cross-task — mem.closures/SL2). Self-referential futures are impossible by construction, so `Pin` is unnecessary. Tasks are plain movable values. See conc.runtime/T1.
+**Concrete benefit — no Pin in async:** State machines from spawn closures only hold owned values (closures can't capture borrows cross-task — mem.closures/SL2), and a link can't cross a task boundary at all (mem.ownership/T2), so nothing a task holds points into a frame that could move. `Pin` is unnecessary and tasks are plain movable values. See conc.runtime/T1.
 
-**The fundamental choice:** I trade "hold a reference to data owned elsewhere" for "hold a handle/key/index to data in a collection." The former requires tracking lifetimes; the latter requires explicit indirection. I think the explicitness is worth it.
+**The fundamental choice:** I trade "hold a reference to data owned elsewhere" for "hold a reference into a container that owns it." The former requires tracking lifetimes; the latter requires naming the container. I think the explicitness is worth it.
 
 ### Comptime Limitations
 

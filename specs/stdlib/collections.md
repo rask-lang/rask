@@ -465,7 +465,7 @@ FIX: Use try_push to handle capacity limits:
 **When to use which collection:**
 - `Vec<T>` — Ordered data, access by position, elements don't need stable identity
 - `Map<K,V>` — Lookup by arbitrary key, no ordering guarantees
-- `Pool<T>` — Elements reference each other (graphs, trees), need stable handles
+- `Rack<T>` + `Link<T>` — Elements reference each other (graphs, trees), need stable identity. (`Pool<T>` + `Handle<T>` did this and is deprecated — rask-lang/rask#908)
 
 **Pattern selection for element access:**
 - 1 statement: `vec[i].field = x`
