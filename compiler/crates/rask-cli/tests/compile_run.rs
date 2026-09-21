@@ -8024,11 +8024,12 @@ fn assert_says_which_side_wanted_a_bool() {
 /// Every user-facing code is an E-number, so `rask explain` can be asked about
 /// any of them.
 ///
-/// Three diagnostics carried a spec rule id instead — `error[mem.context/CC8]`,
-/// `CC10`, `comp.advanced/TS8`. Two schemes in one compiler means anything
-/// grepping for `E0` misses a family, and `rask explain mem.context/CC8` was
-/// never going to work. They're E0849–E0851 now, with the rule id where it
-/// belongs: in the `why`, which is what says the rule in words.
+/// Three diagnostics once carried a spec rule id instead of a code. Two schemes
+/// in one compiler means anything grepping for `E0` misses a family, and
+/// `rask explain` was never going to answer for the other one. They were given
+/// E-numbers, with the rule id where it belongs: in the `why`, which is what
+/// says the rule in words. (All three were pool diagnostics and went out with
+/// the pool, rask-lang/rask#908 — the invariant is what this test keeps.)
 #[test]
 fn every_diagnostic_code_is_an_e_number() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");

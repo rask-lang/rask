@@ -10,7 +10,7 @@
 `Link<T>` is a reference to one of them, and unlike every other reference in
 Rask it can be stored in a field.
 
-This **replaces `Pool<T>` + `Handle<T>`** (`mem.pools`, now `deprecated`). The
+This **replaced `Pool<T>` + `Handle<T>`**, which are gone (rask-lang/rask#908). The
 job is the same — many things of one type, individually addressable,
 individually removable — and the mechanism is better: a handle is a ticket you
 redeem at the container and check for staleness, a link is a pointer you follow.
@@ -94,10 +94,10 @@ header immediately *before* the payload. So a link is the node's address and
 nothing else, and `l.health` is the same base+offset load any aggregate field
 gets — no lookup, no adjustment. `Link<T>?` is that same word with the null
 address for `none` — one word, no tag. That's a different sentinel from
-`Handle<T>?`, which uses all-ones, and deliberately so: each niche picks the
-value its own domain can't produce. A handle is index+generation, so all-ones is
-impossible; a link is an address, so null is. Null also means a rack chunk
-arrives with every link already reading as `none`, since chunks are zeroed.
+the all-ones word the pool's handles used to use, and deliberately: a niche
+picks the value its own domain can't produce, and for an address that is null.
+Null also means a rack chunk arrives with every link already reading as `none`,
+since chunks are zeroed.
 
 An edge write touches the target's *header*, not any field the target declares.
 So a link lent for reading (PM10) stays valid for reading: nothing observable
@@ -174,8 +174,6 @@ Named here so the gaps are on the record rather than discovered:
 - **Required edges** (RK7) and, with them, a delete policy. Set-to-`none` is
   complete only while every edge is optional; admitting `Link<T>` makes one of
   cascade or restrict mandatory. Both wait on batch construction.
-- **Retiring `mem.pools`.** Native lowering has landed, which was the condition
-  (rask-lang/rask#908), but the pool corpus hasn't been converted yet.
 - **Slab affordances.** The backing store is a slab already, and RK12 promises
   the slot number and the directory. What's still open is whether to promise
   *contiguous* iteration, or offer an explicit `compact()`; both want measurement

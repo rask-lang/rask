@@ -1,11 +1,26 @@
 <!-- id: mem.alloc -->
 <!-- status: proposed -->
 <!-- summary: Custom allocators via using clauses; scope-restricted arena lifetimes -->
-<!-- depends: memory/context-clauses.md, memory/ownership.md, stdlib/collections.md -->
+<!-- depends: memory/ownership.md, stdlib/collections.md -->
 
 # Custom Allocators
 
-Collections use the global allocator by default. `using` clauses let functions receive a different allocator — same mechanism as pool contexts, zero overhead, compile-time checked.
+Collections use the global allocator by default. `using` clauses let functions receive a different allocator — zero overhead, compile-time checked.
+
+> **The mechanism this was written against is gone.** A `using` clause on a
+> *signature* only ever declared a `Pool<T>`, and it went out with the pool
+> (rask-lang/rask#908) along with the hidden-parameter pass that threaded it in,
+> the ambiguity rules, and `frozen`. Nothing in the corpus ever wrote
+> `using Allocator`, so nothing broke — but AL7/AL8/AL15–AL18 below describe a
+> signature form that no longer parses, and the rules they say they "follow
+> exactly" (CC1, CC2, CC8, CC9, CC10) no longer exist. The block form —
+> `using Arena.scoped(…) { … }` — is unaffected: it installs something for a
+> lexical scope, which is what `using Multitasking { … }` still does.
+>
+> So this spec now has two halves in different states. The block half (AL10–AL14)
+> still describes a mechanism the language has. The signature half would need a
+> new one, and reintroducing it should be priced on its own merits rather than
+> inherited from a design that was retired.
 
 ## Allocator Trait
 
@@ -57,11 +72,11 @@ func sum(v: Vec<i32>) -> i32 { ... }     // accepts Vec<i32, Global>
 |------|-------------|
 | **AL7: Unnamed context** | `using Allocator` — threads allocator as hidden parameter; collections auto-resolve it |
 | **AL8: Named context** | `using alloc: Allocator` — same as AL7, plus creates a local binding `alloc` for direct use |
-| **AL9: Resolution** | Same rules as pool contexts (CC4): local vars → params → self fields → own `using` clause |
+| **AL9: Resolution** | Search order: local vars → params → self fields → own `using` clause |
 | **AL10: Propagation** | A function's `using Allocator` satisfies callees requiring the same context |
 | **AL11: No context = Global** | Functions without `using Allocator` always use Global for new allocations |
 
-Unnamed (`using Allocator`) is enough when you only need collections to auto-resolve. Named (`using alloc: Allocator`) is needed when you reference the allocator directly — passing it to `Pool.new(alloc)`, calling `alloc.reset()`, etc.
+Unnamed (`using Allocator`) is enough when you only need collections to auto-resolve. Named (`using alloc: Allocator`) is needed when you reference the allocator directly — passing it on to a constructor, calling `alloc.reset()`, etc.
 
 <!-- test: skip -->
 ```rask
@@ -74,9 +89,9 @@ func build_index(items: Vec<Item>) -> Map<string, Item> using Allocator {
     return map
 }
 
-// Named — need direct access to pass allocator to Pool
+// Named — need direct access to pass the allocator on
 func init_world() using alloc: Allocator {
-    let entities = Pool.new(alloc)     // pool backed by this allocator
+    let entities = Rack.new(alloc)     // rack backed by this allocator
     let spatial = Map.new()            // also uses alloc via auto-resolution
     // ...
 }
@@ -125,7 +140,7 @@ func process() {
 | **AL15: Public declaration required** | Public functions that create collections with a context allocator must declare `using Allocator` |
 | **AL16: Private inference** | Private functions can have `using Allocator` inferred from collection construction in allocator context |
 
-Parallel to CC6/CC7 for pool contexts.
+Public functions declare; private ones infer.
 
 ## Compiler Desugaring
 
@@ -151,14 +166,13 @@ func build_index(items: Vec<Item>, __ctx_alloc: &Allocator) -> Map<string, Item,
 | **AL17: Immediate closure inheritance** | Expression-scoped closures inherit the enclosing allocator context |
 | **AL18: Storable closure exclusion** | Storable closures cannot capture allocator context — must pass explicitly |
 
-Parallel to CC9/CC10.
+An inline callback runs inside the scope that resolved the context; a stored one can outlive it.
 
-## Interaction with Pools
+## Interaction with Racks
 
 | Rule | Description |
 |------|-------------|
-| **AL19: Pool backing allocator** | `Pool.new()` uses Global. `Pool.new(alloc)` uses a named allocator for backing storage |
-| **AL20: Pool context orthogonal** | `using Pool<T>` and `using Allocator` are independent contexts — a function can declare both |
+| **AL19: Rack backing allocator** | `Rack.new()` uses Global. An arena-backed rack would take the allocator the enclosing block installed |
 
 <!-- test: skip -->
 ```rask
@@ -166,27 +180,20 @@ func game_frame() {
     let frame_arena = Arena.scoped(4.megabytes())
 
     using frame_arena {
-        let particles = Pool.new()       // Pool auto-resolves arena allocator
-        spawn_particles(particles)
+        mut particles: Rack<Particle> = Rack.new()   // chunks from the arena
+        spawn_particles(mutate particles)
 
-        for h in particles.cursor() {
-            update_particle(h)
+        for p in particles.nodes() {
+            p.lifetime -= 1
         }
     }
-    // arena freed — pool and all particles gone
-}
-
-// Named context — need direct access to pass allocator
-func build_world() using alloc: Allocator {
-    let entities = Pool.new(alloc)       // explicit: pool backed by alloc
-    let index = Map.new()                // implicit: auto-resolves alloc
-    // ...
-}
-
-func update_particle(h: Handle<Particle>) using Pool<Particle> {
-    h.lifetime -= 1
+    // arena freed — the rack and every node with it
 }
 ```
+
+AL20 used to sit here: `using Pool<T>` and `using Allocator` were independent
+contexts a function could declare together. With pools gone there is only one
+kind of `using` left, so there is nothing to be orthogonal to.
 
 ## Standard Allocators
 
@@ -258,9 +265,8 @@ FIX: Add a using clause:
 | Nested `using` blocks | AL12 | Inner block overrides outer for its scope |
 | Arena-allocated value assigned to outer variable | AL13 | Compile error |
 | Collection created in `using` block passed to callee | AL14 | OK — callee receives it by reference, doesn't escape |
-| Multiple allocators in scope | CC8 (reused) | Compile error — use named context (AL8) to disambiguate |
-| `using Allocator` + `using Pool<T>` on same function | AL20 | Both contexts threaded independently |
-| Arena-backed Pool, handle sent via channel | AL13 | Compile error — handle type includes arena scope |
+| Multiple allocators in scope | AL8 | Would need a named context — see the note at the top |
+| Arena-backed rack, link sent via channel | AL13 | Compile error — a link never crosses a task boundary anyway (`mem.racks`) |
 | `try_push` on FixedBuffer-backed Vec | AL3 | Returns `PushError` when buffer full |
 | Comptime allocations | — | Use compiler arena (CT17), not runtime allocators |
 
@@ -272,11 +278,11 @@ FIX: Add a using clause:
 
 **AL4 (default type parameter):** Most code doesn't need custom allocators. Making Global the default and zero-sized means the common case has zero cost — no extra pointer, no vtable, no indirection. The allocator type only appears when you need it.
 
-**AL7/AL8 (unnamed vs named):** Follows pool contexts exactly (CC1/CC2). Most allocator usage is implicit — collections auto-resolve. Named contexts exist for the cases where you need to pass the allocator explicitly (e.g., `Pool.new(alloc)`). The name is local to the function, not part of the API.
+**AL7/AL8 (unnamed vs named):** these followed the pool context rules (CC1/CC2) exactly, which is now a dependency on something deleted. The distinction itself is still the right one if a signature form ever comes back: most allocator usage is implicit, and a name is only needed where the allocator has to be passed on explicitly.
 
 **AL13 (scope restriction):** Rask doesn't have lifetime annotations. Scope restriction is the alternative: the compiler enforces that arena-allocated data doesn't outlive the arena, without requiring the user to annotate lifetimes. This is the same strategy as `with` block restrictions for borrows (mem.borrowing/W2).
 
-**AL14 (lexical only):** Implicit propagation through callees (dynamic scoping) would break transparency of cost — you couldn't tell from reading a function whether it uses an arena. Lexical scoping keeps the behavior visible. Functions that want caller-controlled allocation explicitly opt in via `using Allocator`.
+**AL14 (lexical only):** Implicit propagation through callees (dynamic scoping) would break transparency of cost — you couldn't tell from reading a function whether it uses an arena. Lexical scoping keeps the behavior visible. This half is the one that survives intact, and it is the half that matters: a block that installs something for its scope is a mechanism the language still has.
 
 **Why not type-erased allocators?** Type erasure (storing `&dyn Allocator`) adds a vtable call to every allocation and makes every Vec 8 bytes larger. Since the common case is Global (which is zero-sized), the default type parameter approach is strictly better — zero cost when you don't use custom allocators, monomorphized when you do.
 
@@ -304,8 +310,8 @@ func handle_request(req: Request) -> Response {
 ```rask
 func typecheck(ast: Ast) -> TypedAst {
     using Arena.scoped(16.megabytes()) {
-        let types = Pool.new()       // Pool backed by arena
-        let scopes = Pool.new()      // Pool backed by arena
+        mut types: Vec<TypeInfo> = Vec.new()     // backed by the arena
+        mut scopes: Vec<Scope> = Vec.new()       // backed by the arena
 
         let result = resolve_types(ast, types, scopes)
         return result.freeze()         // copies result to Global
@@ -333,10 +339,9 @@ func sensor_loop() {
 
 ### See Also
 
-- [Context Clauses](context-clauses.md) — `using` clause mechanics (`mem.context`)
 - [Ownership](ownership.md) — Value lifetimes within allocator scopes (`mem.ownership`)
 - [Linearity](linear.md) — Arena vs linear: why they're separate mechanisms (`mem.linear`)
-- [Pools](pools.md) — Handle-based storage, typed arenas (`mem.pools`)
+- [Racks and Links](racks.md) — Nodes with stable identity, delete-time edge fixup (`mem.racks`)
 - [Borrowing](borrowing.md) — Scope restrictions for growable sources (`mem.borrowing`)
 - [Shared, Rack and Heap](shared-rack-heap.md) — All three allocate through the ambient allocator (`mem.shared-rack-heap`)
 - [Heap Values](heap.md) — `own expr` allocates through the context allocator (`mem.heap`)

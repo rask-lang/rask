@@ -58,7 +58,7 @@ thirteen chapters hasn't been done.
 
 **The compiler teaches these when you meet them** — each arrives as an error that explains the rule: linear resources (`@resource`, consume-exactly-once), stale pool handles, disjoint field borrows, borrow escapes, `staged()` lock updates, runtime-scope errors.
 
-**Opt-in, announced by the code that uses them:** `Pool<T>` + `Handle<T>` (deprecated — `mem.racks` replaces it), `Atomic<T>`, `comptime`, `unsafe`/FFI, context clauses (`using Pool<T>`), duck traits and inferred signatures (sketch mode, lint-fenced).
+**Opt-in, announced by the code that uses them:** `Rack<T>` + `Link<T>`, `Atomic<T>`, `comptime`, `unsafe`/FFI, duck traits and inferred signatures (sketch mode, lint-fenced).
 
 ## The budget rule
 

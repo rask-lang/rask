@@ -5060,8 +5060,7 @@ impl Parser {
         let mut contexts: Vec<(String, Vec<CallArg>)> = Vec::new();
         loop {
             let mut name = self.expect_ident()?;
-            // Generic args on context types: `using Pool<Entity>, Multitasking { ... }`
-            // (mem.context-clauses/CC4). Mirrors the loop in parse_base_type.
+            // Generic args on context types. Mirrors the loop in parse_base_type.
             if self.match_token(&TokenKind::Lt) {
                 name.push('<');
                 loop {

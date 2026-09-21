@@ -22,10 +22,6 @@ struct ResourceEntry {
     var_name: Option<String>,
     state: ResourceState,
     scope_depth: usize,
-    /// Handed to a pool, so `mem.resources/R5` is what reports it rather than
-    /// the ordinary "this binding was never consumed" message. A pooled value
-    /// has no binding to name — the report used to read `Conn '?'`.
-    pooled: bool,
 }
 
 /// Tracks linear resource lifetimes across scopes.
@@ -63,7 +59,6 @@ impl ResourceTracker {
             var_name: None,
             state: ResourceState::Live,
             scope_depth,
-            pooled: false,
         });
         id
     }
@@ -88,13 +83,6 @@ impl ResourceTracker {
     }
 
     /// Check if a resource has already been consumed.
-    /// R5: the value went into a pool, so the pool is what owes it now.
-    pub fn mark_pooled(&mut self, id: u64) {
-        if let Some(e) = self.entries.get_mut(&id) {
-            e.pooled = true;
-        }
-    }
-
     pub fn is_consumed(&self, id: u64) -> bool {
         self.entries.get(&id)
             .map(|e| e.state == ResourceState::Consumed)
@@ -160,19 +148,11 @@ impl ResourceTracker {
         let mut leaked: Vec<String> = Vec::new();
         let mut to_remove: Vec<u64> = Vec::new();
 
-        // R5's are counted per element type rather than listed: a pooled value
-        // has no binding to name, and the pool is what is being reported.
-        let mut pooled: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
         for (&id, entry) in &self.entries {
             if entry.scope_depth == scope_depth {
                 if entry.state == ResourceState::Live {
-                    if entry.pooled {
-                        *pooled.entry(entry.type_name.clone()).or_insert(0) += 1;
-                    } else {
-                        let var = entry.var_name.as_deref().unwrap_or("?");
-                        leaked.push(format!("{} '{}'", entry.type_name, var));
-                    }
+                    let var = entry.var_name.as_deref().unwrap_or("?");
+                    leaked.push(format!("{} '{}'", entry.type_name, var));
                 }
                 to_remove.push(id);
             }
@@ -186,18 +166,6 @@ impl ResourceTracker {
             self.entries.remove(id);
         }
 
-        // Keep this wording in step with the runtime's (`rask_pool_free` in
-        // the runtime) — the differential harness compares the two backends'
-        // output verbatim.
-        if let Some((ty, n)) = pooled.into_iter().next() {
-            return Err(format!(
-                "Pool<{}> has {} unconsumed resource element{} at scope exit.\n\
-                 Resources must be explicitly consumed (use take_all() before scope ends).",
-                ty,
-                n,
-                if n == 1 { "" } else { "s" }
-            ));
-        }
         if leaked.is_empty() {
             Ok(())
         } else {

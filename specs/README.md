@@ -15,7 +15,6 @@ Organized by what each category does.
 
 **Building graphs/trees?**
 - [memory/racks.md](memory/racks.md) — Nodes with stable identity and links you can store in a field
-- [memory/pools.md](memory/pools.md) — Handle-based indirection (deprecated: superseded by racks.md)
 
 ---
 
@@ -76,7 +75,7 @@ Quick navigation by task or concept:
 | Linear | [memory/linear.md](memory/linear.md) — Value that must be consumed exactly once |
 | Scoped access | [memory/shared-rack-heap.md](memory/shared-rack-heap.md) — A value held elsewhere, reached through `with` (`Shared<T, S>`, Rack+Link, Heap) |
 | Link | [memory/racks.md](memory/racks.md) — A stored reference to a node in a Rack |
-| Handle | [memory/pools.md](memory/pools.md) — Opaque identifier into Pool (deprecated) |
+| Link | [memory/racks.md](memory/racks.md) — a reference into a `Rack<T>` that may live in a field |
 | Borrow | [memory/borrowing.md](memory/borrowing.md) — Temporary read/write access |
 | Take | [memory/parameters.md](memory/parameters.md) — Ownership transfer |
 | Resource type | [memory/resource-types.md](memory/resource-types.md) — Struct marked linear with `@resource` |
@@ -113,7 +112,7 @@ Quick navigation by task or concept:
 |------|-------------|
 | [ownership.md](memory/ownership.md) | Core ownership rules, cross-task transfer |
 | [value-semantics.md](memory/value-semantics.md) | Copy vs move, 16-byte threshold, move-only types |
-| [linear.md](memory/linear.md) | Consume-exactly-once rules (L1–L7) — shared by `@resource`, `Heap<T>`, `Pool<Linear>` |
+| [linear.md](memory/linear.md) | Consume-exactly-once rules (L1–L7) — shared by `@resource` and `Heap<T>` |
 | [shared-rack-heap.md](memory/shared-rack-heap.md) | `with`-scoped access across `Shared<T, S>`, Rack+Link, Heap — and why the set is closed |
 | [borrowing.md](memory/borrowing.md) | Views last as long as source is stable |
 | [parameters.md](memory/parameters.md) | Parameter modes: borrow (default), `mutate`, `take` |
@@ -121,7 +120,6 @@ Quick navigation by task or concept:
 | [heap.md](memory/heap.md) | `Heap<T>` — linear heap pointer for recursive types |
 | [closures.md](memory/closures.md) | Capture rules, scope constraints, `Shared` capture patterns |
 | [racks.md](memory/racks.md) | Racks and links, delete-time edge fixup, link lifetime |
-| [pools.md](memory/pools.md) | Handle-based indirection, weak handles, cursors, freezing (deprecated) |
 | [cell.md](memory/cell.md) | Retired — folded into `Shared<T, Local>` |
 | [unsafe.md](memory/unsafe.md) | Unsafe blocks, raw pointers, FFI |
 | [atomics.md](memory/atomics.md) | Atomic types, memory orderings, lock-free primitives |
@@ -206,10 +204,8 @@ These live in [`projects/`](../projects/) — not part of Rask, but in this repo
 | [clone-elision.md](compiler/clone-elision.md) | Last-use clone-to-move optimization |
 | [string-refcount-elision.md](compiler/string-refcount-elision.md) | Atomic refcount elision for strings |
 | [effects.md](compiler/effects.md) | Effect tracking: IO, async, pool mutation |
-| [generation-coalescing.md](compiler/generation-coalescing.md) | Redundant generation check elimination |
 | [incremental.md](compiler/incremental.md) | Function-level incremental compilation |
 | [semantic-hash-caching.md](compiler/semantic-hash-caching.md) | Semantic hashing for generics |
-| [hidden-params.md](compiler/hidden-params.md) | Hidden parameter compiler pass for `using` clauses |
 
 ---
 

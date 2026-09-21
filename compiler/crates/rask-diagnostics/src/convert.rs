@@ -2563,14 +2563,9 @@ impl ToDiagnostic for rask_types::TypeError {
                         format!("a map is indexed by its key type `{}` [std.collections/K1]", key),
                         None,
                     ),
-                    K::ExpectedHandle(handle) => (
-                        format!("cannot index `{}` with `{}`", container, found),
-                        format!("a pool is keyed by its handle, not a position — index it with `{}` [mem.pools/PL4]", handle),
-                        Some(format!("let h = pool.insert(value)   // h: {}", handle)),
-                    ),
                     K::NotSliceable => (
                         format!("cannot slice `{}` with a range", container),
-                        "a range index reads a run of positions, and a map or a pool has none — it is keyed [std.collections/V1]".to_string(),
+                        "a range index reads a run of positions, and a map has none — it is keyed [std.collections/V1]".to_string(),
                         None,
                     ),
                     K::NoSliceType => (

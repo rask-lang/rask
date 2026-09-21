@@ -51,7 +51,7 @@ A type is *flat* when it contains no heap-backed fields, recursively.
 |------|-------------|
 | **FL1: Definition** | A type is flat if all fields are flat, recursively. No `string`, `Vec`, `Map`, `Shared`, `any Trait`, closures, or resource types |
 | **FL2: Primitives** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `usize` are flat |
-| **FL3: References are not flat** | No reference into a container is flat — `Link<T>`, `Handle<T>`, `WeakHandle<T>`. A link is an address; a handle is index-plus-generation and used to answer flat, which credited the zero-cost tier with graphs it cannot carry. The flat tier is primitives and flat structs, full stop |
+| **FL3: References are not flat** | A `Link<T>` is an address, so no struct holding one is flat. The flat tier is primitives and flat structs, full stop. `Handle<T>` used to answer flat — index-plus-generation, no address — which credited the zero-cost tier with graphs it cannot carry; it went out with `mem.pools` (rask-lang/rask#908) |
 | **FL4: Comptime check** | `reflect.is_flat<T>()` returns `true` if T is flat. Resolved at compile time (`std.reflect/R1`) |
 | **FL5: Enums** | An enum is flat if all variant payloads are flat |
 
@@ -98,7 +98,7 @@ addition: a link field is written as the target's slot number.
 | **RB2: Deserialize** | `Rack.from_bytes(bytes) -> Rack<T> or DecodeError` — allocates slots in stored index order, then makes a second pass rewriting each stored slot number back to the address that slot now holds, registering the incoming edge as it goes |
 | **RB3: The graph survives; a link does not** | `from_bytes()` answers a complete, independent graph with every internal edge re-pointed. A link the caller held before `to_bytes()` names an address in the old allocation and is not valid against the new rack. There is no mechanism that would make it valid, and claiming one would be the dishonest version of this rule |
 | **RB4: Naming a node across the boundary** | Give the node an id field and look it up. `corresponding()` translates a link into *another rack in this process* (`mem.racks`), which covers `snapshot()`; it cannot translate into a graph rebuilt from bytes, because the link it would take as input is already stale |
-| **RB5: Requires Encode + Decode** | Compile error if `T` does not satisfy `Encode + Decode`, same as PB4 |
+| **RB5: Requires Encode + Decode** | Compile error if `T` does not satisfy `Encode + Decode` |
 | **RB6: Deleted slots are gaps** | Only live nodes are written. A deleted slot is recorded as a gap so the surviving slot numbers keep their meaning — this is what NP1 rests on |
 
 The second pass is what a link costs. It is linear in nodes plus edges, runs once
@@ -113,33 +113,11 @@ writing, the edge-rebuild pass has not been measured, and the interaction with
 `@resource` nodes and `Encode`'s existing schema descriptor is unexamined. This
 section is the shape of the answer, not a report on one.
 
-## Pool Binary Serialization (deprecated)
+## Schema Evolution
 
-> Superseded by the rack rules above, and going out with `mem.pools`. Kept because
-> `Pool` still ships; see rask-lang/rask#908.
-
-Pools with `T: Encode + Decode` can serialize to and from a compact binary format.
-
-| Rule | Description |
-|------|-------------|
-| **PB1: Serialize** | `pool.to_bytes() -> Vec<u8>` — serializes all occupied slots via binary `Encode` |
-| **PB2: Deserialize** | `Pool.from_bytes(bytes) -> Pool<T> or DecodeError` — reconstructs pool from bytes |
-| **PB3: Handle preservation** | Handles obtained before `to_bytes()` are valid against the pool returned by `from_bytes()`. Same index, same generation. This is the reference-level promise that RB3 replaces with a graph-level one — a handle is a slot number the caller holds, so it can be handed back; a link cannot |
-| **PB4: Requires Encode + Decode** | Compile error if `T` does not satisfy `Encode + Decode` |
-| **PB5: Empty slots skipped** | Only occupied slots are serialized. Removed slots (generation bumped, no data) are recorded as gaps |
-
-### Binary Format
-
-The binary format embeds a schema descriptor for forward/backward compatibility.
-
-| Section | Contents |
-|---------|----------|
-| Header | Magic bytes, format version, element count, schema descriptor |
-| Schema descriptor | Field names + types, derived from `reflect.fields<T>()` at comptime |
-| Generation array | Per-slot generation counters (occupied and empty) |
-| Slot data | Occupied slots serialized via binary `Encode`, in index order |
-
-### Schema Evolution
+Stored bytes carry a schema descriptor — field names and types, from
+`reflect.fields<T>()` at comptime — so a type that gained or lost a field since
+the bytes were written still reads back.
 
 | Rule | Description |
 |------|-------------|
@@ -148,41 +126,10 @@ The binary format embeds a schema descriptor for forward/backward compatibility.
 | **SE3: Removed fields** | Fields present in the stored schema but absent in the current type are skipped |
 | **SE4: Type mismatch** | If a field exists in both schemas but the type changed, `from_bytes()` returns `DecodeError` |
 
-<!-- test: skip -->
-```rask
-struct Player {
-    public id: u32
-    public health: i32
 
-    @default(0)
-    public score: i64       // added after initial release — old data gets 0
-}
-
-func save_state(pool: Pool<Player>) -> Vec<u8> or EncodeError {
-    return pool.to_bytes()
-}
-
-func load_state(bytes: Vec<u8>) -> Pool<Player> or DecodeError {
-    return Pool.from_bytes(bytes)
-}
-```
-
-### Handle Round-Trip
-
-<!-- test: skip -->
-```rask
-func test_handle_roundtrip() -> void or Error {
-    let pool = Pool.new()
-    let h = pool.insert(Player { id: 1, health: 100, score: 0 })
-
-    let bytes = try pool.to_bytes()
-    let restored = try Pool.from_bytes(bytes)
-
-    // h is still valid — same index, same generation
-    assert(restored[h].id == 1)
-    assert(restored[h].health == 100)
-}
-```
+These were written for the pool's `to_bytes`/`from_bytes`, which went out with
+`mem.pools` (rask-lang/rask#908). The rules are the format's, not the
+container's, so they carry over to RB1/RB2 unchanged.
 
 ## Memory-Mapped Containers (Flat Types Only)
 
@@ -192,29 +139,29 @@ serialization step.
 | Rule | Description |
 |------|-------------|
 | **MM0: A rack is never mmappable** | Not even with a flat payload. A rack node carries a header — its rack, its incoming-edge list, its slot number — and the first two are addresses, so the storage is not an image that can be mapped back in. Graphs take the RB1/RB2 path, always. This is R1 losing graphs, said in terms of the operation that noticed |
-| **MM1: Flat constraint** | `Pool.from_mmap(path)` and `pool.to_mmap(path)` require `T` to be flat (`FL1`). Compile error otherwise. Deprecated with `mem.pools`; the operation survives the retirement, the receiver does not |
-| **MM2: Bitwise layout** | Mmap'd pools use the type's in-memory layout directly. No encode/decode step |
+| **MM1: Flat constraint** | `from_mmap(path)` / `to_mmap(path)` require the element type to be flat (`FL1`). Compile error otherwise. The receiver went with `mem.pools`; the operation is waiting on a container to sit on |
+| **MM2: Bitwise layout** | An mmap'd container uses the type's in-memory layout directly. No encode/decode step |
 | **MM3: Platform constraint** | Mmap files are valid only on the same platform (same endianness, same alignment). Not cross-platform by default |
 | **MM4: Compile error message** | When T is not flat, the error must identify which field is heap-backed and suggest `to_bytes()` as the alternative |
 
 **MM4 error format:**
 
 ```
-ERROR [mem.relocatable/MM1]: cannot mmap Pool<NamedEntity> — type is not flat
+ERROR [mem.relocatable/MM1]: cannot mmap a container of NamedEntity — type is not flat
    |
-5  |  pool.to_mmap("save.bin")
-   |       ^^^^^^^ NamedEntity contains heap-backed fields
+5  |  particles.to_mmap("save.bin")
+   |            ^^^^^^^ NamedEntity contains heap-backed fields
    |
 3  |  struct NamedEntity {
 4  |      public name: string    ← string owns heap memory
    |
 
-WHY: Memory-mapped pools require flat types (no heap pointers). The mmap file
-     is a direct image of memory — heap pointers would be meaningless.
+WHY: Memory mapping requires flat types (no heap pointers). The mmap file is a
+     direct image of memory — heap pointers would be meaningless.
 
-FIX: Use pool.to_bytes() for types with heap-backed fields:
+FIX: Use to_bytes() for types with heap-backed fields:
 
-  let bytes = try pool.to_bytes()
+  let bytes = try particles.to_bytes()
   try fs.write("save.bin", bytes)
 ```
 
@@ -228,29 +175,29 @@ struct Particle {
     public life: f32
 }
 
-func save_particles(pool: Pool<Particle>) -> void or IoError {
-    try pool.to_mmap("particles.bin")
+func save_particles(particles: Vec<Particle>) -> void or IoError {
+    try particles.to_mmap("particles.bin")
 }
 
-func load_particles() -> Pool<Particle> or IoError {
-    return try Pool.from_mmap("particles.bin")
+func load_particles() -> Vec<Particle> or IoError {
+    return try Vec.from_mmap("particles.bin")
 }
 ```
 
 ## Error Messages
 
-**Non-encodable pool element [PB4]:**
+**Non-encodable node [RB1]:**
 ```
-ERROR [mem.relocatable/PB4]: cannot serialize Pool<Connection>
+ERROR [mem.relocatable/RB1]: cannot serialize a rack of Connection
    |
-5  |  pool.to_bytes()
-   |       ^^^^^^^^^ Connection is not Encode
+5  |  world.to_bytes()
+   |        ^^^^^^^^^ Connection is not Encode
    |
 3  |  struct Connection {
 4  |      public socket: Socket    ← Socket is not Encode
    |
 
-WHY: pool.to_bytes() requires T: Encode + Decode.
+WHY: to_bytes() requires the node type to be Encode + Decode.
 
 FIX: Mark non-serializable fields @no_serialize, or use @no_encode and implement
      custom serialization.
@@ -258,7 +205,7 @@ FIX: Mark non-serializable fields @no_serialize, or use @no_encode and implement
 
 **Schema type mismatch [SE4]:**
 ```
-ERROR [mem.relocatable/SE4]: schema mismatch in Pool.from_bytes()
+ERROR [mem.relocatable/SE4]: schema mismatch in from_bytes()
 
   Field "health" changed type: stored as f32, current type is i32
 
@@ -272,14 +219,12 @@ FIX: Add a migration step, or keep the old field and add a new one.
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Empty pool `to_bytes()` | PB1 | Valid — produces header + empty slot data |
-| `from_bytes()` with corrupted data | PB2 | Returns `DecodeError` |
+| Empty rack `to_bytes()` | RB1 | Valid — produces header and no nodes |
+| `from_bytes()` with corrupted data | RB2 | Returns `DecodeError` |
 | Flat struct with `@unique` annotation | FL1 | Still flat — `@unique` affects copy semantics, not memory layout |
-| Pool with generation overflow slots | PB5 | Dead slots recorded in generation array, no data serialized |
+| A link held across a round trip | RB3 | Dangles — the graph survives, the reference doesn't. Find the node by an id it declares |
 | Mmap file from different platform | MM3 | Undefined — no cross-platform guarantee |
-| `Handle<T>` where T has different layout | PB3 | Handle is valid if schema evolution succeeds (SE1–SE3) |
-| Pool<T> where T: Encode but not Decode | PB4 | `to_bytes()` works; `from_bytes()` is compile error |
-| Bounded pool `from_bytes()` exceeding capacity | PB2 | Returns `DecodeError` if element count exceeds capacity |
+| A rack with a flat node type | MM0 | Still not mmappable — the node header holds addresses |
 
 ---
 
@@ -289,13 +234,11 @@ FIX: Add a migration step, or keep the old field and add a new one.
 
 **R1–R3 (tiers):** I wanted to be upfront about what's actually relocatable. Every game dev will try `Entity { name: string }` with mmap and hit the wall. Being honest about the tiers prevents frustration. Flat types get the zero-cost path; deep types get the linear-scan path; opaque types don't pretend to work.
 
-**FL3 / RB3 (what a link costs):** Handles looked like they made persistence work because they're integers. They didn't — they made it work because they're *positions*, and racks are position-addressed too. So links need no new machinery here, just a second pass at deserialization.
+**FL3 / RB3 (what a link costs):** handles looked like they made persistence work because they're integers. They didn't — they made it work because they're *positions*, and racks are position-addressed too. So links need no new machinery here, just a second pass at deserialization. What a link does cost is the reference-level promise: a handle was a slot number the caller held, so it could be handed straight back after a round trip; a link is an address and cannot be.
 
 They do cost two things, and I'd rather write them down than round them off. A link you held before the round trip is dead afterwards, so undo/redo and time-travel debugging carry a step that handles didn't need. And a graph can never be flat, so mmap-a-graph-and-go is gone — not deferred, gone, because flat means "no addresses" and a link is one. I'm taking both. Per-read speed is what these types exist for, and paying for it once at serialization time, in the one place a program is already writing every byte it owns, is the right end to pay at.
 
 **FL1–FL4 (flat constraint):** I considered a `Relocatable` trait but it would duplicate `Copy` for flat types and `Encode + Decode` for deep types. `reflect.is_flat<T>()` at comptime is simpler — it's a query, not a type-system concept. The compiler already knows the layout; just expose that knowledge.
-
-**PB1–PB5 (pool serialization):** `pool.to_bytes()` with `T: Encode + Decode` handles the common case (deep types). The binary format with schema descriptors means you don't need manual migration code for additive changes — added fields get defaults, removed fields are skipped. This covers the 80% case of evolving game state, configuration, caches.
 
 **SE1–SE4 (schema evolution):** Field-by-field matching by name gives forward/backward compatibility for free on additive changes. Type changes are intentionally an error — silent coercion between `f32` and `i32` would be a bug factory. If you need a migration, write one explicitly.
 
@@ -324,7 +267,6 @@ rather than corrupting the read.
 ### See Also
 
 - [Racks and Links](racks.md) — `slot_index`, the node directory, `snapshot()` and `corresponding()` (`mem.racks`)
-- [Pools and Handles](pools.md) — deprecated; Pool API, handle structure, generation counters (`mem.pools`)
 - [Value Semantics](value-semantics.md) — Copy vs move, 16-byte threshold (`mem.value`)
 - [Linearity](linear.md) — Why linear values are the Tier-3 opaque case (`mem.linear`)
 - [Shared, Rack and Heap](shared-rack-heap.md) — Their relocatability tiers (`mem.shared-rack-heap`)

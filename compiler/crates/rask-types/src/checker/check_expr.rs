@@ -5740,14 +5740,14 @@ impl TypeChecker {
     /// root's type is resolved.
     ///
     /// Writing through a reference is not mutating the binding that holds it: a
-    /// `Handle<T>` write lands in pool storage (mem.context/CC1) and a `Link<T>`
-    /// write lands in the node, so a read-only binding is fine for both. Any
-    /// other root gets the read-only-binding error.
+    /// `Link<T>` write lands in the node, not in the name holding the link, so a
+    /// read-only binding is fine. Any other root gets the read-only-binding
+    /// error.
     ///
     /// This runs after constraint solving because the answer depends on the
     /// root's type, and during the statement walk that type is often still a
     /// variable — a link bound by `if e.target? as t` comes from a deferred
-    /// `HasField`, and a handle can arrive the same way.
+    /// `HasField`.
     /// Re-ask "does this method mutate its receiver?" now that the receiver has
     /// a type. A method whose name happens to match some stdlib type's `mutate
     /// self` method is not one — `Handle.close(take self)` is a consume, and

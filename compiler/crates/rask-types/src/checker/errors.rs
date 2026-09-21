@@ -1051,8 +1051,8 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// std.collections/V1, mem.pools/PL4 (#310): an index expression `c[i]`
-    /// whose index type doesn't match what the container accepts.
+    /// std.collections/V1 (#310): an index expression `c[i]` whose index type
+    /// doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]
     IndexTypeMismatch {
         /// The container being indexed (for the message).
@@ -1084,9 +1084,7 @@ pub enum IndexErrorKind {
     ExpectedInteger,
     /// `Map<K, V>` is indexed by `K` (carried).
     ExpectedKey(Type),
-    /// `Pool<T>` is indexed by its handle. Carries the expected `Handle<T>`.
-    ExpectedHandle(Type),
-    /// A range was used to slice a container that isn't sliceable (Map, Pool).
+    /// A range was used to slice a container that isn't sliceable (a Map).
     NotSliceable,
     /// A `Sequence<T>` was indexed. It holds no elements — SEQ38/SEQ39 —
     /// so there is no position to read.

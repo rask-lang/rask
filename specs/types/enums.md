@@ -445,7 +445,7 @@ For enums with explicit backing types (E14), the return type matches the backing
 | Type | Representation |
 |------|----------------|
 | `Heap<T>?` | null pointer = absent, non-null = present |
-| `Handle<T>?` | generation=0 = absent, else present |
+| `Link<T>?` | null address = absent, else present |
 
 ## Explicit Discriminants
 

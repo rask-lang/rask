@@ -298,7 +298,7 @@ fn test_hello_world() {
 
 Categories:
 - Basic features (variables, functions, control flow)
-- Collections (Vec, Map, Pool operations)
+- Collections (Vec, Map, Rack operations)
 - Error handling (try, panic, ensure)
 - Concurrency (spawn, channels, join)
 - FFI (calling C, being called from C)
@@ -319,7 +319,7 @@ examples/
 |---------|-------|---------------|
 | HTTP server | Concurrent requests, JSON parsing, routing | ~500 |
 | grep clone | File I/O, regex, multi-threading | ~300 |
-| Game demo | Pool handles, update loop, hot reload | ~600 |
+| Game demo | Rack graph, update loop, hot reload | ~600 |
 | Text editor | Rope data structure, undo/redo, syntax highlight | ~800 |
 
 Run: `./run_validation.sh` (manually, not in CI)

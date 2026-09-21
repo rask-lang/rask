@@ -607,4 +607,4 @@ Zero serialization boilerplate. Comparable to Go.
 - `std.json` — JSON format library using this mechanism (`std.json/J6`)
 - `type.generics` — Trait bounds, auto-derive pattern (`type.generics/CL1`)
 - `type.generics` — Trait conformance, structural opt-in (`type.generics/G1`)
-- `mem.relocatable` — Pool binary serialization using Encode/Decode (`mem.relocatable/PB1`)
+- `mem.relocatable` — Rack binary serialization using Encode/Decode (`mem.relocatable/RB1`)

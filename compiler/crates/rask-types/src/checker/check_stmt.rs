@@ -171,10 +171,9 @@ impl TypeChecker {
                 // index/field assign, and mutating method calls all forbidden.
                 if let Some(root) = Self::root_ident_name(target) {
                     // Writing *through* a reference is not mutating the binding
-                    // that holds it: `h.field = v` on a `Handle<T>` lands in pool
-                    // storage (mem.context/CC1), and `l.field = v` on a `Link<T>`
-                    // lands in the node, because a link is the node's address.
-                    // Only a bare rebind (`h = other`) mutates the binding.
+                    // that holds it: `l.field = v` on a `Link<T>` lands in the
+                    // node, because a link is the node's address. Only a bare
+                    // rebind (`l = other`) mutates the binding.
                     //
                     // Whether the root is such a reference depends on its type,
                     // and at this point the type is often still a variable — a

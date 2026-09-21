@@ -1,7 +1,7 @@
 <!-- id: conc.async -->
 <!-- status: decided -->
 <!-- summary: Green tasks with must-use handles, no async/await split, explicit resource declaration -->
-<!-- depends: memory/ownership.md, memory/context-clauses.md, memory/resource-types.md -->
+<!-- depends: memory/ownership.md, memory/resource-types.md -->
 
 # Execution Model
 
@@ -386,5 +386,4 @@ enum TryReceiveError { Empty, Closed }
 
 - `conc.select` — select and multiplex
 - `conc.sync` — synchronization primitives
-- `mem.context` — `using` clauses for pool contexts
 - `mem.resources` — `@resource` types and `ensure` cleanup

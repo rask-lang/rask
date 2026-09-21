@@ -391,8 +391,8 @@ Presence stays `x?` and there is no `is not none`. Two spellings of presence (`x
 
 <!-- test: skip -->
 ```rask
-if player_ent.target? as handle { … }                      // T? is binary; the type adds nothing
-if player_ent.target is Handle<Entity> as handle { … }     // same test, spelled out
+if player_ent.target? as t { … }                       // T? is binary; the type adds nothing
+if player_ent.target is Link<Entity> as t { … }        // same test, spelled out
 ```
 
 So test-and-bind is the one row where the two shapes don't share a construct, and that's the honest outcome rather than a gap: `is` needs a branch name where branches are open, and can't use one where there are only two.

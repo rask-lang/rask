@@ -166,7 +166,7 @@ It pushes a scope when entering a function/block, pops when leaving. Name
 lookup searches from the innermost scope outward.
 
 Built-in functions (`println`, `print`, `panic`, `format`) and built-in types
-(`Vec`, `Map`, `Set`, `string`, `Channel`, `Pool`, `Atomic`, `Shared`, etc.)
+(`Vec`, `Map`, `Set`, `string`, `Channel`, `Rack`, `Atomic`, `Shared`, etc.)
 are registered before any user code.
 
 **Package resolution** (`package.rs`) handles multi-package projects. A
@@ -219,26 +219,7 @@ into a collection, then mutate it on the next line." Rust requires explicit
 lifetimes for this; Rask doesn't.
 
 
-## Stage 7: Hidden Parameter Desugaring (`rask-hidden-params`)
-
-Transforms `using` context clauses into explicit parameters.
-
-**File:** `rask-hidden-params/src/lib.rs`
-
-```rask
-func damage(h: Handle<Player>) using Pool<Player> {
-    h.health -= 10
-}
-// becomes:
-func damage(h: Handle<Player>, __ctx_pool: &Pool<Player>) {
-    h.health -= 10
-}
-```
-
-Call sites are rewritten too. Runs after type checking, before monomorphization.
-
-
-## Stage 8: Monomorphization (`rask-mono`)
+## Stage 7: Monomorphization (`rask-mono`)
 
 Eliminates generics by creating concrete copies.
 
@@ -252,7 +233,7 @@ See [Code Generation](04-codegen.md) for the deep dive.
 - `StructLayout` / `EnumLayout` (field offsets, sizes, alignment)
 
 
-## Stage 9: MIR Lowering (`rask-mir`)
+## Stage 8: MIR Lowering (`rask-mir`)
 
 Flattens tree-shaped AST into a control-flow graph of basic blocks.
 
@@ -262,7 +243,7 @@ Flattens tree-shaped AST into a control-flow graph of basic blocks.
 See [Code Generation](04-codegen.md) for the deep dive.
 
 
-## Stage 10: Code Generation (`rask-codegen`)
+## Stage 9: Code Generation (`rask-codegen`)
 
 Translates MIR to native machine code via Cranelift, then links with the C
 runtime.
