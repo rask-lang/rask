@@ -3488,6 +3488,43 @@ impl Parser {
             return Ok(StmtKind::ComptimeFor { binding, iter, body });
         }
 
+        // CT1: `comptime mut x = expr` — the *expression* runs at compile time
+        // and `x` is an ordinary local of the enclosing scope.
+        //
+        // There was no case for it, so it fell through to the block form below
+        // and parsed as `comptime { mut x = expr }`. The declaration landed
+        // inside that implicit block and died with it: the name was invisible
+        // to the next statement, and an unused one was accepted in silence. A
+        // used one blamed the *use* — "undefined symbol: `doubled`, check
+        // spelling or add an import" — with nothing pointing at the
+        // declaration that never happened (#1220).
+        if self.check(&TokenKind::Mut) || self.check(&TokenKind::Let) {
+            let mut decl = self.parse_stmt()?;
+            match &mut decl.kind {
+                StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => {
+                    let span = init.span.clone();
+                    let inner = std::mem::replace(
+                        init,
+                        Expr { id: self.next_id(), kind: ExprKind::Null, span: span.clone() },
+                    );
+                    let stmt = Stmt {
+                        id: self.next_id(),
+                        kind: StmtKind::Expr(inner),
+                        span: span.clone(),
+                    };
+                    *init = Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::Comptime { body: vec![stmt] },
+                        span,
+                    };
+                }
+                // A destructuring or anything else after `comptime` keeps the
+                // block reading rather than being silently reinterpreted.
+                _ => return Ok(StmtKind::Comptime(vec![decl])),
+            }
+            return Ok(decl.kind);
+        }
+
         let body = if self.check(&TokenKind::LBrace) {
             self.parse_block_body()?
         } else {
