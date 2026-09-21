@@ -4508,6 +4508,10 @@ const PANIC_MESSAGES: &[(&str, &str)] = &[
     // for it now — the pinned text changed together, which is the point of
     // this test (#1009).
     ("force_error.rk", "! on a value that was an error: no route"),
+    // ER15's other half: an explicit message replaces both of the above. Native
+    // dropped the string at parse and printed neither it nor the error's own
+    // `message()` (#1257).
+    ("force_with_message.rk", "could not reach the service"),
     ("explicit.rk", "hand written"),
     ("not_implemented.rk", "not yet implemented"),
     ("unreachable_reached.rk", "entered unreachable code"),

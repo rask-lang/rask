@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// ER15's other half: `r! "msg"` says what to print instead of the error's own
+// `message()`. Native parsed the string, dropped it, and then lost the
+// fallback too — it printed `! on a value that was an error` with neither
+// (#1257).
+struct RouteErr10 { why: string }
+extend RouteErr10 {
+    func message(self) -> string {
+        return self.why
+    }
+}
+func fetch() -> i64 or RouteErr10 {
+    return RouteErr10 { why: "no route" }
+}
+func main() {
+    println(fetch()! "could not reach the service".to_string())
+}

@@ -3489,7 +3489,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Unwrap (postfix !) - panic on None/Err
-            ExprKind::Unwrap { expr: inner, message: _ } => {
+            ExprKind::Unwrap { expr: inner, message: override_text } => {
                 let (val, _inner_ty) = self.lower_expr(inner)?;
                 let niche = self.option_niche(inner, &_inner_ty);
                 let is_niche = niche.is_some();
@@ -3515,7 +3515,20 @@ impl<'a> MirLowerer<'a> {
                 // Reachability picked the method and queued its body;
                 // naming it here instead is how `json.encode` once reached
                 // codegen as a function nothing emits.
-                if !self.lower_forced_error_panic(expr, inner, &val)? {
+                // ER15's other half: `r! "msg"` says what to print instead.
+                // The parser kept the string on the node and nothing here read
+                // it, so native printed neither the override nor the fallback —
+                // `panic at f.rk:2: ! on a value that was an error` where the
+                // interpreter printed `panic: PORT must be a number` (#1257).
+                if let Some(text) = override_text {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("panic".to_string()),
+                        args: vec![MirOperand::Constant(crate::operand::MirConst::String(
+                            text.clone(),
+                        ))],
+                    }));
+                } else if !self.lower_forced_error_panic(expr, inner, &val)? {
                     // No message to reach for: an absent `T?`, or an error
                     // type whose `message()` has no body to instantiate.
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
