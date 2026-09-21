@@ -13,71 +13,13 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "spawn" => {
-                // spawn(|| {}) - green task spawner
-                if args.is_empty() {
-                    return Err(RuntimeError::TypeError(
-                        "spawn requires a closure argument".to_string(),
-                    ));
-                }
-
-                // Extract closure
-                let closure = &args[0];
-                match closure {
-                    Value::Closure {
-                        params,
-                        body,
-                        captured_env,
-                    } => {
-                        if ACTIVE_RUNTIME.read().unwrap().is_none() {
-                            return Err(RuntimeError::Panic(
-                                "RUNTIME PANIC: spawn() called with no active `using Multitasking` scope\n\
-                                 Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
-                            ));
-                        }
-
-                        if !params.is_empty() {
-                            return Err(RuntimeError::TypeError(
-                                "spawn closure must take no parameters".to_string(),
-                            ));
-                        }
-
-                        let body = body.clone();
-                        let captured = captured_env.clone();
-                        let child = self.spawn_child(captured);
-
-                        let join_handle = crate::spawn_interp_thread(move || {
-                            let mut interp = child;
-                            match interp.eval_expr(&body) {
-                                Ok(val) => Ok(val),
-                                Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
-                                    match diag.error {
-                                        RuntimeError::Return(val) => Ok(val),
-                                        _ => unreachable!("checked above"),
-                                    }
-                                }
-                                Err(diag) => Err(interp.task_failure_message(&diag)),
-                            }
-                        })?;
-
-                        let handle_inner = Arc::new(ThreadHandleInner {
-                            handle: Mutex::new(Some(join_handle)),
-                            receiver: Mutex::new(None),
-                            task_id: crate::value::next_task_id(),
-                        });
-
-                        // Register for affine tracking (conc.async/H1)
-                        let ptr = Arc::as_ptr(&handle_inner) as usize;
-                        self.resource_tracker.register_handle(ptr, "TaskHandle", self.env.scope_depth());
-
-                        Ok(Value::TaskHandle(handle_inner))
-                    }
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "spawn expects a closure, got {}",
-                        closure.type_name()
-                    ))),
-                }
-            }
+            // One implementation, in `spawn_async_task`. There were two —
+            // this one and that one — with the same runtime check, the same
+            // child interpreter and the same handle registration, differing
+            // only in how they word "spawn needs a closure". Only that one is
+            // reached by `spawn(|| …)`, so a fix applied here did nothing
+            // (#882 was landed into this copy first and changed no behaviour).
+            "spawn" => self.spawn_async_task(args),
             "join_all" => {
                 // join_all(handles) — wait for all task handles, return Vec of results
                 if args.is_empty() {

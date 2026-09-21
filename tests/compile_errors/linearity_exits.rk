@@ -144,4 +144,40 @@ func good_loop() {
     }
 }
 
+// --- a closure that consumes what it only borrowed ---
+//
+// The cell this file's audit reached last, and the one with teeth. A plain
+// closure *borrows* what it captures — `mem.closures`' edge-case table has
+// always said so — and L3 says a borrow is not a consumption, which is the
+// rule #804 established for a borrow parameter. The ownership pass treated
+// every capture as a move, so the body's `close()` discharged the outer
+// binding's debt and the program compiled.
+//
+// Nothing bounds how many times a closure runs, so that one `close()` is any
+// number of closes at runtime. With `twice` below, native closed the same
+// handle twice and carried on; the interpreter's runtime flag caught it, which
+// is the asymmetry #882 is about — the check is missing exactly where it
+// matters.
+func twice(f: func()) {
+    f()
+    f()
+}
+
+func bad_closure_consumes_borrow() {
+    let c = Conn { id: 1 }
+    twice(|| {
+        // ERROR: the closure borrowed `c` and cannot give it away [E0885]
+        c.close()
+    })
+}
+
+// `own` moves the resource into the closure, so the closure owes it and the
+// outer binding does not. Still compiles.
+func good_own_closure() {
+    let c = Conn { id: 1 }
+    twice(own || {
+        c.close()
+    })
+}
+
 func main() {}

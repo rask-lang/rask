@@ -105,6 +105,12 @@ pub struct OwnershipChecker<'a> {
     /// A borrow can't be given away, so consuming one is an error rather than a
     /// move (#804).
     borrowed_params: HashMap<String, (Span, bool)>,
+    /// Linear values a non-`own` closure captured: name → where the closure is.
+    /// `mem.closures`' edge-case table says a non-`own` closure *borrows* a
+    /// resource, and L3 says a borrow isn't a consumption — so a `close()` in
+    /// the body is the #804 error one door along. Only live while the body is
+    /// being walked.
+    borrowed_captures: HashMap<String, Span>,
     /// `mutate` parameters: name → declaration span. Consuming one is allowed —
     /// that's what exclusive access is for — but the value has to be back before
     /// the function returns (#815).
@@ -268,6 +274,7 @@ impl<'a> OwnershipChecker<'a> {
             owned_bindings: HashSet::new(),
             lent_locals: HashMap::new(),
             borrowed_params: HashMap::new(),
+            borrowed_captures: HashMap::new(),
             mutate_params: HashMap::new(),
             ensure_registered: HashSet::new(),
             ensure_spans: HashMap::new(),
@@ -1958,9 +1965,16 @@ impl<'a> OwnershipChecker<'a> {
                     .cloned()
                     .collect();
 
-                // Move resource captures in outer scope (always — resources are linear)
-                for name in &resource_captures {
-                    self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                // `own` moves a captured resource in; a plain closure borrows
+                // it. `mem.closures`' edge-case table has always said so —
+                // "Resource consumed by closure" against `own`, "Resource
+                // borrowed; can't escape scope" against the other — and the
+                // pass treated both as a move, which is what let a closure
+                // consume something it had only borrowed.
+                if *is_own {
+                    for name in &resource_captures {
+                        self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                    }
                 }
 
                 // `own` closures move non-resource captures too; non-`own` closures borrow them.
@@ -2086,10 +2100,26 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
 
-                // Register resource captures in closure's resource set
+                // Register resource captures in closure's resource set.
+                //
+                // Only an `own` closure owns one, so only an `own` closure
+                // owes its consumption. A plain closure borrowed it: the body
+                // may read it, the outer scope still owes it, and a consume in
+                // the body is an error.
+                //
+                // Nothing bounds how many times a closure runs, which is why
+                // the borrow reading has to be the strict one. `twice(|| {
+                // c.close() })` type-checked, and the interpreter's runtime
+                // flag caught the second close while native closed the handle
+                // twice and carried on (#882).
+                let saved_borrowed_captures = std::mem::take(&mut self.borrowed_captures);
                 for name in &resource_captures {
                     self.bindings.insert(name.clone(), BindingState::Owned);
-                    self.resource_bindings.insert(name.clone());
+                    if *is_own {
+                        self.resource_bindings.insert(name.clone());
+                    } else {
+                        self.borrowed_captures.insert(name.clone(), expr.span);
+                    }
                 }
                 // Register non-resource captures as owned
                 for name in &captures {
@@ -2108,10 +2138,14 @@ impl<'a> OwnershipChecker<'a> {
                 self.borrows = saved_borrows;
                 self.resource_bindings = saved_resources;
                 self.ensure_registered = saved_ensure;
+                self.borrowed_captures = saved_borrowed_captures;
 
-                // Remove moved resources from outer tracking
-                for name in &resource_captures {
-                    self.resource_bindings.remove(name);
+                // An `own` closure took the resource, so the outer scope stops
+                // owing it. A plain closure only borrowed it, and still does.
+                if *is_own {
+                    for name in &resource_captures {
+                        self.resource_bindings.remove(name);
+                    }
                 }
             }
             ExprKind::If { cond, then_branch, else_branch, .. } => {
@@ -5336,6 +5370,16 @@ impl<'a> OwnershipChecker<'a> {
                     declared_at,
                     is_mutate,
                     sink: sink.map(str::to_string),
+                },
+                span,
+            });
+            return;
+        }
+        if let Some(&closure_at) = self.borrowed_captures.get(name) {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ConsumeBorrowedCapture {
+                    name: name.to_string(),
+                    closure_at,
                 },
                 span,
             });

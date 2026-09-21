@@ -362,6 +362,19 @@ pub enum OwnershipErrorKind {
         context: String,
     },
 
+    /// A non-`own` closure consumed a linear value it only borrowed.
+    ///
+    /// The parameter version of this is `ConsumeBorrowedParam` (#804). Same
+    /// rule, different door: a borrow can't be given away. What makes the
+    /// closure version worse is that nothing bounds how many times a closure
+    /// runs, so one consume in the body is any number of consumes at runtime.
+    #[error("cannot consume `{name}` — the closure borrowed it")]
+    ConsumeBorrowedCapture {
+        name: String,
+        /// Where the closure literal is.
+        closure_at: Span,
+    },
+
     /// C4: an ensured resource is consumed on some paths but not all, and the
     /// paths merge before scope exit. Which cleanup runs would depend on hidden
     /// runtime state, so it's a compile error (ctrl.ensure/C3–C4).

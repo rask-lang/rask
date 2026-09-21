@@ -2627,7 +2627,6 @@ impl Interpreter {
                 let body = body.clone();
                 let captured = self.env.capture_snapshot();
                 let child = self.spawn_child(captured);
-
                 let join_handle = crate::spawn_interp_thread(move || {
                     let mut interp = child;
                     let mut result = Value::Unit;

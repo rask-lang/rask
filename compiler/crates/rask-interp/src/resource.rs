@@ -17,7 +17,7 @@ pub enum ResourceState {
 
 /// A tracked resource entry.
 #[derive(Debug)]
-struct ResourceEntry {
+pub struct ResourceEntry {
     type_name: String,
     var_name: Option<String>,
     state: ResourceState,
@@ -151,6 +151,39 @@ impl ResourceTracker {
     /// Look up the resource ID for a handle by its Arc pointer address.
     pub fn lookup_handle_id(&self, ptr: usize) -> Option<u64> {
         self.handle_ids.get(&ptr).copied()
+    }
+
+    /// Re-point a file pointer at an id this tracker was handed.
+    pub fn register_file_id(&mut self, ptr: usize, id: u64) {
+        self.file_ids.insert(ptr, id);
+    }
+
+    /// Re-point a handle pointer at an id this tracker was handed.
+    pub fn register_handle_id(&mut self, ptr: usize, id: u64) {
+        self.handle_ids.insert(ptr, id);
+    }
+
+    /// Take a resource's whole entry out of this tracker, keeping its id.
+    ///
+    /// For handing one across a task boundary. A task runs on its own
+    /// `Interpreter`, so it has its own tracker; without this the parent went
+    /// on owing a resource the task had already closed, and reported a leak
+    /// for a program that was correct (#882). Moving the entry rather than
+    /// re-registering keeps the id, which is what the value itself carries —
+    /// a fresh id would make the task's `close()` look up nothing and succeed
+    /// silently.
+    pub fn take_entry(&mut self, id: u64) -> Option<ResourceEntry> {
+        let entry = self.entries.remove(&id)?;
+        self.file_ids.retain(|_, v| *v != id);
+        self.handle_ids.retain(|_, v| *v != id);
+        Some(entry)
+    }
+
+    /// Put an entry taken from another tracker in at the given scope depth.
+    pub fn insert_entry(&mut self, id: u64, mut entry: ResourceEntry, scope_depth: usize) {
+        entry.scope_depth = scope_depth;
+        self.entries.insert(id, entry);
+        self.next_id = self.next_id.max(id + 1);
     }
 
     /// Check for unconsumed resources at the given scope depth.
