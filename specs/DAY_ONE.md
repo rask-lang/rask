@@ -36,6 +36,22 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 13. **A value can live in a container you reach through.** The type says which: `Shared<T, S>` when several names touch one value — reach it scoped, `with s.write() as v { ... }`. `Rack<T>` + `Link<T>` when many things point at each other — a link is storable in a field, and deleting a node sets every `Link<T>?` aimed at it to `none`, so there is no stale link to check for. `Heap<T>` for one owner behind an indirection. A function that deletes nodes you didn't hand it says `deleting`, and that call revokes your links.
 
+## This is not the learning path
+
+The book is. Four chapters, in this order, and that order is the day-one
+sequence — this page is not:
+
+1. [When there might be nothing](../docs/book/src/guide/when-there-might-be-nothing.md) — `T?`, `? as`, `??`
+2. [Errors are values](../docs/book/src/guide/errors-are-values.md) — `T or E`, `try`, `catch`
+3. [Passing Values](../docs/book/src/guide/passing-values.md) — ownership, the modes
+4. [When one owner isn't enough](../docs/book/src/guide/beyond-one-owner.md) — `Shared`, `Rack` + `Link`, `Heap`
+
+The two are different budgets and the filename hides it. A *learning path* is
+ordered and starts from nothing. A *reading set* is unordered and answers "what
+can appear in code I didn't write". The book teaches four things well; this page
+lists thirteen you must recognise. Chapter 4 is item 13, which is the check that
+they agree.
+
 ## What's deliberately not here
 
 **The compiler teaches these when you meet them** — each arrives as an error that explains the rule: linear resources (`@resource`, consume-exactly-once), stale pool handles, disjoint field borrows, borrow escapes, `staged()` lock updates, runtime-scope errors.
