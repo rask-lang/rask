@@ -1,7 +1,7 @@
 <!-- id: analysis.fourth-option-litmus -->
 <!-- status: exploration -->
 <!-- summary: Three litmus programs written with handles and with edges, scored per METRICS -->
-<!-- depends: analysis/fourth-option.md, memory/pools.md, specs/METRICS.md -->
+<!-- depends: analysis/fourth-option.md, memory/pools.md, METRICS.md -->
 
 # Fourth Option Litmus: Links vs Handles, Scored
 

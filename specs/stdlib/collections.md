@@ -104,8 +104,8 @@ Array literals `[...]` already create Vec values, so `Vec.from([1, 2, 3])` is eq
 
 | Rule | Description |
 |------|-------------|
-| **C4: The slot picks the shape** | `[a, b, c]` is a `Vec<T>` where the position it fills says so, a `[T; N]` where that says so, and a `[T; N]` where nothing says anything. One literal, and the destination decides — `let xs: Vec<i64> = [1, 2, 3]` and `let a: [i64; 3] = [1, 2, 3]` are both the literal doing what it was asked |
-| **C5: Elements fill their slot** | An element coerces into the element type the same way a struct field's value does, so `[1, none, 3]` is a `Vec<i64?>` or a `[i64?; 3]` and the present ones acquire their tag. An empty literal takes the destination's shape whole |
+| **C9: The slot picks the shape** | `[a, b, c]` is a `Vec<T>` where the position it fills says so, a `[T; N]` where that says so, and a `[T; N]` where nothing says anything. One literal, and the destination decides — `let xs: Vec<i64> = [1, 2, 3]` and `let a: [i64; 3] = [1, 2, 3]` are both the literal doing what it was asked |
+| **C10: Elements fill their slot** | An element coerces into the element type the same way a struct field's value does, so `[1, none, 3]` is a `Vec<i64?>` or a `[i64?; 3]` and the present ones acquire their tag. An empty literal takes the destination's shape whole |
 
 **Note:** Key-value pairs for `Map.from()` are represented as 2-element arrays `[key, value]` rather than tuple syntax. Native tuple support may be added in the future. Example:
 
@@ -465,7 +465,7 @@ FIX: Use try_push to handle capacity limits:
 **When to use which collection:**
 - `Vec<T>` — Ordered data, access by position, elements don't need stable identity
 - `Map<K,V>` — Lookup by arbitrary key, no ordering guarantees
-- `Pool<T>` — Elements reference each other (graphs, trees), need stable handles
+- `Rack<T>` + `Link<T>` — Elements reference each other (graphs, trees), need stable identity. (`Pool<T>` + `Handle<T>` did this and is deprecated — rask-lang/rask#908)
 
 **Pattern selection for element access:**
 - 1 statement: `vec[i].field = x`

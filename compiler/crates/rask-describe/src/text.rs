@@ -73,7 +73,11 @@ fn format_doc(out: &mut String, doc: &Option<String>, indent: &str) {
 
 fn format_struct(out: &mut String, s: &StructDesc) {
     format_doc(out, &s.doc, "  ");
-    if s.public {
+    if s.extended.unwrap_or(false) {
+        // Not a struct this file declares — an `extend` on a primitive, on a
+        // package-visible container, or on a type from another file.
+        out.push_str("  extend ");
+    } else if s.public {
         out.push_str("  public struct ");
     } else {
         out.push_str("  struct ");
@@ -83,6 +87,7 @@ fn format_struct(out: &mut String, s: &StructDesc) {
     out.push('\n');
 
     for f in &s.fields {
+        format_doc(out, &f.doc, "    ");
         out.push_str("    ");
         if f.public {
             out.push_str("public ");

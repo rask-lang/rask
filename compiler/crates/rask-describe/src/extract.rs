@@ -16,7 +16,6 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
         .unwrap_or("unknown")
         .to_string();
 
-    // First pass: collect types by name for impl merging
     let mut struct_map: HashMap<String, usize> = HashMap::new();
     let mut enum_map: HashMap<String, usize> = HashMap::new();
 
@@ -28,6 +27,9 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
     let mut imports: Vec<ImportDesc> = Vec::new();
     let mut externs: Vec<ExternDesc> = Vec::new();
 
+    // Pass 1: every type this file declares, registered before any `extend` is
+    // merged. One pass meant an `extend` written above its struct found nothing
+    // and its methods were dropped.
     for decl in decls {
         match &decl.kind {
             DeclKind::Struct(s) => {
@@ -46,6 +48,14 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
                 enum_map.insert(e.name.clone(), idx);
                 enums.push(extract_enum(e, opts));
             }
+            _ => {}
+        }
+    }
+
+    // Pass 2: everything else.
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Struct(_) | DeclKind::Enum(_) => {}
             DeclKind::Trait(t) => {
                 if !opts.show_all && !t.is_pub {
                     continue;
@@ -89,12 +99,34 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
                     .map(extract_function)
                     .collect();
 
-                if let Some(&idx) = struct_map.get(&imp.target_ty) {
+                // `extend Wrapper<T>` targets the type `Wrapper`.
+                let target = base_type_name(&imp.target_ty);
+
+                if let Some(&idx) = struct_map.get(target) {
                     types[idx].methods.extend(methods);
-                } else if let Some(&idx) = enum_map.get(&imp.target_ty) {
+                } else if let Some(&idx) = enum_map.get(target) {
                     enums[idx].methods.extend(methods);
+                } else if !methods.is_empty() {
+                    // The target isn't a public type declared in this file: it's a
+                    // primitive (`extend char`), a package-visible container holding
+                    // public functions (`struct math { }` plus `extend math`), or a
+                    // type declared elsewhere. The methods are still surface — this
+                    // is what `math.ln` and `c.len_utf8()` resolve to — so report
+                    // them against a stub that says what the container's visibility
+                    // actually is, rather than dropping them.
+                    let idx = types.len();
+                    struct_map.insert(target.to_string(), idx);
+                    types.push(StructDesc {
+                        name: target.to_string(),
+                        doc: None,
+                        public: false,
+                        extended: Some(true),
+                        type_params: None,
+                        attrs: None,
+                        fields: Vec::new(),
+                        methods,
+                    });
                 }
-                // Methods on unknown types are silently dropped
             }
             DeclKind::Test(_) | DeclKind::Benchmark(_) | DeclKind::Export(_) | DeclKind::Package(_) | DeclKind::Union(_) | DeclKind::TypeAlias(_) | DeclKind::CImport(_) | DeclKind::Annotation(_) => {}
         }
@@ -114,6 +146,11 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
     }
 }
 
+/// `Wrapper<T>` names the type `Wrapper`.
+fn base_type_name(ty: &str) -> &str {
+    ty.split('<').next().unwrap_or(ty).trim()
+}
+
 fn extract_struct(s: &StructDecl, opts: &DescribeOpts) -> StructDesc {
     let fields: Vec<FieldDesc> = s
         .fields
@@ -123,6 +160,7 @@ fn extract_struct(s: &StructDecl, opts: &DescribeOpts) -> StructDesc {
             name: f.name.clone(),
             type_str: f.ty.clone(),
             public: f.visibility.is_pub(),
+            doc: f.doc.clone(),
         })
         .collect();
 
@@ -142,6 +180,7 @@ fn extract_struct(s: &StructDecl, opts: &DescribeOpts) -> StructDesc {
 
     StructDesc {
         name: s.name.clone(),
+        extended: None,
         doc: s.doc.clone(),
         public: s.is_pub,
         type_params,
@@ -169,6 +208,7 @@ fn extract_enum(e: &EnumDecl, opts: &DescribeOpts) -> EnumDesc {
                     },
                     type_str: f.ty.clone(),
                     public: true,
+                    doc: f.doc.clone(),
                 })
                 .collect();
             VariantDesc {

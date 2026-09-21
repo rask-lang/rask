@@ -122,7 +122,7 @@ with pool[h] as e {
 
 ### Rationale
 
-**AL1-AL2 (borrow stack + closure scan):** Expression-scoped closures (`mem.closures/EC4`) access outer scope directly. Without detection, a closure could structurally mutate a collection while the calling method holds an element borrow — causing reallocation, handle invalidation, or panics. Compile-time detection kills this bug class with zero runtime cost. Non-structural access (reading/writing other elements) is safe because element borrows don't conflict with access to different slots.
+**AL1-AL2 (borrow stack + closure scan):** Expression-scoped closures (`mem.closures/MC1`) access outer scope directly. Without detection, a closure could structurally mutate a collection while the calling method holds an element borrow — causing reallocation, handle invalidation, or panics. Compile-time detection kills this bug class with zero runtime cost. Non-structural access (reading/writing other elements) is safe because element borrows don't conflict with access to different slots.
 
 **AL7 (local analysis):** Method signatures provide borrow requirements without examining method bodies. Same cost as existing type checking.
 

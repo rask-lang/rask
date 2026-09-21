@@ -140,12 +140,12 @@ enum Flatness {
 /// mem.relocatable/FL1: a type is flat when it contains no heap-backed field,
 /// recursively.
 ///
-/// FL2 makes the primitives flat, FL3 makes `Handle<T>` flat — its components are
-/// integers, which is the point of a handle — and FL5 extends the walk to an
-/// enum's variant payloads. A resource type is never flat, whatever it holds.
+/// FL2 makes the primitives flat, FL3 makes every reference into a container
+/// not flat, and FL5 extends the walk to an enum's variant payloads. A resource
+/// type is never flat, whatever it holds.
 ///
 /// `seen` breaks the cycle a self-referential type makes. A struct that reaches
-/// itself does so through a `Handle<Self>` or an `Owned<Self>`; both terminate on
+/// itself does so through a reference or an `Owned<Self>`; both terminate on
 /// their own, but a type that reached itself some other way would not.
 fn flatness(name: &str, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> Flatness {
     let name = name.trim();
@@ -163,9 +163,12 @@ fn flatness(name: &str, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> Fla
     if is_flat_primitive(base) {
         return Flatness::Flat;
     }
-    // FL3: index and generation, no pointer.
-    if base == "Handle" || base == "WeakHandle" {
-        return Flatness::Flat;
+    // FL3: a reference into a container is never flat. `Link` is an address;
+    // `Handle` is index+generation and used to answer flat, which credited the
+    // tier with graphs it can't carry. Answering here also terminates the walk —
+    // these are generic, and the generic arm below would return Unknown.
+    if base == "Link" || base == "Handle" || base == "WeakHandle" {
+        return Flatness::NotFlat;
     }
     if is_heap_backed(base) || name.starts_with("any ") || name.starts_with("func(") {
         return Flatness::NotFlat;
@@ -270,7 +273,8 @@ mod tests {
                 "Point" => &["f64", "f64"],
                 "Named" => &["string", "i32"],
                 "Boxed" => &["T"],
-                // Self-referential through a handle, which is flat (FL3).
+                // Self-referential through a reference — the walk has to stop
+                // there (FL3) rather than recurse into `Node` again.
                 "Node" => &["i64", "Handle<Node>"],
                 "Conn" => &["i64"],
                 "Colour" => &[],
@@ -358,7 +362,7 @@ mod tests {
         assert_eq!(ask("is_flat", "Map<string, i32>"), ReflectAnswer::Bool(false));
         assert_eq!(ask("is_flat", "any Shape"), ReflectAnswer::Bool(false));
         // FL3: a handle is integers.
-        assert_eq!(ask("is_flat", "Handle<Node>"), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_flat", "Handle<Node>"), ReflectAnswer::Bool(false));
         // FL1 recursively.
         assert_eq!(ask("is_flat", "Point"), ReflectAnswer::Bool(true));
         assert_eq!(ask("is_flat", "Named"), ReflectAnswer::Bool(false));
@@ -368,8 +372,9 @@ mod tests {
         assert_eq!(ask("is_flat", "Colour"), ReflectAnswer::Bool(true));
         assert_eq!(ask("is_flat", "Shape"), ReflectAnswer::Bool(true));
         assert_eq!(ask("is_flat", "Payload"), ReflectAnswer::Bool(false));
-        // A self-referential type through a handle terminates.
-        assert_eq!(ask("is_flat", "Node"), ReflectAnswer::Bool(true));
+        // A self-referential type through a reference terminates, and answers
+        // false because FL3 stops at the reference.
+        assert_eq!(ask("is_flat", "Node"), ReflectAnswer::Bool(false));
         // An optional follows its payload.
         assert_eq!(ask("is_flat", "Point?"), ReflectAnswer::Bool(true));
         assert_eq!(ask("is_flat", "Named?"), ReflectAnswer::Bool(false));

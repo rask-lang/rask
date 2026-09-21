@@ -617,6 +617,16 @@ impl<'a> Printer<'a> {
             self.emit_indent();
         }
 
+        // A comment written between the attributes and `func`. The
+        // declaration's span starts at the first `@`, so the comment sits
+        // *inside* it and the top-level flush leaves it pending — it then came
+        // out at the next emission point, which is the first statement of the
+        // body. `f.span.start` is the `func` keyword, which is the bound that
+        // keeps it where it was written.
+        if !f.attrs.is_empty() {
+            self.emit_standalone_comments_before(f.span.start);
+        }
+
         if f.is_private {
             self.emit("private ");
         } else if f.is_pub {
@@ -1363,9 +1373,33 @@ impl<'a> Printer<'a> {
             self.emit_newline();
         }
 
-        // Dependencies
-        for dep in &p.deps {
+        // Dependencies, unscoped ones first, then one block per scope. The
+        // parse flattens `scope "dev" { ... }` into this same list with the
+        // scope recorded on each dep, so the block has to be rebuilt here or
+        // `rask fmt` would quietly promote a dev dep to a real one.
+        for dep in p.deps.iter().filter(|d| d.scope.is_none()) {
             self.format_dep_decl(dep);
+        }
+        for scope in ["dev", "build"] {
+            let scoped: Vec<_> = p.deps.iter()
+                .filter(|d| d.scope.as_deref() == Some(scope))
+                .collect();
+            if scoped.is_empty() {
+                continue;
+            }
+            self.emit_indent();
+            self.emit("scope \"");
+            self.emit(scope);
+            self.emit("\" {");
+            self.emit_newline();
+            self.indent += 1;
+            for dep in scoped {
+                self.format_dep_decl(dep);
+            }
+            self.indent -= 1;
+            self.emit_indent();
+            self.emit("}");
+            self.emit_newline();
         }
 
         // Features

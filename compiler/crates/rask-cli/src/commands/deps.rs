@@ -195,7 +195,7 @@ fn insert_in_scope(content: &str, scope_name: &str, dep_line: &str) -> String {
     if content.contains(&scope_pattern) {
         // Insert into existing scope block
         let lines: Vec<&str> = content.lines().collect();
-        let mut result = Vec::new();
+        let mut result: Vec<String> = Vec::new();
         let mut in_scope = false;
 
         for line in &lines {
@@ -204,11 +204,13 @@ fn insert_in_scope(content: &str, scope_name: &str, dep_line: &str) -> String {
                 in_scope = true;
             }
             if in_scope && trimmed == "}" {
-                // Insert before closing brace of scope
-                result.push(dep_line.as_ref());
+                // Insert before the scope's closing brace, a level deeper
+                // than a top-level dep — `dep_line` comes indented for the
+                // package body.
+                result.push(format!("    {}", dep_line));
                 in_scope = false;
             }
-            result.push(*line);
+            result.push((*line).to_string());
         }
         result.join("\n") + "\n"
     } else {

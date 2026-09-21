@@ -254,7 +254,7 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 
 **PU1 (pure definition):** Errors (`T or E`) are NOT effects. They're values in the type system. A function that returns `T or ParseError` and does nothing else is pure. This matches Haskell's distinction between `Either` (pure) and `IO` (effectful).
 
-**CW1 (IO in ThreadPool):** This replaces the ad-hoc rule `conc.runtime/HP2.4` with a principled check. The compiler now has effect metadata to back it up instead of relying on special-case detection.
+**CW1 (IO in ThreadPool):** This replaces the hand-written linter rule sketched under `conc.runtime/HP2` with a principled check. The compiler now has effect metadata to back it up instead of relying on special-case detection.
 
 ### What This Doesn't Do
 

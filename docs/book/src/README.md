@@ -13,6 +13,10 @@ Put the borrow in a struct field, or return it, and there's no syntax for what
 you're asking — which is the point. Nothing outlives the thing it points at,
 so there's nothing to track, and signatures carry types and nothing else.
 
+Graphs need stored references, so exactly one kind exists: a `Link` into a
+`Rack`. The rack owns every node and outlives every link into it, so even that
+one has no lifetime to name.
+
 Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on
 ceremony.
 

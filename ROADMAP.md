@@ -40,8 +40,8 @@ Re-measure these rather than trusting them — each line names the command.
 | Programs memcheck finds an error in | 0 of 534 | `tests/memcheck_gate.sh` |
 | Examples with a pinned golden | 36 of 38 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 39 of 95 open issues | issue search |
-| Open design questions | 20 | issue search |
+| Open bugs | 37 of 85 open issues | issue search |
+| Open design questions | 22 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
 agent benchmark, internal spellings, formatter round-trips and the HTTP server.
@@ -53,7 +53,7 @@ the suite had grown to 525. That is the failure the preamble above says this
 file exists to prevent, so: re-measure before quoting it, and if you quoted it,
 you have re-measured it.
 
-## v0.3 — Memory is settled
+## v0.3 — Memory is settled — **shipped 2026-09-18**
 
 **Done when `tests/leak_gate.sh` reports 0 allocations this milestone. Today: 0.**
 

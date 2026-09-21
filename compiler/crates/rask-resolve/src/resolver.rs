@@ -56,6 +56,10 @@ pub struct Resolver {
     current_package: Option<PackageId>,
     package_bindings: HashMap<String, PackageId>,
     imported_symbols: HashSet<String>,
+    /// Packages the manifest declares under a `scope` this build doesn't
+    /// link, name -> scope. Read when an import fails, so the error says why
+    /// the package isn't here instead of "not found" (`struct.build/D4`).
+    unlinked_scopes: HashMap<String, String>,
     /// The subset of `imported_symbols` an import brought in as a *type* — a
     /// module name, a companion type, an enum's own name, a selective type
     /// import.
@@ -115,6 +119,7 @@ impl Resolver {
             current_package: None,
             package_bindings: HashMap::new(),
             imported_symbols: HashSet::new(),
+            unlinked_scopes: HashMap::new(),
             imported_type_names: HashSet::new(),
             type_param_scopes: Vec::new(),
             reported_missing_imports: HashSet::new(),
@@ -499,6 +504,7 @@ impl Resolver {
         }
     }
 
+
     pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
         Self::resolve_inner(decls, false)
     }
@@ -628,6 +634,9 @@ impl Resolver {
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
         resolver.cfg_values = cfg_values;
+        for (name, scope) in registry.unlinked_scopes() {
+            resolver.unlinked_scopes.insert(name.clone(), scope.clone());
+        }
         // Where each file lives, so `import c "x.h"` can look beside the file
         // that imports it (#1096). Read off the declarations rather than
         // tracked separately: a file's decls all carry its `file_id`, so the
@@ -703,7 +712,31 @@ impl Resolver {
                 external_decls,
             })
         } else {
+            resolver.name_unlinked_scopes();
             Err(resolver.errors)
+        }
+    }
+
+    /// Re-label undefined names that are really unlinked scoped deps.
+    ///
+    /// A release build strips a dev dep's import with the test blocks that
+    /// used it, so a use surviving in ordinary code arrives here as a plain
+    /// undefined symbol. "We've never heard of `testkit`" is wrong and sends
+    /// the reader hunting for a typo — the manifest declares it, one scope
+    /// over (`struct.build/D4`).
+    fn name_unlinked_scopes(&mut self) {
+        if self.unlinked_scopes.is_empty() {
+            return;
+        }
+        for err in &mut self.errors {
+            let crate::error::ResolveErrorKind::UndefinedSymbol { name } = &err.kind else { continue };
+            let head = name.split('.').next().unwrap_or(name);
+            if let Some(scope) = self.unlinked_scopes.get(head) {
+                err.kind = crate::error::ResolveErrorKind::ScopedDependencyUse {
+                    name: head.to_string(),
+                    scope: scope.clone(),
+                };
+            }
         }
     }
 
@@ -1276,7 +1309,8 @@ impl Resolver {
                     self.errors.push(e);
                 }
             } else {
-                self.errors.push(ResolveError::unknown_package(path.clone(), span));
+                let scope = path.first().and_then(|n| self.unlinked_scopes.get(n)).cloned();
+                self.errors.push(ResolveError::unknown_package_in_scope(path.clone(), scope, span));
                 return;
             }
 
@@ -3576,8 +3610,8 @@ mod tests {
                 name: name.to_string(),
                 type_params: vec![],
                 fields: vec![
-                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None },
-                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None },
+                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
+                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
                 ],
                 methods: vec![],
                 is_pub: true,
@@ -3885,6 +3919,7 @@ mod tests {
                     visibility: FieldVisibility::Public,
                     attrs: vec![],
                     default: None,
+                    doc: None,
                 }],
                 is_pub,
                 doc: None,

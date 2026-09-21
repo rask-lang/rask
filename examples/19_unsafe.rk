@@ -37,7 +37,11 @@ func copy_bytes(src: Vec<u8>, mutate dest: Vec<u8>, count: usize) {
     }
 }
 
-// Manual memory management (discouraged - use safe abstractions)
+// Manual memory management (discouraged - use safe abstractions).
+// The block is long on purpose: showing malloc, the null check, the writes
+// and the free as one sequence is what the example teaches. U4 is right
+// about real code and this isn't any.
+@allow(idiom/large-unsafe-block)
 func manual_allocation_example() {
     print("\n=== Manual Memory Allocation ===\n")
 

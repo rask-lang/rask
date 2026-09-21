@@ -1,7 +1,7 @@
 <!-- id: analysis.fourth-option-verification -->
 <!-- status: exploration -->
 <!-- summary: Three gates before spec work — soundness argument, the strictly-better question answered honestly (no), and the flagship store written both ways and scored -->
-<!-- depends: analysis/fourth-option.md, analysis/fourth-option-concurrency.md, specs/METRICS.md -->
+<!-- depends: analysis/fourth-option.md, analysis/fourth-option-concurrency.md, METRICS.md -->
 
 # Verification: Soundness, Strictly-Better, and the Flagship Side by Side
 

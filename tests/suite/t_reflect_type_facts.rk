@@ -10,6 +10,7 @@
 // (rask-types/src/reflect.rs), which is what this gates.
 import std.reflect
 import memory.Handle
+import memory.Link
 
 struct Point { public x: f64, public y: f64 }
 
@@ -121,6 +122,11 @@ struct Linked {
     public peer: Handle<Point>
 }
 
+struct Peered {
+    public id: i64
+    public peer: Link<Point>?
+}
+
 enum Shape { Circle(f64), Square(Point) }
 
 enum Payload { Text(string), Empty }
@@ -155,9 +161,13 @@ test "mem.relocatable/FL1 — a struct follows its fields, recursively" {
     assert !reflect.is_flat<Conn>()
 }
 
-test "mem.relocatable/FL3 — a handle field keeps a struct flat" {
-    assert reflect.is_flat<Handle<Point>>()
-    assert reflect.is_flat<Linked>()
+test "mem.relocatable/FL3 — a reference into a container is not flat" {
+    // A link is an address. A handle is index+generation and used to answer
+    // flat, which credited the zero-cost tier with graphs it can't carry.
+    assert !reflect.is_flat<Handle<Point>>()
+    assert !reflect.is_flat<Linked>()
+    assert !reflect.is_flat<Link<Point>>()
+    assert !reflect.is_flat<Peered>()
 }
 
 test "mem.relocatable/FL5 — an enum follows its variant payloads" {

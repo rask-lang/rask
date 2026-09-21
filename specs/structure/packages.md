@@ -58,7 +58,7 @@ lockfile-version = 1
 [[package]]
 name = "http-client"
 version = "2.1.0"
-source = "registry+https://packages.rk-lang.org"
+source = "registry+https://packages.rask-lang.dev"
 checksum = "sha256:a1b2c3d4..."
 signing-key = "ed25519:f9e8d7c6..."
 capabilities = ["net"]
@@ -83,7 +83,7 @@ Note: `signing-key` is only present for registry packages. Path and git dependen
 
 | Rule | Description |
 |------|-------------|
-| **RG1: Default** | `https://packages.rk-lang.org` is the official registry |
+| **RG1: Default** | `https://packages.rask-lang.dev` is the official registry |
 | **RG2: Immutable** | Once published, versions can't be changed or deleted |
 | **RG3: No path deps** | Packages with path dependencies can't be published |
 | **RG4: Alternative registries** | Per-package or per-project registry override |

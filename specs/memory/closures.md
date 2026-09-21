@@ -61,7 +61,7 @@ Without `own`, a closure can still escape — it just can't outlive what it borr
 | Rule | Description |
 |------|-------------|
 | **SL3: Parameters, not locals** | A non-`own` closure that leaves the function may capture the function's *lent* parameters — `param: T`, `mutate param: T`, `self` — and not its locals or its `take` parameters. A lent parameter is the caller's and is still there when the call returns; a local and a `take` are the frame's, and the frame is going away |
-| **SL4: The limit rides the return** | A call that answers a closure hands back whatever limits its borrowed arguments had. `make_filter(tags)` gives a closure that lives as long as `tags` does. A `take` argument contributes no limit — it was given away, and handing a scope-limited closure to a `take` parameter is the SL2 error instead |
+| **SL4: The limit rides the return** | A call that answers a closure hands back whatever limits its borrowed arguments had. `make_filter(tags)` gives a closure that lives as long as `tags` does. A `take` argument contributes no limit — it was given away, and handing a scope-limited closure to a `take` parameter is the MC3 error instead |
 
 SL3 is the difference between these two:
 
@@ -100,7 +100,7 @@ public func spawn(take f: func() -> T) -> TaskHandle<T>
 ```
 
 and the `take` is not decoration. The task keeps the closure and runs it after the call
-returns, so a scope-limited closure handed to `spawn` is the SL2 error, and that falls out of
+returns, so a scope-limited closure handed to `spawn` is the MC3 error, and that falls out of
 the signature rather than out of `spawn` being special. It said `f: func() -> T` for a long
 time — a borrow — which is how `conc.tasks/T3` came to be enforced by a guess.
 
@@ -224,9 +224,9 @@ spawning scope.
 
 ## Error messages
 
-**Scope-limited closure escapes [SL2]:**
+**Scope-limited closure escapes [SL3]:**
 ```
-ERROR [mem.closures/SL2]: closure cannot escape scope
+ERROR [mem.closures/SL3]: closure cannot escape scope
    |
 3  |  let tags = get_tags()
    |               ^^^^^^^^^^^ borrowed from outer scope (line 3)
@@ -244,7 +244,7 @@ FIX: capture by value with own:
 **Owned closure used where scope-limited expected — rarely an error. The reverse:**
 
 ```
-ERROR [mem.closures/SL2]: scope-limited closure passed to function that stores it
+ERROR [mem.closures/MC3]: scope-limited closure passed to function that stores it
    |
 5  |  store_callback(greet)
    |  ^^^^^^^^^^^^^^^^^^^^^ 'greet' is scope-limited (borrows 'tags')

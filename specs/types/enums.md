@@ -465,7 +465,7 @@ enum ObjectKind: u8 {
 
 | Rule | Description |
 |------|-------------|
-| **E14: Backing type** | `enum Foo: T { ... }` sets the discriminant representation. `T` is any integer type. Omit for default sizing (E2) |
+| **E19: Backing type** | `enum Foo: T { ... }` sets the discriminant representation. `T` is any integer type. Omit for default sizing (E2) |
 | **E15: Explicit values** | `Variant = N` assigns a discriminant value. Values must be unique and fit the backing type |
 | **E16: All or none** | If any variant has `= N`, all must. No mixing explicit and auto-indexed within one enum |
 | **E17: No payloads** | Enums with explicit values cannot have payload variants. `Variant(T) = 1` is a compile error |

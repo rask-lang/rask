@@ -121,6 +121,7 @@
 | Rule | Description |
 |------|-------------|
 | **T1: Methods merged** | Methods from struct body and `extend` blocks appear in one `methods` array |
+| **T2: An `extend` on a type the file doesn't declare publicly still reports** | `extend char` (a primitive), `extend math` where the container is `struct math { }` (package-visible), and an `extend` on a type declared in another file all produce an entry carrying the public methods, with `"extended": true` and `"public": false`. The methods are surface — `math.ln(x)` and `c.len_utf8()` resolve to them — so dropping them understated the module. Text output writes `extend <name>` rather than `struct <name>`, which is true of all three shapes |
 
 ```json
 {
@@ -129,7 +130,8 @@
   "type_params": ["T"],
   "attrs": ["resource"],
   "fields": [
-    { "name": "port", "type": "u16", "public": true },
+    { "name": "port", "type": "u16", "public": true,
+      "doc": "Port to bind. 0 asks the OS for a free one." },
     { "name": "connections", "type": "Vec<Connection>", "public": false }
   ],
   "methods": []
@@ -140,9 +142,10 @@
 |-------|------|-------------|
 | `name` | `string` | Struct name |
 | `public` | `bool` | Whether the struct is `public` |
+| `extended` | `bool?` | Present and `true` when the entry is an `extend` block on a type this file doesn't declare publicly (T2). Omitted otherwise |
 | `type_params` | `string[]?` | Generic type parameter names |
 | `attrs` | `string[]?` | Attributes (`@resource`, etc.) |
-| `fields` | `Field[]` | Struct fields |
+| `fields` | `Field[]` | Struct fields. Each is `{ name, type, public }` plus `doc` when the field carries a `///` comment |
 | `methods` | `Function[]` | Methods from struct body and extend blocks |
 
 ## EnumType
@@ -363,7 +366,7 @@ server (src/server.rk)
 - Function bodies, expressions, or implementation details
 - Type inference results — only explicitly written types
 - Private items (unless `--all`)
-- Documentation comments (future: add `doc` field)
+- Function bodies' doc comments beyond the declaration's own `///`
 
 ### See Also
 

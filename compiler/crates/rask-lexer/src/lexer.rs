@@ -60,8 +60,6 @@ enum RawToken {
     Ensure,
     #[token("take")]
     Take,
-    #[token("read")]
-    ReadKw,
     #[token("mutate")]
     MutateKw,
     #[token("own")]
@@ -117,8 +115,6 @@ enum RawToken {
     Package,
     #[token("private")]
     Private,
-    #[token("dep")]
-    Dep,
     #[token("scope")]
     Scope,
     #[token("feature")]
@@ -656,7 +652,6 @@ impl<'a> Lexer<'a> {
             RawToken::With => TokenKind::With,
             RawToken::Ensure => TokenKind::Ensure,
             RawToken::Take => TokenKind::Take,
-            RawToken::ReadKw => TokenKind::ReadKw,
             RawToken::MutateKw => TokenKind::MutateKw,
             RawToken::Own => TokenKind::Own,
             RawToken::Where => TokenKind::Where,
@@ -684,7 +679,6 @@ impl<'a> Lexer<'a> {
             RawToken::Or => TokenKind::Or,
             RawToken::Package => TokenKind::Package,
             RawToken::Private => TokenKind::Private,
-            RawToken::Dep => TokenKind::Ident("dep".to_string()),
             RawToken::Scope => TokenKind::Scope,
             RawToken::Feature => TokenKind::Feature,
             RawToken::Exclusive => TokenKind::Exclusive,

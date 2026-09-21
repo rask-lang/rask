@@ -1471,7 +1471,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Shared_read", "rask_shared_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_write", "rask_shared_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
-        // Cell — single-owner interior mutability (mem.cell/CE6). `new` takes
+        // Cell — the internal spelling of `Shared<T, Local>`, the strategy that
+        // takes no lock (`conc.sync/SH1`). `new` takes
         // the value by pointer plus its size, the same way Shared does; `get`
         // hands back the slot address for codegen to load or copy from.
         StdlibEntry {

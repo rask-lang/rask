@@ -291,6 +291,30 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("imported packages must exist in the project or be declared as dependencies")
             }
 
+            ScopedDependencyUse { name, scope } => {
+                let keeps_it = if scope == "dev" {
+                    "a debug build or `rask test`"
+                } else {
+                    "the build script"
+                };
+                Diagnostic::error(format!(
+                    "`{}` is a `scope \"{}\"` dependency, and this build doesn't link it",
+                    name, scope,
+                ))
+                .with_code("E0216")
+                .with_primary(self.span, format!("declared under `scope \"{}\"`", scope))
+                .with_help(format!("{} links it; a release build doesn't", keeps_it))
+                .with_fix(format!(
+                    "move the dep out of `scope \"{}\"` if the shipped program needs it",
+                    scope,
+                ))
+                .with_why(
+                    "a scoped dependency is declared for one kind of build — if a \
+                     release binary could reach it, the scope would be decorative \
+                     [struct.build/D4]",
+                )
+            }
+
             NotVisible { name } => {
                 Diagnostic::error(format!("`{}` is not public", name))
                     .with_code("E0203")
@@ -1800,7 +1824,7 @@ impl ToDiagnostic for rask_types::TypeError {
                             "implement the trait before boxing:\n    extend {} with {} {{ … }}",
                             ty, trait_name
                         ))
-                        .with_why("`as any Trait` builds a vtable from the concrete type's methods, so every method the trait declares has to be there [type.generics/TR1]"),
+                        .with_why("`as any Trait` builds a vtable from the concrete type's methods, so every method the trait declares has to be there [type.generics/G7]"),
                 }
             }
 
@@ -2476,7 +2500,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(message.clone())
                     .with_code("E0818")
                     .with_primary(*span, "invalid conversion form")
-                    .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV5–CV10]")
+                    .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV11–CV16]")
             }
             IntLiteralOutOfRange { literal, ty, min, max, span } => {
                 let label = format!("`{}` doesn't fit in `{}`", literal, ty);

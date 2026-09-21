@@ -214,6 +214,7 @@ mod tests {
             target: None,
             allow: vec![],
             exclusive_selections: vec![],
+            scope: None,
         }
     }
 

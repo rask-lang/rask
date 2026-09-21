@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import libpkg
+import testkit
+
+func main() {
+    println(libpkg.greeting())
+}
+
+test "the dev dep is reachable from a test" {
+    check testkit.fixture() == 42
+}

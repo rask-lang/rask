@@ -133,7 +133,7 @@ Eight methods total. Compiler-provided on the builtin types — no `impl` blocks
 | `.is_ok()` / `.is_err()` | `r?` / `r is E` |
 | `.unwrap()` | `x!` / `r!` |
 | `.unwrap_or(default)` | `x ?? default` |
-| `.unwrap_or_else(f)` | `r else \|e\| f(e)` — the bare fold (`type.errors/ER44`) |
+| `.unwrap_or_else(f)` | `r else \|e\| f(e)` — the bare fold (`type.errors/ER14`) |
 | `.to_option()` | `.ok()` (single survivor) |
 | `.or(other)` | `x ?? other` already returns `T?` |
 | `.or_else(f)` | `r else \|e\| f(e)`, or `try { … } else \|e\| …` when it should propagate |

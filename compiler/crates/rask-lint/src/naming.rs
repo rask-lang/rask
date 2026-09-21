@@ -274,27 +274,43 @@ fn walk_returns_in_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
     }
 }
 
-/// naming/to: `to_*` should return a different type than Self.
+/// naming/to: `to_*` produces a new value without consuming the source.
+///
+/// The axis is cost and ownership, not the type: `as_*` is free, `to_*`
+/// allocates, `into_*` takes the source away (`canonical-patterns`). This
+/// used to test that the return type *differed* from `Self`, which reads
+/// plausibly and is wrong — the canon's own example of a `to_*` is
+/// `to_lowercase()`, and a string's lowercase is a string. It fired on all
+/// six case mappings in the stdlib and on nothing else.
+///
+/// What the canon actually calls a violation is a `to_*` that consumes the
+/// source: that one is `into_*`, and this is now what the rule checks.
 pub fn check_to(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
         if !ctx.method.name.starts_with("to_") {
             continue;
         }
-        if let Some(ret) = &ctx.method.ret_ty {
-            if ret == ctx.type_name || ret == "Self" {
-                diags.push(make_diagnostic(
-                    "naming/to",
-                    Severity::Warning,
-                    format!(
-                        "`{}` returns `{}` (same type) — `to_*` should convert to a different type",
-                        ctx.method.name, ret
-                    ),
-                    "rename to `with_*` for builder-style methods on the same type".to_string(),
-                    source,
-                    ctx.span,
-                ));
-            }
+        let consumes_self = ctx
+            .method
+            .params
+            .first()
+            .is_some_and(|p| p.name == "self" && p.is_take);
+        if consumes_self {
+            diags.push(make_diagnostic(
+                "naming/to",
+                Severity::Warning,
+                format!(
+                    "`{}` takes `take self`, so it consumes the value it converts — that is `into_*`",
+                    ctx.method.name
+                ),
+                format!(
+                    "rename to `into_{}`, or borrow `self` and leave the source intact",
+                    ctx.method.name.trim_start_matches("to_")
+                ),
+                source,
+                ctx.span,
+            ));
         }
     }
     diags
@@ -379,7 +395,27 @@ pub fn check_with(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     diags
 }
 
-/// naming/try: `try_*` must return `T or E`.
+/// A return type that reports failure: `T or E`, or `T?`.
+///
+/// The optional arrives rendered as `Option<T>` as well as `T?`, depending on
+/// where it was written.
+fn answers_whether_it_worked(ret: &str) -> bool {
+    type_str::is_result(ret)
+        || type_str::is_optional(ret)
+        || ret.trim().starts_with("Option<")
+}
+
+/// naming/try: `try_*` answers whether it worked — `T or E`, or `T?` when
+/// there is nothing to put in the `E`.
+///
+/// `Shared.try_read` fails for exactly one reason: someone else holds the
+/// lock. An error type for that carries no information a caller could use,
+/// and `type.errors` draws the line there — `T?` is absence, `T or E` is a
+/// failure with something to say. The rule used to demand `T or E` and
+/// reported `conc.sync/R3` as an error for following its own spec.
+///
+/// What it still catches is the thing worth catching: a `try_*` that answers
+/// a bare `T`, or a bool, and makes the caller guess.
 pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
 
@@ -389,15 +425,16 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            if !type_str::is_result(ret) {
+            if !answers_whether_it_worked(ret) {
                 diags.push(make_diagnostic(
                     "naming/try",
                     Severity::Error,
                     format!(
-                        "`{}` must return a result type (`T or E`), found `{}`",
+                        "`{}` must say whether it worked — `T or E`, or `T?` when \
+                         there is no error to report. Found `{}`",
                         ctx.method.name, type_str::to_source(ret)
                     ),
-                    "change return type to `T or E`".to_string(),
+                    "change return type to `T or E`, or `T?`".to_string(),
                     source,
                     ctx.span,
                 ));
@@ -412,15 +449,16 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
                 continue;
             }
             if let Some(ret) = &f.ret_ty {
-                if !type_str::is_result(ret) {
+                if !answers_whether_it_worked(ret) {
                     diags.push(make_diagnostic(
                         "naming/try",
                         Severity::Error,
                         format!(
-                            "`{}` must return a result type (`T or E`), found `{}`",
+                            "`{}` must say whether it worked — `T or E`, or `T?` when \
+                             there is no error to report. Found `{}`",
                             f.name, type_str::to_source(ret)
                         ),
-                        "change return type to `T or E`".to_string(),
+                        "change return type to `T or E`, or `T?`".to_string(),
                         source,
                         decl.span,
                     ));
@@ -500,7 +538,11 @@ func try_parse(s: string) -> i64 or ParseError9 {
     }
 
     #[test]
-    fn still_rejects_a_non_result_return() {
+    fn still_rejects_a_return_that_cannot_report_failure() {
+        // `try_peek` answers a bare `i64`, so a caller has no way to ask
+        // whether it worked — that is the case the rule exists for.
+        // `try_insert` answers `Handle9<T>?`, which says "not this time"
+        // with nothing else to add, and is fine.
         let src = r#"
 struct Pool9<T> { }
 
@@ -510,7 +552,8 @@ extend Pool9<T> {
 }
 "#;
         let errs = try_errors(src);
-        assert_eq!(errs.len(), 2, "both should still be flagged: {:?}", errs);
+        assert_eq!(errs.len(), 1, "only try_peek should be flagged: {:?}", errs);
+        assert!(errs[0].contains("try_peek"), "{}", errs[0]);
     }
 
     #[test]
@@ -520,13 +563,13 @@ extend Pool9<T> {
         let src = r#"
 struct S9 { }
 extend S9 {
-    public func try_thing(self) -> Handle9<i64>? {}
+    public func try_thing(self) -> void {}
 }
 "#;
         let errs = try_errors(src);
         assert_eq!(errs.len(), 1);
         assert!(
-            !errs[0].contains("Result<"),
+            !errs[0].contains("Result<") && !errs[0].contains("()"),
             "message should use Rask syntax, not the internal rendering: {}",
             errs[0]
         );
