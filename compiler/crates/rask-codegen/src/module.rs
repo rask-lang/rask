@@ -1275,17 +1275,6 @@ impl CodeGenerator {
         }
 
         // Pre-register panic message for inline pool access (release mode)
-        if self.build_mode == BuildMode::Release {
-            let has_pool_access = mir_functions.iter().any(|f| {
-                f.blocks.iter().any(|b| {
-                    b.statements.iter().any(|s| matches!(s.kind, rask_mir::MirStmtKind::PoolCheckedAccess { .. }))
-                })
-            });
-            if has_pool_access {
-                self.register_string("pool access with invalid handle")?;
-            }
-        }
-
         for mir_fn in mir_functions {
             for block in &mir_fn.blocks {
                 for stmt in &block.statements {
@@ -1893,10 +1882,6 @@ fn collect_operand_strings_stmt(stmt: &rask_mir::MirStmt, out: &mut HashSet<Stri
         rask_mir::MirStmtKind::Call { args, .. }
         | rask_mir::MirStmtKind::ClosureCall { args, .. } => {
             for arg in args { collect_operand_string(arg, out); }
-        }
-        rask_mir::MirStmtKind::PoolCheckedAccess { .. } => {
-            // Pool access may need panic strings
-            out.insert("pool access with invalid handle".to_string());
         }
         _ => {}
     }

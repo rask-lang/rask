@@ -187,7 +187,7 @@ impl ResourceTracker {
         }
 
         // Keep this wording in step with the runtime's (`rask_pool_free` in
-        // runtime/pool.c) — the differential harness compares the two backends'
+        // the runtime) — the differential harness compares the two backends'
         // output verbatim.
         if let Some((ty, n)) = pooled.into_iter().next() {
             return Err(format!(

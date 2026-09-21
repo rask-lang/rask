@@ -155,7 +155,6 @@ pub struct FnDecl {
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret_ty: Option<String>,
-    pub context_clauses: Vec<ContextClause>,
     pub body: Vec<Stmt>,
     pub is_pub: bool,
     pub is_private: bool,
@@ -168,17 +167,6 @@ pub struct FnDecl {
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
     /// Span covering `func` keyword through closing `}`
-    pub span: Span,
-}
-
-/// A `using` context clause on a function signature.
-#[derive(Debug, Clone)]
-pub struct ContextClause {
-    pub name: Option<String>,
-    pub ty: String,
-    pub is_frozen: bool,
-    /// The clause itself — `players: Pool<Player>` — so a diagnostic about one
-    /// clause underlines it instead of the whole signature.
     pub span: Span,
 }
 

@@ -729,54 +729,6 @@ fn struct_enum_eq_native_eq_interp() {
     );
 }
 
-// comp.hidden-params (#422): named `using Pool<T>` contexts must lower on
-// native — the SIG2 rewrite (hidden param + named alias + call-site arg) —
-// and read the pool element the same as the interpreter.
-#[test]
-fn using_pool_read_native_eq_interp() {
-    assert_native_eq_interp("using_pool_read.rk", "100");
-}
-
-#[test]
-fn using_pool_propagate_native_eq_interp() {
-    assert_native_eq_interp("using_pool_propagate.rk", "42");
-}
-
-// comp.hidden-params/CALL6: instance-method `using` context threads through
-// method dispatch on both the top-level `l.settle(a)` and the inner
-// `self.post(h)`. Native must match the interpreter.
-#[test]
-fn using_pool_method_native_eq_interp() {
-    assert_native_eq_interp("using_pool_method.rk", "5");
-}
-
-// mem.context/CC1 (#434): `h.field` reads auto-resolve through a named
-// `using Pool<T>` context — the spec's headline pattern.
-#[test]
-fn handle_autoderef_read_native_eq_interp() {
-    assert_native_eq_interp("handle_autoderef_read.rk", "100");
-}
-
-// mem.context/CC1 (#434): `h.field` writes (plain + compound) through named and
-// unnamed contexts mutate the pool element on both backends.
-#[test]
-fn handle_autoderef_write_native_eq_interp() {
-    assert_native_eq_interp("handle_autoderef_write.rk", "705");
-}
-
-// mem.context/CC7 (#434): a private function infers its unnamed Pool<T> context
-// from `h.field` access, so auto-deref works with no `using` clause.
-#[test]
-fn handle_autoderef_inferred_native_eq_interp() {
-    assert_native_eq_interp("handle_autoderef_inferred.rk", "42");
-}
-
-// mem.pools/PF5: reads through a handle in a frozen context work on both backends.
-#[test]
-fn frozen_pool_read_native_eq_interp() {
-    assert_native_eq_interp("frozen_pool_read.rk", "50");
-}
-
 // #380: `T` widens to `T?` at an assignment lvalue (reassignment + field store)
 // and the value is wrapped to `Some` on both backends.
 #[test]
@@ -793,25 +745,6 @@ fn optional_widen_assign_native_eq_interp() {
 #[test]
 fn scalar_mutate_writeback_native_eq_interp() {
     assert_native_eq_interp("scalar_mutate_writeback.rk", "2112999");
-}
-
-// mem.pools/PL2 (#435): a bounded `with_capacity` pool works like a normal pool
-// for inserts within the bound, on both backends.
-#[test]
-fn bounded_pool_with_capacity_native_eq_interp() {
-    assert_native_eq_interp("bounded_pool_with_capacity.rk", "230");
-}
-
-// mem.pools/PL8 (#435): `insert` into a full bounded pool panics (exit 101) on
-// both backends — nothing after the failing insert runs.
-#[test]
-fn bounded_pool_insert_full_panics() {
-    let (nout, ncode) = run_native("bounded_pool_insert_full.rk");
-    let (iout, icode) = run_interp("bounded_pool_insert_full.rk");
-    assert_eq!(ncode, 101, "native should panic on full insert: {}", nout);
-    assert_eq!(icode, 101, "interp should panic on full insert: {}", iout);
-    assert!(!nout.contains("99"), "native must not reach past the panic: {}", nout);
-    assert!(!iout.contains("99"), "interp must not reach past the panic: {}", iout);
 }
 
 /// mem.linear/L4 (#882): `ensure` runs during unwind for a `Heap` box, not
@@ -863,87 +796,6 @@ fn ensure_runs_on_unwind_for_a_box_and_a_resource() {
     }
 }
 
-/// mem.resources/R5 (#1219): a `Pool<Resource>` dropped non-empty panics, on
-/// both backends and with the same message.
-///
-/// A pool's contents are dynamic, so the compiler can't say whether one is
-/// empty at scope exit — which is why R5 is a runtime rule and why `rask check`
-/// passes on the fixture. Native did nothing at all: the connection leaked and
-/// the program exited 0. The interpreter panicked with its generic ledger
-/// message, `Conn '?' not consumed before scope exit`, where the `'?'` is there
-/// because a pooled value has no binding to name.
-///
-/// This can't be a suite file — a test that panics fails — so it lives here,
-/// which is also the only harness that can check the message and the exit code
-/// together.
-#[test]
-fn pool_of_resources_dropped_non_empty_panics() {
-    // The panic goes to stderr, so `run_native`/`run_interp` (stdout only)
-    // would show the message as missing rather than as wrong.
-    let rask = rask_binary();
-    let run = |mode: &[&str]| -> (String, i32) {
-        let out = Command::new(&rask)
-            .args(mode)
-            .arg(fixture("pool_resource_dropped.rk"))
-            .env("RASK_RUNTIME_DIR", runtime_dir())
-            .output()
-            .expect("failed to run rask");
-        (
-            format!(
-                "{}{}",
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            ),
-            out.status.code().unwrap_or(-1),
-        )
-    };
-    let (nout, ncode) = run(&["run", "--native"]);
-    let (iout, icode) = run(&["run", "--interp"]);
-    assert_eq!(ncode, 101, "native should panic on a non-empty resource pool: {nout}");
-    assert_eq!(icode, 101, "interp should panic on a non-empty resource pool: {iout}");
-    for (mode, out) in [("native", &nout), ("interp", &iout)] {
-        assert!(
-            out.contains("Pool<Conn> has 1 unconsumed resource element at scope exit."),
-            "{mode} should name the pool and the count: {out}"
-        );
-        assert!(
-            out.contains("use take_all() before scope ends"),
-            "{mode} should say what to do about it: {out}"
-        );
-    }
-    // Where the panic lands differs: the interpreter reports at `leaky`'s scope
-    // exit, native when the pool's release is placed — after inlining, the end
-    // of `main`. Both fail; only one of them gets there before `main`'s last
-    // statement, which is why this asserts on the exit code and the message
-    // rather than on what did or didn't print.
-}
-
-/// The other half of R5: a pool emptied before it goes out of scope is fine.
-#[test]
-fn pool_of_resources_emptied_is_clean() {
-    assert_native_eq_interp("pool_resource_emptied.rk", "4\n");
-}
-
-// mem.pools/PL8 (#435): `try_insert` returns Some until the bounded pool is full,
-// then none. Interpreter is the reference (native try_insert is tracked in #438).
-#[test]
-fn bounded_pool_try_insert_interp() {
-    let (out, code) = run_interp("bounded_pool_try_insert.rk");
-    assert_eq!(code, 0, "try_insert program must run: {}", out);
-    assert_eq!(out, "110", "unexpected try_insert output: {:?}", out);
-}
-
-// #382 + #380: a Handle is Copy, so `pool[a].next = b` links without consuming
-// `b`, and the widen reads back as Some. Interp is the reference (native pool
-// niche-Option<Handle> reads are tracked in #438), and it must type-check
-// (exit 0) — proving no E0800/E0308 remain.
-#[test]
-fn handle_copy_link_interp() {
-    let (out, code) = run_interp("handle_copy_link.rk");
-    assert_eq!(code, 0, "handle_copy_link must type-check and run: {}", out);
-    assert_eq!(out, "12", "unexpected interp output: {:?}", out);
-}
-
 // #411: nested struct-field assignment (`ln.a.x = v`) persists on native — the
 // projected place stores into the base local instead of a value copy.
 #[test]
@@ -951,46 +803,11 @@ fn nested_field_store_native_eq_interp() {
     assert_native_eq_interp("nested_field_store.rk", "50604");
 }
 
-// #402: compound assignment through a pool handle (`pool[h].f -= n`) persists on
-// native — aggregate pool accesses no longer coalesce into a value copy.
-#[test]
-fn pool_compound_assign_native_eq_interp() {
-    assert_native_eq_interp("pool_compound_assign.rk", "65");
-}
-
-// #402: `with pool[h] as e { e.f = v }` writes through to the pool on native —
-// the binding aliases the slot instead of copying the element.
-#[test]
-fn with_pool_writeback_native_eq_interp() {
-    assert_native_eq_interp("with_pool_writeback.rk", "78");
-}
-
 // #411: field store into a Vec element (`v[i].hp = v`, `+=`) persists on native
 // via read-modify-writeback.
 #[test]
 fn vec_elem_field_store_native_eq_interp() {
     assert_native_eq_interp("vec_elem_field_store.rk", "9925");
-}
-
-// comp.hidden-params/CALL2: a pool held in `self.players` resolves as a hidden
-// context arg (lowered as a field access) for a free callee.
-#[test]
-fn using_pool_self_field_native_eq_interp() {
-    assert_native_eq_interp("using_pool_self_field.rk", "7");
-}
-
-// mem.context/CC9: an inline closure passed as an argument inherits the
-// enclosing function's pool context.
-#[test]
-fn using_closure_immediate_native_eq_interp() {
-    assert_native_eq_interp("using_closure_immediate.rk", "100");
-}
-
-// mem.context/CC10: a storable closure can still take the pool as an explicit
-// param — that resolves the callee's context without inheritance.
-#[test]
-fn using_closure_storable_ok_native_eq_interp() {
-    assert_native_eq_interp("using_closure_storable_ok.rk", "100");
 }
 
 #[test]
@@ -2006,17 +1823,6 @@ fn error_stdlib_renames() {
     }
 }
 
-// mem.pools/PF5: writing through a handle in a `using frozen Pool<T>` context is
-// rejected (E0325); reads in the same file are fine.
-#[test]
-fn error_frozen_pool_write() {
-    let (failed, out) = compile_error_output("frozen_pool_write.rk");
-    assert!(failed, "frozen-context handle writes must be rejected: {}", out);
-    assert!(out.contains("E0325"), "should be a frozen-context write error (E0325): {}", out);
-    // Both the plain store and the compound assign are rejected; the read is not.
-    assert_eq!(out.matches("error[E0325]").count(), 2, "exactly the two writes rejected: {}", out);
-}
-
 /// Run a .rk file given by repo-relative path via `rask run --interp`.
 ///
 /// For the comparison programs in `specs/analysis/prototype/`: the documented
@@ -2040,10 +1846,6 @@ fn run_interp_repo_path(rel: &str) -> (String, i32) {
     )
 }
 
-// The litmus comparison's headline claim: the same program written with
-// `Pool`+`Handle` and with `Rack`+`Link` produces the same output. That is what
-// makes the ergonomics comparison in the write-up a comparison rather than two
-// unrelated programs, so it is asserted rather than eyeballed.
 // analysis.fourth-option: the cascade hole, closed by the `deleting` parameter
 // mode. A function that takes the rack mutably and picks its own nodes to delete
 // has to say so, and the call then revokes every link local into that rack.
@@ -2131,37 +1933,27 @@ fn rack_link_cascade_delete_is_rejected() {
     );
 }
 
+// The litmus programs from the write-up, run so the prose can't drift from what
+// they do. The handle versions they were once compared against went with
+// `Pool` (rask-lang/rask#908), so what is asserted now is that each link
+// version runs and reaches the state the write-up describes.
 #[test]
-fn rack_link_litmus_pairs_agree() {
-    let pairs = [
-        ("L1 doubly-linked list", "l1_list_handles.rk", "l1_list_links.rk"),
-        ("L3 scene tree", "l3_scene_handles.rk", "l3_scene_links.rk"),
-    ];
-    for (label, handles, links) in pairs {
-        let (h_out, h_code) = run_interp_repo_path(&format!("specs/analysis/prototype/{handles}"));
-        let (l_out, l_code) = run_interp_repo_path(&format!("specs/analysis/prototype/{links}"));
-        assert_eq!(h_code, 0, "{label}: handle version should run: {h_out}");
-        assert_eq!(l_code, 0, "{label}: link version should run: {l_out}");
-        assert!(!h_out.trim().is_empty(), "{label}: handle version printed nothing");
-        assert_eq!(
-            h_out, l_out,
-            "{label}: the two memory models must agree.\nhandles:\n{h_out}\nlinks:\n{l_out}"
-        );
-    }
-
-    // L2 is the flagship and deliberately does *not* match line-for-line: the
-    // handle version can still ask about a removed node, the link version has
-    // nothing left to ask. Both must run, and both must reach round 2 with the
-    // dead target's edges cleared.
-    for name in ["l2_targeting_handles.rk", "l2_targeting_links.rk"] {
+fn rack_link_litmus_programs_run() {
+    for name in ["l1_list_links.rk", "l3_scene_links.rk"] {
         let (out, code) = run_interp_repo_path(&format!("specs/analysis/prototype/{name}"));
         assert_eq!(code, 0, "{name} should run: {out}");
-        assert!(out.contains("-- round 2"), "{name} should reach round 2: {out}");
-        assert!(
-            out.contains("a: health=100 target=none"),
-            "{name}: a's edge to the dead target should be cleared by round 2: {out}"
-        );
+        assert!(!out.trim().is_empty(), "{name} printed nothing");
     }
+
+    // L2 is the flagship: by round 2 the dead target's edges are cleared, with
+    // nothing in the program asking whether the node is still there.
+    let (out, code) = run_interp_repo_path("specs/analysis/prototype/l2_targeting_links.rk");
+    assert_eq!(code, 0, "l2_targeting_links.rk should run: {out}");
+    assert!(out.contains("-- round 2"), "should reach round 2: {out}");
+    assert!(
+        out.contains("a: health=100 target=none"),
+        "a's edge to the dead target should be cleared by round 2: {out}"
+    );
 }
 
 // ─── Rack<T> + Link<T> (analysis.fourth-option prototype) ───
@@ -2623,35 +2415,6 @@ fn error_read_lock_mutate() {
     let (failed, out) = compile_error_output("read_lock_mutate.rk");
     assert!(failed, "mutation through a read-lock binding must be rejected: {}", out);
     assert!(out.contains("E0360"), "should flag the read-lock mutation: {}", out);
-}
-
-#[test]
-fn error_context_ambiguous_cc8() {
-    // mem.context/CC8: two Pool<Player> in scope where a callee needs the
-    // context is a real diagnostic, not the old unresolved-variable failure.
-    let (failed, out) = compile_error_output("context_ambiguous_min.rk");
-    assert!(failed, "ambiguous context must be rejected: {}", out);
-    assert!(out.contains("E0849"), "should carry the code: {}", out);
-    assert!(
-        out.contains("mem.context/CC8"),
-        "and cite the rule in the why — the code is what `rask explain` takes, \
-         the rule id is what the spec calls it: {}",
-        out,
-    );
-    assert!(
-        out.contains("ambiguous context"),
-        "should name the ambiguity, not a var lookup failure: {}", out,
-    );
-}
-
-#[test]
-fn error_context_closure_storable_cc10() {
-    // mem.context/CC10: a storable closure needing a pool context it doesn't
-    // take as a parameter is rejected — it can't inherit ambient contexts.
-    let (failed, out) = compile_error_output("context_closure_storable.rk");
-    assert!(failed, "storable closure needing context must be rejected: {}", out);
-    assert!(out.contains("E0850"), "should carry the code: {}", out);
-    assert!(out.contains("mem.context/CC10"), "and cite the rule: {}", out);
 }
 
 #[test]
@@ -3249,53 +3012,6 @@ fn lint_leaves_correct_remainder_indexing_alone() {
     assert!(
         !output.contains("mod-for-index"),
         "none of these are the footgun: {}", output,
-    );
-}
-
-// #585: context clauses bubble — every callee's contexts show up on its callers
-// — so a deep call chain accumulates them until the signature stops saying what
-// the function takes and starts listing what the program owns. A lint rather
-// than a language rule: four is sometimes the honest shape.
-#[test]
-fn lint_flags_a_signature_with_more_than_three_contexts() {
-    let output = lint_output(
-        "struct World { n: i64 }\n\
-         struct Physics { n: i64 }\n\
-         struct Audio { n: i64 }\n\
-         struct Input { n: i64 }\n\
-         func tick(dt: i64) using world: World, physics: Physics, audio: Audio, input: Input {\n\
-         \x20   println(\"{dt}\")\n\
-         }\n\
-         func main() {\n\
-         \x20   println(\"hi\")\n\
-         }\n",
-    );
-    assert!(
-        output.contains("too-many-contexts"),
-        "four context clauses should be flagged: {}", output,
-    );
-    assert!(
-        output.contains("`tick`") && output.contains("world, physics, audio, input"),
-        "should name the function and every clause: {}", output,
-    );
-}
-
-#[test]
-fn lint_leaves_three_contexts_alone() {
-    let output = lint_output(
-        "struct World { n: i64 }\n\
-         struct Physics { n: i64 }\n\
-         struct Audio { n: i64 }\n\
-         func tick(dt: i64) using world: World, physics: Physics, audio: Audio {\n\
-         \x20   println(\"{dt}\")\n\
-         }\n\
-         func main() {\n\
-         \x20   println(\"hi\")\n\
-         }\n",
-    );
-    assert!(
-        !output.contains("too-many-contexts"),
-        "three is the limit, not the trigger: {}", output,
     );
 }
 
@@ -4043,7 +3759,7 @@ fn panic_ensure_e3_first_panic_wins() {
 
 // E3 (issue #298) — a runtime guard tripping at scope exit while already
 // unwinding must not replace the panic in flight — has no test any more. The
-// guard it was reached through was R5, a `Pool<Conn>` still holding a resource,
+// guard it was reached through was R5, a pool still holding a resource,
 // and no container takes a linear value now that pools are gone: Vec, Map and
 // Rack are all compile errors (mem.resource-types/RC1-RC3). Every earlier
 // trigger went the same way — an unconsumed TaskHandle behind a `join()` is
@@ -6006,30 +5722,6 @@ fn a_return_out_of_for_mutate_still_writes_back() {
     );
     for mode in ["--interp", "--native"] {
         let (stdout, stderr, code) = run_capture(mode, "for_mutate_return_writeback.rk");
-        assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
-        assert_eq!(stdout, expected, "{}", mode);
-    }
-}
-
-// Pool elements that aren't structs, read and written.
-//
-// `pool[h]` on a scalar didn't produce a wrong answer — it killed native codegen
-// with a Cranelift panic, because `PoolCheckedAccess` meant "address or value,
-// work it out from the destination's type" and codegen always picked address.
-// `pool[h] = v` with no field to write missed the pool branch entirely and became
-// `Vec_set(pool, handle, v)`, using a packed handle as a position (#719).
-#[test]
-fn a_pool_element_can_be_a_scalar() {
-    let expected = concat!(
-        "42 -7\n", "100 -7\n",
-        "2.5\n", "-0.75\n",
-        "true\n", "false\n",
-        "alpha\n",
-        "10 one\n", "55 one\n",
-        "93\n", "-3\n",
-    );
-    for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "pool_scalar_element.rk");
         assert_eq!(code, 0, "{}: should exit 0, stderr: {}", mode, stderr);
         assert_eq!(stdout, expected, "{}", mode);
     }

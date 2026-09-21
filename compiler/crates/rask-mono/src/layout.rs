@@ -30,10 +30,8 @@ pub struct StructLayout {
     /// Declared `@resource`, so its values must be consumed exactly once
     /// (mem.linear/L1).
     ///
-    /// The compiler enforces that for named bindings. A pool's contents are
-    /// dynamic and can't be tracked statically, so `mem.resources/R5` makes a
-    /// non-empty `Pool<Resource>` at drop a runtime panic instead — and the
-    /// runtime can only do that if it is told what it is holding.
+    /// The compiler enforces that for named bindings; no container may hold a
+    /// linear value at all (`mem.resource-types/RC1`-RC3).
     pub is_resource: bool,
 }
 
@@ -197,8 +195,6 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             (8, 8)
         }
         // Generic builtins with known sizes
-        Type::UnresolvedGeneric { name, .. } if name == "Handle" => (8, 8),
-        Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8),
         // A link is the node's address; a rack is a pointer to its slab.
         Type::UnresolvedGeneric { name, .. } if name == "Link" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Rack" => (8, 8),
@@ -313,7 +309,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                         // type alias target like `type Counts = Map`) arrive here as a bare
                         // name instead of `UnresolvedGeneric` — same opaque-pointer types as
                         // the `UnresolvedGeneric` arm above, just missing their `<...>`.
-                        "Vec" | "Wide" | "Map" | "Handle" | "Pool"
+                        "Vec" | "Wide" | "Map"
                         | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel") {
                         (8, 8)
                     } else {
@@ -622,7 +618,7 @@ fn resolve_field_type(
 fn is_opaque_container_name(name: &str) -> bool {
     matches!(
         name,
-        "Vec" | "Wide" | "Map" | "Set" | "Handle" | "Pool" | "Rack" | "Link"
+        "Vec" | "Wide" | "Map" | "Set" | "Rack" | "Link"
             | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic" | "Channel"
             | "Sender" | "Receiver"
     )

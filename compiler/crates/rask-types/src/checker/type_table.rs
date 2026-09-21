@@ -660,8 +660,8 @@ impl TypeTable {
     }
 
     /// Container wrappers that hold values without becoming linear themselves.
-    /// `Pool` is the sanctioned resource container (RC2); `Handle`/`WeakHandle`
-    /// are copyable references; `Vec`/`Map` are handled by the outer walk.
+    /// A `Link` is a copyable reference; `Vec`/`Map`/`Rack` are handled by the
+    /// outer walk.
     ///
     /// The channel ends are here because `conc.async/CH1` says so outright:
     /// they can go out of scope without an explicit close. Without them,
@@ -672,10 +672,7 @@ impl TypeTable {
     fn is_nonlinear_wrapper(name: &str) -> bool {
         matches!(
             name,
-            "Handle"
-                | "WeakHandle"
-                | "Pool"
-                | "Vec"
+            "Vec"
                 | "Map"
                 | "Link"
                 | "Rack"
@@ -685,9 +682,9 @@ impl TypeTable {
         )
     }
 
-    /// RC1/RC3: find the first `Vec<T>` or `Map<K, V>` anywhere in `ty` whose
-    /// element (or key) is a linear value. `Vec` and `Map` can't consume their
-    /// elements on drop, so linear elements are rejected at the type. Returns the
+    /// RC1-RC3: find the first `Vec<T>`, `Map<K, V>` or `Rack<T>` anywhere in
+    /// `ty` whose element, key or node is a linear value. None of the three can
+    /// consume what it holds, so a linear one is rejected at the type. Returns the
     /// container spelling ("Vec"/"Map") and the offending element type.
     ///
     /// Walks the whole type tree so nested forms (`Vec<Vec<File>>`,

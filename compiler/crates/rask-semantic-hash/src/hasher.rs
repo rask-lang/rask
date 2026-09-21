@@ -13,8 +13,7 @@
 
 use std::collections::HashMap;
 
-use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, Field, Param, TypeParam,
-                     ContextClause};
+use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, Field, Param, TypeParam};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit,
                      CatchClause, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp,
                      WithBinding};
@@ -265,11 +264,6 @@ impl Hasher {
             self.feed_bool(false);
         }
 
-        // Context clauses
-        for cc in &f.context_clauses {
-            self.hash_context_clause(cc);
-        }
-
         // Attributes
         for attr in &f.attrs {
             self.feed_str(attr);
@@ -350,17 +344,6 @@ impl Hasher {
         for b in &tp.bounds {
             self.feed_str(b);
         }
-    }
-
-    fn hash_context_clause(&mut self, cc: &ContextClause) {
-        if let Some(n) = &cc.name {
-            self.feed_bool(true);
-            self.feed_str(n);
-        } else {
-            self.feed_bool(false);
-        }
-        self.feed_str(&cc.ty);
-        self.feed_bool(cc.is_frozen);
     }
 
     // ── Statement hashing ─────────────────────────────────────────
@@ -1140,7 +1123,6 @@ mod tests {
                 default: None,
             }).collect(),
             ret_ty: None,
-            context_clauses: vec![],
             body,
             is_pub: false,
             is_private: false,

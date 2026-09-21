@@ -166,17 +166,7 @@ impl TypeChecker {
         }
     }
 
-    /// The element type `T` of a `Handle<T>`, or `None` for anything else.
-    /// `WeakHandle` is excluded — it must be `upgrade()`d before field access.
-    pub(super) fn handle_element_type(&self, ty: &Type) -> Option<Type> {
-        self.first_type_arg(ty, "Handle")
-    }
-
     /// The node type `T` of a `Link<T>`, or `None` for anything else.
-    ///
-    /// Unlike a handle, a link needs no `Pool<T>` in scope to be followed — it
-    /// names the node directly (analysis.fourth-option), so this is the whole
-    /// resolution story rather than the first half of one.
     pub(super) fn link_node_type(&self, ty: &Type) -> Option<Type> {
         self.first_type_arg(ty, "Link")
     }
@@ -184,11 +174,6 @@ impl TypeChecker {
     /// The node type `T` of a `Rack<T>`, or `None` for anything else.
     pub(super) fn rack_node_type(&self, ty: &Type) -> Option<Type> {
         self.first_type_arg(ty, "Rack")
-    }
-
-    /// The element type `T` of a `Pool<T>`, or `None` for anything else.
-    pub(super) fn pool_element_type(&self, ty: &Type) -> Option<Type> {
-        self.first_type_arg(ty, "Pool")
     }
 
     pub(super) fn resolve_field(
@@ -201,17 +186,8 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
 
-        // mem.context/CC1: `h.field` on a `Handle<T>` auto-resolves through the
-        // active `Pool<T>` context — type the access as the element `T`'s field.
-        // Lowering (native hidden-param pass) and the interpreter rewrite it into
-        // `pool[h].field`. Only strong handles auto-deref; a `WeakHandle` must be
-        // `upgrade()`d first.
-        if let Some(elem) = self.handle_element_type(&ty) {
-            return self.resolve_field(elem, field, expected, span, self_type);
-        }
-
-        // `l.health` on a `Link<Entity>` is the node's field. No context clause
-        // and no liveness check: a link that exists points at a live node.
+        // `l.health` on a `Link<Entity>` is the node's field. No lookup and no
+        // liveness check: a link that exists points at a live node.
         if let Some(node) = self.link_node_type(&ty) {
             return self.resolve_field(node, field, expected, span, self_type);
         }
@@ -511,7 +487,7 @@ impl TypeChecker {
             Type::Tuple(_) | Type::Array { .. } => false,
             Type::UnresolvedGeneric { name, .. } => !matches!(
                 name.as_str(),
-                "Vec" | "Map" | "Set" | "Pool" | "Rack" | "Iterator"
+                "Vec" | "Map" | "Set" | "Rack" | "Iterator"
             ),
             _ => true,
         }
@@ -1109,10 +1085,6 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, args: type_args } if name == "TaskHandle" => {
                 self.resolve_task_handle_method(&type_args, &method, &args, &ret, span)
             }
-            // Pool<T>
-            Type::UnresolvedGeneric { name, args: type_args } if name == "Pool" => {
-                self.resolve_pool_method(type_args, &method, &args, &ret, span)
-            }
             // Rack<T>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Rack" => {
                 self.resolve_rack_method(type_args, &method, &args, &ret, span)
@@ -1132,38 +1104,6 @@ impl TypeChecker {
                         self.resolve_method(node_ty, method, args, ret, span, None)
                     }
                 }
-            }
-            // Handle<T> — value type, eq/ne only
-            Type::UnresolvedGeneric { name, .. } if name == "Handle" => {
-                match method.as_str() {
-                    "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
-                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-                }
-            }
-            // WeakHandle<T> — valid(), upgrade(), eq, ne
-            Type::UnresolvedGeneric { name, args: type_args } if name == "WeakHandle" => {
-                let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
-                    *t.clone()
-                } else {
-                    self.ctx.fresh_var()
-                };
-                match method.as_str() {
-                    "valid" if args.is_empty() => self.unify(&ret, &Type::Bool, span),
-                    "upgrade" if args.is_empty() => {
-                        let handle_ty = Type::UnresolvedGeneric {
-                            name: "Handle".to_string(),
-                            args: vec![GenericArg::Type(Box::new(inner_type))],
-                        };
-                        let opt_ty = Type::option(handle_ty);
-                        self.unify(&ret, &opt_ty, span)
-                    }
-                    "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
-                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
-                }
-            }
-            // Pool (bare, for static constructors like Pool.new())
-            Type::UnresolvedNamed(name) if name == "Pool" => {
-                self.resolve_pool_static_method(&method, &args, &ret, span)
             }
             // Rack (bare, for Rack.new())
             Type::UnresolvedNamed(name) if name == "Rack" => match method.as_str() {
@@ -2660,161 +2600,6 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve methods on Pool<T> instances.
-    pub(super) fn resolve_pool_method(
-        &mut self,
-        type_args: &[GenericArg],
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
-            *t.clone()
-        } else {
-            self.ctx.fresh_var()
-        };
-
-        match method {
-            // pool.insert(value: T) -> Handle<T> (panics on failure, like Vec.push)
-            "alloc" | "insert" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &inner_type, span);
-                let handle_ty = Type::UnresolvedGeneric {
-                    name: "Handle".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner_type))],
-                };
-                self.unify(ret, &handle_ty, span)
-            }
-            // pool.get(h: Handle<T>) -> T?
-            "get" if args.len() == 1 => {
-                let result_ty = Type::option(inner_type);
-                self.unify(ret, &result_ty, span)
-            }
-            // pool.remove(h: Handle<T>) -> T?
-            "remove" if args.len() == 1 => {
-                let result_ty = Type::option(inner_type);
-                self.unify(ret, &result_ty, span)
-            }
-            // pool.len() -> u64
-            "len" if args.is_empty() => {
-                self.unify(ret, &Type::U64, span)
-            }
-            // pool.is_empty() -> bool
-            "is_empty" if args.is_empty() => {
-                self.unify(ret, &Type::Bool, span)
-            }
-            // pool.handles() -> Vec<Handle<T>>
-            "handles" if args.is_empty() => {
-                let handle_ty = Type::UnresolvedGeneric {
-                    name: "Handle".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner_type))],
-                };
-                let vec_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(handle_ty))],
-                };
-                self.unify(ret, &vec_ty, span)
-            }
-            // pool.contains(h: Handle<T>) -> bool
-            "contains" if args.len() == 1 => {
-                self.unify(ret, &Type::Bool, span)
-            }
-            // pool.clear() -> ()
-            "clear" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            // pool.get_mut(h) -> T?
-            "get_mut" | "get_clone" if args.len() == 1 => {
-                let result_ty = Type::option(inner_type);
-                self.unify(ret, &result_ty, span)
-            }
-            // pool.try_insert(value: T) -> Handle<T>?
-            "try_insert" if args.len() == 1 => {
-                let _ = self.unify(&args[0], &inner_type, span);
-                let handle_ty = Type::UnresolvedGeneric {
-                    name: "Handle".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner_type))],
-                };
-                let opt_ty = Type::option(handle_ty);
-                self.unify(ret, &opt_ty, span)
-            }
-            // pool.drain() -> Vec<T>
-            "drain" | "take_all" if args.is_empty() => {
-                let vec_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner_type))],
-                };
-                self.unify(ret, &vec_ty, span)
-            }
-            // pool.entries() -> Vec<(Handle<T>, T)>
-            "entries" if args.is_empty() => {
-                let handle_ty = Type::UnresolvedGeneric {
-                    name: "Handle".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner_type.clone()))],
-                };
-                let pair_ty = Type::Tuple(vec![handle_ty, inner_type]);
-                let vec_ty = Type::UnresolvedGeneric {
-                    name: "Vec".to_string(),
-                    args: vec![GenericArg::Type(Box::new(pair_ty))],
-                };
-                self.unify(ret, &vec_ty, span)
-            }
-            // pool.get_unchecked(h) -> T, pool.get_mut_unchecked(h) -> T
-            "get_unchecked" | "get_mut_unchecked" if args.len() == 1 => {
-                self.unify(ret, &inner_type, span)
-            }
-            // pool.read(h, closure) -> R?, pool.modify(h, closure) -> R?
-            // pool.with_valid(h, closure) -> R?, pool.with_valid_mut(h, closure) -> R?
-            "read" | "modify" | "with_valid" | "with_valid_mut" if args.len() == 2 => {
-                let result_ty = Type::option(self.ctx.fresh_var());
-                self.unify(ret, &result_ty, span)
-            }
-            // pool.capacity() -> u64, pool.remaining() -> u64
-            "capacity" | "remaining" if args.is_empty() => {
-                self.unify(ret, &Type::U64, span)
-            }
-            // pool.weak(h: Handle<T>) -> WeakHandle<T>
-            "weak" if args.len() == 1 => {
-                let weak_ty = Type::UnresolvedGeneric {
-                    name: "WeakHandle".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner_type))],
-                };
-                self.unify(ret, &weak_ty, span)
-            }
-            // pool.snapshot() -> (Pool<T>, Pool<T>)
-            "snapshot" if args.is_empty() => {
-                let pool_ty = Type::UnresolvedGeneric {
-                    name: "Pool".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner_type.clone()))],
-                };
-                let pair_ty = Type::Tuple(vec![pool_ty.clone(), pool_ty]);
-                self.unify(ret, &pair_ty, span)
-            }
-            // pool.clone() -> Pool<T>
-            "clone" if args.is_empty() => {
-                let pool_ty = Type::UnresolvedGeneric {
-                    name: "Pool".to_string(),
-                    args: vec![GenericArg::Type(Box::new(inner_type))],
-                };
-                self.unify(ret, &pool_ty, span)
-            }
-            _ => {
-                self.ctx.add_constraint(TypeConstraint::HasMethod {
-                    ty: Type::UnresolvedGeneric {
-                        name: "Pool".to_string(),
-                        args: type_args.to_vec(),
-                    },
-                    method: method.to_string(),
-                    args: args.to_vec(),
-                    ret: ret.clone(),
-                    span,
-                    call_node: None,
-                });
-                Ok(false)
-            }
-        }
-    }
-
     /// `Rack<T>` methods (analysis.fourth-option).
     ///
     /// Note what is absent: no `get`. A pool hands out handles that must be
@@ -2872,34 +2657,6 @@ impl TypeChecker {
                     call_node: None,
                 });
                 Ok(false)
-            }
-        }
-    }
-
-    /// Resolve static methods on bare Pool (e.g. Pool.new()).
-    pub(super) fn resolve_pool_static_method(
-        &mut self,
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        match method {
-            // Pool.new() -> Pool<T> where T is fresh
-            "new" if args.is_empty() => {
-                let fresh = self.ctx.fresh_var();
-                let pool_ty = Type::UnresolvedGeneric {
-                    name: "Pool".to_string(),
-                    args: vec![GenericArg::Type(Box::new(fresh))],
-                };
-                self.unify(ret, &pool_ty, span)
-            }
-            _ => {
-                Err(TypeError::NoSuchMethod {
-                    ty: Type::UnresolvedNamed("Pool".to_string()),
-                    method: method.to_string(),
-                    span,
-                })
             }
         }
     }

@@ -710,11 +710,6 @@ fn remap_stmt(
             cleanup_block: block_map.get(cleanup_block).copied().unwrap_or(*cleanup_block),
         },
         MirStmtKind::EnsurePop => MirStmtKind::EnsurePop,
-        MirStmtKind::PoolCheckedAccess { dst, pool, handle } => MirStmtKind::PoolCheckedAccess {
-            dst: local_map.get(dst).copied().unwrap_or(*dst),
-            pool: local_map.get(pool).copied().unwrap_or(*pool),
-            handle: local_map.get(handle).copied().unwrap_or(*handle),
-        },
         MirStmtKind::ClosureCreate {
             dst,
             func_name,

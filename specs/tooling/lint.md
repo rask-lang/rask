@@ -53,7 +53,6 @@ Common mistakes the canonical patterns address.
 | **I3: duck-trait** | Any `duck trait` declaration (`type.generics/DT3`) — names the harden step and the types that already match | warning |
 | **I4: inferred-signature** | Non-public function omitting a parameter type, return type, or bound, in a package that declares publish metadata (`type.gradual/GC11`) | warning |
 | **I5: equality-absent-check** | `x == none` / `x != none` on an optional — the branch test is `x is none`, presence is `x?` (`type.optionals/OPT15`) | warning |
-| **I6: too-many-contexts** | A function with more than 3 `using` clauses (`mem.context`) — names the three restructurings | warning |
 
 I6 is a style limit, not a language one. Context clauses bubble: every callee's
 contexts appear on its callers, so a deep call chain accumulates them until the

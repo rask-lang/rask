@@ -5587,24 +5587,7 @@ impl TypeChecker {
                     });
                 }
             }
-            Some(IndexContainer::Pool(elem)) => {
-                if is_range {
-                    self.errors.push(TypeError::IndexTypeMismatch {
-                        container: container.clone(),
-                        found: index.clone(),
-                        kind: IndexErrorKind::NotSliceable,
-                        span,
-                    });
-                } else {
-                    self.pending_index.push(PendingIndex {
-                        container: container.clone(),
-                        index: index.clone(),
-                        kind: PendingIndexKind::Handle(elem),
-                        span,
-                    });
-                }
-            }
-            // Unknown / unresolved container, or `Handle<T>` itself — leave it.
+            // Unknown / unresolved container — leave it.
             None => {
                 // A `Sequence<T>` is the one unindexable thing worth naming.
                 // SEQ41 made a collection's adapters lazy, so `v.filter(p)[0]`
@@ -5641,10 +5624,6 @@ impl TypeChecker {
                     "Vec" => Some(IndexContainer::Sequence),
                     "Map" => match args.first() {
                         Some(GenericArg::Type(k)) => Some(IndexContainer::Map((**k).clone())),
-                        _ => None,
-                    },
-                    "Pool" => match args.first() {
-                        Some(GenericArg::Type(t)) => Some(IndexContainer::Pool((**t).clone())),
                         _ => None,
                     },
                     _ => None,
@@ -5704,16 +5683,7 @@ impl TypeChecker {
                         (Some(k), Some(v)) => ContainerElem::Known(Type::Tuple(vec![k, v])),
                         _ => ContainerElem::Deferred,
                     },
-                    // mem.pools/PF1: a pool iterates its handles, not its values.
-                    Some("Pool") => match arg(0) {
-                        Some(elem) => ContainerElem::Known(Type::UnresolvedGeneric {
-                            name: "Handle".to_string(),
-                            args: vec![GenericArg::Type(Box::new(elem))],
-                        }),
-                        None => ContainerElem::Deferred,
-                    },
-                    // A store iterates its links — the same shape as a pool
-                    // iterating handles, minus the redemption step.
+                    // A rack iterates its links.
                     Some("Rack") => match arg(0) {
                         Some(node) => ContainerElem::Known(Type::UnresolvedGeneric {
                             name: "Link".to_string(),
@@ -5751,7 +5721,7 @@ impl TypeChecker {
     }
 
     pub(super) fn generic_base_name(&self, ty: &Type) -> Option<&'static str> {
-        const NAMES: [&str; 6] = ["Vec", "Map", "Pool", "Handle", "Rack", "Link"];
+        const NAMES: [&str; 4] = ["Vec", "Map", "Rack", "Link"];
         match ty {
             Type::UnresolvedGeneric { name, .. } => {
                 NAMES.iter().copied().find(|n| *n == name)
@@ -5848,7 +5818,7 @@ impl TypeChecker {
                 continue;
             }
             let ty = self.resolve_named(&self.ctx.apply(&pm.ty));
-            if self.handle_element_type(&ty).is_some() || self.link_node_type(&ty).is_some() {
+            if self.link_node_type(&ty).is_some() {
                 continue;
             }
             // Still unknown after solving — stay quiet rather than guess. An
@@ -5884,24 +5854,6 @@ impl TypeChecker {
         }
     }
 
-    /// mem.pools/PF5: a write through a handle whose element type is backed by a
-    /// `using frozen Pool<T>` context is rejected. Deferred alongside the
-    /// read-only check for the same reason — it needs the handle's element type.
-    pub(super) fn validate_pending_frozen_writes(&mut self) {
-        let pending = std::mem::take(&mut self.pending_frozen_writes);
-        for pfw in pending {
-            let ty = self.resolve_named(&self.ctx.apply(&pfw.ty));
-            let Some(elem) = self.handle_element_type(&ty) else { continue };
-            if self.frozen_context_elems.iter().any(|e| *e == elem) {
-                self.errors.push(TypeError::FrozenContextWrite {
-                    op: "write".to_string(),
-                    elem: self.fmt_ty(&elem),
-                    span: pfw.span,
-                });
-            }
-        }
-    }
-
     pub(super) fn validate_pending_index(&mut self) {
         let pending = std::mem::take(&mut self.pending_index);
         for pi in pending {
@@ -5930,30 +5882,6 @@ impl TypeChecker {
                             container,
                             found: index,
                             kind: IndexErrorKind::ExpectedKey(key),
-                            span: pi.span,
-                        });
-                    }
-                }
-                PendingIndexKind::Handle(elem) => {
-                    let elem = self.ctx.apply(&elem);
-                    // Skip only a genuinely-unresolved index; a scalar literal
-                    // var is resolved enough to know it isn't a handle.
-                    if let Type::Var(id) = index {
-                        if !self.ctx.is_integer_literal_var(id)
-                            && !self.ctx.is_float_literal_var(id)
-                        {
-                            continue;
-                        }
-                    }
-                    if !self.index_is_matching_handle(&index, &elem) {
-                        let expected = Type::UnresolvedGeneric {
-                            name: "Handle".to_string(),
-                            args: vec![GenericArg::Type(Box::new(elem))],
-                        };
-                        self.errors.push(TypeError::IndexTypeMismatch {
-                            container,
-                            found: index,
-                            kind: IndexErrorKind::ExpectedHandle(expected),
                             span: pi.span,
                         });
                     }
@@ -6096,8 +6024,6 @@ enum IndexContainer {
     Sequence,
     /// `Map<K, V>` — indexed by `K` (carried).
     Map(Type),
-    /// `Pool<T>` — indexed by `Handle<T>` (T carried).
-    Pool(Type),
 }
 
 /// An index site validated after inference finalizes (mod.rs).
@@ -6113,8 +6039,6 @@ pub(super) enum PendingIndexKind {
     Integer,
     /// Map index — must match the carried key type `K`.
     MapKey(Type),
-    /// Pool index — must be `Handle<T>` for the carried element type `T`.
-    Handle(Type),
 }
 
 /// Whether an index type is an integer (#310).

@@ -2,7 +2,6 @@
 //! Symbol definitions and symbol table.
 
 use rask_ast::Span;
-use rask_ast::decl::ContextClause;
 use crate::package::PackageId;
 
 /// Unique identifier for a symbol.
@@ -31,8 +30,6 @@ pub enum SymbolKind {
         params: Vec<SymbolId>,
         /// Return type as a string (for now).
         ret_ty: Option<String>,
-        /// `using` context clauses.
-        context_clauses: Vec<ContextClause>,
         /// Whether this is an `unsafe func`.
         is_unsafe: bool,
     },

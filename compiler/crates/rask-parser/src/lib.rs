@@ -1447,13 +1447,12 @@ mod tests {
         assert_eq!(f.type_params[0].bounds, vec!["Comparable".to_string()]);
     }
 
-    // Full order: generics → params → return → using → where, across lines.
+    // Full order: generics → params → return → where, across lines.
     #[test]
-    fn where_clause_after_using_multiline() {
+    fn where_clause_on_its_own_line() {
         let f = parse_fn(
-            "func complex<K, V>(map: Map<K, V>, key: K) -> V\n    using values: Pool<V>\n    where K: HashKey, V: Clone\n{ return key }",
+            "func complex<K, V>(map: Map<K, V>, key: K) -> V\n    where K: HashKey, V: Clone\n{ return key }",
         );
-        assert_eq!(f.context_clauses.len(), 1);
         let k = f.type_params.iter().find(|p| p.name == "K").expect("K param");
         let v = f.type_params.iter().find(|p| p.name == "V").expect("V param");
         assert_eq!(k.bounds, vec!["HashKey".to_string()]);

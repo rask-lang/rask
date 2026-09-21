@@ -647,57 +647,6 @@ uint64_t rask_hash_string_key(const void *key, int64_t key_size);
 // future sim runtime, unused today.
 void     rask_map_set_seed(uint64_t seed);
 
-// ─── Pool ───────────────────────────────────────────────────
-// Handle-based sparse storage with generation counters.
-
-typedef struct {
-    uint32_t pool_id;
-    uint32_t index;
-    uint32_t generation;
-} RaskHandle;
-
-typedef struct RaskPool RaskPool;
-
-RaskPool   *rask_pool_new(int64_t elem_size);
-RaskPool   *rask_pool_with_capacity(int64_t elem_size, int64_t cap);
-void        rask_pool_free(RaskPool *p);
-int64_t     rask_pool_len(const RaskPool *p);
-int64_t     rask_pool_is_empty(const RaskPool *p);
-RaskHandle  rask_pool_insert(RaskPool *p, const void *elem);
-void       *rask_pool_get(const RaskPool *p, RaskHandle h);
-int64_t     rask_pool_remove(RaskPool *p, RaskHandle h, void *out);
-int64_t     rask_pool_is_valid(const RaskPool *p, RaskHandle h);
-RaskHandle  rask_pool_alloc(RaskPool *p);
-
-// Packed i64 handle interface for codegen (index:32 | gen:32, pool_id from pool ptr)
-int64_t     rask_pool_alloc_packed(RaskPool *p);
-int64_t     rask_pool_insert_packed(RaskPool *p, const void *elem);
-int64_t     rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
-                                          int64_t owned_count, const int32_t *owned,
-                                          int64_t is_resource, const char *type_name,
-                                          int64_t name_len);
-int64_t     rask_pool_try_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size,
-                                              int64_t owned_count, const int32_t *owned,
-                                              int64_t is_resource, const char *type_name,
-                                              int64_t name_len);
-void       *rask_pool_get_packed(const RaskPool *p, int64_t packed);
-void       *rask_pool_get_checked(const RaskPool *p, int64_t packed,
-                                  const char *file, int32_t line, int32_t col);
-int64_t     rask_pool_remove_packed(RaskPool *p, int64_t packed);
-int64_t     rask_pool_remove_out(RaskPool *p, int64_t packed, void *out);
-int64_t     rask_pool_is_valid_packed(const RaskPool *p, int64_t packed);
-RaskVec    *rask_pool_handles_packed(const RaskPool *p);
-RaskVec    *rask_pool_values(const RaskPool *p);
-RaskVec    *rask_pool_entries(const RaskPool *p);
-RaskVec    *rask_pool_drain(RaskPool *p);
-
-#define RASK_HANDLE_INVALID ((RaskHandle){0, UINT32_MAX, 0})
-
-// Packed sentinel for Option<Handle<T>> niche optimization.
-// All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
-// Option<Handle<T>> uses this as None; any other i64 is Some(handle).
-#define RASK_HANDLE_PACKED_NONE ((int64_t)-1)
-
 // ─── Rack + Link (mem.racks) ────────────────────────────────
 //
 // A `Link<T>` is the node's address — no ticket, no generation check. `none` is
@@ -707,9 +656,7 @@ RaskVec    *rask_pool_drain(RaskPool *p);
 typedef struct RaskRack RaskRack;
 
 // `none` for a link is the null address — the one address that can never name
-// a node. A pool handle is index+generation and uses all-ones instead; the two
-// niches don't share a sentinel, they each pick what their own domain can't
-// produce. Null buys two things here: a rack chunk arrives zeroed, so a node's
+// a node. Null buys two things here: a rack chunk arrives zeroed, so a node's
 // links start out absent with nothing written, and the check is `if (!link)`.
 #define RASK_LINK_NONE ((void *)0)
 

@@ -524,15 +524,6 @@ func main() {
     }
 
     #[test]
-    fn keeps_a_using_clause() {
-        keeps(
-            "func heal(amount: i32) using players: Pool<Player> {\n    return\n}\n",
-            "using players: Pool<Player>",
-            "the context clause",
-        );
-    }
-
-    #[test]
     fn keeps_attributes_and_modifiers() {
         keeps(
             "@message\nenum E {\n    @message(\"boom\")\n    Bad(i64)\n}\n",
@@ -577,16 +568,6 @@ func main() {
             "the doc comment stays above its method:\n{}", output,
         );
         assert_eq!(output, format_source(&output), "and idempotently:\n{}", output);
-    }
-
-    #[test]
-    fn keeps_a_frozen_context_clause() {
-        // `is_frozen` printed as `const`, which isn't the keyword.
-        keeps(
-            "func read_ok(h: Handle<Player>) -> i32 using frozen Pool<Player> {\n    return 1\n}\n",
-            "using frozen Pool<Player>",
-            "the frozen marker",
-        );
     }
 
     #[test]

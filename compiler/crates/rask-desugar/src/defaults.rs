@@ -844,7 +844,7 @@ mod tests {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
                 name: "main".to_string(), type_params: vec![], params: vec![],
-                ret_ty: None, context_clauses: vec![],
+                ret_ty: None,
                 body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
                 is_pub: false, is_private: false, is_comptime: false, is_unsafe: false,
                 abi: None, attrs: vec![], doc: None, span: sp(),
@@ -898,7 +898,7 @@ mod tests {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
                 name: "main".to_string(), type_params: vec![], params: vec![], ret_ty: None,
-                context_clauses: vec![], body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
+                body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
                 is_pub: false, is_private: false, is_comptime: false, is_unsafe: false,
                 abi: None, attrs: vec![], doc: None, span: sp(),
             }),

@@ -1015,7 +1015,6 @@ mod tests {
                     })
                     .collect(),
                 ret_ty: ret_ty.map(|s| s.to_string()),
-                context_clauses: vec![],
                 body,
                 is_pub: false,
                 is_private: false,
@@ -1062,7 +1061,6 @@ mod tests {
                     })
                     .collect(),
                 ret_ty: ret_ty.map(|s| s.to_string()),
-                context_clauses: vec![],
                 body,
                 is_pub: false,
                 is_private: false,
@@ -1519,7 +1517,6 @@ mod tests {
                 })
                 .collect(),
             ret_ty: ret_ty.map(|s| s.to_string()),
-            context_clauses: vec![],
             body,
             is_pub: false,
             is_private: false,

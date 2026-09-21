@@ -28,7 +28,6 @@ impl Interpreter {
                 let mut value = self.eval_owned(init)?;
                 if let Some(ty_str) = ty {
                     value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
-                    backfill_pool_type_param(&value, ty_str);
                 }
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone());
@@ -49,7 +48,6 @@ impl Interpreter {
                 // OPT6: auto-wrap bare T into T? / T or E when annotated.
                 let value = if let Some(ty_str) = ty {
                     let value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
-                    backfill_pool_type_param(&value, ty_str);
                     value
                 } else {
                     value
@@ -392,56 +390,6 @@ impl Interpreter {
                         }
                         Ok(Value::Unit)
                     }
-                    // LP13: for mutate on Pool entries — write back values by handle
-                    Value::Pool(ref p) if *mutate => {
-                        let pool_arc = std::sync::Arc::clone(p);
-                        let pool = pool_arc.lock().unwrap();
-                        let pool_id = pool.pool_id;
-                        let entries: Vec<(Value, Value)> = pool
-                            .slots
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, (gen, slot))| {
-                                slot.as_ref().map(|val| (
-                                    Value::Handle { pool_id, index: i as u32, generation: *gen },
-                                    val.clone(),
-                                ))
-                            })
-                            .collect();
-                        drop(pool);
-
-                        for (handle, val) in entries {
-                            self.env.push_scope();
-                            if let ForBinding::Tuple(names) = binding {
-                                if names.len() >= 2 {
-                                    self.env.define(names[0].clone(), handle.clone());
-                                    self.env.define(names[1].clone(), val);
-                                }
-                            } else {
-                                self.define_for_binding(binding, handle.clone());
-                            }
-                            let outcome = self.exec_stmts(body);
-                            // However the body ended — see the Vec arm above (#650).
-                            if let ForBinding::Tuple(names) = binding {
-                                if names.len() >= 2 {
-                                    if let (Some(v), Value::Handle { index, .. }) = (self.env.get(&names[1]), &handle) {
-                                        let mut pool = pool_arc.lock().unwrap();
-                                        if let Some((_, slot)) = pool.slots.get_mut(*index as usize) {
-                                            *slot = Some(v);
-                                        }
-                                    }
-                                }
-                            }
-                            self.env.pop_scope();
-                            match outcome {
-                                Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => break,
-                                Err(diag) if continues_here(&diag.error, loop_label) => continue,
-                                Err(e) => return Err(e),
-                            }
-                        }
-                        Ok(Value::Unit)
-                    }
                     // Map iteration (non-mutating): yield (key, value) tuples
                     Value::Map(m) => {
                         let pairs = map_entries_seeded(&m.lock().unwrap());
@@ -480,46 +428,6 @@ impl Interpreter {
                     }
                     Value::Vec(v) => {
                         let items: Vec<Value> = v.lock().unwrap().items.clone();
-                        for item in items {
-                            self.env.push_scope();
-                            self.define_for_binding(binding, item);
-                            match self.exec_stmts(body) {
-                                Ok(_) => {}
-                                Err(diag) if breaks_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    break;
-                                }
-                                Err(diag) if continues_here(&diag.error, loop_label) => {
-                                    self.env.pop_scope();
-                                    continue;
-                                }
-                                Err(e) => {
-                                    self.env.pop_scope();
-                                    return Err(e);
-                                }
-                            }
-                            self.env.pop_scope();
-                        }
-                        Ok(Value::Unit)
-                    }
-                    Value::Pool(p) => {
-                        // Handle mode (default): yield handles as snapshot
-                        let pool = p.lock().unwrap();
-                        let pool_id = pool.pool_id;
-                        let items: Vec<Value> = pool
-                            .slots
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(i, (gen, slot))| {
-                                slot.as_ref().map(|_| Value::Handle {
-                                    pool_id,
-                                    index: i as u32,
-                                    generation: *gen,
-                                })
-                            })
-                            .collect();
-                        drop(pool);
-
                         for item in items {
                             self.env.push_scope();
                             self.define_for_binding(binding, item);
@@ -737,25 +645,6 @@ impl Interpreter {
                         }
                     }
                 }
-            }
-        }
-    }
-}
-
-/// Stamp a freshly created `Pool`'s element type from its `let`/`mut`
-/// annotation. `Pool.new()` written bare (the normal style — the element
-/// type is already on the left of the `=`) never learns its own element
-/// type otherwise: nothing else records it anywhere on the value. Named
-/// context-clause resolution (mem.context/CC4) needs that to tell one pool
-/// from another when more than one is in scope (`pool_for_context`, #867).
-/// A no-op once the pool already carries one (e.g. `Pool<Item>.new()`
-/// written out, or a pool passed in from elsewhere).
-pub(crate) fn backfill_pool_type_param(value: &Value, ty: &str) {
-    if let Value::Pool(p) = value {
-        if let Some(elem) = ty.trim().strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
-            let mut guard = p.lock().unwrap();
-            if guard.type_param.is_none() {
-                guard.type_param = Some(elem.trim().to_string());
             }
         }
     }
