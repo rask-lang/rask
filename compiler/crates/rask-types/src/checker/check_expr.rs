@@ -5142,14 +5142,22 @@ impl TypeChecker {
             });
             return false;
         }
-        // A function that returns nothing has nowhere to send the error either,
-        // and unlike a test block it isn't a place where ending the run is the
-        // right answer. This used to fall through: `func helper() { try f() }`
-        // type-checked, then native panicked with a message about test blocks
-        // and the interpreter dropped the error on the floor and carried on.
-        // The unresolved-operand path below has always reported this; the
-        // concrete-Result path is where it leaked.
-        if matches!(resolved, Type::Unit) {
+        // Nowhere to send the error. This used to name `void` alone, so
+        // `func doubled(t: string) -> i64 { let p = try port_of(t) … }`
+        // type-checked and then native printed the result word as if it were
+        // the payload (#1251). `void` was never the property that mattered —
+        // having an error branch is, and `i64` has one no more than `void`
+        // does.
+        //
+        // Not pinned yet, or already broken, stays quiet: a type variable gets
+        // its error branch from the unification below, and piling on after an
+        // earlier error just buries it.
+        if !matches!(resolved, Type::Result { .. } | Type::Var(_) | Type::Error)
+            && !matches!(
+                resolved,
+                Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }
+            )
+        {
             self.errors.push(TypeError::TryInNonPropagatingContext {
                 return_ty: resolved,
                 span,

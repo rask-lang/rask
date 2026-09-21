@@ -1196,6 +1196,30 @@ fn error_try_in_a_function_that_returns_nothing() {
 }
 
 #[test]
+fn try_without_an_error_branch_is_rejected() {
+    // #1251: the same rule one step wider. The check asked "does this return
+    // void?" when the question is "does this return type have a branch to
+    // carry the error?" — and `i64` has one no more than `void` does.
+    //
+    // What the hole cost: `rask check` said OK, then native printed the result
+    // word as if it were the payload (a stack address) and the interpreter
+    // died at run time saying a method was missing on `Result`. Neither named
+    // the program as the problem.
+    let (failed, out) = compile_error_output("try_without_an_error_branch.rk");
+    assert!(failed, "`try` into a return with no error branch must be rejected: {}", out);
+    assert!(
+        out.contains("found `i64`") && out.contains("found `string`")
+            && out.contains("found `Config`"),
+        "should name each return type that has nowhere to put the error: {}", out,
+    );
+    assert!(
+        out.matches("E0316").count() >= 3,
+        "should report all three sites, not stop at the first: {}", out,
+    );
+}
+
+
+#[test]
 fn error_catch_void_body_blames_itself_not_a_later_use() {
     // #876: `catch e => { println(...) }` supplies a void fallback, which is
     // only legal when the value's success type is actually void. When that
