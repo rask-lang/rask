@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A user function whose name is the internal spelling of a stdlib method
+// (#1227).
+//
+// MIR lowers a call to a stdlib method by minting `<Type>_<method>`, so a
+// program's own `func string_pad(s: string)` lands in the same flat namespace
+// as `string.pad`. The call resolved to the right function — a user function is
+// declared after the stdlib and shadows it — but the *argument adaptation* is
+// keyed on the bare name, so the call site was built for one signature and
+// adapted for the other:
+//
+//     error: codegen 'main': Cranelift error: … mismatched argument count for
+//     `call fn295(v7, v6, v5)`: got 3, expected 2
+//
+// Cranelift's verifier caught that one because the arities differ. A collision
+// with the same arity had nothing to catch it: the call went through with the
+// stdlib's argument shape.
+//
+// A language shouldn't reserve `string_pad`, so the answer is to ask which
+// namespace the name is in. A name the program declares is its own function,
+// never a stdlib one.
+
+// The issue's own repro: one parameter against `string.pad`'s three.
+func string_pad(s: string) -> string {
+    return "{s} padded"
+}
+
+// Same arity as what it collides with, which is the case nothing would have
+// caught.
+func Vec_len(v: Vec<i64>) -> u64 {
+    return 99
+}
+
+// A container constructor's spelling, which carries injected arguments.
+func Map_new(seed: i64) -> i64 {
+    return seed * 2
+}
+
+test "a one-parameter function against a three-parameter method" {
+    assert string_pad("seed") == "seed padded"
+}
+
+test "a same-arity collision calls the program's own" {
+    let v: Vec<i64> = [1, 2, 3]
+    assert Vec_len(v) == 99
+}
+
+test "and a constructor's spelling" {
+    assert Map_new(21) == 42
+}

@@ -8421,6 +8421,25 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
         adapt_table: &HashMap<String, (ArgAdapt, RetAdapt)>,
     ) -> CallAdapt {
+        // A name the program declares is its own function, never a stdlib one.
+        //
+        // MIR mints `<Type>_<method>` for a stdlib method and codegen resolves
+        // the name, so a user's `func string_pad(s: string)` lands in the same
+        // flat namespace as `string.pad`. The *call* already goes to the right
+        // place — a user function is declared after the stdlib and shadows it —
+        // but the adaptation is keyed on the bare name, so the call site was
+        // built for one signature and adapted for the other:
+        //
+        //     mismatched argument count for `call fn295(v7, v6, v5)`:
+        //     got 3, expected 2
+        //
+        // Cranelift's verifier caught that one because the arities differ. A
+        // same-arity collision would have called through quietly with the
+        // stdlib's argument shape (#1227). A language shouldn't reserve
+        // `string_pad`, so the answer is to ask which namespace the name is in.
+        if ctx.internal_fns.contains(func_name) {
+            return CallAdapt::None;
+        }
         let (arg_adapt, ret_adapt) = adapt_table
             .get(func_name)
             .copied()
