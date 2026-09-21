@@ -38,19 +38,21 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 ## This is not the learning path
 
-The book is. Four chapters, in this order, and that order is the day-one
-sequence — this page is not:
-
-1. [When there might be nothing](../docs/book/src/guide/when-there-might-be-nothing.md) — `T?`, `? as`, `??`
-2. [Errors are values](../docs/book/src/guide/errors-are-values.md) — `T or E`, `try`, `catch`
-3. [Passing Values](../docs/book/src/guide/passing-values.md) — ownership, the modes
-4. [When one owner isn't enough](../docs/book/src/guide/beyond-one-owner.md) — `Shared`, `Rack` + `Link`, `Heap`
+The book is: thirteen chapters under "Learn the language", of which four are
+written. The outline is rask-lang/rask#1274 and the live order is
+`docs/book/src/SUMMARY.md` — not repeated here, because a second copy of a
+table of contents is a copy that drifts.
 
 The two are different budgets and the filename hides it. A *learning path* is
 ordered and starts from nothing. A *reading set* is unordered and answers "what
-can appear in code I didn't write". The book teaches four things well; this page
-lists thirteen you must recognise. Chapter 4 is item 13, which is the check that
-they agree.
+can appear in code I didn't write". The book teaches a chapter at a time; this
+page lists what you must already recognise.
+
+The two should cover the same ground, and that is a real check rather than a
+slogan: the book's "When one owner isn't enough" is item 13 here, which is the
+only reason to trust item 13 — the audit that produced it used the wrong corpus
+(see the note under the budget rule). Mapping the other twelve onto the
+thirteen chapters hasn't been done.
 
 ## What's deliberately not here
 
