@@ -67,7 +67,7 @@ json.encode_pretty(value)
 
 | Rule | Description |
 |------|-------------|
-| **J6: Auto-encode** | Any struct satisfying `Encode` can be encoded without manual implementation. Uses `comptime for` + field access (`std.encoding/E1`–`E3`) |
+| **J6: Auto-encode** | Any struct satisfying `Encode` can be encoded without manual implementation. Uses `comptime for` + field access (`ctrl.comptime/CT48`–`CT54`) |
 | **J7: Compatible types** | `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `string`, `Vec<T>`, `Map<string, T>`, `T?`, nested structs |
 | **J8: Field mapping** | Struct field `serial_name` = JSON key. Defaults to field name (snake_case). Override with `@rename` (`std.encoding/E18`) |
 | **J9: Optional fields** | `T?` fields decode `null` or missing as `none`; missing required fields produce `MissingField`. `@default` fields (`std.encoding/E20`) also tolerate missing keys |

@@ -313,7 +313,7 @@ No lifetime annotations needed. Function signatures are simple. Reasoning about 
 
 **Concrete benefit — relocatable state:** Because a container preserves its slot layout, graph state can be serialized and sent across processes: every reference is written as the slot number it names and resolved back on arrival. The graph survives; a reference held across the boundary does not, so name a node with an id field if it has to be found again. See `mem.relocatable` for the full specification.
 
-**Concrete benefit — no Pin in async:** State machines from spawn closures only hold owned values (closures can't capture borrows cross-task — mem.closures/SL2), and a link can't cross a task boundary at all (mem.ownership/T2), so nothing a task holds points into a frame that could move. `Pin` is unnecessary and tasks are plain movable values. See conc.runtime/T1.
+**Concrete benefit — no Pin in async:** State machines from spawn closures only hold owned values (closures can't capture borrows cross-task — mem.closures/MC3), and a link can't cross a task boundary at all (mem.ownership/T2), so nothing a task holds points into a frame that could move. `Pin` is unnecessary and tasks are plain movable values. See conc.runtime/T1.
 
 **The fundamental choice:** I trade "hold a reference to data owned elsewhere" for "hold a reference into a container that owns it." The former requires tracking lifetimes; the latter requires naming the container. I think the explicitness is worth it.
 

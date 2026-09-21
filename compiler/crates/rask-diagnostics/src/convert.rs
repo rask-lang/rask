@@ -1791,7 +1791,7 @@ impl ToDiagnostic for rask_types::TypeError {
                             "implement the trait before boxing:\n    extend {} with {} {{ … }}",
                             ty, trait_name
                         ))
-                        .with_why("`as any Trait` builds a vtable from the concrete type's methods, so every method the trait declares has to be there [type.generics/TR1]"),
+                        .with_why("`as any Trait` builds a vtable from the concrete type's methods, so every method the trait declares has to be there [type.generics/G7]"),
                 }
             }
 
@@ -2467,7 +2467,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(message.clone())
                     .with_code("E0818")
                     .with_primary(*span, "invalid conversion form")
-                    .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV5–CV10]")
+                    .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV11–CV16]")
             }
             IntLiteralOutOfRange { literal, ty, min, max, span } => {
                 let label = format!("`{}` doesn't fit in `{}`", literal, ty);

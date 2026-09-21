@@ -14,8 +14,9 @@ use rask_ast::{NodeId, Span};
 ///
 /// Every box in the family hands back the payload's address the same way, so the
 /// block itself is one piece of code; only these three names differ. `release` is
-/// `None` for a box holding no lock — a `Cell` is single-task by construction
-/// (mem.cell/CE1), so there's nothing to unlock on the way out.
+/// `None` for a box holding no lock: `Cell` is the internal spelling of the
+/// `Local` strategy, which takes none and can't cross a task (`conc.sync/SH7`),
+/// so there's nothing to unlock on the way out.
 pub(super) struct BoxWithSyms {
     /// Takes exclusive access, returns the payload's address.
     pub acquire: &'static str,

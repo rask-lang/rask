@@ -897,7 +897,7 @@ impl Interpreter {
             // the same way a struct field does. Without this the callee's scope
             // exit read it as a leak, and native — which has no runtime tracker
             // — disagreed (#792). A `Vec` can't hold a resource at all
-            // (mem.linear/RC1, RC3), so walking one costs nothing and finds
+            // (mem.resources/RC1, RC3), so walking one costs nothing and finds
             // nothing.
             Value::Tuple(items) => {
                 for item in items.iter() {

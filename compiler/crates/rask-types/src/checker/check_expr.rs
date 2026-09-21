@@ -1975,7 +1975,7 @@ impl TypeChecker {
                     self.solve_constraints();
                     let source_ty = self.ctx.apply(&raw_ty);
                     // `with box as v { ... }` binds `v` to the inner T, never the
-                    // wrapper — conc.sync/MX1 for Mutex, mem.cell/CE4 for Cell.
+                    // wrapper (`conc.sync/R1`, `R2`).
                     // Access is held for the block's duration and dropped when
                     // `with` exits.
                     //

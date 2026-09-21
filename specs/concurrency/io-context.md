@@ -225,7 +225,7 @@ using Multitasking, ThreadPool {
 }
 ```
 
-Linter rule `conc.runtime/HP2.4` warns about I/O inside `ThreadPool.spawn`.
+`comp.effects/CW1` warns about I/O inside `ThreadPool.spawn`.
 
 ### Pause point visibility
 

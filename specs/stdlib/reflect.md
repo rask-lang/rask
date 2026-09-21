@@ -196,7 +196,7 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 
 ### Patterns & Guidance
 
-**Comptime field iteration** — the primary use case. Uses `comptime for` + field access (`std.encoding/E1`–`E3`):
+**Comptime field iteration** — the primary use case. Uses `comptime for` + field access (`ctrl.comptime/CT48`–`CT54`):
 
 <!-- test: skip -->
 ```rask
@@ -247,7 +247,7 @@ Ghost annotations show reflected values on hover (e.g., hovering `reflect.fields
 ### See Also
 
 - `ctrl.comptime` — Compile-time execution context
-- `std.encoding` — Comptime field iteration and serialization (`std.encoding/E1`–`E3`)
+- `std.encoding` — Comptime field iteration and serialization
 - `type.traits` — Trait definitions and structural typing
 - `type.structs` — Struct field layout and visibility
 - `mem.relocatable` — Flat type constraint, `is_flat<T>()` usage (`mem.relocatable/FL4`)

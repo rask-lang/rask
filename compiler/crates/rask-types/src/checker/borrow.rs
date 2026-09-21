@@ -507,7 +507,7 @@ impl TypeChecker {
         let resolved = self.resolve_named(&self.ctx.apply(ty));
 
         // A box mutates through its heap slot, not through the binding
-        // (conc.sync, and `mem.cell/CE2` before it) — `let c = Shared.new(0)`
+        // (`conc.sync/R2`) — `let c = Shared.new(0)`
         // followed by `c.write()` is the point of the type, not a mistake. This
         // has to be said explicitly because `write` *is* `mutate self` on
         // other stdlib types, and an unresolved receiver falls through to the

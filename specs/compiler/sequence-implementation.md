@@ -416,7 +416,7 @@ Each stage is independently shippable and testable.
       }
   }
   ```
-- `take self` is required: the returned closure calls `receive()` after `stream()` has returned, so the Receiver must be owned by the closure. A borrowing `self` produces an expression-scoped Sequence (`mem.closures/SL2`) — not storable.
+- `take self` is required: the returned closure calls `receive()` after `stream()` has returned, so the Receiver must be owned by the closure. A borrowing `self` produces an expression-scoped Sequence (`mem.closures/SL4`) — not storable.
 - **Test 1**: `for msg in rx.stream().take(10) { ... }` — channel close terminates the sequence
 - **Test 2**: build a channel, call `rx.stream()`, drop the Sequence without iterating. Verify the Receiver drops with it and senders see the channel-closed path.
 

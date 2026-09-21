@@ -66,11 +66,79 @@ while IFS= read -r f; do
     done
 done < <(find specs -name '*.md')
 
-echo "──────────────────────────────────────────────────"
 if [ "$fail" -eq 0 ]; then
     echo "spec ids gate: $checked files, no duplicate rule ids"
 else
-    echo "spec ids gate: FAILED — a citation like \`spec/ID\` can't name two rules"
+    echo "spec ids gate: FAILED — a citation like `spec/ID` can't name two rules"
     echo "Give the newer rule the next free number in that file and update its citations."
 fi
+
+# ── Part 2: every `spec-id/RULE` citation names a rule that exists ────────────
+#
+# An id is only a name if it resolves. `mem.closures/SL1` was cited from four
+# files after SL1 and SL2 were replaced by SL3/SL4 — the citations still read
+# like authority and pointed at nothing. Same for `type.primitives/CV5–CV10`
+# in a compiler diagnostic, where the real rules are CV11–CV16.
+#
+# A rule is "defined" by any bolded table row or section heading in its spec
+# that carries the id, which is looser than Part 1's named-definition test on
+# purpose: this asks whether the file mentions the rule at all, so a row that
+# records a deletion (`| **ER21, ER24, ER25 deleted** |`) still counts — RULINGS
+# cites ER21 precisely *because* it was removed.
+#
+# Exploration and deprecated pages are skipped as citation sources: they quote
+# doc comments and older drafts verbatim, and rewriting a quote to keep a gate
+# happy falsifies the record.
+
+python3 - <<'PY' || fail=1
+import glob, re, sys
+
+ID   = re.compile(r'\b([A-Z]{1,4}[0-9]+(?:\.[0-9]+)?[a-z]?)\b')
+ROW  = re.compile(r'^\| \*\*([^*]*)\*\*', re.M)
+HEAD = re.compile(r'^#+ .*[(\[]([^)\]]*)[)\]]\s*$', re.M)
+CITE = re.compile(r'\b([a-z][a-z0-9]*\.[a-z0-9-]+)/([A-Z]+[0-9]+(?:\.[0-9]+)?[a-z]?)\b')
+STATUS = re.compile(r'<!--\s*status:\s*([a-z]+)')
+
+specs, rules, skip = {}, {}, set()
+for f in glob.glob('specs/**/*.md', recursive=True):
+    txt = open(f, errors='ignore').read()
+    m = re.search(r'<!--\s*id:\s*([a-z0-9.-]+)\s*-->', txt)
+    if not m:
+        continue
+    sid = m.group(1)
+    specs[sid] = f
+    s = STATUS.search(txt)
+    if s and s.group(1) in ('exploration', 'deprecated'):
+        skip.add(f)
+    found = set()
+    for grp in ROW.findall(txt) + HEAD.findall(txt):
+        for rid in ID.findall(grp):
+            found.add(rid)
+            found.add(rid.split('.')[0])
+    rules[sid] = found
+
+bad = []
+sources = sorted(set(glob.glob('specs/**/*.md', recursive=True)
+                     + glob.glob('compiler/crates/*/src/**/*.rs', recursive=True)
+                     + glob.glob('compiler/crates/*/src/*.rs', recursive=True)))
+for f in sources:
+    if f in skip:
+        continue
+    for i, line in enumerate(open(f, errors='ignore'), 1):
+        for sid, rule in sorted(set(CITE.findall(line))):
+            if sid in specs and rule not in rules[sid]:
+                bad.append((f, i, sid, rule))
+
+for f, i, sid, rule in bad:
+    print(f"dangling citation: {f}:{i} cites {sid}/{rule}, "
+          f"not defined in {specs[sid]}")
+print(f"spec ids gate: {len(sources)} files scanned, "
+      f"{'no dangling citations' if not bad else 'FAILED'}")
+if bad:
+    print("Point each citation at the rule it means, "
+          "or say in the spec that the old id was retired.")
+sys.exit(1 if bad else 0)
+PY
+
+echo "──────────────────────────────────────────────────"
 exit "$fail"
