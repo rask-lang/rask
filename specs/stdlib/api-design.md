@@ -1,6 +1,6 @@
 <!-- id: std.api -->
 <!-- status: decided -->
-<!-- summary: Stdlib API rules — small surface, guessable names, one powerful function over many specific, no Rust legacy by reflex -->
+<!-- summary: Stdlib API rules — small surface, guessable names, one powerful function over many specific, no Rust legacy by reflex, composability through shared protocols -->
 <!-- depends: canonical-patterns.md -->
 
 # Stdlib API Design
@@ -16,6 +16,9 @@ The stdlib is where language size actually hits people. Nobody reads the grammar
 | **SD3: The guess test** | Before designing a function, write the call site you'd *guess* — the line you'd type before opening any docs. If the guess is reasonable and the stdlib differs, the stdlib is wrong, not the guess. Names come from [canonical-patterns.md](../canonical-patterns.md)'s vocabulary so guesses transfer between modules |
 | **SD4: No Rust legacy by reflex** | Every name and shape is justified from how the Rask call site reads, never from what `std` calls it. Rask has `T or E`, `T?`, `Heap`, `Shared<T, S>` — so `Result`, `Option`, `Box`, `Rc`, `RefCell`, `Arc<Mutex<T>>` never appear, and neither do their method idioms (`unwrap`, `expect`, `ok_or`, `and_then`). `Vec`/`Map` survive because they read right in Rask, not because Rust has them |
 | **SD5: One way** | No convenience aliases, no two spellings for one operation (`mem.atomics/GA1` is the precedent). If two functions do the same thing, one of them is deprecated the day the second lands |
+| **SD7: Weakest bound** | A generic function asks for the least trait that lets one body serve every `T`. Generic when the algorithm doesn't care which type it got; concrete when a type parameter would only absorb a conversion. A conversion belongs at the call site, written, with its policy visible |
+| **SD8: Canonical protocols** | The stdlib speaks a closed set of protocols: `Sequence`, `Comparable`, `Equal`, `Hashable`, `Displayable`, `Debug`, `Reader`/`Writer`, `Encode`/`Decode`, and the operator traits once `type.operator-resolution` lands. No module invents a parallel interface for something this set covers. Growing the set is a change to this spec, not a module-level decision |
+| **SD9: Laws, not just signatures** | Every canonical protocol states its contract in its spec (`Equal` is reflexive and symmetric, `Comparable` is a total order, `Sequence` yields each element once). Conforming means meeting the laws. A signature match without the laws is how independently-written pieces compose into bugs |
 
 ## One word per question (SD6)
 
@@ -88,6 +91,33 @@ When speccing a module, write the *call sites first* — a dozen lines of realis
 
 This is `CLAUDE.md`'s "sketch how the call site reads first" made into a gate rather than advice.
 
+## Composability (SD7–SD9)
+
+The goal is Julia's property: two pieces of code that have never heard of each other work together, because the algorithm asked for the least it needed and the type answered. A user's number type flows through generic stdlib math; a user's container flows through everything written against `Sequence`. Rask gets this statically: the "multiple dispatch" question was already settled in `type.operator-resolution`'s rationale — choosing a method from several argument types and third-party conformances (#312) are compile-time features Rask takes; the runtime open-set version is the part rejected. Blocked today on generic trait parameters (#1164) and associated types (#1165).
+
+SD7 delivers the generics half, SD8 the conventions half. They only work together: a weakest-bound function over a protocol nobody shares composes with nothing.
+
+### The litmus: Raido's fixed-point
+
+Raido's 32.32 fixed-point number is the in-house test that the property exists. When it conforms to the operator traits and `Comparable`, this must work with **zero stdlib changes**:
+
+<!-- test: skip -->
+```rask
+let readings: Vec<Fixed> = sensor.window()
+let smallest = min(readings[0], readings[1])   // std.math/G1, T: Comparable
+mut total = Fixed.zero()
+for r in readings {
+    total = total + r                          // operator trait, not a Fixed method
+    if r > alarm_level { alert(r) }            // Comparable again
+}
+```
+
+If any line needs a stdlib edit, a cast, or a `Fixed`-specific sibling function, SD7 or SD8 was violated somewhere. Re-run this check whenever a numeric or container API lands, and whenever the stdlib gains a numeric algorithm (a `sum`, a `clamp`): each must be born generic or not at all.
+
+### What SD9 buys
+
+Julia composes so well partly because nothing can reject you — and it pays in combinations that run and are wrong (the ecosystem-wide breakage when arrays stopped being 1-based is the canonical case). Checked conformance plus written laws is the version of composability where the combinations that compile are the ones that work. That bill is worth paying; `type.operator-resolution`'s rationale records the same trade from the operator side.
+
 ## Edge Cases
 
 | Case | Rule | Handling |
@@ -97,6 +127,8 @@ This is `CLAUDE.md`'s "sketch how the call site reads first" made into a gate ra
 | Cost-family conversions (`as_`/`to_`/`into_`) | SD2 | Allowed — the prefixes are one concept, learned once ([canonical-patterns](../canonical-patterns.md)) |
 | Callers would routinely discard the error | SD3 | The API is absence-shaped — return `T?`, not `T or E`. A probe's failure is a non-answer, and an error branch nobody reads is ceremony at every call site ([canonical-patterns](../canonical-patterns.md)) |
 | A Rust name really is the right one | SD4 | Fine — justified from the Rask side in the module spec's rationale, not from precedent |
+| A module needs an interface the canonical set almost covers | SD8 | Extend the set here (a change to this spec, argued in its rationale) — never a one-module parallel protocol |
+| A generic bound would hide a fallible conversion (e.g. integers of different width) | SD7 | Stay concrete. The seam is fixed by choosing types, not by a type parameter that swallows the policy |
 | Deprecating toward one spelling | SD5 | The loser gets a lint pointing at the winner for one release, then removal (pre-1.0: immediate removal) |
 
 ---
@@ -110,6 +142,10 @@ This is `CLAUDE.md`'s "sketch how the call site reads first" made into a gate ra
 **SD3 (guess test):** Guessability compounds: a stdlib where the first guess works teaches users to guess, which makes every module cheaper to use than its docs. A stdlib that punishes guessing teaches doc-checking, and then the size of the docs *is* the size of the language. This is the API-level version of the reading-set budget ([DAY_ONE.md](../DAY_ONE.md), `spec.metrics` RS).
 
 **SD4 (Rust legacy):** Rask's early stdlib sketches leaned on Rust names because that's what the hands knew. Some survived scrutiny (`Vec`, `Map`), most didn't (`Result` → `T or E`). The rule exists so the scrutiny happens per-name instead of per-habit.
+
+**SD7/SD8 (composability):** I want Julia's composability, by generics and by conventions. The halves only work together. Generics without agreed protocols puts the flexibility at parameter positions (`impl AsRef`-style bounds), where it hides conversions and turns errors into trait-bound walls. Protocols without generics means writing the same loop per type. Both halves, statically checked, is the target. `min<T: Comparable>` with no `math.min` and no `.min()` method is the existing model case.
+
+**SD9 (laws):** Composability means combinations nobody tested. The only way those are correct is if each side conforms to a stated contract rather than a shape. Laws live in the protocol's own spec and are cited from conformance docs; a comptime-checkable subset can come later without changing what the rule asks.
 
 ### See Also
 

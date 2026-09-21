@@ -4,7 +4,7 @@ Rask is a systems language for a world where code is increasingly written by mac
 
 Rust proved that a compiler can carry correctness. It also front-loads its complexity into deep, composing concepts (lifetimes, variance, `Pin`) and pays for zero-cost purity with slow feedback. Go proved that simplicity wins adoption, and pays with GC pauses, nil, and silent resource leaks. Rask takes the third position: **strict like Rust, local like Go, reproducible like neither.**
 
-## The five commitments
+## The six commitments
 
 Every feature, rule, and tool decision must serve these. When two conflict, they're listed in priority order.
 
@@ -23,6 +23,9 @@ A rule the compiler enforces is a rule the compiler explains: diagnostics cite t
 **5. Ceremony must carry information.**
 Every token the language forces you to write must tell the reader something they need: a decision (the order of a middleware chain), a cost (`.clone()`, `as any`), or a contract (`mutate self`, a conformance claim). Restating what the compiler already knows is legal exactly when the reader at that line needs the fact — that's visibility, and it's commitment 2 working. Code that informs neither reader nor compiler is boilerplate, and boilerplate is a design bug: fix it by composing existing forms or deleting the requirement, never by adding a shortcut concept or generating the noise faster. The test for any proposed syntax: what does the reader learn from it? No answer, no syntax.
 
+**6. What you write is the most you pay.**
+The compiler may lower the cost of what you wrote — elide a bounds check, a refcount, a lock it proves uncontended, a copy of a value it proves dead. It may never raise a cost, change what the code means, or change whether it compiles. Written cost is a ceiling, not an estimate; inference affects performance, never legality. That last clause is what keeps a smart compiler from feeling moody: a program's meaning and its verdict are stable across releases even as its cost keeps dropping, so the optimizer can get cleverer forever without a single program breaking. The string refcount elision pass is the model; every future elision passes the same three gates.
+
 ## What this rules out
 
 - Softening sound compile-time rules into advisory lints. The runtime backstop exists for what static analysis *can't* prove, not for what it won't.
@@ -30,6 +33,7 @@ Every token the language forces you to write must tell the reader something they
 - Compiler knowledge that only surfaces in an IDE. It breaks commitment 2.
 - Hidden nondeterminism in language or stdlib semantics. Each source is enumerated and disposed of in the determinism contract.
 - Complexity justified by "it's zero-cost." Rask doesn't promise zero-cost; it promises visible cost. We don't pay Rust's complexity tax for a purity we don't sell.
+- Checks whose outcome depends on how clever the optimizer was. Inference may change what code costs, never whether it compiles or what it means (commitment 6).
 
 ## How decisions get made
 
