@@ -498,7 +498,7 @@ impl<'a> MirLowerer<'a> {
         let present = self.builder.alloc_temp(MirType::Bool);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(present),
-            func: FunctionRef::internal("Map_contains_key".to_string()),
+            func: FunctionRef::internal("Map_contains".to_string()),
             args: vec![MirOperand::Local(map), MirOperand::Local(key)],
         }));
 
@@ -588,7 +588,7 @@ impl<'a> MirLowerer<'a> {
     /// closure, answer `R?`, and for `modify` put back whatever the closure left
     /// in its parameter.
     ///
-    /// `Map_contains_key` decides the branch rather than `Map_get`, so the
+    /// `Map_contains` decides the branch rather than `Map_get`, so the
     /// present path can use `Map_get_unwrap` and get the value itself instead of
     /// an optional to unwrap.
     fn lower_map_value_closure(
@@ -617,7 +617,7 @@ impl<'a> MirLowerer<'a> {
         let present = self.builder.alloc_temp(MirType::Bool);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(present),
-            func: FunctionRef::internal("Map_contains_key".to_string()),
+            func: FunctionRef::internal("Map_contains".to_string()),
             args: vec![MirOperand::Local(map), MirOperand::Local(key)],
         }));
 

@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+package "app" "0.1.0" {
+    description: "A release build must not reach a dev-scoped dep"
+    license: "MIT OR Apache-2.0"
+    dep "libpkg" { path: "../libpkg" }
+    scope "dev" {
+        dep "testkit" { path: "../testkit" }
+    }
+}

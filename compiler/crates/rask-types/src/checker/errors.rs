@@ -258,6 +258,15 @@ pub enum TypeError {
     NonOptionalLink {
         span: Span,
     },
+    /// mem.racks/RK11: `<`, `compare` or `sort` on links. A link is the node's
+    /// address, so the answer would come from the allocator. `op` is what the
+    /// source wrote.
+    #[error("`{op}` on `{recv}` would order nodes by address")]
+    LinkNotOrderable {
+        op: String,
+        recv: String,
+        span: Span,
+    },
     #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
     RetiredBoxType {
         name: String,
@@ -787,6 +796,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// DL4: two or more inline sync accesses in one expression
+    #[error("this expression takes {count} locks at once")]
+    MultipleSyncAccesses {
+        count: usize,
+        /// The receiver of the second access, for the suggestion.
+        recv: String,
+        method: String,
+        span: Span,
+    },
+
     /// E16: mixed explicit and auto-indexed discriminants
     #[error("enum `{enum_name}`: if any variant has `= N`, all must")]
     MixedDiscriminants {
@@ -1288,6 +1307,7 @@ impl TypeError {
             | LocalSharedSent { .. }
             | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
+            | LinkNotOrderable { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
             | StringIsImmutable { .. }
@@ -1340,6 +1360,7 @@ impl TypeError {
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
             | BareSyncAccess { .. }
+            | MultipleSyncAccesses { .. }
             | BadFieldAnnotation { .. }
             | BadAnnotation { .. }
             | UnknownAllowName { .. }

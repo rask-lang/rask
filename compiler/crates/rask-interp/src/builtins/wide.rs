@@ -79,7 +79,7 @@ impl Interpreter {
                 })))
             }
             // --- terminals (run the plan) ---
-            "read" => {
+            "to_vec" => {
                 let lanes = self.eval_wide(plan)?;
                 Ok(Value::vec(lanes))
             }

@@ -37,7 +37,7 @@ func open_result(path: string) -> string {
 }
 
 func create_result(path: string) -> string {
-    let c = fs.create(path)
+    let c = fs.create_file(path)
     c catch e => {
         return "{e}"
     }

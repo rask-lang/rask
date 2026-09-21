@@ -1,7 +1,7 @@
 <!-- id: compiler.mangling -->
 <!-- status: decided -->
 <!-- summary: Symbol naming scheme for object file emission -->
-<!-- depends: struct.modules, type.generics -->
+<!-- depends: structure/modules.md, types/generics.md -->
 
 # Name Mangling
 

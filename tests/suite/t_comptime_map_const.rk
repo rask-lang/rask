@@ -46,7 +46,7 @@ const NAMES = comptime {
 }
 
 // The annotation isn't about folding — an empty map has nothing to read its
-// key and value types off, folded or not, and `contains_key` needs to know
+// key and value types off, folded or not, and `contains` needs to know
 // what a key is. Without it the block fails to lower either way.
 const EMPTY: Map<string, i64> = comptime {
     mut m = Map.new()
@@ -81,8 +81,8 @@ test "a key too long to sit inline still finds its entry" {
 }
 
 test "membership answers for a key that isn't there" {
-    assert CODES.contains_key("alpha")
-    assert !CODES.contains_key("zulu")
+    assert CODES.contains("alpha")
+    assert !CODES.contains("zulu")
 }
 
 test "a table computed by a loop folds" {
@@ -100,7 +100,7 @@ test "an integer key with a string value" {
 
 test "an empty map folds to an empty map" {
     assert EMPTY.len() == 0
-    assert !EMPTY.contains_key("anything")
+    assert !EMPTY.contains("anything")
 }
 
 test "inserting the same key twice keeps the last value" {
@@ -110,7 +110,7 @@ test "inserting the same key twice keeps the last value" {
 
 test "a key removed inside the block isn't in the constant" {
     assert AFTER_REMOVE["keep"] == 1
-    assert !AFTER_REMOVE.contains_key("drop")
+    assert !AFTER_REMOVE.contains("drop")
     assert AFTER_REMOVE.len() == 1
 }
 

@@ -125,6 +125,21 @@ pub enum MirType {
     /// tag. Codegen puts the kind back on the one type it walks, in the one
     /// place that walks it.
     Container(ContainerKind),
+    /// `Heap<T>` — the address of a block holding a `T`.
+    ///
+    /// `Heap(x)` always allocates, so this is a block pointer and nothing else.
+    /// It used to skip the allocation when the payload fit the slot, which
+    /// meant `Heap<i64>` was an `i64`, `Heap<Vec<i64>>` was the vector's own
+    /// handle, and nothing in a type said which of the two a given word was.
+    /// Lowering answered from a flag on the binding, and a flag can't cross a
+    /// carrier — a struct field or a tuple holds a value, not a binding — so
+    /// `*b` and `drop(b)` were each wrong for eight of the sixteen payload
+    /// kinds (#1234, #1256).
+    ///
+    /// Unlike `Container`, this one *does* reach stored types. It has to: the
+    /// checker erases `Heap<T>` to `T` (HP5), so this is the only place the
+    /// fact survives.
+    Heap(Box<MirType>),
     String,
     Struct(StructLayoutId),
     Enum(EnumLayoutId),
@@ -265,7 +280,8 @@ impl MirType {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_)
-            | MirType::Handle | MirType::Link(_) | MirType::Container(_) => 8,
+            | MirType::Handle | MirType::Link(_) | MirType::Container(_)
+            | MirType::Heap(_) => 8,
             MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
             MirType::Struct(sid) => sid.byte_size,

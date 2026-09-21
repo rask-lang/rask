@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A closure held in a struct field, once the struct is a container element.
+//
+// Two fixes landed either side of this one and it fell between them. #1149
+// taught a container's element walk that an element can *be* a closure; #1204
+// taught the frame that a struct field can hold one. Neither taught the element
+// walk that a struct **element** can hold one in a field:
+//
+//     mut fs: Vec<Handler> = []
+//     fs.push(Handler { run: |x| x + 1 })
+//     // rask: 1 allocation never released (32 bytes)
+//
+// 32 bytes is the closure block, one per element, left to nobody. It doesn't
+// need the value called — the leak is in the push, not the call (#1228).
+//
+// Run under the leak gate, which is what measures this: the assertions below
+// only pin that the values still work.
+
+struct Handler {
+    public run: func(i64) -> i64
+}
+
+struct Nested {
+    public inner: Handler
+}
+
+test "a struct element holding a closure" {
+    mut fs: Vec<Handler> = []
+    fs.push(Handler { run: |x| x + 1 })
+    assert fs.len() == 1
+    assert (fs[0].run)(5) == 6
+}
+
+test "never called, still released" {
+    mut fs: Vec<Handler> = []
+    fs.push(Handler { run: |x| x + 1 })
+    assert fs.len() == 1
+}
+
+// A derived container copies element bytes, so the block is named twice and the
+// count on it is what keeps one free from being two.
+test "a clone of that container" {
+    mut fs: Vec<Handler> = []
+    fs.push(Handler { run: |x| x + 1 })
+    fs.push(Handler { run: |x| x + 2 })
+    let copy = fs.clone()
+    assert copy.len() == 2
+    assert (copy[0].run)(5) == 6
+}
+
+test "one level further out" {
+    mut ns: Vec<Nested> = []
+    ns.push(Nested { inner: Handler { run: |x| x * 3 } })
+    assert (ns[0].inner.run)(4) == 12
+}
+
+test "a map value holding one" {
+    mut m: Map<string, Handler> = Map.new()
+    m.insert("k", Handler { run: |x| x + 10 })
+    assert m.len() == 1
+}
+
+func main() {}

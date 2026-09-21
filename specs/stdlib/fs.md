@@ -211,7 +211,7 @@ WHY: The path does not exist on the filesystem.
 
 <!-- test: skip -->
 ```rask
-let file = try fs.create("data.tmp")
+let file = try fs.create_file("data.tmp")
 ensure file.close()
 try file.write_bytes(serialize(data))
 file.close()

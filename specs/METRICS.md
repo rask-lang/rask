@@ -154,14 +154,18 @@ I target SN ≤ 0.3 because error handling shouldn't dominate the actual logic.
 
 ```
 RS = distinct language concepts required to READ the five validation programs
-Target: every concept used is on DAY_ONE.md, and DAY_ONE.md stays one page (~12 concepts)
+Target: every concept used is on DAY_ONE.md, and DAY_ONE.md stays one page (~13 concepts)
 ```
 
 SN measures noise per line; RS measures how much language lives in your head. They fail independently: a language can be token-quiet and still demand twenty concepts to read a web handler.
 
-What counts is the *reading* set — concepts a reader must already know to not misread the code. Concepts that announce themselves in types (`Pool<T>`, `Shared<T>`), are opt-in (`comptime`, `unsafe`), or arrive as self-explaining compile errors (linearity, stale handles) don't count against RS; concepts that appear bare in ordinary code do.
+What counts is the *reading* set — concepts a reader must already know to not misread the code. Opt-in machinery (`comptime`, `unsafe`) and rules that arrive as a self-explaining compile error (linearity, a stale link) don't count against RS. Concepts that appear in ordinary code do.
+
+**Appearing in a type is not an exemption.** This paragraph used to grant one — "concepts that announce themselves in types (`Pool<T>`, `Shared<T>`) don't count" — and that made RS unfailable, because a container is exactly the thing that appears in a type. It also contradicts the sentence above it: a type name tells a *writer* what they chose, and tells a reader who has never met `Link<T>` nothing. Someone reading `game_loop` without item 13 will assume a deleted node leaves a dangling reference, which is the misreading RS exists to count.
 
 **Measurement:** audit the five validation programs against [DAY_ONE.md](DAY_ONE.md). Every construct in them must be on the page.
+
+**Last run:** 2026-09-21, and it was the first. Three of five failed — `http_api_server` on `Shared`, `game_loop` on `Rack`/`Link`/`deleting`, `text_editor` on `Pool`/`Handle`. Neither program could be rewritten out of it, so the page grew by one concept (item 13, containers you reach through). `grep_clone` and `sensor_processor` were already clean. Re-run this when a validation program changes or `DAY_ONE.md` does.
 
 **Red flags:**
 - A validation program uses a concept not on DAY_ONE.md → either the page grows (a budget decision, Ceremony-Test scrutiny) or the program gets rewritten — the same discipline as the Go-length litmus

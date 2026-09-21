@@ -300,6 +300,13 @@ impl TypeChecker {
             matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
         }
         match ty {
+            // A parameter the enclosing function or extend block already binds
+            // keeps its name. Freshening it would hand this call a variable the
+            // caller's type argument never reaches, and the chain after it
+            // would have no receiver type at all.
+            Type::UnresolvedNamed(name) if self.type_params_in_scope.contains(name) => {
+                ty.clone()
+            }
             Type::UnresolvedNamed(name) if is_param(name) => seen
                 .entry(name.clone())
                 .or_insert_with(|| self.ctx.fresh_var())

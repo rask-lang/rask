@@ -157,7 +157,10 @@ extend Command {
     }
 
     /// Set an environment variable for the child process.
-    public func env(take self, key: string, value: string) -> Command {
+    ///
+    /// `set_env`, not `env`: `os.env(name)` in this same module *reads* one, and
+    /// a builder step that looks like a getter is the wrong kind of surprise.
+    public func set_env(take self, key: string, value: string) -> Command {
         mut c = self
         c.envs.push(key)
         c.envs.push(value)

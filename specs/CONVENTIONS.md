@@ -123,7 +123,7 @@ One-line decision statement.
 1. **Rule tables first, examples second.** Lead with the rule table. One code block follows. No prose between.
 2. **No restating the table.** If the rule table says it, don't repeat it in prose.
 3. **One example per rule group.** Pick the clearest one.
-4. **Error messages cite their rule.** Format: `ERROR [mem.borrowing/V2]: message`
+4. **Error messages cite their rule.** Format: `ERROR [mem.borrowing/B2]: message`
 5. **Edge cases table has a Rule column.** Links each case to its governing rule.
 6. **Cross-references use citation format.** `mem.borrowing/S3` not "see borrowing.md".
 7. **Rationale references rules by ID.** `**S3 (no escape):** I wanted to prevent...`
@@ -146,7 +146,7 @@ FIX: Concrete code showing the fix.
 | Content type | Location | Example |
 |-------------|----------|---------|
 | Rules, constraints | Main spec (rule tables) | "Views released at semicolon" |
-| Compiler behavior | Main spec (error messages) | `ERROR [mem.borrowing/V2]` |
+| Compiler behavior | Main spec (error messages) | `ERROR [mem.borrowing/B2]` |
 | Edge cases | Main spec (table) | "Chained temporaries: ALL extended" |
 | "I chose X because..." | Appendix: Rationale | "B1: I wanted to avoid wrestling" |
 | "When to use which" | Appendix: Guidance | Pattern selection tables |

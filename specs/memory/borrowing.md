@@ -18,7 +18,7 @@ A view into `point.x` can't go stale — struct fields sit at fixed offsets. But
 |------|--------|-------------|-----|
 | **B1: Fixed = block-scoped** | Struct fields, arrays | View valid until block ends | Layout can't change |
 | **B2: Growable = inline + `with`** | Vec, Pool, Map | Copy out (Copy types) or use `with` | Heap buffer can reallocate |
-| **B3: String slices = inline only** | string | `s[i..j]` temporary for expression | Slice has no refcount; source could be freed |
+| **B5: String slices = inline only** | string | `s[i..j]` temporary for expression | Slice has no refcount; source could be freed |
 
 **The test:** can the source resize? Vec/Pool/Map own heap buffers that can reallocate. Struct fields and arrays have fixed in-place layout. Strings are immutable but slices are temporary views (S2).
 

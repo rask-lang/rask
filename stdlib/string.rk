@@ -90,19 +90,6 @@ extend string {
         return out.build()
     }
 
-    /// From UTF-8 bytes without validation. Unsafe — caller guarantees valid UTF-8.
-    ///
-    /// It does validate, and panics if the promise was false. `from_utf8` builds
-    /// the string one scalar at a time rather than copying a buffer wholesale, so
-    /// there is no separate cheaper path to expose — and a version that skipped
-    /// the checks would hand back a `string` whose bytes aren't UTF-8, which
-    /// every method on `string` then assumes they are. Reach for `from_utf8`; a
-    /// caller who is certain gets the same answer here with a panic instead of a
-    /// branch.
-    public unsafe func from_utf8_unchecked(bytes: Vec<u8>) -> string {
-        return string.from_utf8(bytes)!
-    }
-
     /// Single-character string.
     @native("rask_string_from_char")
     public func from_char(c: char) -> string {}

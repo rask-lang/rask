@@ -617,6 +617,16 @@ impl<'a> Printer<'a> {
             self.emit_indent();
         }
 
+        // A comment written between the attributes and `func`. The
+        // declaration's span starts at the first `@`, so the comment sits
+        // *inside* it and the top-level flush leaves it pending — it then came
+        // out at the next emission point, which is the first statement of the
+        // body. `f.span.start` is the `func` keyword, which is the bound that
+        // keeps it where it was written.
+        if !f.attrs.is_empty() {
+            self.emit_standalone_comments_before(f.span.start);
+        }
+
         if f.is_private {
             self.emit("private ");
         } else if f.is_pub {
@@ -1363,9 +1373,33 @@ impl<'a> Printer<'a> {
             self.emit_newline();
         }
 
-        // Dependencies
-        for dep in &p.deps {
+        // Dependencies, unscoped ones first, then one block per scope. The
+        // parse flattens `scope "dev" { ... }` into this same list with the
+        // scope recorded on each dep, so the block has to be rebuilt here or
+        // `rask fmt` would quietly promote a dev dep to a real one.
+        for dep in p.deps.iter().filter(|d| d.scope.is_none()) {
             self.format_dep_decl(dep);
+        }
+        for scope in ["dev", "build"] {
+            let scoped: Vec<_> = p.deps.iter()
+                .filter(|d| d.scope.as_deref() == Some(scope))
+                .collect();
+            if scoped.is_empty() {
+                continue;
+            }
+            self.emit_indent();
+            self.emit("scope \"");
+            self.emit(scope);
+            self.emit("\" {");
+            self.emit_newline();
+            self.indent += 1;
+            for dep in scoped {
+                self.format_dep_decl(dep);
+            }
+            self.indent -= 1;
+            self.emit_indent();
+            self.emit("}");
+            self.emit_newline();
         }
 
         // Features
@@ -2029,7 +2063,30 @@ impl<'a> Printer<'a> {
                 if needs_parens { self.emit(")"); }
             }
             ExprKind::Call { func, args } => {
+                // A callee that binds looser than the call keeps its
+                // parentheses. A field holding a function is one: `h.run(5)` is
+                // a method call on `h` (type.structs/M6), so `(h.run)(5)` is
+                // the only way to call the field, and the parser only ever
+                // builds a `Call` over a field from the parenthesised form.
+                // Printing it bare turned a program that compiled into "`run`
+                // is a field on `Handler`, not a method".
+                //
+                // A deref is the other: `(*b)(2)` calls what the block holds,
+                // and `*b(2)` calls `b` and dereferences the answer.
+                let callee_needs_parens = matches!(
+                    func.kind,
+                    ExprKind::Field { .. }
+                        | ExprKind::OptionalField { .. }
+                        | ExprKind::DynamicField { .. }
+                        | ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, .. }
+                );
+                if callee_needs_parens {
+                    self.emit("(");
+                }
                 self.format_expr(func);
+                if callee_needs_parens {
+                    self.emit(")");
+                }
                 self.emit("(");
                 for (i, arg) in args.iter().enumerate() {
                     if i > 0 {

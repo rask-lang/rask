@@ -7,6 +7,7 @@
 //! - Computed memory layouts for all structs and enums
 //! - Reachability analysis starting from main()
 
+pub mod drop_names;
 pub mod abi;
 mod instantiate;
 mod layout;
@@ -1234,8 +1235,8 @@ mod tests {
                     name: "Point".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
-                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
+                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -1296,8 +1297,8 @@ mod tests {
                     name: "Container".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "kind".to_string(), name_span: sp(), ty: "Kind".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
-                        Field { name: "value".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
+                        Field { name: "kind".to_string(), name_span: sp(), ty: "Kind".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "value".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -1316,8 +1317,8 @@ mod tests {
                             name: "Alpha".to_string(),
                             name_span: sp(),
                             fields: vec![
-                                Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
-                                Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
+                                Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                                Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                             ],
                             attrs: vec![],
                             discriminant: None,
@@ -1550,8 +1551,8 @@ mod tests {
                     name: "Point".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
-                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None },
+                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                     ],
                     methods: vec![
                         make_method("new", vec![], Some("Point"), vec![return_stmt(None)]),

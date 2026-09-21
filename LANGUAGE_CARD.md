@@ -152,7 +152,7 @@ Public functions must declare their `using` clauses; `frozen` marks read-only co
 
 ## Collections and iteration
 
-`Vec<T>`, `Map<K,V>` and `Set<T>` (`std.collections`). Growth ops (`push`, `insert`) **panic** on allocation failure; `try_push`/`try_insert` return the rejected value for OOM-aware code. `Set` is `insert`/`contains`/`remove`/`len`/`is_empty`/`clear`/`to_vec`, where `insert` and `remove` answer `bool` — whether the set changed. Membership is `contains`, not `contains_key`: a set has no keys. **Map iteration order is unspecified and seeded per process — never depend on it**; sort explicitly (`determinism/D7`).
+`Vec<T>`, `Map<K,V>` and `Set<T>` (`std.collections`). Growth ops (`push`, `insert`) **panic** on allocation failure; `try_push`/`try_insert` return the rejected value for OOM-aware code. `Set` is `insert`/`contains`/`remove`/`len`/`is_empty`/`clear`/`to_vec`, where `insert` and `remove` answer `bool` — whether the set changed. Membership is `contains`, not `contains`: a set has no keys. **Map iteration order is unspecified and seeded per process — never depend on it**; sort explicitly (`determinism/D7`).
 
 There are no stored iterator objects. Collection methods return `Sequence<T>` — a push-based protocol where the source drives the loop and hands you each item (`type.sequence`). A chain is lazy: building it runs nothing, and the work happens at the terminal in a single pass.
 
@@ -195,9 +195,9 @@ a string and `entries` on a map are all things that look right and aren't.
 `join`
 
 **`Map<K,V>`** — `insert` `get` `remove` `keys` `values` `len` `is_empty`
-`clear` `iter` `clone`, and **`contains_key`** for presence — `Vec` and `string`
+`clear` `iter` `clone`, and **`contains`** for presence — `Vec` and `string`
 say `contains`, a map does not. `m[k] = v` inserts or replaces; `m[k]` reads and
-panics when the key is absent, so test with `contains_key` or use `get`.
+panics when the key is absent, so test with `contains` or use `get`.
 
 **Sequence adapters** (off `.iter()`, or a `string` splitter) — `map` `filter`
 `take` `skip` `take_while` `skip_while` `chain` `enumerate` `flatten`

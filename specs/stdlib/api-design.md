@@ -20,11 +20,66 @@ The stdlib is where language size actually hits people. Nobody reads the grammar
 | **SD7: Canonical protocols** | The stdlib speaks a closed set of protocols: `Sequence`, `Comparable`, `Equal`, `Hashable`, `Displayable`, `Debug`, `Reader`/`Writer`, `Encode`/`Decode`, and the operator traits once `type.operator-resolution` lands. No module invents a parallel interface for something this set covers. Growing the set is a change to this spec, not a module-level decision |
 | **SD8: Laws, not just signatures** | Every canonical protocol states its contract in its spec (`Equal` is reflexive and symmetric, `Comparable` is a total order, `Sequence` yields each element once). Conforming means meeting the laws. A signature match without the laws is how independently-written pieces compose into bugs |
 
+## One word per question (SD6)
+
+| Rule | Description |
+|------|-------------|
+| **SD6: One word per question** | A question gets the same word everywhere it's asked. Membership is `contains` on `Vec`, `Map`, `Set`, `string`, `Rack`, `Pool` and `Headers` — not `contains_key` on one of them. Size is `len`. Reading a stored value through a closure is `read`. Consuming a wrapper is `take`. The compounding is the point: the vocabulary is what makes `SD3`'s guess transfer between modules, so a second word for a question already answered costs more than the module it lives in |
+
+A worked pass over the whole stdlib, and what it turned up:
+
+| Was | Is | Why |
+|-----|----|-----|
+| `Map.contains_key(k)` | `Map.contains(k)` | Rust needs `contains_key` because a Rust map's `contains` would have to say which half it means. Every single-argument method on Rask's `Map` takes a key — `get`, `remove`, `read`, `modify` — so one more that does is no ambiguity. Asking about a value is `m.any(\|e\| e.1 == v)` |
+| `Headers.has(name)` | `Headers.contains(name)` | Third spelling of the same question |
+| `Wide.read()` | `Wide.to_vec()` | Every other `read` in the stdlib borrows through a closure. This one runs the plan and builds a `Vec`, which is what `type.sequence/SEQ31` says to name it |
+| `Shared.into_inner()`, `Atomic.into_inner()` | `take()` | `into_inner` was `Cell`'s name, carried forward from a type Rask no longer has. `take` is the parameter mode the receiver already uses |
+| `fs.create(path)` | `fs.create_file(path)` | Bare `create` in a filesystem module doesn't say which of `create_dir` and it you meant |
+| `Command.env(k, v)` | `Command.set_env(k, v)` | `os.env(name)` in the same module *reads* one |
+| `string.from_utf8_unchecked` | *(deleted)* | Marked `unsafe`, named `_unchecked`, documented "without validation" — and it validated and panicked. `from_utf8(bytes)!` is the same thing, spelled honestly |
+| `Duration.as_seconds_f32() -> f64` | *(deleted)* | The name said `f32` and every layer down to codegen returned `f64`. `as_seconds_f64` already covers it |
+| `Duration.from_millis`, `from_nanos` | *(deleted)* | Their own doc comments said "(alias)" — of `millis` and `nanos` |
+| `http.send_request(m, url, body, hdrs)` | `http.request(Request)` | The four-argument one was `request` with the `Request` spelled out. `Request.with_headers` closes the gap that kept it alive |
+| `Pool.with_valid`, `with_valid_mut` | `Pool.read`, `Pool.modify` | Four names for two operations |
+| `Vec.count()`, `Map.count()`, `Set.count()` | `len()` | A container knows its length; `count` walks. Offering both made the second a slower spelling of the first — a sequence keeps `count` because it genuinely has to walk, and that is the whole difference between the two words |
+
 ## Why SD1 is the load-bearing rule
 
 The day-to-day cost of a big stdlib isn't learning it — it's *re-scanning* it. Every "which function do I want" pause is a trip to the docs, and a module with 60 entries makes that trip mandatory; a module with 15 makes it skippable, because the answer is visible in one `rask api` call or one autocomplete popup. Go's stdlib is loved for exactly this: each package holds a dozen things you can keep in your head. Batteries included means every battery *slot* is filled — not that every slot holds six batteries.
 
 SD2 is how SD1 stays possible: surface grows by parameter, not by name. A parameter is discoverable at the one function you already found; a sibling function is another entry you had to know existed.
+
+### What the budget is actually being spent on
+
+`Vec` was measured against SD1 and came to 60 items — three times the budget.
+Applying SD2 to it buys almost nothing, and the reason is worth writing down
+before someone else spends an afternoon on it: those 60 are not a pile of
+near-synonyms. They are roughly 16 sequence adapters, 12 methods for bounded
+capacity, about 20 core operations, and a tail. The name-families SD2 actually
+targets — `shrink_to_fit`/`shrink_to`, `sort`/`sort_by`, `min`/`min_by` — are
+worth one entry each.
+
+So the budget is being blown by **structure**, not by naming, and two things
+decide whether it can ever be met:
+
+- **The adapters.** `type.sequence/SEQ48` says a collection is its own chain
+  head, which is right — it's what removes Rust's `.iter()`. It used to be
+  implemented by hand-copying each adapter onto each container, and copies rot:
+  `Vec` carried 16 of `Sequence`'s 21 and was missing `take_while` beside a
+  `take` that worked. They are generated from `extend Sequence<T>` now — a type
+  declares `as_sequence` and gets the rest — so `Vec` declares 14 fewer and the
+  gaps are gone. `Map` and `Set` declare one too, so they have the surface for
+  the first time — a map's element is the `(key, value)` pair.
+- **Whether a container's inherited adapters count against its budget.** If
+  they do, no collection can ever meet SD1 while SEQ48 holds, because SEQ48
+  requires them. The count that means something is what the container *adds*,
+  and generated forwarders are the mechanism, not the surface.
+
+SD2 also needs a mechanism the stdlib doesn't have yet: a defaulted parameter
+on a stdlib method is parsed and dropped (rask-lang/rask#1276), so
+`sort(by: … ? = none)` doesn't compile. Until that lands, a collapse can only
+go as far as a mandatory parameter — which is why `shrink(to:)` takes its
+argument.
 
 ## The guess test, operationally (SD3)
 

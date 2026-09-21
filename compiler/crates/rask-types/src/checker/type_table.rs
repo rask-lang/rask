@@ -548,43 +548,49 @@ impl TypeTable {
         }
     }
 
-    /// RC1/RC3: is a value of this type *itself linear* — a thing the language
-    /// requires be consumed exactly once? `@resource` structs/enums (directly or
-    /// transitively), and the tuples/arrays/optionals/results built from them,
-    /// qualify. Wrapper containers (`Handle`, `WeakHandle`, `Pool`, `Vec`, `Map`)
-    /// do NOT: a `Handle<File>` is a copyable value, and a `Vec<File>`/`Pool<File>`
-    /// is a container whose own drop story is decided separately (Pool is the
-    /// sanctioned one, Vec is the violation `find_linear_container` reports).
+    /// Is a value of this type *itself* a linear obligation — something the
+    /// language requires be consumed exactly once?
     ///
-    /// This is deliberately narrower than `type_is_transitive_resource`, which
-    /// recurses into *every* generic arg and so treats `Handle<File>` as linear.
-    /// For the container-element rule that's a false positive — the spec's own
-    /// `Vec<Handle<Connection>>` example is legal.
+    /// A `@resource` struct or enum is, directly or transitively. So is a
+    /// `Heap<T>`, whatever the payload: `Heap(…)` allocates a block and exactly
+    /// one consume gives it back (mem.heap/HP1, HP2).
+    ///
+    /// An aggregate holding a `Heap<T>` is not. Storing a block in a field, a
+    /// tuple, an array or an enum payload consumes it (HP4/L5) — the aggregate
+    /// owns it from then on and its release gives the block back, which is what
+    /// makes `Cons(i64, Heap<List>)` work and `drop(h.inner)` an error. An
+    /// aggregate holding a `@resource` still owes one: there are no
+    /// destructors, so nothing but an explicit consume ever closes one, and a
+    /// tuple has no name to charge but its own. Ask
+    /// [`Self::holds_linear_value`] for the other question, "is there anything
+    /// linear anywhere in here", which is what rules a `Vec<Heap<i64>>` out.
+    ///
+    /// A wrapper is not an aggregate: `T?` and `T or E` carry their payload
+    /// linearly (RC4 — an optional resource must be matched and consumed),
+    /// because nothing walks a wrapper and consumes what is behind its tag.
+    ///
+    /// The two used to be one predicate, and every caller got whichever answer
+    /// the other one needed. It went unnoticed while `Heap<i64>` wasn't linear
+    /// at all; once it was, a tuple of them became an obligation nothing could
+    /// discharge (#1256).
     pub fn is_linear_value(&self, ty: &Type) -> bool {
+        if ty.heap_payload().is_some() {
+            return true;
+        }
         match ty {
             Type::Named(id) => self.is_transitive_resource_by_id(*id),
-            Type::Generic { base, args } => {
+            Type::Generic { base, .. } => {
                 let full = self.type_name(*base);
                 let name = full.split('<').next().unwrap_or(&full);
-                if Self::is_nonlinear_wrapper(name) {
-                    return false;
-                }
-                if self.is_transitive_resource_by_id(*base) {
-                    return true;
-                }
-                args.iter().any(|a| matches!(a, GenericArg::Type(t) if self.is_linear_value(t)))
+                !Self::is_nonlinear_wrapper(name) && self.is_transitive_resource_by_id(*base)
             }
-            Type::UnresolvedGeneric { name, args } => {
+            Type::UnresolvedGeneric { name, .. } => {
                 let base = name.split('<').next().unwrap_or(name);
-                if Self::is_nonlinear_wrapper(base) {
-                    return false;
-                }
-                if let Some(&id) = self.type_names.get(base) {
-                    if self.is_transitive_resource_by_id(id) {
-                        return true;
-                    }
-                }
-                args.iter().any(|a| matches!(a, GenericArg::Type(t) if self.is_linear_value(t)))
+                !Self::is_nonlinear_wrapper(base)
+                    && self
+                        .type_names
+                        .get(base)
+                        .is_some_and(|&id| self.is_transitive_resource_by_id(id))
             }
             Type::UnresolvedNamed(name) => {
                 let base = name.split('<').next().unwrap_or(name);
@@ -592,14 +598,63 @@ impl TypeTable {
                     .get(base)
                     .map_or(false, |id| self.is_transitive_resource_by_id(*id))
             }
-            Type::Tuple(elems) | Type::Union(elems) => {
-                elems.iter().any(|t| self.is_linear_value(t))
-            }
-            Type::Array { elem, .. } => self.is_linear_value(elem),
-            // `T?` is `Result { ok: T, err: none }`; both `T or E` and `T?` carry
-            // their payload linearly (RC4: an optional resource must be matched
-            // and consumed), so a Vec of them is still a violation.
+            // A union's value *is* one of its members, and a wrapper carries its
+            // payload behind a tag with nothing to walk it — so both are linear
+            // when what they hold is. Only the aggregates that own and release
+            // their slots ask `slot_owes` instead.
+            Type::Union(members) => members.iter().any(|t| self.is_linear_value(t)),
             Type::Result { ok, err } => self.is_linear_value(ok) || self.is_linear_value(err),
+            Type::Tuple(elems) => elems.iter().any(|t| self.slot_owes(t)),
+            Type::Array { elem, .. } => self.slot_owes(elem),
+            _ => false,
+        }
+    }
+
+    /// A slot inside an aggregate: does it leave the aggregate owing a consume?
+    ///
+    /// A `Heap<T>` doesn't — the aggregate's release gives the block back. A
+    /// `@resource` does, and the aggregate is the only name left to charge.
+    fn slot_owes(&self, ty: &Type) -> bool {
+        ty.heap_payload().is_none() && self.is_linear_value(ty)
+    }
+
+    /// Does this type hold a linear value anywhere inside it?
+    ///
+    /// RC1/RC3 asks this about a `Vec`'s element and a `Map`'s key and value: a
+    /// container can't consume what it drops, so a linear element is rejected at
+    /// the type — `Vec<(Heap<i64>, i64)>` as much as `Vec<Heap<i64>>`.
+    ///
+    /// Deliberately narrower than [`Self::type_is_transitive_resource`], which
+    /// recurses into *every* generic argument and so treats `Handle<File>` as
+    /// linear. For the container-element rule that is a false positive — the
+    /// spec's own `Vec<Handle<Connection>>` example is legal.
+    pub fn holds_linear_value(&self, ty: &Type) -> bool {
+        if self.is_linear_value(ty) {
+            return true;
+        }
+        match ty {
+            Type::Generic { base, args } => {
+                let full = self.type_name(*base);
+                let name = full.split('<').next().unwrap_or(&full);
+                !Self::is_nonlinear_wrapper(name)
+                    && args
+                        .iter()
+                        .any(|a| matches!(a, GenericArg::Type(t) if self.holds_linear_value(t)))
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                let base = name.split('<').next().unwrap_or(name);
+                !Self::is_nonlinear_wrapper(base)
+                    && args
+                        .iter()
+                        .any(|a| matches!(a, GenericArg::Type(t) if self.holds_linear_value(t)))
+            }
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().any(|t| self.holds_linear_value(t))
+            }
+            Type::Array { elem, .. } => self.holds_linear_value(elem),
+            Type::Result { ok, err } => {
+                self.holds_linear_value(ok) || self.holds_linear_value(err)
+            }
             _ => false,
         }
     }
@@ -777,7 +832,7 @@ impl TypeTable {
         match name {
             "Vec" => {
                 let e = elem(0)?;
-                if self.is_linear_value(e) {
+                if self.holds_linear_value(e) {
                     return Some(("Vec".to_string(), e.clone()));
                 }
                 None
@@ -785,12 +840,12 @@ impl TypeTable {
             "Map" => {
                 // A resource key is as unconsumable on drop as a resource value.
                 if let Some(k) = elem(0) {
-                    if self.is_linear_value(k) {
+                    if self.holds_linear_value(k) {
                         return Some(("Map".to_string(), k.clone()));
                     }
                 }
                 if let Some(v) = elem(1) {
-                    if self.is_linear_value(v) {
+                    if self.holds_linear_value(v) {
                         return Some(("Map".to_string(), v.clone()));
                     }
                 }

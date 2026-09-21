@@ -99,6 +99,7 @@ impl Interpreter {
                 visibility: field.visibility,
                 attrs: field.attrs.clone(),
                 default: field.default.clone(),
+                doc: field.doc.clone(),
             });
         }
 

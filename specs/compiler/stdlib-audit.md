@@ -68,9 +68,7 @@ Comparison of interpreter builtins implementation against spec requirements. Tra
 | `swap(i, j)` | `std.collections/D1` | LOW | Swap two indices |
 | `remove_where(\|x\| bool)` | `std.collections` | MEDIUM | Conditional removal |
 | `take_where(\|x\| bool)` | `std.collections` | MEDIUM | Remove and collect |
-| `push_with(\|slot\| T)` | `std.collections` | LOW | In-place construction |
-| `shrink_to_fit()` | `std.collections` | LOW | Shrink allocation |
-| `shrink_to(n)` | `std.collections` | LOW | Shrink to capacity |
+| `shrink(to)` | `std.collections` | LOW | Give back allocation past `to` elements |
 | `get_clone(i)` | `std.collections/V3` | MEDIUM | Clone out (non-Copy types) |
 
 ### Capacity Management (Not Yet Spec'd for Interpreter)
@@ -225,7 +223,7 @@ Nice to have but not blocking:
 1. `remove_where()`, `take_where()`, `remove_where() (inverted)`
 2. `modify_many()`, `swap()`
 3. `get_clone()` for non-Copy types
-4. `shrink_to_fit()`, capacity management
+4. `shrink(to)`, capacity management
 
 ## Testing Recommendations
 

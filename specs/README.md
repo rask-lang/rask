@@ -6,7 +6,7 @@ Organized by what each category does.
 
 **New to Rask?** Start here. If you hit unfamiliar terms, check the [Glossary](GLOSSARY.md).
 
-0. [DAY_ONE.md](DAY_ONE.md) — The reading set: the twelve concepts on one page
+0. [DAY_ONE.md](DAY_ONE.md) — The reading set: the thirteen concepts on one page
 1. [memory/ownership.md](memory/ownership.md) — Single ownership, move semantics
 2. [memory/value-semantics.md](memory/value-semantics.md) — Copy vs move, 16-byte threshold
 3. [memory/borrowing.md](memory/borrowing.md) — One rule: views last as long as source is stable

@@ -510,12 +510,38 @@ pub enum AccessKind {
     Write,
 }
 
+impl AccessKind {
+    /// After "cannot …": `cannot write to `x``.
+    pub fn verb(self) -> &'static str {
+        match self {
+            AccessKind::Read => "read",
+            AccessKind::Write => "write to",
+        }
+    }
+
+    /// After "while it is being …": `while it is being written to`.
+    pub fn participle(self) -> &'static str {
+        match self {
+            AccessKind::Read => "read",
+            AccessKind::Write => "written to",
+        }
+    }
+
+    /// On a span label: `write access here`.
+    pub fn noun(self) -> &'static str {
+        match self {
+            AccessKind::Read => "read",
+            AccessKind::Write => "write",
+        }
+    }
+}
+
+/// The participle, which is what the enum's one Display used to give — and it
+/// was being dropped into three different grammatical slots, so "cannot written
+/// to `src`" reached users.
 impl std::fmt::Display for AccessKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            AccessKind::Read => write!(f, "read"),
-            AccessKind::Write => write!(f, "written to"),
-        }
+        write!(f, "{}", self.participle())
     }
 }
 

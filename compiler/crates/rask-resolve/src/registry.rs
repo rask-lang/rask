@@ -400,6 +400,21 @@ impl RegistryConfig {
 
 #[cfg(test)]
 mod tests {
+    /// The project is `rask-lang.dev` (docs/CNAME). The registry and the
+    /// advisory database were once half-renamed to `rk-lang.org`, which the
+    /// specs kept and the code didn't — a domain nobody owns, reached on every
+    /// `rask audit`. Assert the host so the next rename can't land halfway.
+    #[test]
+    fn service_hosts_are_on_the_project_domain() {
+        for url in [super::DEFAULT_REGISTRY, crate::advisory::DEFAULT_ADVISORY_URL] {
+            let host = url.strip_prefix("https://").unwrap_or(url);
+            assert!(
+                host.ends_with(".rask-lang.dev"),
+                "{url} is not on rask-lang.dev"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

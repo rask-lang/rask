@@ -81,8 +81,12 @@ extend Shared<T, S> {
     public func replace(self, take value: T) -> T {}
 
     /// Consume the `Shared`, return what it held.
+    ///
+    /// `take` is the parameter mode this method's own receiver uses, and
+    /// `Vec.take_all` is the same idea one level down. `into_inner` was `Cell`'s
+    /// name, carried forward from a type Rask no longer has.
     @native("rask_cell_get")
-    public func into_inner(take self) -> T {}
+    public func take(take self) -> T {}
 }
 
 /// What a failed compare-exchange hands back: the value the atomic actually

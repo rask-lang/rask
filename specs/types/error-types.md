@@ -1,7 +1,7 @@
 <!-- id: type.errors -->
 <!-- status: decided -->
 <!-- summary: T or E is a builtin sum type with type-based branch disambiguation. No Ok/Err wrappers. Disjointness rule (T ≠ E) via the nominal/alias split, checked at the call site once a generic's type argument is known. E must implement Error. Auto-wrap fires only at return. Three words: `try` propagates the bad branch of either shape (shape must fit the enclosing return; a flat `T? or E` operand needs `try … ?? …`); `??` is the absence fallback (value or written-out exit); `catch e =>` / `catch _ =>` is the failure fallback — binder mandatory, no bare-value form, so a discarded error is always visible. `?` is absence-only, so results narrow with `is`. Neither wrapper has methods. No fold method, no presence guard. -->
-<!-- depends: types/types.md, types/optionals.md, types/union-types.md, types/type-aliases.md -->
+<!-- depends: types/optionals.md, types/union-types.md, types/type-aliases.md -->
 
 # Error Types
 
@@ -114,7 +114,7 @@ Why return-only for errors? Construction in assignment/field positions makes the
 | Rule | Syntax | Meaning |
 |------|--------|---------|
 | **ER12: No `?` on a result** | `r?` / `r?.field` / `r ?? v` | Compile error, all forms. `?` marks absence; a result's other branch is an error. Test with `is` (ER23) or `match`; fall back with `catch`; to project, extract first |
-| **ER14: Handle the error** | `r catch e => <expr>` / `r catch _ => <expr>` | Yields T when present, else binds the error and evaluates the body — lazily, only on failure. The binder is **mandatory**: `e =>` to use the error, `_ =>` to discard it *visibly*. The body is a value or any divergence (`catch e => return wrap(e)` is transform-and-leave). There is **no bare-value form** — `r catch v` is a compile error — so an error can never be swallowed silently. Results only; absence uses `??` (`type.optionals/OPT11`) |
+| **ER14: Handle the error** | `r catch e => <expr>` / `r catch _ => <expr>` | Yields T when present, else binds the error and evaluates the body — lazily, only on failure. The binder is **mandatory**: `e =>` to use the error, `_ =>` to discard it *visibly*. The body is a value or any divergence — `return`, `break`, `continue`, `panic(…)` — legal because visible: the exit is written where it happens, so `catch e => return wrap(e)` reads as transform-and-leave. There is **no bare-value form** — `r catch v` is a compile error — so an error can never be swallowed silently. Results only; absence uses `??` (`type.optionals/OPT11`) |
 | **ER15: Force** | `r!` | Extracts T, or panics using `E.message()`; `r! "msg"` overrides with a custom message |
 | **ER16: Extract or propagate** | `try x` | Extracts the success payload, or the bad branch **leaves to the caller** — the error from a `T or E` (widened into this function's error type, ER31/ER31a/ER32), the `none` from a `T?`. No clause exists; what leaves must fit the enclosing return (ER47) |
 | **ER16a: Chain placement** | `try a.b().c` | `try` attaches to the one step in the postfix chain that is fallible — `try read_file(p).len()` is `(try read_file(p)).len()`, `try store.get(id)` is `try (store.get(id))`. The wrappers have no methods at all, so exactly one placement type-checks and no parentheses are needed. `try` does not slide into call arguments |
@@ -162,7 +162,6 @@ The split between the two fallbacks is the point, not an accident. A fallback is
 
 | Rule | Description |
 |------|-------------|
-| **ER14: Handle the error** | `r catch <binder> => <expr>` yields the success payload, or evaluates the body with the error bound (lazily — only on failure). The binder is `e` (any name) or `_`; it is **never optional**, and there is no `r catch v`. The body is a **value or any divergence** — `return`, `break`, `continue`, `panic(…)` — legal because visible: the exit is written where it happens. Results only |
 | **ER47: The shape rule** | What bare `try` propagates must fit the enclosing return: `try r` needs an error branch that accepts `E`, `try x` needs a `T?` return. On a flat `T? or E` **operand** — where both branches could leave — bare `try` is a compile error naming both escapes; write the composite `try f() ?? …` (ER16b) or handle the shapes explicitly. One enclosing scope isn't a function: a `test` block takes either shape and turns it into that test's failure (`std.testing/T20`) |
 | **ER45a: A diverging right side needs parens in a comma list** | Inside an argument list, struct literal, or collection literal, a diverging `??` or `catch` must be parenthesised: `f((g() catch _ => return E), other)`. Bare, it's a compile error asking for them. A value right side needs nothing — no exit to locate |
 

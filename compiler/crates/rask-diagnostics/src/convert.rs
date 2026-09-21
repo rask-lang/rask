@@ -291,6 +291,30 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("imported packages must exist in the project or be declared as dependencies")
             }
 
+            ScopedDependencyUse { name, scope } => {
+                let keeps_it = if scope == "dev" {
+                    "a debug build or `rask test`"
+                } else {
+                    "the build script"
+                };
+                Diagnostic::error(format!(
+                    "`{}` is a `scope \"{}\"` dependency, and this build doesn't link it",
+                    name, scope,
+                ))
+                .with_code("E0216")
+                .with_primary(self.span, format!("declared under `scope \"{}\"`", scope))
+                .with_help(format!("{} links it; a release build doesn't", keeps_it))
+                .with_fix(format!(
+                    "move the dep out of `scope \"{}\"` if the shipped program needs it",
+                    scope,
+                ))
+                .with_why(
+                    "a scoped dependency is declared for one kind of build — if a \
+                     release binary could reach it, the scope would be decorative \
+                     [struct.build/D4]",
+                )
+            }
+
             NotVisible { name } => {
                 Diagnostic::error(format!("`{}` is not public", name))
                     .with_code("E0203")
@@ -648,6 +672,27 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(
                         "`collect` didn't say what it produced, so it needed an annotation to \
                          mean anything — the named terminals say it at the call [type.sequence/SEQ31]"
+                            .to_string(),
+                    )
+            }
+
+            // `count` walks a sequence. A container already knows, so it has
+            // `len` and never grew a `count` — which is the distinction between
+            // the two words, and not one anybody guesses from the outside.
+            NoSuchMethod { ty, method, span }
+                if method == "count"
+                    && rask_stdlib::registry::type_method_names(type_base(&ty.to_string()))
+                        .contains(&"len") =>
+            {
+                Diagnostic::error(format!("no method `count` on `{}`", ty))
+                    .with_code("E0313")
+                    .with_primary(*span, "a container knows its length without walking")
+                    .with_fix("use `.len()`".to_string())
+                    .with_help(format!("`{}` has `len()` — O(1), same answer", ty))
+                    .with_why(
+                        "`count` is a sequence terminal: it walks and tallies, because a \
+                         sequence has no length to ask for. Offering it on a container too \
+                         would be a second, slower spelling of `len` [std.api/SD5]"
                             .to_string(),
                     )
             }
@@ -1197,6 +1242,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("write the field as `Link<T>?` for now")
                     .with_fix("add `?` — `target: Link<Entity>?`")
                     .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
+            }
+
+            LinkNotOrderable { op, recv, span } => {
+                Diagnostic::error(format!("`{}` on `{}` would go by address", op, recv))
+                    .with_code("E0406")
+                    .with_primary(*span, "nodes have no order of their own")
+                    .with_help("`==` asks whether two links name the same node; ordering needs something the nodes declare")
+                    .with_fix("order by a field: `a.id < b.id`, or `links.sort_by_key(|l| l.id)`")
+                    .with_why("a link is the address of its node [mem.racks/RK2], so `<` answers from wherever the allocator put the chunk. Padding the heap before the rack is built changes the result, which makes a sorted walk over links unreproducible [determinism/D11]. Two nodes have no order to define — only identity, which is what `==` compares [mem.racks/RK11]")
             }
 
             LocalSharedSent { name, span } => {
@@ -1791,7 +1845,7 @@ impl ToDiagnostic for rask_types::TypeError {
                             "implement the trait before boxing:\n    extend {} with {} {{ … }}",
                             ty, trait_name
                         ))
-                        .with_why("`as any Trait` builds a vtable from the concrete type's methods, so every method the trait declares has to be there [type.generics/TR1]"),
+                        .with_why("`as any Trait` builds a vtable from the concrete type's methods, so every method the trait declares has to be there [type.generics/G7]"),
                 }
             }
 
@@ -2169,6 +2223,30 @@ impl ToDiagnostic for rask_types::TypeError {
                     ))
                     .with_why("inline access is scoped to the chain it starts (conc.sync/R5), so a `.read()` with nothing chained takes a lock, releases it, and hands back a value that was only valid while it was held")
             }
+            // DL4. This used to be reported as a `BareSyncAccess` with the
+            // explanation glued onto the method name, so the message read
+            // "standalone `.read (multiple sync accesses in one expression —
+            // deadlock risk [conc.sync/DL4])()` has nothing chained onto it" —
+            // which names a method nobody wrote and then says the wrong thing
+            // about it, since the chain does have something chained.
+            MultipleSyncAccesses { count, recv, method, span } => {
+                Diagnostic::error(format!(
+                    "this expression takes {} locks at once", count,
+                ))
+                    .with_code("E0884")
+                    .with_primary(*span, "this is the second lock it takes")
+                    .with_fix(format!(
+                        "read one at a time: `let v = {}.{}().field` on a line of its own, \
+                         or `{}.get()` to copy the whole value out",
+                        recv, method, recv,
+                    ))
+                    .with_help(format!(
+                        "`{}.{}()` holds its lock until the expression it starts ends, so a \
+                         second one in the same expression is a second lock held at the same time",
+                        recv, method,
+                    ))
+                    .with_why("an inline access holds its lock to the end of the expression it starts (conc.sync/R5), so two of them hold two locks at once — and two tasks doing that in opposite orders deadlock [conc.sync/DL4]")
+            }
             MixedDiscriminants { enum_name, span } => {
                 Diagnostic::error(format!("enum `{}` mixes explicit and auto-indexed discriminants", enum_name))
                     .with_code("E0391")
@@ -2443,7 +2521,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(message.clone())
                     .with_code("E0818")
                     .with_primary(*span, "invalid conversion form")
-                    .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV5–CV10]")
+                    .with_why("each conversion form names its data-loss behavior; the source and target kinds must match it [type.primitives/CV11–CV16]")
             }
             IntLiteralOutOfRange { literal, ty, min, max, span } => {
                 let label = format!("`{}` doesn't fit in `{}`", literal, ty);
@@ -3123,10 +3201,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 existing,
                 existing_span,
             } => {
-                let fix_msg = match (
-                    format!("{}", requested).as_str(),
-                    format!("{}", existing).as_str(),
-                ) {
+                let fix_msg = match (requested.participle(), existing.participle()) {
                     ("written to", "read") => {
                         "wait until the read borrow ends, or pass ownership with `own`"
                     }
@@ -3134,11 +3209,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 };
                 Diagnostic::error(format!(
                     "cannot {} `{}` while it is being {}",
-                    requested, name, existing
+                    requested.verb(), name, existing.participle()
                 ))
                 .with_code("E0801")
-                .with_primary(self.span, format!("{} access here", requested))
-                .with_secondary(*existing_span, format!("{} access here", existing))
+                .with_primary(self.span, format!("{} access here", requested.noun()))
+                .with_secondary(*existing_span, format!("{} access here", existing.noun()))
                 .with_help(fix_msg)
                 .with_fix(fix_msg)
                 .with_why("concurrent read and write access to the same value would be a data race")

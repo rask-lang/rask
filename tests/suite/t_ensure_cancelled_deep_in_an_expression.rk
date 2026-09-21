@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// mem.linear/L6 again, one level down: the consuming call sits *inside* another
+// expression rather than being the whole of it.
+//
+//     return Wrapper { value: c.close() }   // close called twice, natively
+//
+// The walk that spots the consuming call and cancels the ensure used to name
+// the shapes it looked inside — a method call, a plain call, the operands of a
+// binary, a cast. A struct literal was not one of them, so the `close()` in it
+// was never seen and the ensure fired on top of it: a real handle closed twice,
+// which on native has no symptom of its own (#1231, after #1216 and #1224 added
+// two earlier shapes to that list). It visits every subexpression now.
+//
+// Each case counts closes — reading the answer alone passes with the cleanup
+// running twice. The counter is a module-level `Atomic` for the reason
+// t_ensure_cancelled_by_handoff.rk gives: a refcounted value reaching an ensure
+// body leaks whether the body runs or not (#1224).
+
+import sync.Atomic
+import sync.SeqCst
+
+const CLOSES: Atomic<i64> = Atomic<i64>.new(0)
+
+@resource
+struct Conn {
+    id: i64
+}
+
+struct Wrapper {
+    public value: i64
+}
+
+extend Conn {
+    func open(id: i64) -> Conn {
+        return Conn { id: id }
+    }
+
+    func close(take self) -> i64 {
+        CLOSES.fetch_add(1, SeqCst)
+        return self.id
+    }
+}
+
+func in_a_struct_literal() -> Wrapper {
+    let c = Conn.open(1)
+    ensure c.close()
+    return Wrapper { value: c.close() }
+}
+
+func in_a_tuple() -> (i64, i64) {
+    let c = Conn.open(2)
+    ensure c.close()
+    return (c.close(), 7)
+}
+
+func in_an_array() -> i64 {
+    let c = Conn.open(3)
+    ensure c.close()
+    let a = [c.close(), 7]
+    return a[0]
+}
+
+// The index of a subscript, which is neither an operand nor an argument.
+func in_an_index() -> i64 {
+    let c = Conn.open(4)
+    ensure c.close()
+    let v = Vec.from([10, 20, 30, 40, 50])
+    return v[c.close()]
+}
+
+// A literal inside a call inside a literal — nesting is the point, since a walk
+// that stops at the first shape it doesn't know stops here too.
+func nested() -> Wrapper {
+    let c = Conn.open(5)
+    ensure c.close()
+    return Wrapper { value: (c.close(), 7).0 }
+}
+
+test "a struct literal field is looked inside" {
+    CLOSES.store(0, SeqCst)
+    assert in_a_struct_literal().value == 1
+    assert CLOSES.load(SeqCst) == 1
+}
+
+test "a tuple element is looked inside" {
+    CLOSES.store(0, SeqCst)
+    assert in_a_tuple().0 == 2
+    assert CLOSES.load(SeqCst) == 1
+}
+
+test "an array element is looked inside" {
+    CLOSES.store(0, SeqCst)
+    assert in_an_array() == 3
+    assert CLOSES.load(SeqCst) == 1
+}
+
+test "an index expression is looked inside" {
+    CLOSES.store(0, SeqCst)
+    assert in_an_index() == 50
+    assert CLOSES.load(SeqCst) == 1
+}
+
+test "and one nested in another" {
+    CLOSES.store(0, SeqCst)
+    assert nested().value == 5
+    assert CLOSES.load(SeqCst) == 1
+}
+
+func main() {}

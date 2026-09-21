@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import libpkg
+import testkit
+
+// The dev dep leaks into code that ships. A release build strips the test
+// blocks (std.testing/T1) and refuses to link the dep behind them, so this
+// use has nowhere to resolve — and the error says which scope it came from
+// rather than claiming the package doesn't exist (struct.build/D4a).
+func main() {
+    println("{libpkg.greeting()} {testkit.fixture()}")
+}

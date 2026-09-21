@@ -183,16 +183,6 @@ extend Vec<T> {
         }
     }
 
-    /// Skip the first n elements. Lazy (type.sequence/SEQ41).
-    public func skip(self, n: usize) -> Sequence<T> {
-        return self.as_sequence().skip(n)
-    }
-
-    /// Take the first n elements. Lazy (type.sequence/SEQ41).
-    public func take(self, n: usize) -> Sequence<T> {
-        return self.as_sequence().take(n)
-    }
-
     /// Remove elements where f returns true, return count removed. No `retain`
     /// — invert the predicate on this instead.
     ///
@@ -258,17 +248,6 @@ extend Vec<T> {
     @native("rask_vec_dedup")
     public func remove_adjacent_duplicates(mutate self) {}
 
-    /// Keep only elements where f returns true. Lazy: the chain's head, not a
-    /// second Vec (type.sequence/SEQ41). `.to_vec()` materializes.
-    public func filter(self, f: func(T) -> bool) -> Sequence<T> {
-        return self.as_sequence().filter(f)
-    }
-
-    /// Transform each element. Lazy (type.sequence/SEQ41).
-    public func map(self, f: func(T) -> U) -> Sequence<U> {
-        return self.as_sequence().map(f)
-    }
-
     /// Stage this data as a Wide plan for data-parallel execution.
     @native("rask_vec_clone")
     public func wide(self) -> Wide<T> {}
@@ -305,11 +284,6 @@ extend Vec<T> {
     /// Reduce without initial value. Returns none if empty.
     @native
     public func reduce(self, f: func(T, T) -> T) -> Option<T> {}
-
-    /// Yield (index, element) pairs. Lazy (type.sequence/SEQ41).
-    public func enumerate(self) -> Sequence<(usize, T)> {
-        return self.as_sequence().enumerate()
-    }
 
     /// Zip with another vector into pairs.
     ///
@@ -359,21 +333,19 @@ extend Vec<T> {
     @native("rask_vec_set")
     public func set(mutate self, index: i64, take value: T) {}
 
-    /// Give back every element of room past the current length.
+    /// Give back allocation past `to` elements — or past the current length,
+    /// when that is larger. `shrink(0)` is therefore shrink-to-fit.
     ///
     /// A bounded vector keeps its allocation: CP3 pre-allocates at the bound,
     /// and shrinking one would make a later push reallocate past its promise.
-    @native("rask_vec_shrink_to_fit")
-    public func shrink_to_fit(mutate self) {}
-
-    /// Shrink the allocation to `min_capacity` elements, or to the length if
-    /// that is larger. A bounded vector keeps its allocation, as above.
+    ///
+    /// This was `shrink_to_fit()` beside `shrink_to(n)`, and the first was
+    /// exactly the second with a zero — `std.api/SD5` says one operation gets
+    /// one spelling. It would read better still as `shrink(to: usize = 0)`,
+    /// which is what `std.api/SD2` asks for; a stdlib method can't carry a
+    /// default argument yet (rask-lang/rask#1276).
     @native("rask_vec_shrink_to")
-    public func shrink_to(mutate self, min_capacity: usize) {}
-
-    /// Construct an element in place via closure. Panics on alloc failure.
-    @native
-    public func push_with(mutate self, f: func(T)) -> usize {}
+    public func shrink(mutate self, to: usize) {}
 
     /// Raw pointer to the underlying buffer (unsafe).
     @native("rask_vec_as_ptr")
@@ -490,8 +462,16 @@ extend Map<K, V> {
     public func get(self, key: K) -> Option<V> {}
 
     /// True if the map contains this key.
+    ///
+    /// Not `contains_key`. Rust needs that because a Rust map's `contains` would
+    /// have to say which half it means; in Rask every single-argument method on
+    /// `Map` takes a key — `get`, `remove`, `read`, `modify` — so one more that
+    /// does is no ambiguity at all. Asking about a value is
+    /// `m.any(|e| e.1 == v)`, which doesn't compete for the name. `Vec`, `Set`,
+    /// `string`, `Rack` and `Pool` all spell membership `contains`, and the
+    /// runtime symbol behind this has been `rask_map_contains` the whole time.
     @native("rask_map_contains")
-    public func contains_key(self, key: K) -> bool {}
+    public func contains(self, key: K) -> bool {}
 
     /// Read value for key through a closure.
     @native
@@ -504,13 +484,13 @@ extend Map<K, V> {
     /// Insert default if key absent, no-op if present. Panics on alloc failure.
     /// Named for what it does — `ensure` is the cleanup keyword.
     ///
-    /// Written in Rask over `contains_key` and `insert`: it's a condition around
+    /// Written in Rask over `contains` and `insert`: it's a condition around
     /// two primitives, and native had no lowering for it at all —
     /// `Map_insert_if_missing` reached codegen as a function nothing emits, while
     /// the interpreter's own copy ran (#886). One source, so the two can't
     /// disagree about it.
     public func insert_if_missing(mutate self, key: K, f: func() -> V) -> void {
-        if self.contains_key(key) {
+        if self.contains(key) {
             return
         }
         self.insert(key, f())
@@ -521,6 +501,19 @@ extend Map<K, V> {
     /// Panics on alloc failure.
     @native
     public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R {}
+
+    /// The chain head: each entry as a `(key, value)` pair (type.sequence/SEQ49).
+    ///
+    /// Every other sequence method on `Map` is generated from this one.
+    public func as_sequence(self) -> Sequence<(K, V)> {
+        return |yield| {
+            for (k, v) in self {
+                if !yield((k, v)) {
+                    return
+                }
+            }
+        }
+    }
 
     /// Iterate over keys.
     @native("rask_map_keys")
@@ -548,7 +541,7 @@ extend Map<K, V> where V: Cloneable {
 
 /// A staged data-parallel plan over lanes of `T` (conc.data-parallel).
 ///
-/// Built from `some_vec.wide()`. `map`/`zip_with` stage lazily; `read`/`sum`
+/// Built from `some_vec.wide()`. `map`/`zip_with` stage lazily; `to_vec`/`sum`
 /// run the plan on the current backend (the CPU baseline for now).
 public struct Wide<T> { }
 
@@ -589,7 +582,7 @@ extend Wide<T> {
 
     /// Run the plan and materialize the lanes back to a Vec.
     @native("rask_vec_clone")
-    public func read(self) -> Vec<T> {}
+    public func to_vec(self) -> Vec<T> {}
 
     /// Run the plan, reducing the lanes with `+`.
     @native("rask_wide_sum")
@@ -622,9 +615,8 @@ extend Wide<T> {
 /// shape and isn't available: `void` is a type, not a value, so there'd be
 /// nothing to pass to `insert`.)
 ///
-/// The membership test is `contains`, not `contains_key`: a set has no keys,
-/// and `Vec` and `string` both spell it `contains`. `Map` keeps
-/// `contains_key` because there a key is one of two things you could mean.
+/// The membership test is `contains`, the same word `Vec`, `string` and `Map`
+/// use.
 public struct Set<T> {
     entries: Map<T, bool>
 }
@@ -647,7 +639,7 @@ extend Set<T> {
 
     /// Add a value. True if it wasn't already there.
     public func insert(mutate self, take value: T) -> bool {
-        if self.entries.contains_key(value) {
+        if self.entries.contains(value) {
             return false
         }
         self.entries.insert(value, true)
@@ -656,12 +648,12 @@ extend Set<T> {
 
     /// True if the value is in the set.
     public func contains(self, value: T) -> bool {
-        return self.entries.contains_key(value)
+        return self.entries.contains(value)
     }
 
     /// Remove a value. True if it was there.
     public func remove(mutate self, value: T) -> bool {
-        if !self.entries.contains_key(value) {
+        if !self.entries.contains(value) {
             return false
         }
         self.entries.remove(value)
@@ -673,15 +665,21 @@ extend Set<T> {
         self.entries.clear()
     }
 
+    /// The chain head (type.sequence/SEQ49). Every other sequence method on
+    /// `Set` is generated from this one.
+    public func as_sequence(self) -> Sequence<T> {
+        return |yield| {
+            for (value, _) in self.entries {
+                if !yield(value) {
+                    return
+                }
+            }
+        }
+    }
+
     /// The values, as a `Vec`.
     ///
-    /// Named for what it builds, not for what you do with it (SEQ31). There is
-    /// no `iter()` here on purpose: a stored iterator isn't a thing in Rask —
-    /// an adapter chain has to terminate in the expression that starts it —
-    /// and a method declared `-> Iterator<T>` isn't recognised by the for-loop
-    /// lowering anyway, so `for v in s.iter()` failed to compile natively
-    /// while the interpreter ran it (#1070). When the sequence protocol lands,
-    /// `Set` gets a real one like every other collection.
+    /// Named for what it builds, not for what you do with it (SEQ31).
     public func to_vec(self) -> Vec<T> {
         return self.entries.keys().to_vec()
     }

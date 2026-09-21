@@ -113,7 +113,7 @@ impl Interpreter {
                 }
             }
             // The single-expression shorthands, under every strategy.
-            "get" | "into_inner" if args.is_empty() => {
+            "get" | "take" if args.is_empty() => {
                 let guard = shared.read().map_err(|e| {
                     RuntimeError::Panic(format!("Shared.get: lock poisoned: {}", e))
                 })?;
@@ -161,9 +161,22 @@ impl Interpreter {
                 })?;
                 Ok(guard.clone())
             }
-            (Value::RaskMutex(m), "lock") => {
+            // `Shared<T, Local>` is a cell: no lock to take, and both verbs
+            // answer (conc.sync/SH5). Without this arm the inline chain — the
+            // one `shared.write().field = v` takes — reported "invalid inline
+            // sync access: .write() on Cell" for every `Local` box (#1232).
+            (Value::Cell(c), "read") | (Value::Cell(c), "write") => {
+                let guard = c.lock().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.{}: lock poisoned: {}", method, e))
+                })?;
+                Ok(guard.clone())
+            }
+            // `Shared<T, Mutex>` is a mutex, and it answers to `read` and
+            // `write` too — which lock a verb takes is the strategy's business
+            // (SH5), and under `Mutex` both take the exclusive one.
+            (Value::RaskMutex(m), "lock" | "read" | "write") => {
                 let guard = m.lock().map_err(|e| {
-                    RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
+                    RuntimeError::Panic(format!("Mutex.{}: lock poisoned: {}", method, e))
                 })?;
                 Ok(guard.clone())
             }
@@ -317,7 +330,7 @@ impl Interpreter {
             // through Arc, so field mutations go to the shared data.
             "lock" if args.is_empty() => {
                 let guard = mutex.lock().map_err(|e| {
-                    RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
+                    RuntimeError::Panic(format!("Mutex.{}: lock poisoned: {}", method, e))
                 })?;
                 Ok(guard.clone())
             }
@@ -362,7 +375,7 @@ impl Interpreter {
                 })?;
                 Ok(guard.clone())
             }
-            "get" | "into_inner" if args.is_empty() => {
+            "get" | "take" if args.is_empty() => {
                 let guard = mutex.lock().map_err(|e| {
                     RuntimeError::Panic(format!("Shared.get: lock poisoned: {}", e))
                 })?;

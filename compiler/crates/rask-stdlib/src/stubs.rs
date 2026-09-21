@@ -10,7 +10,10 @@ use std::collections::HashMap;
 use std::sync::OnceLock;
 
 /// How many sources the stdlib contributes to the `file_id` space.
-pub const STDLIB_FILE_COUNT: u16 = STUB_SOURCES.len() as u16;
+///
+/// One past `STUB_SOURCES` for the generated forwarders, which have no file of
+/// their own but still need spans that resolve somewhere.
+pub const STDLIB_FILE_COUNT: u16 = STUB_SOURCES.len() as u16 + 1;
 
 /// First `file_id` the stdlib's own sources use.
 ///
@@ -28,10 +31,47 @@ pub const STDLIB_FILE_ID_BASE: u16 = u16::MAX - STDLIB_FILE_COUNT + 1;
 /// `(name, source, file_id)` for every stub, so a caller can register them with
 /// a `SourceMap` and have stdlib spans resolve against stdlib text.
 pub fn stub_sources() -> impl Iterator<Item = (&'static str, &'static str, u16)> {
-    STUB_SOURCES
+    all_sources()
         .iter()
         .enumerate()
         .map(|(i, (name, src))| (*name, *src, stub_file_id(i)))
+}
+
+/// The file name the generated sequence forwarders are parsed under.
+pub const FORWARDERS_FILE: &str = "sequence_forwarders.rk";
+
+/// Every stub source, with the generated forwarders spliced in behind
+/// `collections.rk`.
+///
+/// They sit there rather than at the end for the same reason `collections.rk`
+/// is first: a method and a free function share one name table, and these carry
+/// names like `count` and `find` that builtins also spells.
+fn all_sources() -> &'static [(&'static str, &'static str)] {
+    static ALL: OnceLock<Vec<(&'static str, &'static str)>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        let src_of = |name: &str| {
+            STUB_SOURCES
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, s)| *s)
+                .unwrap_or("")
+        };
+        let generated: &'static str = Box::leak(
+            crate::forwarders::generated_source(
+                src_of("sequence.rk"),
+                &[src_of("collections.rk")],
+            )
+            .into_boxed_str(),
+        );
+        let mut all: Vec<(&'static str, &'static str)> = Vec::with_capacity(STUB_SOURCES.len() + 1);
+        for entry in STUB_SOURCES {
+            all.push(*entry);
+            if entry.0 == "collections.rk" {
+                all.push((FORWARDERS_FILE, generated));
+            }
+        }
+        all
+    })
 }
 
 /// The `file_id` for the nth stub source.
@@ -214,7 +254,7 @@ impl StubRegistry {
                 sources: HashMap::new(),
             };
 
-            for (filename, source) in STUB_SOURCES {
+            for (filename, source) in all_sources() {
                 registry.sources.insert(filename.to_string(), source);
                 let lex_result = rask_lexer::Lexer::new(source).tokenize();
                 if !lex_result.is_ok() {
@@ -240,7 +280,7 @@ impl StubRegistry {
         let mut decls = Vec::new();
         let mut next_id: u32 = 1_000_000;
 
-        for (stub_index, (_filename, source)) in STUB_SOURCES.iter().enumerate() {
+        for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
             let file_id = stub_file_id(stub_index);
             let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
             if !lex_result.is_ok() {
@@ -274,7 +314,7 @@ impl StubRegistry {
         // Start NodeIds high to avoid collision with user code NodeIds.
         let mut next_id: u32 = 1_000_000;
 
-        for (stub_index, (_filename, source)) in STUB_SOURCES.iter().enumerate() {
+        for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
             let file_id = stub_file_id(stub_index);
             let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
             if !lex_result.is_ok() {
@@ -332,7 +372,7 @@ impl StubRegistry {
         let mut decls = Vec::new();
         let mut next_id: u32 = 2_000_000;
 
-        for (stub_index, (_filename, source)) in STUB_SOURCES.iter().enumerate() {
+        for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
             let file_id = stub_file_id(stub_index);
             let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
             if !lex_result.is_ok() {
@@ -367,7 +407,7 @@ impl StubRegistry {
         let mut decls = Vec::new();
         let mut next_id: u32 = 3_000_000;
 
-        for (stub_index, (_filename, source)) in STUB_SOURCES.iter().enumerate() {
+        for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
             let file_id = stub_file_id(stub_index);
             let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
             if !lex_result.is_ok() {
@@ -746,7 +786,7 @@ mod tests {
         assert!(reg.has_method("fs", "write_text"));
         assert!(reg.has_method("fs", "exists"));
         assert!(reg.has_method("fs", "open"));
-        assert!(reg.has_method("fs", "create"));
+        assert!(reg.has_method("fs", "create_file"));
     }
 
     #[test]
@@ -789,7 +829,7 @@ mod tests {
         // bounded (std.collections/CP4), so each could give exactly one answer.
         let expected = [
             "new", "with_capacity", "len", "is_empty",
-            "insert", "remove", "clear", "get", "get_clone", "contains_key",
+            "insert", "remove", "clear", "get", "get_clone", "contains",
             "read", "modify", "insert_if_missing", "modify_with_default",
             "keys", "values", "freeze",
         ];
@@ -909,7 +949,7 @@ mod tests {
         // These methods must declare return types — not empty string
         let checks = [
             ("Vec", "len"), ("Vec", "pop"), ("Vec", "get"),
-            ("Map", "len"), ("Map", "get"), ("Map", "contains_key"),
+            ("Map", "len"), ("Map", "get"), ("Map", "contains"),
             ("string", "len"), ("string", "contains"),
         ];
         for (ty, method) in &checks {

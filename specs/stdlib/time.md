@@ -37,7 +37,6 @@ duration.as_seconds() -> u64
 duration.as_millis() -> u64
 duration.as_micros() -> u64
 duration.as_nanos() -> u64
-duration.as_seconds_f32() -> f32
 duration.as_seconds_f64() -> f64
 ```
 

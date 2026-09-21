@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An unsuffixed float literal in an `f32` slot.
+//
+// MIR called every unsuffixed literal an `f64` and let the callee's declared
+// signature convert it. That works for a direct call, where the signature is on
+// hand — and not through a closure, where the caller's own argument types *are*
+// the signature. `yield(1.5)` into a `func(f32) -> bool` passed eight bytes, the
+// callee read the low four, and every f32 through a Sequence collected as 0:
+//
+//     pair().to_vec()[1]        // interp 2.5, native 0
+//
+// The literal goes through a local of its own when it is narrow, so the width
+// travels with the value — a bare float constant carries none, and every reader
+// with no expected type to hand defaults to f64 (#1243).
+import sequence.Sequence
+
+func pair() -> Sequence<f32> {
+    return |yield| {
+        if !yield(1.5) { return }
+        if !yield(2.5) { return }
+    }
+}
+
+func takes_f32(x: f32) -> f32 {
+    return x
+}
+
+test "f32 through a sequence" {
+    let collected = pair().to_vec()
+    assert collected.len() == 2
+    assert collected[1] == 2.5
+}
+
+test "f32 through a closure parameter" {
+    let f = |x: f32| {
+        return x
+    }
+    assert f(2.5) == 2.5
+}
+
+test "f32 through an ordinary call" {
+    assert takes_f32(2.5) == 2.5
+}
+
+test "f64 through the same sequence shape is unchanged" {
+    let xs: Vec<f64> = [1.5, 2.5]
+    assert xs[1] == 2.5
+}
+
+func main() {}

@@ -24,8 +24,8 @@ test "skip and take hand back a fresh Vec" {
     let v: Vec<i32> = [1, 2, 3, 4, 5]
     let head = v.take(2).to_vec()
     let tail = v.skip(3).to_vec()
-    assert head.count() == 2
-    assert tail.count() == 2
+    assert head.len() == 2
+    assert tail.len() == 2
     assert head[0] == 1
     assert tail[1] == 5
 }

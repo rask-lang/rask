@@ -1011,6 +1011,7 @@ mod tests {
                         visibility: FieldVisibility::Package,
                         attrs: vec![],
                         default: None,
+                        doc: None,
                     })
                     .collect(),
                 methods: vec![],
@@ -1043,6 +1044,7 @@ mod tests {
                                 visibility: FieldVisibility::Package,
                                 attrs: vec![],
                                 default: None,
+                                doc: None,
                             })
                             .collect(),
                         attrs: vec![],
@@ -1381,6 +1383,7 @@ mod tests {
                         visibility: FieldVisibility::Package,
                         attrs: vec![],
                         default: None,
+                        doc: None,
                     })
                     .collect(),
                 methods: vec![],

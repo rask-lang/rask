@@ -1231,6 +1231,31 @@ impl TypeChecker {
             return Ok(progress);
         }
 
+        // mem.heap/HP5: `Heap<T>` behaves as `T` wherever one is expected. This
+        // is where that rule lives. It used to be implemented by throwing the
+        // wrapper away at parse, which is transparency and erasure at once —
+        // and erasure is what left `func() -> Heap<i64>` checked as
+        // `func() -> i64`, with nothing downstream able to tell a block from
+        // the value in it (#1256).
+        //
+        // Two `Heap`s unify through the ordinary generic path below, so only
+        // the mixed pair peels — and not against an open variable. A variable
+        // has no `T` to accept a `Heap<T>` *as*; peeling there makes inference
+        // pick the payload, so `let f = || { return b }` came out returning the
+        // number rather than the block.
+        let peel_against = |a: &Type, b: &Type| -> Option<Type> {
+            if b.heap_payload().is_some() || matches!(b, Type::Var(_)) {
+                return None;
+            }
+            a.heap_payload().cloned()
+        };
+        if let Some(inner) = peel_against(&t1, &t2) {
+            return self.unify(&inner, &t2, span);
+        }
+        if let Some(inner) = peel_against(&t2, &t1) {
+            return self.unify(&t1, &inner, span);
+        }
+
         match (&t1, &t2) {
             (a, b) if a == b => Ok(false),
 

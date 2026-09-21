@@ -303,12 +303,6 @@ impl Parser {
                 self.advance();
                 Ok(name)
             }
-            // `read` is reserved by the lexer but has no structural role in the grammar.
-            // Allow it anywhere a plain identifier is expected.
-            TokenKind::ReadKw => {
-                self.advance();
-                Ok("read".to_string())
-            }
             _ => Err(ParseError::expected(
                 "a name",
                 self.current_kind(),
@@ -1679,7 +1673,7 @@ impl Parser {
                 } else {
                     None
                 };
-                fields.push(Field { name: field_name, name_span, ty, visibility, attrs: field_attrs, default });
+                fields.push(Field { name: field_name, name_span, ty, visibility, attrs: field_attrs, default, doc: method_doc });
             }
 
             self.match_token(&TokenKind::Comma);
@@ -1746,6 +1740,7 @@ impl Parser {
                 visibility: FieldVisibility::Package,
                 attrs: vec![],
                 default,
+                doc: None,
             });
             self.match_token(&TokenKind::Comma);
             self.skip_newlines();
@@ -1766,7 +1761,7 @@ impl Parser {
         let mut fields = Vec::new();
 
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
-            let _field_doc = self.take_doc();
+            let field_doc = self.take_doc();
             let field_private = self.match_token(&TokenKind::Private);
             let field_pub = if !field_private { self.match_token(&TokenKind::Public) } else { false };
 
@@ -1790,7 +1785,7 @@ impl Parser {
             let field_name = self.expect_ident_or_keyword()?;
             self.expect(&TokenKind::Colon)?;
             let ty = self.parse_type_name()?;
-            fields.push(Field { name: field_name, name_span, ty, visibility, attrs: vec![], default: None });
+            fields.push(Field { name: field_name, name_span, ty, visibility, attrs: vec![], default: None, doc: field_doc });
 
             self.match_token(&TokenKind::Comma);
             self.skip_newlines();
@@ -1873,7 +1868,7 @@ impl Parser {
                             (format!("_{}", idx), type_span, ty)
                         };
 
-                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None });
+                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None });
                         idx += 1;
 
                         if !self.match_token(&TokenKind::Comma) { break; }
@@ -1888,7 +1883,7 @@ impl Parser {
                         let field_name = self.expect_ident()?;
                         self.expect(&TokenKind::Colon)?;
                         let ty = self.parse_type_name()?;
-                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None });
+                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None });
                         if !self.match_token(&TokenKind::Comma) {
                             self.skip_newlines();
                             if !self.check(&TokenKind::RBrace) { continue; }
@@ -2575,18 +2570,33 @@ impl Parser {
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
                 match self.current_kind() {
                     TokenKind::Ident(ref s) if s == "dep" => {
-                        deps.push(self.parse_dep_item()?);
+                        deps.push(self.parse_dep_item(None)?);
                     }
                     TokenKind::Scope => {
                         // scope "dev" { dep ... }
                         self.advance();
-                        let _scope_name = self.expect_string()?;
+                        let scope_span = self.current().span;
+                        let scope_name = self.expect_string()?;
+                        if scope_name != "dev" && scope_name != "build" {
+                            return Err(ParseError {
+                                span: scope_span,
+                                message: format!(
+                                    "unknown dependency scope \"{}\" — the scopes are \"dev\" and \"build\"",
+                                    scope_name,
+                                ),
+                                hint: Some(
+                                    "\"dev\" deps are linked by `rask test`, \"build\" deps by the                                      build script; a dep outside any scope is linked by every build"
+                                        .to_string(),
+                                ),
+                                why: None,
+                            });
+                        }
                         self.skip_newlines();
                         self.expect(&TokenKind::LBrace)?;
                         self.skip_newlines();
                         while !self.check(&TokenKind::RBrace) && !self.at_end() {
                             if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-                                deps.push(self.parse_dep_item()?);
+                                deps.push(self.parse_dep_item(Some(&scope_name))?);
                             } else {
                                 self.advance();
                             }
@@ -2684,7 +2694,7 @@ impl Parser {
                         self.skip_newlines();
                         while !self.check(&TokenKind::RBrace) && !self.at_end() {
                             if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-                                opt_deps.push(self.parse_dep_item()?);
+                                opt_deps.push(self.parse_dep_item(None)?);
                             } else {
                                 self.advance();
                             }
@@ -2694,7 +2704,7 @@ impl Parser {
                     }
                     options.push(FeatureOption { name: opt_name, deps: opt_deps });
                 } else if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-                    feature_deps.push(self.parse_dep_item()?);
+                    feature_deps.push(self.parse_dep_item(None)?);
                 } else if matches!(self.current_kind(), TokenKind::Ident(_)) {
                     // default: "tokio"
                     let key = self.expect_ident()?;
@@ -2725,7 +2735,8 @@ impl Parser {
     /// dep "shared" { path: "../shared" }
     /// dep "tokio" "^1.0" { with: ["rt-multi-thread", "net"] }
     /// ```
-    fn parse_dep_item(&mut self) -> Result<DepDecl, ParseError> {
+    fn parse_dep_item(&mut self, scope: Option<&str>) -> Result<DepDecl, ParseError> {
+        let mut dep_scope: Option<String> = scope.map(str::to_string);
         // `dep` is a contextual keyword — only recognized inside package blocks
         if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
             self.advance();
@@ -2764,6 +2775,26 @@ impl Parser {
                     "git" => { git = Some(self.expect_string()?); }
                     "branch" => { branch = Some(self.expect_string()?); }
                     "target" => { target = Some(self.expect_string()?); }
+                    // A dep inside a `feature` block can name its scope here
+                    // instead — `scope` blocks and `feature` blocks may not
+                    // nest (struct.build/F4), so this key is the only way to
+                    // say "this optional dep is a dev dep".
+                    "scope" => {
+                        let span = self.current().span;
+                        let named = self.expect_string()?;
+                        if named != "dev" && named != "build" {
+                            return Err(ParseError {
+                                span,
+                                message: format!(
+                                    "unknown dependency scope \"{}\" — the scopes are \"dev\" and \"build\"",
+                                    named,
+                                ),
+                                hint: None,
+                                why: None,
+                            });
+                        }
+                        dep_scope = Some(named);
+                    }
                     "with" => {
                         self.expect(&TokenKind::LBracket)?;
                         while !self.check(&TokenKind::RBracket) && !self.at_end() {
@@ -2821,6 +2852,7 @@ impl Parser {
         Ok(DepDecl {
             name, version, path, git, branch, with_features, target,
             allow, exclusive_selections,
+            scope: dep_scope,
         })
     }
 
@@ -3329,7 +3361,7 @@ impl Parser {
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
                 | TokenKind::Take
                 | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
-                | TokenKind::None | TokenKind::Null | TokenKind::ReadKw
+                | TokenKind::None | TokenKind::Null
         )
     }
 
@@ -4071,16 +4103,6 @@ impl Parser {
                 }
             }
 
-            // `read` is reserved as a parameter mode keyword but has no syntactic
-            // role in expressions. Allow it as a plain identifier so user-defined
-            // functions and variables named `read` work correctly.
-            TokenKind::ReadKw => {
-                self.advance();
-                let name = "read".to_string();
-                let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.span(start, end) })
-            }
-
             TokenKind::LParen => self.parse_paren_or_tuple(),
 
             TokenKind::LBracket => self.parse_array_literal(),
@@ -4772,7 +4794,16 @@ impl Parser {
         if self.check(&TokenKind::RParen) { return Ok(args); }
 
         let outer_list = std::mem::replace(&mut self.in_comma_list, true);
+        // An argument list closes the ambiguity a condition opens, the same way
+        // a parenthesised expression does: once the parser is inside `f(`, a
+        // `{` can only start a struct literal, because the body of the `if`
+        // can't start there. Without this `if !accept(Pay { a: 7 }) { … }`
+        // read the literal's brace as the start of the body and reported a
+        // missing `)` — and authoring a sequence hit it immediately, since the
+        // yield is always in a condition (#1236).
+        let outer_braces = std::mem::replace(&mut self.allow_brace_expr, true);
         let result = self.parse_args_loop(raw_first_string, &mut args);
+        self.allow_brace_expr = outer_braces;
         self.in_comma_list = outer_list;
         result?;
         Ok(args)
@@ -5957,7 +5988,6 @@ fn starts_an_expression(kind: &TokenKind) -> bool {
             | TokenKind::None
             | TokenKind::Null
             | TokenKind::Own
-            | TokenKind::ReadKw
             | TokenKind::Select
             | TokenKind::SelectPriority
             | TokenKind::Try
@@ -6003,7 +6033,6 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Private => "private",
         TokenKind::Take => "take",
         TokenKind::Own => "own",
-        TokenKind::ReadKw => "read",
         TokenKind::MutateKw => "mutate",
         TokenKind::Unsafe => "unsafe",
         TokenKind::Comptime => "comptime",

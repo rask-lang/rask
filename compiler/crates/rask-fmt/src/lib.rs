@@ -96,6 +96,18 @@ mod tests {
         assert_eq!(format_source(input), input);
     }
 
+    /// A comment between an attribute and its declaration stayed where it was
+    /// written. The declaration's span starts at the `@`, so the comment sits
+    /// inside it and the top-level flush skipped it — it came back out at the
+    /// next emission point, which is the first statement of the body. That
+    /// matters for an example the book includes by anchor: the `// ANCHOR:`
+    /// line has to stay above `func`, and the formatter was moving it in.
+    #[test]
+    fn keeps_a_comment_between_an_attribute_and_its_function() {
+        let input = "@allow(idiom/match-on-optional)\n// ANCHOR: simplest\nfunc a() -> i32 {\n    return 1\n}\n";
+        assert_eq!(format_source(input), input);
+    }
+
     #[test]
     fn idempotent_on_clean_code() {
         let clean = "func main() {\n    let x = 42\n    println(x.to_string())\n}\n";
@@ -451,6 +463,29 @@ func main() {
             "func main() {\n    let n = (a ?? b).count()\n}\n",
             "(a ?? b).count()",
             "a coalescing receiver",
+        );
+    }
+
+    #[test]
+    fn keeps_parens_a_function_typed_field_call_needs() {
+        // `h.run(5)` is a method call on `h` (type.structs/M6), so the
+        // parentheses are the only way to call a field that holds a function.
+        // Dropping them turned a program that compiled into "`run` is a field
+        // on `Handler`, not a method", and the round-trip gate is what said so.
+        keeps(
+            "func main() {\n    let n = (h.run)(5)\n}\n",
+            "(h.run)(5)",
+            "a function-typed field",
+        );
+        keeps(
+            "func main() {\n    let n = (fs[0].run)(5)\n}\n",
+            "(fs[0].run)(5)",
+            "a field of an element",
+        );
+        keeps(
+            "func main() {\n    let n = (ns[0].inner.run)(4)\n}\n",
+            "(ns[0].inner.run)(4)",
+            "a field of a nested field",
         );
     }
 

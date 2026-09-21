@@ -178,12 +178,12 @@ extend Pool<T> {
     public func get_mut_unchecked(mutate self, handle: Handle<T>) -> T {}
 
     /// Apply closure only if handle is valid (read-only).
-    @native
-    public func with_valid(self, handle: Handle<T>, f: func(T) -> R) -> Option<R> {}
+    ///
+    /// `with_` here is Rask's scoped access, not the builder prefix the lint
+    /// rule is about — these hand a borrow to a closure and hand back what it
+    /// answered. Both go with `Pool` (rask-lang/rask#908).
 
     /// Apply closure only if handle is valid (mutable).
-    @native
-    public func with_valid_mut(mutate self, handle: Handle<T>, f: func(T) -> R) -> Option<R> {}
 
     /// Total slot capacity (allocated slots, including free).
     @native

@@ -129,7 +129,7 @@ func manual_close() {
 
 func demonstrate_file_resources() -> void or IoError {
     // File handles are also linear resources
-    mut file = try fs.create("test.txt")
+    mut file = try fs.create_file("test.txt")
     ensure {
         file.close()
         fs.remove_file("test.txt")  // Clean up the file after use

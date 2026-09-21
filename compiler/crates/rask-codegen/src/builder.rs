@@ -2731,6 +2731,14 @@ impl<'a> FunctionBuilder<'a> {
                         | MirType::Array { .. }
                         | MirType::Ptr
                         | MirType::Handle
+                        // A `Heap<T>` standing where a `T` is expected (HP5):
+                        // the block's address is the aggregate's address, so
+                        // there is nothing to spill. Spilling it passed the
+                        // address of a slot holding the pointer, and the callee
+                        // read the pointer's bytes as the enum's tag —
+                        // `sum(rest)` on a `Cons(i64, Heap<List>)` trapped on
+                        // the second node.
+                        | MirType::Heap(_)
                 )
             });
             if arg_is_aggregate {
@@ -4487,8 +4495,20 @@ impl<'a> FunctionBuilder<'a> {
                 let lty = mir_to_cranelift_type(ty)?;
                 let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
-                let a = builder.ins().sextend(types::I64, a);
-                let b = builder.ins().sextend(types::I64, b);
+                // Only a narrower field needs widening. `sextend` from i64 to
+                // i64 is not an instruction, and the Cranelift verifier rejected
+                // the whole function over it — so a struct holding a tuple of
+                // i64 couldn't be compiled at all, derive or no derive, and it
+                // took `Metadata` and `SystemTime` down with it (#1237). The
+                // declared-type arm next to this one has always guarded it.
+                let (a, b) = if lty == types::I64 {
+                    (a, b)
+                } else {
+                    (
+                        builder.ins().sextend(types::I64, a),
+                        builder.ins().sextend(types::I64, b),
+                    )
+                };
                 Ok(Self::emit_signed_three_way(builder, a, b))
             }
             other => Err(Self::unorderable_field(&format!("`{:?}`", other))),
@@ -6882,17 +6902,29 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// The address and size of a returned aggregate whose storage this frame
-    /// doesn't own — a by-ref closure capture. `None` for anything else.
+    /// doesn't own — a by-ref closure capture, or a parameter. `None` for
+    /// anything else.
+    ///
+    /// A parameter holding an aggregate arrives as the caller's address and
+    /// gets no slot here, so returning it handed back that address. For
+    /// anything wider than a word the caller copies out of it and the answer is
+    /// right; for a word-sized one the caller stores the word it was given, and
+    /// that word was the address. `|p: Pay| { return p }` came back as a stack
+    /// address where the field should be, and the same closure over an enum
+    /// landed on a tag that isn't one of the variants (#1235). An ordinary
+    /// function was right only because it got inlined first.
     fn borrowed_aggregate_return(
         builder: &mut ClifFunctionBuilder,
         value: Option<&MirOperand>,
         ctx: &CodegenCtx,
     ) -> Option<(Value, u32)> {
         let Some(MirOperand::Local(id)) = value else { return None };
-        if !ctx.addr_taken.borrowed.contains(id) {
+        let local = ctx.locals.iter().find(|l| l.id == *id)?;
+        let storage_is_the_callers =
+            ctx.addr_taken.borrowed.contains(id) || (local.is_param && local.ty.passed_by_address());
+        if !storage_is_the_callers {
             return None;
         }
-        let local = ctx.locals.iter().find(|l| l.id == *id)?;
         let size = Self::resolve_type_alloc_size(
             &local.ty, ctx.struct_layouts, ctx.enum_layouts,
         )?;
@@ -7240,6 +7272,10 @@ impl<'a> FunctionBuilder<'a> {
             MirType::String => true,
             // A container owns its byte store whatever the elements are.
             MirType::Container(_) => true,
+            // A block is the slot's whatever is in it, the same way a `Heap<T>`
+            // *field* counts (see `is_heap_field`). Storing one in an aggregate
+            // moves it in (mem.heap/HP4), so the aggregate gives it back.
+            MirType::Heap(_) => true,
             // A box moved into a field is the aggregate's: the block, and the
             // value's own contents through the vtable. Left out, a struct whose
             // only owning field was an `any Trait` was skipped by the whole
@@ -7356,6 +7392,24 @@ impl<'a> FunctionBuilder<'a> {
             MirType::Container(kind) => Self::emit_container_release(
                 builder, base, offset, Self::container_free_for_kind(*kind), ctx,
             ),
+            // The slot holds the block's address. What the block holds goes
+            // first — after `rask_free` there is nothing left to walk — and
+            // then the block. Same two steps `drop(b)` emits for a named one.
+            MirType::Heap(payload) => {
+                let block = builder.ins().load(
+                    cranelift_codegen::ir::types::I64,
+                    cranelift_codegen::ir::MemFlags::new(),
+                    base,
+                    offset,
+                );
+                Self::release_strings_mir(builder, block, 0, payload, ctx, depth + 1)?;
+                let free_ref = ctx
+                    .func_refs
+                    .get("rask_free")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
+                builder.ins().call(*free_ref, &[block]);
+                Ok(())
+            }
             // The slot *is* the `[data, vtable]` fat pointer. The runtime's own
             // entry walker reads both words and the vtable's release hook, so
             // hand it the slot rather than repeating that here — and the hook
@@ -8843,7 +8897,7 @@ impl<'a> FunctionBuilder<'a> {
             // instead made `Atomic<Slot>` an atomic pointer to a temporary, and
             // the load read whatever that address held (mem.atomics).
             "Atomic_new" | "Atomic_store" | "Atomic_swap" | "Atomic_load"
-            | "Atomic_into_inner" | "Atomic_compare_exchange"
+            | "Atomic_take" | "Atomic_compare_exchange"
             | "Atomic_compare_exchange_weak" => {
                 // Argument side: load the word out of an aggregate payload. The
                 // ordering arguments are plain integers and answer `false` to

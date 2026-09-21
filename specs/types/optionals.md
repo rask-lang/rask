@@ -1,7 +1,7 @@
 <!-- id: type.optionals -->
 <!-- status: decided -->
 <!-- summary: T? is sugar for T or none. none is a built-in zero-field type. The ?-family (?, ?., `is none`) tests and projects — as plain booleans, no narrowing; payload access is always the `as v` bind. `??` supplies the other branch — a value or an exit; bare `try` propagates the absence to a T?-returning caller. No Some/None constructors. Optionals nest: T?? keeps both layers distinct, operators act on the outer one, a bare none literal means the outer absent. -->
-<!-- depends: types/types.md, types/union-types.md, types/error-types.md, control/control-flow.md -->
+<!-- depends: types/union-types.md, types/error-types.md, control/control-flow.md -->
 
 # Optionals
 

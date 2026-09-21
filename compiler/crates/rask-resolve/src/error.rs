@@ -75,6 +75,23 @@ impl ResolveError {
         }
     }
 
+    /// An import the build can't satisfy. When the manifest declares it under
+    /// a `scope` this build doesn't link, say that instead — "unknown
+    /// package" would send the reader looking for a typo in a name their own
+    /// manifest carries (`struct.build/D4`).
+    pub fn unknown_package_in_scope(path: Vec<String>, scope: Option<String>, span: Span) -> Self {
+        match scope {
+            Some(scope) => Self {
+                kind: ResolveErrorKind::ScopedDependencyUse {
+                    name: path.first().cloned().unwrap_or_default(),
+                    scope,
+                },
+                span,
+            },
+            None => Self::unknown_package(path, span),
+        }
+    }
+
     pub fn unknown_package(path: Vec<String>, span: Span) -> Self {
         Self {
             kind: ResolveErrorKind::UnknownPackage { path },
@@ -198,6 +215,9 @@ pub enum ResolveErrorKind {
 
     #[error("unknown package: `{}`", if path.is_empty() { "<empty>".to_string() } else { path.join(".") })]
     UnknownPackage { path: Vec<String> },
+
+    #[error("`{name}` is a `scope \"{scope}\"` dependency and this build doesn't link it")]
+    ScopedDependencyUse { name: String, scope: String },
 
     #[error("`{name}` is not public and cannot be accessed from this package")]
     NotVisible { name: String },

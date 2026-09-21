@@ -314,7 +314,7 @@ If Pool folds into Graph and Handle becomes boundary-only `Key<T>`:
 - Pool's hidden `Arc<Mutex>` threading — replaced by scoped parallel
   iteration, removing a lock the current design hides (a TC violation,
   strictly read).
-- `mem.pools`' weak handles, `with_valid`, `get_unchecked` escape hatches —
+- `mem.pools`' weak handles, `read`, `get_unchecked` escape hatches —
   the problems they escape from don't exist.
 - DAY_ONE.md drops Handle, the get-dance, and `using Pool<T>`; gains `Link?`
   and two schema clauses that announce themselves.

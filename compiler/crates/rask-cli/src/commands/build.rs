@@ -180,11 +180,23 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
     ensure_gitignore(&root);
 
     // === LC1 Step 1-3: Parse build.rk, discover packages + deps ===
+    // A dev dependency is present exactly where `test` blocks are.
+    // `std.testing/T1` strips them in release, so release is the build that
+    // doesn't link one — which is the whole reason to write `scope "dev"`.
+    // Every other build compiles the test blocks and needs their imports to
+    // resolve.
     let mut registry = PackageRegistry::new();
+    let release = opts.profile == "release";
+    if !release {
+        registry.include_scope("dev");
+    }
     let root_ids = match registry.discover_workspace(&root) {
         Ok(ids) => ids,
         Err(e) => report_package_error(&e),
     };
+    if release {
+        registry.strip_test_blocks();
+    }
     let is_workspace = root_ids.len() > 1;
     let mut root_id = root_ids[0];
 
@@ -847,7 +859,11 @@ pub fn cmd_update(path: &str) {
         process::exit(1);
     }
 
+    // The lock pins what any build might need, so it sees every scope — one
+    // that left dev deps out would make `rask test` unreproducible.
     let mut registry = PackageRegistry::new();
+    registry.include_scope("dev");
+    registry.include_scope("build");
     let root_ids = match registry.discover_workspace(&root) {
         Ok(ids) => ids,
         Err(e) => report_package_error(&e),

@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `shared.write().field = value` — a store through an inline lock chain.
+//
+//     settings.write().theme = "light"
+//     println("{settings.read().theme}")     // interp: light, native: garbage
+//
+// The receiver of the store is a lock chain, and lowering it as an ordinary
+// expression took the lock and gave it straight back: the store landed *after*
+// the release, through a guard nobody held. It also lost the field's width on
+// the way, so a 16-byte string went into the slot as a bare word and read back
+// as whatever followed it. An `i64` field was fine, and so was the same store
+// inside `with … as s { }`, which is what made it look like a string bug
+// (#1232, a sibling of #698).
+//
+// While fixing it: an inline chain on a `Shared<T, Local>` didn't compile at
+// all. The release side of that pair named `Cell_noop_release`, which nothing
+// declares — a `Local` takes no lock, so it has nothing to give back. And the
+// interpreter only accepted the inline form under `Readers`, where
+// conc.sync/SH5 says all three strategies answer to both verbs.
+import sync.Shared
+import sync.Local
+
+struct Settings {
+    public theme: string
+    public size: i64
+}
+
+test "a string field stored through an inline write" {
+    let settings = Shared.new(Settings { theme: "dark", size: 1 })
+    settings.write().theme = "light"
+    assert settings.read().theme == "light"
+}
+
+test "a scalar field stored through an inline write" {
+    let settings = Shared.new(Settings { theme: "dark", size: 1 })
+    settings.write().size = 7
+    assert settings.read().size == 7
+}
+
+test "the same store inside a with block" {
+    let settings = Shared.new(Settings { theme: "dark", size: 1 })
+    with settings.write() as s {
+        s.theme = "light"
+    }
+    assert settings.read().theme == "light"
+}
+
+test "written twice — the replaced string is given back" {
+    let settings = Shared.new(Settings { theme: "dark", size: 1 })
+    settings.write().theme = "a theme name long enough to allocate"
+    settings.write().theme = "another one, also long enough to allocate"
+    assert settings.read().theme == "another one, also long enough to allocate"
+}
+
+test "a Local Shared takes both verbs" {
+    let settings = Shared.local(Settings { theme: "dark", size: 1 })
+    settings.write().theme = "light"
+    assert settings.read().theme == "light"
+}
+
+test "a Mutex Shared takes both verbs" {
+    let settings = Shared.mutex(Settings { theme: "dark", size: 1 })
+    settings.write().theme = "light"
+    assert settings.read().theme == "light"
+}
+
+func main() {}

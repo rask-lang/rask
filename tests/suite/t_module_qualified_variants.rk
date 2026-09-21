@@ -142,7 +142,7 @@ test "a dotted name in a condition still starts the body" {
 
 // A static method through a module still flattens the way it always did.
 test "module.Type.method() is unaffected" {
-    let d = time.Duration.from_millis(250)
+    let d = time.Duration.millis(250)
     assert d.as_millis() == 250
     let r = h.Response.new(204, "")
     assert r.status == 204

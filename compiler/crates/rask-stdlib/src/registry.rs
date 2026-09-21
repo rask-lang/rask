@@ -133,7 +133,7 @@ const VEC_METHODS: &[&str] = &[
     "filter", "map", "flat_map", "fold", "reduce",
     "enumerate", "zip", "limit", "flatten",
     "sort", "sort_by", "any", "all", "find", "position",
-    "remove_adjacent_duplicates", "sum", "min", "max", "count", "take_all",
+    "remove_adjacent_duplicates", "sum", "min", "max", "take_all",
 ];
 
 const MAP_METHODS: &[&str] = &[
@@ -184,7 +184,7 @@ const JSON_VALUE_METHODS: &[&str] = &[
 ];
 
 const DURATION_METHODS: &[&str] = &[
-    "as_seconds", "as_millis", "as_micros", "as_nanos", "as_seconds_f32", "as_seconds_f64",
+    "as_seconds", "as_millis", "as_micros", "as_nanos", "as_seconds_f64",
 ];
 
 const INSTANT_METHODS: &[&str] = &["elapsed"];
@@ -236,7 +236,7 @@ macro_rules! methods_with_arity {
 // answers, and that one doesn't.
 const SHARED_METHODS: &[&str] = &[
     "read", "write", "try_read", "try_write", "clone",
-    "get", "set", "replace", "into_inner",
+    "get", "set", "replace", "take",
 ];
 
 const SIMD_METHODS: &[&str] = &[
@@ -266,7 +266,7 @@ methods_with_arity!(ATOMIC_METHODS, ATOMIC_ARITIES,
     "fetch_nand" => [2],
     "fetch_max" => [2],
     "fetch_min" => [2],
-    "into_inner" => [0],
+    "take" => [0],
 );
 
 // ---------------------------------------------------------------------------
@@ -275,7 +275,7 @@ methods_with_arity!(ATOMIC_METHODS, ATOMIC_ARITIES,
 
 const FS_METHODS: &[&str] = &[
     "read_text", "read_bytes", "read_lines", "write_text", "write_bytes",
-    "append_text", "exists", "open", "create", "absolute_path", "metadata",
+    "append_text", "exists", "open", "create_file", "absolute_path", "metadata",
     "remove_file", "remove_dir", "create_dir", "create_dir_all",
     "rename", "copy", "current_dir", "home_dir",
 ];

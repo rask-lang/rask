@@ -524,7 +524,7 @@ impl Interpreter {
                     let old = std::mem::replace(&mut *guard, args.into_iter().next().unwrap());
                     Ok(old)
                 }
-                "into_inner" => {
+                "take" => {
                     // Consume the cell — return inner value
                     let guard = c.lock().unwrap();
                     Ok(guard.clone())
@@ -870,7 +870,7 @@ impl Interpreter {
         match module {
             Fs => matches!(method,
                 "read_text" | "read_bytes" | "read_lines" | "write_text" | "write_bytes"
-                | "append_text" | "exists" | "open" | "create" | "absolute_path" | "metadata"
+                | "append_text" | "exists" | "open" | "create_file" | "absolute_path" | "metadata"
                 | "remove_file" | "remove_dir" | "create_dir" | "create_dir_all"
                 | "rename" | "copy" | "list_dir" | "current_dir" | "home_dir"
             ),

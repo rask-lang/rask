@@ -17,7 +17,7 @@ Iteration in Rask is **push**: the source owns the loop and hands you each item.
 | **SEQ34: Yields lend, except to a terminal** | A yield lends its item for the length of one call — `Sequence<T>` a read-only borrow, `SequenceMut<T>` a mutable one (`mem.closures/CP1`, `CP4`). The one exception is a terminal consuming a value the chain **owns**: nothing can observe that item afterwards, so the terminal may move it instead of copying it (SEQ47) |
 | **SEQ35: Owned iteration is not a sequence** | Consuming a collection is `take_all()`, which returns the drained `Vec<T>`. `for x in v.take_all()` is an ordinary for-over-Vec on a temporary the loop owns |
 | **SEQ46: Naming it needs an import, using it doesn't** | `import sequence.Sequence` to write `Sequence<T>` in a signature — the same terms as `memory.Heap` or `memory.Link`. Iterating one needs no import: `for x in tree.in_order()` works because the compiler knows the type, not because the name is in scope. So the import lands only in files that *author* sequences, never in files that merely consume them |
-| **SEQ36: A closure literal fills a Sequence slot** | Where a `Sequence<T>` is expected, a closure of the right shape is one — no constructor call. Same rule as `let xs: Vec<i64> = [1, 2, 3]`: the slot picks the shape (`std.collections/C4`) |
+| **SEQ36: A closure literal fills a Sequence slot** | Where a `Sequence<T>` is expected, a closure of the right shape is one — no constructor call. Same rule as `let xs: Vec<i64> = [1, 2, 3]`: the slot picks the shape (`std.collections/C9`) |
 
 <!-- test: skip -->
 ```rask
@@ -26,7 +26,7 @@ public func in_order(self) -> Sequence<i32> {
 }
 ```
 
-A `Sequence<T>` is a first-class value. It can be stored, passed, returned — subject to the same scope rules as any closure (`mem.closures/SL1-SL2`).
+A `Sequence<T>` is a first-class value. It can be stored, passed, returned — subject to the same scope rules as any closure (`mem.closures/SL3-SL4`).
 
 **Why it isn't a reserved name.** `Vec`, `Map`, `Set`, `string`, `Error` and `Channel` are in scope everywhere and can't be redeclared. `Sequence` deliberately isn't: it's a far more likely thing for a program to want for itself — a DNA sequence, an animation sequence, a sequence number — and rask-lang/rask#977 already taught this lesson once, when `Handle` was reserved and programs couldn't declare their own. The import costs one line in the files that author sequences and nothing anywhere else.
 
@@ -269,6 +269,7 @@ Adapters are methods on `Sequence<T>`, declared in one `extend Sequence<T>` bloc
 | **SEQ13: Chain syntax** | `seq.adapter(args)` resolves like any method call. An earlier draft declared adapters as free functions taking the sequence as the first parameter *and* said they resolve as methods; those are different mechanisms and the method one wins |
 | **SEQ41: One adapter surface** | An adapter builds a sequence, never a second collection. `v.map(f)` is legal — SEQ48 makes the collection its own chain head — and it hands back a `Sequence<U>`, so nothing is allocated until a terminal asks. An eager copy allocates per stage; the chain allocates once, where you wrote the terminal. `std.api/SD5` says one operation gets one spelling, and this is it. `zip` and `chunks` are *not* adapters and stay on the indexable source (SEQ14, SEQ39): lockstep and position need two positions at once, which a push source can't hold |
 | **SEQ48: A collection is its own chain head** | There is no `.iter()`. `v.filter(p)` starts a sequence over `v` directly, and `for x in v` walks it. Rust needs `.iter()` to separate borrowing from `into_iter()`'s move and `iter_mut()`'s mutable borrow; Rask spells those `take_all()` and `for mutate x in v`, so the distinction `.iter()` exists to draw isn't there and the call was pure ceremony. A user type still reaches iterability by returning a sequence from a method of its own (SEQ6) — that method may be called `iter`, and nothing in the compiler treats the name specially |
+| **SEQ49: A chain head declares `as_sequence`, not the adapters** | A collection carries the whole sequence surface because the compiler generates each method from `extend Sequence<T>` — signature over the host, body `return self.as_sequence().<name>(…)`. The type writes `as_sequence(self) -> Sequence<E>` and gets the rest. Writing one by hand still wins, which is how `Vec.flat_map` takes a `Vec<U>` where the sequence one takes a `Sequence<U>`. Hand-copying is what SEQ48 used to mean in practice, and copies rot: `Vec` had `take` and no `take_while`. A generated forwarder is inherited surface, so it doesn't count against the host's `std.api/SD1` budget |
 | **SEQ13a: Short-circuit propagation** | If the downstream yield returns `false`, the adapter must stop and return `false` from its own yield call. Sources must likewise stop emitting when their yield returns `false`. This is the contract that makes `.take(n)`, `.find()`, and `break` work. Violating it changes observable semantics |
 
 | Adapter | Behavior | Signature |
@@ -441,13 +442,13 @@ So SEQ17–SEQ19 are the target, not the present state, and this section says so
 
 ## Scope Rules
 
-`Sequence<T>` storability is not a new rule — it falls out of ordinary closure capture rules (`mem.closures/SL1-SL2`, `mem.closures/MC3`). A `Sequence<T>` is a closure value; its lifetime is the lifetime of whatever it captures.
+`Sequence<T>` storability is not a new rule — it falls out of ordinary closure capture rules (`mem.closures/SL3-SL4`, `mem.closures/MC3`). A `Sequence<T>` is a closure value; its lifetime is the lifetime of whatever it captures.
 
 | Rule | Description |
 |------|-------------|
 | **SEQ25: Owned captures = storable** | A `Sequence<T>` whose closure captures only owned or Copy data can be stored in structs, returned across function boundaries, and sent across tasks. The canonical pattern is `take self` on the method that builds it |
 | **SEQ26: Borrow captures = expression-scoped** | A `Sequence<T>` whose closure captures any block-scoped borrow is limited to that borrow's scope. It cannot outlive the source, be stored in a struct, or be sent across tasks. Returning one from the function that borrowed the source is fine — the limit travels to the caller, who holds the source (`mem.closures/SL3`, `SL4`) |
-| **SEQ27: No separate closed-world rule** | There is no "Sequence-specific" storability constraint. The rule above is `mem.closures/SL1-SL2` applied verbatim to the closure that implements the sequence |
+| **SEQ27: No separate closed-world rule** | There is no "Sequence-specific" storability constraint. The rule above is `mem.closures/SL3-SL4` applied verbatim to the closure that implements the sequence |
 
 Concretely: if your method builds a `Sequence<T>` by borrowing `self`, the returned Sequence is limited to that borrow. If the method takes `take self`, the Sequence owns the source and is freely storable.
 
@@ -717,7 +718,7 @@ An earlier draft justified push with "Rask has no storable references, so a pull
 
 **Nothing can point into a `Vec`.** A pull cursor over a Vec is `struct VecCursor<T> { source: <a borrow of the Vec>, i: usize }`, and there is no such field. `Link` points into a rack and nothing else; there is no value naming a position inside a `Vec`, a `Map`, a `string`, or a `Heap` chain. So pull is authorable only for rack-shaped data, and every other collection stays compiler-magic — user types and stdlib types iterating by different mechanisms, permanently.
 
-Making it uniform needs a struct that is scope-limited by a borrow it holds. Closures already have that property (`mem.closures/SL1-SL2`) and so do links (`mem.racks/RK6`); generalizing it to structs is lifetime annotations with the serial numbers filed off, which is the one bill Rask has refused to pay since the start.
+Making it uniform needs a struct that is scope-limited by a borrow it holds. Closures already have that property (`mem.closures/MC3`) and so do links (`mem.racks/RK6`); generalizing it to structs is lifetime annotations with the serial numbers filed off, which is the one bill Rask has refused to pay since the start.
 
 Push has no such asymmetry. The closure captures its source *by borrow*, which is legal precisely because the closure can't escape — Vec, Map, string, Heap, Rack, channels, one mechanism, all of it user-authorable. That is the reason, and it costs what SEQ34 (no owned yields), SEQ38 (no resuming), SEQ8 (return needs a flag) and SEQ40 (the desugar spells out its captures) say it costs.
 

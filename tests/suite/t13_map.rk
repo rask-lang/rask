@@ -33,12 +33,12 @@ test "map len" {
     assert m.len() == 2
 }
 
-// BUG: interpreter has .contains() but spec says .contains_key()
-test "map contains_key" {
+// BUG: interpreter has .contains() but spec says .contains()
+test "map contains" {
     mut m = Map.new()
     m.insert("exists", 1)
-    assert m.contains_key("exists")
-    assert !m.contains_key("missing")
+    assert m.contains("exists")
+    assert !m.contains("missing")
 }
 
 test "map string values" {
@@ -77,7 +77,7 @@ test "map index assign counts" {
     let words = ["a", "b", "a"]
     mut counts: Map<string, i64> = Map.new()
     for w in words {
-        if counts.contains_key(w) {
+        if counts.contains(w) {
             counts[w] = counts[w] + 1i64
         } else {
             counts[w] = 1i64

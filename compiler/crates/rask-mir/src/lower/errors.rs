@@ -55,8 +55,16 @@ impl<'a> MirLowerer<'a> {
     /// checker's `Ptr` typed the binding as an opaque pointer, so
     /// `json.encode(view)` fell through to `json_encode_i64` and `/tasks/1`
     /// answered with the task's id instead of the task.
+    /// A `Heap<T>` beats both. The checker erases `Heap<T>` to `T` (HP5), so
+    /// where the lowered type says `heap<i64>` and the checker says `i64` they
+    /// are describing the same value and only one of them knows there is a
+    /// block — `let v = make() catch _ => return` then `*v` read the block's
+    /// address as the number (#1256).
     pub(super) fn better_payload_ty(from_checker: Option<MirType>, from_result: Option<MirType>) -> Option<MirType> {
         let candidates = [from_checker, from_result];
+        if let Some(heap) = candidates.iter().flatten().find(|t| matches!(t, MirType::Heap(_))) {
+            return Some(heap.clone());
+        }
         candidates.iter().flatten()
             .find(|t| !matches!(t, MirType::Ptr))
             .or_else(|| candidates.iter().flatten().next())

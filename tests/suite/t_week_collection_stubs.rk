@@ -5,7 +5,7 @@
 // eleven that check-fail with "the signature exists so the API can be
 // referenced, but neither backend implements ...". Three clusters:
 //
-//   capacity control — reserve, try_reserve, shrink_to_fit, shrink_to,
+//   capacity control — reserve, try_reserve, shrink,
 //     allocated, Map.is_bounded. Thin accessors over state RaskVec/RaskMap
 //     already keep: capacity(), is_bounded() on Vec, is_full() and remaining()
 //     all work today.
@@ -96,15 +96,15 @@ test "std.collections — allocated counts elements, capacity is the bound" {
     assert f.allocated() >= 4u64
 }
 
-test "std.collections — shrink_to_fit and shrink_to release capacity" {
+test "std.collections — shrink releases capacity, with and without a floor" {
     mut v: Vec<i32> = Vec.new()
     v.reserve(64)
     v.push(1)
-    v.shrink_to_fit()
+    v.shrink(0)
     assert v.len() == 1
     mut w: Vec<i32> = Vec.new()
     w.reserve(64)
-    w.shrink_to(8)
+    w.shrink(8)
     assert w.is_empty()
 }
 

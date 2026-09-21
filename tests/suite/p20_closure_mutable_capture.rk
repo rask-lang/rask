@@ -207,3 +207,38 @@ test "mem.closures/MC3 — the variable is usable again after the closure is don
     count = count * 10
     assert count == 30
 }
+
+// --- MC4 across a function that only passes the closure on ---
+
+func calls_it(f: func(i32)) {
+    f(1)
+    f(2)
+}
+
+func passes_it_on(f: func(i32)) {
+    calls_it(f)
+}
+
+// One hop worked, two didn't. Handing a parameter to another function counted
+// as giving it away whatever that function did with it, so the closure went on
+// the heap — and a heap environment holds copies of the captures, so the write
+// landed in the copy. Whether passing a parameter on gives it away is the
+// callee's answer, and the callee here only calls it.
+test "mem.closures/MC4 — the write survives two hops" {
+    mut total = 0
+    passes_it_on(|x| { total = total + x })
+    assert total == 3
+}
+
+// Same shape through the stdlib: every collection's sequence method is a
+// forwarder, so `v.for_each(f)` is two hops by construction.
+test "mem.closures/MC4 — the write survives a collection's forwarder" {
+    let v: Vec<i32> = [1, 2, 3, 4, 5]
+    mut total = 0
+    v.for_each(|x| { total = total + x })
+    assert total == 15
+
+    mut seen = 0
+    v.as_sequence().for_each(|x| { seen = seen + 1 })
+    assert seen == 5
+}
