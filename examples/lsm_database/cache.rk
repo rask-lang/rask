@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Block cache — Pool-based LRU cache for SSTable blocks.
+// Block cache — LRU cache for SSTable blocks, keyed by "{sst}:{block}".
 //
-// Handles give stable references to cached blocks. Eviction removes
-// the least-accessed entry when capacity is hit. Demonstrates Pool<T>
-// and Handle<T> for non-graph use cases.
-import memory.Pool
-import memory.Handle
+// Blocks don't reference each other, so there's nothing here a container
+// with stable identity would buy: the map is the cache. Eviction removes
+// the least-accessed entry when capacity is hit.
 
 const MAX_CACHE_ENTRIES: usize = 128
 
@@ -17,16 +15,14 @@ struct CacheBlock {
 }
 
 struct BlockCache {
-    blocks: Pool<CacheBlock>
-    by_key: Map<string, Handle<CacheBlock>>
+    blocks: Map<string, CacheBlock>
     access_counter: i64
 }
 
 extend BlockCache {
     func new() -> BlockCache {
         return BlockCache {
-            blocks: Pool.new(),
-            by_key: Map.new(),
+            blocks: Map.new(),
             access_counter: 0,
         }
     }
@@ -37,67 +33,58 @@ extend BlockCache {
 
     func get(mutate self, sst_id: i32, block_id: i32) -> Vec<KeyValue>? {
         let key = BlockCache.cache_key(sst_id, block_id)
-        let handle = self.by_key.get(key) ?? {
-            return none
-        }
-        let handle = handle.clone()
+        if !self.blocks.contains(key) { return none }
 
         self.access_counter += 1
-        with self.blocks[handle] as block {
-            block.access_count = self.access_counter
+        let stamp = self.access_counter
+        return self.blocks.modify(key, |mutate block: CacheBlock| {
+            block.access_count = stamp
             return block.entries.clone()
-        }
+        })
     }
 
     func put(mutate self, sst_id: i32, block_id: i32, entries: Vec<KeyValue>) {
         let key = BlockCache.cache_key(sst_id, block_id)
-        if self.by_key.contains(key) { return }
+        if self.blocks.contains(key) { return }
 
         if self.blocks.len() >= MAX_CACHE_ENTRIES {
             self.evict_one()
         }
 
         self.access_counter += 1
-        let handle = self.blocks.insert(CacheBlock {
+        self.blocks.insert(key, CacheBlock {
             sst_id,
             block_id,
             entries,
             access_count: self.access_counter,
         })
-        self.by_key.insert(key, handle)
     }
 
     func evict_one(mutate self) {
         mut min_access: i64 = i64.MAX
-        mut victim: Handle<CacheBlock>? = none
+        mut victim: string? = none
 
-        for handle in self.blocks {
-            if self.blocks[handle].access_count < min_access {
-                min_access = self.blocks[handle].access_count
-                victim = handle
+        for (key, block) in self.blocks {
+            if block.access_count < min_access {
+                min_access = block.access_count
+                victim = key
             }
         }
 
-        if victim? as h {
-            let key = with self.blocks[h] as block {
-                BlockCache.cache_key(block.sst_id, block.block_id)
-            }
-            self.blocks.remove(h)
-            self.by_key.remove(key)
+        if victim? as key {
+            self.blocks.remove(key)
         }
     }
 
     func invalidate(mutate self, sst_id: i32) {
         mut to_remove = Vec.new()
-        for handle in self.blocks {
-            if self.blocks[handle].sst_id == sst_id {
-                let key = BlockCache.cache_key(self.blocks[handle].sst_id, self.blocks[handle].block_id)
-                to_remove.push((handle, key))
+        for (key, block) in self.blocks {
+            if block.sst_id == sst_id {
+                to_remove.push(key)
             }
         }
-        for (handle, key) in to_remove {
-            self.blocks.remove(handle)
-            self.by_key.remove(key)
+        for key in to_remove {
+            self.blocks.remove(key)
         }
     }
 

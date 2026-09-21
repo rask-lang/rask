@@ -2830,7 +2830,7 @@ fn error_cast_rules() {
 #[test]
 fn error_index_types() {
     // #310: index expression types are checked — integer for Vec/slice/string,
-    // K for Map, Handle<T> for Pool; range slicing only on sequences.
+    // K for Map; range slicing only on sequences.
     assert!(compile_error("index_types.rk"),
         "should reject wrong index types across container classes (E0819)");
 }
@@ -4041,23 +4041,14 @@ fn panic_ensure_e3_first_panic_wins() {
     }
 }
 
-#[test]
-fn panic_guard_during_unwind_is_secondary() {
-    // E3, issue #298: a runtime guard tripping at scope exit while already
-    // unwinding from "boom" must not override it. Interp only — native's
-    // ensure/guard-on-panic plumbing has bigger pre-existing gaps here,
-    // untouched by this fix (ctrl.panic implementation notes).
-    //
-    // The guard is R5 (a Pool still holding a resource). It used to be H1 — an
-    // unconsumed TaskHandle parked behind a `join()` the panic jumped over —
-    // which mem.linear/L7 now rejects at compile time. A pool's contents are a
-    // runtime fact, so it is the guard the static rules still can't reach.
-    let (_stdout, stderr, code) = run_capture("--interp", "panic_guard_unwind_secondary.rk");
-    assert_eq!(code, 101, "panic should exit 101 (P4): {}", stderr);
-    assert!(stderr.contains("panic: boom"), "the body's panic must win: {}", stderr);
-    assert!(stderr.contains("secondary panic during unwind") && stderr.contains("unconsumed resource"),
-        "the guard trip must be contained and reported as secondary: {}", stderr);
-}
+// E3 (issue #298) — a runtime guard tripping at scope exit while already
+// unwinding must not replace the panic in flight — has no test any more. The
+// guard it was reached through was R5, a `Pool<Conn>` still holding a resource,
+// and no container takes a linear value now that pools are gone: Vec, Map and
+// Rack are all compile errors (mem.resource-types/RC1-RC3). Every earlier
+// trigger went the same way — an unconsumed TaskHandle behind a `join()` is
+// mem.linear/L7. The rule stands, the path is unreachable from Rask source, and
+// rask-lang/rask#1296 tracks it.
 
 #[test]
 fn panic_detached_task_reports_to_stderr() {
@@ -6591,9 +6582,9 @@ e = shape
 // An `own` closure capturing a Copy *parameter* inside a branch reported the
 // parameter maybe-moved at the next use (#768). The Copy check read
 // `binding_types`, which holds only let/mut bindings, so a parameter looked
-// non-Copy. `Handle<T>` needed one more step: resolving a parameter's type string
-// gave up on any generic spelling, so it never reached the rule that makes Handle
-// Copy.
+// non-Copy. `Link<T>` needed one more step: resolving a parameter's type string
+// gave up on any generic spelling, so it never reached the rule that makes a
+// link Copy.
 #[test]
 fn an_own_closure_capturing_a_copy_param_on_both_backends() {
     let expected = "\

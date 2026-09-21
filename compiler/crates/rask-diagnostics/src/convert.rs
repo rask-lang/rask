@@ -2591,19 +2591,31 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             LinearInContainer { container, elem, span } => {
-                let rule = if container == "Map" { "RC3" } else { "RC1" };
+                let rule = match container.as_str() {
+                    "Map" => "RC3",
+                    "Rack" => "RC2",
+                    _ => "RC1",
+                };
                 let label = format!("`{}` cannot hold linear value `{}`", container, elem);
+                // A rack fails for the same reason with a different verb:
+                // `delete` frees the node, it never hands it back, so there is
+                // no call that consumes one.
+                let mechanism = if container == "Rack" {
+                    format!("`Rack.delete` frees the node rather than handing it back, so nothing \
+                             can consume `{}` — and it is linear, so it has to be consumed exactly \
+                             once", elem)
+                } else {
+                    format!("`{}` drop can't consume its elements, but `{}` is linear — it must be \
+                             consumed exactly once, so it can't be silently dropped", container, elem)
+                };
                 Diagnostic::error(label.clone())
                     .with_code("E0820")
                     .with_primary(*span, label)
-                    .with_why(format!(
-                        "`{}` drop can't consume its elements, but `{}` is linear — it must be \
-                         consumed exactly once, so it can't be silently dropped [mem.resource-types/{}]",
-                        container, elem, rule,
-                    ))
-                    .with_help(
-                        "store linear values in a `Pool<T>` (explicit removal, RC2) or an \
-                         optional `T?` (match and consume, RC4) — not a Vec or Map"
+                    .with_why(format!("{} [mem.resource-types/{}]", mechanism, rule))
+                    .with_fix(
+                        "hold it in an optional `T?` and match to consume it (RC4). No container \
+                         takes a linear value: a Vec or Map drop can't consume its elements, and \
+                         a rack's delete can't give a node back"
                             .to_string(),
                     )
             }

@@ -822,8 +822,9 @@ impl TypeTable {
         })
     }
 
-    /// If `name`/`args` describe a `Vec<T>` or `Map<K, V>` with a linear element
-    /// or key, return the violation. The check is head-only; the caller recurses.
+    /// If `name`/`args` describe a `Vec<T>`, `Map<K, V>` or `Rack<T>` with a
+    /// linear element, key or node, return the violation. The check is
+    /// head-only; the caller recurses.
     fn container_violation(&self, name: &str, args: &[GenericArg]) -> Option<(String, Type)> {
         let elem = |i: usize| match args.get(i) {
             Some(GenericArg::Type(t)) => Some(t.as_ref()),
@@ -848,6 +849,17 @@ impl TypeTable {
                     if self.holds_linear_value(v) {
                         return Some(("Map".to_string(), v.clone()));
                     }
+                }
+                None
+            }
+            // Same reason as `Vec`: `delete` frees the node, it doesn't hand it
+            // back, so there is no way to consume one. `Pool.remove` answered
+            // `T?`, which is what made a pool the one container a linear value
+            // could live in — and that went with the pool (rask-lang/rask#908).
+            "Rack" => {
+                let e = elem(0)?;
+                if self.holds_linear_value(e) {
+                    return Some(("Rack".to_string(), e.clone()));
                 }
                 None
             }

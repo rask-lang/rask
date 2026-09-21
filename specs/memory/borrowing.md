@@ -10,17 +10,19 @@ A view into `point.x` can't go stale — struct fields sit at fixed offsets. But
 
 **Fixed-layout sources** (struct fields, arrays) can't resize. Views persist until the block ends.
 
-**Growable sources** (Vec, Pool, Map) own heap buffers that can reallocate. Each access is temporary — copy out the value for one expression, or use `with` for multi-statement access.
+**Growable sources** (Vec, Map) own heap buffers that can reallocate. Each access is temporary — copy out the value for one expression, or use `with` for multi-statement access.
+
+**A rack is neither.** `Rack<T>` never moves a node, so a `Link<T>` is a reference you keep and follow — it is not an access mode at all, and nothing below applies to it. That's what the type is for: see [racks.md](racks.md).
 
 `string` is immutable and Copy (16 bytes, refcounted). String slices (`s[i..j]`) are temporary views — they can't be stored because the slice would dangle if the source string's refcount drops to zero. To store a substring, convert it: `.view()` for a zero-copy `StringView` that holds a refcount on the source buffer, or `.to_string()` for an independent copy. See `std.strings/S2`, `std.strings/V1`.
 
 | Rule | Source | Access model | Why |
 |------|--------|-------------|-----|
 | **B1: Fixed = block-scoped** | Struct fields, arrays | View valid until block ends | Layout can't change |
-| **B2: Growable = inline + `with`** | Vec, Pool, Map | Copy out (Copy types) or use `with` | Heap buffer can reallocate |
+| **B2: Growable = inline + `with`** | Vec, Map | Copy out (Copy types) or use `with` | Heap buffer can reallocate |
 | **B5: String slices = inline only** | string | `s[i..j]` temporary for expression | Slice has no refcount; source could be freed |
 
-**The test:** can the source resize? Vec/Pool/Map own heap buffers that can reallocate. Struct fields and arrays have fixed in-place layout. Strings are immutable but slices are temporary views (S2).
+**The test:** can the source resize? Vec and Map own heap buffers that can reallocate. Struct fields and arrays have fixed in-place layout. Strings are immutable but slices are temporary views (S2).
 
 ## Parameter and Receiver Borrows
 
@@ -127,21 +129,21 @@ Single-expression access to collection elements works inline. The compiler creat
 | Rule | Description |
 |------|-------------|
 | **E1: Expression duration** | Inline access valid only within the expression |
-| **E2: Chain calls OK** | `pool[h].field.method()` is one expression |
+| **E2: Chain calls OK** | `v[i].field.method()` is one expression |
 | **E3: Lvalue in-place** | `collection[key].field = value` is in-place mutation, not copy-modify-discard |
 | **E4: Rvalue copies or errors** | `let x = collection[key]` copies if Copy, compile error if not |
 | **E5: Sync inline access** | `shared.read().chain`, `shared.write().chain`, and `mutex.lock().chain` follow E1-E4 rules. Lock held for expression duration, released at expression end. Standalone `.read()`/`.write()`/`.lock()` without chaining is a compile error |
 
 <!-- test: skip -->
 ```rask
-pool[h].health -= damage     // In-place mutation (E3)
-if pool[h].health <= 0 {     // New inline access
-    pool.remove(h)           // No active borrow - OK
+entities[i].health -= damage     // In-place mutation (E3)
+if entities[i].health <= 0 {     // New inline access
+    entities.remove(i)           // No active borrow - OK
 }
 
-let hp = pool[h].health    // Copy out i32 (E4, Copy type)
-process(pool[h].name)        // Temporary borrow for call duration (E1)
-pool[h].pos.normalize()      // Method chain (E2)
+let hp = entities[i].health      // Copy out i32 (E4, Copy type)
+process(entities[i].name)        // Temporary borrow for call duration (E1)
+entities[i].pos.normalize()      // Method chain (E2)
 ```
 
 **Sync primitive inline access (E5):**
@@ -170,14 +172,10 @@ An inline sync write is at most one store: if the right-hand side panics, the lo
 | Rule | Description |
 |------|-------------|
 | **W1: First-class block** | `with` is a real scope — `return` exits the function, `try` propagates to the enclosing function, `break`/`continue` work for surrounding loops |
-| **W2: No structural mutation (Vec/Map/string)** | Source collection cannot be structurally mutated inside the `with` block (no insert, remove, push, pop, clear). Reading and writing other elements via inline access is allowed |
-| **W2a: Pool insert allowed** | `pool.insert()` is allowed inside `with pool[h]` — compiler re-resolves bindings after insert (handles survive reallocation per `mem.pools/PL9`) |
-| **W2b: Pool remove(other) allowed** | `pool.remove(other_h)` is allowed if `other_h` is not the bound handle variable — compiler re-resolves; runtime panic if aliased (same semantics as W3) |
-| **W2c: Pool remove(bound) forbidden** | `pool.remove(h)` where `h` is the bound handle is a compile error — you can't remove the element you're borrowing |
-| **W2d: Pool clear forbidden** | `pool.clear()` is always a compile error inside `with` — invalidates everything |
+| **W2: No structural mutation** | Source collection cannot be structurally mutated inside the `with` block (no insert, remove, push, pop, clear). Reading and writing other elements via inline access is allowed |
 | **W3: Aliasing check** | Multiple bindings from same collection: runtime panic if same key/handle |
 | **W4: Error semantics** | Panics on invalid handle/OOB (matches direct indexing) |
-| **W5: Mutable binding** | `with` bindings are mutable — the block exists for multi-statement mutation; the modified value writes back to the source at block exit. Read-only access comes from the source, not the binding: `shared.read()` bindings reject mutation (E0360, conc.sync/R1), frozen pool contexts reject writes (mem.pools/PF5), and plain reads use inline access |
+| **W5: Mutable binding** | `with` bindings are mutable — the block exists for multi-statement mutation; the modified value writes back to the source at block exit. Read-only access comes from the source, not the binding: `shared.read()` bindings reject mutation (E0360, conc.sync/R1), and plain reads use inline access |
 | **W6: Value production** | Block can produce a value (last expression) — `with` works in expression context |
 | **W7: One-liner shorthand** | `with X as v: expr` — no braces for single expressions (parallels `if cond: expr`) |
 
@@ -196,7 +194,7 @@ with <source>[<key1>] as <binding1>, <source>[<key2>] as <binding2> { <body> }
 <!-- test: skip -->
 ```rask
 // Multi-statement access
-with pool[h] as entity {
+with entities[i] as entity {
     entity.health -= damage
     entity.last_hit = now()
     if entity.health <= 0 {
@@ -205,19 +203,19 @@ with pool[h] as entity {
 }
 
 // Multiple elements from same collection
-with pool[h1] as e1, pool[h2] as e2 {
-    e1.health -= e2.attack    // Runtime panic if h1 == h2
+with entities[i] as e1, entities[j] as e2 {
+    e1.health -= e2.attack    // Runtime panic if i == j
 }
 
 // Expression context — produces a value
-let name = with pool[h] as entity { entity.name }
+let name = with entities[i] as entity { entity.name }
 
 // One-liner shorthand
-with pool[h] as e: e.health -= 10
+with entities[i] as e: e.health -= 10
 
 // return/try/break work naturally
-func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
-    with pool[h] as entity {
+func apply_buff(mutate entities: Vec<Entity>, i: u64) -> void or Error {
+    with entities[i] as entity {
         entity.strength += 10
         entity.defense += 5
         entity.buff_expiry = now() + Duration.seconds(30)
@@ -245,80 +243,32 @@ func main() {
 }
 ```
 
-**Pool exception (W2a–W2d):** Pool handles survive reallocation (`mem.pools/PL9`). The compiler exploits this — `insert` and `remove(other)` are allowed inside `with pool[h]` blocks. After each structural mutation, the compiler re-resolves the binding by re-validating the handle (~1ns generation check).
+There used to be an exception here, four rules wide, for `Pool<T>`: a handle survived reallocation, so `insert` and `remove(other)` were allowed inside a `with pool[h]` block and the compiler re-resolved the binding after each. That machinery went with the pool (rask-lang/rask#908). What replaced it needs no exception — a rack never moves a node, so a link is not a borrow and there is no block to sit inside:
 
 <!-- test: skip -->
 ```rask
-with pool[h] as entity {
-    entity.health -= pool[other_h].bonus    // OK: inline read of other element
-    pool[other_h].last_attacker = h         // OK: inline write to other element
-
-    // Pool-specific: insert and remove(other) are allowed
-    let ally = pool.insert(new_ally)  // OK: re-resolves entity binding  [re-resolved]
-    entity.allies.push(ally)                // entity still valid after insert
-    pool.remove(expired_h)                  // OK: re-resolves  [re-resolved]
-}
+entity.health -= other.bonus       // just a read through a link
+other.last_attacker = entity       // just a write
+let ally = world.insert(new_ally)  // inserting doesn't invalidate anything
+entity.allies.push(ally)
+world.delete(expired)              // and neither does deleting
 ```
 
-Removing the bound handle or clearing the pool remain compile errors:
-
-<!-- test: compile-fail: ownership -->
-```rask
-import memory.Pool
-import memory.Handle
-
-struct Entity { health: i64 }
-
-func main() {
-    mut pool = Pool<Entity>.new()
-    let h = pool.insert(Entity { health: 100 })
-    with pool[h] as entity {
-        entity.health -= 10
-        pool.remove(h)           // ERROR: removing the bound element (W2c)
-    }
-}
-```
-
-<!-- test: compile-fail: ownership -->
-```rask
-import memory.Pool
-import memory.Handle
-
-struct Entity { health: i64 }
-
-func main() {
-    mut pool = Pool<Entity>.new()
-    let h = pool.insert(Entity { health: 100 })
-    with pool[h] as entity {
-        pool.clear()             // ERROR: clears everything (W2d)
-    }
-}
-```
-
-If `remove(other_h)` happens to alias the bound handle at runtime, the re-resolution panics with "stale handle" — same aliasing semantics as W3.
-
-For multi-statement access to multiple elements, the comma syntax is still preferred:
+For multi-statement access to two elements of the same collection, the comma syntax is the one to reach for:
 <!-- test: skip -->
 ```rask
-with pool[h1] as e1, pool[h2] as e2 {
-    e1.health -= e2.attack    // Runtime panic if h1 == h2
+with entities[i] as e1, entities[j] as e2 {
+    e1.health -= e2.attack    // Runtime panic if i == j
 }
 ```
 
-The same-handle restriction still applies — accessing `pool[h]` (same handle variable as the `with` binding) inside the block is a compile error. Use the binding instead.
+The same-key restriction still applies — accessing `entities[i]` (same index variable as the `with` binding) inside the block is a compile error. Use the binding instead.
 
-For iteration + mutation, use mutable iteration (`std.iteration/I4`) or collect handles:
+For iteration + mutation, use mutable iteration (`std.iteration/I4`):
 <!-- test: skip -->
 ```rask
-// Mutable iteration (preferred for in-place mutation)
-for mutate entity in pool {
+for mutate entity in entities {
     entity.update()
-}
-
-// Handle collection (for structural mutation like remove)
-let handles = pool.handles().to_vec()
-for h in handles {
-    with pool[h] as e { e.update() }
 }
 ```
 
@@ -328,10 +278,10 @@ One syntax for all container types that hold values behind indirection. Bindings
 
 | Container | Access | Read-only access |
 |-----------|--------|------------------|
-| Pool/Vec/Map | `with pool[h] as e { ... }` | frozen pool context (PF5), or inline reads |
+| Vec/Map | `with items[k] as e { ... }` | inline reads |
 | Shared | `with shared.write() as v { ... }` | `with shared.read() as v { ... }` — mutation is E0360 |
 
-A source that is neither an element reached by key nor a `Shared` is a compile error (`E0874`). Those are the two cases the block earns its keep in — it re-resolves the handle after a structural change (W2a-W2d) and holds the lock for its duration. `with h.data as d { d.push(1) }` has neither, and does exactly what `h.data.push(1)` does.
+A source that is neither an element reached by key nor a `Shared` is a compile error (`E0874`). Those are the two cases the block earns its keep in — it keeps one element's access alive across several statements, and it holds the lock for its duration. `with h.data as d { d.push(1) }` has neither, and does exactly what `h.data.push(1)` does. A `Link<T>` has neither either, and for a better reason: it is already the node.
 
 Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is a compile error. A `.read()` binding is the one read-only binding: mutating through it is rejected at the mutation site (E0360), and it never writes back.
 
@@ -351,14 +301,14 @@ When you pass `value.field` to a function, the borrow checker tracks the borrow 
 <!-- test: skip -->
 ```rask
 struct GameState {
-    entities: Pool<Entity>
+    entities: Rack<Entity>
     score: i32
 }
 
 // Takes the field directly — decoupled from GameState
-func movement_system(mutate entities: Pool<Entity>, dt: f32) {
-    for h in entities {
-        entities[h].position.x += entities[h].velocity.dx * dt
+func movement_system(mutate entities: Rack<Entity>, dt: f32) {
+    for e in entities.nodes() {
+        e.position.x += e.velocity.dx * dt
     }
 }
 
@@ -380,8 +330,8 @@ func parallel_update(mutate state: GameState, dt: f32) {
     scoped {
         // Compiler sees: captures state.entities mutably
         spawn(|| {
-            for h in state.entities {
-                state.entities[h].position.x += state.entities[h].velocity.dx * dt
+            for e in state.entities.nodes() {
+                e.position.x += e.velocity.dx * dt
             }
         })
         // Compiler sees: captures state.score mutably — disjoint, no conflict
@@ -392,7 +342,7 @@ func parallel_update(mutate state: GameState, dt: f32) {
 }
 ```
 
-Functions take concrete field types, not struct-coupled projections. This means `movement_system` works with any `Pool<Entity>`, not just one from `GameState`.
+Functions take concrete field types, not struct-coupled projections. This means `movement_system` works with any `Rack<Entity>`, not just one from `GameState`.
 
 ## Access Rules
 
@@ -424,8 +374,8 @@ Error messages use value-based framing. No "statement-scoped" or "view released 
 ```
 ERROR [mem.borrowing/E4]: cannot bind non-Copy collection element
    |
-5  |  let entity = pool[h]
-   |               ^^^^^^^ Entity is not Copy
+5  |  let entity = entities[i]
+   |               ^^^^^^^^^^^ Entity is not Copy
 6  |  entity.update()
    |  ^^^^^^ cannot use — element was not copied out
 
@@ -434,12 +384,12 @@ WHY: Collection elements that aren't Copy can't be assigned to variables.
 
 FIX: Use with for multi-statement access:
 
-  with pool[h] as entity {
+  with entities[i] as entity {
       entity.update()
   }
 
   // Or clone if you need an independent copy:
-  let entity = pool[h].clone()
+  let entity = entities[i].clone()
 ```
 
 **Storing view from string [B2]:**
@@ -466,7 +416,7 @@ FIX 3: Store indices:
   process(line[span])
 ```
 
-**Structural mutation inside with — Vec/Map/string [W2]:**
+**Structural mutation inside with [W2]:**
 ```
 ERROR [mem.borrowing/W2]: cannot push to `vec` inside with block — vec can reallocate
    |
@@ -477,30 +427,16 @@ ERROR [mem.borrowing/W2]: cannot push to `vec` inside with block — vec can rea
    |      ^^^^^^^^^^^^^^^^^^ structural mutation not allowed inside with block
 
 WHY: Vec/Map can reallocate, invalidating the borrowed element.
-     Pool handles survive reallocation — use Pool if you need insert/remove inside with.
 
 FIX: Move the structural mutation outside the with block:
 
   with vec[i] as item { item.count += 1 }
   vec.push(new_item)
-```
 
-**Removing bound handle inside with — Pool [W2c]:**
-```
-ERROR [mem.borrowing/W2c]: cannot remove `h` inside with block — it's the bound element
-   |
-5  |  with pool[h] as entity {
-   |  ---- element borrowed here
-6  |      entity.health -= 10
-7  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ removing the element you're borrowing
-
-WHY: Removing the bound element frees its memory. The binding would dangle.
-
-FIX: Move the removal outside the with block:
-
-  let should_remove = with pool[h] as e { e.health -= 10; e.health <= 0 }
-  if should_remove { pool.remove(h) }
+  // Or, if the elements reference each other and get deleted individually,
+  // this is what a rack is for — a node never moves, so nothing invalidates:
+  //   item.count += 1
+  //   world.insert(new_item)
 ```
 
 ## Edge Cases
@@ -527,12 +463,8 @@ FIX: Move the removal outside the with block:
 | `with` and `break`/`continue` | W1 | Applies to surrounding loop |
 | Nested `with` same collection | W2 | Compile error (use comma syntax) |
 | Inline read of other element inside `with` | W2 | Allowed |
-| Inline write of other element inside `with` | W2 | Allowed (runtime panic if same handle) |
-| Structural mutation inside `with` (Vec/Map/string) | W2 | Compile error |
-| `pool.insert()` inside `with pool[h]` | W2a | Allowed — re-resolves binding |
-| `pool.remove(other_h)` inside `with pool[h]` | W2b | Allowed — re-resolves; runtime panic if aliased |
-| `pool.remove(h)` inside `with pool[h]` (bound handle) | W2c | Compile error |
-| `pool.clear()` inside `with pool[h]` | W2d | Compile error |
+| Inline write of other element inside `with` | W2 | Allowed (runtime panic if same key) |
+| Structural mutation inside `with` | W2 | Compile error |
 | Disjoint field borrows | F2 | Non-overlapping fields can be borrowed simultaneously |
 | Field borrow + whole-struct borrow | F3 | Compile error: struct already borrowed |
 | Same field borrowed twice | F2 | Compile error: field already borrowed |
@@ -541,7 +473,7 @@ FIX: Move the removal outside the with block:
 
 | Aspect | Fixed Sources | Growable Sources |
 |--------|---------------|------------------|
-| Types | Struct fields, arrays | Pool, Vec, Map, string |
+| Types | Struct fields, arrays | Vec, Map, string |
 | View duration | Until block ends (block-scoped) | Expression only (inline access) |
 | **Parameter borrows** | Block-scoped (call duration) | Block-scoped (call duration) |
 | Can store in `let`? | Yes | Copy types only |
@@ -575,13 +507,14 @@ Use `.to_string()` instead of `.view()` when the result must not pin the source 
 ### Entity Update (Inline Access)
 <!-- test: parse -->
 ```rask
-func update_combat(pool: Pool<Entity>) {
-    mut targets: Vec<Handle<Entity>> = find_targets(pool)
-
-    for h in targets {
-        pool[h].health -= 10             // Inline access (E1)
-        if pool[h].health <= 0 {         // New inline access
-            pool.remove(h)               // No active borrow - OK
+func update_combat(mutate entities: Vec<Entity>) {
+    mut i: u64 = 0
+    while i < entities.len() {
+        entities[i].health -= 10         // Inline access (E1)
+        if entities[i].health <= 0 {     // New inline access
+            entities.remove(i)           // No active borrow - OK
+        } else {
+            i += 1
         }
     }
 }
@@ -590,8 +523,8 @@ func update_combat(pool: Pool<Entity>) {
 ### Multi-Statement Mutation
 <!-- test: parse -->
 ```rask
-func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
-    with pool[h] as entity {
+func apply_buff(mutate entities: Vec<Entity>, i: u64) -> void or Error {
+    with entities[i] as entity {
         entity.strength += 10
         entity.defense += 5
         entity.buff_expiry = now() + Duration.seconds(30)
@@ -606,7 +539,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
 
 ### Rationale
 
-**B1/B2 (fixed vs growable):** I wanted to avoid "borrow checker wrestling" — code that looks fine then explodes 20 lines later. Collections can change structurally — `Vec` reallocates, `Pool` compacts, `Map` rehashes. Block-scoped views into them would dangle. Inline access + `with` kills this bug class.
+**B1/B2 (fixed vs growable):** I wanted to avoid "borrow checker wrestling" — code that looks fine then explodes 20 lines later. Collections can change structurally — `Vec` reallocates, `Map` rehashes. Block-scoped views into them would dangle. Inline access + `with` kills this bug class. A `Rack` is the exception that proves the rule: it never moves a node, which is the whole reason a `Link<T>` can be stored where no other reference can.
 
 **S3 (no escape):** The cost is more `.clone()` calls. I think that's better than scope annotations leaking into function signatures.
 
@@ -614,15 +547,15 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
 
 **W2 (structural mutation):** The compiler categorizes each collection method as structural (changes element count or triggers reallocation: insert, remove, push, pop, clear) or non-structural (reads/writes existing elements). For Vec/Map/string, structural mutations are forbidden inside `with` — they could invalidate the borrowed element.
 
-**W2a–W2d (pool exception):** Pool handles survive reallocation (PL9) — that's the entire point of handles. I decided to exploit this inside `with` blocks rather than apply the same restriction as Vec/Map. After `pool.insert()` or `pool.remove(other)`, the compiler re-resolves the binding by re-validating the handle (~1ns generation check). If a `remove(other_h)` aliased the bound handle at runtime, the re-resolution panics "stale handle" — same aliasing semantics as W3. The cost is per-type rules in the compiler, but pools already have their own rules (context clauses, generation coalescing, frozen modifiers). One more isn't conceptual overhead — it's the handle abstraction doing what it was designed for.
+**W2a–W2d (retired with pools):** there were four extra rules here letting `insert` and `remove(other)` happen inside a `with pool[h]` block, because a handle survived reallocation and the compiler could re-resolve the binding with a generation check. I argued at the time that one more per-type rule was cheap given pools already had context clauses, generation coalescing and frozen modifiers. That was the tell: the exception was only affordable because the type it served was already expensive. All of it went together (rask-lang/rask#908), and what replaced it needs no rule — a rack node never moves, so there is no binding to re-resolve and no block to be inside.
 
-**W5 (mutable binding):** `with` exists for multi-statement access — and the overwhelming majority of cases involve mutation. If you just need to read, inline access usually suffices, `.read()` takes a shared lock, and frozen pool contexts make whole pools read-only. I tried flipping this to read-only-by-default with `as mut` opting in (consistency with `let`/`mut`), and it put ceremony on nearly every real with-block in the codebase — the same keyword-length inversion `const`/`mut` had, just one level up. So mutability stays on the source, not the binding: `.read()`/`.write()` picks the lock, frozen picks the pool mode, and a bare binding mutates. The one enforced exception: a `.read()` binding rejects mutation at the mutation site (E0360) and never writes back — under the old unenforced design that write leaked through the read lock.
+**W5 (mutable binding):** `with` exists for multi-statement access — and the overwhelming majority of cases involve mutation. If you just need to read, inline access usually suffices and `.read()` takes a shared lock. I tried flipping this to read-only-by-default with `as mut` opting in (consistency with `let`/`mut`), and it put ceremony on nearly every real with-block in the codebase — the same keyword-length inversion `const`/`mut` had, just one level up. So mutability stays on the source, not the binding: `.read()`/`.write()` picks the lock, and a bare binding mutates. The one enforced exception: a `.read()` binding rejects mutation at the mutation site (E0360) and never writes back — under the old unenforced design that write leaked through the read lock.
 
-**E5 (sync inline access):** Collections got inline access through `[]` indexing — `pool[h].field` works without `with`. Sync primitives didn't have an equivalent. `.read()`, `.write()`, and `.lock()` now serve the same role: they produce expression-scoped access to the inner value. The lock is visible in the dot-chain (`config.read().timeout`), so cost transparency is preserved. `with` blocks remain for multi-statement access — inline is just the single-expression shorthand.
+**E5 (sync inline access):** Collections got inline access through `[]` indexing — `items[i].field` works without `with`. Sync primitives didn't have an equivalent. `.read()`, `.write()`, and `.lock()` now serve the same role: they produce expression-scoped access to the inner value. The lock is visible in the dot-chain (`config.read().timeout`), so cost transparency is preserved. `with` blocks remain for multi-statement access — inline is just the single-expression shorthand.
 
 **Why string slices are temporary:** Strings are immutable and refcounted, but a slice (`s[i..j]`) is a raw view into the buffer without its own refcount. Storing it directly would require borrow tracking — contradicting the "no storable references" principle. Instead, storing is an explicit conversion: `.view()` produces a `StringView` that holds its own refcount on the buffer (zero-copy, can't dangle — a value, not a tracked borrow), `.to_string()` produces an independent copy. Both costs are visible at the conversion site; no borrow tracking needed.
 
-**Inline access is still a temporary borrow:** `process(pool[h].name)` where `name` is a string — it's a temporary borrow for the expression. The user sees: "you can use it inline, or copy it out, or use `with`." Value-based framing, borrow-based implementation. Users don't need to understand the implementation.
+**Inline access is still a temporary borrow:** `process(items[i].name)` where `name` is a string — it's a temporary borrow for the expression. The user sees: "you can use it inline, or copy it out, or use `with`." Value-based framing, borrow-based implementation. Users don't need to understand the implementation.
 
 ### Patterns & Guidance
 
@@ -631,17 +564,17 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> void or Error {
 <!-- test: skip -->
 ```rask
 // Pattern 1: Copy out the value (Copy types)
-let health = pool[h].health    // Value copied
+let health = items[i].health   // Value copied
 if health <= 0 { ... }
 
 // Pattern 2: with for multi-statement access
-with pool[h] as entity {
+with items[i] as entity {
     entity.health -= damage
     entity.last_hit = now()
 }
 
 // Pattern 3: One-liner shorthand
-with pool[h] as e: e.health -= damage
+with items[i] as e: e.health -= damage
 ```
 
 **The pattern for parsers (zero-copy views):**
@@ -688,14 +621,13 @@ The IDE makes access patterns visible through ghost annotations.
 | Inline access | `[inline access]` |
 | `with` block | `[bound: lines N-M]` |
 | Conflict site | `[conflict: viewed on line N]` |
-| Pool re-resolution (W2a/W2b) | `[re-resolved]` |
 
 <!-- test: skip -->
 ```rask
 // Inline access (collection)
-let health = pool[h].health  // [inline access]
-if health <= 0 {             // health is a Copy value
-    pool.remove(h)           // OK - no conflict
+let health = items[i].health  // [inline access]
+if health <= 0 {              // health is a Copy value
+    items.remove(i)           // OK - no conflict
 }
 ```
 
@@ -718,7 +650,7 @@ Hover information shows the access type, duration, and suggested patterns for th
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value-semantics`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)
 - [Shared, Rack and Heap](shared-rack-heap.md) — The types whose `with` access follows these rules (`mem.shared-rack-heap`)
-- [Pools](pools.md) — Handle-based indirection (`mem.pools`)
+- [Racks and Links](racks.md) — nodes with stable identity, and the one reference that can live in a field (`mem.racks`)
 - [Collections](../stdlib/collections.md) — Vec, Map APIs (`std.collections`)
 - [Cell](cell.md) — Retired; folded into `Shared<T, Local>` (`mem.cell`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T, S>` `with` access (`conc.sync`)

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Month one: linearity — consume exactly once.
 //
-// The rule (mem.linear L1–L6) is shared by `@resource`, `Heap<T>` and
-// `Pool<Linear>`: a linear value has to be consumed on every path out of its
-// scope, and exactly once. That makes a forgotten close a compile error instead
+// The rule (mem.linear L1–L6) is shared by `@resource` and `Heap<T>`: a linear
+// value has to be consumed on every path out of its scope, and exactly once. That makes a forgotten close a compile error instead
 // of a leak, and a double close impossible.
 //
 // A test can't assert on a compile error, so what this file pins is the *positive*
