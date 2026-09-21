@@ -88,7 +88,7 @@ Julia composes so well partly because nothing can reject you — and it pays in 
 
 **SD4 (Rust legacy):** Rask's early stdlib sketches leaned on Rust names because that's what the hands knew. Some survived scrutiny (`Vec`, `Map`), most didn't (`Result` → `T or E`). The rule exists so the scrutiny happens per-name instead of per-habit.
 
-**SD6/SD7 (composability):** I want Julia's composability, by generics and by conventions. The generics half without the conventions half is Rust: everything is generic and nothing agrees on which abstraction to be generic *over*, so flexibility lands at parameter positions (`impl AsRef`, `Into`) where it hides conversions and turns errors into trait-bound walls. The conventions half without the generics half is Go: everyone agrees, and you write the same loop per type. Both halves, statically checked, is the target. `min<T: Comparable>` with no `math.min` and no `.min()` method is the existing model case.
+**SD6/SD7 (composability):** I want Julia's composability, by generics and by conventions. The halves only work together. Generics without agreed protocols puts the flexibility at parameter positions (`impl AsRef`-style bounds), where it hides conversions and turns errors into trait-bound walls. Protocols without generics means writing the same loop per type. Both halves, statically checked, is the target. `min<T: Comparable>` with no `math.min` and no `.min()` method is the existing model case.
 
 **SD8 (laws):** Composability means combinations nobody tested. The only way those are correct is if each side conforms to a stated contract rather than a shape. Laws live in the protocol's own spec and are cited from conformance docs; a comptime-checkable subset can come later without changing what the rule asks.
 
