@@ -431,6 +431,11 @@ t_shared_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hands ba
                         # the file's own header says so. Zero is reachable — it waits on
                         # the elision knowing which box came back.
 
+# A `Vec` held in an optional — #1305. The local carries the kind and codegen
+# knows how to walk it; MIR never emits the release. Predates the file: the
+# `Vec.from([…])` spelling that already compiled leaks identically.
+t_collection_literal_takes_its_slot.rk  # 2 allocations — a Vec behind an option tag, #1305
+
 # A box holding a box — #1302. The payload kind the runtime keeps on a box says
 # `Vec`, `Map` or closure; a nested box isn't among them, because freeing one
 # means calling the release for *its* strategy and the outer box carries a kind,

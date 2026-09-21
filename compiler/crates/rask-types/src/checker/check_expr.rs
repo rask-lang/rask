@@ -141,7 +141,14 @@ impl TypeChecker {
         // literal stayed open and defaulted to `i32`: `a[1] = 5` into an
         // `[i64?; 3]` stored four bytes into an eight-byte payload, and the
         // upper half came back as whatever the stack held (#835).
-        if matches!(expr.kind, ExprKind::Int(..) | ExprKind::Float(..)) {
+        // A collection literal is the same case one shape out: `let o: Vec<i64>?
+        // = [7, 42]` fills the *present* side, so what the literal is being
+        // asked for is the `Vec<i64>` inside. Left unpeeled, the slot said
+        // nothing the literal could read and it typed itself from its own
+        // elements — `expected Vec<i64>, found [i32; 2]` (#1233). The layer it
+        // skipped is added back by the ordinary optional widening at the
+        // binding.
+        if matches!(expr.kind, ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Array(..)) {
             if let Some(inner) = expected.as_option() {
                 let inner = inner.clone();
                 return self.infer_expr_expecting(expr, &inner);
@@ -3737,7 +3744,37 @@ impl TypeChecker {
             }
             _ => obj_ty,
         };
-        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+        // std.collections/C4 says the slot picks a collection literal's shape,
+        // and for a method the slot is the parameter — which isn't known here:
+        // a method resolves through a deferred constraint, after the arguments
+        // have already been given types. So `vv.push([7, 42])` on a
+        // `Vec<Vec<i64>>` typed the literal from its own elements and then
+        // failed against the parameter: "expected `Vec<i64>`, found `[i32; 2]`"
+        // (#1233).
+        //
+        // What *is* known here is the receiver. A `Vec<C>` deals in exactly one
+        // collection — its element type — so an array literal handed to any of
+        // its methods can only be meant as one of those, whatever position it
+        // sits in. That is the C4 rule read off the receiver instead of off the
+        // parameter, not a guess about which method it is.
+        //
+        // Only when the element is itself a collection shape: on a `Vec<i64>`
+        // an array-literal argument isn't an element and this says nothing. A
+        // `Map`'s value slot is positional and isn't covered — `Vec.from([…])`
+        // is still the spelling there.
+        let elem_shape = self
+            .first_type_arg(&self.ctx.apply(&obj_ty), "Vec")
+            .filter(|t| self.collection_elem_type(t).is_some());
+        let arg_types: Vec<_> = args
+            .iter()
+            .map(|a| match (&a.expr.kind, &elem_shape) {
+                (ExprKind::Array(_), Some(want)) => {
+                    let want = want.clone();
+                    self.infer_expr_expecting(&a.expr, &want)
+                }
+                _ => self.infer_expr(&a.expr),
+            })
+            .collect();
 
         // TR5 for a collection element. `Vec<any Shape>.push(Circle { … })` has
         // to box, but the parameter type here is the container's element
