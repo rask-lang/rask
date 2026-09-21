@@ -48,7 +48,11 @@ drop(ptr)                         // Consume (deallocate)
 
 Consumption methods: `drop(ptr)`, passing to a `take` parameter, assignment to another binding, or `ensure drop(ptr)` for deferred consumption.
 
-**Storing one in a field ends its linearity.** HP4 says assigning to another binding consumes, and a struct or enum field is another binding — so the `Heap` is the aggregate's from then on, and the aggregate's release gives the block back when the aggregate dies. The field is not a second linear thing: there is nothing left to consume, and `drop(h.inner)` is an error rather than a consume, because the hand-drop and the release would both free it.
+**Storing one in an aggregate ends its linearity.** HP4 says assigning to another binding consumes, and a struct field, an enum payload, a tuple element and an array element are each another binding — so the `Heap` is the aggregate's from then on, and the aggregate's release gives the block back when the aggregate dies. The slot is not a second linear thing: there is nothing left to consume, and `drop(h.inner)` is an error rather than a consume, because the hand-drop and the release would both free it.
+
+Reading one back out is a borrow for the same reason. `match l { Cons(head, rest) => … }` gives `rest` no obligation, and `Cons(_, rest)` discards nothing — the enum still owns the block either way. A `@resource` is the opposite: there are no destructors, so nothing but an explicit consume ever closes one, and matching it out of an enum is the last chance to.
+
+A wrapper is not an aggregate. `Heap<T>?` and `Heap<T> or E` carry their payload linearly, because nothing walks a wrapper and consumes what is behind its tag — `o? as v` moves the obligation to `v` instead.
 
 I went back and forth on making that `drop` a silent no-op instead. It's worse: the author writes a consume and gets none, and whether `drop(x)` frees anything then depends on whether `x` is a binding or a projection, which the line doesn't say.
 
@@ -98,11 +102,13 @@ drop(ptr)                         // Now consumed
 |------|-------------|
 | **HP5: Transparent** | `Heap<T>` unifies with `T` in type checking; code accepting `T` also accepts `Heap<T>` |
 
-HP5 is a deliberate simplification — auto-deref without ceremony.
+HP5 is a deliberate simplification — auto-deref without ceremony. It is a rule in unification, not an erasure: `Heap<T>` is still a type that says there is a block, it just fits wherever a `T` does.
 
-Linearity is enforced for an `Heap(…)` local: one that nothing consumes is an error, and so is a second consume. Consuming means `drop(name)`, handing it to a `take` parameter, storing it in a field, tuple, array or enum payload, or returning it. `ensure` covers the error paths. This is the same rule set `@resource` follows; the `Heap(…)` in the source is what marks the binding, since HP5 leaves nothing in the type to look at.
+That distinction is worth stating because the implementation got it wrong for a while. Unwrapping `Heap<T>` to `T` at parse gives you the same transparency and throws the block away with it — `func() -> Heap<i64>` was checked as `func() -> i64`, and nothing downstream could tell a block from the value in it. `*b` on one read a stack address (#1256).
 
-HP5's transparency has one consequence worth stating: nothing in the *type* distinguishes a value from a pointer to it, so the compiler tracks which is which by where the value came from. `Heap(…)` allocates and hands back the pointer; a binding takes it over rather than copying out of it; a declared `Heap<T>` slot given something already on the heap stores it as-is rather than allocating a second time. A scalar never moves to the heap — it fits its slot — so `Heap<i32>` really is an `i32`, and dropping one frees nothing.
+Linearity is enforced for a `Heap(…)` local: one that nothing consumes is an error, and so is a second consume. Consuming means `drop(name)`, handing it to a `take` parameter, storing it in a field, tuple, array or enum payload, or returning it. `ensure` covers the error paths. This is the same rule set `@resource` follows.
+
+`Heap(…)` allocates exactly one block, whatever the payload. A number gets one too: it would fit the slot, and skipping the allocation for the payloads that do made `Heap<T>` two shapes rather than one — what `*b` reads, what `drop(b)` frees and what a field holds each had two answers, and the compiler picked between them from where the value came from rather than from its type. That fails the moment the value crosses a carrier, because a struct field or a tuple holds a value and not a binding (#1234). One allocation per `Heap(…)` is the cost, and `Heap(…)` is written where the cost is.
 
 | Rule | Description |
 |------|-------------|

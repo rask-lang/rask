@@ -11,45 +11,52 @@ use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
 use super::errors::{IndexErrorKind, InvalidCastClass, TypeError};
 use super::inference::{LiteralKind, TypeConstraint};
-use super::parse_type::parse_type_string;
+use super::parse_type::{parse_type_string, split_type_args};
 use super::TypeChecker;
 
 use crate::types::{GenericArg, Type};
-
-/// Split a type argument string by commas, respecting nested angle brackets.
-/// "Map<string, bool>, i64" → ["Map<string, bool>", "i64"]
-fn split_type_args(s: &str) -> Vec<String> {
-    let mut args = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => {
-                args.push(s[start..i].trim().to_string());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    let last = s[start..].trim();
-    if !last.is_empty() {
-        args.push(last.to_string());
-    }
-    args
-}
 
 /// Parse a type argument string into a Type, handling nested generics.
 /// "Map<string, bool>" → UnresolvedGeneric { name: "Map", args: [string, bool] }
 /// "Route" → UnresolvedNamed("Route")
 fn parse_type_arg(s: &str) -> Type {
+    // A function type, before the generic test below: `func(Vec<i64>) -> i64`
+    // has a `<` in it and is not a generic. Without this arm the argument of
+    // `Map<string, func(i64) -> i64>.new()` stayed a bare name, so the closure
+    // handed to `insert` never learned what its parameter was — `|x| x + 1`
+    // lowered as pointer arithmetic and answered 13 for 5 (#1151).
+    if let Some(rest) = s.trim().strip_prefix("func(") {
+        let mut depth = 1usize;
+        let close = rest.char_indices().find_map(|(i, c)| match c {
+            '(' => {
+                depth += 1;
+                None
+            }
+            ')' => {
+                depth -= 1;
+                (depth == 0).then_some(i)
+            }
+            _ => None,
+        });
+        if let Some(close) = close {
+            let params = split_type_args(&rest[..close])
+                .into_iter()
+                .map(parse_type_arg)
+                .collect();
+            let ret = rest[close + 1..]
+                .trim()
+                .strip_prefix("->")
+                .map(|r| parse_type_arg(r.trim()))
+                .unwrap_or(Type::Unit);
+            return Type::Fn { params, ret: Box::new(ret) };
+        }
+    }
     if let Some(open) = s.find('<') {
         let base = &s[..open];
         let inner = &s[open+1..s.len()-1];
         let args = split_type_args(inner)
             .into_iter()
-            .map(|a| GenericArg::Type(Box::new(parse_type_arg(&a))))
+            .map(|a| GenericArg::Type(Box::new(parse_type_arg(a))))
             .collect();
         Type::UnresolvedGeneric {
             name: base.to_string(),
@@ -611,6 +618,12 @@ impl TypeChecker {
                         // `T` to the checker, so a borrow through it yields the
                         // same type it started with.
                         match resolved {
+                            // `*b` on a `Heap<T>` borrows the `T` in the block
+                            // (HP3). The wrapper used to be gone by now, so
+                            // this was the identity.
+                            ref t if t.heap_payload().is_some() => {
+                                t.heap_payload().expect("just checked").clone()
+                            }
                             Type::RawPtr(inner) => *inner,
                             // The operand's type isn't settled yet — it came
                             // out of another call, as in `*nums.as_ptr()`.
@@ -650,6 +663,15 @@ impl TypeChecker {
                             Type::Bool
                         }
                     }
+                    // `Heap(x)` is a block holding an `x`. The type used to be
+                    // the payload's, which said nothing about the block —
+                    // HP5's transparency lives in `unify` now instead, so a
+                    // `T` still fits a `Heap<T>` slot and the other way round
+                    // (#1256).
+                    rask_ast::expr::UnaryOp::Heap => Type::UnresolvedGeneric {
+                        name: "Heap".to_string(),
+                        args: vec![GenericArg::Type(Box::new(operand_ty))],
+                    },
                     _ => operand_ty,
                 }
             }
@@ -1963,7 +1985,20 @@ impl TypeChecker {
                     //
                     // Pool is deliberately absent — a pool is reached by element
                     // (`with pool[h] as e`), so the source is already the payload.
-                    let unwraps = |name: &str| matches!(name, "Mutex" | "Shared" | "Cell");
+                    // `b.read()` already answers with the payload, so stripping
+                    // a wrapper off *that* reads through a box the program still
+                    // holds: one `with` on a `Shared<Shared<i64, Local>, Local>`
+                    // bound the `i64`, and `.get()` on the binding was "no method
+                    // `get` on i64" (#1242). One `with` opens one box. Only the
+                    // bare form has a wrapper left to strip.
+                    let names_a_lock = matches!(
+                        &binding.source.kind,
+                        ExprKind::MethodCall { method, .. }
+                            if matches!(method.as_str(), "read" | "write" | "staged")
+                    );
+                    let unwraps = |name: &str| {
+                        !names_a_lock && matches!(name, "Mutex" | "Shared" | "Cell")
+                    };
                     let inner_of = |args: &[GenericArg]| match args.first() {
                         Some(GenericArg::Type(inner)) => Some((**inner).clone()),
                         _ => None,
@@ -1988,11 +2023,6 @@ impl TypeChecker {
                     // ("expected Cell, Mutex, Shared … got Shared") and native
                     // compiled it and read the wrong bytes, printing 0 for a field
                     // that held 4 (#880).
-                    let names_a_lock = matches!(
-                        &binding.source.kind,
-                        ExprKind::MethodCall { method, .. }
-                            if matches!(method.as_str(), "read" | "write" | "staged")
-                    );
                     // ST3a: `staged()` under `Local`. The strategy is in the
                     // type, so the compiler can decide it — and ctrl.panic/S7
                     // says a condition fixed at the declaration is a diagnostic,
@@ -3485,7 +3515,7 @@ impl TypeChecker {
                     let inner = &name[base_name.len()+1..name.len()-1];
                     let generic_args = split_type_args(inner)
                         .into_iter()
-                        .map(|s| GenericArg::Type(Box::new(parse_type_arg(&s))))
+                        .map(|s| GenericArg::Type(Box::new(parse_type_arg(s))))
                         .collect();
                     Type::UnresolvedGeneric {
                         name: base_name.to_string(),
@@ -4136,8 +4166,8 @@ impl TypeChecker {
             return Vec::new();
         }
         split_type_args(&callee[open + 1..callee.len() - 1])
-            .iter()
-            .map(|a| parse_type_arg(a.trim()))
+            .into_iter()
+            .map(parse_type_arg)
             .collect()
     }
 

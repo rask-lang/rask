@@ -33,7 +33,12 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         return Ok(Type::union_named(types_vec?, |id| Some(types.type_name(id))));
     }
 
-    if s.ends_with('?') && !s.starts_with('(') {
+    // `T?`, including a parenthesised `T`. The parenthesised case used to be
+    // excluded outright, so `(i64, bool)?` matched neither this nor the tuple
+    // arm below — it ends with `?`, not `)` — and fell through to a name. What
+    // reported it was `if o? as v`, which then read the annotation as something
+    // that isn't an optional and asked for a Result (#1238).
+    if s.ends_with('?') {
         let inner = parse_type_string(&s[..s.len() - 1], types)?;
         return Ok(Type::option(inner));
     }
@@ -114,16 +119,22 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
             let args = args?;
 
             match name {
+                // `Heap<T>` keeps its wrapper. HP5 says it behaves as `T`, and
+                // this used to implement that by unwrapping here — which is
+                // transparency and erasure at once. Erasure is the part that
+                // costs: nothing downstream can tell a block from the value in
+                // it, so `func() -> Heap<i64>` is checked as `func() -> i64`
+                // and `*f()` has nothing to load through. `unify` peels it
+                // instead, so `T` still fits a `Heap<T>` slot and the other way
+                // round (#1256).
                 "Heap" if args.len() == 1 => {
-                    // Owned<T> is transparent to the type checker — unwrap to T
-                    if let GenericArg::Type(ty) = args.into_iter().next().unwrap() {
-                        return Ok(*ty);
-                    } else {
+                    if !matches!(args.first(), Some(GenericArg::Type(_))) {
                         return Err(TypeError::GenericError(
-                            "Owned expects a type argument, not a const".to_string(),
+                            "Heap expects a type argument, not a const".to_string(),
                             Span::new(0, 0),
                         ));
                     }
+                    return Ok(Type::UnresolvedGeneric { name: "Heap".to_string(), args });
                 }
                 // `Shared<T, S = Readers>` (conc.sync/SH2). The strategy is a
                 // defaulted type parameter, so fill it in here rather than
@@ -249,12 +260,20 @@ pub(crate) fn split_type_args(s: &str) -> Vec<&str> {
     let mut paren_depth = 0;
     let mut start = 0;
 
+    // `>` only closes a `<` that is open. The arrow of a function type carries
+    // one too, and counting it drove the depth negative — so the comma in
+    // `Shared<func(i64) -> i64, Local>` was never at depth 0, the whole thing
+    // came back as one argument, and the defaulting step then filled in the
+    // missing strategy: `Shared.local(f)` was checked as a `Readers` box and
+    // rejected the annotation that said `Local` (#1241). Same cause under
+    // `Map<string, func(i64, i64) -> i64>`, which split down the middle of the
+    // parameter list (#1151).
     for (i, c) in s.char_indices() {
         match c {
             '<' => depth += 1,
-            '>' => depth -= 1,
+            '>' if depth > 0 => depth -= 1,
             '(' => paren_depth += 1,
-            ')' => paren_depth -= 1,
+            ')' if paren_depth > 0 => paren_depth -= 1,
             ',' if depth == 0 && paren_depth == 0 => {
                 result.push(s[start..i].trim());
                 start = i + 1;

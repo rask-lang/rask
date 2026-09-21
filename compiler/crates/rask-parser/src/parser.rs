@@ -4772,7 +4772,16 @@ impl Parser {
         if self.check(&TokenKind::RParen) { return Ok(args); }
 
         let outer_list = std::mem::replace(&mut self.in_comma_list, true);
+        // An argument list closes the ambiguity a condition opens, the same way
+        // a parenthesised expression does: once the parser is inside `f(`, a
+        // `{` can only start a struct literal, because the body of the `if`
+        // can't start there. Without this `if !accept(Pay { a: 7 }) { … }`
+        // read the literal's brace as the start of the body and reported a
+        // missing `)` — and authoring a sequence hit it immediately, since the
+        // yield is always in a condition (#1236).
+        let outer_braces = std::mem::replace(&mut self.allow_brace_expr, true);
         let result = self.parse_args_loop(raw_first_string, &mut args);
+        self.allow_brace_expr = outer_braces;
         self.in_comma_list = outer_list;
         result?;
         Ok(args)

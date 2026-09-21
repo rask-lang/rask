@@ -34,12 +34,13 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 520 of 525, 5 registered red | `tests/differential.sh` |
-| Programs that leak | 1, holding 2 allocations, both deferred | `tests/leak_gate.sh` |
-| Programs memcheck finds an error in | 0 of 522 | `tests/memcheck_gate.sh` |
-| Examples with a pinned golden | 35 of 37 | `tests/examples_gate.sh` |
+| Suite programs agreeing on both backends | 532 of 537, 5 registered red | `tests/differential.sh` |
+| Programs that leak | 3, holding 10 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 284 of 286 | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 0 of 534 | `tests/memcheck_gate.sh` |
+| Examples with a pinned golden | 36 of 38 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 37 of 78 open issues | issue search |
+| Open bugs | 39 of 95 open issues | issue search |
 | Open design questions | 20 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
@@ -154,24 +155,63 @@ at all yet — which is v0.5's theme, not this one.
 
 ## v0.4 — A value works in every position
 
-**Done when a new positional-matrix gate is green.**
+**Done when `tests/matrix/run.sh` is green. Today: 284 of 286 cells clean, and
+the 2 that aren't are out of this milestone (see below).**
 
 These read as unrelated bugs and aren't. A closure works as a local and not out
 of a `Map`; a function works as an argument and not as a struct field. Nothing
-enumerates value-kind × position, so the holes are found one report at a time.
-The deliverable is the matrix — every value kind (closure, container, box,
-string, struct, function, and a `Sequence` over `Vec.iter()`) in every position
-(local, struct field, `Vec` element, `Map` value, return, capture, argument) —
-and then the bugs it lights up. Sequence is in there because
-[#1046](https://github.com/rask-lang/rask/issues/1046) is the same shape: the
-adapters are written and work, and `Vec.iter()` not returning a `Sequence` is the
-position they can't occupy.
+enumerated value-kind × position, so the holes were found one report at a time.
+The deliverable is the matrix — every payload kind in every carrier, one small
+program per cell, run on both backends — and then the bugs it lights up.
 
-[#1046](https://github.com/rask-lang/rask/issues/1046) ·
-[#1151](https://github.com/rask-lang/rask/issues/1151)
+The matrix exists: `tests/matrix/gen.py` writes 286 cells over 18 payloads and
+16 carriers, `tests/matrix/run.sh` runs them, and `tests/matrix/known_red.txt`
+holds each red cell to what it claims — which backend fails it and how far that
+backend gets. A registered cell that starts passing is reported so the line gets
+pruned.
 
-[#1151](https://github.com/rask-lang/rask/issues/1151) is the worst of them —
-making it compile currently gives a wrong answer.
+It lit up ten bugs across 25 cells on its first full run, and they are fixed:
+
+[#1234](https://github.com/rask-lang/rask/issues/1234) ·
+[#1239](https://github.com/rask-lang/rask/issues/1239) ·
+[#1151](https://github.com/rask-lang/rask/issues/1151) ·
+[#1235](https://github.com/rask-lang/rask/issues/1235) ·
+[#1237](https://github.com/rask-lang/rask/issues/1237) ·
+[#1238](https://github.com/rask-lang/rask/issues/1238) ·
+[#1240](https://github.com/rask-lang/rask/issues/1240) ·
+[#1241](https://github.com/rask-lang/rask/issues/1241) ·
+[#1236](https://github.com/rask-lang/rask/issues/1236) ·
+[#1242](https://github.com/rask-lang/rask/issues/1242) ·
+[#1243](https://github.com/rask-lang/rask/issues/1243)
+
+Plus two the matrix doesn't reach, found the same week and the same theme:
+[#1232](https://github.com/rask-lang/rask/issues/1232), a string field assigned
+through an inline lock chain, and
+[#1228](https://github.com/rask-lang/rask/issues/1228), a closure in a struct
+field leaking once the struct is a `Vec` element.
+
+[#1046](https://github.com/rask-lang/rask/issues/1046) is still open and still
+in: the sequence adapters are written and work, and `Vec.iter()` not returning a
+`Sequence` is the position they can't occupy.
+
+**Four came out of this list.** Same rule the three below came out under — a
+version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
+
+- **#1244** — can a function type be the success side of `T or E`?
+  `-> func(i64) -> i64 or Oops` parses as `func(i64) -> (i64 or Oops)`, which is
+  a defensible reading; what is missing is a way to write the other one, and
+  there is no parenthesised type form. `specs/types/error-types.md` and
+  `specs/SYNTAX.md` don't cover it. Its two cells stay registered in
+  `known_red.txt` — the gate keeps watching them — and they are not what this
+  milestone closes on.
+- **#1245** — `Vec<Heap<i64>>` compiles, where `std.collections/C4` says it
+  shouldn't. A missing *rejection* is not a value failing in a position, and its
+  cells could never go green: the program isn't supposed to compile at all.
+- **#1233** — an array literal only takes its shape from an annotated `let`. An
+  inference gap that shows up in eight cells and is the reason `gen.py` writes
+  `Vec.from([…])`; the carriers still measure their carriers.
+- **#1248** — a generic function whose name ends in `_free` leaks the `Vec` it
+  returns. A name collision in the ownership metadata, not a position.
 
 **What this list used to say.** It named eight. Two were already closed when
 the milestone was written (#843, #886), and three were not bugs at all — they

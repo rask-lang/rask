@@ -800,11 +800,21 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
             _ => {}
         }
     }
-    if ty.ends_with('?') && !ty.starts_with('(') {
+    // `T?`, `T??`, and the long spelling. A parenthesised payload was excluded
+    // outright, so `let o: (i64, bool)? = (42, true)` bound the tuple bare and
+    // `if o? as v` then found no `Some` to open — and `Option<(i64, bool)>`
+    // was never recognised here at all (#1238).
+    let want = if ty.ends_with('?') {
+        ty.chars().rev().take_while(|c| *c == '?').count()
+    } else if ty.starts_with("Option<") && ty.ends_with('>') {
+        1
+    } else {
+        0
+    };
+    if want > 0 {
         if rhs_is_none_literal {
             return value;
         }
-        let want = ty.chars().rev().take_while(|c| *c == '?').count();
         let mut out = value;
         for _ in value_option_depth(&out)..want {
             out = Value::Enum {

@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A function type written inside another type's arguments.
+//
+// The splitter that cuts `A, B` apart counted the `>` of `->` as closing a
+// bracket, so every one of these came out as a single argument with the depth
+// stuck below zero:
+//
+//   `Shared<func(i64) -> i64, Local>`  → one argument, and the defaulting step
+//     then supplied the missing strategy: `Shared.local(f)` was checked as a
+//     `Readers` and rejected the annotation that said `Local` (#1241).
+//   `(func(i64) -> i64, func(i64) -> i64)` → one element, so the tuple never
+//     matched its annotation and the closures' parameter types stayed open
+//     (#1240).
+//   `Map<string, func(i64, i64) -> i64>` → split down the middle of the
+//     parameter list.
+//
+// And a `Shared` holding a function value binds a callable, which
+// `with b.read() as f { f(2) }` has to know, or the call goes looking for a
+// function named `f`.
+import sync.Shared
+import sync.Local
+
+func add_forty(n: i64) -> i64 {
+    return n + 40
+}
+
+func add_five(n: i64) -> i64 {
+    return n + 5
+}
+
+test "a closure in a Local Shared" {
+    let b: Shared<func(i64) -> i64, Local> = Shared.local(|n| { return n + 40 })
+    with b.read() as f {
+        assert f(2) == 42
+    }
+}
+
+test "a named function in a Local Shared" {
+    let b: Shared<func(i64) -> i64, Local> = Shared.local(add_forty)
+    with b.read() as f {
+        assert f(2) == 42
+    }
+}
+
+test "closures in an annotated tuple" {
+    let tup: (func(i64) -> i64, func(i64) -> i64) = (|n| { return n + 5 }, |n| { return n + 40 })
+    assert tup.0(2) == 7
+    assert tup.1(2) == 42
+}
+
+test "named functions in an annotated tuple" {
+    let tup: (func(i64) -> i64, func(i64) -> i64) = (add_five, add_forty)
+    assert tup.1(2) == 42
+}
+
+test "a two-parameter function type in a type argument" {
+    mut m: Map<string, func(i64, i64) -> i64> = Map.new()
+    m.insert("k", |a, b| a + b)
+    if m.get("k")? as g {
+        assert g(2, 40) == 42
+    } else {
+        assert false
+    }
+}
+
+// One `with` opens one `Shared`. On a `Shared` holding a `Shared` it opened
+// both, and the binding came out as the innermost value — `.get()` on it was
+// "no method on i64" (#1242).
+test "a Shared holding a Shared" {
+    let b: Shared<Shared<i64, Local>, Local> = Shared.local(Shared.local(42))
+    with b.read() as v {
+        assert v.get() == 42
+    }
+}
+
+func main() {}

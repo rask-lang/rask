@@ -787,6 +787,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// DL4: two or more inline sync accesses in one expression
+    #[error("this expression takes {count} locks at once")]
+    MultipleSyncAccesses {
+        count: usize,
+        /// The receiver of the second access, for the suggestion.
+        recv: String,
+        method: String,
+        span: Span,
+    },
+
     /// E16: mixed explicit and auto-indexed discriminants
     #[error("enum `{enum_name}`: if any variant has `= N`, all must")]
     MixedDiscriminants {
@@ -1340,6 +1350,7 @@ impl TypeError {
             | ZeroStep { .. }
             | StepDirectionMismatch { .. }
             | BareSyncAccess { .. }
+            | MultipleSyncAccesses { .. }
             | BadFieldAnnotation { .. }
             | BadAnnotation { .. }
             | UnknownAllowName { .. }

@@ -885,7 +885,7 @@ impl<'a> MirLowerer<'a> {
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
             | MirType::FuncPtr(_) | MirType::Handle | MirType::Link(_)
-            | MirType::Container(_) => 8,
+            | MirType::Container(_) | MirType::Heap(_) => 8,
             MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
             MirType::Struct(sid) => sid.byte_size as i64,
@@ -1060,8 +1060,20 @@ impl<'a> MirLowerer<'a> {
         // A closure is a bare `Ptr` in MIR too, and it has no head name to
         // match on, so the checker's type is the only thing that says the
         // element owns a block (#1149).
-        if let Some(rask_types::Type::Fn { .. }) = self.container_elem_rask_type(node_id, index) {
-            return crate::elem_strs::ELEM_CLOSURE;
+        match self.container_elem_rask_type(node_id, index) {
+            Some(rask_types::Type::Fn { .. }) => return crate::elem_strs::ELEM_CLOSURE,
+            // The same type, left as it was spelled. `Map<string, func(i64) ->
+            // i64>.new()` records its argument as a name and nothing resolves
+            // it further, so the values looked like plain words: the map never
+            // held the closure's block, the block went at the end of the
+            // statement that inserted it, and calling what came back out
+            // answered 13 for `|x| x + 1` applied to 5 (#1151).
+            Some(rask_types::Type::UnresolvedNamed(name))
+                if name.trim_start().starts_with("func(") =>
+            {
+                return crate::elem_strs::ELEM_CLOSURE
+            }
+            _ => {}
         }
         crate::elem_strs::tag_of(self.container_elem_mir_type(node_id, index).as_ref())
     }

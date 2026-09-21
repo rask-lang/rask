@@ -229,12 +229,18 @@ impl<'a> MirLowerer<'a> {
         let has_range = arms.iter().any(|a| contains_range_pattern(&a.pattern));
         if has_range {
             let (scrutinee_op, scrutinee_ty) = self.lower_expr(scrutinee)?;
+            let (scrutinee_op, scrutinee_ty) = self.peel_heap_value(scrutinee_op, scrutinee_ty);
             return self.lower_scalar_chain_match(scrutinee_op, scrutinee_ty, arms);
         }
 
         let niche = self.niche_sentinel_of_expr(scrutinee);
         let is_niche = niche.is_some();
+        // A `Heap<T>` matched as a `T` (HP5) — `match rest` on the tail of a
+        // `Cons(i64, Heap<List>)`. Without this the scrutinee's type was the
+        // block rather than the enum, so no layout was found and every payload
+        // binding fell back to a word.
         let (scrutinee_op, scrutinee_ty) = self.lower_expr(scrutinee)?;
+        let (scrutinee_op, scrutinee_ty) = self.peel_heap_value(scrutinee_op, scrutinee_ty);
 
         // String match
         let is_string_match = matches!(scrutinee_ty, MirType::String)

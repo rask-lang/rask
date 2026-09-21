@@ -1414,10 +1414,38 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Constant(konst), ty))
             }
             ExprKind::Float(val, suffix) => {
+                // An unsuffixed literal takes the type the checker gave it
+                // (type.primitives/L1). Calling it an `f64` outright left an
+                // `f32` slot being filled with a double — harmless where the
+                // callee's declared signature is on hand to convert against,
+                // and not harmless through a closure, where the caller's own
+                // argument types *are* the signature. `yield(1.5)` into a
+                // `func(f32) -> bool` passed eight bytes, the callee read the
+                // low four, and every f32 through a Sequence collected as 0
+                // (#1243).
+                //
+                // The narrow one goes through a local of its own so the width
+                // travels with the value: a bare `MirConst::Float` carries
+                // none, and every reader that has no expected type to hand
+                // defaults to f64.
                 let ty = match suffix {
                     Some(FloatSuffix::F32) => MirType::F32,
-                    Some(FloatSuffix::F64) | None => MirType::F64,
+                    Some(FloatSuffix::F64) => MirType::F64,
+                    None => self
+                        .ctx
+                        .lookup_raw_type(expr.id)
+                        .map(|t| self.ctx.type_to_mir(t))
+                        .filter(|t| matches!(t, MirType::F32))
+                        .unwrap_or(MirType::F64),
                 };
+                if ty == MirType::F32 {
+                    let local = self.builder.alloc_temp(MirType::F32);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local,
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Float(*val))),
+                    }));
+                    return Ok((MirOperand::Local(local), MirType::F32));
+                }
                 Ok((MirOperand::Constant(MirConst::Float(*val)), ty))
             }
             ExprKind::String(s) => Ok((
@@ -1649,17 +1677,16 @@ impl<'a> MirLowerer<'a> {
                     // `own expr` heap-allocates (mem.owned) at the point of
                     // evaluation — not just when the value happens to land in a
                     // struct field or enum payload declared `Owned<T>` (#739).
-                    // A scalar already fits an `Owned<T>` slot in place (OW7),
-                    // so `box_into_owned` leaves it alone; only an aggregate
-                    // actually moves to the heap.
+                    // `Heap(x)` allocates whatever the payload is, so the
+                    // result is the block's address and its type says so.
+                    //
+                    // A container payload keeps its kind: the handle sits at
+                    // the block's start, and `drop` has to free the vector as
+                    // well as the block.
                     UnaryOp::Heap => {
-                        let boxed = self.box_into_owned(operand_op, &operand_ty);
-                        let result_ty = if operand_ty.passed_by_address() {
-                            MirType::Ptr
-                        } else {
-                            operand_ty.clone()
-                        };
-                        return Ok((boxed, result_ty));
+                        let payload = self.heap_payload_ty(operand, &operand_ty);
+                        let boxed = self.box_into_owned(operand_op, &payload);
+                        return Ok((boxed, MirType::Heap(Box::new(payload))));
                     }
                     // A float pointee reads as a float. `rask_ptr_read` hands
                     // back an `int64_t`, so the bits arrived intact and got
@@ -1691,6 +1718,20 @@ impl<'a> MirLowerer<'a> {
                             ],
                         }));
                         return Ok((MirOperand::Local(result_local), MirType::I64));
+                    }
+                    // `*b` on a `Heap<T>` reads the block. An aggregate lives
+                    // at an address anyway, so the block's address *is* the
+                    // value; everything else comes out of the block at the
+                    // payload's own width.
+                    UnaryOp::Deref if matches!(operand_ty, MirType::Heap(_)) => {
+                        let MirType::Heap(payload) = &operand_ty else {
+                            unreachable!("just matched")
+                        };
+                        let payload = payload.as_ref().clone();
+                        if payload.passed_by_address() {
+                            return Ok((operand_op, payload));
+                        }
+                        (payload, MirRValue::Deref(operand_op))
                     }
                     // A raw pointer needs the load. An `Owned<T>` doesn't —
                     // it's transparent (OW5), so the checker's type for the
@@ -1976,68 +2017,71 @@ impl<'a> MirLowerer<'a> {
                     return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
                 }
 
-                // drop(p) — consume a `Heap<T>` (mem.heap/HP3, mem.owned/OW3),
-                // freeing the block it holds. There isn't always one: a scalar
-                // `T` fits the slot in place (OW7) and was never allocated, so
-                // freeing it would hand `rask_free` a value that was never a
-                // pointer.
+                // drop(p) — consume a `Heap<T>` (mem.heap/HP3): release what
+                // the block holds, then free the block.
                 //
-                // Telling the two apart used to be "is the argument's MIR type
-                // `Ptr`", and that never fired for the boxed case. A `Heap<T>`
-                // is transparent in MIR and in the checker both — a reference to
-                // one has the *payload's* type, because that is what the program
-                // treats it as (OW5) — so the test saw `Struct`, read it as
-                // "nothing to free", and `drop(Heap(Point { … }))` lowered to no
-                // code at all. Every `Heap` of a struct leaked its block.
+                // The type is the whole test now. It used to be a flag on the
+                // binding, because `Heap<T>` erases to `T` in the checker (HP5)
+                // and lowering had no type that said "block" — so `drop` asked
+                // whether the name had been bound to something that allocated,
+                // and got it wrong for every payload that reached it through a
+                // carrier (#1234, #1256).
                 //
-                // The binding is what knows: lowering marks a name a box when
-                // its initialiser turned out to be a pointer, which is the same
-                // decision that made the binding alias the block instead of
-                // copying out of it. A by-address payload is the other half —
-                // `Heap(42)` allocates nothing, and freeing what it hands back
-                // would free the number 42.
+                // `ReleaseSlot` covers both halves of what a block can hold: an
+                // aggregate spread across it, and a container handle sitting at
+                // its start. A closure is neither and is released by the frame
+                // that built it — a second release there is a double free.
                 if func_name == "drop" {
                     let arg_expr = args.first().map(|a| &a.expr);
-                    let boxed = arg_expr.is_some_and(|e| self.expr_yields_owned_box(e))
-                        && arg_mir_types.first().is_some_and(|t| t.passed_by_address());
+                    let heap_payload = arg_mir_types.first().and_then(|t| match t {
+                        MirType::Heap(payload) => Some(payload.as_ref().clone()),
+                        _ => None,
+                    });
                     // A field never reaches here: the aggregate's release owns
                     // what its field holds, so `drop(h.inner)` is E0880 and the
-                    // check stops before MIR. What used to stand here loaded
-                    // the field's word, because the read hands back a *copy* of
-                    // the payload and freeing that stack slot aborted in glibc
-                    // — machinery for a shape that no longer compiles (#1202).
-                    let box_ptr = if boxed
-                        || matches!(arg_mir_types.first(), Some(MirType::Ptr))
+                    // check stops before MIR (#1202).
+                    if let (Some(payload), Some(op)) = (heap_payload, arg_operands.first().cloned())
                     {
-                        arg_operands.into_iter().next()
-                    } else {
-                        None
-                    };
-                    if let Some(op) = box_ptr {
-                        // What the payload holds goes first. Freeing the block
-                        // says nothing about the string and the `Vec` inside a
-                        // `Heap<Record>` — the block is where they live, and
-                        // after `rask_free` there is nothing left to walk.
-                        //
-                        // An aggregate local *is* an address, so a local typed
-                        // as the payload and holding the block's pointer is the
-                        // payload, and the ordinary contents release walks it.
-                        if let Some(payload_ty) =
-                            arg_mir_types.first().filter(|t| t.passed_by_address()).cloned()
-                        {
-                            let payload = self.builder.alloc_temp(payload_ty);
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: payload,
-                                rvalue: MirRValue::Use(op.clone()),
-                            }));
-                            self.builder.push_stmt(MirStmt::dummy(
-                                MirStmtKind::RcDecContents { local: payload },
-                            ));
+                        let block = self.as_local(op);
+                        // One handle in the block — a vector, a map, a closure,
+                        // a box — is freed by name; `rask_mono::drop_names` is
+                        // the same table codegen releases a *field* by, which
+                        // is the same question about the same handle. Anything
+                        // else spread across the block is walked.
+                        let handle_free = arg_expr
+                            .and_then(|e| self.ctx.lookup_raw_type(e.id))
+                            .map(|t| t.peel_heap())
+                            .and_then(|t| {
+                                rask_mono::drop_names::container_free_for_rendered(
+                                    &self.rendered_with_names(t),
+                                )
+                                .or_else(|| rask_mono::drop_names::container_free_for(t))
+                            });
+                        match handle_free {
+                            Some(free_fn) => {
+                                let handle = self.builder.alloc_temp(MirType::Ptr);
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                                    dst: handle,
+                                    rvalue: MirRValue::Deref(MirOperand::Local(block)),
+                                }));
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: None,
+                                    func: FunctionRef::internal(free_fn.to_string()),
+                                    args: vec![MirOperand::Local(handle)],
+                                }));
+                            }
+                            None => {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ReleaseSlot {
+                                    addr: block,
+                                    offset: 0,
+                                    ty: payload,
+                                }));
+                            }
                         }
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: None,
                             func: FunctionRef::internal("rask_free".to_string()),
-                            args: vec![op],
+                            args: vec![MirOperand::Local(block)],
                         }));
                     }
                     return Ok((MirOperand::Constant(MirConst::Int(0)), MirType::Void));
@@ -2485,9 +2529,7 @@ impl<'a> MirLowerer<'a> {
                 // Struct, enum and tuple only. A `Handle<T>?` field is 8 bytes
                 // because it's a niche — the handle *is* the value, `none` is the
                 // all-ones sentinel — so its word is the answer, not its address.
-                let access = if self.owned_field_is_boxed(object, field) {
-                    FieldAccess::Sized(8)
-                } else {
+                let access = {
                     field_size.map_or(FieldAccess::Word, |size| {
                         let lives_inline = matches!(
                             result_ty,
@@ -3067,7 +3109,7 @@ impl<'a> MirLowerer<'a> {
                     let val_op = match field_layout
                         .and_then(|f| self.owned_payload(&f.ty))
                     {
-                        Some(_) => self.box_into_owned_slot(&field.value, val_op, &val_ty),
+                        Some(_) => self.box_into_owned_slot(val_op, &val_ty),
                         None => val_op,
                     };
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -5111,7 +5153,7 @@ impl<'a> MirLowerer<'a> {
                                 // came back as a tag used for an address (#705).
                                 let val = match fields.get(i).and_then(|f| self.owned_payload(&f.ty)) {
                                     Some(_) => {
-                                        self.box_into_owned_slot(&arg.expr, val, &val_ty)
+                                        self.box_into_owned_slot(val, &val_ty)
                                     }
                                     None => val,
                                 };
@@ -7105,6 +7147,75 @@ impl<'a> MirLowerer<'a> {
                     | rask_types::Type::U64 | rask_types::Type::I64
             ) => self.pointee_size(expr),
             _ => None,
+        }
+    }
+
+    /// The MIR type the block of a `Heap(x)` holds.
+    ///
+    /// The lowered type of the payload, except that a container keeps its kind:
+    /// the handle sits at the block's start, and `drop` frees what it points at
+    /// as well as the block. Lowering types every handle as a bare pointer, so
+    /// the kind has to come off the checker's type — the same route a wrapper's
+    /// payload takes.
+    /// A type written out with its names put back.
+    ///
+    /// `Display` on a resolved `Type::Generic` prints TypeIds, so
+    /// `Shared<i64, Local>` comes out with no `Local` in it and the release
+    /// table can't tell the strategies apart. The layout side never hits this
+    /// because a field's type is still a name there.
+    fn rendered_with_names(&self, ty: &rask_types::Type) -> String {
+        use rask_types::{GenericArg, Type};
+        let Some(head) = super::MirContext::type_prefix(ty, self.ctx.type_names) else {
+            return format!("{}", ty);
+        };
+        let args = match ty {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return head,
+        };
+        if args.is_empty() {
+            return head;
+        }
+        let written: Vec<String> = args
+            .iter()
+            .map(|a| match a {
+                GenericArg::Type(t) => super::MirContext::type_prefix(t, self.ctx.type_names)
+                    .unwrap_or_else(|| format!("{}", t)),
+                other => format!("{}", other),
+            })
+            .collect();
+        format!("{}<{}>", head, written.join(", "))
+    }
+
+    /// HP5 on the lowering side: a `Heap<T>` standing where a `T` is expected.
+    ///
+    /// An aggregate payload lives at an address anyway, so the block's address
+    /// *is* the value and this is a relabel. A payload that fits its slot has
+    /// to come out of the block, at its own width. `*b` is the same operation
+    /// written down; this is the one the transparency rule performs for you —
+    /// `match rest` on a `Cons(i64, Heap<List>)` tail, say.
+    pub(crate) fn peel_heap_value(&mut self, op: MirOperand, ty: MirType) -> (MirOperand, MirType) {
+        let MirType::Heap(payload) = ty else { return (op, ty) };
+        let payload = *payload;
+        if payload.passed_by_address() {
+            return (op, payload);
+        }
+        let local = self.builder.alloc_temp(payload.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: local,
+            rvalue: MirRValue::Deref(op),
+        }));
+        (MirOperand::Local(local), payload)
+    }
+
+    fn heap_payload_ty(&self, operand: &Expr, operand_ty: &MirType) -> MirType {
+        let from_checker = self
+            .ctx
+            .lookup_raw_type(operand.id)
+            .filter(|t| !t.has_unsolved_var())
+            .map(|t| self.ctx.payload_to_mir(t));
+        match from_checker {
+            Some(t) if t != MirType::Ptr => t,
+            _ => operand_ty.clone(),
         }
     }
 
@@ -9885,9 +9996,11 @@ impl<'a> MirLowerer<'a> {
     /// `rask-interp/src/interp/eval_expr.rs::ExprKind::If(IsPresent ..)`.
     /// The payload type behind an `x?` scrutinee.
     pub(crate) fn presence_payload_type(&mut self, inner: &Expr, scrutinee_ty: &MirType) -> MirType {
-        self.extract_payload_type(inner)
-            .or_else(|| Self::payload_of_mir(scrutinee_ty))
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:presence_payload"))
+        Self::better_payload_ty(
+            self.extract_payload_type(inner),
+            Self::payload_of_mir(scrutinee_ty),
+        )
+        .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:presence_payload"))
     }
 
     /// Bind an `x? as v` payload as a local in the current block. Shared by the
@@ -9899,6 +10012,7 @@ impl<'a> MirLowerer<'a> {
         val: &MirOperand,
         payload_ty: &MirType,
         is_niche: bool,
+        scrutinee: &Expr,
     ) {
         let local = self.builder.alloc_local(name.to_string(), payload_ty.clone());
         let rvalue = if is_niche {
@@ -9920,6 +10034,27 @@ impl<'a> MirLowerer<'a> {
         if let Some(prefix) = self.mir_type_name(payload_ty) {
             self.meta_mut(name).type_prefix = Some(prefix);
         }
+        // A callable payload binds a closure, and calling it has to emit an
+        // indirect call. Every other way of binding one registers it; this one
+        // didn't, so `if m.get(k)? as f` left `f(2)` lowering as a call to a
+        // function named `f` — which is nothing, so lowering gave up (#1151).
+        if let Some(ret_ty) = self.presence_payload_callable_ret(scrutinee) {
+            self.note_callable_binding(name, ret_ty);
+        }
+    }
+
+
+    /// What the payload of `scrutinee` answers when called, if it is callable.
+    ///
+    /// The scrutinee of `x? as f` is a `T?` or a `T or E`; what `f` binds is the
+    /// good side of it.
+    fn presence_payload_callable_ret(&self, scrutinee: &Expr) -> Option<MirType> {
+        let ty = self.ctx.lookup_raw_type(scrutinee.id)?;
+        let payload = match ty {
+            rask_types::Type::Result { ok, .. } => ok.as_ref(),
+            other => other,
+        };
+        self.ctx.callable_ret_ty(payload, self.ctx.type_names)
     }
 
     fn lower_if_present(
@@ -9966,7 +10101,7 @@ impl<'a> MirLowerer<'a> {
         let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
         let outer_locals = self.locals.clone();
         if let Some(name) = then_name.as_ref() {
-            self.bind_presence_payload(name, &val, &payload_ty, is_niche);
+            self.bind_presence_payload(name, &val, &payload_ty, is_niche, inner);
         }
         let (then_val, then_ty) = self.lower_expr(then_branch)?;
         self.locals = outer_locals;

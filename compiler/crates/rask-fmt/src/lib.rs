@@ -455,6 +455,29 @@ func main() {
     }
 
     #[test]
+    fn keeps_parens_a_function_typed_field_call_needs() {
+        // `h.run(5)` is a method call on `h` (type.structs/M6), so the
+        // parentheses are the only way to call a field that holds a function.
+        // Dropping them turned a program that compiled into "`run` is a field
+        // on `Handler`, not a method", and the round-trip gate is what said so.
+        keeps(
+            "func main() {\n    let n = (h.run)(5)\n}\n",
+            "(h.run)(5)",
+            "a function-typed field",
+        );
+        keeps(
+            "func main() {\n    let n = (fs[0].run)(5)\n}\n",
+            "(fs[0].run)(5)",
+            "a field of an element",
+        );
+        keeps(
+            "func main() {\n    let n = (ns[0].inner.run)(4)\n}\n",
+            "(ns[0].inner.run)(4)",
+            "a field of a nested field",
+        );
+    }
+
+    #[test]
     fn keeps_parens_precedence_needs() {
         // The operators are left-associative, so the right operand needs
         // parentheses at equal precedence: `a - (b - c)` is not `a - b - c`.

@@ -104,6 +104,33 @@ pub enum Type {
 }
 
 impl Type {
+    /// `T`, if this is a `Heap<T>`.
+    ///
+    /// HP5 says `Heap<T>` behaves as `T` wherever one is expected. Every place
+    /// that has to honour that asks this, rather than the wrapper being thrown
+    /// away at parse: thrown away, nothing downstream can tell a block from the
+    /// value in it, and `func() -> Heap<i64>` is checked as `func() -> i64`
+    /// (#1256).
+    pub fn heap_payload(&self) -> Option<&Type> {
+        let Type::UnresolvedGeneric { name, args } = self else { return None };
+        if name != "Heap" {
+            return None;
+        }
+        match args.first()? {
+            GenericArg::Type(inner) => Some(inner),
+            _ => None,
+        }
+    }
+
+    /// This type with every outer `Heap<…>` peeled off.
+    pub fn peel_heap(&self) -> &Type {
+        let mut cur = self;
+        while let Some(inner) = cur.heap_payload() {
+            cur = inner;
+        }
+        cur
+    }
+
     /// Does this type still contain an inference variable anywhere inside it?
     ///
     /// An answer that does is present and useless: it converts to a plausible

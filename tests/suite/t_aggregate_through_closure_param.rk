@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct or an enum handed *into* a closure and back out.
+//
+// A parameter holding an aggregate arrives as the caller's address and gets no
+// slot in the callee, so returning it handed back that address. Anything wider
+// than a word survived — the caller copies out of the address it was given —
+// but a word-sized one had the caller store the word it got, and that word was
+// the address:
+//
+//     let f = |p: Pay| { return p }
+//     println("{f(x).a}")        // interp 42, native 140734262240096
+//
+// The enum version landed on a tag that is neither variant, which the match's
+// `unreachable` turned into SIGILL. It read whatever was on the stack, so it
+// printed the right answer about one run in forty (#1235).
+//
+// An ordinary function was right only because it got inlined first, which is
+// why this file calls one that doesn't.
+
+struct Pay {
+    public a: i64
+}
+
+struct Big {
+    public a: i64
+    public b: i64
+    public c: i64
+}
+
+enum Colour {
+    Red
+    Blue
+}
+
+extend Colour {
+    func name(self) -> string {
+        match self {
+            Colour.Red => { return "Red" }
+            Colour.Blue => { return "Blue" }
+        }
+    }
+}
+
+test "a word-sized struct through a closure parameter" {
+    let x = Pay { a: 42 }
+    let f = |p: Pay| {
+        return p
+    }
+    assert f(x).a == 42
+}
+
+test "a wider struct through a closure parameter" {
+    let x = Big { a: 1, b: 2, c: 3 }
+    let f = |p: Big| {
+        return p
+    }
+    assert f(x).b == 2
+}
+
+test "an enum through a closure parameter" {
+    let x = Colour.Red
+    let f = |p: Colour| {
+        return p
+    }
+    assert f(x).name() == "Red"
+}
+
+// A tuple is an aggregate too, and word-sized here.
+test "a tuple through a closure parameter" {
+    let x = (42, 7)
+    let f = |p: (i64, i64)| {
+        return p
+    }
+    assert f(x).0 == 42
+}
+
+func main() {}
