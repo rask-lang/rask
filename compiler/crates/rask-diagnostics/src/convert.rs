@@ -277,18 +277,68 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 .with_fix("move this `return` inside a function body")
                 .with_why("`return` exits the enclosing function — it has no meaning at the top level"),
 
-            UnknownPackage { path } => {
+            UnknownPackage { path, declared_in_scope } => {
                 let path_str = if path.is_empty() {
                     "<empty>".to_string()
                 } else {
                     path.join(".")
                 };
+                // The manifest does declare it, under a scope this build
+                // doesn't link. "Package not found" would send the reader
+                // hunting for a typo that isn't there.
+                if let Some(scope) = declared_in_scope {
+                    let linked_by = if scope == "dev" {
+                        "every build that keeps `test` blocks — `rask test`, `rask build`, `rask run`"
+                    } else {
+                        "the build script"
+                    };
+                    return Diagnostic::error(format!(
+                        "`{}` is a `scope \"{}\"` dependency, and this build doesn't link it",
+                        path_str, scope,
+                    ))
+                    .with_code("E0207")
+                    .with_primary(self.span, format!("declared under `scope \"{}\"`", scope))
+                    .with_help(format!("linked by {}", linked_by))
+                    .with_fix(format!(
+                        "move the dep out of `scope \"{}\"` if the shipped program needs it",
+                        scope,
+                    ))
+                    .with_why(
+                        "a scoped dependency is declared for one kind of build — if \
+                         a release binary could reach it, the scope would be decorative \
+                         [struct.build/D4]",
+                    );
+                }
                 Diagnostic::error(format!("unknown package: `{}`", path_str))
                     .with_code("E0207")
                     .with_primary(self.span, "package not found")
                     .with_help("check the package name or add it as a dependency")
                     .with_fix("check the package name or add it as a dependency")
                     .with_why("imported packages must exist in the project or be declared as dependencies")
+            }
+
+            ScopedDependencyUse { name, scope } => {
+                let keeps_it = if scope == "dev" {
+                    "a debug build or `rask test`"
+                } else {
+                    "the build script"
+                };
+                Diagnostic::error(format!(
+                    "`{}` is a `scope \"{}\"` dependency, and this build doesn't link it",
+                    name, scope,
+                ))
+                .with_code("E0207")
+                .with_primary(self.span, format!("declared under `scope \"{}\"`", scope))
+                .with_help(format!("{} links it; a release build doesn't", keeps_it))
+                .with_fix(format!(
+                    "move the dep out of `scope \"{}\"` if the shipped program needs it",
+                    scope,
+                ))
+                .with_why(
+                    "a scoped dependency is declared for one kind of build — if a \
+                     release binary could reach it, the scope would be decorative \
+                     [struct.build/D4]",
+                )
             }
 
             NotVisible { name } => {

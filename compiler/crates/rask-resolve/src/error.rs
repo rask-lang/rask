@@ -75,9 +75,19 @@ impl ResolveError {
         }
     }
 
+    /// The manifest declares this package, under a `scope` the build doesn't
+    /// link (`struct.build/D4`).
+    pub fn unknown_package_in_scope(path: Vec<String>, scope: Option<String>, span: Span) -> Self {
+        let mut e = Self::unknown_package(path, span);
+        if let ResolveErrorKind::UnknownPackage { declared_in_scope, .. } = &mut e.kind {
+            *declared_in_scope = scope;
+        }
+        e
+    }
+
     pub fn unknown_package(path: Vec<String>, span: Span) -> Self {
         Self {
-            kind: ResolveErrorKind::UnknownPackage { path },
+            kind: ResolveErrorKind::UnknownPackage { path, declared_in_scope: None },
             span,
         }
     }
@@ -197,7 +207,15 @@ pub enum ResolveErrorKind {
     InvalidReturn,
 
     #[error("unknown package: `{}`", if path.is_empty() { "<empty>".to_string() } else { path.join(".") })]
-    UnknownPackage { path: Vec<String> },
+    UnknownPackage {
+        path: Vec<String>,
+        /// Set when the manifest *does* declare it, under a `scope` this
+        /// build doesn't link (`struct.build/D4`).
+        declared_in_scope: Option<String>,
+    },
+
+    #[error("`{name}` is a `scope \"{scope}\"` dependency and this build doesn't link it")]
+    ScopedDependencyUse { name: String, scope: String },
 
     #[error("`{name}` is not public and cannot be accessed from this package")]
     NotVisible { name: String },

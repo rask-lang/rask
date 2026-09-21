@@ -2569,18 +2569,33 @@ impl Parser {
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
                 match self.current_kind() {
                     TokenKind::Ident(ref s) if s == "dep" => {
-                        deps.push(self.parse_dep_item()?);
+                        deps.push(self.parse_dep_item(None)?);
                     }
                     TokenKind::Scope => {
                         // scope "dev" { dep ... }
                         self.advance();
-                        let _scope_name = self.expect_string()?;
+                        let scope_span = self.current().span;
+                        let scope_name = self.expect_string()?;
+                        if scope_name != "dev" && scope_name != "build" {
+                            return Err(ParseError {
+                                span: scope_span,
+                                message: format!(
+                                    "unknown dependency scope \"{}\" — the scopes are \"dev\" and \"build\"",
+                                    scope_name,
+                                ),
+                                hint: Some(
+                                    "\"dev\" deps are linked by `rask test`, \"build\" deps by the                                      build script; a dep outside any scope is linked by every build"
+                                        .to_string(),
+                                ),
+                                why: None,
+                            });
+                        }
                         self.skip_newlines();
                         self.expect(&TokenKind::LBrace)?;
                         self.skip_newlines();
                         while !self.check(&TokenKind::RBrace) && !self.at_end() {
                             if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-                                deps.push(self.parse_dep_item()?);
+                                deps.push(self.parse_dep_item(Some(&scope_name))?);
                             } else {
                                 self.advance();
                             }
@@ -2678,7 +2693,7 @@ impl Parser {
                         self.skip_newlines();
                         while !self.check(&TokenKind::RBrace) && !self.at_end() {
                             if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-                                opt_deps.push(self.parse_dep_item()?);
+                                opt_deps.push(self.parse_dep_item(None)?);
                             } else {
                                 self.advance();
                             }
@@ -2688,7 +2703,7 @@ impl Parser {
                     }
                     options.push(FeatureOption { name: opt_name, deps: opt_deps });
                 } else if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
-                    feature_deps.push(self.parse_dep_item()?);
+                    feature_deps.push(self.parse_dep_item(None)?);
                 } else if matches!(self.current_kind(), TokenKind::Ident(_)) {
                     // default: "tokio"
                     let key = self.expect_ident()?;
@@ -2719,7 +2734,8 @@ impl Parser {
     /// dep "shared" { path: "../shared" }
     /// dep "tokio" "^1.0" { with: ["rt-multi-thread", "net"] }
     /// ```
-    fn parse_dep_item(&mut self) -> Result<DepDecl, ParseError> {
+    fn parse_dep_item(&mut self, scope: Option<&str>) -> Result<DepDecl, ParseError> {
+        let mut dep_scope: Option<String> = scope.map(str::to_string);
         // `dep` is a contextual keyword — only recognized inside package blocks
         if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
             self.advance();
@@ -2758,6 +2774,26 @@ impl Parser {
                     "git" => { git = Some(self.expect_string()?); }
                     "branch" => { branch = Some(self.expect_string()?); }
                     "target" => { target = Some(self.expect_string()?); }
+                    // A dep inside a `feature` block can name its scope here
+                    // instead — `scope` blocks and `feature` blocks may not
+                    // nest (struct.build/F4), so this key is the only way to
+                    // say "this optional dep is a dev dep".
+                    "scope" => {
+                        let span = self.current().span;
+                        let named = self.expect_string()?;
+                        if named != "dev" && named != "build" {
+                            return Err(ParseError {
+                                span,
+                                message: format!(
+                                    "unknown dependency scope \"{}\" — the scopes are \"dev\" and \"build\"",
+                                    named,
+                                ),
+                                hint: None,
+                                why: None,
+                            });
+                        }
+                        dep_scope = Some(named);
+                    }
                     "with" => {
                         self.expect(&TokenKind::LBracket)?;
                         while !self.check(&TokenKind::RBracket) && !self.at_end() {
@@ -2815,6 +2851,7 @@ impl Parser {
         Ok(DepDecl {
             name, version, path, git, branch, with_features, target,
             allow, exclusive_selections,
+            scope: dep_scope,
         })
     }
 

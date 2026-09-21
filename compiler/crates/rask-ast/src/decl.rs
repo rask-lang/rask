@@ -643,4 +643,7 @@ pub struct DepDecl {
     pub allow: Vec<String>,
     /// Exclusive feature selections (FG5).
     pub exclusive_selections: Vec<(String, String)>,
+    /// Dependency scope (struct.build/D4): `"dev"`, `"build"`, or `None` for
+    /// an ordinary dependency that every build links.
+    pub scope: Option<String>,
 }

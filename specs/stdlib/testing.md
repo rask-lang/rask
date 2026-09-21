@@ -10,7 +10,7 @@ Built-in test framework with `test` blocks, `@test` functions, assertions, paral
 
 | Rule | Description |
 |------|-------------|
-| **T1: Test blocks** | `test "name" { body }` — standalone, not exported, stripped in release builds |
+| **T1: Test blocks** | `test "name" { body }` — standalone, not exported, stripped in release builds before anything resolves, along with imports that only a test used. That is also what makes `scope "dev"` mean something: with the tests gone, a release build has no honest reason to reach a dev dependency (`struct.build/D4a`) |
 | **T2: @test functions** | `@test` on a function makes it both a test and a callable function |
 | **T3: Location** | Tests may appear inline in any `.rk` file or in separate `*_test.rk` files. `foo_test.rk` beside `foo.rk` is that module's companion and compiles with it, package or no package |
 | **T4: Private access** | Inline and same-package `*_test.rk` tests can access private members; external test files see `public` only |

@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+package "app" "0.1.0" {
+    description: "Uses a dev-scoped dep from a test block only"
+    license: "MIT OR Apache-2.0"
+    dep "libpkg" { path: "../libpkg" }
+    scope "dev" {
+        dep "testkit" { path: "../testkit" }
+    }
+}

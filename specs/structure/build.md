@@ -52,7 +52,9 @@ All keywords inside `package` follow: `keyword "name" ["version"] [{ key: value 
 | **D1: Semver ranges** | Version strings use semver: `"^2.0"` (compatible), `">=1.5"` (minimum), `"=1.0.0"` (exact) |
 | **D2: Sub-block properties** | Extended config via sub-block: `dep "name" { target: "linux" }` |
 | **D3: No duplicates** | Same dep declared twice at same level is a compile error |
-| **D4: Scopes** | `scope "dev"` for test deps, `scope "build"` for build script deps |
+| **D4: Scopes** | `scope "dev"` for test deps, `scope "build"` for build script deps. Any other name is a parse error |
+| **D4a: A dev dep goes where the test blocks go** | A release build strips `test` blocks (`std.testing/T1`), so it links no `scope "dev"` dep and drops the now-dead imports with them. Every other build keeps the test blocks and links the deps they need. A use that survives the strip — ordinary code reaching a dev dep — names the scope and fails |
+| **D4b: Scopes don't inherit** | Only the root's scoped deps are linked. A dependency's own dev deps belong to its own test run; pulling them in would link half the tree to run one test |
 
 ```rask
 dep "http" "^2.0"

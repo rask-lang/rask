@@ -63,14 +63,26 @@ for app in "$PKG_DIR"/*/app; do
     # stale the moment anyone edits the fixture's library — "dependency 'libpkg'
     # has changed" is a confusing way to report a change you just made on purpose.
     rm -rf "$app/build" "$app/rask.lock"
-    build_out="$(cd "$app" && "$RASK" build 2>&1)"
+
+    # A fixture that is about the release build says so in `profile.txt`.
+    # Some rules only exist there — `std.testing/T1` strips test blocks in
+    # release, and `struct.build/D4a` hangs off that — so without this the
+    # gate could only ever see half of them.
+    profile="debug"
+    profile_file="$(dirname "$app")/profile.txt"
+    [ -f "$profile_file" ] && profile="$(tr -d '[:space:]' < "$profile_file")"
+    if [ "$profile" = "release" ]; then
+        build_out="$(cd "$app" && "$RASK" build --release 2>&1)"
+    else
+        build_out="$(cd "$app" && "$RASK" build 2>&1)"
+    fi
     build_rc=$?
 
     got=""
     run_rc=1
     if [ $build_rc -eq 0 ]; then
         # The binary takes the package's name, which is the app directory's.
-        bin="$app/build/debug/$(basename "$app")"
+        bin="$app/build/$profile/$(basename "$app")"
         if [ -x "$bin" ]; then
             got="$("$bin" 2>&1)"
             run_rc=$?

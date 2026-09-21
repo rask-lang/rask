@@ -79,6 +79,16 @@ pub struct PackageRegistry {
     next_node_id: u32,
     /// Next unused file id, likewise shared.
     next_file_id: u16,
+    /// Scopes this build links beyond the unscoped deps (`struct.build/D4`).
+    /// Empty is a release build: unscoped deps only.
+    ///
+    /// Only the root's scoped deps are honoured. A dependency's own dev deps
+    /// are its test runner's business — pulling them in would link half the
+    /// ecosystem to run one test.
+    root_scopes: Vec<String>,
+    /// Root deps this build skipped, and the scope that would have linked
+    /// them. An import of one gets to say *why* the package isn't here.
+    unlinked_scopes: HashMap<String, String>,
 }
 
 /// Error that can occur during package discovery.
@@ -319,11 +329,27 @@ fn parse_build_rk(path: &Path) -> Result<(Option<PackageDecl>, Vec<Decl>), Packa
     Ok((manifest, parse_result.decls))
 }
 
-/// Extract path dependencies from a manifest.
-fn path_deps(manifest: &Option<PackageDecl>) -> Vec<DepDecl> {
-    manifest.as_ref()
-        .map(|m| m.deps.iter().filter(|d| d.path.is_some()).cloned().collect())
-        .unwrap_or_default()
+/// Path dependencies a build with these scopes active links.
+///
+/// A dep with no scope is linked by everything. A `scope "dev"` dep is linked
+/// only when `"dev"` is active, and likewise `"build"` — which is the whole
+/// point of writing one (`struct.build/D4`).
+fn path_deps(
+    manifest: &Option<PackageDecl>,
+    scopes: &[String],
+    skipped: &mut HashMap<String, String>,
+) -> Vec<DepDecl> {
+    let Some(m) = manifest.as_ref() else { return Vec::new() };
+    let mut kept = Vec::new();
+    for dep in m.deps.iter().filter(|d| d.path.is_some()) {
+        match &dep.scope {
+            Some(scope) if !scopes.iter().any(|active| active == scope) => {
+                skipped.insert(dep.name.clone(), scope.clone());
+            }
+            _ => kept.push(dep.clone()),
+        }
+    }
+    kept
 }
 
 // =========================================================================
@@ -334,6 +360,49 @@ impl PackageRegistry {
     /// Create a new empty registry.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Drop every `test` and `benchmark` block from every package
+    /// (`std.testing/T1`: stripped in release builds).
+    ///
+    /// Done here rather than at each consumer so nothing can see a program
+    /// the build is not actually compiling — and because it's what makes
+    /// `scope "dev"` enforceable: with the test blocks gone, a release build
+    /// has no honest reason to reach a dev dependency, so refusing to link
+    /// one can't break working code.
+    pub fn strip_test_blocks(&mut self) {
+        // An import of an unlinked scoped dep goes with them. Its only honest
+        // user was a test block, and leaving it behind would fail the build
+        // on a line that is now dead. A *use* that survives the strip is a
+        // different matter and still fails — as an undefined symbol that
+        // names the scope.
+        let unlinked: Vec<String> = self.unlinked_scopes.keys().cloned().collect();
+        for pkg in &mut self.packages {
+            for file in &mut pkg.files {
+                file.decls.retain(|d| match &d.kind {
+                    DeclKind::Test(_) | DeclKind::Benchmark(_) => false,
+                    DeclKind::Import(i) => {
+                        !i.path.first().is_some_and(|seg| unlinked.contains(seg))
+                    }
+                    _ => true,
+                });
+            }
+        }
+    }
+
+    /// Root deps this build didn't link, and the scope that would have.
+    pub fn unlinked_scopes(&self) -> &HashMap<String, String> {
+        &self.unlinked_scopes
+    }
+
+    /// Also link the root's deps in this scope — `"dev"` wherever `test`
+    /// blocks are compiled, `"build"` for the build script
+    /// (`struct.build/D4`).
+    pub fn include_scope(&mut self, scope: &str) -> &mut Self {
+        if !self.root_scopes.iter().any(|s| s == scope) {
+            self.root_scopes.push(scope.to_string());
+        }
+        self
     }
 
     /// Discover a package from a directory path.
@@ -457,7 +526,9 @@ impl PackageRegistry {
         let (files, subdirs) = collect_rk_files(dir)?;
         let source_files =
             parse_rk_files(&mut self.next_node_id, &mut self.next_file_id, files)?;
-        let deps = path_deps(&manifest);
+        let mut skipped = HashMap::new();
+        let deps = path_deps(&manifest, &self.root_scopes, &mut skipped);
+        self.unlinked_scopes.extend(skipped);
 
         let package = Package {
             id: PackageId(0), // placeholder, set by register_package
@@ -529,7 +600,7 @@ impl PackageRegistry {
         let (files, _subdirs) = collect_rk_files(&canonical)?;
         let source_files =
             parse_rk_files(&mut self.next_node_id, &mut self.next_file_id, files)?;
-        let deps = path_deps(&manifest);
+        let deps = path_deps(&manifest, &[], &mut HashMap::new());
         let pkg_path = vec![pkg_name.clone()];
 
         let package = Package {

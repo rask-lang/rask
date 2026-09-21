@@ -595,8 +595,31 @@ fn main() {
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("add"), output::arg("<package> [version]"));
                 process::exit(1);
             }
-            let pkg_name = cmd_args[2];
-            let version = find_positional_arg(&cmd_args, 3, &["--dev", "--feature", "--path"]);
+            // `--dev` takes no value, so it must not be in the skip-next
+            // list — listing it there also swallowed the argument after it,
+            // and reading the name off position 2 made `rask add --dev pkg`
+            // add a dependency literally called `--dev`.
+            let value_flags = ["--feature", "--path"];
+            let positionals: Vec<&str> = {
+                let mut out = Vec::new();
+                let mut skip_next = false;
+                for arg in cmd_args.iter().skip(2) {
+                    if skip_next {
+                        skip_next = false;
+                    } else if value_flags.contains(arg) {
+                        skip_next = true;
+                    } else if !arg.starts_with('-') {
+                        out.push(*arg);
+                    }
+                }
+                out
+            };
+            let Some(pkg_name) = positionals.first().copied() else {
+                eprintln!("{}: missing package name", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("add"), output::arg("<package> [version]"));
+                process::exit(1);
+            };
+            let version = positionals.get(1).copied();
             let dev = cmd_args.contains(&"--dev");
             let feature = extract_flag_value(&cmd_args, "--feature");
             let local_path = extract_flag_value(&cmd_args, "--path");
