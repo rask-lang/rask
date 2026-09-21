@@ -14,6 +14,14 @@ use super::TypeChecker;
 
 use crate::types::Type;
 
+/// One inline `.read()`/`.write()`/`.lock()` found inside an expression: which
+/// verb, how the receiver was written, and where.
+struct SyncAccess {
+    method: String,
+    recv: String,
+    span: Span,
+}
+
 impl TypeChecker {
     /// Type a `for` binding takes when iterating `iter_ty`.
     ///
@@ -664,12 +672,18 @@ impl TypeChecker {
         // Multiple locks in one expression risks deadlock.
         let accesses = self.collect_sync_accesses(expr);
         if accesses.len() > 1 {
-            // Report on the second access
-            let (ty_name, method, span) = &accesses[1];
-            self.errors.push(TypeError::BareSyncAccess {
-                ty: ty_name.clone(),
-                method: format!("{} (multiple sync accesses in one expression — deadlock risk [conc.sync/DL4])", method),
-                span: *span,
+            // On the second access — the one that makes it two. Its own error,
+            // not a `BareSyncAccess` with the explanation glued onto the method
+            // name: that read as "standalone `.read (multiple sync accesses in
+            // one expression — deadlock risk [conc.sync/DL4])()` has nothing
+            // chained onto it", which names a method nobody wrote and then says
+            // the wrong thing about it.
+            let second = &accesses[1];
+            self.errors.push(TypeError::MultipleSyncAccesses {
+                count: accesses.len(),
+                recv: second.recv.clone(),
+                method: second.method.clone(),
+                span: second.span,
             });
         }
     }
@@ -759,8 +773,7 @@ impl TypeChecker {
     }
 
     /// Recursively collect all sync access nodes within an expression tree.
-    /// Each access is (type_name, method, span).
-    fn collect_sync_accesses(&mut self, expr: &Expr) -> Vec<(String, String, rask_ast::Span)> {
+    fn collect_sync_accesses(&mut self, expr: &Expr) -> Vec<SyncAccess> {
         let mut accesses = Vec::new();
         self.walk_sync_accesses(expr, &mut accesses);
         let staged = std::mem::take(&mut self.staged_outside_with);
@@ -771,6 +784,7 @@ impl TypeChecker {
     }
 
     /// How to spell a sync receiver back to the author, for the suggestion.
+    /// `None` for anything that isn't a name or a field path.
     fn sync_source_text(e: &Expr) -> Option<String> {
         match &e.kind {
             ExprKind::Ident(name) => Some(name.clone()),
@@ -781,13 +795,18 @@ impl TypeChecker {
         }
     }
 
-    fn walk_sync_accesses(&mut self, expr: &Expr, out: &mut Vec<(String, String, rask_ast::Span)>) {
+    fn walk_sync_accesses(&mut self, expr: &Expr, out: &mut Vec<SyncAccess>) {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
                 // Check if this node itself is a sync access
                 if args.is_empty() && matches!(method.as_str(), "read" | "write" | "lock") {
-                    if let Some(ty_name) = self.sync_type_of(object) {
-                        out.push((ty_name, method.clone(), expr.span));
+                    if self.sync_type_of(object).is_some() {
+                        out.push(SyncAccess {
+                            method: method.clone(),
+                            recv: Self::sync_source_text(object)
+                                .unwrap_or_else(|| "shared".to_string()),
+                            span: expr.span,
+                        });
                     }
                 }
                 // ST1: `staged()` has no expression-scoped form, so reaching one

@@ -687,6 +687,52 @@ impl<'a> MirLowerer<'a> {
                     }
                     // Field assignment: obj.field = value → Store at field offset
                     ExprKind::Field { object, field } => {
+                        // `box.write().field = v`. The receiver is a lock chain,
+                        // so lowering it as an ordinary expression takes the
+                        // lock and gives it straight back — the store then
+                        // landed after the release, through a guard nobody
+                        // held, and with no field type to size it by: a string
+                        // went into a 16-byte slot as a bare word and read back
+                        // as garbage. The `with` form was right all along, which
+                        // is what made this look like a string bug (#1232).
+                        if let Some((box_obj, acquire, release)) = self.sync_guard(object) {
+                            let (box_op, _, guard_local, guard_ty) =
+                                self.acquire_sync_guard(box_obj, acquire)?;
+                            if let Some((offset, fty, fsize)) =
+                                self.field_offset_ty_size(&guard_ty, field)
+                            {
+                                // The value the slot is about to lose, exactly
+                                // as the place-chain path below gives it back.
+                                if let Some(old) = self.replaced_slot_type(target, &fty) {
+                                    self.builder.push_stmt(MirStmt::dummy(
+                                        MirStmtKind::ReleaseSlot { addr: guard_local, offset, ty: old },
+                                    ));
+                                }
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                                    addr: guard_local,
+                                    offset,
+                                    value: val_op,
+                                    store_size: fsize,
+                                }));
+                                if let Some(release) = release {
+                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                        dst: None,
+                                        func: FunctionRef::internal(release.to_string()),
+                                        args: vec![box_op],
+                                    }));
+                                }
+                                return Ok(());
+                            }
+                            // No layout for the payload — release and fall
+                            // through rather than leave the lock held.
+                            if let Some(release) = release {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                                    dst: None,
+                                    func: FunctionRef::internal(release.to_string()),
+                                    args: vec![box_op],
+                                }));
+                            }
+                        }
                         // #411: a place rooted at an aggregate local (`p.x`,
                         // `ln.a.x`, tuple fields) projects straight to base+offset
                         // as one store. This avoids loading an intermediate field
@@ -1570,10 +1616,6 @@ impl<'a> MirLowerer<'a> {
     /// Lower a let/const binding: evaluate init, assign to a new local.
     fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
-        // Ask before lowering: `own` is gone from the operand by then, and the
-        // type says nothing (OW5 erases `Owned<T>` to `T`), so this is the only
-        // point where "the value in this local is a heap box" is knowable (#739).
-        let init_may_be_box = self.expr_yields_owned_box(init);
         // A closure this function later hands to `spawn` is lowered as one, here
         // — the wrapper that boxes a result too wide for the task's one word is
         // built while the closure is lowered, and the `spawn` comes later (#1094).
@@ -1592,31 +1634,27 @@ impl<'a> MirLowerer<'a> {
             self.lower_expr(init)?
         };
 
-        // `let p = own Big { … }` takes over the box rather than copying out of
-        // it. A struct-typed destination copies its bytes on assignment, which is
-        // right for every other aggregate and wrong here: it left `p` naming a
-        // stack copy and orphaned the heap value, so `drop(p)` had a stack address
-        // to free and a field storing `p` held an address that dangled at scope
-        // exit (#739). The binding aliases the pointer instead.
+        // `let b = Heap(Big { … })` takes over the block rather than copying out
+        // of it. A struct-typed destination copies its bytes on assignment,
+        // which is right for every other aggregate and wrong here: it left `b`
+        // naming a stack copy and orphaned the heap value, so `drop(b)` had a
+        // stack address to free and a field storing `b` held an address that
+        // dangled at scope exit (#739). The binding aliases the block instead.
         //
-        // The pointer is the test, not the `own`: a scalar `Owned` was never boxed
-        // — it fits the slot — so `let ptr: Owned<i32> = own 42` is an ordinary
-        // binding holding 42, and marking it a box would have `drop` free the
-        // address 42.
-        if init_may_be_box {
+        // Only when the name is itself a `Heap<T>`. `let o: Heap<i64>? = Heap(42)`
+        // is an option holding one, and taking the block's local as the binding
+        // skipped the wrap: the tag was read out of the block's first word and
+        // `o? as v` took the `none` branch.
+        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
+        if matches!(var_ty, MirType::Heap(_)) {
             if let MirOperand::Local(src) = init_op {
-                if matches!(self.builder.local_type(src), Some(MirType::Ptr)) {
-                    let var_ty = ty
-                        .map(|s| self.ctx.resolve_type_str(s))
-                        .unwrap_or(inferred_ty);
+                if matches!(self.builder.local_type(src), Some(MirType::Heap(_))) {
                     self.builder.name_local(src, name.to_string());
                     self.locals.insert(name.to_string(), (src, var_ty));
-                    self.meta_mut(name).is_owned_box = true;
                     return Ok(());
                 }
             }
         }
-        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
         // A `mut` scalar that an `ensure` reads and this function writes again
         // gets a cell of its own (#1011).
         //
@@ -2242,7 +2280,7 @@ impl<'a> MirLowerer<'a> {
                     else_block: exit_block,
                 }));
                 let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
-                Some((name, val, payload_ty, is_niche))
+                Some((name, val, payload_ty, is_niche, inner))
             }
             None => {
                 let (cond_op, _) = self.lower_expr(cond)?;
@@ -2256,8 +2294,8 @@ impl<'a> MirLowerer<'a> {
         };
 
         self.builder.switch_to_block(body_block);
-        if let Some((name, val, payload_ty, is_niche)) = bind_in_body {
-            self.bind_presence_payload(&name, &val, &payload_ty, is_niche);
+        if let Some((name, val, payload_ty, is_niche, inner)) = bind_in_body {
+            self.bind_presence_payload(&name, &val, &payload_ty, is_niche, inner);
         }
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
@@ -2669,18 +2707,8 @@ impl<'a> MirLowerer<'a> {
         let Some(source_ty) = self.ctx.lookup_raw_type(source.id) else { return };
         let Some(elem) = self.checker_elem_of(source_ty) else { return };
         if let rask_types::Type::Fn { ret, .. } = elem {
-            self.closure_locals.insert(name.to_string());
             let ret_mir = self.ctx.type_to_mir(&ret);
-            self.func_sigs.insert(
-                name.to_string(),
-                super::FuncSig {
-                    ret_ty: ret_mir,
-                    scalar_mutate_params: Vec::new(),
-                    aggregate_mutate_params: Vec::new(),
-                    ret_vec_elem: None,
-                    param_ty_strs: Vec::new(),
-                },
-            );
+            self.note_callable_binding(name, ret_mir);
         }
     }
 

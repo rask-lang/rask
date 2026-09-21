@@ -1052,6 +1052,13 @@ impl<'a> MirContext<'a> {
                 if name.starts_with("Rack<") || name == "Rack" {
                     return MirType::Ptr;
                 }
+                // `Heap<T>` is a block address, always — that is what makes it
+                // a type rather than a fact about a binding. The payload keeps
+                // its container kind, since the payload sits at the block's
+                // start and `drop` has to free what it points at.
+                if let Some(inner) = name.strip_prefix("Heap<").and_then(|s| s.strip_suffix('>')) {
+                    return MirType::Heap(Box::new(self.payload_from_str(inner.trim())));
+                }
                 if name.starts_with("Channel<") || name.starts_with("Sender<")
                     || name.starts_with("Receiver<") || name.starts_with("Shared<")
                 {
@@ -1321,6 +1328,18 @@ impl<'a> MirContext<'a> {
                 self.link_mir_type(args.first())
             }
             Type::UnresolvedGeneric { name, .. } if name == "Rack" => MirType::Ptr,
+            // `Heap<T>` structurally, not through the rendered name: an inner
+            // type the checker has resolved is a `Named(TypeId)`, which renders
+            // as an id and leaves `resolve_type_str` nothing to look up. A
+            // `Shared<Heap<Pt>, Local>` came out as `heap<ptr>` and the read
+            // through it segfaulted.
+            Type::UnresolvedGeneric { name, args } if name == "Heap" => {
+                let payload = match args.first() {
+                    Some(rask_types::GenericArg::Type(inner)) => self.payload_to_mir(inner),
+                    _ => MirType::Ptr,
+                };
+                MirType::Heap(Box::new(payload))
+            }
             Type::Generic { args, .. } if self.is_link_type(ty) => {
                 self.link_mir_type(args.first())
             }
@@ -1575,6 +1594,15 @@ impl<'a> MirContext<'a> {
         if let Type::Fn { ret, .. } = ty {
             return Some(self.type_to_mir(ret));
         }
+        // A function type the checker never resolved past its spelling. A
+        // `Map`'s value type and an optional's payload both arrive this way, so
+        // `if m.get(k)? as f` bound a name nothing knew was callable and `f(2)`
+        // lowered as a call to a function called `f` (#1151).
+        if let Type::UnresolvedNamed(name) = ty {
+            if let Some(ret) = fn_type_ret_str(name) {
+                return Some(self.resolve_type_str(ret));
+            }
+        }
         let head = Self::type_prefix(ty, type_names)?;
         match head.split('<').next() {
             Some("Sequence") | Some("SequenceMut") => Some(MirType::Void),
@@ -1638,14 +1666,6 @@ pub(crate) struct LocalMeta {
     /// gets a stack cell of its own, so the cleanup hook can capture the cell
     /// rather than a snapshot taken when the ensure was scheduled (#1011).
     pub scalar_through_ptr: Option<MirType>,
-    /// The value in this local is a heap box handed over by `own` (#739).
-    ///
-    /// `Owned<T>` erases to `T` in the checker (OW5), so nothing in the type says
-    /// whether a given value is the struct or a pointer to it. Only the code that
-    /// allocated it knows, and this carries that fact to the places that have to
-    /// tell the two apart: storing into a declared `Owned` slot must not box a
-    /// second time, and `drop` frees exactly one box.
-    pub is_owned_box: bool,
 }
 
 pub struct MirLowerer<'a> {
@@ -2318,76 +2338,68 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Does `object.field` name a field declared `Owned<T>` whose value went to
-    /// the heap? Those hold a pointer where every other aggregate field holds the
-    /// value, so reading one is a load rather than an address (#739).
+    /// Record that `name` binds something callable, and what calling it
+    /// answers.
     ///
-    /// A scalar payload is never boxed — it fits the slot already — so the field
-    /// holds the value and reads like any other.
-    pub(crate) fn owned_field_is_boxed(&self, object: &Expr, field: &str) -> bool {
-        let layout = self.struct_layout_of_expr(object);
-        if std::env::var("RASK_DEBUG_OWNED").is_ok() {
-            eprintln!("OWNEDCHK field {} layout {:?} fieldty {:?}", field,
-                layout.as_ref().map(|l| l.name.clone()),
-                layout.as_ref().and_then(|l| l.fields.iter().find(|f| f.name == field).map(|f| f.ty.clone())));
-        }
-        let Some(layout) = layout else { return false };
-        let Some(fl) = layout.fields.iter().find(|f| f.name == field) else { return false };
-        let Some(payload) = self.owned_payload(&fl.ty) else { return false };
-        self.ctx.type_to_mir(&payload).passed_by_address()
+    /// This is what makes a call site emit an indirect call instead of looking
+    /// for a function by that name, so every way of binding a function value
+    /// has to do it: a `let`, a `for` element, a closure parameter, the payload
+    /// of a `T?`, the binding of a `with`.
+    pub(crate) fn note_callable_binding(&mut self, name: &str, ret_ty: MirType) {
+        self.closure_locals.insert(name.to_string());
+        self.func_sigs.insert(
+            name.to_string(),
+            FuncSig {
+                ret_ty,
+                scalar_mutate_params: Vec::new(),
+                aggregate_mutate_params: Vec::new(),
+                ret_vec_elem: None,
+                param_ty_strs: Vec::new(),
+            },
+        );
     }
 
-    /// Does this expression already evaluate to a heap box?
-    ///
-    /// `own e` allocates, and so does anything already holding what an `own`
-    /// produced — a local bound to one, or a field declared `Owned<T>`. Storing
-    /// such a value into a declared `Owned` slot must not allocate again; that's
-    /// how `Holder { inner: p }` ended up with a box holding a box (#739).
-    pub(crate) fn expr_yields_owned_box(&self, expr: &Expr) -> bool {
-        match &expr.kind {
-            ExprKind::Unary { op: UnaryOp::Heap, .. } => true,
-            ExprKind::Ident(name) => self.meta(name).is_some_and(|m| m.is_owned_box),
-            ExprKind::Field { object, field } => self.owned_field_is_boxed(object, field),
-            _ => false,
-        }
-    }
-
-    /// Box a value on its way into a declared `Owned<T>` slot, unless it's a box
-    /// already.
+    /// Box a value on its way into a declared `Heap<T>` slot, unless it is a
+    /// block already.
     pub(crate) fn box_into_owned_slot(
         &mut self,
-        value_expr: &Expr,
         val: MirOperand,
         val_ty: &MirType,
     ) -> MirOperand {
-        if self.expr_yields_owned_box(value_expr) {
+        if matches!(val_ty, MirType::Heap(_)) {
             return val;
         }
         self.box_into_owned(val, val_ty)
     }
 
-    /// Heap-allocate a copy of `val` and hand back the pointer — what `own` means.
+    /// Heap-allocate a copy of `val` and hand back the block's address — what
+    /// `Heap(…)` means.
     ///
-    /// A scalar needs no box: it already fits the 8-byte slot, and a scalar can't
-    /// make a type recursive, so `Owned<i64>` staying transparent costs nothing.
-    /// An aggregate is the case that matters, and its pointer is also its
-    /// representation, so nothing downstream has to know it moved.
+    /// Every payload gets a block. Skipping the allocation for the ones that fit
+    /// the slot saved a `malloc` on `Heap(42)` and cost the compiler a second
+    /// shape to carry everywhere: what `*b` reads, what `drop(b)` frees and
+    /// what a field holds were each answered twice, from a flag on the binding,
+    /// and a flag can't cross a carrier (#1234, #1256). The allocation is also
+    /// what the source asked for — `Heap(…)` is written where the cost is.
+    ///
+    /// The block is a word at minimum, so a narrow payload still has a whole
+    /// one behind it. The store writes the payload's own width, which is what
+    /// the load on the other side reads: an `f32` written eight bytes wide and
+    /// read four comes back 0.
     pub(crate) fn box_into_owned(&mut self, val: MirOperand, val_ty: &MirType) -> MirOperand {
-        if !val_ty.passed_by_address() {
-            return val;
-        }
-        let size = val_ty.size() as i64;
-        let heap = self.builder.alloc_temp(MirType::Ptr);
+        let width = val_ty.size().max(1);
+        let block = (width as i64).max(8);
+        let heap = self.builder.alloc_temp(MirType::Heap(Box::new(val_ty.clone())));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(heap),
             func: FunctionRef::internal("rask_alloc".to_string()),
-            args: vec![MirOperand::Constant(MirConst::Int(size))],
+            args: vec![MirOperand::Constant(MirConst::Int(block))],
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: heap,
             offset: 0,
             value: val,
-            store_size: Some(size as u32),
+            store_size: Some(width),
         }));
         MirOperand::Local(heap)
     }
@@ -2922,7 +2934,6 @@ impl<'a> MirLowerer<'a> {
     /// C1/C2: check if an expression is a consuming method call on an ensure
     /// receiver. If so, emit ResourceConsume to cancel the ensure at cleanup time.
     fn check_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
-        use rask_ast::expr::ExprKind;
         // An ensure body *is* the deferred consumption, so a consuming call in
         // it cancels nothing — and the resource's slot belongs to the function
         // that registered it, not to the thunk. Emitting one here made codegen
@@ -2935,59 +2946,57 @@ impl<'a> MirLowerer<'a> {
 
     /// The consuming call can be anywhere in the expression, not only at its
     /// root: `(ha.join() catch _ => 0) + (hb.join() catch _ => 0)` consumes both
-    /// handles from inside a sum. Peeling only the outermost wrappers found
-    /// neither, and both ensures ran on handles that were already joined.
+    /// handles from inside a sum, and `Wrapper { value: c.close() }` consumes
+    /// one from inside a struct literal.
+    ///
+    /// This used to name the shapes it looked inside — a method call, a plain
+    /// call, the operands of a binary, a cast — and every shape it forgot was a
+    /// double free: the `ensure` fired on a handle the program had already
+    /// closed (#1216, #1224, #1231). A list like that can only ever be behind
+    /// the AST, so there isn't one any more. The walk visits every
+    /// subexpression and stops only where a boundary says to.
     ///
     /// Emitting for a call the program might not reach would be wrong, and
     /// can't happen: `ctrl.ensure/C4` rejects an ensured value that is consumed
     /// on some paths and not others, so whatever is here runs.
-    ///
-    /// Closure and `spawn` bodies are their own functions with their own
-    /// obligations — a consume in there is not this frame's.
     fn walk_for_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
         use rask_ast::expr::ExprKind;
-        // Their own functions, with their own obligations — a consume in there
-        // is not this frame's. A nested block runs through `lower_block`, which
-        // asks on its own.
-        if matches!(
-            expr.kind,
-            ExprKind::Closure { .. } | ExprKind::Spawn { .. } | ExprKind::Block(_)
-        ) {
-            return;
+        let mut consuming = Vec::new();
+        let mut heads = Vec::new();
+        rask_ast::visit::walk_expr_pruned(expr, &mut |e| {
+            match &e.kind {
+                // Their own functions, with their own obligations — a consume
+                // in there is not this frame's.
+                ExprKind::Closure { .. } | ExprKind::Spawn { .. } => return false,
+                // Statements. They run through `lower_block`, which asks about
+                // each of them on its own; walking in from here would emit the
+                // cancellation at the wrong point — before the block, whether
+                // or not it is reached.
+                ExprKind::Block(_)
+                | ExprKind::BlockCall { .. }
+                | ExprKind::Unsafe { .. }
+                | ExprKind::Comptime { .. }
+                | ExprKind::Loop { .. } => return false,
+                // Body as above, but the head is lowered here, so it keeps its
+                // walk: `using open(p) as f` evaluates `open(p)` in this frame.
+                ExprKind::UsingBlock { args, .. } => {
+                    heads.extend(args.iter().map(|a| &a.expr));
+                    return false;
+                }
+                ExprKind::WithAs { bindings, .. } => {
+                    heads.extend(bindings.iter().map(|b| &b.source));
+                    return false;
+                }
+                _ => {}
+            }
+            consuming.push(e);
+            true
+        });
+        for e in consuming {
+            self.emit_resource_consume(e);
         }
-        self.emit_resource_consume(expr);
-        match &expr.kind {
-            ExprKind::Try { expr: inner }
-            | ExprKind::Unwrap { expr: inner, .. }
-            | ExprKind::Cast { expr: inner, .. } => self.walk_for_resource_consume(inner),
-            ExprKind::Unary { operand, .. } => self.walk_for_resource_consume(operand),
-            ExprKind::Catch { value, clause } => {
-                self.walk_for_resource_consume(value);
-                self.walk_for_resource_consume(&clause.body);
-            }
-            ExprKind::Binary { left, right, .. } => {
-                self.walk_for_resource_consume(left);
-                self.walk_for_resource_consume(right);
-            }
-            ExprKind::NullCoalesce { value, default } => {
-                self.walk_for_resource_consume(value);
-                self.walk_for_resource_consume(default);
-            }
-            // `a + b` is `a.add(b)` by the time it gets here (rask-desugar), so
-            // the operands of every arithmetic expression arrive as a receiver
-            // and an argument.
-            ExprKind::MethodCall { object, args, .. } => {
-                self.walk_for_resource_consume(object);
-                for arg in args {
-                    self.walk_for_resource_consume(&arg.expr);
-                }
-            }
-            ExprKind::Call { args, .. } => {
-                for arg in args {
-                    self.walk_for_resource_consume(&arg.expr);
-                }
-            }
-            _ => {}
+        for e in heads {
+            self.walk_for_resource_consume(e);
         }
     }
 
@@ -5804,23 +5813,7 @@ fn collect_pattern_names(
 /// `|T| -> R` to the `func(...)` form, so only that spelling needs handling.
 pub(crate) fn fn_type_param_strs(ty: &str) -> Option<Vec<String>> {
     let inner = ty.trim().strip_prefix("func(")?;
-    // Cut at the paren that closes the parameter list, not at a nested one.
-    let mut depth = 1usize;
-    let mut end = None;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '(' => depth += 1,
-            ')' => {
-                depth -= 1;
-                if depth == 0 {
-                    end = Some(i);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let params = &inner[..end?];
+    let params = &inner[..fn_type_params_end(inner)?];
     if params.trim().is_empty() {
         return Some(Vec::new());
     }
@@ -5830,6 +5823,33 @@ pub(crate) fn fn_type_param_strs(ty: &str) -> Option<Vec<String>> {
             .map(|p| p.trim().to_string())
             .collect(),
     )
+}
+
+/// Where the parameter list of a `func(...)` spelling closes — the paren that
+/// matches the one already stripped, not a nested one, since a parameter can be
+/// a function type of its own.
+fn fn_type_params_end(inner: &str) -> Option<usize> {
+    let mut depth = 1usize;
+    inner.char_indices().find_map(|(i, c)| match c {
+        '(' => {
+            depth += 1;
+            None
+        }
+        ')' => {
+            depth -= 1;
+            (depth == 0).then_some(i)
+        }
+        _ => None,
+    })
+}
+
+/// What a function-type annotation answers, e.g. `"func(i64) -> i64"` → `"i64"`.
+/// `None` for anything that isn't one, and for a function type written without
+/// a return.
+pub(crate) fn fn_type_ret_str(ty: &str) -> Option<&str> {
+    let inner = ty.trim().strip_prefix("func(")?;
+    let rest = inner[fn_type_params_end(inner)? + 1..].trim();
+    Some(rest.strip_prefix("->")?.trim())
 }
 
 /// Element type of a declared `Vec<T>` return type, e.g. `"Vec<SeedSpec>"` →

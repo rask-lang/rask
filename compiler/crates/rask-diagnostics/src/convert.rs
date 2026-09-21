@@ -2169,6 +2169,30 @@ impl ToDiagnostic for rask_types::TypeError {
                     ))
                     .with_why("inline access is scoped to the chain it starts (conc.sync/R5), so a `.read()` with nothing chained takes a lock, releases it, and hands back a value that was only valid while it was held")
             }
+            // DL4. This used to be reported as a `BareSyncAccess` with the
+            // explanation glued onto the method name, so the message read
+            // "standalone `.read (multiple sync accesses in one expression —
+            // deadlock risk [conc.sync/DL4])()` has nothing chained onto it" —
+            // which names a method nobody wrote and then says the wrong thing
+            // about it, since the chain does have something chained.
+            MultipleSyncAccesses { count, recv, method, span } => {
+                Diagnostic::error(format!(
+                    "this expression takes {} locks at once", count,
+                ))
+                    .with_code("E0884")
+                    .with_primary(*span, "this is the second lock it takes")
+                    .with_fix(format!(
+                        "read one at a time: `let v = {}.{}().field` on a line of its own, \
+                         or `{}.get()` to copy the whole value out",
+                        recv, method, recv,
+                    ))
+                    .with_help(format!(
+                        "`{}.{}()` holds its lock until the expression it starts ends, so a \
+                         second one in the same expression is a second lock held at the same time",
+                        recv, method,
+                    ))
+                    .with_why("an inline access holds its lock to the end of the expression it starts (conc.sync/R5), so two of them hold two locks at once — and two tasks doing that in opposite orders deadlock [conc.sync/DL4]")
+            }
             MixedDiscriminants { enum_name, span } => {
                 Diagnostic::error(format!("enum `{}` mixes explicit and auto-indexed discriminants", enum_name))
                     .with_code("E0391")

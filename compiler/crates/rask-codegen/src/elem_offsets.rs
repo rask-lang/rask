@@ -316,6 +316,15 @@ fn heap_payload_name(ty: &RaskType) -> Option<String> {
 /// handle, and a `Pool` or a `Rack` is an arena whose contents outlive any one
 /// element (mem.pools, mem.racks).
 fn container_kind(ty: &RaskType) -> Option<i32> {
+    // A closure a field holds is the aggregate's — storing one moves it in, and
+    // the frame stops dropping it the moment it does, the same rule
+    // `container_free_for` states for a frame's own walk. Without it the
+    // *element* walk had nothing to say about a `Vec<Handler>` whose `Handler`
+    // holds a `func(i64) -> i64`: one 32-byte block per element, left to
+    // nobody (#1228).
+    if matches!(ty, RaskType::Fn { .. }) {
+        return Some(KIND_CLOSURE);
+    }
     let rendered = format!("{}", ty);
     if rendered.ends_with('?') || rendered.contains(" or ") {
         return None;

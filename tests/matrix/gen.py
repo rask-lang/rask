@@ -182,6 +182,15 @@ def commit(t, name):
     return "    ensure drop(%s)\n" % name if TYPES[t].get("linear") else ""
 
 
+def take(t):
+    """`take ` for a linear payload's parameter, nothing for the rest.
+
+    A borrow hands the value back at the end of the call, so the caller still
+    owes the consume and the callee can't return it (mem.parameters/PM1). A
+    linear payload crossing a call boundary has to be taken."""
+    return "take " if TYPES[t].get("linear") else ""
+
+
 # ── Carriers ─────────────────────────────────────────────────────
 # Each builds (extra decls, body of `main`) for one payload type.
 # Every cell prints exactly one line: `got=<rendered payload>`.
@@ -197,10 +206,10 @@ def c_local(t, ty):
 
 def c_param_return(t, ty):
     decls = """\
-func roundtrip(x: {decl}) -> {decl} {{
+func roundtrip({take}x: {decl}) -> {decl} {{
     return x
 }}
-""".format(decl=ty["decl"])
+""".format(decl=ty["decl"], take=take(t))
     return decls, """\
     let x: {decl} = {val}
     let y = roundtrip(x)
@@ -213,27 +222,29 @@ def c_optional(t, ty):
     return "", """\
     let o: {decl}? = {val}
     if o? as v {{
-        println("got={show}")
+{commit}        println("got={show}")
     }} else {{
         println("got=NONE")
     }}
-""".format(decl=ty["decl"], val=ty["val"], show=read_expr(t, "v"))
+""".format(decl=ty["decl"], val=ty["val"], show=read_expr(t, "v"),
+           commit=("    " + commit(t, "v").lstrip("\n") if commit(t, "v") else ""))
 
 
 def c_optional_param(t, ty):
     decls = """\
-func unwrap_it(o: {decl}?) -> {decl} {{
+func unwrap_it({take}o: {decl}?) -> {decl} {{
     if o? as v {{
         return v
     }}
     return {val2}
 }}
-""".format(decl=ty["decl"], val2=ty["val2"])
+""".format(decl=ty["decl"], val2=ty["val2"], take=take(t))
     return decls, """\
     let o: {decl}? = {val}
     let v = unwrap_it(o)
-    println("got={show}")
-""".format(decl=ty["decl"], val=ty["val"], show=read_expr(t, "v"))
+{commit}    println("got={show}")
+""".format(decl=ty["decl"], val=ty["val"], commit=commit(t, "v"),
+           show=read_expr(t, "v"))
 
 
 def c_result(t, ty):
@@ -256,8 +267,8 @@ func make() -> {decl} or Oops {{
 """.format(decl=ty["decl"], val=ty["val"])
     return decls, """\
     let v = make() catch _ => return
-    println("got={show}")
-""".format(show=read_expr(t, "v"))
+{commit}    println("got={show}")
+""".format(commit=commit(t, "v"), show=read_expr(t, "v"))
 
 
 def c_struct_field(t, ty):
@@ -310,8 +321,9 @@ def c_closure_capture(t, ty):
         return x
     }}
     let y = f()
-    println("got={show}")
-""".format(decl=ty["decl"], val=ty["val"], show=read_expr(t, "y"))
+{commit}    println("got={show}")
+""".format(decl=ty["decl"], val=ty["val"], commit=commit(t, "y"),
+           show=read_expr(t, "y"))
 
 
 def c_closure_param(t, ty):
@@ -319,12 +331,13 @@ def c_closure_param(t, ty):
     from a capture, and a different lowering (mem.closures/CP1)."""
     return "", """\
     let x: {decl} = {val}
-    let f = |p: {decl}| {{
+    let f = |{take}p: {decl}| {{
         return p
     }}
     let y = f(x)
-    println("got={show}")
-""".format(decl=ty["decl"], val=ty["val"], show=read_expr(t, "y"))
+{commit}    println("got={show}")
+""".format(decl=ty["decl"], val=ty["val"], take=take(t), commit=commit(t, "y"),
+           show=read_expr(t, "y"))
 
 
 def c_own_closure(t, ty):
@@ -341,8 +354,8 @@ func escaping() -> func() -> {decl} {{
     return decls, """\
     let f = escaping()
     let y = f()
-    println("got={show}")
-""".format(show=read_expr(t, "y"))
+{commit}    println("got={show}")
+""".format(commit=commit(t, "y"), show=read_expr(t, "y"))
 
 
 def c_shared_box(t, ty):
@@ -442,6 +455,16 @@ def skips():
     return {
         ("vec_index", "heap"): "std.collections/C4 — no linear resource in a Vec",
         ("map_value", "heap"): "std.collections/C4 — no linear resource in a Map",
+        # Both of these reach the payload through a `Vec`, so C4 rules them out
+        # for the same reason: `for x in v` needs the vector, and the sequence
+        # carrier reads its items back with `to_vec()`.
+        ("for_loop", "heap"): "std.collections/C4 — no linear resource in a Vec",
+        ("seq_yield", "heap"): "std.collections/C4 — the items come back in a Vec",
+        # A borrow hands the value back when the call returns, so the closure
+        # can't return it, and CP4 says a closure can't take it either — there
+        # is no spelling of "a Heap handed into a closure and back out".
+        ("closure_param", "heap"):
+            "mem.closures/CP4 — a closure can't take ownership through a parameter",
     }
 
 

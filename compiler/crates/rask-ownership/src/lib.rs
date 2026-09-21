@@ -4244,7 +4244,7 @@ impl<'a> OwnershipChecker<'a> {
         match pattern {
             Pattern::Wildcard => {
                 if let Some(ty) = scrutinee_ty {
-                    if self.type_is_resource(ty) {
+                    if self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
                         self.errors.push(OwnershipError {
                             kind: OwnershipErrorKind::LinearWildcardDiscard {
                                 position: error::LinearDiscardPosition::Scrutinee,
@@ -4267,7 +4267,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 if let Some(ty) = scrutinee_ty {
                     self.binding_types.insert(name.clone(), ty.clone());
-                    if self.type_is_resource(ty) {
+                    if self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
                         self.resource_bindings.insert(name.clone());
                     }
                 }
@@ -4305,6 +4305,7 @@ impl<'a> OwnershipChecker<'a> {
                         for (fname, fty) in &struct_fields {
                             if !mentioned.contains(fname.as_str())
                                 && self.type_is_resource(fty)
+                                && !self.pattern_payload_is_borrowed(fty)
                             {
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::LinearWildcardDiscard {
@@ -4333,7 +4334,9 @@ impl<'a> OwnershipChecker<'a> {
                     let pos_ty = payload_tys.as_ref().and_then(|tys| tys.get(i));
                     if let Pattern::Wildcard = pat {
                         if let Some(ty) = pos_ty {
-                            if self.type_is_resource(ty) {
+                            if self.type_is_resource(ty)
+                                && !self.pattern_payload_is_borrowed(ty)
+                            {
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::LinearWildcardDiscard {
                                         position: error::LinearDiscardPosition::Field {
@@ -5506,6 +5509,22 @@ impl<'a> OwnershipChecker<'a> {
         self.program.types.is_linear_value(ty)
     }
 
+    /// Is a value of this type, read out of an aggregate by a pattern, the
+    /// aggregate's rather than the reader's?
+    ///
+    /// A `Heap<T>` is. Storing one in a field or an enum payload consumed it
+    /// (mem.heap/HP4) and the aggregate's release gives the block back — which
+    /// is what makes `Cons(i64, Heap<List>)` free its whole chain. So
+    /// `match l { Cons(head, rest) => … }` borrows `rest`: it owes nothing, and
+    /// `Cons(_, rest)` discards nothing.
+    ///
+    /// A `@resource` is not. There are no destructors, so nothing but an
+    /// explicit consume ever closes one, and matching it out of an enum is the
+    /// last chance to.
+    fn pattern_payload_is_borrowed(&self, ty: &Type) -> bool {
+        ty.heap_payload().is_some()
+    }
+
     /// Whether an expression's inferred type is transitively linear.
     fn expr_is_resource_type(&self, expr: &Expr) -> bool {
         if let Some(ty) = self.program.node_types.get(&expr.id) {
@@ -5722,19 +5741,15 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// `own expr` allocates, so the binding it initializes is linear (L1–L6, same
-    /// rules as `@resource`).
+    /// `Heap(expr)` allocates, so the binding it initializes is linear (L1–L6,
+    /// same rules as `@resource`).
     ///
-    /// The `own` in the source is the signal, not the type: `Owned<T>` erases to
-    /// `T` in the checker so OW5's transparency works, which leaves nothing in the
-    /// type to look at. A scalar is excluded — it was never allocated, so
-    /// `Owned<i32>` really is an `i32` and there is nothing to free (#819).
+    /// Every payload. The scalar exception used to live here — a `Heap<i32>`
+    /// really was an `i32`, so there was nothing to free (#819) — and it went
+    /// when `Heap(…)` stopped skipping the allocation for payloads that fit the
+    /// slot (#1256). A block is a block whatever is in it.
     fn track_owned_binding(&mut self, name: &str, init: &Expr) {
         if !matches!(&init.kind, ExprKind::Unary { op: UnaryOp::Heap, .. }) {
-            return;
-        }
-        let Some(ty) = self.program.node_types.get(&init.id) else { return };
-        if !self.own_allocates(ty) {
             return;
         }
         self.resource_bindings.insert(name.to_string());
@@ -5783,47 +5798,6 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Does `own` on a value of this type allocate?
-    ///
-    /// Only what *is* its bytes. A scalar fits the slot a pointer would occupy, so
-    /// `own 42` is 42 and there is nothing to free; a `Vec`, `Map` or any other box
-    /// is already a pointer to its own storage. Same rule lowering applies —
-    /// `MirType::passed_by_address` — which is what keeps the check and the
-    /// allocation talking about the same set of values.
-    fn own_allocates(&self, ty: &Type) -> bool {
-        match ty {
-            Type::String
-            | Type::Tuple(_)
-            | Type::Array { .. }
-            | Type::Union(_)
-            | Type::Result { .. }
-            | Type::SimdVector { .. }
-            | Type::TraitObject { .. } => true,
-            Type::Named(id) => matches!(
-                self.program.types.get(*id),
-                Some(
-                    rask_types::TypeDef::Struct { .. }
-                        | rask_types::TypeDef::Enum { .. }
-                        | rask_types::TypeDef::Union { .. }
-                )
-            ),
-            Type::UnresolvedNamed(name) => self
-                .program
-                .types
-                .get_type_id(name)
-                .is_some_and(|id| self.own_allocates(&Type::Named(id))),
-            // A generic instantiation of a user struct or enum is its bytes; the
-            // box family and the collections are pointers, and their names are the
-            // ones the type table doesn't hold a struct def for.
-            Type::Generic { base, .. } => self.own_allocates(&Type::Named(*base)),
-            Type::UnresolvedGeneric { name, .. } => self
-                .program
-                .types
-                .get_type_id(name)
-                .is_some_and(|id| self.own_allocates(&Type::Named(id))),
-            _ => false,
-        }
-    }
 
     /// At function exit, emit errors for unconsumed @resource bindings, and C4
     /// errors for ensured resources whose consumption isn't statically definite.

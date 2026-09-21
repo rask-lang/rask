@@ -431,9 +431,14 @@ impl TypeChecker {
                 // implemented yet (`Error` isn't a registered trait either) —
                 // rejecting the bare form now would break those examples ahead
                 // of that landing. Tracked in #708.
+                // `Heap` is compiler-provided and has no declaration to find:
+                // there is nothing to call on one, `Heap(…)` makes it and `*`
+                // and `drop` are the whole vocabulary. It stayed off this list
+                // while the parser unwrapped `Heap<T>` to `T` and the name
+                // never reached here (#1256).
                 if name == "Self"
                     || name.starts_with('_')
-                    || matches!(name, "Iterator" | "InsertError" | "Error")
+                    || matches!(name, "Iterator" | "InsertError" | "Error" | "Heap")
                 {
                     return;
                 }

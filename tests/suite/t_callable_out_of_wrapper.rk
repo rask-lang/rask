@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A function value taken out of an optional or a `Map`, and called.
+//
+// Two gaps, both native-only.
+//
+// The binding wasn't registered as callable. Every other way of binding a
+// function value says so — a `let`, a `for` element, a closure parameter — and
+// that registration is what makes the call emit an indirect call instead of
+// looking for a function by that name. The payload of `x? as f` said nothing,
+// so `f(2)` lowered as a call to a function named `f`, found no signature and
+// gave up on the return type (#1151, #1239):
+//
+//     error: MIR lowering 'main': couldn't work out a type here …
+//
+// Behind it, `Map<string, func(i64) -> i64>.new()` left its value type as the
+// name it was written as rather than a function type, so the closure handed to
+// `insert` never learned what its parameter was — `|x| x + 1` lowered `x + 1`
+// as *pointer* arithmetic and answered 13 for 5. The map also didn't know its
+// values owned a closure block, so the block went at the end of the statement
+// that inserted it.
+
+func add_forty(n: i64) -> i64 {
+    return n + 40
+}
+
+test "a closure out of an optional" {
+    let o: func(i64) -> i64? = |n| { return n + 40 }
+    if o? as f {
+        assert f(2) == 42
+    } else {
+        assert false
+    }
+}
+
+test "a named function out of an optional" {
+    let o: func(i64) -> i64? = add_forty
+    if o? as f {
+        assert f(2) == 42
+    } else {
+        assert false
+    }
+}
+
+test "a closure out of a Map, annotated" {
+    mut m: Map<string, func(i64) -> i64> = Map.new()
+    m.insert("k", |x| x + 1)
+    if m.get("k")? as g {
+        assert g(5) == 6
+    } else {
+        assert false
+    }
+}
+
+// The same map written with its type arguments on the constructor. This is the
+// spelling that left the value type unresolved.
+test "a closure out of a Map, spelled on the constructor" {
+    mut m = Map<string, func(i64) -> i64>.new()
+    m.insert("k", |x| x + 1)
+    if m.get("k")? as g {
+        assert g(5) == 6
+    } else {
+        assert false
+    }
+}
+
+test "a named function out of a Map" {
+    mut m = Map<string, func(i64) -> i64>.new()
+    m.insert("k", add_forty)
+    if m.get("k")? as g {
+        assert g(2) == 42
+    } else {
+        assert false
+    }
+}
+
+// A function type with more than one parameter: the comma inside the parens is
+// not a type-argument separator.
+test "a two-parameter function type as a Map value" {
+    mut m = Map<string, func(i64, i64) -> i64>.new()
+    m.insert("k", |a, b| a + b)
+    if m.get("k")? as g {
+        assert g(2, 40) == 42
+    } else {
+        assert false
+    }
+}
+
+func main() {}

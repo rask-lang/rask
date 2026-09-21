@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// What a `Heap<T>` holds depends on the payload, and the two halves disagreed.
+//
+// `Heap(x)` allocates a block only when the payload doesn't fit the slot — a
+// struct, a string, a tuple. A number fits, and so does a handle: a `Vec`,
+// a `Map`, a closure, a `Shared` are each one pointer to something the runtime
+// already made. Lowering knew that and wrote the payload straight into the
+// local; everything downstream still read the local as a block pointer. So:
+//
+//     let b: Heap<f64> = Heap(2.5)      // printed 2 — the slot was typed `ptr`
+//     let v: Heap<Vec<i64>> = Heap(…)   // `*v` loaded through the vector's
+//                                       // own handle, and `drop` freed it as
+//                                       // if it were the block → SIGSEGV
+//
+// A `Heap<i64>` survived by accident: it is a word either way (#1234).
+//
+// Spec: specs/memory/heap.md — HP3 (deref borrows, `drop` deallocates), HP5
+// ("a scalar is never boxed — it fits its slot").
+import memory.Heap
+import sync.Shared
+import sync.Local
+
+struct Pay {
+    public a: i64
+}
+
+struct Holder {
+    public inner: Heap<i64>
+}
+
+func add_forty(n: i64) -> i64 {
+    return n + 40
+}
+
+test "a float payload keeps its width" {
+    let b: Heap<f64> = Heap(2.5)
+    ensure drop(b)
+    assert *b == 2.5
+    drop(b)
+}
+
+test "a f32 payload keeps its width" {
+    let b: Heap<f32> = Heap(2.5)
+    ensure drop(b)
+    assert *b == 2.5
+    drop(b)
+}
+
+test "a Vec payload is the vector itself" {
+    let b: Heap<Vec<i64>> = Heap(Vec.from([7, 42]))
+    ensure drop(b)
+    assert (*b)[1] == 42
+    assert (*b).len() == 2
+    drop(b)
+}
+
+test "a Map payload is the map itself" {
+    let b: Heap<Map<string, i64>> = Heap(Map.from([("k", 42)]))
+    ensure drop(b)
+    assert (*b)["k"] == 42
+    drop(b)
+}
+
+test "a closure payload is callable" {
+    let b: Heap<func(i64) -> i64> = Heap(|n| { return n + 40 })
+    ensure drop(b)
+    assert (*b)(2) == 42
+    drop(b)
+}
+
+test "a named function as the payload" {
+    let b: Heap<func(i64) -> i64> = Heap(add_forty)
+    ensure drop(b)
+    assert (*b)(2) == 42
+    drop(b)
+}
+
+test "a Shared as the payload" {
+    let b: Heap<Shared<i64, Local>> = Heap(Shared.local(42))
+    ensure drop(b)
+    assert (*b).get() == 42
+    drop(b)
+}
+
+// The struct payload still gets a block, and reads through it.
+test "a struct payload still gets a block" {
+    let b: Heap<Pay> = Heap(Pay { a: 42 })
+    ensure drop(b)
+    assert (*b).a == 42
+    drop(b)
+}
+
+// The same question reached through a field: the release walk was treating the
+// slot as a block pointer and handing `rask_free` the number in it.
+test "a scalar payload in a field" {
+    let h = Holder { inner: Heap(42) }
+    assert *h.inner == 42
+}
+
+func main() {}

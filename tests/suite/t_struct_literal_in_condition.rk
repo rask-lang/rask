@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct literal as a call argument, where the call is in a condition.
+//
+//     if !accept(Pay { a: 7 }) { println("no") }
+//     error[E0100]: Expected ')', found '{'
+//
+// The restriction that keeps `if x { }` unambiguous was still in force inside
+// the argument list, so the literal's brace read as the start of the if-body.
+// Parentheses already lifted it — `if (c == Shape.Circle { r: 4 }) { … }` is
+// the documented way to write one — and an argument list closes the same
+// ambiguity: once the parser is inside `accept(`, a `{` can only be a literal,
+// because the body can't start there.
+//
+// It bites hardest when authoring a sequence, where the yield is always in a
+// condition (type.sequence/SEQ3) — so a `Sequence<SomeStruct>` couldn't be
+// written at all (#1236).
+import sequence.Sequence
+
+struct Pay {
+    public a: i64
+}
+
+func accept(p: Pay) -> bool {
+    return p.a > 0
+}
+
+func pair() -> Sequence<Pay> {
+    return |yield| {
+        if !yield(Pay { a: 7 }) { return }
+        if !yield(Pay { a: 42 }) { return }
+    }
+}
+
+test "a struct literal in an if condition" {
+    mut seen = false
+    if accept(Pay { a: 7 }) {
+        seen = true
+    }
+    assert seen
+}
+
+test "negated" {
+    mut seen = false
+    if !accept(Pay { a: 0 }) {
+        seen = true
+    }
+    assert seen
+}
+
+test "in a while condition" {
+    mut turns = 0
+    while accept(Pay { a: 1 - turns }) {
+        turns = turns + 1
+    }
+    assert turns == 1
+}
+
+test "yielded by a sequence" {
+    let collected = pair().to_vec()
+    assert collected.len() == 2
+    assert collected[1].a == 42
+}
+
+func main() {}
