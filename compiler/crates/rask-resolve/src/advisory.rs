@@ -8,7 +8,7 @@
 use serde::Deserialize;
 
 /// Default advisory database URL (AU1).
-pub const DEFAULT_ADVISORY_URL: &str = "https://advisories.rk-lang.org";
+pub const DEFAULT_ADVISORY_URL: &str = "https://advisories.rask-lang.dev";
 
 /// A single security advisory.
 #[derive(Debug, Clone, Deserialize)]

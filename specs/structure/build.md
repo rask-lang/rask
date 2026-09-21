@@ -630,7 +630,7 @@ ERROR [struct.build/SG4]: signature verification failed
 
 | Rule | Description |
 |------|-------------|
-| **AU1: Advisory database** | Fetches from `https://advisories.rk-lang.org` |
+| **AU1: Advisory database** | Fetches from `https://advisories.rask-lang.dev` |
 | **AU2: Lock file based** | Checks exact versions from `rask.lock`, not constraints from `build.rk` |
 | **AU3: Exit code** | Returns non-zero if vulnerabilities found (for CI gates) |
 | **AU4: Ignore list** | `rask audit --ignore CVE-2024-1234` for acknowledged risks |
