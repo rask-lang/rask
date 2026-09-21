@@ -1294,7 +1294,7 @@ func timeout<T>(duration: Duration, operation: || -> T) -> T or TimedOut {
 
 ## Channels
 
-### Channel Structure (CH1-CH4)
+### Channel Structure (realizes conc.async/CH1-CH4)
 
 ```rust
 Channel<T> {
@@ -1315,7 +1315,7 @@ Channel<T> {
 
 **Example:** `Channel<Request>::buffered(1024)` for request type (32 bytes) = 64 + 32*1024 = ~33KB.
 
-### Send Flow (CH2, CH4)
+### Send Flow (realizes conc.async/CH2, CH4)
 
 ```rust
 func Sender::send(self, value: T) -> void or SendError {
@@ -1362,7 +1362,7 @@ func Sender::send(self, value: T) -> void or SendError {
 
 **Waker queue fairness:** FIFO order (VecDeque) ensures senders/receivers wake in arrival order.
 
-### Receive Flow (CH3)
+### Receive Flow (realizes conc.async/CH3)
 
 ```rust
 func Receiver::receive(self) -> T or ReceiveError {
@@ -1428,7 +1428,7 @@ func Receiver::receive(self) -> T or ReceiveError {
 
 ## ThreadPool (Separate from Multitasking)
 
-### ThreadPool Structure (S2 - realizes conc.async/S2)
+### ThreadPool Structure (TP1 - realizes conc.async/S2)
 
 ThreadPool is simpler than Multitasking because it's CPU-bound (no I/O reactor needed).
 
@@ -1452,7 +1452,7 @@ type Job = Box<dyn FnOnce() -> Value + Send>;
 | Parking | Tasks can park/resume | Jobs run to completion |
 | Use case | I/O-bound, high concurrency | CPU-bound, parallel compute |
 
-### ThreadPool Spawn Flow (TP1)
+### ThreadPool Spawn Flow (TP2)
 
 ```rust
 func ThreadPool::spawn<T>(closure: || -> T) -> ThreadPoolHandle<T> {
@@ -1488,7 +1488,7 @@ func ThreadPool::spawn<T>(closure: || -> T) -> ThreadPoolHandle<T> {
 
 **Cost:** ~150ns (Arc allocation + box closure + queue push)
 
-### Worker Loop (TP2)
+### Worker Loop (TP3)
 
 ```rust
 fn thread_pool_worker(pool: Arc<ThreadPool>) {
@@ -1515,7 +1515,7 @@ fn thread_pool_worker(pool: Arc<ThreadPool>) {
 
 ## Performance Characteristics
 
-### Operation Costs (P1)
+### Operation Costs (PC1)
 
 | Operation | Latency | Explanation |
 |-----------|---------|-------------|
@@ -1531,7 +1531,7 @@ fn thread_pool_worker(pool: Arc<ThreadPool>) {
 | I/O registration | ~500ns | Reactor hashmap insert + syscall |
 | ThreadPool spawn | ~150ns | Box + queue push |
 
-### Memory Costs (P2)
+### Memory Costs (PC2)
 
 | Structure | Virtual | Physical (typical) | Notes |
 |-----------|---------|--------------------|-------|
@@ -1550,7 +1550,7 @@ fn thread_pool_worker(pool: Arc<ThreadPool>) {
 
 **Comparison to stackless state machines:** state machines win by ~10-100× on task memory (120 bytes + captures vs 1 MiB virtual / 4 KiB physical). Stackful pays that memory to avoid the compile-time transform and user-visible coloring. See [§Design Rationale](#design-rationale).
 
-### Scalability Limits (P3)
+### Scalability Limits (PC3)
 
 **Vertical scaling (single machine):**
 

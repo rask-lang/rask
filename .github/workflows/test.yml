@@ -268,7 +268,7 @@ jobs:
     # no compiler, so it runs whatever else broke.
     - name: Spec rule-id gate
       if: ${{ !cancelled() }}
-      run: tests/spec_ids_gate.sh
+      run: tests/spec_ids_gate.py
 
     # Every example with a tests/golden/ output must match on both backends.
     # Catches native codegen rot in examples/. Also parallel (GATE_JOBS).

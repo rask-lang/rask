@@ -13,7 +13,7 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 |------|-------------|
 | **RS1: Two-phase approach** | Phase A targets OS threads (1:1). Phase B upgrades to M:N green tasks. Both implement `conc.async` semantics identically |
 | **RS2: Semantic parity** | `spawn`, `join`, `detach`, `cancel`, channels, `select` — all work in both phases. Programs don't change |
-| **RS3: Performance boundary** | Phase A handles ~10k concurrent tasks. Phase B targets 100k+ (per `conc.runtime/P3`) |
+| **RS3: Performance boundary** | Phase A handles ~10k concurrent tasks. Phase B targets 100k+ (per `conc.runtime/PC3`) |
 | **RS4: No feature gating** | Phase A implements everything in `conc.async` — no deferred features. Only implementation strategy differs |
 
 **Why not jump straight to M:N?** Building the `fiber_switch` assembly routines, work-stealing scheduler, pluggable reactor, and preemption machinery simultaneously is a recipe for debugging four things at once. OS threads let us validate the full concurrency API with a thin C runtime first.
