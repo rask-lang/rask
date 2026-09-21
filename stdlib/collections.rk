@@ -494,6 +494,19 @@ extend Map<K, V> {
     @native
     public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R {}
 
+    /// The chain head: each entry as a `(key, value)` pair (type.sequence/SEQ49).
+    ///
+    /// Every other sequence method on `Map` is generated from this one.
+    public func as_sequence(self) -> Sequence<(K, V)> {
+        return |yield| {
+            for (k, v) in self {
+                if !yield((k, v)) {
+                    return
+                }
+            }
+        }
+    }
+
     /// Iterate over keys.
     @native("rask_map_keys")
     public func keys(self) -> Iterator<K> {}
@@ -645,15 +658,21 @@ extend Set<T> {
         self.entries.clear()
     }
 
+    /// The chain head (type.sequence/SEQ49). Every other sequence method on
+    /// `Set` is generated from this one.
+    public func as_sequence(self) -> Sequence<T> {
+        return |yield| {
+            for (value, _) in self.entries {
+                if !yield(value) {
+                    return
+                }
+            }
+        }
+    }
+
     /// The values, as a `Vec`.
     ///
-    /// Named for what it builds, not for what you do with it (SEQ31). There is
-    /// no `iter()` here on purpose: a stored iterator isn't a thing in Rask —
-    /// an adapter chain has to terminate in the expression that starts it —
-    /// and a method declared `-> Iterator<T>` isn't recognised by the for-loop
-    /// lowering anyway, so `for v in s.iter()` failed to compile natively
-    /// while the interpreter ran it (#1070). When the sequence protocol lands,
-    /// `Set` gets a real one like every other collection.
+    /// Named for what it builds, not for what you do with it (SEQ31).
     public func to_vec(self) -> Vec<T> {
         return self.entries.keys().to_vec()
     }

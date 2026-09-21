@@ -147,3 +147,27 @@ test "a chain inside a generic function keeps its element type" {
     let words: Vec<string> = ["a", "b"]
     assert chain_count(words) == 2
 }
+
+// `Map` and `Set` reach the same surface, through their own `as_sequence`.
+// A map's element is the `(key, value)` pair, so that's what the closures see.
+test "a Map is its own chain head" {
+    mut m = Map<string, i64>.new()
+    m.insert("a", 1)
+    m.insert("b", 2)
+    m.insert("c", 3)
+    assert m.count() == 3
+    assert m.filter(|e| e.1 > 1).count() == 2
+    assert m.any(|e| e.0 == "b")
+    assert m.fold(0, |acc, e| acc + e.1) == 6
+}
+
+test "a Set is its own chain head" {
+    mut s = Set<i64>.new()
+    s.insert(1)
+    s.insert(2)
+    s.insert(3)
+    assert s.count() == 3
+    assert s.filter(|x| x > 1).count() == 2
+    assert s.map(|x| x * 2).to_vec().len() == 3
+    assert s.all(|x| x > 0)
+}

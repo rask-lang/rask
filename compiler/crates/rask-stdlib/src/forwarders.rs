@@ -23,7 +23,7 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl};
 ///
 /// `(extend header, element type)`. The element is what `Sequence<T>`'s `T`
 /// stands for on this host, and it's substituted into every signature.
-const HOSTS: &[(&str, &str)] = &[("Vec<T>", "T")];
+const HOSTS: &[(&str, &str)] = &[("Vec<T>", "T"), ("Map<K, V>", "(K, V)"), ("Set<T>", "T")];
 
 /// Rask source declaring every host's generated forwarders.
 pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
@@ -36,6 +36,17 @@ pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
     );
     for (header, elem) in HOSTS {
         let base = header.split('<').next().unwrap_or(header);
+        let host_params: Vec<String> = header
+            .find('<')
+            .map(|i| {
+                header[i + 1..]
+                    .trim_end_matches('>')
+                    .split(',')
+                    .map(|p| p.trim().to_string())
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
         let declared: Vec<String> = host_srcs
             .iter()
             .flat_map(|src| declared_methods(&parse(src), base))
@@ -52,7 +63,7 @@ pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
             if m.params.len() == 1 && m.ret_ty.as_deref() == Some(*header) {
                 continue;
             }
-            block.push_str(&forwarder(m, elem));
+            block.push_str(&forwarder(m, elem, &host_params));
         }
         if !block.is_empty() {
             out.push_str(&format!("extend {} {{\n{}}}\n\n", header, block));
@@ -63,7 +74,14 @@ pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
 
 /// One forwarder: the sequence method's signature over the host, body
 /// delegating through `as_sequence`.
-fn forwarder(m: &FnDecl, elem: &str) -> String {
+fn forwarder(m: &FnDecl, elem: &str, host_params: &[String]) -> String {
+    // The method's own parameters, renamed off any the host already uses.
+    // `Sequence.min_by_key<K>` over a `Map<K, V>` would otherwise declare a `K`
+    // that hides the map's key type, and `func((K, V)) -> K` then means two
+    // different things in one signature.
+    let renames = collisions(m, elem, host_params);
+    let name_of = |n: &str| renames.get(n).cloned().unwrap_or_else(|| n.to_string());
+
     let type_params = if m.type_params.is_empty() {
         String::new()
     } else {
@@ -72,9 +90,9 @@ fn forwarder(m: &FnDecl, elem: &str) -> String {
             .iter()
             .map(|p| {
                 if p.bounds.is_empty() {
-                    p.name.clone()
+                    name_of(&p.name)
                 } else {
-                    format!("{}: {}", p.name, p.bounds.join(" + "))
+                    format!("{}: {}", name_of(&p.name), p.bounds.join(" + "))
                 }
             })
             .collect();
@@ -85,14 +103,17 @@ fn forwarder(m: &FnDecl, elem: &str) -> String {
     let rest = &m.params[1..];
     let params: Vec<String> = rest
         .iter()
-        .map(|p| format!("{}: {}", p.name, substitute(&p.ty, elem)))
+        .map(|p| format!("{}: {}", p.name, substitute(&rename(&p.ty, &renames), elem)))
         .collect();
     let args: Vec<String> = rest.iter().map(|p| p.name.clone()).collect();
     let returns_nothing = matches!(m.ret_ty.as_deref(), None | Some("()") | Some("void"));
     let ret = if returns_nothing {
         String::new()
     } else {
-        format!(" -> {}", substitute(m.ret_ty.as_deref().unwrap_or("void"), elem))
+        format!(
+            " -> {}",
+            substitute(&rename(m.ret_ty.as_deref().unwrap_or("void"), &renames), elem)
+        )
     };
 
     let signature = format!(
@@ -114,6 +135,42 @@ fn forwarder(m: &FnDecl, elem: &str) -> String {
     format!("{}{}    }}\n", signature, body)
 }
 
+/// A new name for each of the method's type parameters that the host already
+/// spells, picked from the letters neither of them uses.
+fn collisions(
+    m: &FnDecl,
+    elem: &str,
+    host_params: &[String],
+) -> std::collections::HashMap<String, String> {
+    let mut taken: std::collections::HashSet<String> = host_params.iter().cloned().collect();
+    taken.extend(m.type_params.iter().map(|p| p.name.clone()));
+    let mut out = std::collections::HashMap::new();
+    for p in &m.type_params {
+        if !host_params.iter().any(|h| h == &p.name) {
+            continue;
+        }
+        let free = ('A'..='Z')
+            .map(|c| c.to_string())
+            .find(|c| !taken.contains(c) && !elem.contains(c.as_str()))
+            .unwrap_or_else(|| format!("{}_", p.name));
+        taken.insert(free.clone());
+        out.insert(p.name.clone(), free);
+    }
+    out
+}
+
+/// Apply `collisions`' renames to a rendered type, whole words only.
+///
+/// Runs *before* the element substitution, so that a method's `K` becomes `A`
+/// while it is still the only `K` in the string — substituting `(K, V)` in
+/// first would make the host's key indistinguishable from it.
+fn rename(ty: &str, renames: &std::collections::HashMap<String, String>) -> String {
+    if renames.is_empty() {
+        return ty.to_string();
+    }
+    map_words(ty, |w| renames.get(w).cloned().unwrap_or_else(|| w.to_string()))
+}
+
 /// Rewrite `Sequence<T>`'s element name to the host's.
 ///
 /// Whole-word only: `T` in `func(T) -> bool` is the element, the `T` inside
@@ -122,6 +179,13 @@ fn substitute(ty: &str, elem: &str) -> String {
     if elem == "T" {
         return to_source(ty);
     }
+    to_source(&map_words(ty, |w| {
+        if w == "T" { elem.to_string() } else { w.to_string() }
+    }))
+}
+
+/// Rewrite each identifier in a rendered type, leaving the punctuation alone.
+fn map_words(ty: &str, f: impl Fn(&str) -> String) -> String {
     let mut out = String::with_capacity(ty.len());
     let bytes = ty.as_bytes();
     let mut i = 0;
@@ -135,14 +199,13 @@ fn substitute(ty: &str, elem: &str) -> String {
             } {
                 i += 1;
             }
-            let word = &ty[start..i];
-            out.push_str(if word == "T" { elem } else { word });
+            out.push_str(&f(&ty[start..i]));
         } else {
             out.push(c);
             i += 1;
         }
     }
-    to_source(&out)
+    out
 }
 
 /// Undo the parser's internal spelling for a closure that returns nothing.
@@ -212,27 +275,67 @@ mod tests {
             .expect("the generated source is one of the stub sources")
     }
 
+    /// The block a host's forwarders land in.
+    fn block_for(host: &str) -> String {
+        let src = generated();
+        let start = src
+            .find(&format!("extend {} {{", host))
+            .unwrap_or_else(|| panic!("no block for `{}`:\n{}", host, src));
+        let end = src[start..].find("\n}").expect("unterminated block");
+        src[start..start + end].to_string()
+    }
+
     #[test]
     fn fills_the_gaps_a_hand_copied_surface_left() {
-        let src = generated();
+        let block = block_for("Vec<T>");
         for name in ["take_while", "skip_while", "chain", "for_each", "min_by_key"] {
             assert!(
-                src.contains(&format!("public func {}", name)),
+                block.contains(&format!("public func {}", name)),
                 "`Vec` should inherit `{}`:\n{}",
                 name,
-                src
+                block
             );
         }
+    }
+
+    #[test]
+    fn a_map_and_a_set_get_the_same_surface() {
+        for host in ["Map<K, V>", "Set<T>"] {
+            let block = block_for(host);
+            for name in ["filter", "map", "count", "any", "fold"] {
+                assert!(
+                    block.contains(&format!("public func {}", name)),
+                    "`{}` should inherit `{}`:\n{}",
+                    host,
+                    name,
+                    block
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_methods_own_parameter_is_renamed_off_the_hosts() {
+        // `Sequence.min_by_key<K>` over a `Map<K, V>` would declare a second
+        // `K`, and `func((K, V)) -> K` then means two things at once.
+        let block = block_for("Map<K, V>");
+        assert!(
+            block.contains("public func min_by_key<A: Comparable>(self, key: func((K, V)) -> A)"),
+            "{}",
+            block
+        );
     }
 
     #[test]
     fn a_hand_written_method_wins() {
         // `Vec.flat_map` takes a `Vec<U>` where the sequence one takes a
         // `Sequence<U>`, so generating over it would change the call sites.
-        let src = generated();
-        assert!(!src.contains("public func flat_map"), "{}", src);
+        let block = block_for("Vec<T>");
+        assert!(!block.contains("public func flat_map"), "{}", block);
         // `to_vec` on a `Vec` is `clone` under a second name (`std.api/SD5`).
-        assert!(!src.contains("public func to_vec"), "{}", src);
+        // A `Map`'s builds a `Vec<(K, V)>`, so it stays.
+        assert!(!block.contains("public func to_vec"), "{}", block);
+        assert!(block_for("Map<K, V>").contains("public func to_vec"));
     }
 
     #[test]

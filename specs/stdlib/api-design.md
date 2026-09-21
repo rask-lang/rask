@@ -42,8 +42,8 @@ decide whether it can ever be met:
   `Vec` carried 16 of `Sequence`'s 21 and was missing `take_while` beside a
   `take` that worked. They are generated from `extend Sequence<T>` now — a type
   declares `as_sequence` and gets the rest — so `Vec` declares 14 fewer and the
-  gaps are gone. `Map` and `Set` still declare no `as_sequence`, so they still
-  get nothing; that's now one method each rather than 21.
+  gaps are gone. `Map` and `Set` declare one too, so they have the surface for
+  the first time — a map's element is the `(key, value)` pair.
 - **Whether a container's inherited adapters count against its budget.** If
   they do, no collection can ever meet SD1 while SEQ48 holds, because SEQ48
   requires them. The count that means something is what the container *adds*,
