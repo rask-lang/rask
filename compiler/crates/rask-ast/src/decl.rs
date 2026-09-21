@@ -253,6 +253,8 @@ pub struct Field {
     /// Declared default (`port: i32 = 8080`). Compile-time constant only (FD1).
     /// Filled in at construction when the field is omitted.
     pub default: Option<Expr>,
+    /// Doc comment (`/// ...`) written above the field.
+    pub doc: Option<String>,
 }
 
 /// Serialization annotations on a struct field (std.encoding/E18–E20).

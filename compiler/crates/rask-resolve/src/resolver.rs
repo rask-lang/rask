@@ -3610,8 +3610,8 @@ mod tests {
                 name: name.to_string(),
                 type_params: vec![],
                 fields: vec![
-                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None },
-                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None },
+                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
+                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
                 ],
                 methods: vec![],
                 is_pub: true,
@@ -3919,6 +3919,7 @@ mod tests {
                     visibility: FieldVisibility::Public,
                     attrs: vec![],
                     default: None,
+                    doc: None,
                 }],
                 is_pub,
                 doc: None,

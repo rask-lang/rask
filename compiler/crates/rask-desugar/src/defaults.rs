@@ -811,7 +811,7 @@ mod tests {
         fn field(name: &str, ty: &str, default: Option<Expr>) -> Field {
             Field {
                 name: name.to_string(), name_span: sp(), ty: ty.to_string(),
-                visibility: FieldVisibility::Public, attrs: vec![], default,
+                visibility: FieldVisibility::Public, attrs: vec![], default, doc: None,
             }
         }
 
@@ -879,7 +879,7 @@ mod tests {
                 name: "Config".to_string(), type_params: vec![],
                 fields: vec![Field {
                     name: "port".to_string(), name_span: sp(), ty: "i32".to_string(),
-                    visibility: FieldVisibility::Public, attrs: vec![], default: Some(int_expr(8080)),
+                    visibility: FieldVisibility::Public, attrs: vec![], default: Some(int_expr(8080)), doc: None,
                 }],
                 methods: vec![], is_pub: false, attrs: vec![], doc: None,
             }),

@@ -110,6 +110,7 @@ impl TypeChecker {
                         visibility: FieldVisibility::Public,
                         attrs: Vec::new(),
                         default: None,
+                        doc: None,
                     })
                 })
                 .collect();

@@ -87,6 +87,7 @@ fn format_struct(out: &mut String, s: &StructDesc) {
     out.push('\n');
 
     for f in &s.fields {
+        format_doc(out, &f.doc, "    ");
         out.push_str("    ");
         if f.public {
             out.push_str("public ");

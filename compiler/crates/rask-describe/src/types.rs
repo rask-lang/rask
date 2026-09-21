@@ -94,6 +94,8 @@ pub struct FieldDesc {
     #[serde(rename = "type")]
     pub type_str: String,
     pub public: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 /// Enum type description.

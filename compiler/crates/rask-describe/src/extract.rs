@@ -160,6 +160,7 @@ fn extract_struct(s: &StructDecl, opts: &DescribeOpts) -> StructDesc {
             name: f.name.clone(),
             type_str: f.ty.clone(),
             public: f.visibility.is_pub(),
+            doc: f.doc.clone(),
         })
         .collect();
 
@@ -207,6 +208,7 @@ fn extract_enum(e: &EnumDecl, opts: &DescribeOpts) -> EnumDesc {
                     },
                     type_str: f.ty.clone(),
                     public: true,
+                    doc: f.doc.clone(),
                 })
                 .collect();
             VariantDesc {

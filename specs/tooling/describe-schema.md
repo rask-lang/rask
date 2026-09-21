@@ -130,7 +130,8 @@
   "type_params": ["T"],
   "attrs": ["resource"],
   "fields": [
-    { "name": "port", "type": "u16", "public": true },
+    { "name": "port", "type": "u16", "public": true,
+      "doc": "Port to bind. 0 asks the OS for a free one." },
     { "name": "connections", "type": "Vec<Connection>", "public": false }
   ],
   "methods": []
@@ -144,7 +145,7 @@
 | `extended` | `bool?` | Present and `true` when the entry is an `extend` block on a type this file doesn't declare publicly (T2). Omitted otherwise |
 | `type_params` | `string[]?` | Generic type parameter names |
 | `attrs` | `string[]?` | Attributes (`@resource`, etc.) |
-| `fields` | `Field[]` | Struct fields |
+| `fields` | `Field[]` | Struct fields. Each is `{ name, type, public }` plus `doc` when the field carries a `///` comment |
 | `methods` | `Function[]` | Methods from struct body and extend blocks |
 
 ## EnumType
@@ -365,7 +366,7 @@ server (src/server.rk)
 - Function bodies, expressions, or implementation details
 - Type inference results — only explicitly written types
 - Private items (unless `--all`)
-- Documentation comments (future: add `doc` field)
+- Function bodies' doc comments beyond the declaration's own `///`
 
 ### See Also
 
