@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Vec methods marked `@native` with no dispatch row — proof they still run.
+//
+// `NATIVE_WITHOUT_A_DISPATCH_ROW` in rask-codegen/src/dispatch.rs lists every
+// `@native` declaration codegen has no entry for. Its own comment admits the
+// list mixes two kinds and "only trying one tells them apart": a call lowered
+// somewhere bespoke (fine, stays listed) and a call with no entry point at all
+// (type-checks, runs on the interpreter, dies at codegen with "Function not
+// found"). Nobody had tried. Of the 65 entries, 19 turned out to be the second
+// kind — see the t_native_reach_* siblings.
+//
+// These are the first kind. Vec's iterator methods are fused into a chain
+// rather than called, so the absent row is correct, and this file is what says
+// so with a running program instead of a comment.
+
+test "vec methods with no dispatch row still answer" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    assert(v.fold(0, |a, b| { return a + b }) == 10)
+    assert(v.any(|x| { return x > 3 }))
+    assert(v.all(|x| { return x > 0 }))
+    assert(v.sum() == 10)
+    assert((v.reduce(|a, b| { return a + b }) ?? -1) == 10)
+    assert((v.position(|x| { return x == 3 }) ?? 99) == 2)
+    assert((v.find(|x| { return x > 2 }) ?? -1) == 3)
+    assert((v.min() ?? -1) == 1)
+    assert((v.max() ?? -1) == 4)
+}
+
+test "vec zip, sort_by_key, read and modify" {
+    mut v: Vec<i64> = [3, 1, 2]
+    let w: Vec<string> = ["a", "b", "c"]
+    assert(v.zip(w).len() == 3)
+
+    v.sort_by_key(|x| { return 0 - x })
+    assert((v.get(0) ?? -1) == 3)
+    assert((v.get(2) ?? -1) == 1)
+
+    assert((v.read(0, |x| { return x * 2 }) ?? -1) == 6)
+    assert((v.modify(0, |x| { return x + 100 }) ?? -1) == 103)
+}

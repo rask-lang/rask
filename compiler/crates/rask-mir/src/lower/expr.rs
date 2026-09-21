@@ -5519,8 +5519,10 @@ impl<'a> MirLowerer<'a> {
                                 let tag = self.container_elem_tag(expr.id, 0);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(tag)));
                             }
-                            // Map.new(): inject key_size, val_size
-                            if (base_name == "Map") && method == "new" {
+                            // Map.new() / Map.with_capacity(n): inject
+                            // key_size, val_size. with_capacity keeps its `n`
+                            // after them, the way Vec's does.
+                            if (base_name == "Map") && (method == "new" || method == "with_capacity") {
                                 let key_size = self.generic_arg_slot_size(expr.id, 0);
                                 let val_size = self.generic_arg_slot_size(expr.id, 1);
                                 arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
@@ -5540,7 +5542,9 @@ impl<'a> MirLowerer<'a> {
                             // then read the key's 8 bytes as a char pointer. Lookups
                             // hashed whatever that address held, so an insert and a
                             // later get disagreed at random (#812).
-                            let func_name = if func_name == "Map_new" {
+                            let func_name = if func_name == "Map_new"
+                                || func_name == "Map_with_capacity"
+                            {
                                 let from_checker = self.container_elem_mir_type(expr.id, 0);
                                 // The spelling still answers when the checker has
                                 // nothing for this node: `Map<string, _>.new()` inside
@@ -5551,7 +5555,7 @@ impl<'a> MirLowerer<'a> {
                                 let has_string_keys = matches!(from_checker, Some(MirType::String))
                                     || matches!(from_spelling, Some(MirType::String));
                                 if has_string_keys {
-                                    "Map_new_string_keys".to_string()
+                                    format!("{func_name}_string_keys")
                                 } else {
                                     func_name
                                 }
@@ -7267,21 +7271,25 @@ impl<'a> MirLowerer<'a> {
         obj_op: &MirOperand,
         obj_ty: &MirType,
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        // Raw pointer methods: dispatch directly to RawPtr_* C functions.
-        // Skip for smart pointer types (Shared, Channel, etc.) that also use MirType::Ptr.
-        let is_smart_ptr = self.ctx.lookup_raw_type(object.id)
-            .and_then(|ty| super::MirContext::stdlib_type_prefix(ty))
-            .map(|prefix| matches!(prefix, "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver"))
-            .unwrap_or(false)
-            || if let ExprKind::Ident(var_name) = &object.kind {
-                self.meta(var_name)
-                    .and_then(|m| m.type_prefix.as_deref())
-                    .map(|p| matches!(p, "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver"))
-                    .unwrap_or(false)
-            } else {
-                false
-            };
-        if matches!(obj_ty, MirType::Ptr) && !is_smart_ptr {
+        // Raw-pointer methods dispatch straight to the `RawPtr_*` C functions,
+        // so the receiver has to actually be a `*T` — which only the checker
+        // knows. `MirType::Ptr` is every value reached by address: a Pool, a
+        // Rack, a Shared, a Channel, a box. The test used to be "Ptr, and not
+        // one of these five smart-pointer names", so every by-address type
+        // nobody had thought to list took the raw-pointer path — `pool.read(h,
+        // f)` became `RawPtr_read(pool, h, f, 8)` and Cranelift rejected a
+        // 4-argument call against a 2-argument signature. Asking the checker
+        // instead of keeping a list is the same move #725 argues for; the list
+        // could only ever be wrong in one direction.
+        //
+        // When the checker has nothing for the receiver, this isn't a raw
+        // pointer call. A `*T` is written in an `unsafe` block from a cast or
+        // an `as_ptr()`, both of which the checker types.
+        let is_raw_ptr = matches!(
+            self.ctx.lookup_raw_type(object.id),
+            Some(rask_types::Type::RawPtr(_))
+        );
+        if matches!(obj_ty, MirType::Ptr) && is_raw_ptr {
             let entry = rask_stdlib::ptr_methods::lookup(method.as_str());
             if method == "cast" {
                 // Cast is a no-op at runtime — pointer value unchanged

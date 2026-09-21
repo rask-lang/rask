@@ -615,6 +615,14 @@ RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
                                   const int32_t *val_offs, int64_t n_val_offs);
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq);
+// `Map.with_capacity(n)`. A hint, like the Vec one: it pre-allocates the
+// tables and sets no ceiling. `n <= 0` gets the default.
+RaskMap *rask_map_new_cap(int64_t key_size, int64_t val_size, int64_t cap,
+                          const int32_t *key_offs, int64_t n_key_offs,
+                          const int32_t *val_offs, int64_t n_val_offs);
+RaskMap *rask_map_new_string_keys_cap(int64_t key_size, int64_t val_size, int64_t cap,
+                                      const int32_t *key_offs, int64_t n_key_offs,
+                                      const int32_t *val_offs, int64_t n_val_offs);
 // Releases every string the keys and values hold, then the map itself.
 void     rask_map_free(RaskMap *m);
 int64_t  rask_map_len(const RaskMap *m);

@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Map, math and json methods marked `@native` with no dispatch row.
+//
+// Same sweep as t_native_reach_vec.rk: these are the entries that turned out
+// to be lowered somewhere bespoke rather than missing. `Map.read`/`modify`
+// fuse into the map access, the fourteen `math.*` calls go straight to libm,
+// and `json.encode_pretty` is written in Rask.
+//
+// `Map.with_capacity` was the one Map entry that wasn't: it died natively with
+// "Function not found: Map_with_capacity". It has a constructor now, so it is
+// tested here with the rest.
+
+import std.math
+import std.json
+
+struct Point {
+    public x: i64
+    public label: string
+}
+
+test "map read, modify and modify_with_default" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+
+    assert((m.read("a", |v| { return v * 10 }) ?? -1) == 10)
+    assert((m.modify("a", |v| { return v + 5 }) ?? -1) == 6)
+    assert(m.modify_with_default("b", || { return 7 }, |v| { return v + 1 }) == 8)
+}
+
+// The capacity is a hint and nothing else: it decides the first table size, so
+// a map built with one has to behave exactly like a map built without —
+// including growing past it. String keys and byte keys hash differently and
+// reach the constructor by different names, so both are here (#812 is what
+// happens when the wrong one is picked).
+test "map with_capacity" {
+    mut strs: Map<string, i64> = Map.with_capacity(64)
+    strs.insert("z", 3)
+    strs.insert("y", 4)
+    assert(strs.len() == 2)
+    assert((strs.get("z") ?? -1) == 3)
+    assert((strs.get("y") ?? -1) == 4)
+
+    mut ints: Map<i64, string> = Map.with_capacity(4)
+    ints.insert(1, "one")
+    assert((ints.get(1) ?? "?") == "one")
+
+    mut zero: Map<string, i64> = Map.with_capacity(0)
+    zero.insert("a", 1)
+    assert((zero.get("a") ?? -1) == 1)
+
+    mut grown: Map<string, i64> = Map.with_capacity(2)
+    for i in 0..50 {
+        grown.insert("k{i}", i)
+    }
+    assert(grown.len() == 50)
+    assert((grown.get("k30") ?? -1) == 30)
+}
+
+test "every math function reaches an implementation" {
+    assert(math.sin(0.0) == 0.0)
+    assert(math.cos(0.0) == 1.0)
+    assert(math.tan(0.0) == 0.0)
+    assert(math.asin(0.0) == 0.0)
+    assert(math.acos(1.0) == 0.0)
+    assert(math.atan(0.0) == 0.0)
+    assert(math.atan2(0.0, 1.0) == 0.0)
+    assert(math.exp(0.0) == 1.0)
+    assert(math.ln(1.0) == 0.0)
+    assert(math.log2(1.0) == 0.0)
+    assert(math.log10(1.0) == 0.0)
+    assert(math.hypot(3.0, 4.0) == 5.0)
+    assert(math.to_radians(0.0) == 0.0)
+    assert(math.to_degrees(0.0) == 0.0)
+}
+
+test "json encode_pretty" {
+    let p = Point { x: 1, label: "x" }
+    assert(json.encode(p).contains("\"label\":\"x\""))
+    assert(json.encode_pretty(p).contains("\n"))
+}

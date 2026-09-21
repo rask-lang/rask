@@ -157,6 +157,8 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Vec_chunks", 0, 0, "Vec_free"),
     ("Map_new", 2, 2, "Map_free"),
     ("Map_new_string_keys", 2, 2, "Map_free"),
+    ("Map_with_capacity", 3, 2, "Map_free"),
+    ("Map_with_capacity_string_keys", 3, 2, "Map_free"),
     // `keys`, `values` and `entries` walk a map and hand back a fresh Vec of
     // what they found — a `Map_` name with a `Vec` result, which is why the
     // free is written down rather than read off the prefix.

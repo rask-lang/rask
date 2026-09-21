@@ -274,6 +274,24 @@ static RaskMap *map_with_elem_strs(RaskMap *m,
     return m;
 }
 
+// The one constructor. `cap` is a hint: it decides the first table size and
+// nothing else, so a map built with one grows exactly like a map built
+// without. Probing is `% cap`, so any positive number works — no rounding to
+// a power of two.
+static RaskMap *map_new_custom_cap(int64_t key_size, int64_t val_size,
+                                   RaskHashFn hash, RaskEqFn eq, int64_t cap) {
+    RaskMap *m = (RaskMap *)rask_alloc(sizeof(RaskMap));
+    *m = (RaskMap){
+        .key_size = key_size,
+        .val_size = val_size,
+        .hash_fn = hash,
+        .eq_fn = eq,
+        .displaced = NULL,
+    };
+    map_alloc_tables(m, cap > 0 ? cap : MAP_INITIAL_CAP);
+    return m;
+}
+
 RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
                       const int32_t *key_offs, int64_t n_key_offs,
                       const int32_t *val_offs, int64_t n_val_offs) {
@@ -292,16 +310,23 @@ RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
 
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq) {
-    RaskMap *m = (RaskMap *)rask_alloc(sizeof(RaskMap));
-    *m = (RaskMap){
-        .key_size = key_size,
-        .val_size = val_size,
-        .hash_fn = hash,
-        .eq_fn = eq,
-        .displaced = NULL,
-    };
-    map_alloc_tables(m, MAP_INITIAL_CAP);
-    return m;
+    return map_new_custom_cap(key_size, val_size, hash, eq, MAP_INITIAL_CAP);
+}
+
+RaskMap *rask_map_new_cap(int64_t key_size, int64_t val_size, int64_t cap,
+                          const int32_t *key_offs, int64_t n_key_offs,
+                          const int32_t *val_offs, int64_t n_val_offs) {
+    return map_with_elem_strs(
+        map_new_custom_cap(key_size, val_size, rask_hash_bytes, rask_eq_bytes, cap),
+        key_offs, n_key_offs, val_offs, n_val_offs);
+}
+
+RaskMap *rask_map_new_string_keys_cap(int64_t key_size, int64_t val_size, int64_t cap,
+                                      const int32_t *key_offs, int64_t n_key_offs,
+                                      const int32_t *val_offs, int64_t n_val_offs) {
+    return map_with_elem_strs(
+        map_new_custom_cap(key_size, val_size, rask_hash_string_key, rask_eq_string_key, cap),
+        key_offs, n_key_offs, val_offs, n_val_offs);
 }
 
 // Releases every string the keys and values hold, then the map itself. The two
