@@ -206,8 +206,14 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
     }
 
     // Trait object: "any TraitName".
+    //
+    // A qualified name is the module's trait under the name the table holds it
+    // by — the same unwrapping `resolve_named` does for `io.Buffer`. Without
+    // it, `any io.Writer` parsed (since #1159) and then named a trait nothing
+    // could satisfy, so every conformance check against it failed and the
+    // methods weren't found either.
     if let Some(trait_name) = rask_ast::traits::trait_object_name(s) {
-        return Ok(Type::TraitObject { trait_name: trait_name.to_string() });
+        return Ok(Type::TraitObject { trait_name: unqualify_trait(trait_name, types) });
     }
 
     // A declared type parameter wins over a type of the same name. Without
@@ -238,6 +244,27 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
     }
 
     Ok(Type::UnresolvedNamed(s.to_string()))
+}
+
+/// The name a trait is registered under, for a possibly module-qualified
+/// spelling. `io.Writer` is `Writer` when that is what the table holds, or
+/// `io$Writer` when the module prefix was folded into the key. Anything the
+/// table doesn't know keeps the spelling it was written with, so the
+/// "no trait named `io.Writer`" message still names what the author typed.
+fn unqualify_trait(name: &str, types: &TypeTable) -> String {
+    if types.get_type_id(name).is_some() {
+        return name.to_string();
+    }
+    let Some(dot) = name.find('.') else { return name.to_string() };
+    let tail = &name[dot + 1..];
+    if types.get_type_id(tail).is_some() {
+        return tail.to_string();
+    }
+    let prefixed = format!("{}${}", &name[..dot], tail);
+    if types.get_type_id(&prefixed).is_some() {
+        return prefixed;
+    }
+    name.to_string()
 }
 
 /// Parse a single generic argument, which can be either a type or a const value.

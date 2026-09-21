@@ -1247,6 +1247,26 @@ fn a_type_that_contains_itself_is_rejected() {
 }
 
 #[test]
+fn an_optional_trait_object_is_rejected_with_its_own_reason() {
+    // #1159 made the parse after `any` share the real type-name parse, so
+    // `any io.Reader` works. Sharing it whole would also have admitted
+    // `any Shape?`, which type-checks and then segfaults natively — the value
+    // is never boxed into the option's payload (#1308). The suffix stays
+    // refused, but with a message about the feature rather than the old
+    // "Expected ')', found '?'".
+    let (failed, out) = compile_error_output("optional_trait_object.rk");
+    assert!(failed, "`any Trait?` must be rejected: {}", out);
+    assert!(
+        out.contains("an optional trait object isn't built yet"),
+        "should name the feature, not the punctuation: {}", out,
+    );
+    assert!(
+        out.contains("1308"),
+        "should point at the issue that lifts it: {}", out,
+    );
+}
+
+#[test]
 fn error_catch_void_body_blames_itself_not_a_later_use() {
     // #876: `catch e => { println(...) }` supplies a void fallback, which is
     // only legal when the value's success type is actually void. When that

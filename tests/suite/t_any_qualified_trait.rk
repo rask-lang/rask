@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `any module.Trait` (#1159).
+//
+// A module-qualified name was fine in every type position but this one:
+//
+//     func takes_a_struct(b: io.Buffer) -> i64 { … }    // parses
+//     func returns_one() -> io.Buffer { … }             // parses
+//     func takes_a_box(r: any io.Reader) -> i64 { … }   // Expected ')', found '.'
+//
+// The parse after `any` was a copy of the type-name parse that handled a name
+// and its generic arguments and stopped, so it never reached the qualification
+// the real one does two lines further down. The trait's own name reads exactly
+// like any other type name, so the same code reads it now.
+//
+// It cost more than the one spelling: with `any io.Reader` refused, writing a
+// trait object of another module's trait meant importing the trait under a name
+// of its own first, and for `io` that is its own maze — `import io.Writer`
+// reports no such symbol, a bare `Writer` beside `import io` collides and asks
+// for an alias. The error hinted at none of it.
+
+import io
+
+trait Greeter {
+    func greet(self) -> string
+}
+
+struct Loud {
+    name: string
+}
+
+extend Loud with Greeter {
+    func greet(self) -> string {
+        return "HI {self.name}"
+    }
+}
+
+// The unqualified spelling, which always worked — here so a regression in
+// either shows up.
+func hail(g: any Greeter) -> string {
+    return g.greet()
+}
+
+// A qualified trait in a parameter, which is what the issue is about. It parses
+// and it checks — `io.Buffer` conforms — and it stops there for now: the rest of
+// the spelling isn't built. Calling it fails to lower natively (#1309), and
+// declaring conformance with a qualified name (`extend Counter with io.Writer`)
+// is refused outright (#1310). So this is a signature that has to compile, not
+// a call.
+func sink(w: any io.Writer, data: string) -> bool {
+    return true
+}
+
+// The same name in a return position and inside a generic argument, which is
+// where the old copy of the parse would also have stopped.
+func first_writer(ws: Vec<any io.Writer>) -> bool {
+    return ws.len() > 0
+}
+
+// And in a return position.
+func pick(g: any Greeter) -> any Greeter {
+    return g
+}
+
+test "a qualified trait parses in a parameter" {
+    let l = Loud { name: "rask" }
+    assert hail(l) == "HI rask"
+}
+
+test "and a bare one still round-trips" {
+    let l = Loud { name: "there" }
+    assert pick(l).greet() == "HI there"
+}

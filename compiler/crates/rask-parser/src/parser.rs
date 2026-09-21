@@ -1392,34 +1392,56 @@ impl Parser {
 
         let mut name = self.expect_ident()?;
 
+        // `any Trait` — the trait's own name reads exactly like any other, so
+        // the same code reads it.
+        //
+        // It used to be a copy that handled a name and its generic arguments
+        // and stopped, which left out the qualification below: `any io.Reader`
+        // stopped at the dot with "Expected ')'" and no hint that the spelling
+        // was the problem rather than the signature (#1159). Every other type
+        // position took a qualified name, so the only way to write a trait
+        // object of another module's trait was to import the trait under a name
+        // of its own first.
+        //
+        // The optional suffix is deliberately *not* shared. `any Trait?`
+        // type-checks and the interpreter runs it, but native never boxes the
+        // value into the option's payload and reads an uninitialised slot —
+        // SIGSEGV in every position (#1308). Letting it parse here would turn a
+        // bad parse error into a crash, so it stays rejected until the backend
+        // has it, with a message that says which of the two it is.
         if name == "any" {
             if let TokenKind::Ident(_) = self.current_kind() {
-                let mut trait_name = self.expect_ident()?;
-                if self.match_token(&TokenKind::Lt) {
-                    trait_name.push('<');
-                    loop {
-                        if let TokenKind::Int(n, _) = self.current_kind().clone() {
-                            self.advance();
-                            trait_name.push_str(&n.to_string());
-                        } else {
-                            trait_name.push_str(&self.parse_type_name()?);
-                        }
-                        if self.pending_gt {
-                            break;
-                        }
-                        if self.match_token(&TokenKind::Comma) {
-                            trait_name.push_str(", ");
-                        } else {
-                            break;
-                        }
-                    }
-                    self.expect_gt_in_generic()?;
-                    trait_name.push('>');
+                let trait_name = self.parse_type_body()?;
+                if self.check(&TokenKind::Question) || self.check(&TokenKind::QuestionQuestion) {
+                    return Err(ParseError {
+                        span: self.current().span,
+                        message: "an optional trait object isn't built yet".to_string(),
+                        hint: Some(format!(
+                            "take `any {}` and use a sentinel, or wrap it in a struct field                              you can leave unset",
+                            trait_name
+                        )),
+                        why: Some(
+                            "`any Trait?` checks, and the interpreter runs it — native never                              boxes the value into the option's payload, so it reads an                              uninitialised slot and crashes. Rejected here rather than at                              run time [#1308]"
+                                .to_string(),
+                        ),
+                    });
                 }
                 return Ok(format!("any {}", trait_name));
             }
         }
 
+        self.parse_type_body_from(name).map(|n| self.parse_optional_suffix(n))
+    }
+
+    /// A type name and everything that binds tighter than its optional suffix:
+    /// the qualification (`io.Buffer`) and the generic arguments (`Map<K, V>`).
+    fn parse_type_body(&mut self) -> Result<String, ParseError> {
+        let name = self.expect_ident()?;
+        self.parse_type_body_from(name)
+    }
+
+    /// The same, with the leading identifier already consumed.
+    fn parse_type_body_from(&mut self, mut name: String) -> Result<String, ParseError> {
         while self.check(&TokenKind::Dot) && !matches!(self.peek(1), TokenKind::LBrace) {
             self.advance();
             name.push('.');
@@ -1450,7 +1472,7 @@ impl Parser {
             name.push('>');
         }
 
-        Ok(self.parse_optional_suffix(name))
+        Ok(name)
     }
 
     /// Consume trailing `?`/`??` optional markers and append them to `base`.
