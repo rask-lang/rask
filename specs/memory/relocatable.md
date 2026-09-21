@@ -51,7 +51,7 @@ A type is *flat* when it contains no heap-backed fields, recursively.
 |------|-------------|
 | **FL1: Definition** | A type is flat if all fields are flat, recursively. No `string`, `Vec`, `Map`, `Shared`, `any Trait`, closures, or resource types |
 | **FL2: Primitives** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `usize` are flat |
-| **FL3: References are not flat** | A `Link<T>` is an address, so no struct holding one is flat. The flat tier is primitives and flat structs, full stop. `Handle<T>` used to answer flat — index-plus-generation, no address — which credited the zero-cost tier with graphs it cannot carry; it went out with `mem.pools` (rask-lang/rask#908) |
+| **FL3: References are not flat** | A `Link<T>` is an address, so no struct holding one is flat. The flat tier is primitives and flat structs, full stop. `Handle<T>` used to answer flat — index-plus-generation, no address — which credited the zero-cost tier with graphs it cannot carry; it went out with the pool (rask-lang/rask#908) |
 | **FL4: Comptime check** | `reflect.is_flat<T>()` returns `true` if T is flat. Resolved at compile time (`std.reflect/R1`) |
 | **FL5: Enums** | An enum is flat if all variant payloads are flat |
 
@@ -128,7 +128,7 @@ the bytes were written still reads back.
 
 
 These were written for the pool's `to_bytes`/`from_bytes`, which went out with
-`mem.pools` (rask-lang/rask#908). The rules are the format's, not the
+the pool (rask-lang/rask#908). The rules are the format's, not the
 container's, so they carry over to RB1/RB2 unchanged.
 
 ## Memory-Mapped Containers (Flat Types Only)
@@ -139,7 +139,7 @@ serialization step.
 | Rule | Description |
 |------|-------------|
 | **MM0: A rack is never mmappable** | Not even with a flat payload. A rack node carries a header — its rack, its incoming-edge list, its slot number — and the first two are addresses, so the storage is not an image that can be mapped back in. Graphs take the RB1/RB2 path, always. This is R1 losing graphs, said in terms of the operation that noticed |
-| **MM1: Flat constraint** | `from_mmap(path)` / `to_mmap(path)` require the element type to be flat (`FL1`). Compile error otherwise. The receiver went with `mem.pools`; the operation is waiting on a container to sit on |
+| **MM1: Flat constraint** | `from_mmap(path)` / `to_mmap(path)` require the element type to be flat (`FL1`). Compile error otherwise. The receiver went with the pool; the operation is waiting on a container to sit on |
 | **MM2: Bitwise layout** | An mmap'd container uses the type's in-memory layout directly. No encode/decode step |
 | **MM3: Platform constraint** | Mmap files are valid only on the same platform (same endianness, same alignment). Not cross-platform by default |
 | **MM4: Compile error message** | When T is not flat, the error must identify which field is heap-backed and suggest `to_bytes()` as the alternative |

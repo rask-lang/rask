@@ -152,7 +152,7 @@ Ensure the unhappy path, explicitly consume the happy path.
 
 ## Linearity in containers
 
-No container can hold a linear value. A `Vec` or a `Map` drop would need to consume each element, and drop can't return errors; a `Rack.delete` frees the node rather than handing it back, so nothing can consume one. `Pool<T>` used to be the exception — `remove` answered `T?` — and went with `mem.pools` (rask-lang/rask#908).
+No container can hold a linear value. A `Vec` or a `Map` drop would need to consume each element, and drop can't return errors; a `Rack.delete` frees the node rather than handing it back, so nothing can consume one. `Pool<T>` used to be the exception — `remove` answered `T?` — and went with the pool (rask-lang/rask#908).
 
 | Container | Linear allowed? | Why |
 |-----------|-----------------|-----|
