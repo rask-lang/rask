@@ -23,6 +23,37 @@ The day-to-day cost of a big stdlib isn't learning it — it's *re-scanning* it.
 
 SD2 is how SD1 stays possible: surface grows by parameter, not by name. A parameter is discoverable at the one function you already found; a sibling function is another entry you had to know existed.
 
+### What the budget is actually being spent on
+
+`Vec` was measured against SD1 and came to 60 items — three times the budget.
+Applying SD2 to it buys almost nothing, and the reason is worth writing down
+before someone else spends an afternoon on it: those 60 are not a pile of
+near-synonyms. They are roughly 16 sequence adapters, 12 methods for bounded
+capacity, about 20 core operations, and a tail. The name-families SD2 actually
+targets — `shrink_to_fit`/`shrink_to`, `sort`/`sort_by`, `min`/`min_by` — are
+worth one entry each.
+
+So the budget is being blown by **structure**, not by naming, and two things
+decide whether it can ever be met:
+
+- **The adapters.** `type.sequence/SEQ48` says a collection is its own chain
+  head, which is right — it's what removes Rust's `.iter()`. It is implemented
+  by hand-copying each adapter onto each container, so `Vec` carries 16 of
+  `Sequence`'s 28, is missing 12 (`take_while`, `min_by`, `for_each`, `chain`,
+  …), and `Map` and `Set` carry none at all. Every copy costs a declaration, a
+  checker rule and sometimes a runtime symbol, which is why the set is partial.
+  Routing an unresolved method on a container to `Sequence` would give every
+  container all 28 and take 16 entries off `Vec`'s count at the same time.
+- **Whether a container's inherited adapters count against its budget.** If
+  they do, no collection can ever meet SD1 while SEQ48 holds, because SEQ48
+  requires them. The count that means something is what the container *adds*.
+
+SD2 also needs a mechanism the stdlib doesn't have yet: a defaulted parameter
+on a stdlib method is parsed and dropped (rask-lang/rask#1276), so
+`sort(by: … ? = none)` doesn't compile. Until that lands, a collapse can only
+go as far as a mandatory parameter — which is why `shrink(to:)` takes its
+argument.
+
 ## The guess test, operationally (SD3)
 
 When speccing a module, write the *call sites first* — a dozen lines of realistic use, before any signature exists — and have someone (or a second pass, cold) guess what each call does and what its variants would be called. Three outcomes:

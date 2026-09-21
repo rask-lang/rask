@@ -282,8 +282,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // bound), which is why both exist.
         StdlibEntry::simple("Vec_allocated", "rask_vec_allocated", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Vec_reserve", "rask_vec_reserve", &[types::I64, types::I64], Some(types::I64), true),
-        StdlibEntry::simple("Vec_shrink_to_fit", "rask_vec_shrink_to_fit", &[types::I64], None, false),
-        StdlibEntry::simple("Vec_shrink_to", "rask_vec_shrink_to", &[types::I64, types::I64], None, false),
+        // `shrink_to_fit()` was `shrink_to(0)` with a name of its own, so the
+        // pair collapsed to one `shrink(to)` (std.api/SD5).
+        StdlibEntry::simple("Vec_shrink", "rask_vec_shrink_to", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("Vec_is_full", "rask_vec_is_full", &[types::I64], Some(types::I64), false),
         // Vec.fixed(n): (elem_size, n) — elem_size injected at lowering, same as
         // with_capacity. The difference is the bound it sets.
@@ -1977,7 +1978,6 @@ mod tests {
     "Vec.min",
     "Vec.modify",
     "Vec.position",
-    "Vec.push_with",
     "Vec.read",
     "Vec.reduce",
     "Vec.sort_by_key",

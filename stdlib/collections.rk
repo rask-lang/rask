@@ -359,21 +359,19 @@ extend Vec<T> {
     @native("rask_vec_set")
     public func set(mutate self, index: i64, take value: T) {}
 
-    /// Give back every element of room past the current length.
+    /// Give back allocation past `to` elements — or past the current length,
+    /// when that is larger. `shrink(0)` is therefore shrink-to-fit.
     ///
     /// A bounded vector keeps its allocation: CP3 pre-allocates at the bound,
     /// and shrinking one would make a later push reallocate past its promise.
-    @native("rask_vec_shrink_to_fit")
-    public func shrink_to_fit(mutate self) {}
-
-    /// Shrink the allocation to `min_capacity` elements, or to the length if
-    /// that is larger. A bounded vector keeps its allocation, as above.
+    ///
+    /// This was `shrink_to_fit()` beside `shrink_to(n)`, and the first was
+    /// exactly the second with a zero — `std.api/SD5` says one operation gets
+    /// one spelling. It would read better still as `shrink(to: usize = 0)`,
+    /// which is what `std.api/SD2` asks for; a stdlib method can't carry a
+    /// default argument yet (rask-lang/rask#1276).
     @native("rask_vec_shrink_to")
-    public func shrink_to(mutate self, min_capacity: usize) {}
-
-    /// Construct an element in place via closure. Panics on alloc failure.
-    @native
-    public func push_with(mutate self, f: func(T)) -> usize {}
+    public func shrink(mutate self, to: usize) {}
 
     /// Raw pointer to the underlying buffer (unsafe).
     @native("rask_vec_as_ptr")

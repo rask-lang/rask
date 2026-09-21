@@ -1994,7 +1994,7 @@ impl TypeChecker {
             method,
             "push" | "pop" | "push_all" | "insert" | "insert_at" | "remove" | "remove_at"
             | "remove_where" | "take_where" | "clear" | "truncate" | "resize"
-            | "reserve" | "shrink_to_fit" | "with_capacity" | "try_insert" | "try_push"
+            | "reserve" | "shrink" | "with_capacity" | "try_insert" | "try_push"
         )
     }
 

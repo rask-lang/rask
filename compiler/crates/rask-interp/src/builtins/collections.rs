@@ -158,14 +158,7 @@ impl Interpreter {
             // A bounded vector is pre-allocated at its bound (CP3) and keeps
             // its allocation: shrinking one would make a later push reallocate
             // past its own promise.
-            "shrink_to_fit" => {
-                let mut guard = v.lock().unwrap();
-                if guard.bound.is_none() {
-                    guard.items.shrink_to_fit();
-                }
-                Ok(Value::Unit)
-            }
-            "shrink_to" => {
+            "shrink" => {
                 let min_capacity = self.expect_int(&args, 0)? as usize;
                 let mut guard = v.lock().unwrap();
                 if guard.bound.is_none() {
