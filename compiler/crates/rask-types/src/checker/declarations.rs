@@ -796,6 +796,15 @@ impl TypeChecker {
                 sig
             })
             .collect();
+        // OR12: `@builtin` says the pair's types are written here and the
+        // arithmetic is the compiler's — `instant - instant` is a machine
+        // subtraction on two nanosecond counts. The backends have to know
+        // there's no body before they look for one.
+        for (m, sig) in i.methods.iter().zip(new_methods.iter()) {
+            if m.attrs.iter().any(|a| a == "builtin") {
+                self.types.record_builtin_method(type_id, &sig.name);
+            }
+        }
         // M7: one name per member. A field and a method that share one make
         // `h.run` and `h.run(5)` reach different things, which is the reader
         // problem M6 exists to avoid — so the declaration is the error, and

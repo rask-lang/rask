@@ -1933,6 +1933,19 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("an associated type is read off the conformance, not guessed from the methods — that is what keeps it a lookup instead of a search [type.associated-types/AT2]")
             }
 
+            AmbiguousLiteralOperand { right, op, candidates, span } => {
+                Diagnostic::error(format!(
+                    "`{}` between a literal and `{}` has more than one reading", op, right
+                ))
+                .with_code("E0895")
+                .with_primary(*span, format!("could be any of {}", candidates.join(", ")))
+                .with_fix(format!(
+                    "suffix the literal to say which: `3{} {} …`",
+                    candidates.first().map(String::as_str).unwrap_or("i64"), op
+                ))
+                .with_why("a bare literal takes its type from what it's used with, and here several types form this pair — so there is no one answer to take [type.operator-resolution/OR1]")
+            }
+
             NoOperatorConformance {
                 left, right, op, trait_name, header, has_inherent, span,
             } => {

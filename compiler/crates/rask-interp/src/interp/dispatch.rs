@@ -694,6 +694,12 @@ impl Interpreter {
         receiver: Value,
         args: Vec<Value>,
     ) -> Option<Result<Value, RuntimeError>> {
+        // OR12: a `@builtin` conformance has no body — it says what the pair
+        // answers with and leaves the arithmetic to the layer below, which has
+        // it already.
+        if target.builtin {
+            return None;
+        }
         let ty = Self::nominal_type_name(&receiver)
             .or_else(|| Self::runtime_type_name(&receiver))?;
         let mut names = vec![target.method.clone()];

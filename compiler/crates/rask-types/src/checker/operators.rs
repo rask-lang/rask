@@ -65,6 +65,8 @@ pub(super) struct OperatorMatch {
     /// The applied trait as the conformance table holds it (`Mul<Meters>`),
     /// for diagnostics and for the symbol the backends dispatch to.
     pub applied: String,
+    /// OR12: the conformance has no body — the compiler answers this pair.
+    pub builtin: bool,
     pub self_id: TypeId,
 }
 
@@ -219,46 +221,53 @@ impl TypeChecker {
         }
     }
 
-    /// OR6/OR1: the primitive an unsuffixed literal on the *left* of an
-    /// operator must be, when exactly one primitive forms a pair with the type
-    /// on the right.
+    /// OR1: the type an unsuffixed literal on the *left* of an operator must
+    /// be, read off the conformance table.
     ///
     /// `3 * duration` is the case. Nothing ties the literal to anything — the
-    /// right operand isn't a number — so it defaulted to `i32` and the pair
-    /// `(i32, Duration)` names no conformance, for a line whose only reading is
-    /// the `i64` one the stdlib wrote. The candidate set is the fifteen
-    /// primitives, so this is a lookup over a fixed list, not a search.
+    /// right operand isn't a number — so it defaulted to `i32`, and the pair
+    /// `(i32, Duration)` names no conformance for a line whose only reading is
+    /// the `i64` one the stdlib wrote. Asking which types conform to
+    /// `Mul<Duration>` is one lookup, and a literal narrows the answer further:
+    /// `3` can only be an integer and `3.0` only a float.
+    ///
+    /// `None` when nothing matches or more than one does — the caller reports
+    /// the ambiguity, which a suffix on the literal settles.
     pub(super) fn literal_receiver_pair(
         &self,
         recv: &Type,
         method: &str,
         args: &[Type],
-    ) -> Option<Type> {
-        let trait_base = operator_trait(method)?;
-        let [arg] = args else { return None };
+    ) -> Result<Option<Type>, Vec<String>> {
+        let Some(trait_base) = operator_trait(method) else { return Ok(None) };
+        let [arg] = args else { return Ok(None) };
         let rhs = self.resolve_named(&self.ctx.apply(arg));
+        // A number on the right settles the literal the ordinary way.
         if matches!(rhs, Type::Var(_) | Type::Error)
             || super::type_table::primitive_spelling(&rhs).is_some()
         {
-            return None;
+            return Ok(None);
         }
-        let applied = format!("{}<{}>", trait_base, conformance_spelling(&rhs, &self.types)?);
-        let mut found = None;
-        for name in super::type_table::PRIMITIVE_CONFORMANCE_TARGETS {
-            let Some(id) = self.types.primitive_id(name) else { continue };
-            if !self.types.declares_conformance(id, &applied) {
+        let Some(spelling) = conformance_spelling(&rhs, &self.types) else { return Ok(None) };
+        let applied = format!("{}<{}>", trait_base, spelling);
+
+        let mut found: Vec<Type> = Vec::new();
+        for id in self.types.conformers_of(&applied) {
+            let name = self.types.type_name(*id);
+            // Only a primitive: a literal is never anything else.
+            if !rask_ast::primitives::is_scalar(&name) {
                 continue;
             }
-            let candidate = super::parse_type_string(name, &self.types).ok()?;
-            if !self.literal_could_be(recv, &candidate) {
-                continue;
+            let Ok(candidate) = super::parse_type_string(&name, &self.types) else { continue };
+            if self.literal_could_be(recv, &candidate) {
+                found.push(candidate);
             }
-            if found.is_some() {
-                return None;
-            }
-            found = Some(candidate);
         }
-        found
+        match found.as_slice() {
+            [] => Ok(None),
+            [only] => Ok(Some(only.clone())),
+            several => Err(several.iter().map(|t| self.render_type(t)).collect()),
+        }
     }
 
     /// The type an applied conformance's `Rhs` names: `Mul<f64>` → `f64`.
@@ -345,11 +354,13 @@ impl TypeChecker {
             .assoc_binding(self_id, applied, "Out")
             .cloned()
             .unwrap_or_else(|| sig.ret.clone());
+        let builtin = self.types.is_builtin_method(self_id, &filed);
         PairOutcome::Found(OperatorMatch {
             sig,
             out,
             filed,
             applied: applied.to_string(),
+            builtin,
             self_id,
         })
     }
@@ -449,6 +460,7 @@ impl TypeChecker {
                     recv: recv.clone(),
                     method: found.filed.clone(),
                     applied: found.applied,
+                    builtin: found.builtin,
                 },
             );
             // CALL6: dispatch keys on this, and what it dispatches to is the
@@ -479,4 +491,9 @@ pub struct OperatorTarget {
     pub method: String,
     /// The applied trait the pair resolved to (`Mul<Meters>`).
     pub applied: String,
+    /// OR12: the conformance declares what the pair answers with and leaves the
+    /// arithmetic to the compiler — `instant - instant` is a machine
+    /// subtraction. There is no body, so the backends keep their own lowering
+    /// instead of looking for one.
+    pub builtin: bool,
 }

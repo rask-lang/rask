@@ -825,9 +825,25 @@ impl TypeChecker {
                 // ties the literal to anything, so it would default to `i32`
                 // and miss the `i64` conformance the pair was written for.
                 if self.ctx.literal_vars.contains_key(id) {
-                    if let Some(settled) = self.literal_receiver_pair(&ty, &method, &args) {
-                        self.unify(&ty, &settled, span)?;
-                        return self.resolve_method(settled, method, args, ret, span, call_node);
+                    match self.literal_receiver_pair(&ty, &method, &args) {
+                        Ok(Some(settled)) => {
+                            self.unify(&ty, &settled, span)?;
+                            return self.resolve_method(
+                                settled, method, args, ret, span, call_node,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(candidates) => {
+                            let right = self.render_type(
+                                &self.resolve_named(&self.ctx.apply(&args[0])),
+                            );
+                            return Err(TypeError::AmbiguousLiteralOperand {
+                                right,
+                                op: Self::operator_spelling(&method).to_string(),
+                                candidates,
+                                span,
+                            });
+                        }
                     }
                 }
                 if self.ctx.literal_vars.contains_key(id)
@@ -1622,6 +1638,12 @@ impl TypeChecker {
                             recv: receiver.clone(),
                             method: filed,
                             applied,
+                            // A bound names the trait, not the conformance, so
+                            // whether the instantiation's is `@builtin` isn't
+                            // known here. No stdlib `@builtin` pair is reachable
+                            // through a bound today; if one becomes so, the
+                            // backends' "is there a body" fallback catches it.
+                            builtin: false,
                         },
                     );
                 }

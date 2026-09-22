@@ -754,6 +754,7 @@ impl<'a> Monomorphizer<'a> {
                             recv,
                             method,
                             applied: target.applied.clone(),
+                            builtin: target.builtin,
                         },
                     );
                 }

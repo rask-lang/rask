@@ -105,7 +105,7 @@ An unsuffixed literal has no type until defaulting runs, and a conformance is ch
 
 - **One conformance is not a choice.** `meters * 2.0` where `Meters` carries only `Mul<f64>` types the call against it, and that is what settles the literal.
 - **A literal still says something.** `2` can only be an integer and `2.0` only a float, so against `Div<i64>` and `Div<Duration>` a `duration / 2` has one candidate of the right kind.
-- **A literal on the *left* takes the primitive that forms a pair.** `3 * duration` has nothing tying the `3` to anything — the right operand isn't a number — so it takes the type of the one primitive that forms a pair with `Duration`. The candidate set is the primitives, so this is a lookup over a fixed list, not a search.
+- **A literal on the *left* takes the type that forms a pair.** `3 * duration` has nothing tying the `3` to anything — the right operand isn't a number — so it takes the type that conforms to `Mul<Duration>`. That is one lookup: the conformance table is indexed by applied trait as well as by `Self`. When more than one primitive answers, the literal is ambiguous and says so; a suffix settles it.
 
 Anything still ambiguous waits for literal defaulting rather than picking.
 
@@ -168,6 +168,7 @@ Both are the messages that decide whether the feature is trusted, so they are no
 | `a *= b` where `(A, B)` answers in `C` | OR11 | Compile error: the assignment would change `a`'s type |
 | `instant - instant` | OR12 | `Duration`, declared `@builtin` in `stdlib/time.rk` |
 | `3 * duration` | OR1 | `Duration` — the literal takes the `i64` the pair was written for |
+| `3 * tick`, with `Mul<Tick>` on both `i64` and `i32` | OR1 | Compile error (E0895) naming both; `3i64 * tick` settles it |
 | `x.mul(2.0)` inside `func f<T: Mul<f64>>` | OR1, AT6 | The bound names the pair; `T.Out` is read off it |
 | `m * 2.0` where `Meters` has an inherent `mul` | OR8 | Compile error (E0894) naming both operands and the header the method wants |
 | `m.mul(2.0)` where `Meters` has an inherent `mul` | OR8a | Legal — an ordinary method call, which is all it ever was |

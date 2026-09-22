@@ -611,6 +611,16 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// OR1: an unsuffixed literal on the left of an operator, where more than
+    /// one primitive forms a pair with the type on the right.
+    #[error("`{op}` between a literal and `{right}` could be any of {}", .candidates.join(", "))]
+    AmbiguousLiteralOperand {
+        right: String,
+        op: String,
+        candidates: Vec<String>,
+        span: Span,
+    },
+
     /// OR1/OR8: an operator whose operand pair names no conformance.
     #[error("no `{op}` for `{left}`")]
     NoOperatorConformance {
@@ -1438,6 +1448,7 @@ impl TypeError {
             | UnknownAssocType { .. }
             | InherentMethodOnPrimitive { .. }
             | NoOperatorConformance { .. }
+            | AmbiguousLiteralOperand { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
             | StringAddForbidden { .. }

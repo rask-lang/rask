@@ -106,6 +106,17 @@ pub struct TypeTable {
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
     pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<String>)>>,
+    /// OR1: the conformances, read the other way round — applied trait
+    /// (`Mul<Duration>`) → the types that answer it.
+    ///
+    /// `3 * duration` asks "which type forms this pair with `Duration`", which
+    /// the by-`Self` table can only answer by walking every entry. One insert
+    /// here on the way in makes it a lookup.
+    pub(super) conformers_by_pair: HashMap<String, Vec<TypeId>>,
+    /// OR12: conformance methods declared `@builtin` — the pair's types are
+    /// written in the stdlib and the arithmetic is the compiler's, so there is
+    /// no body to call. Keyed `(type, filed method name)`.
+    pub(super) builtin_methods: std::collections::HashSet<(TypeId, String)>,
     /// OR6: the `TypeDef::Primitive` standing in for each primitive, so a
     /// conformance written against one has a `TypeId` to be filed under.
     ///
@@ -136,6 +147,8 @@ impl TypeTable {
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
             primitive_ids: HashMap::new(),
+            builtin_methods: std::collections::HashSet::new(),
+            conformers_by_pair: HashMap::new(),
         };
         table.register_builtins();
         table
@@ -484,7 +497,17 @@ impl TypeTable {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
         let key = self.applied_conformance_key(trait_name, &self_base);
+        let conformers = self.conformers_by_pair.entry(key.clone()).or_default();
+        if !conformers.contains(&type_id) {
+            conformers.push(type_id);
+        }
         self.conformances.entry(type_id).or_default().insert(key);
+    }
+
+    /// OR1: every type that conforms to this applied trait, in declaration
+    /// order. `Mul<Duration>` answers with the `i64` the stdlib wrote.
+    pub fn conformers_of(&self, applied: &str) -> &[TypeId] {
+        self.conformers_by_pair.get(applied).map_or(&[], |v| v.as_slice())
     }
 
     /// AT2/AT8: record `type Out = Meters` for one conformance.
@@ -1212,6 +1235,17 @@ impl TypeTable {
             | TypeDef::NominalAlias { name, .. }
             | TypeDef::Primitive { name, .. } => name,
         }
+    }
+
+    /// OR12: note that a conformance method has no body — the compiler answers
+    /// this pair itself.
+    pub fn record_builtin_method(&mut self, type_id: TypeId, filed: &str) {
+        self.builtin_methods.insert((type_id, filed.to_string()));
+    }
+
+    /// OR12: is this conformance method the compiler's rather than a body?
+    pub fn is_builtin_method(&self, type_id: TypeId, filed: &str) -> bool {
+        self.builtin_methods.contains(&(type_id, filed.to_string()))
     }
 
     /// OR6: the registered stand-in for a primitive, by its source spelling.
