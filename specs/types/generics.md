@@ -12,7 +12,7 @@ Trait conformance is declared — `extend Type with Trait` says the type satisfi
 
 | Rule | Description |
 |------|-------------|
-| **G1: Declared conformance** | A type satisfies a trait through a declared `extend Type with Trait` block, checked against the trait's signatures. `duck trait` opts a trait into shape-matching (no declaration needed) within its own package — see DT1–DT4. The four core traits (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1, and only by the package that declares the type (XC1). `Debug` (all types), `Encode`/`Decode` (markers), and `Error` (enums, `type.errors/ER6`) are also auto-derived |
+| **G1: Declared conformance** | A type satisfies a trait through a declared `extend Type with Trait` block, checked against the trait's signatures. `duck trait` opts a trait into shape-matching (no declaration needed) within its own package — see DT1–DT4. The four core traits (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `Error` (enums, `type.errors/ER6`) are also auto-derived. Of those, the four plus `Encode`/`Decode` may be overridden only by the package that declares the type (XC1) |
 | **G2: Checked at use site** | The compiler verifies trait matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before trait checking |
@@ -233,24 +233,28 @@ There is no orphan rule. Any package may declare `extend T with Trait` for a typ
 
 | Rule | Description |
 |------|-------------|
-| **XC1: Core traits belong to the owner** | `extend T with Equal`, `Hashable`, `Comparable` or `Cloneable` is legal only in the package that declares `T`. From any other package it's a compile error, the empty-body form included. These four are auto-derived for every eligible type (EQ1/HA1/CO1/CL1), so a third party never needs one |
+| **XC1: Contract traits belong to the owner** | `extend T with Equal`, `Hashable`, `Comparable`, `Cloneable`, `Encode` or `Decode` is legal only in the package that declares `T`. From any other package it's a compile error, the empty-body form included. All six are auto-derived for every eligible type (EQ1/HA1/CO1/CL1, `std.encoding/E12`), so a third party never needs one |
 | **XC2: Everything else is open** | For every other trait, `extend T with Trait` is legal wherever both names are visible. No newtype wrapper, no forwarding methods, no ceremony for the case that has no conflict |
 | **XC3: Two conformances never resolve silently** | Two declared conformances for the same (type, trait) pair are a compile error, never a pick. The pair is the *applied* trait, so two different applied forms of one generic trait are two conformances, not one declared twice — that they can still collide on a method name is MN3's, reported once and not twice. Both in one package: the error is at the second declaration. In two packages: at the place that needs the conformance, so a collision nobody uses costs nothing |
 | **XC4: Visibility is the user's, not the build's** | A conformance is visible to a package iff the declaring package is in *that* package's dependency graph. A library keeps using its own conformance even when the program linking it also pulls in someone else's |
 | **XC5: Conformance is part of the instantiation** | A generic instance is keyed by its type arguments *and* the conformances resolved for its bounds. `show<Doc>` under two different `Labeled` conformances is two instances, so neither can silently get the other's code |
 | **XC6: Disambiguation is a nominal type** | Nothing names a conformance, so there is no syntax for choosing between two. `type MyDoc = Doc` is a distinct type (`type.aliases/T2`) that carries its own conformance (`T13`) |
 
-### Why the core four are carved out
+### Why these six are carved out
 
-The hazard worth a language rule isn't two packages disagreeing about behavior — it's two packages disagreeing about an invariant a *data structure* was built on. Package D fills a `Map` keyed by `Json` using its own `Hashable`, package E probes that map with a different one, and entries that are plainly there can't be found. Nothing errors, nothing crashes, the lookup just says no.
+The hazard worth a language rule isn't two packages disagreeing about behavior — it's a third party changing what happens to data the owner is responsible for. Two shapes of that, and both are silent.
 
-That class needs exactly four traits: `Equal`, `Hashable`, `Comparable`, `Cloneable`. Every container in the stdlib rests on them, every eligible type already has the one version the compiler derived (G1), and only the owner may replace it (EQ2/HA2/CO2, OC1). So the carve-out costs nothing — there was never a legitimate reason for a third party to write one.
+**The four, by disagreeing.** Package D fills a `Map` keyed by `Json` using its own `Hashable`, package E probes that map with a different one, and entries that are plainly there can't be found. Nothing errors, nothing crashes, the lookup just says no. Every container in the stdlib rests on these four, every eligible type already has the one version the compiler derived (G1), and only the owner may replace it (EQ2/HA2/CO2, OC1).
 
-`Debug`, `Encode`/`Decode` and `Error` are auto-derived too and are *not* carved out. Nothing keys a hash table on them; a third-party `Debug` changes what a log line says, which is the ordinary ambiguity XC3 covers. The list of four is closed: a trait that turns out to carry structural invariants gets its own design round, not a quiet addition here.
+**`Encode`/`Decode`, by overruling.** These two can't disagree: they're markers with no methods (`std.encoding/E11`), so a conformance block has no body, and the encoding is derived from the type's fields either way. What a third-party marker *can* do is widen what's serializable — a type whose owner wrote `@no_encode` because putting this value on a wire is meaningless or unsafe (`std.encoding/E16`) gets serialized anyway, decided by a package the owner has never read. `@no_encode` is the owner saying no about their own type's data. Someone else's `extend` is not the place that gets overturned.
+
+`Debug` and `Error` are auto-derived too and are *not* carved out. Nothing is stored, keyed or transmitted on their say-so; a third-party `Debug` changes what a log line says, which is the ordinary ambiguity XC3 covers. The six are a closed list: a trait that turns out to decide what happens to someone else's data gets its own design round, not a quiet addition here.
 
 ### What XC3 does and doesn't buy
 
-XC3 makes a collision loud in the program that has it. It does not make disagreeing conformances impossible: if D encodes `Json` with its own `Encode` and E decodes with a different one, neither package ever sees both, nothing errors, and the bytes disagree. Same story for a user-written container that bakes a user trait's ordering into its layout — XC5 keeps the two instantiations apart so neither runs the other's code, but a value built by one and probed by the other still misbehaves.
+XC3 makes a collision loud in the program that has it. What it can't do is see a collision no single program has: two packages that never depend on each other each use their own conformance, nothing is ambiguous from either side, and nothing errors.
+
+XC1 empties that of consequence for the stdlib's contracts — a hash can't be third-party, so two packages keying the same type are keying it the same way. What's left is a user trait carrying a contract of its own: a user-written sorted container instantiated under two different orderings. XC5 keeps the instantiations apart so neither runs the other's code, but a value built by one and probed by the other still misbehaves, and no diagnostic in this design catches it.
 
 That residual is the price of having no orphan rule, and it's bounded: it takes two packages that independently conform the same foreign type to the same foreign trait, *and* a value crossing between them. Rust charges every user a newtype wrapper to rule it out. Rask charges the one user who hits it, and charges the same wrapper (XC6) — one line, where it's actually needed.
 
@@ -266,7 +270,7 @@ Step 3 gives you a type that compiles; it does not give you liba's behavior. Not
 
 ### Error Messages
 
-**Third-party core-trait conformance [XC1]:**
+**Third-party contract-trait conformance [XC1]:**
 ```
 ERROR [type.generics/XC1]: `Hashable` for `Doc` can only be declared in `traitpkg`
    |
@@ -281,6 +285,27 @@ FIX: Put the hash you want on a type of your own:
 
   type MyDoc = traitpkg.Doc
   extend MyDoc with Hashable { ... }
+```
+
+`Encode`/`Decode` are the same rule and a different sentence — there is no
+second encoding to conflict with, only someone else's `@no_encode` being
+overruled, so the message says that instead:
+
+```
+ERROR [type.generics/XC1]: only `traitpkg` can make `Doc` encodable
+   |
+4  |  extend traitpkg.Doc with Encode {
+   |                           ^^^^^^ `traitpkg` marked `Doc` `@no_encode`
+
+WHY: `Encode` has no methods — declaring it doesn't change how `Doc`
+     serializes, it changes *whether* it does. `traitpkg` said no about
+     its own type's data, and this would be `liba` saying yes for them.
+
+FIX: If you need these fields on a wire, carry them in a type you own:
+
+  struct DocWire {
+      public n: i64
+  }
 ```
 
 **Two conformances in scope [XC3]:**
@@ -538,7 +563,7 @@ func increment<T: Numeric>(val: T) -> T {
 | Recursive generics | G6 | `Vec<Vec<T>>` allowed; compiler prevents infinite expansion |
 | Trait visibility | TD1 | Package-visible by default, `public trait` exports — same rule as structs and functions (`struct.modules/V1`) |
 | Same method required by two traits | MN2/MN3 | Same signature: shared implementation. Different: `scoped` or error |
-| Third party declares `Hashable` for a foreign type | XC1 | Compile error at the `extend`, whatever the body. Wrap in a nominal type instead |
+| Third party declares `Hashable` or `Encode` for a foreign type | XC1 | Compile error at the `extend`, whatever the body. Wrap in a nominal type instead |
 | Third party declares any other trait for a foreign type | XC2 | Legal, no wrapper needed |
 | Two packages declare the same (type, trait), nobody uses it | XC3 | Not an error — the check is where the conformance is required |
 | One package declares the same (type, trait) twice | XC3 | Compile error at the second declaration |
@@ -579,7 +604,11 @@ func increment<T: Numeric>(val: T) -> T {
 
 **XC1–XC6 (cross-package conformance):** Rust's orphan rule is the most-hated restriction in the language, and it exists for a real reason — two crates defining conflicting impls that then link together. What's wrong with it isn't the goal, it's the billing. Every user pays a newtype wrapper and a wall of forwarding methods, forever, as insurance against a conflict that almost never happens.
 
-Rask inverts that because it can. The conflicts that actually corrupt data go through `Equal`/`Hashable`/`Comparable`/`Cloneable`, and those are already auto-derived with one canonical version per type (G1) — so forbidding third-party versions of exactly those four costs nobody anything and removes the whole corruption class. What's left is ambiguity, not corruption, and ambiguity can be reported. XC3 reports it, at the place that has it, naming both packages. The common case pays nothing; the rare real collision pays a newtype — the same thing Rust charges everyone.
+Rask inverts that because it can. The conflicts that actually corrupt data go through traits that are already auto-derived with one canonical version per type (G1) — so forbidding third-party versions of exactly those costs nobody anything and removes the corruption class outright. What's left is ambiguity, not corruption, and ambiguity can be reported. XC3 reports it, at the place that has it, naming both packages. The common case pays nothing; the rare real collision pays a newtype — the same thing Rust charges everyone.
+
+The carve-out started at four — the traits the stdlib's containers key on — on the reasoning that a duplicate `Encode` is only ambiguity. That was right about `Encode` not disagreeing and wrong about it being harmless, and the rest of the reasoning had to change with it. `Encode` and `Decode` are markers (`std.encoding/E11`): there is no second implementation to conflict, because there is no implementation. What a third party gets by declaring one is the *decision*, and the decision `@no_encode` records is that this type's data does not go on a wire. A package that never wrote the type shouldn't be the one to reverse that, so XC1 covers all six.
+
+Which makes the rule less "these traits get baked into data structures" and more "these traits decide what happens to data whose owner is someone else". `Debug` decides what a line of a log looks like and stays out.
 
 XC5 is the part that makes XC3 more than a slogan. Two conformances in one build, resolved per instantiation (XC4), means the same generic at the same type argument can need two bodies. If the monomorphization key were just the type arguments, one of them would silently win and which one would depend on link order — the exact regression this design exists to prevent, reintroduced at the back.
 
@@ -650,7 +679,7 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 | `Encode` | Marker — no methods | Yes — all-Encode public fields (`std.encoding/E12`) |
 | `Decode` | Marker — no methods | Yes — all-Decode public fields (`std.encoding/E12`) |
 
-The four core traits (Equal, Hashable, Comparable, Cloneable) are the invariant-carrying family: their implementations get baked into data structures that cross package boundaries, so they are auto-derived, owner-overridable, and never third-party (cross-package conformance rules, issue #312).
+Six of these decide what happens to a type's data: `Equal`, `Hashable`, `Comparable`, `Cloneable` get baked into the data structures holding it, and `Encode`/`Decode` say whether it may be serialized at all. All six are auto-derived, owner-overridable, and never third-party (XC1).
 
 ### See Also
 
