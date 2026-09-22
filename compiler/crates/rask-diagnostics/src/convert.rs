@@ -1933,6 +1933,19 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("an associated type is read off the conformance, not guessed from the methods — that is what keeps it a lookup instead of a search [type.associated-types/AT2]")
             }
 
+            OperatorMethodWithoutConformance { ty, method, trait_name, header, span } => {
+                Diagnostic::error(format!(
+                    "`{}` is `{}`'s method — declare the conformance", method, trait_name
+                ))
+                .with_code("E0893")
+                .with_primary(*span, format!("`{}` on `{}` without `with {}`", method, ty, trait_name))
+                .with_fix(format!(
+                    "extend {} with {} {{ … }}\n— or, if it isn't the operator, give it a name that isn't `{}`",
+                    ty, header, method
+                ))
+                .with_why("an operator resolves from both operand types against a declared conformance, so a `mul` nobody registered is a method with an operator's name and none of its meaning — and `T: Mul` as a bound wouldn't accept it. The twelve operator method names belong to their traits [type.operator-resolution/OR1]")
+            }
+
             InherentMethodOnPrimitive { ty, method, span } => {
                 Diagnostic::error(format!(
                     "`{}` takes conformances, not methods of its own", ty

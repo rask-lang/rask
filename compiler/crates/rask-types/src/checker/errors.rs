@@ -611,6 +611,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// OR1/OR2: an operator's method declared outside a conformance.
+    #[error("`{method}` is `{trait_name}`'s method — declare the conformance")]
+    OperatorMethodWithoutConformance {
+        ty: String,
+        method: String,
+        trait_name: String,
+        /// The header the block wants, with `Rhs` read off the parameter.
+        header: String,
+        span: Span,
+    },
+
     /// OR6: `extend f64 { … }` — an inherent method on a primitive.
     #[error("`{ty}` takes conformances, not methods of its own")]
     InherentMethodOnPrimitive {
@@ -1419,6 +1430,7 @@ impl TypeError {
             | MissingAssocType { .. }
             | UnknownAssocType { .. }
             | InherentMethodOnPrimitive { .. }
+            | OperatorMethodWithoutConformance { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
             | StringAddForbidden { .. }

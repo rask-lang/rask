@@ -215,6 +215,22 @@ impl TypeChecker {
         super::parse_type_string(&rhs, &self.types).ok()
     }
 
+    /// The receiver's declared type parameters bound to what it actually is:
+    /// `Wrapping<u8>` gives `{T: u8}`. Empty for a receiver with none.
+    fn receiver_param_bindings(&self, recv: &Type) -> Vec<(String, Type)> {
+        let Type::Generic { base, args } = &self.resolve_named(&self.ctx.apply(recv)) else {
+            return Vec::new();
+        };
+        self.declared_type_params(*base)
+            .into_iter()
+            .zip(args.iter())
+            .filter_map(|(p, a)| match a {
+                crate::types::GenericArg::Type(t) => Some((p, (**t).clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Is this operand an unsuffixed literal still waiting for a type?
     fn is_literal_var(&self, ty: &Type) -> bool {
         matches!(self.ctx.apply(ty), Type::Var(id) if self.ctx.literal_vars.contains_key(&id))
@@ -347,14 +363,24 @@ impl TypeChecker {
         span: Span,
         call_node: Option<NodeId>,
     ) -> Result<bool, super::TypeError> {
+        // AT10: a conditional conformance's `Out` and parameters are written in
+        // the receiver's own parameters — `extend Wrapping<T> with Add` answers
+        // in `Wrapping<T>`. Bind them to what this receiver actually is, or
+        // `(a + b).value` comes back as the literal `T` and every use of it is
+        // a method call on a type parameter.
+        let bindings = self.receiver_param_bindings(recv);
+        let subst: std::collections::HashMap<&str, Type> =
+            bindings.iter().map(|(p, t)| (p.as_str(), t.clone())).collect();
         let mut progress = false;
         for ((param, _), arg) in found.sig.params.iter().zip(args.iter()) {
-            if self.coerce_arg(param, arg, span)? {
+            let param = Self::substitute_type_params(param, &subst);
+            if self.coerce_arg(&param, arg, span)? {
                 progress = true;
             }
         }
         // OR5: `Out` is read off the conformance, never solved for.
-        if self.unify(&found.out, ret, span)? {
+        let out = Self::substitute_type_params(&found.out, &subst);
+        if self.unify(&out, ret, span)? {
             progress = true;
         }
         if let Some(node) = call_node {

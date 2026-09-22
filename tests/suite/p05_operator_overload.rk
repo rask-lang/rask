@@ -5,8 +5,11 @@
 func main() {}
 
 struct Vec2 { x: i32, y: i32 }
-extend Vec2 {
+extend Vec2 with Add {
     func add(self, o: Vec2) -> Vec2 { return Vec2 { x: self.x + o.x, y: self.y + o.y } }
+}
+
+extend Vec2 with Mul {
     func mul(self, o: Vec2) -> Vec2 { return Vec2 { x: self.x * o.x, y: self.y * o.y } }
 }
 

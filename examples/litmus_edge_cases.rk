@@ -17,7 +17,7 @@ extend TextBuffer {
         return TextBuffer { lines: Vec.new() }
     }
 
-    func add(self, text: string) {
+    func push(self, text: string) {
         self.lines.push(text)
     }
 
@@ -31,8 +31,8 @@ extend TextBuffer {
 
 test "string is Copy — read then write same container" {
     mut buf = TextBuffer.new()
-    buf.add("hello")
-    buf.add("world")
+    buf.push("hello")
+    buf.push("world")
     let old = buf.replace(0, "changed")
     assert old == "hello"
     assert buf.lines[0] == "changed"

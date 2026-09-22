@@ -46,6 +46,7 @@ public trait Mul<Rhs = Self> {
 | Rule | Description |
 |------|-------------|
 | **OR1: Resolution on the ordered pair** | `a OP b` selects the operator-trait conformance registered for `(typeof a, typeof b)`, in that order. It is not a method lookup on `a` |
+| **OR1a: The method names belong to the traits** | `add`, `sub`, `mul`, `div`, `rem`, `neg`, `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shl`, `shr` are declared in a conformance or not at all. A plain `extend Meters { func mul(self, k: f64) -> Meters }` is an error naming the header it wants, because MN1 gives the type one `mul` and that one has to be the conformance's. A method that could not *be* the operator's — `mutate self`, a void return, the wrong arity — keeps the name; a set's `add(mutate self, v)` is not an operator |
 | **OR2: Declared operator traits** | `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` are declared traits taking `<Rhs>` and carrying an associated `Out`. `Neg` and `BitNot` are unary — no `Rhs`, `Out` only. They live in [`stdlib/ops.rk`](../../stdlib/ops.rk) |
 | **OR3: Both default to `Self`** | The operator traits are declared `trait Mul<Rhs = Self> { type Out = Self … }`, so this is `type.generics/GT4` and `type.associated-types/AT4` rather than an operator rule. `extend Point with Add` is `Add<Point>` answering in `Point`; `extend Meters with Mul<f64>` answers in `Meters` |
 | **OR4: One conformance per pair** | At most one conformance of a given operator trait for a given `(Self, Rhs)` in a build. A second is a use-site error naming both packages — the same collision rule retroactive conformance already carries (#312). Two conformances of one operator to *different* pairs are fine and are what OR1 tells apart |
@@ -120,6 +121,7 @@ Anything still ambiguous waits for literal defaulting rather than picking.
 
 - **The hardcoded stdlib pairs are gone.** `("Instant", "add")`, `("Instant", "sub")` and their neighbours are ordinary conformances in `stdlib/time.rk`, and the three rows of the arithmetic table that had never been implemented came with them.
 - **Primitives gained a conformance surface.** Their method tables are still closed to inherent methods (OR6), but a conformance can be written on one.
+- **Existing inherent operator methods became conformances.** `extend Meters { func mul(…) }` no longer serves `*`; it is `extend Meters with Mul<f64>`. The rewrite is mechanical and the compiler prints the header (E0893).
 - **A type can carry two conformances of one operator.** Each one's method is filed under the applied argument, so the two keep separate symbols.
 - **`operators.md`'s "Operator traits: `Add`, `Sub`, …" line describes something that exists.**
 
@@ -167,6 +169,8 @@ Both are the messages that decide whether the feature is trusted, so they are no
 | `instant - instant` | OR12 | `Duration`, declared `@builtin` in `stdlib/time.rk` |
 | `3 * duration` | OR1 | `Duration` — the literal takes the `i64` the pair was written for |
 | `x.mul(2.0)` inside `func f<T: Mul<f64>>` | OR1, AT6 | The bound names the pair; `T.Out` is read off it |
+| `extend Meters { func mul(self, k: f64) -> Meters }` | OR1a | Compile error (E0893) naming the header: `extend Meters with Mul<f64>` |
+| `extend Holder { func add(mutate self, v: i64) }` | OR1a | Legal — an operator's method takes `self` by value and answers with something |
 
 ---
 
@@ -188,13 +192,13 @@ The first two are ordinary compile-time work. Rask already had the second: #312 
 
 The Julia comparison also produced a caution worth recording: part of why Julia composes so well is that nothing can reject you. A checked system buys early errors and pays for them with errors in cases Julia would simply have run. OR8 is that bill. I think it is the right trade for a language that has to run on a sensor, but it is a real cost and not a free win.
 
-### Why an inherent operator method still serves the operator
+### Why the rule is on the declaration, not the call
 
-The first draft of this rule said the opposite: an inherent `extend Meters { func mul(…) }` would stop being found by `*`, and every operator would go through a declared conformance. That is the tidier rule and it is what `G1`'s nominal conformance does for every other trait.
+Desugaring erases the difference between `a * b` and `a.mul(b)` before anything downstream can act on it, so "this call came from an operator" isn't a question the checker can ask. The obvious answer — carry a marker from desugar into the checker — is a lot of plumbing for a fact that turns a working spelling into an error.
 
-It isn't what landed, for one concrete reason: desugaring erases the difference between `a * b` and `a.mul(b)` before anything can act on it, and a method named `add` that isn't an operator — a registry's `add`, a set's — has to keep working as a plain call. Telling the two apart means carrying a marker from desugar through resolution into the checker, and the value of the marker is that it turns a working spelling into an error.
+OR1a asks the question at the declaration instead, where nothing has been erased: a method with an operator's name and an operator's shape is the conformance's, and the block that writes it says which pair it answers. That leaves no call site where an operator could resolve to something a conformance didn't register, without any marker — and it puts the diagnostic on the line that needs changing, with the header to write, rather than on the call.
 
-So the pair is what resolves, and an inherent operator method is the `(Self, Rhs)` conformance it looks like. What the pair *can't* be answered by inherently is a primitive receiver — OR6 keeps that closed — which is the half that was unwritable, and the half that the whole feature was for. If the marker becomes cheap for another reason, this is worth revisiting: `T: Add` as a bound means more when the conformance is declared.
+The shape test is what keeps a set's `add(mutate self, v: i64)` legal. The trait declares `func add(self, rhs: Rhs) -> Self.Out`, so a `mutate self` or a void return can never be the conformance, and reserving the name against it would buy nothing. One casualty in the corpus — a `TextBuffer.add(text)` that is now `push`, which is what the collections call it.
 
 ### What was considered and rejected
 

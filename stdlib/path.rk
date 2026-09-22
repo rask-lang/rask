@@ -113,23 +113,6 @@ extend Path {
         return false
     }
 
-    /// Append a component with a separator. Backs the `/` operator —
-    /// there is no `join` method.
-    public func div(self, other: string) -> Path {
-        // An absolute right side replaces the left, the way every path library
-        // resolves it.
-        if other.starts_with("/") {
-            return Path { value: other }
-        }
-        if self.value.is_empty() {
-            return Path { value: other }
-        }
-        if self.value.ends_with("/") {
-            return Path { value: "{self.value}{other}" }
-        }
-        return Path { value: "{self.value}/{other}" }
-    }
-
     /// Replace the extension. Adds one when there isn't one already.
     public func with_extension(self, ext: string) -> Path {
         if self.stem()? as base {
@@ -161,5 +144,27 @@ extend Path {
             }
         }
         return out
+    }
+}
+
+/// `path / "component"` appends with a separator. There is no `join`.
+extend Path with Div<string> {
+    type Out = Path
+
+    /// Append a component with a separator. Backs the `/` operator —
+    /// there is no `join` method.
+    public func div(self, other: string) -> Path {
+        // An absolute right side replaces the left, the way every path library
+        // resolves it.
+        if other.starts_with("/") {
+            return Path { value: other }
+        }
+        if self.value.is_empty() {
+            return Path { value: other }
+        }
+        if self.value.ends_with("/") {
+            return Path { value: "{self.value}{other}" }
+        }
+        return Path { value: "{self.value}/{other}" }
     }
 }
