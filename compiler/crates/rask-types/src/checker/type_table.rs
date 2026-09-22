@@ -11,6 +11,18 @@ use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
+/// Where a (type, trait) conformance came from — G1 auto-derive, or an
+/// `extend T with Trait` block and whether that block was the stdlib's.
+///
+/// The origin has to be the *first* registration's, not the pass currently
+/// running: a program overriding a stdlib type's `Displayable` was reported as
+/// a same-package duplicate because the guard read the current pass's mode.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ConformanceOrigin {
+    Derived,
+    Declared { decl: NodeId, span: Span, from_stdlib: bool },
+}
+
 /// Central registry of all types in the program.
 #[derive(Debug, Default)]
 pub struct TypeTable {
@@ -81,14 +93,13 @@ pub struct TypeTable {
     /// apart. Binding happens here, where the TypeId is still known.
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
     /// G1: declared/derived trait conformances (nominal). TypeId → trait base
-    /// name → the `extend T with Trait` block that declared it, or None when
-    /// the compiler derived it.
+    /// name → where that conformance came from.
     ///
     /// XC3 needs the declaration site: a second declared conformance for the
     /// same pair is an error that has to name both, and until this held the
     /// site it was a set — so the second one landed on the first and the last
     /// `extend` block silently won, link order and all.
-    pub(super) conformances: HashMap<TypeId, HashMap<String, Option<(NodeId, Span)>>>,
+    pub(super) conformances: HashMap<TypeId, HashMap<String, ConformanceOrigin>>,
     /// CC1/CC2: conditional-conformance conditions. (TypeId, trait base) → the
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
@@ -410,15 +421,20 @@ impl TypeTable {
             .entry(type_id)
             .or_default()
             .entry(Self::conformance_key(trait_name))
-            .or_insert(None);
+            .or_insert(ConformanceOrigin::Derived);
     }
 
     /// XC3: record a conformance an `extend T with Trait` block declared.
     ///
-    /// Returns the earlier block's span when one already declared this pair —
-    /// the caller reports it and leaves the first in place. Re-registering the
-    /// same block is not a duplicate: the stdlib's declarations are collected
-    /// once as stubs and again as bodies.
+    /// Returns the earlier block's span only when both blocks are the program's
+    /// own — that's the same-package clash XC3 reports at the declaration. A
+    /// program block landing on a stdlib one is an override across a package
+    /// boundary, legal for any non-core trait by XC2, and the program's block
+    /// takes the slot so a *second* program block reports against it rather
+    /// than against the stdlib.
+    ///
+    /// Re-registering the same block is never a duplicate: the stdlib's
+    /// declarations are collected once as stubs and again as bodies.
     pub fn record_declared_conformance(
         &mut self,
         type_id: TypeId,
@@ -426,17 +442,34 @@ impl TypeTable {
         decl_id: NodeId,
         span: Span,
     ) -> Option<Span> {
+        let from_stdlib = self.stdlib_mode;
+        let mine = ConformanceOrigin::Declared { decl: decl_id, span, from_stdlib };
         let slot = self
             .conformances
             .entry(type_id)
             .or_default()
             .entry(Self::conformance_key(trait_name))
-            .or_insert(None);
-        match slot {
-            Some((first_id, first_span)) if *first_id != decl_id => Some(*first_span),
-            Some(_) => None,
-            None => {
-                *slot = Some((decl_id, span));
+            .or_insert(ConformanceOrigin::Derived);
+        match *slot {
+            ConformanceOrigin::Declared { decl, .. } if decl == decl_id => None,
+            ConformanceOrigin::Declared { span: first, from_stdlib: false, .. }
+                if !from_stdlib =>
+            {
+                Some(first)
+            }
+            // A stdlib declaration being overridden by the program's, or a
+            // stdlib block re-read: the program's wins, the stdlib's yields.
+            ConformanceOrigin::Declared { from_stdlib: true, .. } => {
+                if !from_stdlib {
+                    *slot = mine;
+                }
+                None
+            }
+            // Program block first, stdlib re-read after — can't happen with
+            // the current ordering, and the program's still wins if it does.
+            ConformanceOrigin::Declared { .. } => None,
+            ConformanceOrigin::Derived => {
+                *slot = mine;
                 None
             }
         }

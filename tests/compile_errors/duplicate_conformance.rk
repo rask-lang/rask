@@ -14,6 +14,8 @@
 // as does one block naming several (CD1) — both are below the marker's span on
 // purpose, so a diagnostic that over-fires shows up as a failure here.
 
+import http.Method
+
 trait Labeled {
     func label(self) -> string
 }
@@ -53,6 +55,22 @@ extend Memo with Labeled {
 scoped extend Memo with Labeled {
     func label(self) -> string {
         return "scoped"
+    }
+}
+
+// A program block landing on a *stdlib* one is an override, not a clash (XC2),
+// and the program's takes the slot — so a second program block is reported
+// against the program's first, never against the stdlib's.
+extend Method with Displayable {
+    func to_string(self) -> string {
+        return "first"
+    }
+}
+
+// ERROR: the program's own first block is the one this collides with (E0407)
+extend Method with Displayable {
+    func to_string(self) -> string {
+        return "second"
     }
 }
 

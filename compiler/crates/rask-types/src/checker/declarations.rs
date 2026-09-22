@@ -446,19 +446,21 @@ impl TypeChecker {
             // XC3: two blocks claiming the same pair. Reported here rather than
             // where the conformance is used, because both are in this package —
             // the cross-package half needs the use site and the declaring
-            // package's name, neither of which the checker has yet (#1296).
+            // package's name, neither of which the checker has yet (#1299).
             //
-            // The stdlib is collected twice per run (stubs, then bodies), so
-            // this is deliberately quiet in stdlib mode.
+            // `record_declared_conformance` answers only for two of the
+            // program's own blocks. It has to: the guard here used to read the
+            // *current* pass's stdlib mode, which says nothing about where the
+            // first registration came from — so `extend Method with Displayable`
+            // in a program was reported against the stdlib's own block, an
+            // override XC2 makes legal for every non-core trait.
             if let Some(first) = first {
-                if !self.types.stdlib_mode {
-                    self.errors.push(TypeError::DuplicateConformance {
-                        ty: base_name.to_string(),
-                        trait_name: TypeTable::conformance_display(trait_name),
-                        first,
-                        span,
-                    });
-                }
+                self.errors.push(TypeError::DuplicateConformance {
+                    ty: base_name.to_string(),
+                    trait_name: TypeTable::conformance_display(trait_name),
+                    first,
+                    span,
+                });
             }
             if !condition.is_empty() {
                 self.types.record_conformance_condition(type_id, trait_name, condition.clone());
