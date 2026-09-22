@@ -181,12 +181,7 @@ impl Playground {
     /// local run.
     fn prepare(&mut self, checked: &rask_compiler::CheckResult, source: &str) {
         self.interpreter.inject_cfg(&cfg());
-        self.interpreter.set_node_types(checked.typed.node_types.clone());
-        self.interpreter.set_error_wraps(checked.typed.error_wraps.clone());
-        self.interpreter
-            .set_try_chain_placement(checked.typed.try_chain_placement.clone());
-        self.interpreter
-            .set_fallback_keeps_shape(checked.typed.fallback_keeps_shape.clone());
+        self.interpreter.adopt_checker_tables(&checked.typed);
         self.interpreter.set_source_info(PLAYGROUND, source);
         if !checked.package_names.is_empty() {
             self.interpreter.register_packages(&checked.package_names);

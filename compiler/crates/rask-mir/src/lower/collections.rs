@@ -6,7 +6,7 @@
 use crate::FieldAccess;
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
-    operand::MirConst, types::{EnumLayoutId, StructLayoutId}, FunctionRef, MirOperand, MirRValue,
+    operand::MirConst, FunctionRef, MirOperand, MirRValue,
     MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
@@ -235,7 +235,7 @@ impl<'a> MirLowerer<'a> {
         struct_op: MirOperand,
         layout: StructLayout,
     ) -> Result<TypedOperand, LoweringError> {
-        use rask_types::Type;
+        
 
         let buf = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -1025,22 +1025,6 @@ impl<'a> MirLowerer<'a> {
             return None;
         };
         Some(inner.as_ref().clone())
-    }
-
-    /// A container's `index`-th type argument as a *payload* MIR type: a
-    /// nested container keeps what it is instead of collapsing to a bare
-    /// pointer (`MirType::Container`). What a local has to say when the frame
-    /// is the one that will free it.
-    /// The head name is where the answer comes from, not `Display`: a generic
-    /// the checker resolved renders as `<type#7><string>` and no rendered-name
-    /// test matches that.
-    pub(super) fn container_elem_payload_type(
-        &self,
-        node_id: rask_ast::NodeId,
-        index: usize,
-    ) -> Option<MirType> {
-        let name = self.container_elem_head(node_id, index)?;
-        crate::ContainerKind::from_rendered(&name).map(MirType::Container)
     }
 
     /// The element tag for a container's `index`-th type argument.

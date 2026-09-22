@@ -40,6 +40,8 @@ pub struct MonoProgram {
     /// and lowering falls back to guessing from AST shape.
     pub instantiated_node_types: HashMap<NodeId, Type>,
     pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
+    /// OR1: operator calls a conformance answered, in instantiated bodies.
+    pub instantiated_operator_targets: HashMap<NodeId, rask_types::OperatorTarget>,
     /// ER31a: `try` sites in instantiated bodies that wrap their error, same idea.
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
@@ -66,6 +68,16 @@ impl MonoProgram {
     ) -> HashMap<NodeId, rask_types::Callee> {
         let mut merged = typed.call_targets.clone();
         merged.extend(self.instantiated_call_targets.iter().map(|(k, v)| (*k, v.clone())));
+        merged
+    }
+
+    /// OR1 operator targets for the whole program, merged the same way.
+    pub fn all_operator_targets(
+        &self,
+        typed: &TypedProgram,
+    ) -> HashMap<NodeId, rask_types::OperatorTarget> {
+        let mut merged = typed.operator_targets.clone();
+        merged.extend(self.instantiated_operator_targets.iter().map(|(k, v)| (*k, v.clone())));
         merged
     }
 
@@ -762,7 +774,8 @@ fn monomorphize_inner(
                     | rask_types::TypeDef::Enum { name, .. }
                     | rask_types::TypeDef::Trait { name, .. }
                     | rask_types::TypeDef::Union { name, .. }
-                    | rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
+                    | rask_types::TypeDef::NominalAlias { name, .. }
+                    | rask_types::TypeDef::Primitive { name, .. } => name.clone(),
                 };
                 (rask_types::TypeId(i as u32), name)
             })
@@ -888,6 +901,7 @@ fn monomorphize_inner(
         call_rewrites: mono.call_rewrites,
         instantiated_node_types: mono.instantiated_node_types,
         instantiated_call_targets: mono.instantiated_call_targets,
+        instantiated_operator_targets: mono.instantiated_operator_targets,
         instantiated_error_wraps: mono.instantiated_error_wraps,
         instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
     })
@@ -1086,6 +1100,7 @@ mod tests {
             node_types: std::collections::HashMap::new(),
             call_type_args: std::collections::HashMap::new(),
             call_targets: std::collections::HashMap::new(),
+            operator_targets: std::collections::HashMap::new(),
             trait_coercions: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),

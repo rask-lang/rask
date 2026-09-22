@@ -220,11 +220,11 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &cfg);
 
     // --- Desugar (operators + default/named args) ---
-    let desugar_errors = rask_desugar::desugar_with_stdlib(
+    let desugared = rask_desugar::desugar_with_stdlib(
         &mut parse_result.decls,
         rask_stdlib::StubRegistry::defaulted_signatures(),
     );
-    for e in &desugar_errors {
+    for e in &desugared.errors {
         diags.push(
             rask_diagnostics::Diagnostic::error(e.message.clone())
                 .with_code("E0338")
@@ -335,7 +335,12 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     // --- Typecheck (lenient so ownership/effects still run) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (mut typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
+        rask_types::typecheck_with_stdlib_lenient(
+            resolved,
+            &parse_result.decls,
+            &stdlib_decls,
+            &desugared.operator_calls,
+        );
     for error in &type_errors {
         let diag = error.to_diagnostic();
         if is_current_file_diagnostic(&diag, &current_file_spans) {

@@ -1933,6 +1933,66 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("an associated type is read off the conformance, not guessed from the methods — that is what keeps it a lookup instead of a search [type.associated-types/AT2]")
             }
 
+            AmbiguousLiteralOperand { right, op, candidates, span } => {
+                Diagnostic::error(format!(
+                    "`{}` between a literal and `{}` has more than one reading", op, right
+                ))
+                .with_code("E0895")
+                .with_primary(*span, format!("could be any of {}", candidates.join(", ")))
+                .with_fix(format!(
+                    "suffix the literal to say which: `3{} {} …`",
+                    candidates.first().map(String::as_str).unwrap_or("i64"), op
+                ))
+                .with_why("a bare literal takes its type from what it's used with, and here several types form this pair — so there is no one answer to take [type.operator-resolution/OR1]")
+            }
+
+            NoOperatorConformance {
+                left, right, op, trait_name, header, has_inherent, span,
+            } => {
+                let title = match right {
+                    Some(right) => format!("no `{}` between `{}` and `{}`", op, left, right),
+                    None => format!("`{}` has no `{}`", left, op),
+                };
+                let d = Diagnostic::error(title)
+                    .with_code("E0894")
+                    .with_primary(*span, match right {
+                        Some(right) => format!("`{}` on the left, `{}` on the right", left, right),
+                        None => format!("nothing defines `{}` on a `{}`", op, left),
+                    });
+                // The method is often already there — an `extend Meters { func
+                // mul(…) }` that predates the conformance. Then the fix is one
+                // header, not a body, and saying so is the difference between a
+                // one-word edit and a rewrite.
+                d.with_fix(if *has_inherent {
+                    format!(
+                        "`{}` has the method — move it under the header that registers it:\n                             extend {} with {} {{ … }}",
+                        left, left, header
+                    )
+                } else {
+                    format!("extend {} with {} {{ … }}", left, header)
+                })
+                    .with_why(&format!(
+                        "an operator is resolved from both operand types, in order, against a \
+                         conformance somebody declared — so `{}` is the one place that says what \
+                         this pair means, and until it exists the result type isn't defined \
+                         [type.operator-resolution/OR1]",
+                        trait_name
+                    ))
+            }
+
+            InherentMethodOnPrimitive { ty, method, span } => {
+                Diagnostic::error(format!(
+                    "`{}` takes conformances, not methods of its own", ty
+                ))
+                .with_code("E0892")
+                .with_primary(*span, format!("`{}` can't be an inherent method here", method))
+                .with_fix(format!(
+                    "write it as a conformance:\n    extend {} with SomeTrait {{ func {}(…) }}",
+                    ty, method
+                ))
+                .with_why("a primitive's own methods are the compiler's, so an `extend` block on one adds nothing anyone can call — the method silently didn't exist. A conformance is different: it registers against a trait, which is how `2.0 * meters` becomes writable [type.operator-resolution/OR6]")
+            }
+
             UnknownAssocType { assoc, trait_name, known, span } => {
                 let d = Diagnostic::error(format!(
                     "no associated type `{}` on `{}`",

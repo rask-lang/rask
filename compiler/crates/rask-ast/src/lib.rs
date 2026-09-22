@@ -11,6 +11,7 @@ pub mod stmt;
 pub mod decl;
 pub mod coercion;
 pub mod traits;
+pub mod operators;
 pub mod fmt_spec;
 pub mod primitives;
 pub mod type_str;

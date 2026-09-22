@@ -615,7 +615,7 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
                         let mut all_decls: Vec<_> = pkg.all_decls().cloned().collect();
                         let dep_annotations =
                             rask_compiler::dependency_annotations(registry, pkg_id);
-                        rask_desugar::desugar_package(
+                        let desugared = rask_desugar::desugar_package(
                             &mut all_decls,
                             &dep_annotations,
                             rask_stdlib::StubRegistry::defaulted_signatures(),
@@ -627,7 +627,9 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
 
                         match rask_resolve::resolve_package(&all_decls, registry, pkg_id) {
                             Ok(resolved) => {
-                                if let Err(errors) = rask_types::typecheck(resolved, &all_decls) {
+                                if let Err(errors) = rask_types::typecheck(
+                                    resolved, &all_decls, &desugared.operator_calls,
+                                ) {
                                     for error in &errors {
                                         crate::show_diagnostic_multi(&error.to_diagnostic(), &pkg_source_files);
                                     }

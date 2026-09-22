@@ -188,6 +188,10 @@ pub struct Interpreter {
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
     pub(crate) node_types: HashMap<rask_ast::NodeId, rask_types::Type>,
+    /// OR1: operator calls the checker resolved to a conformance, so `2.0 * m`
+    /// runs the `extend f64 with Mul<Meters>` body instead of asking the float
+    /// layer to multiply a struct.
+    pub(crate) operator_targets: HashMap<rask_ast::NodeId, rask_types::OperatorTarget>,
     /// What each generic function's type parameters resolved to for the call
     /// currently on the stack, innermost last.
     ///
@@ -293,6 +297,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            operator_targets: HashMap::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
             call_depth: 0,
@@ -323,6 +328,7 @@ impl Interpreter {
             cli_args: args,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            operator_targets: HashMap::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
             call_depth: 0,
@@ -359,6 +365,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            operator_targets: HashMap::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
             call_depth: 0,
@@ -447,6 +454,19 @@ impl Interpreter {
     /// falls back to unchecked i64 arithmetic.
     pub fn set_node_types(&mut self, node_types: HashMap<rask_ast::NodeId, rask_types::Type>) {
         self.node_types = node_types;
+    }
+
+    /// Take every per-node table the checker produced.
+    ///
+    /// Four call sites set the same four tables one at a time, so a new one was
+    /// four edits and three chances to miss. They pass the whole program here
+    /// instead.
+    pub fn adopt_checker_tables(&mut self, typed: &rask_types::TypedProgram) {
+        self.node_types = typed.node_types.clone();
+        self.error_wraps = typed.error_wraps.clone();
+        self.try_chain_placement = typed.try_chain_placement.clone();
+        self.fallback_keeps_shape = typed.fallback_keeps_shape.clone();
+        self.operator_targets = typed.operator_targets.clone();
     }
 
     /// The nominal type name of a runtime value, for matching against a generic
@@ -561,6 +581,7 @@ impl Interpreter {
         child.struct_decls = self.struct_decls.clone();
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
+        child.operator_targets = self.operator_targets.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();

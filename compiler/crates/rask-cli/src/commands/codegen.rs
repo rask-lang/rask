@@ -222,19 +222,8 @@ pub fn cmd_mir(path: &str, format: Format) {
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
-    let type_names: std::collections::HashMap<rask_types::TypeId, String> = typed.types.iter()
-        .enumerate()
-        .map(|(i, def)| {
-            let name = match def {
-                rask_types::TypeDef::Struct { name, .. } => name.clone(),
-                rask_types::TypeDef::Enum { name, .. } => name.clone(),
-                rask_types::TypeDef::Trait { name, .. } => name.clone(),
-                rask_types::TypeDef::Union { name, .. } => name.clone(),
-                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
-            };
-            (rask_types::TypeId(i as u32), name)
-        })
-        .collect();
+    let type_names: std::collections::HashMap<rask_types::TypeId, String> =
+        typed.types.type_name_map();
     let trait_methods: std::collections::HashMap<String, Vec<String>> = typed.types.iter()
         .filter_map(|def| {
             if let rask_types::TypeDef::Trait { name, .. } = def {
@@ -258,6 +247,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     // carried its records onto them. Lowering wants one map for both.
     let all_node_types = mono.all_node_types(&typed);
     let all_call_targets = mono.all_call_targets(&typed);
+    let all_operator_targets = mono.all_operator_targets(&typed);
     let all_error_wraps = mono.all_error_wraps(&typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
@@ -266,6 +256,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         &mono.enum_layouts,
         &all_node_types,
         &all_call_targets,
+        &all_operator_targets,
         &type_names,
     )
         .with_comptime_globals(&comptime_globals)
@@ -339,6 +330,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     // carried its records onto them. Lowering wants one map for both.
     let all_node_types = mono.all_node_types(&typed);
     let all_call_targets = mono.all_call_targets(&typed);
+    let all_operator_targets = mono.all_operator_targets(&typed);
     let all_error_wraps = mono.all_error_wraps(&typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
@@ -347,6 +339,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         &mono.enum_layouts,
         &all_node_types,
         &all_call_targets,
+        &all_operator_targets,
         &type_names,
     )
         .with_comptime_globals(&comptime_globals)
