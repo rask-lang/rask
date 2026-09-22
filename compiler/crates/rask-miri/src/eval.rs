@@ -281,12 +281,6 @@ impl MiriEngine {
                 ));
             }
 
-            MirStmtKind::PoolCheckedAccess { .. } => {
-                return Err(MiriError::UnsupportedOperation(
-                    "pool access is not available at compile time".to_string(),
-                ));
-            }
-
             // Closures — not in initial scope
             MirStmtKind::ClosureCreate { .. }
             | MirStmtKind::ClosureCall { .. }

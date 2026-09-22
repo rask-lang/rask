@@ -140,7 +140,7 @@ boxed writer).
 
 [#882](https://github.com/rask-lang/rask/issues/882) was the last thing this
 milestone was waiting on, and the audit it asked for is done: four passes over
-the grid — `@resource`, `Heap<T>`, `Pool<Linear>`, then the crossed cells and
+the grid — `@resource`, `Heap<T>`, then the crossed cells and
 the panic path — seventy-odd cells, six holes, all fixed. The result worth
 keeping is the shape. Not one was a wrong rule. Every one was a point nobody had
 put on the list: a `break`, a wrapper, a call form, a thunk. And the crossed

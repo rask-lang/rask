@@ -1,7 +1,7 @@
 <!-- id: mem.closures -->
 <!-- status: decided -->
 <!-- summary: Two modes — |x| expr borrows outer scope (scope-limited), own |x| expr moves/copies (self-contained) -->
-<!-- depends: memory/borrowing.md, memory/value-semantics.md, memory/pools.md -->
+<!-- depends: memory/borrowing.md, memory/value-semantics.md -->
 <!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-ownership/ -->
 
 # Closures
@@ -395,7 +395,7 @@ button2.on_click(own |event| {
 - [Borrowing](borrowing.md) — Block-scoped views and `with`-based access (`mem.borrowing`)
 - [Shared, Rack and Heap](shared-rack-heap.md) — The three that hand out scoped access (`mem.shared-rack-heap`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T, S>`, the single-value container (`conc.sync`)
-- [Pools](pools.md) — Pool+Handle pattern for shared mutable state (`mem.pools`)
+- [Racks and Links](racks.md) — a reference that can live in a field, for graph-shaped state (`mem.racks`)
 - [Linearity](linear.md) — Closures capturing linear values must consume them (`mem.linear`)
 - [Heap Values](heap.md) — Moving an `Heap<T>` into a closure consumes it (`mem.heap`)
 - [Concurrency](../concurrency/sync.md) — Closures sent cross-task must use `own` (`conc.sync`)

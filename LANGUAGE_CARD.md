@@ -62,16 +62,16 @@ No references can be stored in structs, returned, or sent cross-task — this is
 
 <!-- test: parse -->
 ```rask
-let hp = pool[h].health          // Copy types: copy out
-pool[h].health -= damage           // in-place expression access
-let e = vec[i]                   // ERROR if element isn't Copy — use with or .clone()
+let hp = units[i].health           // Copy types: copy out
+units[i].health -= damage          // in-place expression access
+let e = units[i]                   // ERROR if element isn't Copy — use with or .clone()
 
-with pool[h] as entity {           // multi-statement access; writes back at block exit
+with units[i] as entity {          // multi-statement access; writes back at block exit
     entity.health -= damage
     if entity.health <= 0 { entity.status = Status.Dead }
     try log_hit(entity.id)         // return/try/break/continue work — real block, not a closure
 }
-with pool[h] as e: e.health -= 10  // one-liner form
+with units[i] as e: e.health -= 10 // one-liner form
 ```
 
 - Inside `with` on Vec/Map: no structural mutation (push/insert/remove/clear) — compile error (`mem.borrowing/W2`). A rack needs no `with` at all: a link is already a stable name for a node, so you hold it directly.
@@ -146,9 +146,7 @@ func tend(mutate roster: Rack<Player>) {
 - A link a *caller* owns travels freely. One into a rack this body declared can't be returned or stored anywhere longer-lived (RK6).
 - Edges are `Link<T>?` for now. A required edge is rejected — delete would have no `none` to write (RK7).
 - A function that deletes nodes its caller didn't hand it says `deleting`, and the call revokes the caller's links into that rack (RK9).
-- `Pool<T>` + `Handle<T>` is the deprecated predecessor (`mem.pools`). Same job, one extra indirection and a staleness check you had to remember.
-
-Public functions must declare their `using` clauses; `frozen` marks read-only contexts.
+- `Pool<T>` + `Handle<T>` did this job before and is deleted (rask-lang/rask#908). Same job, one extra indirection and a staleness check you had to remember.
 
 ## Collections and iteration
 
@@ -391,7 +389,7 @@ func encode<T: Encode>(value: T, mutate w: Writer) -> void or Error {
 }
 ```
 
-No I/O (`@embed_file` excepted), no pools/concurrency/`any Trait` at comptime. `comptime if cfg.os == "linux"` for conditional compilation — discarded branches are only syntax-checked. Serialization is built on this plus `@rename`/`@no_serialize`/`@default` field annotations (`std.encoding`) — there are no macros. Auto-derive covers every non-`private` field; `private` means off the wire.
+No I/O (`@embed_file` excepted), no racks/concurrency/`any Trait` at comptime. `comptime if cfg.os == "linux"` for conditional compilation — discarded branches are only syntax-checked. Serialization is built on this plus `@rename`/`@no_serialize`/`@default` field annotations (`std.encoding`) — there are no macros. Auto-derive covers every non-`private` field; `private` means off the wire.
 
 ## Modules, build, unsafe
 

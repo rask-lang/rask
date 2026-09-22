@@ -327,5 +327,4 @@ These are the structural properties the IR must have for incremental compilation
 
 - `comp.semantic-hash` — Change detection infrastructure (Merkle tree, cache keys, invalidation)
 - `comp.codegen` — Compilation pipeline, MIR lowering, Cranelift backend
-- `comp.gen-coalesce` — MIR optimization pass (runs on changed functions during incremental)
 - `struct.build` — Build system, watch mode, package compilation order

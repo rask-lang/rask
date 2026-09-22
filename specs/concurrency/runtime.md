@@ -1,7 +1,7 @@
 <!-- id: conc.runtime -->
 <!-- status: decided -->
 <!-- summary: Async runtime implementation model - M:N scheduler, pluggable reactor, stackful fibers -->
-<!-- depends: concurrency/async.md, memory/context-clauses.md, memory/resource-types.md -->
+<!-- depends: concurrency/async.md, memory/resource-types.md -->
 
 # Async Runtime Implementation Model
 
@@ -1762,11 +1762,10 @@ spawn(own || {  // 'own' captures by move
     vec.push(1)  // OK: task owns vec
 })
 
-// Legal: capture handle (copyable)
-let pool = Pool.new()
-let h = pool.add(Entity { hp: 100 })
+// Illegal: capture a link
+let e = world.insert(Entity { hp: 100 })
 spawn(|| {
-    pool[h].hp -= 10  // OK: handle is Copy, pool context available
+    e.hp -= 10  // ERROR: a link is an address; it means nothing over there
 })
 ```
 
@@ -1797,29 +1796,34 @@ spawn(|| {
 
 **Guarantee (CN2 + mem.resources/R4):** Resources cleaned up even on abnormal exit.
 
-### Pool Handle Passing (I3 - mem.pools)
+### Graphs Across Tasks (I3 - mem.racks)
 
-**Handles are Send + Sync (mem.pools/PH1):**
-
-Pool handles are copyable opaque IDs (pool_id, index, generation). They can safely cross task boundaries:
+**A link never crosses (mem.ownership/T2).** A `Link<T>` is the node's address,
+so it names nothing in another task's address space. A graph crosses by copy:
 
 ```rask
-using Pool<Entity>, Multitasking {
-    let h = pool.add(Entity { hp: 100 })
+using Multitasking {
+    let frame = world.snapshot()   // deep copy; internal edges re-pointed
 
-    spawn(|| {
-        pool[h].hp -= 10  // OK: handle is Copy, pool context threaded
+    spawn(own || {
+        for e in frame.nodes() { tally(e.hp) }
     }).detach()
 }
 ```
 
 **Why this works:**
-1. Handle is `Copy` (no ownership issues)
-2. `pool` context threaded through `using Pool<Entity>` (mem.context-clauses/CC4)
-3. Pool validation checks handle on access (generation check)
-4. Pool internal Arc<Mutex<Vec>> is thread-safe
+1. `snapshot()` copies the nodes and re-points every edge inside the copy, so the
+   receiving side has a complete, independent graph (`mem.racks/RK13`)
+2. `own` moves the copy into the task — one owner, as usual
+3. Nothing is shared, so nothing is locked
 
-**Constraint:** Pool itself must be in scope (context clause ensures this).
+**Constraint:** a link sent back the other way means nothing. If a node needs a
+name that survives the crossing, give it an id field.
+
+This used to be the one place a graph *could* be shared cheaply: `Handle<T>` was
+an index plus a generation, so it was Send + Sync unconditionally. That went with
+the pool (rask-lang/rask#908), and the copy is the honest price for reads that
+cost nothing.
 
 ### Comptime Restrictions (I4 - control.comptime)
 
@@ -1837,7 +1841,7 @@ let data = comptime {
 - Channels
 - `using Multitasking`
 - I/O (File, TcpConnection)
-- Pools (control.comptime/CT20)
+- Racks (control.comptime/CT20)
 
 ---
 
@@ -2287,8 +2291,7 @@ This spec defines the **M:N green task runtime** that realizes Rask's async sema
 
 **Related specs:**
 - [async.md](async.md) - Programmer-facing semantics
-- [memory/pools.md](../memory/pools.md) - Handle validation (similar detail level)
-- [memory/context-clauses.md](../memory/context-clauses.md) - Context parameter threading
+- [memory/racks.md](../memory/racks.md) - Rack and Link (similar detail level)
 - [memory/resource-types.md](../memory/resource-types.md) - Ensure hook integration
 
 **Implementation roadmap:**

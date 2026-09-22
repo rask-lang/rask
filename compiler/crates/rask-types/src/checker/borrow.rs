@@ -88,7 +88,7 @@ pub(crate) struct PersistentBorrow {
 /// Whether a borrow source can grow/shrink (determines view duration).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SourceStability {
-    /// Vec, Pool, Map — views are instant (released at semicolon).
+    /// Vec, Map — views are instant (released at semicolon).
     Growable,
     /// string, array, struct — views persist until block end.
     Fixed,
@@ -310,7 +310,7 @@ impl TypeChecker {
     // Source Classification (ESAD Phase 2)
     // ------------------------------------------------------------------------
 
-    /// Classify a type as growable (Vec/Pool/Map) or fixed (string/array/struct).
+    /// Classify a type as growable (Vec/Map) or fixed (string/array/struct).
     /// Growable sources have instant views (released at semicolon).
     /// Fixed sources have persistent views (released at block end).
     /// Note: string is Fixed here; string slice storage is rejected separately (S2).
@@ -322,19 +322,19 @@ impl TypeChecker {
             Type::Named(id) => {
                 let name = self.types.type_name(*id);
                 match name.as_str() {
-                    "Vec" | "Pool" | "Map" | "Rack" => SourceStability::Growable,
+                    "Vec" | "Map" | "Rack" => SourceStability::Growable,
                     _ => SourceStability::Fixed,
                 }
             }
             Type::Generic { base, .. } => {
                 let name = self.types.type_name(*base);
                 match name.as_str() {
-                    "Vec" | "Pool" | "Map" | "Rack" => SourceStability::Growable,
+                    "Vec" | "Map" | "Rack" => SourceStability::Growable,
                     _ => SourceStability::Fixed,
                 }
             }
             Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-                if name.starts_with("Vec") || name.starts_with("Pool") || name.starts_with("Map")
+                if name.starts_with("Vec") || name.starts_with("Map")
                     || name.starts_with("Rack")
                 {
                     SourceStability::Growable

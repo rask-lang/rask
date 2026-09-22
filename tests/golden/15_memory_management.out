@@ -1,6 +1,6 @@
-=== Pool/Handle Pattern ===
+=== Rack/Link Pattern ===
 
-Creating linked list with handles:
+Creating linked list with links:
 List values: 1 -> 2 -> 3 -> end
 
 Creating game entities:
@@ -15,10 +15,11 @@ Goblin health: 30
 Player health: 90
 
 Removing defeated enemy:
-Enemy1 removed from pool
+Goblin deleted
+Player's target cleared by the delete
 
 === Key Benefits ===
 - No lifetime parameters
-- Handles never dangle (invalidation explicit)
-- Perfect for graphs, entity systems, UI trees
-- Pool owns memory, handles are lightweight IDs
+- A link can live in a field; a reference can't
+- A dead link never exists, so reads need no check
+- The rack owns the nodes; links are one machine word

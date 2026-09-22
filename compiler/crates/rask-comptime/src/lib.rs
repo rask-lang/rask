@@ -827,8 +827,8 @@ pub enum ComptimeError {
     #[error("I/O not allowed at comptime; use runtime code for file/network operations")]
     IoNotAllowed,
 
-    #[error("pools and handles not allowed at comptime; use Vec or arrays instead")]
-    PoolsNotAllowed,
+    #[error("a rack is not allowed at comptime; use a Vec or an array instead")]
+    RacksNotAllowed,
 
     #[error("concurrency not allowed at comptime; spawn/channels require runtime")]
     ConcurrencyNotAllowed,
@@ -905,7 +905,7 @@ impl ComptimeError {
                 | NonExhaustiveMatch
                 | Panic(_)
                 | IoNotAllowed
-                | PoolsNotAllowed
+                | RacksNotAllowed
                 | ConcurrencyNotAllowed
                 | UnsafeNotAllowed
         )

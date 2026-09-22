@@ -429,7 +429,6 @@ fn try_eval_comptime_mir(
             type_params: vec![],
             params: vec![],
             ret_ty: ret_ty_str.map(|s| s.to_string()),
-            context_clauses: vec![],
             body: synth_body,
             is_pub: false,
             is_private: false,

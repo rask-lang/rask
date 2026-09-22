@@ -61,11 +61,6 @@ pub enum MirStmtKind {
     /// cleanup block, so a normal scope exit removes the hook (the inline path
     /// runs the body) and only a panic reaches it through `rask_ensure_run_all`.
     EnsureHookPop,
-    PoolCheckedAccess {
-        dst: LocalId,
-        pool: LocalId,
-        handle: LocalId,
-    },
     /// Create a closure value: heap-allocated `[func_ptr | captures...]`.
     /// `captures` lists the locals whose values are stored into the environment.
     /// `heap` controls allocation strategy: true = heap (escaping), false = stack (local-only).

@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 
 use crate::interp::Interpreter;
-use crate::value::{FloatKind, ModuleKind, PoolData, ThreadHandleInner, Value};
+use crate::value::{FloatKind, ModuleKind, ThreadHandleInner, Value};
 
 /// Construct a minimal dummy value for a given type name.
 /// Only needs to route to the right dispatch — doesn't need valid data.
@@ -25,19 +25,6 @@ fn dummy_value(type_name: &str) -> Value {
         "string" => Value::String(Arc::new(Mutex::new(String::new()))),
         "Vec" => Value::vec(vec![]),
         "Map" => Value::Map(Arc::new(Mutex::new(Default::default()))),
-        "Pool" => Value::Pool(Arc::new(Mutex::new(PoolData {
-            pool_id: 0,
-            slots: vec![],
-            free_list: vec![],
-            len: 0,
-            type_param: None,
-            capacity: None,
-        }))),
-        "Handle" => Value::Handle {
-            pool_id: 0,
-            index: 0,
-            generation: 0,
-        },
         "Rack" => {
             let rack = Arc::new(Mutex::new(crate::value::RackData::new()));
             crate::value::register_rack(&rack);

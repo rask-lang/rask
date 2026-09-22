@@ -4,7 +4,7 @@
 // through to the guess — right for integers, silently wrong for an f64, a
 // string, or a struct.
 import sync.Shared
-import memory.Pool
+import memory.Rack
 
 struct Holder {
     public names: Vec<string>
@@ -83,21 +83,23 @@ test "an iterator chain keeps the element type" {
     assert total == 4.0
 }
 
-test "removing during a snapshot iteration is not a stale handle" {
-    mut pool: Pool<Point> = Pool.new()
-    let a = pool.insert(Point { x: 1.0, y: 1.0 })
-    let b = pool.insert(Point { x: 9.0, y: 9.0 })
-    assert pool.len() == 2
+test "deleting during a snapshot iteration reaches the element type" {
+    mut rack: Rack<Point> = Rack.new()
+    let a = rack.insert(Point { x: 1.0, y: 1.0 })
+    let b = rack.insert(Point { x: 9.0, y: 9.0 })
+    assert rack.len() == 2
 
-    // Each `h` is a distinct handle out of the snapshot, so reading one after a
-    // previous iteration removed a different one is fine.
-    for h in pool.handles() {
-        let p = pool[h]
-        if p.x < 5.0 {
-            pool.remove(h)
+    // `nodes()` is a snapshot, so deleting one node while walking it is fine —
+    // and each `n` resolves to `Point`, which is what this file is about.
+    for n in rack.nodes() {
+        if n.x < 5.0 {
+            rack.delete(n)
         }
     }
-    assert pool.len() == 1
-    assert pool[b].x == 9.0
-    let _ = a
+    assert rack.len() == 1
+    // `a` and `b` are revoked by the delete (RK5) — the survivor is read back
+    // out of the rack, and it still resolves to `Point`.
+    for n in rack.nodes() {
+        assert n.x == 9.0
+    }
 }

@@ -27,7 +27,7 @@ pub fn classify_call(callee: &str) -> Effects {
         return Effects { io: true, async_: true, grow: false, shrink: false, needs_runtime: false };
     }
 
-    // Pool structural mutation sources (EF1: split into Grow/Shrink)
+    // Container structural mutation sources (EF1: split into Grow/Shrink)
     if is_grow_source(callee) {
         return Effects { io: false, async_: false, grow: true, shrink: false, needs_runtime: false };
     }
@@ -66,19 +66,13 @@ fn is_async_source(callee: &str) -> bool {
 }
 
 fn is_grow_source(callee: &str) -> bool {
-    // Pool structural growth (EF1: Grow effect).
-    matches!(callee,
-        "insert" | "pool.insert" | "alloc" | "pool.alloc"
-    )
+    // Structural growth (EF1: Grow effect).
+    matches!(callee, "insert" | "alloc")
 }
 
 fn is_shrink_source(callee: &str) -> bool {
-    // Pool structural shrinkage (EF1: Shrink effect).
-    matches!(callee,
-        "remove" | "pool.remove"
-        | "clear" | "pool.clear"
-        | "drain" | "pool.drain"
-    )
+    // Structural shrinkage (EF1: Shrink effect).
+    matches!(callee, "remove" | "clear" | "drain" | "delete")
 }
 
 #[cfg(test)]
@@ -110,12 +104,12 @@ mod tests {
 
     #[test]
     fn grow_sources_classified() {
-        let e = classify_call("pool.insert");
+        let e = classify_call("insert");
         assert!(e.grow);
         assert!(!e.shrink);
         assert!(!e.io);
 
-        let e = classify_call("insert");
+        let e = classify_call("alloc");
         assert!(e.grow);
     }
 
@@ -125,10 +119,10 @@ mod tests {
         assert!(e.shrink);
         assert!(!e.grow);
 
-        let e = classify_call("pool.remove");
+        let e = classify_call("delete");
         assert!(e.shrink);
 
-        let e = classify_call("pool.clear");
+        let e = classify_call("clear");
         assert!(e.shrink);
     }
 

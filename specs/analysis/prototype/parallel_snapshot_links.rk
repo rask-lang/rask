@@ -11,7 +11,8 @@
 // and shares nothing. The rack crosses; no link does. It is the delete-time
 // fixup's walk with a different rewrite.
 //
-// The handle version of this is `pool.snapshot()` plus `using frozen Pool<T>`.
+// The handle version of this was `pool.snapshot()` plus `using frozen Pool<T>`,
+// back when there were handles (rask-lang/rask#908).
 // Same shape, and links reach it without a read-only type.
 import memory.Link
 import memory.Rack

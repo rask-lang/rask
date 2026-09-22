@@ -162,7 +162,7 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         }
     }
 
-    // Handle other generics: `Name<T1, T2, ...>` (Vec, Map, Pool, Handle, ...)
+    // Handle other generics: `Name<T1, T2, ...>` (Vec, Map, Rack, Link, ...)
     // Without this, `Vec<string>` returns as `UnresolvedNamed("Vec<string>")`,
     // which the method-lookup path doesn't unify against `Generic { Vec, [string] }`.
     if let Some(open) = s.find('<') {

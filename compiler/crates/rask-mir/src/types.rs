@@ -15,7 +15,6 @@ pub enum ContainerKind {
     Vec,
     Map,
     Rack,
-    Pool,
 }
 
 impl MirType {
@@ -79,7 +78,6 @@ impl ContainerKind {
             "Vec" => Some(ContainerKind::Vec),
             "Map" => Some(ContainerKind::Map),
             "Rack" => Some(ContainerKind::Rack),
-            "Pool" => Some(ContainerKind::Pool),
             _ => None,
         }
     }
@@ -148,14 +146,11 @@ pub enum MirType {
         len: u32,
     },
     FuncPtr(SignatureId),
-    /// Handle<T> — pool handle, packed as i64 (index:32 | gen:32) in current codegen.
-    Handle,
     /// Link<T> — the address of a node whose payload has this layout
     /// (mem.racks/RK2). Carrying the layout is what makes `l.field` an ordinary
     /// base+offset projection: the local holds the address, exactly as an
-    /// aggregate local does. `Link<T>?` is the same word with the all-ones
-    /// sentinel for `none`, which is why it shares the niche machinery with
-    /// `Handle`.
+    /// aggregate local does. `Link<T>?` is the same word with the null address
+    /// for `none`, which is the whole niche.
     Link(StructLayoutId),
     /// Tuple type — struct-like layout with positional fields.
     /// Stored as (field types, total byte size).
@@ -225,13 +220,13 @@ impl MirType {
         )
     }
 
-    /// True for the two one-word niche payloads: a pool handle and a link.
+    /// True for the one-word niche payload: a link.
     ///
-    /// `T?` for either of these is the same word — no tag, no separate payload
-    /// slot — with one value of the word reserved to mean `none`. Everywhere
-    /// that asks "is this option a niche?" is asking this.
+    /// `Link<T>?` is the same word — no tag, no separate payload slot — with
+    /// the null address reserved to mean `none`. Everywhere that asks "is this
+    /// option a niche?" is asking this.
     pub fn is_niche_payload(&self) -> bool {
-        matches!(self, MirType::Handle | MirType::Link(_))
+        matches!(self, MirType::Link(_))
     }
 
     /// The node layout a link names, whether the link is spelled bare or as a
@@ -259,13 +254,11 @@ impl MirType {
 
     /// The word that means `none` for this type, if it is a niche.
     ///
-    /// Each niche picks a value its own domain can't produce, and they are not
-    /// the same value: a handle is index+generation, so all-ones is impossible;
-    /// a link is an address, so null is. Asking the type is what keeps the two
-    /// apart — nothing downstream should reach for a sentinel constant directly.
+    /// A niche picks a value its own domain can't produce: a link is an
+    /// address, so null is it. Asking the type is what keeps this in one place
+    /// — nothing downstream should reach for the sentinel constant directly.
     pub fn niche_none(&self) -> Option<i64> {
         match self {
-            MirType::Handle => Some(rask_mono::abi::HANDLE_NONE_SENTINEL),
             MirType::Link(_) => Some(rask_mono::abi::LINK_NONE_SENTINEL),
             MirType::Option(inner) => inner.niche_none(),
             _ => None,
@@ -280,7 +273,7 @@ impl MirType {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_)
-            | MirType::Handle | MirType::Link(_) | MirType::Container(_)
+            | MirType::Link(_) | MirType::Container(_)
             | MirType::Heap(_) => 8,
             MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
@@ -300,9 +293,9 @@ impl MirType {
             }
             MirType::TraitObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
             MirType::Option(inner) => {
-                // The niche pair are one word: the value *is* the option, and
-                // `none` is the all-ones sentinel. Everything else is
-                // tag (8 bytes, aligned) + payload.
+                // The niche is one word: the value *is* the option, and `none`
+                // is the null address. Everything else is tag (8 bytes,
+                // aligned) + payload.
                 //
                 // A payload narrower than a word still occupies one: every
                 // writer of a payload slot stores a whole word into it, so the
@@ -310,7 +303,7 @@ impl MirType {
                 // while codegen gave the slot 16 is what made a copy of one
                 // leave four stale bytes behind, and `==` on an option reads
                 // its payload as a word (#920).
-                if matches!(**inner, MirType::Handle | MirType::Link(_)) {
+                if matches!(**inner, MirType::Link(_)) {
                     8
                 } else {
                     8 + inner.size().max(8)
@@ -378,11 +371,11 @@ impl MirType {
             // back pointing at the dead init thunk (#1000), and `join` got an
             // array of addresses where it wanted strings (#1021).
             MirType::String => true,
-            // The one exception is the niche: a `Handle<T>?` is a single word
-            // where the handle *is* the value and `none` is the all-ones
-            // sentinel, so it keeps the word store. That's why this isn't just
-            // "everything passed by address".
-            MirType::Option(inner) => !matches!(**inner, MirType::Handle | MirType::Link(_)),
+            // The one exception is the niche: a `Link<T>?` is a single word
+            // where the link *is* the value and `none` is the null address, so
+            // it keeps the word store. That's why this isn't just "everything
+            // passed by address".
+            MirType::Option(inner) => !matches!(**inner, MirType::Link(_)),
             _ => false,
         }
     }

@@ -244,14 +244,6 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
-    /// mem.pools/PF5: a write, insert, remove, or clear inside a
-    /// `using frozen Pool<T>` context. `op` names the rejected operation.
-    #[error("cannot {op} in a frozen `Pool<{elem}>` context")]
-    FrozenContextWrite {
-        op: String,
-        elem: String,
-        span: Span,
-    },
     /// A required edge (`Link<T>`, no `?`) — needs batches to build and a delete
     /// policy to destroy, neither of which the prototype has.
     #[error("a required `Link<T>` edge is not supported yet — write `Link<T>?`")]
@@ -691,25 +683,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// CC1: `using Multitasking`/`ThreadPool` may not appear on a function signature
-    #[error("`using {ctx}` cannot appear on a function signature")]
-    SignatureRuntimeContext {
-        ctx: String,
-        span: Span,
-    },
-
-    /// CC11: the entry point can't declare a context — it has no caller to supply one
-    #[error("`{entry}` cannot declare a `using` context")]
-    EntryPointContext {
-        /// Entry function name, so an `@entry`-marked function reads correctly.
-        entry: String,
-        /// Alias the clause named, if any — the suggested local reuses it.
-        alias: Option<String>,
-        /// Context type as written: `Pool<Player>`.
-        ty: String,
-        span: Span,
-    },
-
     /// conc.sync/SH7: a task-local `Shared` sent to another task.
     #[error("this `Shared` is task-local and cannot be sent")]
     LocalSharedSent {
@@ -1135,8 +1108,8 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// std.collections/V1, mem.pools/PL4 (#310): an index expression `c[i]`
-    /// whose index type doesn't match what the container accepts.
+    /// std.collections/V1 (#310): an index expression `c[i]` whose index type
+    /// doesn't match what the container accepts.
     #[error("cannot index {container} with {found}")]
     IndexTypeMismatch {
         /// The container being indexed (for the message).
@@ -1168,9 +1141,7 @@ pub enum IndexErrorKind {
     ExpectedInteger,
     /// `Map<K, V>` is indexed by `K` (carried).
     ExpectedKey(Type),
-    /// `Pool<T>` is indexed by its handle. Carries the expected `Handle<T>`.
-    ExpectedHandle(Type),
-    /// A range was used to slice a container that isn't sliceable (Map, Pool).
+    /// A range was used to slice a container that isn't sliceable (a Map).
     NotSliceable,
     /// A `Sequence<T>` was indexed. It holds no elements — SEQ38/SEQ39 —
     /// so there is no position to read.
@@ -1358,7 +1329,6 @@ impl TypeError {
             | GenericError(..)
             | AliasingViolation { .. }
             | MutateReadOnlyParam { .. }
-            | FrozenContextWrite { .. }
             | MutateConst { .. }
             | RetiredBoxType { .. }
             | LocalSharedSent { .. }
@@ -1407,8 +1377,6 @@ impl TypeError {
             | NonExhaustiveMatch { .. }
             | UndefinedName { .. }
             | UnknownContext { .. }
-            | SignatureRuntimeContext { .. }
-            | EntryPointContext { .. }
             | SpawnOutsideBlock { .. }
             | CyclicTypeAlias { .. }
             | CallableFieldNotAMethod { .. }

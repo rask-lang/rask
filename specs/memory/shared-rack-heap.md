@@ -16,7 +16,6 @@ One shape, one syntax, three access disciplines. No user-defined type gets a fou
 | [`Shared<T, S>`](../concurrency/sync.md) | Scoped `read()`/`write()`; `S` picks the synchronization | Yes, unless `S` is `Local` | One mutable value several names reach |
 | [`Rack<T>`](racks.md) + `Link<T>` | Stored references; delete nulls every incoming edge | No (copy with `snapshot()`) | Graphs, scene trees, entity systems |
 | [`Heap<T>`](heap.md) | Linear (single consumer) | Sendable | Recursive types, AST nodes |
-| [`Pool<T>`](pools.md) + `Handle<T>` | Identity-based (generation-checked) | Sendable | **Deprecated** — superseded by `Rack` + `Link` |
 
 `Atomic<T>` (see [`mem.atomics`](atomics.md)) sits adjacent: same carve-out, but its access is intrinsic operations rather than a scope.
 
@@ -63,7 +62,7 @@ Rust-style guards (`MutexGuard`, `Ref`, `RefMut`) let a reference escape the acq
 
 | Rule | Description |
 |------|-------------|
-| **BX1: Fixed set** | The set is `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack` + `Link`, `Heap`, and the deprecated `Pool` + `Handle`, plus adjacent `Atomic`. They're language constructs with type-shaped names, like `T or E` and `T?` — not library types |
+| **BX1: Fixed set** | The set is `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack` + `Link` and `Heap`, plus adjacent `Atomic`. They're language constructs with type-shaped names, like `T or E` and `T?` — not library types |
 | **BX2: No user-built equivalent** | No user-defined type gets these semantics: refcounted copy, shared interior, or `with`-scoped access. There is no annotation, trait, or generic parameter that grants them |
 | **BX3: Compose instead** | Types that need sharing wrap one — `Shared<Map<K,V>>` for a cache, `Rack<T>` + `Link<T>` for a graph, `Shared<Vec<u8>>` for a refcounted buffer |
 | **BX4: `unsafe` doesn't unlock it** | Raw pointers let you build any data structure you like (`mem.unsafe`). They don't let a type opt into running code on assignment, on scope exit, or at borrow boundaries — that's what these semantics require, and it isn't a pointer capability |
@@ -106,7 +105,6 @@ All of them heap-allocate their contents. Scoped access is what makes reaching t
 - [Racks and Links](racks.md) — Graph storage with delete-time edge fixup (`mem.racks`)
 - [Heap Values](heap.md) — A value moved to the heap, consumed once (`mem.heap`)
 - [Cell](cell.md) — Retired; folded into `Shared<T, Local>` (`mem.cell`)
-- [Pools](pools.md) — Deprecated handle-based identity storage (`mem.pools`)
 - [Atomics](atomics.md) — Adjacent: intrinsic operations, not `with` (`mem.atomics`)
 - [Ownership](ownership.md) — Why these hold heap data by value (`mem.ownership`)
 - [Borrowing](borrowing.md) — `with` semantics and rules (`mem.borrowing`)
@@ -118,7 +116,7 @@ All of them heap-allocate their contents. Scoped access is what makes reaching t
 
 ### Why one page?
 
-Before this spec, Cell, Shared, Mutex, Pool and Owned each stood alone with their own "when to use what" tables duplicated across specs. Readers had to cross-reference five pages to build a mental model. Three of those five have since collapsed into one, which is what putting them side by side made visible.
+Before this spec, Cell, Shared, Mutex, Pool and Owned each stood alone with their own "when to use what" tables duplicated across specs. Readers had to cross-reference five pages to build a mental model. Three of those five collapsed into one, which is what putting them side by side made visible; Pool went too, replaced by Rack + Link (rask-lang/rask#908).
 
 They share one syntax and one decision. Collecting them turns five questions ("which type do I pick?") into one: `with` access is the common shape, so pick the access discipline that fits the problem. The individual specs still own their details.
 

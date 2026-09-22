@@ -23,7 +23,6 @@ mod stmt;
 pub mod transform;
 mod types;
 
-pub mod hidden_params;
 pub mod layout_check;
 pub mod lower;
 mod const_free;
@@ -37,7 +36,6 @@ pub use const_free::{add_const_free, CONST_FREE_FN};
 pub use container_drop::{insert_container_drops, ENV_DROP_SUFFIX};
 pub use trait_drop::insert_trait_drops;
 pub use transform::clone_elision::elide_clones;
-pub use transform::gen_coalesce::coalesce_generation_checks;
 pub use transform::string_append::optimize_string_concat;
 pub use transform::pass::{MirPass, PassManager, PipelineResult};
 pub use function::{BlockId, MirBlock, MirFunction, MirLocal};

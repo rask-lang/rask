@@ -3,7 +3,7 @@
 **Status:** Design exploration
 **Spec ID:** `tool.debug`
 
-Rask's restrictions (single ownership, pools, structured concurrency) make the program state space more tractable than C/Rust. A conventional debugger treats memory as an opaque soup. Rask knows the structure — that's the unfair advantage.
+Rask's restrictions (single ownership, racks, structured concurrency) make the program state space more tractable than C/Rust. A conventional debugger treats memory as an opaque soup. Rask knows the structure — that's the unfair advantage.
 
 ## Tier 1 — DWARF + Existing Tools
 
@@ -36,15 +36,15 @@ Once DWARF works, `rr record ./program && rr replay` gives reverse execution for
 
 These features exploit what the compiler knows that generic debuggers don't.
 
-### D3. Pool inspector
+### D3. Rack inspector
 
-Show all live entities in a pool as a table. Highlight which handles point where. Flag generation mismatches (stale handles).
+Show every live node in a rack as a table, with who points at whom. The rack already keeps the incoming-edge records so that `delete` can null them (`mem.racks/RK3`), so the in-degree column is a read, not an analysis.
 
 ```
-Pool<Enemy> (id=2, capacity=64, live=12)
-  [0] gen=3  health=45  pos=(10,20)  ← handle(2,0,3)
-  [1] gen=1  [free]
-  [2] gen=5  health=100 pos=(0,0)
+Rack<Enemy> (live=12, slots=64)
+  [0] health=45   pos=(10,20)   in:2  out: target→[2]
+  [1] [free]
+  [2] health=100  pos=(0,0)     in:1  out: target→none
   ...
 ```
 
@@ -72,9 +72,8 @@ Show active capabilities and where they were introduced:
 
 ```
 Active contexts:
-  Pool<Player>     from game.rk:12
-  Pool<Enemy>      from game.rk:13
   Multitasking     from main.rk:5
+  ThreadPool       from main.rk:6
 ```
 
 ### D7. State diffing between stops
@@ -84,8 +83,8 @@ Instead of "what is the state?", show "what changed since last breakpoint?"
 ```
 Stopped at game_loop.rk:52  (3rd iteration)
   Changed:
-    pool[player_handle].position: (10, 20) → (11, 20)
-    pool[enemy_handle].health: 50 → 45
+    world[player].position: (10, 20) → (11, 20)
+    world[enemy].health: 50 → 45
     score: 100 → 110
   Unchanged: 847 other values
 ```
@@ -94,28 +93,28 @@ Stopped at game_loop.rk:52  (3rd iteration)
 
 ## Tier 3 — Advanced
 
-### D8. Omniscient pool debugging (query the past)
+### D8. Omniscient rack debugging (query the past)
 
-Instrument pool operations at compile time. Record a structured event log. Query it after execution:
+Instrument rack operations at compile time. Record a structured event log. Query it after execution:
 
 ```
-> query handle(pool=0, index=5) mutations
+> query node(rack=world, slot=5) mutations
   t=1042  health: 100 → 90   at game_loop.rk:47
   t=1185  health: 90 → 75    at game_loop.rk:47
   t=1301  health: 75 → 0     at damage.rk:12
-  t=1302  [recycled]          at pool.rk:88
+  t=1302  [deleted, 3 edges nulled]  at game_loop.rk:61
 ```
 
-This falls out naturally from Rask's pool model. In C++ you'd need sanitizer-level instrumentation. In Rask, every pool mutation goes through `pool[handle]` — the compiler knows every access point.
+The slot number is the handle here: RK12 gives every node the index of the slot it occupies and keeps a directory from index to node, so a trace can name a node without holding an address that stops meaning anything after the delete.
 
-**Overhead estimate:** ~1-2% for dev builds (ring buffer append per pool operation). Acceptable to leave on permanently in debug mode.
+**Overhead estimate:** ~1-2% for dev builds (ring buffer append per node write). Acceptable to leave on permanently in debug mode.
 
 ### D9. Conditional time-travel
 
 Combine time-travel with assertions — binary-search the execution timeline:
 
 ```
-> watch pool[h].health < 0
+> watch world[5].health < 0
   First violation at t=1301, damage.rk:12
   [jumps to that point in time]
 ```
@@ -143,7 +142,7 @@ When the debugger catches a bug, automatically extract a minimal reproducing tes
 
 **Phase 1:** D1 (DWARF emission). This is the foundation — everything else builds on it.
 
-**Phase 2:** D3-D7 (Rask-aware features). Implement as a custom DAP server that wraps LLDB and adds semantic understanding of pools, channels, ownership.
+**Phase 2:** D3-D7 (Rask-aware features). Implement as a custom DAP server that wraps LLDB and adds semantic understanding of racks, channels, ownership.
 
 **Phase 3:** D8-D11 (advanced features). Requires compile-time instrumentation and deeper integration.
 

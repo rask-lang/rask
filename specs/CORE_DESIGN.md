@@ -4,7 +4,7 @@
 
 I spent a long time trying to get this right: ergonomics without sacrificing transparency. Go feels great to write but gives you no safety guarantees. Rust is safe but you spend half your time fighting the borrow checker and annotating lifetimes. I wanted something in between.
 
-The breakthrough was realizing that most of Rust's complexity comes from trying to allow storable references. If you eliminate those—make references impossible to store—you can skip lifetime annotations entirely. The cost is explicit indirection (handles instead of pointers), but that's a cost I can see and reason about.
+The breakthrough was realizing that most of Rust's complexity comes from trying to allow storable references. If you eliminate those—make references impossible to store—you can skip lifetime annotations entirely. The cost is that a graph has to live somewhere the language knows about — a `Rack<T>` — but that's a cost I can see and reason about.
 
 ---
 
@@ -45,21 +45,21 @@ There's no `Box<T>` because there's no need to distinguish "heap-allocated value
 
 **Why this matters:** When everything is a value, the ownership rules apply everywhere identically. Move a `Vec` and the buffer moves. Move a `Heap` and the value it points at goes with it. Move an `any Widget` and the heap data moves. One model for owned data — the uniform rule.
 
-**Honest carve-out: a small fixed set of language primitives with shared semantics.** `string` (with its substring view `StringView`), `Shared<T, S>`, and `Atomic<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define, and that set is closed on purpose — see [Shared, Rack and Heap](memory/shared-rack-heap.md) for the disciplines (`Shared`, `Rack`+`Link`, `Heap`, the deprecated `Pool`, plus `Atomic` as adjacent) and for why I don't hand out a way to build more of them (`mem.shared-rack-heap/BX1`–`BX4`). Short version: those types don't use a secret type-system feature, they have permission to run code on assignment, on scope exit, and at borrow boundaries — three places I keep free of user code so cost stays readable and cleanup stays visible. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
+**Honest carve-out: a small fixed set of language primitives with shared semantics.** `string` (with its substring view `StringView`), `Shared<T, S>`, and `Atomic<T>` are values in the ownership sense (single owner, move on assignment), but their internal semantics are refcounted or shared. `string.clone()` is a refcount bump, not a deep copy; `Shared<T>.clone()` shares access with other holders; moving a `Shared<T>` moves one reference to data that may have other references. These are not types users can define, and that set is closed on purpose — see [Shared, Rack and Heap](memory/shared-rack-heap.md) for the disciplines (`Shared`, `Rack`+`Link`, `Heap`, plus `Atomic` as adjacent) and for why I don't hand out a way to build more of them (`mem.shared-rack-heap/BX1`–`BX4`). Short version: those types don't use a secret type-system feature, they have permission to run code on assignment, on scope exit, and at borrow boundaries — three places I keep free of user code so cost stays readable and cleanup stays visible. The uniformity claim holds for user-defined types; the primitives are the exceptions you should know about.
 
-**Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Rack`+`Link` for graphs, disjoint field borrowing for partial borrows, and context clauses for implicit state threading — solutions to problems that pure MVS hits once you go beyond simple value passing. Pure MVS answers "these things point at each other" with projections, or with an index into an array that the programmer maintains by hand; the rack is that index, owned by the language and checked by it.
+**Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Rack`+`Link` for graphs, and disjoint field borrowing for partial borrows — solutions to problems that pure MVS hits once you go beyond simple value passing. Pure MVS answers "these things point at each other" with projections, or with an index into an array that the programmer maintains by hand; the rack is that index, owned by the language and checked by it.
 
 ### 3. No Storable References
 
 References cannot outlive their lexical scope. You can borrow a value temporarily (for the duration of a function call or expression), but you cannot store that borrow in a struct, return it, or let it escape.
 
 **What this means:**
-- No types that "hold a pointer to another value"
-- Collections use handles (opaque identifiers) instead of references
-- Graphs, trees with parent pointers, and self-referential structures use key-based indirection
+- No user-defined type holds a pointer to another value
+- Graphs, trees with parent pointers, and self-referential structures go through a `Rack<T>`
 - Dangling pointers can't happen — there's no reference to outlive anything
-- Use-after-free never goes silent: reaching through a stale handle panics at the access (see the pool tradeoff below)
-- Iterator invalidation is caught the same way, at the access
+- Iterator invalidation is caught at the access
+
+**The one storable reference is `Link<T>`, and the rack is why it's safe.** A link may live in a struct field, which no other reference may. It isn't an exception to the rule so much as the rule paid for differently: `rack.delete(n)` nulls every `Link<T>?` pointing at `n` before it returns, so a link to a dead node never exists to be followed (`mem.racks/RK3`). A *local* link, which the rack can't reach, is a compile error to use after the delete (RK5).
 
 **The tradeoff:** Some patterns require explicit indirection. **The gain:** No lifetime annotations, no borrow checker fights, no runtime tracking.
 
@@ -77,10 +77,10 @@ Major costs are visible in code. Small safety checks can be implicit.
 
 **Implicit (no ceremony required):**
 - Bounds checks
-- Handle validity checks
+- Following a link (it's a load — the rack keeps links valid, so nothing is checked)
 - Small copies of primitive types
 
-**The balancing act:** I want allocations visible (they're expensive), but I don't want ceremony on every array access. The rule is: if it's O(1) and cheap (bounds check, generation check), it can be implicit. If it's potentially expensive (allocation, I/O, locking), it must be explicit in the code.
+**The balancing act:** I want allocations visible (they're expensive), but I don't want ceremony on every array access. The rule is: if it's O(1) and cheap (a bounds check, an edge-record write), it can be implicit. If it's potentially expensive (allocation, I/O, locking), it must be explicit in the code.
 
 ### 5. Local Analysis Only
 
@@ -162,13 +162,13 @@ The compiler tracks information the language deliberately keeps out of the type 
 - `@pure` is a lint annotation, not a type qualifier. A pure function can call an impure one; the lint warns.
 - IDE ghost annotations show closure captures, inferred types, pause points, and `own` at take call sites — the compiler knows, the source doesn't say. (Mutation is not on this list: `mutate` is written at the call site, `mem.parameters/PM4` — a wrong reading of mutation is legal code, so it isn't left to tooling.) Outside an IDE, `rask annotate` materializes the same layer into diffs and terminals ([tooling/annotate.md](tooling/annotate.md)), so "tooling shows" doesn't quietly mean "only the IDE shows."
 
-**Honest carve-out: pool contexts color signatures.** `using Pool<T>` (and its named/frozen variants) is declared in signatures and propagates up the call graph via `mem.context/CC5`, because a pool is a value callees dereference — it must be threaded through as a hidden parameter reference. This is scope-level coloring, deliberately traded for uncolored call syntax. It is the only coloring left in the language, and it goes when `Pool` does (rask-lang/rask#908) — at which point this carve-out isn't narrowed, it's deleted. See [context-clauses.md](memory/context-clauses.md).
+**There is no carve-out any more.** One used to sit here: `using Pool<T>` was declared in signatures and propagated up the call graph, because a pool is a value callees dereference and something had to thread it in. That was scope-level coloring, and it was the only coloring left in the language. Pools are gone (rask-lang/rask#908), and nothing replaced the clause — a `Rack<T>` needs no ambient context, because a `Link<T>` *is* the node rather than a ticket you redeem at a container. Nothing in a Rask signature colors it today.
 
 **Multitasking and ThreadPool do NOT color signatures.** `using Multitasking { ... }` is a block that installs a process-global runtime; it never appears on a function signature. The compiler infers which functions transitively reach `spawn` (as internal metadata, invisible in source) and checks the caller's lexical scope; cases that static analysis can't prove fall through to a runtime panic. See [concurrency/runtime.md](concurrency/runtime.md) and [concurrency/async.md](concurrency/async.md).
 
-**Why I chose this:** Effect systems and async/await color every call site. Rask keeps effects as metadata (no call-site color) and restricts capability coloring to the one place it actually buys something — pool references, which are real values. Runtime capabilities are a single process-level resource and don't need to be threaded through every signature.
+**Why I chose this:** Effect systems and async/await color every call site. Rask keeps effects as metadata, so no call site is colored, and no signature is either. Runtime capabilities are a single process-level resource and don't need threading through every signature.
 
-This principle is what makes the async model (no `async`/`await` at call sites), the purity story (no effect types), and the IDE experience (ghost annotations everywhere) coherent rather than a list of compromises. The common rule: the compiler knows, tooling shows, call syntax stays clean. The one thing a signature still carries is a pool reference, and only because it is a value.
+This principle is what makes the async model (no `async`/`await` at call sites), the purity story (no effect types), and the IDE experience (ghost annotations everywhere) coherent rather than a list of compromises. The common rule: the compiler knows, tooling shows, call syntax stays clean.
 
 ---
 
@@ -208,7 +208,7 @@ I'd rather have explicit `.clone()` calls than hidden overhead on every pointer 
 
 Rust's borrow checker is technically sound, but ergonomically expensive. Lifetime annotations leak into function signatures. The complexity is front-loaded—you pay for it whether you need it or not.
 
-I took a different approach: instead of tracking reference lifetimes, make references non-storable. This eliminates the need for lifetime tracking entirely. You trade storable references for explicit handles. I think that's a better tradeoff.
+I took a different approach: instead of tracking reference lifetimes, make references non-storable. This eliminates the need for lifetime tracking entirely. The one reference you can store is a `Link<T>`, and it is safe because the rack that owns the node fixes up every edge at delete time rather than because a checker proved something about it. I think that's a better tradeoff.
 
 ### Why Not Manual Memory Management?
 
@@ -234,13 +234,13 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Value semantics.** Types ≤16 bytes with all-Copy fields copy implicitly. Larger types move. The threshold is fixed (not configurable) for semantic stability across platforms. `@unique` prevents copying; `@resource` requires exactly-once consumption. See [value-semantics.md](memory/value-semantics.md).
 
-**Borrowing.** References are block-scoped for fixed-layout sources (struct fields, arrays — valid until end of enclosing block). Growable sources (Vec, Pool, Map, string) use inline access: expression-scoped for one-liners, `with...as` blocks for multi-statement operations. Cannot be stored in structs, returned, or sent cross-task. See [borrowing.md](memory/borrowing.md).
+**Borrowing.** References are block-scoped for fixed-layout sources (struct fields, arrays — valid until end of enclosing block). Growable sources (Vec, Map, string) use inline access: expression-scoped for one-liners, `with...as` blocks for multi-statement operations. Cannot be stored in structs, returned, or sent cross-task. See [borrowing.md](memory/borrowing.md).
 
 **Parameters.** Three modes declared in the signature: borrow (default, read-only), `mutate` (mutable access, caller keeps ownership), and `take` (ownership transfer). Mutation is marked at both ends — `f(mutate x)` at the call site, receivers exempt (`mem.parameters/PM4`). Passing `mutate value.field` borrows only that field — disjoint fields don't conflict. See [parameters.md](memory/parameters.md), [borrowing.md](memory/borrowing.md).
 
-**Collections.** `Vec<T>` for sequences, `Map<K,V>` for key-value lookup, `Rack<T>` for nodes with stable identity that reference each other (graphs, entities, scene trees). Growth operations panic on allocation failure; `try_` variants (`try_push`, `try_insert`) return the rejected value for OOM-aware code (`std.collections/C2`). `with pool[h] as entity { ... }` for multi-statement element access. See [collections.md](stdlib/collections.md), [racks.md](memory/racks.md).
+**Collections.** `Vec<T>` for sequences, `Map<K,V>` for key-value lookup, `Rack<T>` for nodes with stable identity that reference each other (graphs, entities, scene trees). Growth operations panic on allocation failure; `try_` variants (`try_push`, `try_insert`) return the rejected value for OOM-aware code (`std.collections/C2`). `with vec[i] as entity { ... }` for multi-statement element access on a growable collection. A rack node needs no `with`: it never moves, so `n.health -= 1` is an ordinary field write. See [collections.md](stdlib/collections.md), [racks.md](memory/racks.md).
 
-**Context clauses.** `using` is Rask's ambient-context mechanism, full stop, but it has two forms and only one of them touches signatures. A function declares `using Pool<T>` and the compiler threads the pool as a hidden parameter — no runtime registry, no lookup cost, compile-time checked. Public functions declare their pool contexts (part of the API contract); private ones can have them inferred. `using Multitasking { ... }` and `using ThreadPool { ... }` are the other form: a block that installs a process-global slot for its lexical extent, propagating to nothing (`mem.context` see-also, and Principle 9). See [context-clauses.md](memory/context-clauses.md).
+**Context blocks.** `using Multitasking { ... }` and `using ThreadPool { ... }` install a process-global slot for their lexical extent and propagate to nothing. That is the only form `using` has. There was a second one — a signature clause naming a `Pool<T>` the compiler threaded in as a hidden parameter — and it went with pools (rask-lang/rask#908), which is why no signature carries ambient context today (Principle 9). See [concurrency/runtime.md](concurrency/runtime.md).
 
 **Error handling.** Errors are values: `T or E` is a builtin sum type with type-based branch disambiguation (no `Ok`/`Err` wrappers), `try` for propagation, two shape-specific fallbacks (`??` for absence, `catch e =>` for failure — a dropped error is always spelled `catch _ =>`), `x!` force-unwrap. `T?` is sugar for `T or none` — the optional shape — sharing the same machinery. Error types compose with `A | B` union syntax. `E` must implement `Error` (`message() -> string`, auto-derived for enums); `none` is exempt as the absent sentinel. Disjointness rule (T ≠ E) makes construction unambiguous; newtype is the escape hatch. No exceptions, no hidden control flow. See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
@@ -254,7 +254,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Concurrency.** `spawn(|| {})` for green tasks (requires `using Multitasking`), `ThreadPool.spawn(|| {})` for CPU-bound work (requires `using ThreadPool`), `Thread.spawn(|| {})` for raw OS threads. Call sites are uncolored — no `async`/`await` — and I/O pauses the task automatically. The cost of invisible suspension: a function reading from a socket may pause mid-call, including with locks held. Lint rules and IDE `[io]` annotations partially recover that visibility; the type system does not. Pausing never breaks a lock's guarantee — a parked task still holds it, and only a panic can end a task mid-update (`ctrl.panic/LK4`); `staged()` plus a default-on warning cover the sites where that matters. `using Multitasking { ... }` is a block in the caller's scope, not a clause on a signature — the runtime is one process-level resource, so nothing has to be threaded through (Principle 9). Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. Cooperative cancellation via cancel flag checked by I/O operations. See [concurrency/](concurrency/).
 
-**Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`build.rk`) handle full-language code generation. See [comptime.md](control/comptime.md).
+**Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, racks, or concurrency. Build scripts (`build.rk`) handle full-language code generation. See [comptime.md](control/comptime.md).
 
 **Strings.** `string` (UTF-8, immutable, refcounted, Copy) plus `StringView`, its storable zero-copy substring — a view shares the source's buffer and holds a refcount on it, so parsers store views in tokens and structs without copying and without dangling. `StringBuilder` for construction (UTF-8 by construction — zero-copy `build()`). Slicing is inline; escaping the expression is an explicit conversion: `.view()` (zero-copy, pins source) or `.to_string()` (independent copy). See [strings.md](stdlib/strings.md).
 
@@ -287,7 +287,7 @@ I'm not pretending there aren't costs to these choices. Every design has tradeof
 
 ### Graphs cost an edge write, not a read
 
-**Decision:** Graph structures use `Rack<T>` + `Link<T>` (`mem.racks`). `Pool<T>` + `Handle<T>` did this job and is deprecated — the retirement is sequenced in rask-lang/rask#908.
+**Decision:** Graph structures use `Rack<T>` + `Link<T>` (`mem.racks`). `Pool<T>` + `Handle<T>` used to do this job; both are deleted (rask-lang/rask#908).
 
 **Cost:** Reads are free — a link is the node's address, so `node.health` is the same base+offset load any field gets. Writes are not: assigning a link into an edge writes the *target* too, because the rack records the incoming edge so delete can find it later. Measured at ~2.6 ns against ~2.9 ns for a raw pointer store.
 
@@ -304,10 +304,10 @@ I'm not pretending there aren't costs to these choices. Every design has tradeof
 - String slices in structs → `StringView` (zero-copy, refcounted) or `Span` indices
 - Caches holding references → own the values, hand out links
 
-**Benefit:** Removes entire categories of bugs — two of them by construction, one by making it loud:
+**Benefit:** Removes entire categories of bugs, by construction:
 - Dangling pointers — impossible; references can't escape their scope, so there's nothing to leave behind
-- Use-after-free — a stale handle still compiles, but the generation check catches it at the access. Detection, not impossibility; the point is that it can't be silent
-- Iterator invalidation — a link into a rack mutated mid-loop is the same story as the delete above: the rack nulls the edges it can reach, and a local link is a compile error to use
+- Use-after-free through a link — the rack nulls every stored edge at delete (`mem.racks/RK3`), and a local link the rack can't reach is a compile error to use afterwards (RK5). There's no stale state to observe
+- Iterator invalidation — same story: the rack nulls the edges it can reach, and a local link is a compile error to use
 
 No lifetime annotations needed. Function signatures are simple. Reasoning about ownership is local.
 
@@ -323,7 +323,7 @@ No lifetime annotations needed. Function signatures are simple. Reasoning about 
 
 **Cost:** At comptime, you cannot:
 - Do I/O (except `@embed_file`)
-- Use pools or handles
+- Use racks
 - Use concurrency
 - Call unsafe code
 - Exceed iteration/memory limits
@@ -343,7 +343,7 @@ No lifetime annotations needed. Function signatures are simple. Reasoning about 
 
 **Consider alternatives:**
 - OS kernels, drivers → Need unsafe pointer manipulation (Rust, C)
-- Soft real-time with nanosecond budgets → Handle overhead may matter (C++, Rust)
+- Soft real-time with nanosecond budgets → the edge-write cost on graph mutation may matter (C++, Rust)
 - Scripting/prototyping → GC languages are faster to write (Python, Go)
 - Maximum raw performance → Manual memory control needed (C++, Rust, Zig)
 
@@ -356,7 +356,7 @@ I'm targeting the "90% of code" that doesn't need pointer-level control but bene
 I'm upfront about what Rask doesn't do well:
 
 1. **Explicit cloning:** Collections and large values require explicit cloning to share access (strings are Copy — no cloning needed)
-2. **Key-based indirection:** Graphs and self-referential structures use handles, not pointers
+2. **Graphs need a container:** self-referential structures live in a `Rack<T>` and reference each other by `Link<T>`, not by bare pointers
 3. **No shared mutable references:** Cross-task data sharing uses channels (ownership transfer), `Shared<T, S>` (`with`-based scoped access), or explicit synchronization
 4. **Unsafe for low-level code:** OS/kernel work requires unsafe blocks with raw pointers
 

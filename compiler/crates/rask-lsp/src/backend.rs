@@ -356,18 +356,6 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
             diags.push(d);
         }
     }
-    let frozen_diagnostics = rask_effects::frozen::check(&parse_result.decls, &effects);
-    for fd in &frozen_diagnostics {
-        let d = if fd.is_error {
-            rask_diagnostics::Diagnostic::error(&fd.message)
-        } else {
-            rask_diagnostics::Diagnostic::warning(&fd.message)
-        };
-        let d = d.with_code(fd.code).with_primary(fd.span, "");
-        if is_current_file_diagnostic(&d, &current_file_spans) {
-            diags.push(d);
-        }
-    }
 
     // Only index current-file decls — sibling byte offsets would collide.
     let mut position_index = build_position_index(&parse_result.decls[..current_file_decl_count]);

@@ -402,8 +402,8 @@ Visibility in patterns: `extend` blocks see all fields; same package sees packag
 |------|------|----------|
 | Empty struct | S1 | Valid (unit struct), size 0 |
 | Single field | S1 | Valid, no special treatment |
-| Recursive field | S2 | MUST use `Heap<T>` or `Handle<T>` for indirection |
-| Self-referential | S2 | Use `Handle<Self>` using Pool |
+| Recursive field | S2 | MUST use `Heap<T>` or `Link<T>` for indirection |
+| Self-referential | S2 | Use `Link<Self>?` and put the nodes in a `Rack<Self>` |
 | Large struct (>16 bytes) | — | Move semantics; explicit `.clone()` for copy |
 | Struct in Vec | — | Allowed if non-linear |
 | Linear field | — | Struct becomes linear; must be consumed |
@@ -487,7 +487,7 @@ extend FileHandle {
 
 ### Patterns & Guidance
 
-**Disjoint field borrowing:** Functions that need a single field should take that field's type directly: `func f(mutate entities: Pool<Entity>)`. The borrow checker tracks field-level borrows at call sites — passing `state.entities` borrows only that field. See `mem.borrowing/F1`–`F4`.
+**Disjoint field borrowing:** Functions that need a single field should take that field's type directly: `func f(mutate entities: Rack<Entity>)`. The borrow checker tracks field-level borrows at call sites — passing `state.entities` borrows only that field. See `mem.borrowing/F1`–`F4`.
 
 ### See Also
 

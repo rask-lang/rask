@@ -395,9 +395,8 @@ Each stage is independently shippable and testable.
 ### Stage 6 — Migrate collection iteration methods to `Sequence<T>`
 
 - **`stdlib/collections.rk`** — `Vec::take_all()` returns `Sequence<T>` (line 83)
-- **`stdlib/memory.rk`** — `Pool::handles()`, `Pool::values()`, `Pool::take_all()` (lines 61, 64, 67)
 - **`stdlib/string.rk`** — `chars()`, `bytes()`, `char_indices()`, `split()`, `split_whitespace()`, `lines()` (lines 102–117)
-- **Runtime** (`compiler/crates/rask-interp/src/builtins/collections.rs`): rewrite `take_all()`, `handles()`, `keys()`, `values()` to return `Value::Closure` driving the underlying data
+- **Runtime** (`compiler/crates/rask-interp/src/builtins/collections.rs`): rewrite `take_all()`, `keys()`, `values()` to return `Value::Closure` driving the underlying data
 - **Type checker** (`compiler/crates/rask-types/src/checker/resolve.rs`): remove the Iterator-return references for `drain()`/`take_all()` (lines 1365, 1746–1748)
 - The existing chain fusion (`rask-mir/src/lower/iterators.rs`) for `vec.filter(...).map(...)` remains — it operates on the AST chain pattern, not on the runtime Iterator trait
 
@@ -457,7 +456,6 @@ Each stage is independently shippable and testable.
 | Function type parsing | `compiler/crates/rask-types/src/checker/parse_type.rs:247` | `parse_fn_type()` |
 | Generic substitution | `compiler/crates/rask-mono/src/instantiate.rs:70` | `substitute_type_string()` |
 | Stdlib Vec methods | `stdlib/collections.rk:80,83` | return types |
-| Stdlib Pool methods | `stdlib/memory.rk:61,64,67` | return types |
 | Stdlib string methods | `stdlib/string.rk:102-117` | return types |
 | Stdlib Channel | `stdlib/async.rk` | add `stream()` |
 | Interp for-loop | `compiler/crates/rask-interp/src/interp/exec_stmt.rs:175` | `StmtKind::For` |

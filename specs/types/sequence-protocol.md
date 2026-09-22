@@ -761,18 +761,18 @@ The retired `Iterator<Item>` trait mapped to these patterns:
 | `collection.iterate()` (returned `VecRefIterator<T>` etc.) | the collection *is* the chain head — `collection.filter(p)`, `for x in collection` (SEQ48) |
 | `iter.collect()` | `iter.to_vec()` (SEQ28) — or `.to_map()` / `.join(sep)` |
 | `.take_all()` returning consuming iterator struct | `.take_all()` returns the drained `Vec<T>` (SEQ35) — not a Sequence |
-| `pool.handles()` returning handle iterator | `pool.handles()` returns `Sequence<Handle<T>>` |
+| `pool.handles()` returning handle iterator | `rack.nodes()` returns `Vec<Link<T>>`, which is a chain head like any other |
 | `iter.zip(other)` | Use indices: `for i in 0..min(a.len(), b.len())` |
 
 ### Patterns & Guidance
 
-**Pool-backed graph traversal** — yield handles, compose freely:
+**Graph traversal** — yield links, compose freely:
 
 <!-- test: skip -->
 ```rask
-for h in graph.bfs(start) {
-    if graph.nodes[h].visited { continue }
-    mark_visited(h)
+for n in graph.bfs(start) {
+    if n.visited { continue }
+    mark_visited(n)
 }
 ```
 

@@ -16,8 +16,8 @@ Every panic source is a programmer bug by definition. Expected failures use `T o
 | **S1: Explicit** | `panic(msg)`, `todo()`, `unreachable()` (`type.errors/DP1–DP2`) |
 | **S2: Force operators** | `x!` / `r!` on empty/error values (`type.errors/ER15`) |
 | **S3: Checked arithmetic** | Overflow, divide-by-zero, `i32.MIN / -1` (`type.overflow/OV1–OV3`) |
-| **S4: Access checks** | Index out of bounds, stale/wrong-pool handle (`mem.pools`), `with` aliasing (`mem.borrowing/W3–W4`) |
-| **S5: Runtime guards** | `spawn` with no runtime (`conc.async/CC3`), `TaskHandle` dropped unconsumed (`conc.async/H1`), non-empty `Pool<Resource>` at scope exit (`mem.resources/R5`), stack overflow via guard page (`conc.runtime`) |
+| **S4: Access checks** | Index out of bounds, `with` aliasing (`mem.borrowing/W3–W4`) |
+| **S5: Runtime guards** | `spawn` with no runtime (`conc.async/CC3`), `TaskHandle` dropped unconsumed (`conc.async/H1`), stack overflow via guard page (`conc.runtime`) |
 | **S6: Message + location** | Every panic carries a message and the source location of the failing operation |
 | **S7: Nothing the compiler already knows** | A condition the compiler can decide from the source alone must be a compile error, never a panic compiled into the program. This covers unimplemented paths too: "not supported yet" is a diagnostic, not a runtime message |
 
@@ -58,7 +58,7 @@ func observe() {
 |------|-------------|
 | **U1: Ensures run** | Every ensure scheduled between the panic point and the task root runs during unwind |
 | **U2: Access released, writes kept** | Unwind releases *access* (locks, borrows, bindings) but never rolls back *data*. Values keep whatever mutations happened before the panic |
-| **U3: `with` release** | Unwinding through a `with` block releases what the block held: a `Shared` gives back whatever lock its strategy took, pool element access ends |
+| **U3: `with` release** | Unwinding through a `with` block releases what the block held: a `Shared` gives back whatever lock its strategy took, an element binding ends |
 | **U4: Inline access release** | Expression-scoped locks (`mutex.lock().f`, `shared.read().f` — `conc.sync/R5, MX3`) release when the expression is abandoned mid-unwind |
 | **U5: There is nothing to leak** | A linear value with no scheduled ensure would be leaked on panic — no destructor runs, ever. `mem.linear/L7` is why there is never one to lose: nothing may stand between an acquisition and its commitment, so the only code that can panic runs with cleanup already scheduled |
 
@@ -69,9 +69,11 @@ the acquisition-to-commitment window empty, which is a rule the compiler checks
 rather than a habit the author keeps. Requiring the `ensure` one line earlier
 costs nothing — it is the line that used to sit at the bottom of the function.
 
-The remaining leaks are the ones no static rule can see: a `Pool` whose contents
-are a runtime fact trips its own guard instead (R5, and E3 below for what that
-looks like mid-unwind).
+There used to be a leak no static rule could see — a `Pool<Resource>` whose
+contents were a runtime fact — and it had a runtime guard of its own. Pools are
+gone (rask-lang/rask#908), and no container can hold a linear value now
+(`mem.resources/RC1`–RC3), so the guard has nothing to fire on. Every case here
+is static.
 
 ## Locks: Released, Not Poisoned
 
@@ -94,7 +96,7 @@ Closes the panic half of [#280](https://github.com/rask-lang/rask/issues/280). S
 |------|-------------|
 | **E1: Ensure panic panics the task** | A panic inside an ensure body (or its `else` handler) ends that ensure and starts — or continues — unwind. The task dies |
 | **E2: Remaining ensures still run** | The other scheduled ensures, in this block and every outer block, run anyway in LIFO order. One failing cleanup never skips other releases |
-| **E3: First panic wins** | The first panic becomes the task's `Panicked` message. Any panic raised later in the same unwind — an ensure body, or a runtime guard firing at an unwound scope exit (`mem.resources/R5`, `conc.async/H1`) — is contained at its boundary and reported to stderr as a secondary panic |
+| **E3: First panic wins** | The first panic becomes the task's `Panicked` message. Any panic raised later in the same unwind — an ensure body, or a runtime guard firing at an unwound scope exit (`conc.async/H1`) — is contained at its boundary and reported to stderr as a secondary panic |
 | **A1: Abort escape hatch** | If the runtime itself cannot continue unwinding (panic inside the unwind machinery, stack exhaustion during unwind), the process aborts (SIGABRT). This is a runtime failure mode, not a semantic rule programs may rely on |
 
 <!-- test: parse -->
@@ -149,9 +151,8 @@ Resolves the panic open question in `determinism`.
 | Panic in ensure body during normal block exit | E1–E2 | Task dies with that panic; remaining ensures run |
 | Panic in ensure body during unwind | E3 | Contained, reported as secondary; original panic wins |
 | Panic in `else \|e\|` handler | E1 | Same as ensure-body panic |
-| Non-empty `Pool<Resource>` scope exits during unwind | E3 | R5 guard fires as secondary — reported, contained; elements leak (U5's consequence) |
 | Unconsumed `TaskHandle` scope exits during unwind | E3 | H1 guard fires as secondary — reported, contained; the task keeps running as if detached |
-| Panic while holding nested pool bindings (`with pool[h1] as a, pool[h2] as b`) | U3 | Both accesses released |
+| Panic while holding nested `with` bindings (`with v[i] as a, v[j] as b`) | U3 | Both accesses released |
 | Task parked on I/O while holding a lock | LK4 | Not a death — lock stays held, waiters wait until the task resumes and exits |
 | Task cancelled while parked holding a lock | LK4 | Task wakes; the pending I/O returns `Cancelled` as an error value; the block exits through normal control flow and releases the lock — no unwind, writes kept |
 | Panic between linear acquisition and its `ensure` | U5 | Resource leaks; lint nudges ensure-immediately-after |
@@ -210,7 +211,7 @@ The interpreter already implements most of this model; compiled code has the big
 - Matches E2/E3 (`interp/call.rs`, `run_ensures`): a panic in an ensure body no longer skips the remaining ensures — they all run in LIFO order; the first panic wins and later ones (including any raised while already unwinding) are reported to stderr as secondary panics.
 - Matches U2 (`eval_expr.rs`, WithAs): `with`-block writes are flushed before the panic propagates, so mutations made before the panic are kept.
 - Exits with code 101 on uncaught panic (`struct.targets/EX4`, `run.rs`).
-- Residual: the `mem.resources/R5` and `conc.async/H1` runtime guards firing at an unwound scope exit still override the primary panic instead of being contained as secondary (`call_function` → `check_scope_exit`) — the E3 guard case, tracked under #298.
+- Residual: the `conc.async/H1` runtime guard firing at an unwound scope exit still overrides the primary panic instead of being contained as secondary (`call_function` → `check_scope_exit`) — the E3 guard case, tracked under #298.
 - `staged()` (`conc.sync/ST1–ST4`) works on both paths. The interpreter already bound a copy of the payload and wrote it back at block exit, so staged is that minus the writeback when the body panicked — except the "copy" was a `Value::clone`, which shares the `Arc` behind a struct, so writes landed in the `Shared` whatever the writeback decided; a `deep_clone` is what makes the discard mean anything. Compiled, the commit is the block's inline cleanup (which every non-panic exit already chains through, ST2) and the acquire registers the *discard* on the held-access stack `rask_panic` drains (ST3) — neither half knows about the other. ST1 (`with`-source only, E0846) and ST3a (not under `Local`, E0845) are compile errors.
 
 **Compiled** (`rask-codegen` + C runtime):

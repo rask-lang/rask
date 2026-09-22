@@ -1,17 +1,17 @@
 <!-- id: comp.effects -->
 <!-- status: decided -->
-<!-- summary: Compiler-inferred effect metadata for IO, async, and pool mutation — tooling-visible, not type-level -->
-<!-- depends: concurrency/io-context.md, compiler/hidden-params.md, compiler/advanced-analyses.md, memory/context-clauses.md -->
+<!-- summary: Compiler-inferred effect metadata for IO, async, and structural mutation — tooling-visible, not type-level -->
+<!-- depends: concurrency/io-context.md, compiler/advanced-analyses.md -->
 
 # Effect Tracking
 
-The compiler infers which functions perform I/O, async operations, or pool mutations. This information is metadata — visible through IDE ghost text and linter annotations, not enforced in the type system. No function coloring.
+The compiler infers which functions perform I/O, async operations, or structural mutations (a call that can grow or shrink a collection). This information is metadata — visible through IDE ghost text and linter annotations, not enforced in the type system. No function coloring.
 
 ## Effect Categories
 
 | Rule | Description |
 |------|-------------|
-| **FX1: Three categories** | IO (syscalls, file/network/stdio), Async (spawn, sleep, channel ops), Mutation (pool Grow/Shrink — see `comp.advanced/EF1-EF6`) |
+| **FX1: Three categories** | IO (syscalls, file/network/stdio), Async (spawn, sleep, channel ops), Mutation (Grow/Shrink — see `comp.advanced/EF1`, EF3, EF4) |
 | **FX2: Transitive inference** | A function has effect X if it or any callee transitively has effect X |
 | **FX3: Not in the type system** | Effects are compiler metadata. They don't appear in function signatures, don't constrain calling, don't split ecosystems |
 
@@ -52,7 +52,7 @@ From `conc.io-context`:
 | `io` | `Stdin.read`, `Stdout.write`, `Stderr.write` | Yes |
 | `async` | `sleep`, `timeout` | Yes (also Async) |
 | `io` | `Buffer.read`, `Buffer.write` | No |
-| collections | `Vec`, `Map`, `Pool` | No |
+| collections | `Vec`, `Map`, `Rack` | No |
 | `json` | `json.encode`, `json.decode` | No |
 | `fmt` | `format` | No |
 | `math` | All functions | No |
@@ -69,7 +69,7 @@ From `conc.io-context`:
 
 | Rule | Description |
 |------|-------------|
-| **MU1: Defined by comp.advanced** | Pool mutation effects (Access, Grow, Shrink) are already formalized in `comp.advanced/EF1-EF6` |
+| **MU1: Defined by comp.advanced** | Structural effects (Grow, Shrink) are already formalized in `comp.advanced/EF1`, EF3, EF4 |
 | **MU2: Orthogonal** | Mutation effects are tracked independently from IO/Async. A function can have IO + Mutation, just IO, or neither |
 
 ## Inference
@@ -94,7 +94,7 @@ infer_effects(func):
         if call.target is async_source:
             effects.add(Async)
             effects.add(IO)  // AS3: Async implies IO
-        if call.target is pool_grow_or_shrink:
+        if call.target is grow_or_shrink:
             effects.add(Mutation)
 
         // Transitive: add callee's effects
@@ -106,7 +106,7 @@ infer_effects(func):
     return effects
 ```
 
-Fixed-point iteration handles mutual recursion (same mechanism as `comp.hidden-params` context propagation).
+Fixed-point iteration handles mutual recursion.
 
 ## Purity
 
@@ -235,7 +235,7 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 | Closure captures IO function | FX2 | Closure inherits effects of captured calls |
 | Generic function | INF1 | Effects inferred per monomorphized instance (post-monomorphization) |
 | `unsafe` block with no C calls | IO3 | Still conservative (IO assumed). Suppress with `@no_io` on the function |
-| `comptime func` | PU2 | Pure once CT60 has checked it — inference measures the body, and a `comptime func` reaching I/O, `spawn` or a pool insert is rejected at its definition |
+| `comptime func` | PU2 | Pure once CT60 has checked it — inference measures the body, and a `comptime func` reaching I/O, `spawn` or a rack insert is rejected at its definition |
 | Cross-module call | INF2, INF3 | Read effects from compiled metadata |
 | `extern` function | INF5 | Conservative IO unless `@no_io` annotated |
 | Function pointer / `any Trait` call | INF1 | Conservative: assumed IO + Async (dynamic dispatch prevents static analysis) |
@@ -264,22 +264,20 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 - **No algebraic effects.** Effects can't be intercepted, resumed, or composed. See `rejected-features.md`.
 - **No compile errors from effects.** Only warnings (`CW1`, `CW2`) and lint annotations (`@pure`).
 
-This is deliberately less powerful than Koka, Scala 3's capture checking, or Frank. The goal is visibility, not enforcement. Rask's type system handles the enforcement it needs through `T or E` (errors), `using frozen` (mutation), and `using Multitasking` (async context).
+This is deliberately less powerful than Koka, Scala 3's capture checking, or Frank. The goal is visibility, not enforcement. Rask's type system handles the enforcement it needs through `T or E` (errors), the structural-effect rules (mutation under a borrow), and `using Multitasking` (async context).
 
 ### Relationship to Existing Features
 
 | Feature | What it does | How effects relate |
 |---------|-------------|-------------------|
 | `T or E` | Tracks errors in types | Not an effect — already handled by the type system |
-| `using Pool<T>` | Threads pool as hidden param | Mutation effect tracks Grow/Shrink from `comp.advanced/EF1-EF6` |
-| `using frozen Pool<T>` | Restricts to Access-only | Already enforced at type level — effects confirm it |
+| `with v[i] as x { … }` | Borrows into a growable buffer | Mutation effect says which calls in the body could move that buffer (`comp.advanced/EF1`, EF4) |
 | `using Multitasking { ... }` block | Installs process-global runtime | IO/Async effects track which functions need it; the CC2 reachability check is a separate pass |
 | `comptime func` | Restricts to pure computation | Purity (PU2) gives vocabulary for what comptime already enforces |
-| Hidden params pass | Threads contexts | Effect inference reuses the same transitive propagation mechanism |
 
 ### Implementation Notes
 
-Effect inference runs as a pass after type checking, alongside the hidden-params pass. It reuses the same call-graph walk and fixed-point iteration (`comp.hidden-params` propagation algorithm). The difference: hidden-params modifies the AST (inserts parameters), effect inference only annotates metadata (no AST changes).
+Effect inference runs as a pass after type checking: one call-graph walk plus fixed-point iteration, annotating metadata only — no AST changes.
 
 **Compilation cost:** O(n) per module for the initial walk, O(n × k) for fixed-point iteration where k is typically 2-3. Well under the 10% analysis budget from `comp.advanced`.
 
@@ -301,8 +299,7 @@ Effect inference runs as a pass after type checking, alongside the hidden-params
 ### See Also
 
 - `conc.io-context` — IO source function categorization
-- `comp.hidden-params` — context threading mechanism (shared infrastructure)
-- `comp.advanced/EF1-EF6` — pool mutation effect system
+- `comp.advanced/EF1`, EF3, EF4 — the structural-effect rules
 - `ctrl.comptime/CT6-CT8` — comptime purity restrictions
 - `tool.lint` — `@pure` annotation enforcement
 - `tool.warnings` — warning infrastructure (`@allow`, `@deny`)

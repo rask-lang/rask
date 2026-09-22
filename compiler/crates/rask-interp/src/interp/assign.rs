@@ -205,18 +205,6 @@ impl Interpreter {
                     Err(RuntimeError::TypeError("Vec index must be an integer".to_string()))
                 }
             }
-            Value::Pool(p) => {
-                if let Value::Handle { pool_id, index, generation } = idx {
-                    let mut pool = p.lock().unwrap();
-                    let slot_idx = pool.validate(*pool_id, *index, *generation)
-                        .map_err(|e| RuntimeError::Panic(e))?;
-                    let value = wrap_like(pool.slots[slot_idx].1.as_ref(), value);
-                    pool.slots[slot_idx].1 = Some(value);
-                    Ok(())
-                } else {
-                    Err(RuntimeError::TypeError("Pool index must be a Handle".to_string()))
-                }
-            }
             Value::Map(m) => {
                 m.lock().unwrap().insert(MapKey(idx.clone()), value);
                 Ok(())
@@ -235,20 +223,6 @@ impl Interpreter {
         value: Value,
     ) -> Result<(), RuntimeError> {
         match container {
-            Value::Pool(p) => {
-                if let Value::Handle { pool_id, index, generation } = idx {
-                    let mut pool = p.lock().unwrap();
-                    let slot_idx = pool.validate(*pool_id, *index, *generation)
-                        .map_err(|e| RuntimeError::Panic(e))?;
-                    if let Some(ref elem) = pool.slots[slot_idx].1 {
-                        Self::assign_nested_field(elem, field_chain, value)
-                    } else {
-                        Err(RuntimeError::TypeError("pool slot is empty; the handle may have been removed".to_string()))
-                    }
-                } else {
-                    Err(RuntimeError::TypeError("Pool indexing requires a Handle".to_string()))
-                }
-            }
             Value::Vec(v) => {
                 if let Value::Int(i, _) = idx {
                     let idx = *i as usize;
@@ -312,19 +286,7 @@ impl Interpreter {
                     ExprKind::Ident(var_name) => {
                         if let Some(obj) = self.env.get(var_name) {
                             let obj = obj.clone();
-                            // mem.context/CC1: `h.field = v` auto-resolves through
-                            // the active Pool<T> — write to the element's field.
-                            if let Value::Handle { pool_id, .. } = &obj {
-                                let pool = self.pool_for_handle(*pool_id).ok_or_else(|| {
-                                    RuntimeError::Panic(format!(
-                                        "no Pool in scope to resolve handle field `.{}`",
-                                        field_chain.first().cloned().unwrap_or_default()
-                                    ))
-                                })?;
-                                Self::assign_index_field(&Value::Pool(pool), &obj, &field_chain, value)
-                            } else {
-                                Self::assign_nested_field(&obj, &field_chain, value)
-                            }
+                            Self::assign_nested_field(&obj, &field_chain, value)
                         } else {
                             Err(RuntimeError::UndefinedVariable(var_name.clone()))
                         }

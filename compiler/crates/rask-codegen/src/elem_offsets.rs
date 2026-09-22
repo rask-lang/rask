@@ -99,21 +99,6 @@ fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Op
 
 /// What one element of a container tagged `tag` owns, and where, or `None` when
 /// it owns nothing.
-/// The element type's name, when the tag names a `@resource` struct.
-///
-/// `mem.resources/R5` makes a non-empty `Pool<Resource>` at drop a runtime
-/// panic — the compiler can't track what a pool holds, which is why the rule is
-/// a runtime one. The pool is told on its first insert, and this is what it is
-/// told.
-pub fn resource_elem_name(tag: i64, layouts: &[StructLayout]) -> Option<&str> {
-    if tag < ELEM_STRUCT_BASE {
-        return None;
-    }
-    let idx = usize::try_from(tag - ELEM_STRUCT_BASE).ok()?;
-    let layout = layouts.get(idx)?;
-    layout.is_resource.then(|| layout.name.as_str())
-}
-
 pub fn string_offsets_for_tag(
     tag: i64,
     layouts: &[StructLayout],
@@ -313,8 +298,8 @@ fn heap_payload_name(ty: &RaskType) -> Option<String> {
 ///
 /// The same head-of-the-rendered-type test `container_free_for` uses, and for
 /// the same reasons: `Vec<i64>?` is a wrapper around the handle rather than the
-/// handle, and a `Pool` or a `Rack` is an arena whose contents outlive any one
-/// element (mem.pools, mem.racks).
+/// handle, and a `Rack` is an arena whose nodes outlive any one
+/// node (mem.racks).
 fn container_kind(ty: &RaskType) -> Option<i32> {
     // A closure a field holds is the aggregate's — storing one moves it in, and
     // the frame stops dropping it the moment it does, the same rule

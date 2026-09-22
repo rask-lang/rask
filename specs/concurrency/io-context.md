@@ -1,7 +1,7 @@
 <!-- id: conc.io-context -->
 <!-- status: decided -->
 <!-- summary: How stdlib I/O functions detect async context and dispatch between sync/async paths -->
-<!-- depends: concurrency/async.md, concurrency/runtime-strategy.md, stdlib/io.md, memory/context-clauses.md -->
+<!-- depends: concurrency/async.md, concurrency/runtime-strategy.md, stdlib/io.md -->
 
 # I/O Context Integration
 
@@ -85,7 +85,7 @@ pub fn rask_file_read(file: &File, buf: &mut [u8]) -> Result<usize, IoError> {
 | `io` | `Buffer.read`, `Buffer.write` | No — in-memory, never blocks |
 | `async` | `sleep`, `timeout` | Yes — needs timer/scheduler |
 | `async` | `spawn`, `Channel.send/receive` | Yes — needs scheduler/reactor |
-| collections | `Vec`, `Map`, `Pool` | No — pure memory operations |
+| collections | `Vec`, `Map`, `Rack` | No — pure memory operations |
 | `json` | `json.encode`, `json.decode` | No — pure computation |
 | `fmt` | `format` | No — pure computation |
 | `math` | All functions | No — pure computation |
@@ -248,8 +248,6 @@ The annotation appears on any call that can read RUNTIME_SLOT and park a task. P
 - `conc.async/IO1-IO2` — Transparent pausing and sync fallback semantics
 - `conc.runtime/IO1-IO3` — Async I/O flow, reactor registration protocol
 - `conc.strategy` — Phase A vs Phase B runtime implementation
-- `conc.hidden-params` — Hidden-parameter compiler pass (scoped to Pool contexts)
 - `std.io` — Reader/Writer traits, IoError
 - `std.fs` — File type and convenience functions
 - `std.net` — TcpListener, TcpConnection
-- `mem.context` — `using` clause mechanism for Pool contexts

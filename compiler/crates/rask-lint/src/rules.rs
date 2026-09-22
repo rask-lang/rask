@@ -33,7 +33,6 @@ fn all_rules() -> Vec<Rule> {
         Rule { id: "idiom/equality-absent-check", check: idiom::check_equality_absent_check },
         Rule { id: "idiom/match-on-optional", check: idiom::check_match_on_optional },
         Rule { id: "idiom/mod-for-index", check: idiom::check_mod_for_index },
-        Rule { id: "idiom/too-many-contexts", check: idiom::check_too_many_contexts },
         // Style
         Rule { id: "style/snake-case-func", check: style::check_snake_case_func },
         Rule { id: "style/pascal-case-type", check: style::check_pascal_case_type },

@@ -47,7 +47,7 @@ fn suggest(ty: &Type, names: &HashMap<crate::TypeId, String>) -> Option<String> 
         _ => return None,
     };
     let filled = match head.as_str() {
-        "Vec" | "Pool" => "Vec<i64>".replace("Vec", &head),
+        "Vec" => "Vec<i64>".replace("Vec", &head),
         "Map" => "Map<string, i64>".to_string(),
         _ if args.is_empty() => head.clone(),
         _ => format!("{head}<…>"),

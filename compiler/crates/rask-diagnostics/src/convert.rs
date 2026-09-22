@@ -151,27 +151,6 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why(why)
             }
 
-            // CC2: the clause enables `h.field` and binds nothing, so the
-            // receiver of a structural call has no name behind it.
-            UnnamedContextBinding { name, ty } => {
-                let head = ty.split('<').next().unwrap_or(ty).trim().to_lowercase();
-                let suggested = if head.is_empty() { "ctx" } else { head.as_str() };
-                Diagnostic::error(format!(
-                    "`{}` is not a binding — `using {}` doesn't create one",
-                    name, ty
-                ))
-                .with_code("E0869")
-                .with_primary(self.span, "not found in this scope")
-                .with_fix(format!("name the context: `using {}: {}`", suggested, ty))
-                .with_why(format!(
-                    "an unnamed `using {}` only resolves handle field access — `h.field` \
-                     finds the pool without ever naming it. Structural operations like \
-                     `insert` and `remove` are calls on the pool itself, so they need a \
-                     name to call them on [mem.context/CC2]",
-                    ty
-                ))
-            }
-
             UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
                 .with_code("E0200")
                 .with_primary(self.span, "not found in this scope")
@@ -791,7 +770,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 // be — `{v:debug}` already renders it (std.fmt/G2).
                 let is_container = ty.starts_with('(')
                     || ty.starts_with('[')
-                    || ["Vec", "Map", "Set", "Pool", "Rack", "Iterator"]
+                    || ["Vec", "Map", "Set", "Rack", "Iterator"]
                         .iter()
                         .any(|n| ty.starts_with(n) && ty[n.len()..].starts_with('<'));
                 // The cases have genuinely different fixes.
@@ -1224,15 +1203,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("add `mutate` before the parameter to allow mutation".to_string())
                     .with_fix("add `mutate` keyword to the parameter declaration")
                     .with_why("parameters are read-only by default — add `mutate` to indicate the function modifies this value")
-            }
-
-            FrozenContextWrite { op, elem, span } => {
-                Diagnostic::error(format!("cannot {} in a frozen `Pool<{}>` context", op, elem))
-                    .with_code("E0325")
-                    .with_primary(*span, format!("this {} needs a mutable pool context", op))
-                    .with_help(format!("drop `frozen` from the `using Pool<{}>` clause", elem))
-                    .with_fix(format!("using Pool<{}>", elem))
-                    .with_why("a `using frozen Pool<T>` context is read-only (mem.pools/PF5) — it allows reads through handles but no writes, inserts, removes, or clears")
             }
 
             NonOptionalLink { span } => {
@@ -2057,45 +2027,6 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("`using` blocks require a known runtime context to initialize")
             }
 
-            SignatureRuntimeContext { ctx, span } => {
-                Diagnostic::error(format!("`using {}` cannot appear on a function signature", ctx))
-                    .with_code("E0351")
-                    .with_primary(*span, "remove this clause from the signature")
-                    .with_help(format!(
-                        "`using {}` is a block, not a signature annotation — \
-                         wrap the call site in `using {} {{ ... }}` instead",
-                        ctx, ctx
-                    ))
-                    .with_why("`using Multitasking` installs a process-global runtime slot; \
-                               functions don't declare it, they just use it [conc.async/CC1]")
-            }
-
-            EntryPointContext { entry, alias, ty, span } => {
-                let binding = alias.clone().unwrap_or_else(|| "ctx".to_string());
-                // `Pool<Player>` → `Pool`, so the suggestion names the constructor
-                // the way it's actually written.
-                let head = ty.split('<').next().unwrap_or(ty).trim();
-                // Was E0831, which `??` on a non-optional already had. Two
-                // errors under one code meant the registry kept only one of
-                // them, so `rask explain E0831` answered about `using` on main
-                // for anyone who hit the `??` error (#892).
-                Diagnostic::error(format!("`{}` cannot declare a `using` context", entry))
-                    .with_code("E0844")
-                    .with_primary(*span, "nothing can supply this")
-                    .with_fix(format!(
-                        "drop the clause and own it here — `mut {}: {} = {}.new()` — \
-                         then call the functions that declare `using {}`; they resolve \
-                         it out of `{}`'s scope",
-                        binding, ty, head, ty, entry
-                    ))
-                    .with_why(format!(
-                        "a `using` clause is a hidden parameter the caller fills in, and \
-                         `{}` has no caller — the parameter would be left holding whatever \
-                         the stack came up with [mem.context/CC11]",
-                        entry
-                    ))
-            }
-
             SpawnOutsideBlock { span } => {
                 Diagnostic::error("`spawn` must be inside a `using Multitasking { ... }` block")
                     .with_code("E0352")
@@ -2657,19 +2588,31 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             LinearInContainer { container, elem, span } => {
-                let rule = if container == "Map" { "RC3" } else { "RC1" };
+                let rule = match container.as_str() {
+                    "Map" => "RC3",
+                    "Rack" => "RC2",
+                    _ => "RC1",
+                };
                 let label = format!("`{}` cannot hold linear value `{}`", container, elem);
+                // A rack fails for the same reason with a different verb:
+                // `delete` frees the node, it never hands it back, so there is
+                // no call that consumes one.
+                let mechanism = if container == "Rack" {
+                    format!("`Rack.delete` frees the node rather than handing it back, so nothing \
+                             can consume `{}` — and it is linear, so it has to be consumed exactly \
+                             once", elem)
+                } else {
+                    format!("`{}` drop can't consume its elements, but `{}` is linear — it must be \
+                             consumed exactly once, so it can't be silently dropped", container, elem)
+                };
                 Diagnostic::error(label.clone())
                     .with_code("E0820")
                     .with_primary(*span, label)
-                    .with_why(format!(
-                        "`{}` drop can't consume its elements, but `{}` is linear — it must be \
-                         consumed exactly once, so it can't be silently dropped [mem.resource-types/{}]",
-                        container, elem, rule,
-                    ))
-                    .with_help(
-                        "store linear values in a `Pool<T>` (explicit removal, RC2) or an \
-                         optional `T?` (match and consume, RC4) — not a Vec or Map"
+                    .with_why(format!("{} [mem.resource-types/{}]", mechanism, rule))
+                    .with_fix(
+                        "hold it in an optional `T?` and match to consume it (RC4). No container \
+                         takes a linear value: a Vec or Map drop can't consume its elements, and \
+                         a rack's delete can't give a node back"
                             .to_string(),
                     )
             }
@@ -2686,14 +2629,9 @@ impl ToDiagnostic for rask_types::TypeError {
                         format!("a map is indexed by its key type `{}` [std.collections/K1]", key),
                         None,
                     ),
-                    K::ExpectedHandle(handle) => (
-                        format!("cannot index `{}` with `{}`", container, found),
-                        format!("a pool is keyed by its handle, not a position — index it with `{}` [mem.pools/PL4]", handle),
-                        Some(format!("let h = pool.insert(value)   // h: {}", handle)),
-                    ),
                     K::NotSliceable => (
                         format!("cannot slice `{}` with a range", container),
-                        "a range index reads a run of positions, and a map or a pool has none — it is keyed [std.collections/V1]".to_string(),
+                        "a range index reads a run of positions, and a map has none — it is keyed [std.collections/V1]".to_string(),
                         None,
                     ),
                     K::NoSliceType => (
@@ -3628,17 +3566,6 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                            consumed on some paths but not others has no definite answer at scope exit (C4)")
             }
 
-            FrozenContextMutation { context_ty, operation } => {
-                Diagnostic::error(format!(
-                    "cannot {} in frozen context `{}`",
-                    operation, context_ty
-                ))
-                .with_code("E0859")
-                .with_primary(self.span, format!("{} not allowed in frozen context", operation))
-                .with_help("remove `frozen` from the context clause, or remove the mutation")
-                .with_why("frozen contexts guarantee no structural mutations — this enables safe iteration without generation checks")
-            }
-
             WithBlockStructuralMutation { collection, operation, binding_span } => {
                 Diagnostic::error(format!(
                     "cannot {} `{}` inside `with` block",
@@ -3650,36 +3577,11 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_help("move the structural mutation outside the with block")
                 .with_fix("move the structural mutation outside the with block")
                 .with_why(format!(
-                    "{} can reallocate, invalidating the borrowed element. \
-                     Pool handles survive reallocation — use Pool if you need insert/remove inside with",
+                    "{} can reallocate, invalidating the borrowed element. If the elements \
+                     reference each other and get deleted individually, that is what a `Rack` \
+                     is for — a node never moves, so nothing invalidates [mem.borrowing/W2]",
                     collection
                 ))
-            }
-
-            WithBlockBoundHandleRemoved { handle, collection: _, binding_span } => {
-                Diagnostic::error(format!(
-                    "cannot remove `{}` inside `with` block — it's the bound element",
-                    handle
-                ))
-                .with_code("E0809")
-                .with_primary(self.span, "removing the element you're borrowing")
-                .with_secondary(*binding_span, "element borrowed here")
-                .with_help("move the removal outside the with block")
-                .with_fix("move the removal outside the with block")
-                .with_why("removing the bound element frees its memory — the binding would dangle")
-            }
-
-            WithBlockClear { collection, binding_span } => {
-                Diagnostic::error(format!(
-                    "cannot clear `{}` inside `with` block",
-                    collection
-                ))
-                .with_code("E0861")
-                .with_primary(self.span, "clear invalidates all elements")
-                .with_secondary(*binding_span, "element borrowed here")
-                .with_help("move the clear outside the with block")
-                .with_fix("move the clear outside the with block")
-                .with_why("clearing the collection frees all elements — the binding would dangle")
             }
 
             UseAfterDiscard { name, discarded_at } => {
