@@ -618,7 +618,8 @@ pub enum TypeError {
         method: String,
         trait_name: String,
         /// The header the block wants, with `Rhs` read off the parameter.
-        header: String,
+        /// `None` on a trait declaration, where there is no block to write.
+        header: Option<String>,
         span: Span,
     },
 

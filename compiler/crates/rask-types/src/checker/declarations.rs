@@ -177,16 +177,22 @@ impl TypeChecker {
             match &decl.kind {
                 DeclKind::Struct(s) => {
                     self.check_declared_type_name(&s.name, "struct", decl.span);
+                    self.reject_unregistered_operator_methods(&s.name, &[], &s.methods);
                     let id = self.register_struct(s);
                     self.types.record_method_decl(id, decl.id);
                 }
                 DeclKind::Enum(e) => {
                     self.check_declared_type_name(&e.name, "enum", decl.span);
+                    self.reject_unregistered_operator_methods(&e.name, &[], &e.methods);
                     let id = self.register_enum(e, decl.span);
                     self.types.record_method_decl(id, decl.id);
                 }
                 DeclKind::Trait(t) => {
                     self.check_declared_type_name(&t.name, "trait", decl.span);
+                    // OR1a on the declaration that started it: a trait asking
+                    // for `add` makes every conformer's block illegal, and the
+                    // fix is here rather than at each of them.
+                    self.reject_operator_methods_on_trait(&t.name, &t.methods);
                     // DT1: shape-matching stops at the package boundary
                     if t.is_pub && t.is_duck {
                         self.errors.push(TypeError::PublicDuckTrait {
@@ -484,7 +490,31 @@ impl TypeChecker {
         trait_names: &[String],
         methods: &[rask_ast::decl::FnDecl],
     ) {
+        self.reject_operator_methods(target_ty, trait_names, methods, true)
+    }
+
+    /// The same, for a trait declaration: there is no block to write, so the
+    /// fix is to bound on the operator trait or rename the method.
+    pub(super) fn reject_operator_methods_on_trait(
+        &mut self,
+        trait_ty: &str,
+        methods: &[rask_ast::decl::FnDecl],
+    ) {
+        self.reject_operator_methods(trait_ty, &[], methods, false)
+    }
+
+    fn reject_operator_methods(
+        &mut self,
+        target_ty: &str,
+        trait_names: &[String],
+        methods: &[rask_ast::decl::FnDecl],
+        writable: bool,
+    ) {
         let base = target_ty.split('<').next().unwrap_or(target_ty).trim();
+        // `stdlib/ops.rk` declares the traits themselves.
+        if rask_ast::operators::operator_trait_method(base).is_some() {
+            return;
+        }
         for m in methods {
             let Some(trait_name) = rask_ast::operators::operator_trait(&m.name) else {
                 continue;
@@ -519,7 +549,7 @@ impl TypeChecker {
                 ty: base.to_string(),
                 method: m.name.clone(),
                 trait_name: trait_name.to_string(),
-                header,
+                header: writable.then_some(header),
                 span: m.span,
             });
         }

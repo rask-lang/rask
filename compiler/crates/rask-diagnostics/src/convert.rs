@@ -1938,11 +1938,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     "`{}` is `{}`'s method — declare the conformance", method, trait_name
                 ))
                 .with_code("E0893")
-                .with_primary(*span, format!("`{}` on `{}` without `with {}`", method, ty, trait_name))
-                .with_fix(format!(
-                    "extend {} with {} {{ … }}\n— or, if it isn't the operator, give it a name that isn't `{}`",
-                    ty, header, method
-                ))
+                .with_primary(*span, format!("`{}` declared on `{}`, not by a conformance", method, ty))
+                .with_fix(match header {
+                    Some(header) => format!(
+                        "extend {} with {} {{ … }}\n— or, if it isn't the operator, give it a name that isn't `{}`",
+                        ty, header, method
+                    ),
+                    None => format!(
+                        "`{}` already asks for this — bound on it instead of on `{}`\n— or, if it isn't the operator, give it a name that isn't `{}`",
+                        trait_name, ty, method
+                    ),
+                })
                 .with_why("an operator resolves from both operand types against a declared conformance, so a `mul` nobody registered is a method with an operator's name and none of its meaning — and `T: Mul` as a bound wouldn't accept it. The twelve operator method names belong to their traits [type.operator-resolution/OR1]")
             }
 

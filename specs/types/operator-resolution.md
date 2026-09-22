@@ -46,7 +46,7 @@ public trait Mul<Rhs = Self> {
 | Rule | Description |
 |------|-------------|
 | **OR1: Resolution on the ordered pair** | `a OP b` selects the operator-trait conformance registered for `(typeof a, typeof b)`, in that order. It is not a method lookup on `a` |
-| **OR1a: The method names belong to the traits** | `add`, `sub`, `mul`, `div`, `rem`, `neg`, `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shl`, `shr` are declared in a conformance or not at all. A plain `extend Meters { func mul(self, k: f64) -> Meters }` is an error naming the header it wants, because MN1 gives the type one `mul` and that one has to be the conformance's. A method that could not *be* the operator's — `mutate self`, a void return, the wrong arity — keeps the name; a set's `add(mutate self, v)` is not an operator |
+| **OR1a: The method names belong to the traits** | `add`, `sub`, `mul`, `div`, `rem`, `neg`, `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shl`, `shr` are declared in a conformance or not at all. A plain `extend Meters { func mul(self, k: f64) -> Meters }` is an error naming the header it wants, because MN1 gives the type one `mul` and that one has to be the conformance's. A method that could not *be* the operator's — `mutate self`, a void return, the wrong arity — keeps the name; a set's `add(mutate self, v)` is not an operator. A *trait* asking for one is the same error on the declaration that started it: `trait Summable { func add(self, other: Self) -> Self }` is `Add` spelled twice |
 | **OR2: Declared operator traits** | `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` are declared traits taking `<Rhs>` and carrying an associated `Out`. `Neg` and `BitNot` are unary — no `Rhs`, `Out` only. They live in [`stdlib/ops.rk`](../../stdlib/ops.rk) |
 | **OR3: Both default to `Self`** | The operator traits are declared `trait Mul<Rhs = Self> { type Out = Self … }`, so this is `type.generics/GT4` and `type.associated-types/AT4` rather than an operator rule. `extend Point with Add` is `Add<Point>` answering in `Point`; `extend Meters with Mul<f64>` answers in `Meters` |
 | **OR4: One conformance per pair** | At most one conformance of a given operator trait for a given `(Self, Rhs)` in a build. A second is a use-site error naming both packages — the same collision rule retroactive conformance already carries (#312). Two conformances of one operator to *different* pairs are fine and are what OR1 tells apart |
@@ -171,6 +171,7 @@ Both are the messages that decide whether the feature is trusted, so they are no
 | `x.mul(2.0)` inside `func f<T: Mul<f64>>` | OR1, AT6 | The bound names the pair; `T.Out` is read off it |
 | `extend Meters { func mul(self, k: f64) -> Meters }` | OR1a | Compile error (E0893) naming the header: `extend Meters with Mul<f64>` |
 | `extend Holder { func add(mutate self, v: i64) }` | OR1a | Legal — an operator's method takes `self` by value and answers with something |
+| `trait Summable { func add(self, other: Self) -> Self }` | OR1a | Compile error on the trait: that is `Add`, and a conformer could only have one `add` |
 
 ---
 
