@@ -35,69 +35,6 @@ extend Number {
         return self.raw >> FRAC_BITS
     }
 
-    func add(self, other: Number) -> Number {
-        // Addition: just add the raw values
-        return Number { raw: self.raw + other.raw }
-    }
-
-    func sub(self, other: Number) -> Number {
-        // Subtraction: just subtract
-        return Number { raw: self.raw - other.raw }
-    }
-
-    func neg(self) -> Number {
-        // Negation
-        return Number { raw: -self.raw }
-    }
-
-    func mul(self, other: Number) -> Number {
-        // Multiplication: multiply raw values, shift right by 32 to correct the fixed-point scaling
-        let a = self.raw as i128
-        let b = other.raw as i128
-
-        // Handle signs manually to avoid issues with unsigned splits
-        let sign = if (a < 0) != (b < 0) {
-            -1
-        } else {
-            1
-        }
-
-        let result = (a.abs() * b.abs()) >> FRAC_BITS
-        return Number { raw: if sign < 0 {
-            (-result).wrap<i64>()
-        } else {
-            result.wrap<i64>()
-        } }
-    }
-
-    func div(self, other: Number) -> Number {
-        // Division: shift left by 32, then divide
-        // Same split trick as multiplication
-        if other.raw == 0 {
-            // Caller should check for this — but saturate rather than crash
-            return Number { raw: if self.raw >= 0 {
-                0x7FFFFFFFFFFFFFFF
-            } else {
-                -0x7FFFFFFFFFFFFFFF
-            } }
-        }
-
-        let a = self.raw as i128
-        let b = other.raw as i128
-        let sign = if (a < 0) != (b < 0) {
-            -1
-        } else {
-            1
-        }
-
-        let result = (a.abs() << FRAC_BITS) / b.abs()
-        return Number { raw: if sign < 0 {
-            (-result).wrap<i64>()
-        } else {
-            result.wrap<i64>()
-        } }
-    }
-
     func modulo(self, other: Number) -> Number {
         // Modulo
         if other.raw == 0 {
@@ -153,6 +90,84 @@ extend Number {
             ""
         }
         return "{sign}{int_part}.{padded}"
+    }
+}
+
+// type.operator-resolution/OR2: the operators are conformances, so a Number
+// flows through anything written against `Add`, `Sub`, `Mul` or `Div` — and
+// through generic stdlib math, which is the whole point of a number type that
+// isn't the compiler's (std.api-design/SD7-SD9).
+
+extend Number with Add {
+    func add(self, other: Number) -> Number {
+        // Addition: just add the raw values
+        return Number { raw: self.raw + other.raw }
+    }
+}
+
+extend Number with Sub {
+    func sub(self, other: Number) -> Number {
+        // Subtraction: just subtract
+        return Number { raw: self.raw - other.raw }
+    }
+}
+
+extend Number with Mul {
+    func mul(self, other: Number) -> Number {
+        // Multiplication: multiply raw values, shift right by 32 to correct the fixed-point scaling
+        let a = self.raw as i128
+        let b = other.raw as i128
+
+        // Handle signs manually to avoid issues with unsigned splits
+        let sign = if (a < 0) != (b < 0) {
+            -1
+        } else {
+            1
+        }
+
+        let result = (a.abs() * b.abs()) >> FRAC_BITS
+        return Number { raw: if sign < 0 {
+            (-result).wrap<i64>()
+        } else {
+            result.wrap<i64>()
+        } }
+    }
+}
+
+extend Number with Div {
+    func div(self, other: Number) -> Number {
+        // Division: shift left by 32, then divide
+        // Same split trick as multiplication
+        if other.raw == 0 {
+            // Caller should check for this — but saturate rather than crash
+            return Number { raw: if self.raw >= 0 {
+                0x7FFFFFFFFFFFFFFF
+            } else {
+                -0x7FFFFFFFFFFFFFFF
+            } }
+        }
+
+        let a = self.raw as i128
+        let b = other.raw as i128
+        let sign = if (a < 0) != (b < 0) {
+            -1
+        } else {
+            1
+        }
+
+        let result = (a.abs() << FRAC_BITS) / b.abs()
+        return Number { raw: if sign < 0 {
+            (-result).wrap<i64>()
+        } else {
+            result.wrap<i64>()
+        } }
+    }
+}
+
+extend Number with Neg {
+    func neg(self) -> Number {
+        // Negation
+        return Number { raw: -self.raw }
     }
 }
 

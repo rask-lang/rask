@@ -1949,6 +1949,7 @@ mod tests {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
             instantiated_call_targets: Default::default(),
+            instantiated_operator_targets: Default::default(),
             instantiated_error_wraps: Default::default(),
             instantiated_fallback_keeps_shape: Default::default(),
         instantiated_escaping_closures: Default::default(),
@@ -1964,6 +1965,7 @@ mod tests {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
             instantiated_call_targets: Default::default(),
+            instantiated_operator_targets: Default::default(),
             instantiated_error_wraps: Default::default(),
             instantiated_fallback_keeps_shape: Default::default(),
         instantiated_escaping_closures: Default::default(),
@@ -2015,6 +2017,7 @@ mod tests {
         rask_mono::MonoProgram {
             instantiated_node_types: Default::default(),
             instantiated_call_targets: Default::default(),
+            instantiated_operator_targets: Default::default(),
             instantiated_error_wraps: Default::default(),
             instantiated_fallback_keeps_shape: Default::default(),
         instantiated_escaping_closures: Default::default(),

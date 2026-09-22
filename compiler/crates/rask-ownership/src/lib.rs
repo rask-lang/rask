@@ -3742,6 +3742,9 @@ impl<'a> OwnershipChecker<'a> {
                             variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(t)))
                                 && self.type_size(ty) <= 16
                         }
+                        // A primitive is always Copy; it never reaches here as
+                        // a `Named` anyway.
+                        rask_types::TypeDef::Primitive { .. } => true,
                         rask_types::TypeDef::Trait { .. } => false,
                         rask_types::TypeDef::Union { fields, .. } => {
                             fields.iter().all(|(_, t)| self.is_copy(t))
@@ -3790,6 +3793,9 @@ impl<'a> OwnershipChecker<'a> {
                             variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(&Self::substitute_generic_field(t, &subst))))
                                 && self.type_size(ty) <= 16
                         }
+                        // A primitive is always Copy; it never reaches here as
+                        // a `Named` anyway.
+                        rask_types::TypeDef::Primitive { .. } => true,
                         rask_types::TypeDef::Trait { .. } => false,
                         // Unions aren't generic (no type_params to substitute) —
                         // reaching this arm through a `Type::Generic` would mean
@@ -5850,7 +5856,8 @@ impl<'a> OwnershipChecker<'a> {
             | rask_types::TypeDef::Enum { name, .. }
             | rask_types::TypeDef::Trait { name, .. }
             | rask_types::TypeDef::Union { name, .. }
-            | rask_types::TypeDef::NominalAlias { name, .. } => {
+            | rask_types::TypeDef::NominalAlias { name, .. }
+            | rask_types::TypeDef::Primitive { name, .. } => {
                 Some(name.split('<').next().unwrap_or(name).to_string())
             }
         }

@@ -254,7 +254,7 @@ Carrying keeps the task memory-safe; it doesn't make the program right.
 
 | Rule | Description |
 |------|-------------|
-| **SP1: A write the task never uses is an error** | Inside a spawned closure, a write to a capture that nothing downstream puts to use is a compile error (E0892). The task is writing its own copy and the copy is about to die, so the write goes nowhere |
+| **SP1: A write the task never uses is an error** | Inside a spawned closure, a write to a capture that nothing downstream puts to use is a compile error (E0896). The task is writing its own copy and the copy is about to die, so the write goes nowhere |
 
 SP1 exists because carrying is silent for the sizes that matter least. A `Vec` capture is
 moved and the outer name dies with it, which a reader can't miss; an `i64` is copied and
@@ -263,7 +263,7 @@ to type-check, run, and print `0`. Memory-safe and wrong, which is the worst qua
 
 ```rask
 mut count = 0
-spawn(|| { count += 1 })          // error E0892 — lands on the task's copy
+spawn(|| { count += 1 })          // error E0896 — lands on the task's copy
 
 let total = Shared.new(0)         // the fix: one value, two holders
 let t = total.clone()
@@ -278,7 +278,7 @@ back the closure's return value; it is not a write-back for captures.
 
 ```rask
 spawn(|| {
-    for i in 0..10 { total += i }     // error E0892
+    for i in 0..10 { total += i }     // error E0896
 })
 ```
 

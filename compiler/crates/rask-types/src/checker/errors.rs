@@ -611,6 +611,42 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// OR1: an unsuffixed literal on the left of an operator, where more than
+    /// one primitive forms a pair with the type on the right.
+    #[error("`{op}` between a literal and `{right}` could be any of {}", .candidates.join(", "))]
+    AmbiguousLiteralOperand {
+        right: String,
+        op: String,
+        candidates: Vec<String>,
+        span: Span,
+    },
+
+    /// OR1/OR8: an operator whose operand pair names no conformance.
+    #[error("no `{op}` for `{left}`")]
+    NoOperatorConformance {
+        left: String,
+        /// `None` for the unary operators, which have one operand.
+        right: Option<String>,
+        /// The operator as written (`*`), not the desugared method name.
+        op: String,
+        /// The trait the pair would conform to (`Mul`).
+        trait_name: String,
+        /// The header the left operand wants, with `Rhs` read off the right.
+        header: String,
+        /// The left operand already has a method by this name, without a
+        /// conformance — so the fix is a header, not a body.
+        has_inherent: bool,
+        span: Span,
+    },
+
+    /// OR6: `extend f64 { … }` — an inherent method on a primitive.
+    #[error("`{ty}` takes conformances, not methods of its own")]
+    InherentMethodOnPrimitive {
+        ty: String,
+        method: String,
+        span: Span,
+    },
+
     /// AT1: `type X = ...` or `Self.X` naming something no trait declares.
     #[error("no associated type `{assoc}` on `{trait_name}`")]
     UnknownAssocType {
@@ -1410,6 +1446,9 @@ impl TypeError {
             | TraitArity { .. }
             | MissingAssocType { .. }
             | UnknownAssocType { .. }
+            | InherentMethodOnPrimitive { .. }
+            | NoOperatorConformance { .. }
+            | AmbiguousLiteralOperand { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
             | StringAddForbidden { .. }

@@ -1,0 +1,124 @@
+// type.operator-resolution — `a OP b` resolved on the ordered pair.
+//
+// The direction that used to be unwritable is the point: `Meters * f64` has
+// always worked because `Meters` is the receiver, and `f64 * Meters` could not
+// be written at all — a primitive's methods came from a closed table.
+
+func main() {}
+
+struct Meters { v: f64 }
+
+struct SquareMeters { v: f64 }
+
+extend Meters with Mul<f64> {
+    func mul(self, k: f64) -> Meters {
+        return Meters { v: self.v * k }
+    }
+}
+
+// OR6: a conformance on a primitive. Neither type is the compiler's.
+extend f64 with Mul<Meters> {
+    type Out = Meters
+
+    func mul(self, m: Meters) -> Meters {
+        return Meters { v: self * m.v }
+    }
+}
+
+test "OR1 — the left operand no longer decides on its own" {
+    let d = Meters { v: 3.0 }
+    let scaled = d * 2.0
+    assert scaled.v == 6.0
+    let flipped = 2.0 * d
+    assert flipped.v == 6.0
+}
+
+test "OR1 — the same pair through the method spelling" {
+    let d = Meters { v: 4.0 }
+    assert d.mul(0.5).v == 2.0
+    assert 0.5.mul(d).v == 2.0
+}
+
+// AT8/OR4: a second `Mul` on the same type, with its own `Out`. Both blocks
+// call their method `mul` and both have a body — which is exactly the pair
+// `type.associated-types` recorded as unwritable until the operator resolved
+// from the argument.
+extend Meters with Mul<Meters> {
+    type Out = SquareMeters
+
+    func mul(self, other: Meters) -> SquareMeters {
+        return SquareMeters { v: self.v * other.v }
+    }
+}
+
+test "OR4 — two conformances of one operator on one type" {
+    let a = Meters { v: 3.0 }
+    let b = Meters { v: 4.0 }
+    let area: SquareMeters = a * b
+    assert area.v == 12.0
+    // The other conformance is still reachable from the same receiver.
+    assert (a * 2.0).v == 6.0
+}
+
+// OR3: both defaults declared on the trait, so this is `Add<Meters>` answering
+// in `Meters`.
+extend Meters with Add {
+    func add(self, other: Meters) -> Meters {
+        return Meters { v: self.v + other.v }
+    }
+}
+
+test "OR3 — a bare header means the homogeneous pair" {
+    let a = Meters { v: 1.5 }
+    let b = Meters { v: 2.5 }
+    assert (a + b).v == 4.0
+}
+
+// The result type is the pair's, not the receiver's.
+extend SquareMeters with Div<Meters> {
+    type Out = Meters
+
+    func div(self, m: Meters) -> Meters {
+        return Meters { v: self.v / m.v }
+    }
+}
+
+test "OR5 — Out is read off the conformance" {
+    let area = SquareMeters { v: 12.0 }
+    let side = Meters { v: 3.0 }
+    let other: Meters = area / side
+    assert other.v == 4.0
+}
+
+test "primitive arithmetic is untouched" {
+    let a: f64 = 2.0
+    let b: f64 = 3.0
+    assert a * b == 6.0
+    assert 7 / 2 == 3
+    assert -7 % 3 == -1
+}
+
+// AT3/AT6: the projection in generic code. `T.Out` is written, then read off
+// T's conformance once T is known. The body's `x.mul(2.0)` has to reach the
+// conformance filed under `mul$f64`, in an instantiation whose nodes the
+// checker never saw — native lowered it as a machine multiply on two struct
+// pointers before the dispatch record was carried across.
+//
+// `Feet` rather than `Meters`: a type carrying two `Mul`s has two `Out`s, and
+// a bare `T.Out` doesn't say which bound it was projected through (#1330).
+struct Feet { v: f64 }
+
+extend Feet with Mul<f64> {
+    func mul(self, k: f64) -> Feet {
+        return Feet { v: self.v * k }
+    }
+}
+
+func doubled<T: Mul<f64>>(x: T) -> T.Out {
+    return x.mul(2.0)
+}
+
+test "OR1 — through a generic bound" {
+    let f = Feet { v: 4.5 }
+    assert doubled(f).v == 9.0
+}

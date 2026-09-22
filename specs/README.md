@@ -100,6 +100,7 @@ Quick navigation by task or concept:
 | [generics.md](types/generics.md) | Parametric polymorphism, constraints |
 | [gradual-constraints.md](types/gradual-constraints.md) | Type/bound inference for private functions — sketching only |
 | [associated-types.md](types/associated-types.md) | `type Out` on a trait, `Self.Out`/`T.Out` projections |
+| [operator-resolution.md](types/operator-resolution.md) | `a OP b` resolved on the ordered pair of operand types |
 | [traits.md](types/traits.md) | Trait objects, dynamic dispatch |
 | [sequence-protocol.md](types/sequence-protocol.md) | Sequence<T> type, adapters, terminals |
 | [integer-overflow.md](types/integer-overflow.md) | Overflow semantics |

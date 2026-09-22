@@ -25,7 +25,7 @@ go down.
 | [rust_syntax_rejected.rk](rust_syntax_rejected.rk) | Additional Rust keyword rejections |
 | [rust_error_propagation.rk](rust_error_propagation.rk) | Rust's `?` used to propagate an error (ER12, E0368) — Rask spells that `try`, and `?` is the presence test, which a `T or E` can't answer. The marker lived in `syntax_rejected.rk` below eight parse errors that stop the pipeline before the checker runs |
 | [trait_body_members.rk](trait_body_members.rk) | Anything a trait body doesn't hold — `const`, a nested `struct`, a bare `public`, an attribute (#1164). All of them used to hang the parser: the body loop had no branch for them, so nothing consumed the token and the condition never went false. `type` was on this list and no longer is — a trait body holds methods and associated types (TD4) |
-| [trait_generic_and_assoc.rk](trait_generic_and_assoc.rk) | The ways a generic trait or an associated type goes wrong (#1164, #1165): a header that leaves the parameter unbound, a method whose signature isn't the one the applied trait asks for, a conformance that never says what `Out` is, a binding naming a member the trait doesn't declare, `Self.X` for an undeclared `X`, and an `Out` that fails the bound the trait put on it. Each used to surface as "this type is missing methods the trait requires" pointing at a block that had them |
+| [trait_generic_and_assoc.rk](trait_generic_and_assoc.rk) | The ways a generic trait or an associated type goes wrong (#1164, #1165): a header that leaves the parameter unbound, a method whose signature isn't the one the applied trait asks for, a conformance that never says what `Out` is, a binding naming a member the trait doesn't declare, `Self.X` for an undeclared `X`, and an `Out` that fails the bound the trait put on it. Each used to surface as "this type is missing methods the trait requires" pointing at a block that had them. Also `type.operator-resolution/OR1`: an operator whose operand pair names no conformance, where the left operand has the method but no header |
 
 ### Type System
 
@@ -110,7 +110,7 @@ go down.
 | File | What it tests |
 |------|--------------|
 | [closure_errors.rk](closure_errors.rk) | What the parser rejects around closures: `\|mutate x\|` capture syntax (unimplemented, #1087 — the message used to suggest `\|mutate x: T\|`, which compiles and means something else) and a closure type in a signature. MC2 and SL2 can't be reached until those exist |
-| [task_lost_write.rk](task_lost_write.rk) | A task writing a capture nothing reads back (SP2, E0892, #1281) — inline, under an `if` inside an `own` closure, and through a closure named before it was spawned. The legal shapes sit below: a task that returns what it summed, and one that counts for its own output |
+| [task_lost_write.rk](task_lost_write.rk) | A task writing a capture nothing reads back (SP1, E0896, #1281) — inline, under an `if`, through a closure named before it was spawned, a read that comes before the write, and an accumulator loop whose every write is read by the next iteration. The legal shapes sit below: a task that returns what it summed, and one that counts for its own output |
 
 ### Other
 

@@ -17,7 +17,7 @@ The stdlib is where language size actually hits people. Nobody reads the grammar
 | **SD4: No Rust legacy by reflex** | Every name and shape is justified from how the Rask call site reads, never from what `std` calls it. Rask has `T or E`, `T?`, `Heap`, `Shared<T, S>` — so `Result`, `Option`, `Box`, `Rc`, `RefCell`, `Arc<Mutex<T>>` never appear, and neither do their method idioms (`unwrap`, `expect`, `ok_or`, `and_then`). `Vec`/`Map` survive because they read right in Rask, not because Rust has them |
 | **SD5: One way** | No convenience aliases, no two spellings for one operation (`mem.atomics/GA1` is the precedent). If two functions do the same thing, one of them is deprecated the day the second lands |
 | **SD7: Weakest bound** | A generic function asks for the least trait that lets one body serve every `T`. Generic when the algorithm doesn't care which type it got; concrete when a type parameter would only absorb a conversion. A conversion belongs at the call site, written, with its policy visible |
-| **SD8: Canonical protocols** | The stdlib speaks a closed set of protocols: `Sequence`, `Comparable`, `Equal`, `Hashable`, `Displayable`, `Debug`, `Reader`/`Writer`, `Encode`/`Decode`, and the operator traits once `type.operator-resolution` lands. No module invents a parallel interface for something this set covers. Growing the set is a change to this spec, not a module-level decision |
+| **SD8: Canonical protocols** | The stdlib speaks a closed set of protocols: `Sequence`, `Comparable`, `Equal`, `Hashable`, `Displayable`, `Debug`, `Reader`/`Writer`, `Encode`/`Decode`, and the operator traits (`type.operator-resolution`). No module invents a parallel interface for something this set covers. Growing the set is a change to this spec, not a module-level decision |
 | **SD9: Laws, not just signatures** | Every canonical protocol states its contract in its spec (`Equal` is reflexive and symmetric, `Comparable` is a total order, `Sequence` yields each element once). Conforming means meeting the laws. A signature match without the laws is how independently-written pieces compose into bugs |
 
 ## One word per question (SD6)
@@ -94,13 +94,13 @@ This is `CLAUDE.md`'s "sketch how the call site reads first" made into a gate ra
 
 ## Composability (SD7–SD9)
 
-The goal is Julia's property: two pieces of code that have never heard of each other work together, because the algorithm asked for the least it needed and the type answered. A user's number type flows through generic stdlib math; a user's container flows through everything written against `Sequence`. Rask gets this statically: the "multiple dispatch" question was already settled in `type.operator-resolution`'s rationale — choosing a method from several argument types and third-party conformances (#312) are compile-time features Rask takes; the runtime open-set version is the part rejected. Blocked today on generic trait parameters (#1164) and associated types (#1165).
+The goal is Julia's property: two pieces of code that have never heard of each other work together, because the algorithm asked for the least it needed and the type answered. A user's number type flows through generic stdlib math; a user's container flows through everything written against `Sequence`. Rask gets this statically: the "multiple dispatch" question was settled in `type.operator-resolution`'s rationale — choosing a method from several argument types and third-party conformances (#312) are compile-time features Rask takes; the runtime open-set version is the part rejected. Both halves are in: generic trait parameters (#1164), associated types (#1165), and the operator resolution built on them.
 
 SD7 delivers the generics half, SD8 the conventions half. They only work together: a weakest-bound function over a protocol nobody shares composes with nothing.
 
 ### The litmus: Raido's fixed-point
 
-Raido's 32.32 fixed-point number is the in-house test that the property exists. When it conforms to the operator traits and `Comparable`, this must work with **zero stdlib changes**:
+Raido's 32.32 fixed-point number is the in-house test that the property exists. Conforming to the operator traits and `Comparable`, this works with **zero stdlib changes** — it runs on both backends as `tests/suite/t_fixed_point_litmus.rk`:
 
 <!-- test: skip -->
 ```rask
@@ -114,6 +114,8 @@ for r in readings {
 ```
 
 If any line needs a stdlib edit, a cast, or a `Fixed`-specific sibling function, SD7 or SD8 was violated somewhere. Re-run this check whenever a numeric or container API lands, and whenever the stdlib gains a numeric algorithm (a `sum`, a `clamp`): each must be born generic or not at all.
+
+The half that needed operator resolution is `3 * reading` — a scalar on the *left*. `reading * 3` always worked, because the left operand was the one that got to answer.
 
 ### What SD9 buys
 

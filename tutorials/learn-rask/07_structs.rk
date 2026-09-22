@@ -75,11 +75,6 @@ extend Vec3 {
         todo()
     }
 
-    // Component-wise addition: (x₁+x₂, y₁+y₂, z₁+z₂)
-    func add(self, other: Vec3) -> Vec3 {
-        todo()
-    }
-
     // Multiply each component by a scalar
     func scale(self, factor: f64) -> Vec3 {
         todo()
@@ -105,6 +100,16 @@ extend Vec3 {
     // Fun fact: the cross product only works in 3D and 7D.
     // That's a genuine mathematical theorem, not a limitation.
     func cross(self, other: Vec3) -> Vec3 {
+        todo()
+    }
+}
+
+// `+` resolves against a declared conformance, so this is where `a + b` on a
+// Vec3 comes from — and `extend Vec3 with Add` means `Add<Vec3>` answering in
+// `Vec3`, since both default to Self.
+extend Vec3 with Add {
+    // Component-wise addition: (x₁+x₂, y₁+y₂, z₁+z₂)
+    func add(self, other: Vec3) -> Vec3 {
         todo()
     }
 }

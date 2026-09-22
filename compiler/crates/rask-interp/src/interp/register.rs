@@ -171,7 +171,17 @@ impl Interpreter {
                     let base_name = strip_generics(&impl_decl.target_ty).to_string();
                     let type_methods = self.methods.entry(base_name).or_default();
                     for method in &impl_decl.methods {
-                        type_methods.insert(method.name.clone(), method.clone());
+                        // OR4: `Mul<f64>` and `Mul<Meters>` on one type both
+                        // call their method `mul`, so file each under the
+                        // applied argument — one entry between them would keep
+                        // whichever block was registered last.
+                        let name = rask_ast::operators::conformance_method_name(
+                            &impl_decl.target_ty,
+                            &impl_decl.trait_names,
+                            &method.name,
+                        )
+                        .unwrap_or_else(|| method.name.clone());
+                        type_methods.insert(name, method.clone());
                     }
                 }
                 DeclKind::Import(import) => {

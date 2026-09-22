@@ -17,11 +17,13 @@ struct Money {
     cents: i64
 }
 
-extend Money {
+extend Money with Add {
     public func add(self, other: Money) -> Money {
         return Money { cents: self.cents + other.cents }
     }
+}
 
+extend Money {
     public func compare(self, other: Money) -> Ordering {
         return self.cents.compare(other.cents)
     }

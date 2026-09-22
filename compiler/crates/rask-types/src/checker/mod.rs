@@ -25,11 +25,13 @@ mod check_expr;
 mod unify;
 mod generics;
 mod resolve;
+pub mod operators;
 mod validate;
 pub(crate) mod resolved_types;
 
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TraitTypeParam, TraitAssocType, TypeBinding, TypedProgram, receiver_name};
-pub use type_table::TypeTable;
+pub use type_table::{primitive_spelling, TypeTable};
+pub use operators::{operator_trait, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext};
 pub use parse_type::parse_type_string;
@@ -236,6 +238,14 @@ pub struct TypeChecker {
     /// Free calls record here immediately; method calls record when their
     /// `HasMethod` constraint resolves.
     pub(super) call_targets: HashMap<NodeId, type_defs::Callee>,
+    /// OR1: operator calls a conformance answered, keyed by the call's NodeId.
+    pub(super) operator_targets: HashMap<NodeId, operators::OperatorTarget>,
+    /// OR1: method calls that were operators before desugaring rewrote them.
+    ///
+    /// `a * b` and `a.mul(b)` are one node kind by the time the checker sees
+    /// them, and only the first has to resolve against a declared conformance.
+    /// Desugar is the last pass that knows, so it says.
+    pub(super) operator_calls: std::collections::HashSet<NodeId>,
     /// SymbolId → type param names for generic functions.
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
@@ -500,6 +510,8 @@ impl TypeChecker {
             try_block_errors: Vec::new(),
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
+            operator_targets: HashMap::new(),
+            operator_calls: std::collections::HashSet::new(),
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
             annotation_types: std::collections::HashSet::new(),
@@ -921,6 +933,7 @@ impl TypeChecker {
             node_types,
             call_type_args,
             call_targets,
+            operator_targets: std::mem::take(&mut self.operator_targets),
             trait_coercions,
             error_wraps,
             fallback_keeps_shape,
@@ -1064,8 +1077,13 @@ impl Default for TypeChecker {
 // Public API
 // ============================================================================
 
-pub fn typecheck(resolved: ResolvedProgram, decls: &[Decl]) -> Result<TypedProgram, Vec<TypeError>> {
-    let checker = TypeChecker::new(resolved);
+pub fn typecheck(
+    resolved: ResolvedProgram,
+    decls: &[Decl],
+    operator_calls: &std::collections::HashSet<NodeId>,
+) -> Result<TypedProgram, Vec<TypeError>> {
+    let mut checker = TypeChecker::new(resolved);
+    checker.operator_calls = operator_calls.clone();
     checker.check(decls)
 }
 
@@ -1074,8 +1092,10 @@ pub fn typecheck_with_stdlib(
     resolved: ResolvedProgram,
     decls: &[Decl],
     stdlib_decls: &[Decl],
+    operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
     let mut checker = TypeChecker::new(resolved);
+    checker.operator_calls = operator_calls.clone();
     // In stdlib scope: these registrations are what stdlib code means by a
     // name, and they must not be overwritten when the program declares its own.
     checker.types.stdlib_mode = true;
@@ -1094,8 +1114,10 @@ pub fn typecheck_with_stdlib_lenient(
     resolved: ResolvedProgram,
     decls: &[Decl],
     stdlib_decls: &[Decl],
+    operator_calls: &std::collections::HashSet<NodeId>,
 ) -> (TypedProgram, Vec<TypeError>) {
     let mut checker = TypeChecker::new(resolved);
+    checker.operator_calls = operator_calls.clone();
     checker.types.stdlib_mode = true;
     checker.collect_type_declarations(stdlib_decls);
     checker.types.stdlib_mode = false;
@@ -1106,7 +1128,12 @@ pub fn typecheck_with_stdlib_lenient(
     // Bodies only: the types were registered from the stub set above, and
     // re-declaring them here would mint a second TypeId per name — which is
     // how `JsonValue` ended up not unifying with itself.
-    let bodies: Vec<Decl> = rask_stdlib::StubRegistry::compilable_decls()
+    // The stdlib's own operators go in the same set: its bodies are checked
+    // here too, and `path / "x"` in path.rk is an operator like any other.
+    let stdlib = rask_stdlib::StubRegistry::compilable();
+    checker.operator_calls.extend(stdlib.operator_calls);
+    let bodies: Vec<Decl> = stdlib
+        .decls
         .into_iter()
         .filter(|d| matches!(d.kind,
             rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))

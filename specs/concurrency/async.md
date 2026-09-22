@@ -15,7 +15,7 @@ Green tasks with must-use handles. No async/await split — the same function wo
 | **S2: Pooled thread** | `ThreadPool.spawn(|| {})` runs on thread pool; must run with an active `using ThreadPool` block |
 | **S3: Raw thread** | `Thread.spawn(|| {})` creates OS thread; no runtime required |
 | **S4: Must-use handle** | All spawn forms return handles that must be joined or detached — dropping one is a compile error |
-| **S5: The task works on copies** | Every spawn form gives the task a copy of what its closure captured. A borrow can't cross (E0862) and a write the task never reads back is an error (E0892) — see [mem.closures](../memory/closures.md#spawn) for both. The value both sides need is a `Shared` reached through a clone, or the closure's return value |
+| **S5: The task works on copies** | Every spawn form gives the task a copy of what its closure captured. A borrow can't cross (E0862) and a write the task never reads back is an error (E0896) — see [mem.closures](../memory/closures.md#spawn) for both. The value both sides need is a `Shared` reached through a clone, or the closure's return value |
 
 Spawn functions do not appear in signatures. No function declares `using Multitasking` — the compiler infers which functions (transitively) need a runtime and checks callers against the current lexical scope. See [Runtime Scope](#runtime-scope) below.
 

@@ -313,6 +313,7 @@ impl<'a> MirContext<'a> {
         enum_layouts: &'a [EnumLayout],
         node_types: &'a HashMap<NodeId, Type>,
         call_targets: &'a HashMap<NodeId, rask_types::Callee>,
+        operator_targets: &'a HashMap<NodeId, rask_types::OperatorTarget>,
         type_names: &'a HashMap<rask_types::TypeId, String>,
     ) -> Self {
         Self {
@@ -320,6 +321,7 @@ impl<'a> MirContext<'a> {
             enum_layouts,
             node_types,
             call_targets,
+            operator_targets,
             type_names,
             // Straight off the checker — never optional.
             type_defs: &typed.types,
@@ -482,6 +484,14 @@ pub struct MirContext<'a> {
     /// dispatched on, so lowering reads it instead of guessing a prefix from
     /// the receiver's syntactic shape.
     pub call_targets: &'a HashMap<NodeId, rask_types::Callee>,
+    /// OR1: operator calls the checker resolved to a conformance.
+    ///
+    /// `a * b` is a machine instruction on some pairs and a call on others, and
+    /// on a primitive receiver it's the *right* operand that decides. Lowering
+    /// can't re-derive that from the receiver's MIR type — an `f64` receiver
+    /// looks like plain arithmetic either way — so it reads what the checker
+    /// settled on.
+    pub operator_targets: &'a HashMap<NodeId, rask_types::OperatorTarget>,
     /// Type names marked with `@resource` — used for resource tracking ops (C1/C2).
     pub resource_types: &'a std::collections::HashSet<String>,
     /// Nominal newtype name → the type it wraps, as a type string.
@@ -552,6 +562,9 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_types::Callee>> =
             std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_OPERATOR_TARGETS:
+            std::sync::LazyLock<HashMap<NodeId, rask_types::OperatorTarget>> =
+            std::sync::LazyLock::new(HashMap::new);
         static EMPTY_RESOURCE_TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, String>> =
@@ -581,6 +594,7 @@ impl<'a> MirContext<'a> {
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
+            operator_targets: &EMPTY_OPERATOR_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
             nominal_underlying: &EMPTY_NOMINAL,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -1500,6 +1514,20 @@ impl<'a> MirContext<'a> {
     /// Extends `stdlib_type_prefix` to also handle user-defined struct/enum
     /// types from extend blocks. Monomorphization produces qualified names
     /// like "Person_greet"; this ensures MIR calls match.
+    /// OR6: the prefix a *conformance* method's symbol carries.
+    ///
+    /// Not `builtin_method_prefix`: that collapses widths, so every float
+    /// receiver answers `f64` and an `extend f32 with Mul<…>` body would be
+    /// called under someone else's name. A conformance is filed on the type as
+    /// written.
+    pub fn conformance_prefix(
+        ty: &Type,
+        type_names: &HashMap<rask_types::TypeId, String>,
+    ) -> Option<String> {
+        Self::type_prefix(ty, type_names)
+            .or_else(|| rask_types::primitive_spelling(ty).map(str::to_string))
+    }
+
     pub fn type_prefix(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> Option<String> {
         if let Some(s) = Self::stdlib_type_prefix(ty) {
             return Some(s.to_string());
@@ -1564,6 +1592,12 @@ impl<'a> MirContext<'a> {
     }
 
     pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
+        // OR1: an operator the pair resolved names its own receiver. Reading it
+        // off the MIR type instead would collapse `f32` onto `f64` — the width
+        // collapse the builtin prefixes want and a conformance symbol doesn't.
+        if let Some(target) = self.operator_targets.get(&node) {
+            return Self::conformance_prefix(&target.recv, self.type_names);
+        }
         match self.call_targets.get(&node)? {
             rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names)
                 .or_else(|| builtin_method_prefix(recv).map(str::to_string)),
@@ -1616,24 +1650,6 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    pub fn type_prefix_str(s: &str) -> Option<String> {
-        let s = s.trim();
-        match s {
-            "string" => Some("string".to_string()),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
-            | "f32" | "f64" | "char" => None,
-            _ => {
-                // "Vec<...>" → "Vec", "Map<...>" → "Map", etc.
-                if let Some(pos) = s.find('<') {
-                    Some(s[..pos].to_string())
-                } else if s.chars().next().map_or(false, |c| c.is_uppercase()) {
-                    Some(s.to_string())
-                } else {
-                    None
-                }
-            }
-        }
-    }
 }
 
 /// Supplementary metadata for a local variable, keyed by variable name.
@@ -1898,7 +1914,7 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn record_module_const_meta(&mut self, name: &str, init: &Expr) {
         let ExprKind::MethodCall { object, args, .. } = &init.kind else { return };
         let ExprKind::Ident(type_name) = &object.kind else { return };
-        let Some(prefix) = MirContext::type_prefix_str(type_name) else { return };
+        let Some(prefix) = type_prefix_from_str(type_name) else { return };
         if let Some(inner) = args.first().and_then(|a| {
             self.ctx.lookup_raw_type(a.expr.id)
                 .and_then(|t| MirContext::type_prefix(t, self.ctx.type_names))
@@ -5566,7 +5582,7 @@ impl<'a> MirLowerer<'a> {
                 if let Some(s) = start { self.walk_free_vars(s, bound, seen, free); }
                 if let Some(e) = end { self.walk_free_vars(e, bound, seen, free); }
             }
-            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch, else_binding } => {
+            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch, else_binding: _ } => {
                 self.walk_free_vars(inner, bound, seen, free);
                 let mut then_bound = bound.clone();
                 collect_pattern_names(pattern, &mut then_bound);
@@ -6005,16 +6021,8 @@ pub(crate) fn type_names_a_parameter(ty: &Type) -> Option<String> {
     }
 }
 
-/// Return type for known stdlib functions that don't return I64.
-/// Supplements func_sigs (which only has user-defined functions).
-///
-/// Primary source: stub-derived metadata. Suffix-based patterns serve as
-/// fallbacks for user type methods and methods not yet in stubs.
-fn stdlib_return_mir_type(func_name: &str) -> MirType {
-    stdlib_return_mir_type_in(func_name, None)
-}
-
-/// Same, but able to resolve a named error type against the program's layouts.
+/// Return type for a known stdlib function, resolving a named error type
+/// against the program's layouts.
 ///
 /// A stub's `T or E` used to lose `E` outright — the metadata parser wrote I64
 /// into the error slot no matter what was declared. That gave the Result an
@@ -7369,6 +7377,7 @@ mod tests {
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
+        let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let empty_type_defs = rask_types::TypeTable::default();
@@ -7397,6 +7406,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
+            operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -7446,6 +7456,7 @@ mod tests {
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
+        let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let empty_type_defs = rask_types::TypeTable::default();
@@ -7474,6 +7485,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
+            operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -7532,6 +7544,7 @@ mod tests {
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
+        let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let empty_type_defs = rask_types::TypeTable::default();
@@ -7560,6 +7573,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
+            operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),

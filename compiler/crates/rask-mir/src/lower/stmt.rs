@@ -286,13 +286,8 @@ impl<'a> MirLowerer<'a> {
         matches!(fty, MirType::String).then(|| fty.clone())
     }
 
-    /// Byte offset + MIR type of `field` within an aggregate MIR type.
-    fn field_offset_ty(&self, oty: &MirType, field: &str) -> Option<(u32, MirType)> {
-        self.field_offset_ty_size(oty, field).map(|(off, ty, _)| (off, ty))
-    }
-
-    /// Same, plus the layout's recorded byte size for the field when there is
-    /// one. Tuple fields carry their size in the layout too.
+    /// Byte offset, MIR type and recorded byte size of `field` within an
+    /// aggregate MIR type. Tuple fields carry their size in the layout too.
     fn field_offset_ty_size(
         &self,
         oty: &MirType,
@@ -1129,7 +1124,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 if let Some((_, resource_id)) = receiver_name
                     .as_ref()
-                    .and_then(|name| self.ensure_receivers.get(&cleanup_block).cloned())
+                    .and_then(|_name| self.ensure_receivers.get(&cleanup_block).cloned())
                 {
                     // Check if resource was consumed → skip cleanup
                     let consumed = self.builder.alloc_temp(MirType::I64);
@@ -1278,7 +1273,7 @@ impl<'a> MirLowerer<'a> {
         &self,
         iter: &Expr,
     ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
-        use rask_ast::decl::field_attrs;
+        
 
         let unsupported = || {
             LoweringError::InvalidConstruct(
@@ -2843,7 +2838,7 @@ impl<'a> MirLowerer<'a> {
             None => (MirOperand::Constant(MirConst::Int(1)), start_ty.clone()),
         };
 
-        let mut define = |this: &mut Self, ty: &MirType, rvalue: MirRValue| {
+        let define = |this: &mut Self, ty: &MirType, rvalue: MirRValue| {
             let local = this.builder.alloc_temp(ty.clone());
             this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
             local
@@ -3022,7 +3017,7 @@ impl<'a> MirLowerer<'a> {
         body: &[Stmt],
     ) -> Result<(), LoweringError> {
         let ty = self.builder.local_type(start_l).unwrap_or(MirType::I64);
-        let mut define = |this: &mut Self, t: &MirType, rvalue: MirRValue| {
+        let define = |this: &mut Self, t: &MirType, rvalue: MirRValue| {
             let local = this.builder.alloc_temp(t.clone());
             this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
             local

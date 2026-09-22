@@ -26,7 +26,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    BlockId, FunctionRef, LocalId, MirBlock, MirConst, MirFunction, MirOperand, MirRValue, MirStmt,
+    BlockId, FunctionRef, LocalId, MirBlock, MirFunction, MirOperand, MirRValue, MirStmt,
     MirStmtKind, MirTerminatorKind, MirType,
 };
 
@@ -1896,7 +1896,7 @@ fn cells_this_frame_frees(
     fresh: &HashMap<LocalId, &'static str>,
     kept: &HashMap<String, Vec<bool>>,
     trait_kept: &HashMap<String, Vec<bool>>,
-    trait_handing: &HashMap<String, HandBack>,
+    _trait_handing: &HashMap<String, HandBack>,
 ) -> Vec<(LocalId, Holds, BlockId)> {
     let mut by_ref_cells: HashSet<LocalId> = func
         .blocks
@@ -2710,7 +2710,7 @@ fn find_escaping(
     // So it is recorded per block instead, and the placement below frees only
     // where no path in has consumed it yet.
     let mut consumed: HashMap<LocalId, HashSet<BlockId>> = HashMap::new();
-    let mut mark = |op: &MirOperand, escaping: &mut HashSet<LocalId>| {
+    let mark = |op: &MirOperand, escaping: &mut HashSet<LocalId>| {
         if let MirOperand::Local(id) = op {
             if containers.contains_key(id) {
                 escaping.insert(*id);

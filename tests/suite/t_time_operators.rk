@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.time A1–A8 — the arithmetic table, as operator conformances.
+//
+// Half of this table was a hand-written `match ("Instant", "sub")` in the type
+// checker: the only place that could say "instant minus instant is a Duration",
+// because the language had no way to write a conformance whose result type
+// depends on the right operand. The other half — scaling, the ratio, and the
+// span between two wall-clock points — was simply missing, and each addition
+// would have meant another arm in the compiler.
+//
+// It's `extend Instant with Sub<Instant> { type Out = Duration … }` in
+// stdlib/time.rk now, and the two that couldn't be written at all work.
+
+import time
+import time.SystemTime
+import time.Duration
+import time.Instant
+
+test "std.time/A1, A2 — an instant shifts by a duration, and two of them make one" {
+    let start = Instant.now()
+    let span = Duration.millis(5)
+
+    let later: Instant = start + span
+    let gap: Duration = later - start
+    assert gap.as_millis() == 5
+
+    let back: Instant = later - span
+    assert (back - start).as_millis() == 0
+}
+
+test "std.time/A3 — durations add and subtract" {
+    let a = Duration.millis(5)
+    let b = Duration.millis(3)
+    assert (a + b).as_millis() == 8
+    assert (a - b).as_millis() == 2
+}
+
+test "std.time/A4 — scaling, both directions" {
+    let d = Duration.millis(5)
+    assert (d * 3).as_millis() == 15
+    // The direction that used to be unwritable: a conformance on `i64`.
+    assert (3 * d).as_millis() == 15
+    assert (d / 2).as_millis() == 2
+}
+
+test "std.time/A5 — the ratio of two durations is a count" {
+    let a = Duration.millis(9)
+    let b = Duration.millis(4)
+    let ratio: u64 = a / b
+    assert ratio == 2
+}
+
+test "std.time/A7, A8 — wall-clock shift and difference" {
+    let now = SystemTime.from_unix_seconds(1709251200)
+    let span = Duration.seconds(60)
+
+    let later: SystemTime = now + span
+    assert later.unix_seconds() == 1709251260
+
+    let earlier: SystemTime = later - span
+    assert earlier.unix_seconds() == 1709251200
+
+    let between: Duration = later - now
+    assert between.as_seconds() == 60
+}
+
+func main() {}

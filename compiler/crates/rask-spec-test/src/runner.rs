@@ -218,7 +218,7 @@ fn check_front_end(code: &str) -> Result<(), (FailStage, String)> {
     if !parse_result.is_ok() {
         return Err((FailStage::Parse, format!("{:?}", parse_result.errors)));
     }
-    rask_desugar::desugar_with_stdlib(
+    let desugared = rask_desugar::desugar_with_stdlib(
         &mut parse_result.decls,
         rask_stdlib::StubRegistry::defaulted_signatures(),
     );
@@ -235,7 +235,12 @@ fn check_front_end(code: &str) -> Result<(), (FailStage, String)> {
 
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
+        rask_types::typecheck_with_stdlib_lenient(
+            resolved,
+            &parse_result.decls,
+            &stdlib_decls,
+            &desugared.operator_calls,
+        );
     if !type_errors.is_empty() {
         return Err((FailStage::Typecheck, format!("{:?}", type_errors)));
     }

@@ -15,7 +15,8 @@ func main() {
     // ERROR: no method `lt` found for type `OnlyEq`
     println("lt={a < b}")
 
-    // ERROR: no method `add` found for type `OnlyEq`
+    // ERROR: no `+` between `OnlyEq` and `OnlyEq` — `Add` wasn't listed, and
+    // ERROR: an operator answers to a declared conformance
     let sum = a + b
     println("sum={sum}")
 }

@@ -14,7 +14,9 @@ extend Point {
     func manhattan(self) -> i32 {
         return self.x + self.y
     }
+}
 
+extend Point with Add {
     func add(self, other: Point) -> Point {
         return Point { x: self.x + other.x, y: self.y + other.y }
     }
