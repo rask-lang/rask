@@ -444,6 +444,15 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// A spawned task writes a capture nothing reads back. The task works on a
+    /// copy that dies with it, so the write goes nowhere.
+    #[error("`{name}` is written in a task and nothing reads it back")]
+    TaskWriteLost {
+        name: String,
+        /// Where the closure was handed to `spawn`.
+        spawn_span: Span,
+    },
+
     /// MC2: a variable a live closure captures mutably, touched by something
     /// else. `holder` is the closure's binding, `second_closure` says whether
     /// the thing touching it is another closure capturing the same variable.

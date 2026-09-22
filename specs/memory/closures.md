@@ -211,16 +211,44 @@ and it is not needed once captures are inferred.
 
 ## spawn
 
-`spawn` requires owned closures. The existing syntax works:
+A task gets a **copy** of everything its closure captured, and that copy lives in the
+task's environment, which dies when the task does. That's true whatever the closure was
+spelled: `spawn` copies with or without `own`, because pointing into the spawning frame is
+exactly what a task must not do.
 
 ```rask
 spawn(own || {
-    vec.push(1)  // OK: task owns vec
+    vec.push(1)  // the task's vec — `own` moved it in, the outer name is gone
 })
 ```
 
-A scope-limited closure passed to `spawn` is a compile error — the task could outlive the
-spawning scope.
+Two rules follow.
+
+| Rule | Description |
+|------|-------------|
+| **SP1: A borrow can't cross** | A closure that borrows a capture and is handed to `spawn` is a compile error (E0862). The task could outlive the spawning scope. `own` is the fix for a value the task should have; `Shared` reached through a clone is the fix for one both sides need |
+| **SP2: A write nothing reads back is an error** | Inside a spawned closure, a write to a capture that the body never reads again is a compile error (E0892). The task is writing its own copy and the copy is about to die, so the write goes nowhere |
+
+SP2 is what closes the hole SP1 leaves. SP1 only bites on captures big enough to have a
+scope; a Copy capture is copied either way, so `mut count = 0` followed by `spawn(|| {
+count += 1 })` used to type-check, run, and print `0`. Memory-safe and wrong, which is the
+worst quadrant.
+
+```rask
+mut count = 0
+spawn(|| { count += 1 })          // error E0892 — lands on the task's copy
+
+let total = Shared.new(0)         // the fix: one value, two holders
+let t = total.clone()
+spawn(own || { with t.write() as c { c += 1 } })
+```
+
+A write the task reads back is doing work, so it stays legal — a task that sums into a
+local and returns it, or counts something for its own output, is unaffected. `join()` hands
+back the closure's return value; it is not a write-back for captures.
+
+Deadness here is decidable from the closure body alone, which is why it's an error and not
+a lint: no program wants the write it rejects.
 
 ## Error messages
 

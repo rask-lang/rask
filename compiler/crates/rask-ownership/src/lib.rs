@@ -55,6 +55,16 @@ struct ForMutateInfo {
     span: Span,
 }
 
+/// What a task body does with the captures it was given a copy of.
+#[derive(Default)]
+struct TaskWrites {
+    /// Captures the body assigns to, at the first such assignment.
+    written_at: HashMap<String, Span>,
+    /// Captures the body reads somewhere other than the expansion of their own
+    /// compound assignment. A read is what makes a write worth doing.
+    read: HashSet<String>,
+}
+
 /// Ownership and borrow checker.
 pub struct OwnershipChecker<'a> {
     /// The typed program from type checking.
@@ -199,6 +209,10 @@ pub struct OwnershipChecker<'a> {
     /// a Vec was enough to reject the whole thing (#869). Keyed by node, a
     /// binding asks about its own initializer and the body can't answer for it.
     closure_scope_limits: HashMap<rask_ast::NodeId, u32>,
+    /// Closure literals bound to a name, so `spawn(f)` can be checked the same
+    /// way `spawn(|| …)` is. Only the literal case is in here — a closure that
+    /// arrives through a parameter or a call has no body to read.
+    closure_literals: HashMap<String, Expr>,
     /// Free-function parameter modes by name → per-position `take` flags.
     ///
     /// Lets a call consume arguments to `take` params without call-site `own`
@@ -293,6 +307,7 @@ impl<'a> OwnershipChecker<'a> {
             scope_limited_closures: HashMap::new(),
             module_consts: std::collections::HashSet::new(),
             closure_scope_limits: HashMap::new(),
+            closure_literals: HashMap::new(),
             mutable_captures: Vec::new(),
             fn_take_params: HashMap::new(),
             fn_deleting_params: HashMap::new(),
@@ -1046,6 +1061,9 @@ impl<'a> OwnershipChecker<'a> {
                 if let Some(&borrow_block) = self.closure_scope_limits.get(&init.id) {
                     self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
                 }
+                if matches!(init.kind, ExprKind::Closure { .. }) {
+                    self.closure_literals.insert(name.clone(), init.clone());
+                }
                 // Track resource types. The annotation and the initializer are
                 // both asked: an annotation the name table can't place — a
                 // wrapper, an alias — used to suppress what the checker had
@@ -1104,6 +1122,9 @@ impl<'a> OwnershipChecker<'a> {
                 // SL1: inherit scope limit from closure expression
                 if let Some(&borrow_block) = self.closure_scope_limits.get(&init.id) {
                     self.scope_limited_closures.insert(name.clone(), (borrow_block, self.current_block));
+                }
+                if matches!(init.kind, ExprKind::Closure { .. }) {
+                    self.closure_literals.insert(name.clone(), init.clone());
                 }
                 // Track resource types. The annotation and the initializer are
                 // both asked: an annotation the name table can't place — a
@@ -1585,6 +1606,9 @@ impl<'a> OwnershipChecker<'a> {
                     // does. A `take` parameter is the real escape: the callee
                     // keeps it and the caller can't see where it goes (SL2).
                     self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
+                    if matches!(&func.kind, ExprKind::Ident(n) if n == "spawn") {
+                        self.check_spawn_lost_writes(&arg.expr);
+                    }
                     // Passing a rack to a `deleting` parameter revokes every link
                     // local into it — but not until the rest of the arguments have
                     // been checked, or a link passed alongside it reads as already
@@ -1679,6 +1703,11 @@ impl<'a> OwnershipChecker<'a> {
                         .and_then(|t| t.get(i))
                         .map(|m| matches!(m, ParamMode::Take) || (channel_send && i == 0));
                     self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
+                    // `Thread.spawn`, `ThreadPool.spawn`, `group.spawn` — every
+                    // one hands the closure to a task that runs it once.
+                    if method == "spawn" {
+                        self.check_spawn_lost_writes(&arg.expr);
+                    }
                     if arg.mode == ArgMode::Own || is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
@@ -4271,6 +4300,171 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Collect free variables with field projection tracking.
     /// `projections` maps captured var name → narrowest field projection used in the closure.
+    // ---- A task's write to a capture nothing reads back ----
+
+    /// A closure handed to `spawn` gets a **copy** of every capture, and the
+    /// task's environment dies when the task does. So a write to a capture that
+    /// nothing in the body reads back goes nowhere: the counter in the task is
+    /// not the counter the parent prints, and `join()` is not a write-back.
+    ///
+    /// Only Copy captures ever reach here. Anything bigger is already rejected
+    /// as an escaping borrow (SL2) or moved in by `own`, and a move leaves the
+    /// parent nothing to read.
+    ///
+    /// The write is dead, and deadness is decidable from the body alone, so it
+    /// is an error rather than a lint. The fix is a value that outlives the
+    /// task: `Shared` reached through a clone, a channel, or the closure's
+    /// return value.
+    fn check_spawn_lost_writes(&mut self, arg: &Expr) {
+        let closure = match &arg.kind {
+            ExprKind::Closure { .. } => arg.clone(),
+            ExprKind::Ident(name) => match self.closure_literals.get(name) {
+                Some(c) => c.clone(),
+                None => return,
+            },
+            _ => return,
+        };
+        let ExprKind::Closure { params, body, .. } = &closure.kind else { return };
+        let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+
+        let mut scan = TaskWrites::default();
+        self.scan_task_writes_expr(body, &locals, &mut scan);
+
+        // Deterministic order: the body's, not the map's.
+        let mut lost: Vec<(String, Span)> = scan
+            .written_at
+            .into_iter()
+            .filter(|(name, _)| !scan.read.contains(name))
+            .collect();
+        lost.sort_by_key(|(_, span)| (span.start, span.end));
+        for (name, span) in lost {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::TaskWriteLost { name, spawn_span: arg.span },
+                span,
+            });
+        }
+    }
+
+    /// Reads and writes a task body performs on its captures.
+    ///
+    /// Containers recurse so a write inside an `if` or a loop is still found;
+    /// everything else is a read, collected through the capture walker so no
+    /// expression shape is missed. Missing a read would reject a working
+    /// program, so every arm that isn't a container hands the whole expression
+    /// over rather than picking it apart.
+    fn scan_task_writes_expr(&self, expr: &Expr, locals: &HashSet<String>, scan: &mut TaskWrites) {
+        match &expr.kind {
+            ExprKind::Block(stmts) => self.scan_task_writes_body(stmts, locals, scan),
+            ExprKind::If { cond, then_branch, else_branch, .. } => {
+                self.scan_task_reads(cond, locals, scan);
+                self.scan_task_writes_expr(then_branch, locals, scan);
+                if let Some(e) = else_branch { self.scan_task_writes_expr(e, locals, scan); }
+            }
+            ExprKind::IfLet { expr: scrutinee, then_branch, else_branch, .. } => {
+                self.scan_task_reads(scrutinee, locals, scan);
+                self.scan_task_writes_expr(then_branch, locals, scan);
+                if let Some(e) = else_branch { self.scan_task_writes_expr(e, locals, scan); }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.scan_task_reads(scrutinee, locals, scan);
+                for arm in arms {
+                    if let Some(g) = &arm.guard { self.scan_task_reads(g, locals, scan); }
+                    self.scan_task_writes_expr(&arm.body, locals, scan);
+                }
+            }
+            // A nested closure borrows the task's environment, so a write in
+            // there is one the task can still read back. Reads only.
+            _ => self.scan_task_reads(expr, locals, scan),
+        }
+    }
+
+    fn scan_task_writes_body(&self, body: &[Stmt], locals: &HashSet<String>, scan: &mut TaskWrites) {
+        let mut scope = locals.clone();
+        for stmt in body {
+            self.scan_task_writes_stmt(stmt, &scope, scan);
+            Self::names_declared_by(stmt, &mut scope);
+        }
+    }
+
+    fn scan_task_writes_stmt(&self, stmt: &Stmt, locals: &HashSet<String>, scan: &mut TaskWrites) {
+        match &stmt.kind {
+            StmtKind::Assign { target, value, .. } => {
+                let root = Self::extract_root_and_fields(target).0;
+                let captured = root
+                    .as_ref()
+                    .filter(|r| !locals.contains(*r) && self.bindings.contains_key(*r));
+                if let Some(name) = captured {
+                    scan.written_at.entry(name.clone()).or_insert(stmt.span);
+                    // A variable reading itself on the way into its own new
+                    // value is not the read that saves the write — `count =
+                    // count + 1` is as lost as `count += 1`, and the compound
+                    // form is stored with `value` already expanded to the long
+                    // one anyway. What counts is a read somewhere else.
+                    self.scan_task_reads_except(value, locals, scan, Some(name));
+                    // An index into the target — `grid[i] = x` — is read, not written.
+                    if let ExprKind::Index { index, .. } = &target.kind {
+                        self.scan_task_reads(index, locals, scan);
+                    }
+                    return;
+                }
+                self.scan_task_reads(target, locals, scan);
+                self.scan_task_reads(value, locals, scan);
+            }
+            StmtKind::Expr(e) => self.scan_task_writes_expr(e, locals, scan),
+            StmtKind::Mut { init, .. } | StmtKind::Let { init, .. }
+            | StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. }
+            | StmtKind::LetStruct { init, .. } => self.scan_task_reads(init, locals, scan),
+            StmtKind::Return(Some(e)) | StmtKind::Break { value: Some(e), .. } => {
+                self.scan_task_reads(e, locals, scan)
+            }
+            StmtKind::While { cond, body, .. } => {
+                self.scan_task_reads(cond, locals, scan);
+                self.scan_task_writes_body(body, locals, scan);
+            }
+            StmtKind::WhileLet { expr, body, .. } => {
+                self.scan_task_reads(expr, locals, scan);
+                self.scan_task_writes_body(body, locals, scan);
+            }
+            StmtKind::Loop { body, .. } => self.scan_task_writes_body(body, locals, scan),
+            StmtKind::For { iter, body, .. } => {
+                self.scan_task_reads(iter, locals, scan);
+                self.scan_task_writes_body(body, locals, scan);
+            }
+            StmtKind::Ensure { body, else_handler } => {
+                self.scan_task_writes_body(body, locals, scan);
+                if let Some((_, handler)) = else_handler {
+                    self.scan_task_writes_body(handler, locals, scan);
+                }
+            }
+            StmtKind::Comptime(body) => self.scan_task_writes_body(body, locals, scan),
+            StmtKind::ComptimeFor { iter, body, .. } => {
+                self.scan_task_reads(iter, locals, scan);
+                self.scan_task_writes_body(body, locals, scan);
+            }
+            StmtKind::Return(None) | StmtKind::Break { value: None, .. }
+            | StmtKind::Continue(_) | StmtKind::Discard { .. } => {}
+        }
+    }
+
+    fn scan_task_reads(&self, expr: &Expr, locals: &HashSet<String>, scan: &mut TaskWrites) {
+        self.scan_task_reads_except(expr, locals, scan, None);
+    }
+
+    fn scan_task_reads_except(
+        &self,
+        expr: &Expr,
+        locals: &HashSet<String>,
+        scan: &mut TaskWrites,
+        skip: Option<&str>,
+    ) {
+        let mut names = Vec::new();
+        self.collect_free_vars_inner(expr, locals, &mut names, &mut HashMap::new());
+        for name in names {
+            if Some(name.as_str()) == skip { continue }
+            scan.read.insert(name);
+        }
+    }
+
     fn collect_free_vars_with_projections(
         &self,
         expr: &Expr,

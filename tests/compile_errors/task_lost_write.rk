@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A task writes a capture nothing reads back (E0892, #1281).
+//
+// A closure handed to `spawn` gets a copy of every capture, and that copy dies
+// with the task. A write to one only reaches the task's own copy, so a counter
+// bumped in a task and printed in the parent prints the value it started with.
+// This type-checked and ran and answered wrong, which is the worst quadrant.
+//
+// Only Copy captures get this far — anything larger is already an escaping
+// borrow (E0862) or moved in, and a move leaves the parent nothing to read.
+
+func main() {
+    using Multitasking {
+        mut count = 0
+        // ERROR: E0892 — the write lands on the task's copy of `count`
+        let h = spawn(|| {
+            count += 1
+        })
+        h.join()
+        println("{count}")
+
+        mut hits = 0
+        let flag = true
+        let g = spawn(own || {
+            if flag {
+                // ERROR: E0892 — `own` copies a Copy type too, so this is the same loss
+                hits = hits + 1
+            }
+        })
+        g.join()
+        println("{hits}")
+
+        mut named = 0
+        // ERROR: E0892 — named first, spawned after, same copy
+        let f = || { named += 1 }
+        let k = spawn(f)
+        k.join()
+        println("{named}")
+    }
+}
+
+// What stays legal: the task reads its copy back, so the write is doing work.
+func computes_its_own() {
+    using Multitasking {
+        mut sum = 0
+        let h = spawn(|| {
+            for i in 0..5 {
+                sum += i
+            }
+            return sum
+        })
+        let total = h.join() catch e => { return }
+        println("{total}")
+    }
+}
+
+// And a task that counts something for its own report keeps its write.
+func reports_its_own() {
+    using Multitasking {
+        mut seen = 0
+        let h = spawn(|| {
+            seen += 1
+            println("task saw {seen}")
+        })
+        h.join()
+    }
+}

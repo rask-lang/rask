@@ -110,6 +110,7 @@ go down.
 | File | What it tests |
 |------|--------------|
 | [closure_errors.rk](closure_errors.rk) | What the parser rejects around closures: `\|mutate x\|` capture syntax (unimplemented, #1087 — the message used to suggest `\|mutate x: T\|`, which compiles and means something else) and a closure type in a signature. MC2 and SL2 can't be reached until those exist |
+| [task_lost_write.rk](task_lost_write.rk) | A task writing a capture nothing reads back (SP2, E0892, #1281) — inline, under an `if` inside an `own` closure, and through a closure named before it was spawned. The legal shapes sit below: a task that returns what it summed, and one that counts for its own output |
 
 ### Other
 

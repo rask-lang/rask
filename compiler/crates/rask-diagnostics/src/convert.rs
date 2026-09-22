@@ -3710,6 +3710,22 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("closures that capture block-scoped borrows are limited to that block's lifetime — returning or storing them would create a dangling reference (SL2)")
             }
 
+            TaskWriteLost { name, spawn_span } => {
+                Diagnostic::error(format!(
+                    "`{}` is written in a task and nothing reads it back",
+                    name
+                ))
+                .with_code("E0892")
+                .with_primary(self.span, format!("this write lands on the task's own copy of `{}`", name))
+                .with_secondary(*spawn_span, "the task gets a copy of every capture, and it dies with the task")
+                .with_fix(format!(
+                    "share the value instead: `let shared = Shared.new(…)`, capture `shared.clone()`, and write through `with shared.write() as {} {{ … }}`",
+                    name
+                ))
+                .with_help("or return the value from the closure and read it off `join()`")
+                .with_why("a task works on its own copy of what it captured, and `join()` is not a write-back — the write would be thrown away when the task ends")
+            }
+
             ForMutateStructuralMutation { collection, operation, loop_span } => {
                 Diagnostic::error(format!(
                     "cannot {} `{}` during `for mutate` — invalidates iteration",
