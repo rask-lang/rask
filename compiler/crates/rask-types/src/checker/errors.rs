@@ -548,6 +548,12 @@ pub enum TypeError {
         /// for all three told everyone to "implement `Integer` for `Marker`"
         /// and explained itself in terms of trait objects (#713).
         context: TraitBoundContext,
+        /// The first method the type doesn't have, where one is known. A
+        /// conformance header that says "missing methods" and stops sends the
+        /// author looking through a block that may be one method short —
+        /// `Hashable` needs `eq` as well as `hash`, and nothing said so. The
+        /// second half is the signature to write.
+        missing: Option<(String, String)>,
         span: Span,
     },
     /// A bound, conformance header or cast naming a trait that doesn't exist.
@@ -1138,6 +1144,29 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.generics/XC1: one of the six auto-derived traits declared for a
+    /// type by a package that doesn't own it. Four of them decide what happens
+    /// to the type's data inside a container and two decide whether it goes on
+    /// a wire at all — both are answers a type gets once, from its owner.
+    #[error("only `{owner}` can declare `{trait_name}` for `{ty}`")]
+    ForeignCoreConformance {
+        /// The type being extended.
+        ty: String,
+        /// The trait, spelled as the block writes it.
+        trait_name: String,
+        /// The package that declares the type.
+        owner: String,
+        /// The package the block is in.
+        here: String,
+        /// `Encode`/`Decode`, which say *whether* the data serializes rather
+        /// than how — a different message from the container four.
+        encoding: bool,
+        /// The `extend` header.
+        span: Span,
+        /// Where the type is declared.
+        declared_at: Span,
+    },
+
     /// ctrl.comptime/CT53: `value.(expr)` is rewritten to a direct field access
     /// while compiling, so the name has to be one the compiler knows. A runtime
     /// string has nothing to rewrite to.
@@ -1352,6 +1381,7 @@ impl TypeError {
             Undefined(..)
             | DynamicFieldNameNotComptime { .. }
             | DuplicateConformance { .. }
+            | ForeignCoreConformance { .. }
             | SerializationOptedOut { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }

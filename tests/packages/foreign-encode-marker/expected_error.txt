@@ -1,0 +1,1 @@
+only `traitpkg` can make `traitpkg.Secret` encodable

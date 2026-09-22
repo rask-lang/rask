@@ -56,6 +56,13 @@ pub struct ResolvedProgram {
     /// Public type declarations from external packages, keyed by package name.
     /// The type checker registers these so cross-package types resolve.
     pub external_decls: HashMap<String, Vec<Decl>>,
+    /// Which package each source file belongs to, by file id.
+    ///
+    /// A span carries its file id and every package owns a set of them, so this
+    /// answers "which package wrote this?" for any declaration — which is what
+    /// `type.generics/XC1` needs and what the merged decl list drops. Empty
+    /// outside a package build.
+    pub file_packages: HashMap<u16, String>,
 }
 
 /// Extern function signature extracted from C imports or explicit `extern "C"` decls.

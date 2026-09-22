@@ -582,20 +582,20 @@ pub fn unqualify_diagnostics(
                 continue;
             }
             // Where the name sits inside a longer identifier, the compiler
-            // built that identifier from it — the fix for a duplicate
-            // conformance suggests `type MyDoc = ...`, which is `MyDoc_traitpkg`
-            // at this point. A dotted path can't go in the middle of an
-            // identifier, so that one gets the bare name and reads `MyDoc`;
-            // anywhere else gets the spelling the program uses.
+            // built that identifier from it — a duplicate conformance suggests
+            // `type MyDoc = …` and an opted-out encoding suggests
+            // `struct DocWire { … }`, which are `MyDoc_traitpkg` and
+            // `Doc_traitpkgWire` at this point. A dotted path can't go in the
+            // middle of an identifier, so those get the bare name; anywhere
+            // else gets the spelling the program uses.
+            let ident_char = |c: char| c.is_alphanumeric() || c == '_';
             let mut out = String::with_capacity(s.len());
             let mut rest = s.as_str();
             while let Some(at) = rest.find(q.as_str()) {
-                let glued = rest[..at]
-                    .chars()
-                    .next_back()
-                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
+                let before = rest[..at].chars().next_back().is_some_and(ident_char);
+                let after = rest[at + q.len()..].chars().next().is_some_and(ident_char);
                 out.push_str(&rest[..at]);
-                out.push_str(if glued { bare } else { spelled });
+                out.push_str(if before || after { bare } else { spelled });
                 rest = &rest[at + q.len()..];
             }
             out.push_str(rest);

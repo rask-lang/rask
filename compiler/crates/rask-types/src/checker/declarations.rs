@@ -179,11 +179,13 @@ impl TypeChecker {
                     self.check_declared_type_name(&s.name, "struct", decl.span);
                     let id = self.register_struct(s);
                     self.types.record_method_decl(id, decl.id);
+                    self.types.record_declared_at(id, decl.span);
                 }
                 DeclKind::Enum(e) => {
                     self.check_declared_type_name(&e.name, "enum", decl.span);
                     let id = self.register_enum(e, decl.span);
                     self.types.record_method_decl(id, decl.id);
+                    self.types.record_declared_at(id, decl.span);
                 }
                 DeclKind::Trait(t) => {
                     self.check_declared_type_name(&t.name, "trait", decl.span);
@@ -221,6 +223,11 @@ impl TypeChecker {
                 DeclKind::TypeAlias(a) => {
                     self.check_declared_type_name(&a.name, "type alias", decl.span);
                     self.register_type_alias(a, decl.span);
+                    // A nominal type (`type MyDoc = traitpkg.Doc`) belongs to
+                    // whoever wrote it, which is what makes it XC1's way out.
+                    if let Some(id) = self.types.get_type_id(&a.name) {
+                        self.types.record_declared_at(id, decl.span);
+                    }
                 }
                 // `const W = 4` then `[i32; W]`. The length has to be known
                 // before any declared type is parsed, so it's recorded in this
@@ -621,6 +628,7 @@ impl TypeChecker {
                         ty: bound_str.clone(),
                         trait_name: want,
                         context: super::TraitBoundContext::ConformanceHeader,
+                        missing: None,
                         span: bound_span,
                     });
                 }
@@ -630,6 +638,31 @@ impl TypeChecker {
         // unmatchable, so checking them would report a pile of missing methods
         // on top of the one real problem.
         self.errors.len() == before
+    }
+
+    /// Which package wrote the file a span points into, if this is a package
+    /// build. `None` for a single file, for the stdlib, and for anything the
+    /// compiler generated — all cases where there is no package to compare.
+    pub(super) fn package_of(&self, span: rask_ast::Span) -> Option<&str> {
+        self.resolved.file_packages.get(&span.file_id).map(|s| s.as_str())
+    }
+
+    /// XC1: the traits a type's owner alone may declare, and whether this one
+    /// is an encoding marker.
+    ///
+    /// Four of them are one answer per type — two hashes for one type doesn't
+    /// conflict loudly, it makes a `Map` miss entries it holds. The other two
+    /// have no methods at all (std.encoding/E11): declaring one doesn't change
+    /// how the type serializes, it changes whether it does, which is the same
+    /// thing `@no_encode` says no to.
+    fn core_trait(name: &str) -> Option<bool> {
+        match name.split('<').next().unwrap_or(name) {
+            "Equal" | "Eq" | "Hashable" | "Comparable" | "Ord" | "Cloneable" | "Clone" => {
+                Some(false)
+            }
+            "Encode" | "Decode" => Some(true),
+            _ => None,
+        }
     }
 
     pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId, span: rask_ast::Span) {
@@ -648,6 +681,28 @@ impl TypeChecker {
             .collect();
         for trait_name in &i.trait_names {
             self.types.record_conformance(type_id, trait_name);
+            // XC1: six traits belong to the package that declares the type.
+            // Checked before the duplicate rule below, because a foreign block
+            // claiming one of them is wrong whether or not the owner wrote one.
+            if let Some(encoding) = Self::core_trait(trait_name) {
+                if let (Some(here), Some(declared_at)) =
+                    (self.package_of(span).map(str::to_string), self.types.declared_at(type_id))
+                {
+                    if let Some(owner) = self.package_of(declared_at).map(str::to_string) {
+                        if owner != here {
+                            self.errors.push(TypeError::ForeignCoreConformance {
+                                ty: base_name.to_string(),
+                                trait_name: TypeTable::conformance_display(trait_name),
+                                owner,
+                                here,
+                                encoding,
+                                span,
+                                declared_at,
+                            });
+                        }
+                    }
+                }
+            }
             // XC3: two blocks claiming the same pair. Reported here rather than
             // where the conformance is used, because both are in this package —
             // the cross-package half needs the use site and the declaring
@@ -2022,10 +2077,17 @@ impl TypeChecker {
                                 });
                                 continue;
                             }
+                            let missing = match &e {
+                                crate::traits::TraitError::MissingMethod { method, signature, .. } => {
+                                    Some((method.clone(), signature.clone()))
+                                }
+                                _ => None,
+                            };
                             self.errors.push(TypeError::TraitNotSatisfied {
                                 ty: i.target_ty.clone(),
                                 trait_name,
                                 context: super::TraitBoundContext::ConformanceHeader,
+                                missing,
                                 span: decl.span,
                             });
                         }

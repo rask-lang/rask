@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// The owner's decision: this type's data doesn't go on a wire.
+@no_encode
+public struct Secret {
+    public token: string
+}
+
+public func make_secret(t: string) -> Secret {
+    return Secret { token: t }
+}

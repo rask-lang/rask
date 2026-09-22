@@ -7369,14 +7369,39 @@ impl<'a> MirLowerer<'a> {
             self.ctx.lookup_raw_type(object.id),
             Some(rask_types::Type::Generic { .. } | rask_types::Type::UnresolvedGeneric { .. })
         );
-        let has_operator_overload = aggregate_receiver
-            && self.mir_type_name(obj_ty)
-                .map(|ty_name| format!("{}_{}", ty_name, method))
-                .is_some_and(|qualified| {
-                    self.func_sigs.contains_key(&qualified)
-                        || (receiver_is_generic
-                            && self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", qualified))))
-                });
+        // Both names the receiver goes by. `mir_type_name` reads the layout,
+        // and a nominal newtype shares its underlying type's layout (T3) — so
+        // for `type Counted = Doc` it answers "Doc" and the lookup built
+        // `Doc_eq`, a function nobody declared. The block's methods are
+        // registered under the newtype's own name, the way #445 keyed them, so
+        // `a.eq(b)` on a `Counted` fell through to a raw struct-address compare
+        // while `a.same(b)` — not an operator method, so it takes the dispatch
+        // chain below — called the right body. The checker's type is what knows
+        // the difference.
+        let mut overload_names: Vec<String> = Vec::new();
+        if let Some(prefix) = self
+            .ctx
+            .lookup_raw_type(object.id)
+            .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+        {
+            overload_names.push(prefix);
+        }
+        if let Some(name) = self.mir_type_name(obj_ty) {
+            overload_names.push(name);
+        }
+        // A nominal newtype has no layout of its own (type.aliases/T3), so it
+        // isn't an aggregate by `obj_ty` even when it wraps a struct — and an
+        // `extend Counted with Equal` block is exactly the overload this gate
+        // is here to find.
+        let has_operator_overload = (aggregate_receiver
+            || self.expr_is_transparent_newtype(object))
+            && overload_names.iter().any(|ty_name| {
+                let qualified = format!("{}_{}", ty_name, method);
+                self.func_sigs.contains_key(&qualified)
+                    || (receiver_is_generic
+                        && self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", qualified))))
+            });
         let skip_binop = skip_binop || has_operator_overload;
 
         // std.bits B1 on an integer receiver. These aren't operator methods —

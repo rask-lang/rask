@@ -490,6 +490,7 @@ impl Resolver {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 external_decls: HashMap::new(),
+                file_packages: HashMap::new(),
             })
         } else {
             Err(resolver.errors)
@@ -516,6 +517,7 @@ impl Resolver {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 external_decls: HashMap::new(),
+                file_packages: HashMap::new(),
             })
         } else {
             Err(resolver.errors)
@@ -580,6 +582,7 @@ impl Resolver {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 external_decls: HashMap::new(),
+                file_packages: HashMap::new(),
             })
         } else {
             Err(resolver.errors)
@@ -650,6 +653,16 @@ impl Resolver {
             resolver.package_bindings.insert(pkg.name.clone(), pkg.id);
         }
 
+        // Which package owns each file, for the checks that need to know who
+        // declared something (type.generics/XC1). The registry is the only
+        // place that knows, and it isn't around after the merge.
+        let mut file_packages: HashMap<u16, String> = HashMap::new();
+        for pkg in registry.packages() {
+            for file in &pkg.files {
+                file_packages.insert(file.file_id, pkg.name.clone());
+            }
+        }
+
         // Collect public symbols and type declarations from external packages
         let mut external_decls: HashMap<String, Vec<Decl>> = HashMap::new();
         for pkg in registry.packages() {
@@ -702,6 +715,7 @@ impl Resolver {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 external_decls,
+                file_packages,
             })
         } else {
             resolver.name_unlinked_scopes();

@@ -474,7 +474,9 @@ impl TypeChecker {
             } else {
                 super::TraitBoundContext::GenericBound
             };
-            return TypeError::TraitNotSatisfied { ty: ty_name, trait_name, context, span };
+            return TypeError::TraitNotSatisfied {
+                ty: ty_name, trait_name, context, missing: None, span,
+            };
         }
         let verb = if trait_name == "Encode" { "encoded" } else { "decoded" };
         let checker = crate::traits::TraitChecker::new(&self.types);

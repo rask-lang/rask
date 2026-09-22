@@ -1811,6 +1811,7 @@ impl TypeChecker {
                                 ty: ty_desc,
                                 trait_name: trait_name.clone(),
                                 context: super::TraitBoundContext::TraitObjectCast,
+                                missing: None,
                                 span: expr.span,
                             });
                         }

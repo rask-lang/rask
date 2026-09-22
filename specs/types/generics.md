@@ -272,40 +272,48 @@ Step 3 gives you a type that compiles; it does not give you liba's behavior. Not
 
 **Third-party contract-trait conformance [XC1]:**
 ```
-ERROR [type.generics/XC1]: `Hashable` for `Doc` can only be declared in `traitpkg`
+error[E0409]: only `traitpkg` can declare `Hashable` for `traitpkg.Doc`
    |
-4  |  extend traitpkg.Doc with Hashable {
-   |                           ^^^^^^^^ `Doc` belongs to `traitpkg`, this is `liba`
+4  |  public extend Doc with Hashable {
+   |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this block is in `liba`
+   |
+7  |  public struct Doc {
+   |  ----------------- `traitpkg.Doc` belongs to `traitpkg`
 
-WHY: Maps and Sets are built on one hash per type. A second one from
-     another package makes entries unfindable instead of erroring.
-     `Doc` already has the compiler's, and only `traitpkg` can replace it.
+FIX: put the behaviour you want on a type of your own:
+       type MyDoc = traitpkg.Doc
+       extend MyDoc with Hashable { … }
 
-FIX: Put the hash you want on a type of your own:
-
-  type MyDoc = traitpkg.Doc
-  extend MyDoc with Hashable { ... }
+WHY: `Hashable` is one answer per type — `Map`, `Set` and every sort built
+     on them assume `traitpkg.Doc` answers the same way everywhere. A second
+     answer from another package doesn't conflict loudly; it makes lookups
+     miss entries the container holds. Only `traitpkg` can change the one
+     `traitpkg.Doc` already has (type.generics/XC1).
 ```
 
 `Encode`/`Decode` are the same rule and a different sentence — there is no
 second encoding to conflict with, only someone else's `@no_encode` being
-overruled, so the message says that instead:
+overruled, so the message says that instead. It doesn't wait for the
+annotation: the rule is who decides, and a type with no annotation is one
+whose owner hasn't decided yet.
 
 ```
-ERROR [type.generics/XC1]: only `traitpkg` can make `Doc` encodable
+error[E0409]: only `traitpkg` can make `traitpkg.Secret` encodable
    |
-4  |  extend traitpkg.Doc with Encode {
-   |                           ^^^^^^ `traitpkg` marked `Doc` `@no_encode`
+4  |  public extend Secret with Encode {
+   |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this block is in `liba`
+   |
+5  |  public struct Secret {
+   |  -------------------- `traitpkg.Secret` belongs to `traitpkg`, which
+   |                       decides whether its data goes on a wire
 
-WHY: `Encode` has no methods — declaring it doesn't change how `Doc`
-     serializes, it changes *whether* it does. `traitpkg` said no about
-     its own type's data, and this would be `liba` saying yes for them.
+FIX: if you need these fields on a wire, carry them in a type `liba` owns:
+       struct SecretWire { … }
 
-FIX: If you need these fields on a wire, carry them in a type you own:
-
-  struct DocWire {
-      public n: i64
-  }
+WHY: `Encode` has no methods — declaring it doesn't change how
+     `traitpkg.Secret` serializes, it changes whether it does. That is the
+     declaring package's call, and a type its owner marked `@no_encode`
+     would be overruled from outside (type.generics/XC1).
 ```
 
 **Two conformances in scope [XC3]:**
@@ -331,6 +339,14 @@ FIX: Give the collision a type of its own, and say what it does:
      To keep one of the two implementations instead, move the code that
      needs it into a package that depends on `liba` or on `libb`, not both.
 ```
+
+That's the message XC3 asks for. What ships today reports the same collision
+at the *second declaration* whether the two blocks are in one package or two,
+and names neither package — the checker sees one merged program and hasn't
+been given the use site. So a cross-package collision nobody uses is rejected
+where the rule says it should cost nothing. Suppressing it instead would put
+back the silent pick this whole section exists to stop, so it stays until the
+use-site report lands (#1299).
 
 ## Conditional Conformance
 
@@ -563,9 +579,9 @@ func increment<T: Numeric>(val: T) -> T {
 | Recursive generics | G6 | `Vec<Vec<T>>` allowed; compiler prevents infinite expansion |
 | Trait visibility | TD1 | Package-visible by default, `public trait` exports — same rule as structs and functions (`struct.modules/V1`) |
 | Same method required by two traits | MN2/MN3 | Same signature: shared implementation. Different: `scoped` or error |
-| Third party declares `Hashable` or `Encode` for a foreign type | XC1 | Compile error at the `extend`, whatever the body. Wrap in a nominal type instead |
+| Third party declares `Hashable` or `Encode` for a foreign type | XC1 | Compile error (E0409) at the `extend`, whatever the body. Wrap in a nominal type instead |
 | Third party declares any other trait for a foreign type | XC2 | Legal, no wrapper needed |
-| Two packages declare the same (type, trait), nobody uses it | XC3 | Not an error — the check is where the conformance is required |
+| Two packages declare the same (type, trait), nobody uses it | XC3 | Not an error — the check is where the conformance is required. Today's compiler still reports it at the second declaration (#1299) |
 | One package declares the same (type, trait) twice | XC3 | Compile error at the second declaration |
 | A library and the program linking it see different conformances | XC4/XC5 | Each uses the one its own dependencies give it; the two instantiations are distinct |
 | Trait evolution | TD2 | Adding a required method with a default body is non-breaking; without one it breaks every conformer (major version) |

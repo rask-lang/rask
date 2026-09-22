@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import traitpkg.Doc
+
+// XC1 says `Hashable` for `Doc` belongs to `traitpkg`. This is the way out it
+// names: a nominal type of our own (type.aliases/T2, T13), which carries its
+// own conformance and shares the layout.
+public type Tagged = Doc
+
+public extend Tagged with Hashable {
+    public func hash(self) -> u64 {
+        return 42
+    }
+    public func eq(self, other: Tagged) -> bool {
+        return self.value.n == other.value.n
+    }
+}
+
+public func tag(d: Doc) -> Tagged {
+    return Tagged(d)
+}

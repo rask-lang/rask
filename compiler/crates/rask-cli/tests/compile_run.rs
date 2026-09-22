@@ -1333,8 +1333,11 @@ fn error_trait_bound_messages() {
         "nothing can implement a numeric trait, so that must not be the fix: {}", out,
     );
     // The other three keep their own advice, each naming what to do where.
+    // The conformance header names the method that is absent and the signature
+    // to write: "missing methods" on a block one method short is a hunt.
     for expected in [
-        "add the missing methods to the block",
+        "`Silent` has no `greet`, which `Greeter` requires",
+        "func greet(self) -> string",
         "pass a type that implements `Greeter`",
         "implement the trait before boxing",
     ] {

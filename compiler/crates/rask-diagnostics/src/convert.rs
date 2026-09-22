@@ -542,6 +542,51 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
             }
 
+            ForeignCoreConformance {
+                ty, trait_name, owner, here, encoding, span, declared_at,
+            } => {
+                let base = if *encoding {
+                    Diagnostic::error(format!("only `{}` can make `{}` {}", owner, ty,
+                        if trait_name.starts_with("Decode") { "decodable" } else { "encodable" }))
+                        .with_primary(*span, format!("this block is in `{}`", here))
+                        .with_secondary(*declared_at, format!(
+                            "`{}` belongs to `{}`, which decides whether its data goes on a wire",
+                            ty, owner))
+                        .with_why(format!(
+                            "`{}` has no methods — declaring it doesn't change how `{}` \
+                             serializes, it changes whether it does. That is the declaring \
+                             package's call, and a type its owner marked `@no_encode` would \
+                             be overruled from outside (type.generics/XC1).",
+                            trait_name, ty
+                        ))
+                        .with_fix(format!(
+                            "if you need these fields on a wire, carry them in a type `{}` owns:\n\
+                             struct {}Wire {{ … }}",
+                            here, ty
+                        ))
+                } else {
+                    Diagnostic::error(format!(
+                        "only `{}` can declare `{}` for `{}`", owner, trait_name, ty))
+                        .with_primary(*span, format!("this block is in `{}`", here))
+                        .with_secondary(*declared_at, format!("`{}` belongs to `{}`", ty, owner))
+                        .with_why(format!(
+                            "`{}` is one answer per type — `Map`, `Set` and every sort built \
+                             on them assume `{}` answers the same way everywhere. A second \
+                             answer from another package doesn't conflict loudly; it makes \
+                             lookups miss entries the container holds. Only `{}` can change \
+                             the one `{}` already has (type.generics/XC1).",
+                            trait_name, ty, owner, ty
+                        ))
+                        .with_fix(format!(
+                            "put the behaviour you want on a type of your own:\n\
+                             type My{} = {}\n\
+                             extend My{} with {} {{ … }}",
+                            ty, ty, ty, trait_name
+                        ))
+                };
+                base.with_code("E0409")
+            }
+
             Undefined(name) => Diagnostic::error(format!("undefined type: `{}`", name))
                 .with_code("E0309")
                 .with_primary(Span::new(0, 0), "type not found")
@@ -1848,12 +1893,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", trait_name))
             }
 
-            TraitNotSatisfied { ty, trait_name, context, span } => {
+            TraitNotSatisfied { ty, trait_name, context, missing, span } => {
                 use rask_types::TraitBoundContext as Ctx;
                 let d = Diagnostic::error(format!("`{}` does not implement `{}`", ty, trait_name))
                     .with_code("E0333")
-                    .with_primary(*span, match context {
-                        Ctx::NumericBound => format!("`{}` is not one of the types `{}` covers", ty, trait_name),
+                    .with_primary(*span, match (context, missing) {
+                        (Ctx::NumericBound, _) => format!("`{}` is not one of the types `{}` covers", ty, trait_name),
+                        // Name it. A trait can require more than the one method
+                        // its name suggests — `Hashable` needs `eq` too — and
+                        // "missing methods" sent the author back through a block
+                        // that was one method short.
+                        (_, Some((m, _))) => format!("`{}` has no `{}`, which `{}` requires", ty, m, trait_name),
                         _ => format!("`{}` is missing methods `{}` requires", ty, trait_name),
                     });
                 match context {
@@ -1872,10 +1922,17 @@ impl ToDiagnostic for rask_types::TypeError {
                         ))
                         .with_why("a type parameter's bound is a promise the body relies on, so it's checked against the type argument at the call [type.generics/G1]"),
                     Ctx::ConformanceHeader => d
-                        .with_fix(format!(
-                            "add the missing methods to the block, or drop `{}` from its header:\n    extend {} with {} {{ … }}",
-                            trait_name, ty, trait_name
-                        ))
+                        .with_fix(match missing {
+                            Some((m, sig)) => format!(
+                                "add it to the block, or drop `{}` from its header:\n    {}",
+                                trait_name,
+                                if sig.is_empty() { format!("func {}(…) {{ … }}", m) } else { sig.clone() }
+                            ),
+                            None => format!(
+                                "add the missing methods to the block, or drop `{}` from its header:\n    extend {} with {} {{ … }}",
+                                trait_name, ty, trait_name
+                            ),
+                        })
                         .with_why("the header is the claim and the block is the evidence — a conformance is only declared once the methods are there [type.generics/G1]"),
                     Ctx::TraitObjectCast => d
                         .with_fix(format!(
@@ -2788,19 +2845,21 @@ impl ToDiagnostic for rask_types::TraitError {
                 ty,
                 trait_name,
                 method,
+                signature,
                 span,
             } => Diagnostic::error(format!(
-                "missing method `{}` required by trait `{}`",
-                method, trait_name
+                "`{}` has no `{}`, which `{}` requires",
+                ty, method, trait_name
             ))
             .with_code("E0701")
-            .with_primary(*span, format!("method `{}` missing", method))
-            .with_help(format!(
-                "add `func {}(...)` in `extend {} : {}`",
-                method, ty, trait_name
+            .with_primary(*span, format!("`{}` is not in the block", method))
+            .with_fix(format!(
+                "add it:\n    extend {} with {} {{\n        {}\n    }}",
+                ty,
+                trait_name,
+                if signature.is_empty() { format!("func {}(…) {{ … }}", method) } else { signature.clone() }
             ))
-            .with_fix(format!("add `func {}(...)` in `extend {} : {}`", method, ty, trait_name))
-            .with_why("trait implementations must provide all required methods"),
+            .with_why("the header is the claim and the block is the evidence — a conformance is only declared once every method the trait names is there [type.generics/G1]"),
 
             SignatureMismatch {
                 method,

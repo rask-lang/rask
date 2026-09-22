@@ -106,6 +106,10 @@ pub struct TypeTable {
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
     pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<String>)>>,
+    /// XC1: where each type was declared. The span's file id says which package
+    /// wrote it, which is how a conformance block knows whether it owns the
+    /// type it's extending.
+    pub(super) declared_at: HashMap<TypeId, Span>,
 }
 
 impl TypeTable {
@@ -129,6 +133,7 @@ impl TypeTable {
             assoc_bindings: HashMap::new(),
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
+            declared_at: HashMap::new(),
         };
         table.register_builtins();
         table
@@ -550,6 +555,16 @@ impl TypeTable {
     }
 
     /// MN3: where a conformance was declared, if it was written in source.
+    /// XC1: remember where a type was declared.
+    pub fn record_declared_at(&mut self, type_id: TypeId, span: Span) {
+        self.declared_at.entry(type_id).or_insert(span);
+    }
+
+    /// The span of a type's declaration, if one was recorded.
+    pub fn declared_at(&self, type_id: TypeId) -> Option<Span> {
+        self.declared_at.get(&type_id).copied()
+    }
+
     pub fn conformance_span(&self, type_id: TypeId, trait_name: &str) -> Option<Span> {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name);
