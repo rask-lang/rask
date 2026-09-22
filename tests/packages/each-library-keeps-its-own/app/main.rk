@@ -12,6 +12,10 @@
 //
 // `two-foreign-conformances` is the other side — the program asking for the
 // conformance itself, where both are visible, which is E0410.
+//
+// The test block runs on both backends — the packages gate runs one through
+// `rask test --interp` too. Measured against an interpreter without the fix:
+// `assertion failed: "b:7" == "a:7"`.
 
 import traitpkg
 import liba
@@ -22,4 +26,10 @@ func main() {
     println(liba.describe(d))
     println(libb.describe(d))
     return
+}
+
+test "each library keeps its own conformance" {
+    let d = traitpkg.make_doc(7)
+    assert liba.describe(d) == "a:7"
+    assert libb.describe(d) == "b:7"
 }

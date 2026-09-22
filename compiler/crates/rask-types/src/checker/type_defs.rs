@@ -183,12 +183,23 @@ pub enum TypeDef {
 
 /// Method name without its type-parameter suffix: `convert<T>` → `convert`.
 /// XC5: the symbol a conformance method gets where more than one package
-/// declares it on the same type — `Doc_label` becomes `Doc_label_liba`.
+/// declares it on the same type — `Doc_label` becomes `Doc_label~liba`.
 ///
 /// One function so monomorphization, MIR and the checker can't drift: the name
 /// the call emits has to be the name the body is emitted under.
+///
+/// `~` because nothing else in a generated name uses it. `_` is how a
+/// dependency's declarations are qualified (`Doc` in `traitpkg` is
+/// `Doc_traitpkg`), so `Doc_label_liba` is also what a method named `label_liba`
+/// would produce; `$` is monomorphization's type-argument separator, so
+/// `Doc_label$liba` reads as an instantiation; `<`, `>`, `.`, `?` and `,` all
+/// appear in type spellings, and `@` means a symbol version to an ELF linker.
+/// A Rask identifier can't contain `~`, so nothing a program declares collides
+/// with it.
+pub const CONFORMANCE_SEP: char = '~';
+
 pub fn conformance_symbol(base: &str, package: &str) -> String {
-    format!("{}_{}", base, package)
+    format!("{}{}{}", base, CONFORMANCE_SEP, package)
 }
 
 pub(crate) fn method_base(name: &str) -> &str {

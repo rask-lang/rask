@@ -455,11 +455,16 @@ fn main() {
             }
             let p = Path::new(file);
             if interp {
-                if p.is_dir() {
-                    eprintln!("{}: --interp does not yet support directory mode", output::error_label());
-                    process::exit(1);
+                // A package directory checks as one program — `check_file`
+                // finds the `build.rk` and merges every package's declarations
+                // — so the interpreter takes the same decl list a single file
+                // gives it. A directory of loose files has no build.rk and no
+                // shared namespace, so each one still runs on its own.
+                if p.is_dir() && !p.join("build.rk").is_file() {
+                    commands::run::cmd_test_files_interp(file, filter, format);
+                } else {
+                    commands::run::cmd_test_interp(file, filter, format);
                 }
-                commands::run::cmd_test_interp(file, filter, format);
             } else if p.is_dir() {
                 // Directory with build.rk → single project (all files share types).
                 // Directory without build.rk → folder of standalone files; run each

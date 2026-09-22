@@ -377,6 +377,22 @@ fn forward_test_stderr(stderr: &[u8]) {
 /// Useful for cross-checking codegen-side regressions and for tests that
 /// don't yet compile natively.
 pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
+    if !run_test_file_interp(path, filter.as_deref(), format, true) {
+        process::exit(1);
+    }
+}
+
+/// Run one file's — or one package's — `test` blocks on the interpreter.
+///
+/// `require_tests` is the difference between a file named on the command line
+/// and one swept up from a directory: naming a file with no tests is a mistake,
+/// finding one in a folder is not.
+fn run_test_file_interp(
+    path: &str,
+    filter: Option<&str>,
+    format: Format,
+    require_tests: bool,
+) -> bool {
     let result = crate::run_check_or_exit(path, format);
 
     // Same as `cmd_run`: the program name is argv[0], so a test that reads
@@ -400,11 +416,11 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     }
 
     let all = rask_compiler::program_decls(&result.decls);
-    let test_results = interp.run_tests(&all, filter.as_deref());
+    let test_results = interp.run_tests(&all, filter);
 
     // Render in the same format as native (JSON-per-line, then summarize).
     let (mut json_lines, comptime_count) =
-        comptime_test_records(&result.decls, filter.as_deref());
+        comptime_test_records(&result.decls, filter);
     for r in &test_results {
         let escaped_name = json_escape(&r.name);
         let dur_ns = r.duration.as_nanos() as u64;
@@ -441,6 +457,9 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     // output, so an empty file has to fail on both or it stays green on the
     // strength of them agreeing about nothing.
     if test_results.is_empty() && comptime_count == 0 {
+        if !require_tests {
+            return true;
+        }
         if format == Format::Human {
             eprintln!(
                 "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
@@ -448,10 +467,53 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
                 path,
             );
         }
-        process::exit(1);
+        return false;
     }
 
-    if test_results.iter().any(|r| !r.passed && r.skipped.is_none()) {
+    !test_results.iter().any(|r| !r.passed && r.skipped.is_none())
+}
+
+/// A directory of loose `.rk` files, on the interpreter — the mirror of
+/// `cmd_test_files_native`.
+///
+/// Each file runs on its own because there is no `build.rk` binding them into a
+/// package, so two files are free to declare the same type name.
+pub fn cmd_test_files_interp(dir: &str, filter: Option<String>, format: Format) {
+    let dir_path = std::path::Path::new(dir);
+    let files = without_companion_modules(crate::collect_rk_files(dir_path));
+
+    if files.is_empty() {
+        if format == Format::Human {
+            println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(dir), "===".dimmed());
+            println!("  No .rk files found.");
+        }
+        return;
+    }
+
+    if format == Format::Human {
+        println!("{} Test suite: {} ({} files) {}\n",
+            "===".dimmed(), output::file_path(dir), files.len(), "===".dimmed());
+    }
+
+    let mut failed_files = 0;
+    for file in &files {
+        if !run_test_file_interp(file, filter.as_deref(), format, false) {
+            failed_files += 1;
+        }
+    }
+
+    if format == Format::Human && files.len() > 1 {
+        println!();
+        println!("{}", output::separator(50));
+        if failed_files == 0 {
+            println!("{} all {} files passed", output::status_pass(), files.len());
+        } else {
+            println!("{} {} of {} files failed",
+                output::status_fail(), failed_files, files.len());
+        }
+    }
+
+    if failed_files > 0 {
         process::exit(1);
     }
 }
