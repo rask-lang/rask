@@ -1,17 +1,27 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! Where lowering couldn't work out a type and guessed i64.
+//! Where lowering couldn't work out a type.
 //!
-//! A guess is only ever right for a payload that already fits a machine word.
-//! Every other shape — an f64 needing a float register, a 16-byte string, a
-//! struct reached by address — comes out silently wrong, which reads as a
-//! miscompile rather than a missing feature. Routing every guess through here
-//! makes them countable, and `RASK_STRICT_TYPES=1` makes them fatal so a sweep
-//! can tell which ones a real program actually reaches.
+//! It used to guess i64 and carry on. A guess is only ever right for a payload
+//! that already fits a machine word: an f64 needing a float register, a
+//! 16-byte string, a struct reached by address all come out silently wrong,
+//! which reads as a miscompile rather than a missing feature. So the sites
+//! were routed through here to be counted, then made fatal.
 //!
-//! Sites that no program reaches don't need a fallback at all; they should say
-//! plainly that the type is unknown. This module is how you find out which
-//! those are.
+//! Counting them answered the question the module was built to ask. Every
+//! example and every suite file — over 400 programs — reaches **none** of the
+//! 49 sites, measured with `RASK_ALLOW_TYPE_FALLBACK=1` so a hit is recorded
+//! instead of ending the compile. They guard shapes nothing currently writes.
+//!
+//! Which is why the entry point is called `unknown_type` and not
+//! `i64_fallback`. It does not stand in for a type; it says there isn't one
+//! and fails the enclosing function's lowering. The i64 it still hands back is
+//! only so the caller can finish walking the expression it is about to throw
+//! away.
+//!
+//! Nothing has to re-run that sweep to keep it true: a site that becomes
+//! reachable fails the build, so the differential harness goes red on the
+//! first program that reaches one.
 
 use crate::MirType;
 use std::cell::RefCell;
@@ -162,17 +172,17 @@ pub fn trace_coverage() -> bool {
     std::env::var_os("RASK_TRACE_TYPE_COVERAGE").is_some()
 }
 
-/// Record that a site could not resolve a type.
+/// There is no type here, and lowering can't invent one.
 ///
-/// This is fatal: the enclosing function's lowering fails and the compiler
-/// reports which site gave up. The i64 it still returns is only so the caller
-/// can finish walking the expression — nothing is emitted from it, because
-/// lowering is about to be thrown away.
+/// Fatal: the enclosing function's lowering fails and the compiler reports
+/// which site gave up. The i64 it returns is scaffolding for the rest of the
+/// walk, not an answer — nothing is emitted from it.
 ///
 /// `RASK_ALLOW_TYPE_FALLBACK=1` restores the old guess-and-continue behaviour.
-/// It exists for bisecting whether a given failure is *this* or something else,
-/// not as a way to ship a build.
-pub fn i64_fallback(site: &'static str) -> MirType {
+/// It exists for bisecting whether a given failure is *this* or something
+/// else, and for sweeping the corpus to see which sites anything reaches. Not
+/// a way to ship a build.
+pub fn unknown_type(site: &'static str) -> MirType {
     HITS.with(|h| *h.borrow_mut().entry(site).or_insert(0) += 1);
     if trace() {
         eprintln!("[type-fallback] {site} could not resolve a type");

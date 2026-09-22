@@ -140,6 +140,19 @@ pub fn map_ctor_for(key_ty: &MirType) -> &'static str {
     }
 }
 
+/// The same decision for `Map.with_capacity(n)`, which takes the capacity
+/// between the sizes and the tags but buckets by exactly the same rule.
+///
+/// Derived from `map_ctor_for` rather than repeating the match, so a fourth key
+/// kind is added in one place and this follows.
+pub fn map_ctor_with_capacity(key_ty: &MirType) -> &'static str {
+    match map_ctor_for(key_ty) {
+        "Map_new_string_keys" => "Map_with_capacity_string_keys",
+        "Map_new_link_keys" => "Map_with_capacity_link_keys",
+        _ => "Map_with_capacity",
+    }
+}
+
 /// The tag for `ty`, or `ELEM_NONE` if it owns no strings this can point at.
 ///
 /// An enum used to be `ELEM_NONE` — a flat list of offsets can't say where a
@@ -196,6 +209,9 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Vec_chunks", 0, 0, "Vec_free"),
     ("Map_new", 2, 2, "Map_free"),
     ("Map_new_string_keys", 2, 2, "Map_free"),
+    ("Map_with_capacity", 3, 2, "Map_free"),
+    ("Map_with_capacity_string_keys", 3, 2, "Map_free"),
+    ("Map_with_capacity_link_keys", 3, 2, "Map_free"),
     ("Map_new_link_keys", 2, 2, "Map_free"),
     // `keys`, `values` and `entries` walk a map and hand back a fresh Vec of
     // what they found — a `Map_` name with a `Vec` result, which is why the

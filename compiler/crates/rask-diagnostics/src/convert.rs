@@ -3620,6 +3620,28 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("resource types must be consumed exactly once — a closure/spawn that captures a resource takes ownership and must consume it")
             }
 
+            ConsumeBorrowedCapture { name, closure_at } => {
+                Diagnostic::error(format!(
+                    "cannot consume `{}` — the closure borrowed it",
+                    name
+                ))
+                .with_code("E0891")
+                .with_primary(self.span, format!("this consumes `{}`", name))
+                .with_secondary(*closure_at, format!("this closure captured `{}` by borrow", name))
+                .with_help(format!(
+                    "write `own || …` so the closure takes `{}`, or consume `{}` \
+                     outside the closure",
+                    name, name
+                ))
+                .with_fix("own ||".to_string())
+                .with_why(
+                    "a plain closure borrows what it captures, and a borrow is not \
+                     yours to give away. Nothing says how many times a closure runs \
+                     either, so one `close()` in the body can be any number of \
+                     closes at runtime [mem.closures, mem.linear/L2, L3]",
+                )
+            }
+
             EnsureMaybeConsumed { name, ensure_at, consumed_at } => {
                 Diagnostic::error(format!(
                     "consumption of `{}` depends on which path ran",

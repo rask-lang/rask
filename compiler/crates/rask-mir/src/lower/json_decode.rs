@@ -68,7 +68,7 @@ impl<'a> MirLowerer<'a> {
                 .ctx
                 .find_enum("JsonError")
                 .map(|(idx, l)| MirType::Enum(EnumLayoutId::new(idx, l.size, l.align)))
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/json_decode:68"));
+                .unwrap_or_else(|| crate::fallback::unknown_type("lower/json_decode:68"));
             let result_ty = MirType::Result {
                 ok: Box::new(payload_mir),
                 err: Box::new(err_ty),
@@ -138,7 +138,7 @@ impl<'a> MirLowerer<'a> {
             .ctx
             .find_enum("JsonError")
             .map(|(idx, l)| MirType::Enum(EnumLayoutId::new(idx, l.size, l.align)))
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/json_decode:136"));
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/json_decode:136"));
         let result_ty = MirType::Result {
             ok: Box::new(payload_mir),
             err: Box::new(err_ty.clone()),

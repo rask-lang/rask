@@ -182,6 +182,18 @@ def commit(t, name):
     return "    ensure drop(%s)\n" % name if TYPES[t].get("linear") else ""
 
 
+def owning(t):
+    """`own ` on a closure that gives its capture away, nothing for the rest.
+
+    A plain closure borrows what it captures, and a borrow is not the
+    closure's to hand out (mem.closures, mem.linear/L3, E0885). Nothing says
+    how many times a closure runs, so a borrowing closure that returns its
+    captured `Heap` would hand the same box to two callers. `own` moves the
+    box in, which is the correct Rask for this cell — the carrier emits it and
+    moves on, the same way `commit` emits the `ensure`."""
+    return "own " if TYPES[t].get("linear") else ""
+
+
 def take(t):
     """`take ` for a linear payload's parameter, nothing for the rest.
 
@@ -317,12 +329,12 @@ def c_tuple(t, ty):
 def c_closure_capture(t, ty):
     return "", """\
     let x: {decl} = {val}
-    let f = || {{
+    let f = {own}|| {{
         return x
     }}
     let y = f()
 {commit}    println("got={show}")
-""".format(decl=ty["decl"], val=ty["val"], commit=commit(t, "y"),
+""".format(decl=ty["decl"], val=ty["val"], own=owning(t), commit=commit(t, "y"),
            show=read_expr(t, "y"))
 
 

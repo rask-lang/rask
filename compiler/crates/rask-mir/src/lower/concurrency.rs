@@ -280,7 +280,7 @@ impl<'a> MirLowerer<'a> {
         // acquire hands back; anything word-sized is loaded into the local
         // (codegen does the load), which is why it needs writing back.
         let inner_type_name = self.resolve_shared_inner_type_name(object);
-        let mut guard_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::i64_fallback("lower/concurrency:278"));
+        let mut guard_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::unknown_type("lower/concurrency:278"));
         if let Some(ref type_name) = inner_type_name {
             if let Some((layout_idx, sl)) = self.ctx.find_struct(type_name) {
                 guard_ty = MirType::Struct(StructLayoutId::new(layout_idx, sl.size, sl.align));

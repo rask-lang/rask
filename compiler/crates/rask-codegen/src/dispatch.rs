@@ -840,6 +840,27 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
         },
+        StdlibEntry {
+            mir_name: "Map_with_capacity_link_keys", c_name: "rask_map_new_link_keys_cap",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
+        },
+        // Map.with_capacity(n): (key_size, val_size, cap) — the two sizes
+        // injected at lowering, the same as `Map_new`, with `cap` kept after
+        // them the way `Vec_with_capacity` keeps its own.
+        StdlibEntry {
+            mir_name: "Map_with_capacity", c_name: "rask_map_new_cap",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Map_with_capacity_string_keys", c_name: "rask_map_new_string_keys_cap",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Map_from", "rask_map_clone", &[types::I64], Some(types::I64), false),
         // `insert` answers `V?` — the value it displaced. The C side hands
         // back a pointer to it (NULL for a fresh key), so DerefOption builds
@@ -1797,6 +1818,7 @@ pub fn panicking_functions() -> HashSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     /// Every float method the checker accepts and MIR lowers to a call has to
     /// be callable natively. This is the test that would have caught #687:
@@ -1882,88 +1904,101 @@ mod tests {
         );
     }
 
+    /// Why a `@native` declaration has no dispatch row.
+    ///
     /// `@native` with no symbol derives its name, and those are the ones that
-    /// go missing quietly. Each either has a dispatch row or is on this list.
-    ///
-    /// The list is a snapshot of the gap as it stands, and it may only shrink.
-    /// Two kinds of entry are mixed in it deliberately, because from here they
-    /// look the same and only trying one tells them apart:
-    ///
-    ///   - lowered somewhere bespoke: `Vec.fold` and friends are fused into an
-    ///     iterator chain, `reflect.*` is resolved at comptime, `math.*` goes to
-    ///     libm. These are fine and will stay listed.
-    ///   - no entry point at all, which is a bug: the call type-checks, runs on
-    ///     the interpreter, and dies at codegen with "Function not found". The
-    ///     list is where those stop being invisible. `Command.*` and `Timer.*`
-    ///     were the first two families confirmed that way (#1066); `Command` is
-    ///     implemented now and `Timer` says `@unimplemented`, so both are off.
-    ///
-    /// The test fails both ways. An unlisted name with no row is a new gap; a
-    /// listed name that has since gained a row is stale and must come off.
-    const NATIVE_WITHOUT_A_DISPATCH_ROW: &[&str] = &[
-    "FieldInfo.get",
-    "FieldInfo.has",
-    "Map.modify",
-    "Map.modify_with_default",
-    "Map.read",
-    "Map.with_capacity",
-    "TaskGroup.join_all",
-    "TaskGroup.new",
-    "Vec.all",
-    "Vec.any",
-    "Vec.find",
-    "Vec.fold",
-    "Vec.max",
-    "Vec.min",
-    "Vec.modify",
-    "Vec.position",
-    "Vec.read",
-    "Vec.reduce",
-    "Vec.sort_by_key",
-    "Vec.sum",
-    "Vec.zip",
-    "Wide.map",
-    "Wide.max",
-    "Wide.min",
-    "Wide.reduce",
-    "Wide.zip_with",
-    "json.encode_pretty",
-    "math.acos",
-    "math.asin",
-    "math.atan",
-    "math.atan2",
-    "math.cos",
-    "math.exp",
-    "math.hypot",
-    "math.ln",
-    "math.log10",
-    "math.log2",
-    "math.sin",
-    "math.tan",
-    "math.to_degrees",
-    "math.to_radians",
-    "os.signals",
-    "reflect.align_of",
-    "reflect.fields",
-    "reflect.is_copy",
-    "reflect.is_enum",
-    "reflect.is_flat",
-    "reflect.is_float",
-    "reflect.is_integer",
-    "reflect.is_map",
-    "reflect.is_optional",
-    "reflect.is_resource",
-    "reflect.is_struct",
-    "reflect.is_vec",
-    "reflect.name_of",
-    "reflect.size_of",
+    /// go missing quietly. Each either has a dispatch row or is classified
+    /// here. The classification used to be a bare list of names, with a
+    /// comment saying it mixed two kinds "and only trying one tells them
+    /// apart". Trying all 65 said: 46 are fine and 19 are gaps, which is not a
+    /// distinction a reader should have to rediscover. So the list records
+    /// which, and the evidence.
+    enum NoRow {
+        /// Lowered somewhere other than a call — fused into an iterator chain,
+        /// resolved at comptime, sent to libm. Correct, and it stays. The
+        /// string names the `tests/suite/t_native_reach_*.rk` file that runs
+        /// it on both backends, because "it's lowered elsewhere" is a claim
+        /// and a claim needs a program behind it.
+        LoweredElsewhere(&'static str),
+        /// No entry point at all: the call type-checks, runs on the
+        /// interpreter, and dies at codegen with "Function not found". The
+        /// string is the tracking issue.
+        NoEntryPoint(&'static str),
+    }
+    use NoRow::{LoweredElsewhere as Ok_, NoEntryPoint as Gap};
+
+    /// The list may only shrink. The test fails both ways: an unlisted name
+    /// with no row is a new gap, and a listed name that has since gained a row
+    /// is stale and must come off — that is how `Command.*` and `Map.
+    /// with_capacity` left it.
+    const NATIVE_WITHOUT_A_DISPATCH_ROW: &[(&str, NoRow)] = &[
+    ("FieldInfo.get",             Ok_("t_native_reach_reflect")),
+    ("FieldInfo.has",             Ok_("t_native_reach_reflect")),
+    ("Map.modify",                Ok_("t_native_reach_map_math_json")),
+    ("Map.modify_with_default",   Ok_("t_native_reach_map_math_json")),
+    ("Map.read",                  Ok_("t_native_reach_map_math_json")),
+    ("TaskGroup.join_all",        Gap("#1288")),
+    ("TaskGroup.new",             Gap("#1288")),
+    ("Vec.all",                   Ok_("t_native_reach_vec")),
+    ("Vec.any",                   Ok_("t_native_reach_vec")),
+    ("Vec.find",                  Ok_("t_native_reach_vec")),
+    ("Vec.fold",                  Ok_("t_native_reach_vec")),
+    ("Vec.max",                   Ok_("t_native_reach_vec")),
+    ("Vec.min",                   Ok_("t_native_reach_vec")),
+    ("Vec.modify",                Ok_("t_native_reach_vec")),
+    ("Vec.position",              Ok_("t_native_reach_vec")),
+    ("Vec.read",                  Ok_("t_native_reach_vec")),
+    ("Vec.reduce",                Ok_("t_native_reach_vec")),
+    ("Vec.sort_by_key",           Ok_("t_native_reach_vec")),
+    ("Vec.sum",                   Ok_("t_native_reach_vec")),
+    ("Vec.zip",                   Ok_("t_native_reach_vec")),
+    ("Wide.map",                  Gap("#1287")),
+    ("Wide.max",                  Gap("#1287")),
+    ("Wide.min",                  Gap("#1287")),
+    ("Wide.reduce",               Gap("#1287")),
+    ("Wide.zip_with",             Gap("#1287")),
+    ("json.encode_pretty",        Ok_("t_native_reach_map_math_json")),
+    ("math.acos",                 Ok_("t_native_reach_map_math_json")),
+    ("math.asin",                 Ok_("t_native_reach_map_math_json")),
+    ("math.atan",                 Ok_("t_native_reach_map_math_json")),
+    ("math.atan2",                Ok_("t_native_reach_map_math_json")),
+    ("math.cos",                  Ok_("t_native_reach_map_math_json")),
+    ("math.exp",                  Ok_("t_native_reach_map_math_json")),
+    ("math.hypot",                Ok_("t_native_reach_map_math_json")),
+    ("math.ln",                   Ok_("t_native_reach_map_math_json")),
+    ("math.log10",                Ok_("t_native_reach_map_math_json")),
+    ("math.log2",                 Ok_("t_native_reach_map_math_json")),
+    ("math.sin",                  Ok_("t_native_reach_map_math_json")),
+    ("math.tan",                  Ok_("t_native_reach_map_math_json")),
+    ("math.to_degrees",           Ok_("t_native_reach_map_math_json")),
+    ("math.to_radians",           Ok_("t_native_reach_map_math_json")),
+    ("os.signals",                Gap("#1289")),
+    // `size_of`, `align_of` and `is_copy` refuse on BOTH backends with the
+    // same message — the compiler has two size models that disagree (#791) —
+    // so there is no probe. Agreeing to refuse is not a divergence, and the
+    // one thing that would be wrong here is calling them reachable.
+    ("reflect.align_of",          Gap("#791")),
+    ("reflect.is_copy",           Gap("#791")),
+    ("reflect.size_of",           Gap("#791")),
+    ("reflect.fields",            Ok_("t_native_reach_reflect")),
+    ("reflect.is_enum",           Ok_("t_native_reach_reflect")),
+    ("reflect.is_flat",           Ok_("t_native_reach_reflect")),
+    ("reflect.is_float",          Ok_("t_native_reach_reflect")),
+    ("reflect.is_integer",        Ok_("t_native_reach_reflect")),
+    ("reflect.is_map",            Ok_("t_native_reach_reflect")),
+    ("reflect.is_optional",       Ok_("t_native_reach_reflect")),
+    ("reflect.is_resource",       Ok_("t_native_reach_reflect")),
+    ("reflect.is_struct",         Ok_("t_native_reach_reflect")),
+    ("reflect.is_vec",            Ok_("t_native_reach_reflect")),
+    ("reflect.name_of",           Ok_("t_native_reach_reflect")),
     ];
 
     #[test]
     fn derived_native_names_are_listed_or_dispatched() {
         let dispatched: HashSet<&str> =
             stdlib_entries().iter().map(|e| e.mir_name).collect();
-        let listed: HashSet<&str> = NATIVE_WITHOUT_A_DISPATCH_ROW.iter().copied().collect();
+        let listed: HashSet<&str> =
+            NATIVE_WITHOUT_A_DISPATCH_ROW.iter().map(|(k, _)| *k).collect();
 
         let reg = rask_stdlib::StubRegistry::load();
         let mut unlisted: Vec<String> = Vec::new();
@@ -1987,16 +2022,20 @@ mod tests {
         unlisted.sort();
         assert!(
             unlisted.is_empty(),
-            "{} `@native` declarations have no dispatch row and aren't listed. If the \
-             call is lowered somewhere bespoke, add it to \
-             NATIVE_WITHOUT_A_DISPATCH_ROW; otherwise it needs an entry point:\n  {}",
+            "{} `@native` declarations have no dispatch row and aren't listed. Try \
+             one — write a program that calls it and run it on both backends. \
+             If it answers, it is lowered somewhere bespoke: add it as \
+             `LoweredElsewhere` naming the suite file that proves it. If it \
+             dies with \"Function not found\", it is a gap: open an issue, add \
+             it as `NoEntryPoint`, and register the probe in \
+             tests/known_divergences.txt:\n  {}",
             unlisted.len(),
             unlisted.join("\n  ")
         );
 
         let mut stale: Vec<&str> = NATIVE_WITHOUT_A_DISPATCH_ROW
             .iter()
-            .copied()
+            .map(|(k, _)| *k)
             .filter(|k| !seen.contains(*k))
             .collect();
         stale.sort();
@@ -2007,6 +2046,59 @@ mod tests {
              them; the list only shrinks:\n  {}",
             stale.len(),
             stale.join("\n  ")
+        );
+    }
+
+    /// Every classification has to cash out: a `LoweredElsewhere` names a
+    /// suite file that exists and runs the call on both backends, and a
+    /// `NoEntryPoint` names an issue. Without this, "lowered elsewhere" is a
+    /// guess anyone can write down, which is what the old flat list was.
+    #[test]
+    fn every_classification_carries_its_evidence() {
+        let suite = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../tests/suite");
+        let mut bad: Vec<String> = Vec::new();
+        for (name, why) in NATIVE_WITHOUT_A_DISPATCH_ROW {
+            match why {
+                NoRow::LoweredElsewhere(probe) => {
+                    let f = suite.join(format!("{probe}.rk"));
+                    if !f.exists() {
+                        bad.push(format!("{name}: no probe at tests/suite/{probe}.rk"));
+                        continue;
+                    }
+                    // The probe has to actually call it. A file that names the
+                    // family in a comment and never runs the method proves
+                    // nothing, and that is the easy mistake to make here.
+                    let method = name.rsplit('.').next().unwrap_or(name);
+                    let body = std::fs::read_to_string(&f).unwrap_or_default();
+                    let calls: Vec<&str> = body
+                        .lines()
+                        .filter(|l| !l.trim_start().starts_with("//"))
+                        .collect();
+                    // `.m(` or `.m<` — a generic call writes its type
+                    // arguments first, as `reflect.is_vec<Row>()` does.
+                    let body = calls.join("\n");
+                    if !body.contains(&format!(".{method}("))
+                        && !body.contains(&format!(".{method}<"))
+                    {
+                        bad.push(format!(
+                            "{name}: tests/suite/{probe}.rk never calls `.{method}`"
+                        ));
+                    }
+                }
+                NoRow::NoEntryPoint(issue) => {
+                    if !issue.starts_with('#') || issue[1..].parse::<u32>().is_err() {
+                        bad.push(format!("{name}: `{issue}` is not an issue number"));
+                    }
+                }
+            }
+        }
+        bad.sort();
+        assert!(
+            bad.is_empty(),
+            "{} entries don't carry their evidence:\n  {}",
+            bad.len(),
+            bad.join("\n  ")
         );
     }
 }

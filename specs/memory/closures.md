@@ -279,10 +279,24 @@ FIX: Use Shared<T> for shared mutable state:
 | `own` closure captures Copy type | Value copied (same as non-own) |
 | `own` closure captures move-only type | Type moved into closure, source invalid |
 | `own` closure captures resource type | Resource consumed by closure; must be used within or returned |
-| Non-`own` closure captures resource type | Resource borrowed; can't escape scope |
+| Non-`own` closure captures resource type | Resource borrowed; consuming it in the body is an error (E0891) |
 | Nested closures | Each level borrows/moves from its immediate outer scope |
 | Pure closure (no captures) | Self-contained either way; `own` is redundant but allowed |
 | Mutable capture of a Copy type | Borrows mutably (not copied), mutations visible to caller |
+
+The resource rows are the same rule as `mem.linear/L3` — a borrow isn't a
+consumption — and there is a second reason for them here: nothing says how many
+times a closure runs. A `close()` in the body of a plain closure is one
+consumption to read and any number at runtime, so it has to be `own`, which
+moves the resource in and leaves the outer binding with nothing to owe.
+
+```rask
+func twice(f: func()) { f() f() }
+
+let c = Conn.open(1)
+twice(|| { c.close() })         // error[E0891] — the closure borrowed `c`
+twice(own || { c.close() })     // fine: `c` is the closure's now
+```
 
 ---
 

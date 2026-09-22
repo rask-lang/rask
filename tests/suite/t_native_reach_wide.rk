@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Wide<T>` — the data-parallel staging plan — runs on the interpreter and
+// has no native entry point for anything but `sum`.
+//
+// `v.wide()` and `.sum()` both lower fine; the five methods that make the
+// plan worth staging do not:
+//
+//     error: codegen 'main': Function not found: Wide_map
+//
+// Same sweep as the other t_native_reach_* files: these are entries from
+// `NATIVE_WITHOUT_A_DISPATCH_ROW` in rask-codegen/src/dispatch.rs that turned
+// out to have no implementation rather than a bespoke lowering.
+
+test "wide map and zip_with" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    let u: Vec<i64> = [10, 20, 30, 40]
+    assert(v.wide().map(|x| { return x * 2 }).sum() == 20)
+    assert(v.wide().zip_with(u.wide(), |a, b| { return a + b }).sum() == 110)
+}
+
+test "wide min, max and reduce" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    assert(v.wide().min() == 1)
+    assert(v.wide().max() == 4)
+    assert(v.wide().reduce(0, |a, b| { return a + b }) == 10)
+}
+
+test "wide sum is the one that lowers" {
+    let v: Vec<i64> = [1, 2, 3, 4]
+    assert(v.wide().sum() == 10)
+}

@@ -481,7 +481,7 @@ impl<'a> MirLowerer<'a> {
         let (obj_op, obj_ty) = self.lower_expr(object)?;
         let value_ty = self
             .collection_elem_of_expr(object)
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:map_entry_modify"));
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:map_entry_modify"));
 
         let map = self.builder.alloc_temp(obj_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -600,7 +600,7 @@ impl<'a> MirLowerer<'a> {
         let (obj_op, obj_ty) = self.lower_expr(object)?;
         let value_ty = self
             .collection_elem_of_expr(object)
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:map_value_closure"));
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:map_value_closure"));
 
         let map = self.builder.alloc_temp(obj_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -714,7 +714,7 @@ impl<'a> MirLowerer<'a> {
         }
         let elem_ty = self
             .collection_elem_of_expr(object)
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:element_closure"));
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:element_closure"));
 
         let collection = self.builder.alloc_temp(obj_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -1083,7 +1083,7 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(body_block);
         let elem_ty = self.extract_iterator_elem_type(chain.source)
             .or_else(|| self.collection_elem_of_expr(chain.source))
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:chain_elem"));
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:chain_elem"));
         let elem_local = self.builder.alloc_temp(elem_ty.clone());
         if is_array {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -2060,7 +2060,7 @@ impl<'a> MirLowerer<'a> {
         let sub_elem_ty = Self::closure_return_exprs(closure)
             .into_iter()
             .find_map(|e| self.collection_elem_of_expr(e))
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:flat_map_elem"));
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:flat_map_elem"));
 
         let result_vec = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -2173,7 +2173,7 @@ impl<'a> MirLowerer<'a> {
         other: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
         let other_elem_ty = self.collection_elem_of_expr(other)
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:zip_elem"));
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:zip_elem"));
 
         let (other_op, other_ty) = self.lower_expr(other)?;
         let other_vec = self.builder.alloc_temp(other_ty);
@@ -2507,7 +2507,7 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Use(obj_op),
         }));
         let elem_ty = self.collection_elem_of_expr(object)
-            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/iterators:sort_by_key_elem"));
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:sort_by_key_elem"));
 
         let n = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {

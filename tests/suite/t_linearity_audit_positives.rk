@@ -266,3 +266,65 @@ test "conc.async/CH1 — and one carrying something ordinary" {
         assert t.seat == 7
     }
 }
+
+// --- a resource across a task boundary ---
+//
+// The last two cells of the #882 grid: a resource handed to a spawned task,
+// and the same with the task panicking. Both have to run the cleanup exactly
+// once and leave nobody owing it.
+//
+// `own` is what makes it writable at all. A plain closure borrows its
+// captures, so consuming one inside the body is E0891 — which is the whole
+// point of that rejection: nothing bounds how many times a closure runs.
+//
+// The interpreter used to report a leak here for a program that ran
+// correctly. A task runs on its own interpreter with its own resource
+// tracker, so the parent went on owing what the task had already closed,
+// while native — with no tracker — printed nothing. Six call sites build a
+// task's interpreter and the handover now lives in the one function they
+// share.
+
+@resource
+struct Latch {
+    public id: i32
+}
+
+extend Latch {
+    public func release(take self) -> i32 {
+        println("released {self.id}")
+        return self.id
+    }
+}
+
+test "a task consumes the resource it was given" {
+    using Multitasking {
+        let latch = Latch { id: 3 }
+        let task = spawn(own || {
+            return latch.release()
+        })
+        let got = task.join() catch _ => {
+            assert false
+            return
+        }
+        assert got == 3
+    }
+}
+
+test "and does so while unwinding" {
+    using Multitasking {
+        let latch = Latch { id: 5 }
+        let task = spawn(own || {
+            ensure latch.release()
+            panic("the task dies here")
+        })
+        // The task died, so the join answers with the failure — and
+        // `released 5` above it says the `ensure` ran on the way out, which
+        // is L4 under a panic. Both backends print the same two lines; a
+        // missed cleanup shows up as a missing line rather than as a state
+        // only one backend tracks.
+        let outcome = task.join() catch _ => {
+            return
+        }
+        assert false
+    }
+}
