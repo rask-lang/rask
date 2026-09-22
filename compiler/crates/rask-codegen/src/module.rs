@@ -132,8 +132,14 @@ impl CodeGenerator {
     }
 
     /// Create a code generator targeting a specific platform (XT2).
-    pub fn new_with_target(triple: &str, build_mode: BuildMode) -> CodegenResult<Self> {
+    ///
+    /// `name` is a Rask target name or a full triple; `crate::targets` turns
+    /// one into the other. Going straight to `Triple::from_str` is what made
+    /// `aarch64-macos` an ELF object — the parse is lenient and defaults every
+    /// field the name doesn't spell (#1185).
+    pub fn new_with_target(name: &str, build_mode: BuildMode) -> CodegenResult<Self> {
         use std::str::FromStr;
+        let triple = crate::targets::codegen_triple(name).map_err(CodegenError::UnknownTarget)?;
         let target = target_lexicon::Triple::from_str(triple)
             .map_err(|e| CodegenError::CraneliftError(format!("invalid target '{}': {}", triple, e)))?;
 
@@ -2147,6 +2153,28 @@ impl CodeGenerator {
     /// Emit the final object file. Consumes self because finish() takes ownership.
     pub fn emit_object(self, path: &str) -> CodegenResult<()> {
         let mut product = self.module.finish();
+
+        // Mach-O objects say which platform they were built for, in an
+        // LC_BUILD_VERSION load command. Ours carried none, so ld64 guessed on
+        // every single macOS compile:
+        //
+        //   ld: warning: no platform load command found in 'rask_hello.o',
+        //       assuming: macOS
+        //
+        // It guessed right, and a warning on every build is still a warning on
+        // every build. arm64 macOS starts at 11.0; x86_64 goes back further,
+        // and picking 11.0 there would refuse to run on a Mac that works.
+        if product.object.format() == object::BinaryFormat::MachO {
+            let minos = match product.object.architecture() {
+                object::Architecture::Aarch64 => 11 << 16, // 11.0.0
+                _ => (10 << 16) | (12 << 8),               // 10.12.0
+            };
+            let mut version = object::write::MachOBuildVersion::default();
+            version.platform = object::macho::PLATFORM_MACOS;
+            version.minos = minos;
+            version.sdk = minos;
+            product.object.set_macho_build_version(version);
+        }
 
         // Emit DWARF debug info in debug builds
         if self.build_mode == BuildMode::Debug {

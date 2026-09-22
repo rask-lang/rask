@@ -517,6 +517,12 @@ Format: `<arch>-<os>` or `<arch>-<os>-<env>`
 
 **Tier 3 (community):** `riscv64-linux`, `x86_64-freebsd`, `arm-none`
 
+These short names are Rask's own spelling. Each maps to a full triple before
+codegen sees it (`aarch64-macos` → `aarch64-apple-darwin`), and a name that
+doesn't map is an error. Handing the short name to the target parser directly
+is lenient in the worst way: it reads the architecture and defaults the rest,
+so `aarch64-macos` produced an ELF object with nothing said about it.
+
 ## Watch Mode
 
 | Rule | Description |

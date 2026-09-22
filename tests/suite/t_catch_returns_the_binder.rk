@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `catch e => return e` (#1255).
+//
+// `try r` is `r catch e => return e` plus widening, so that spelling has to
+// compile — it's what `try` *is*, and the book's error chapter teaches the
+// primitive before the sugar. It didn't:
+//
+//     let n = text.parse<i64>() catch e => { return e }
+//     error[E0308]: expected `i64`, found `ParseError`
+//         = fix: change this to type `i64`
+//
+// Advice the author can't take: there is no `i64` to change a `ParseError`
+// into.
+//
+// The return site picks a branch by comparing the returned value's type against
+// the two sides of `T or E`. The stdlib's own signatures carry their error type
+// as an unresolved name — `UnresolvedNamed("ParseError")` — while the
+// function's declared return carries the resolved one, `Named(TypeId(17))`.
+// Two spellings of one type, and `==` on them says they differ, so the error
+// was sent to the *success* branch. Both sides go through the name table before
+// they're compared now.
+//
+// The same code against a user function was always fine, which is what made it
+// look like a `catch` bug rather than a name-resolution one.
+
+import string.ParseError
+
+func doubled(text: string) -> i64 or ParseError {
+    let n = text.parse<i64>() catch e => { return e }
+    return n * 2
+}
+
+// The bare form, no block.
+func tripled(text: string) -> i64 or ParseError {
+    let n = text.parse<i64>() catch e => return e
+    return n * 3
+}
+
+// What it's equivalent to.
+func doubled_with_try(text: string) -> i64 or ParseError {
+    let n = try text.parse<i64>()
+    return n * 2
+}
+
+test "returning the catch binder propagates the error" {
+    let ok = doubled("21") catch _ => { assert false; return }
+    assert ok == 42
+    let three = tripled("3") catch _ => { assert false; return }
+    assert three == 9
+}
+
+test "and the error still comes out as an error" {
+    mut caught = false
+    let _ = doubled("nope") catch _ => {
+        caught = true
+        0
+    }
+    assert caught
+}
+
+test "the sugar agrees with the primitive" {
+    let a = doubled("10") catch _ => { assert false; return }
+    let b = doubled_with_try("10") catch _ => { assert false; return }
+    assert a == b
+}

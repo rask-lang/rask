@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `[a, b]` takes its shape from the slot it fills — std.collections/C4 (#1233).
+//
+// That worked for an annotated `let` and for a plain function parameter, and
+// nowhere else. Two positions that should say `Vec<i64>` didn't reach the
+// literal, so it typed itself from its own elements and the call was a type
+// error:
+//
+//     vv.push([7, 42])            // expected `Vec<i64>`, found `[i32; 2]`
+//     let o: Vec<i64>? = [7, 42]  // same
+//
+// Two different layers. An optional slot never peeled — what the literal is
+// being asked for is the `Vec<i64>` inside, and the layer it skips is added
+// back by the ordinary optional widening at the binding. And a method's
+// parameter isn't known where the argument is typed, because a method resolves
+// through a deferred constraint that runs later; what *is* known there is the
+// receiver, and a `Vec<C>` deals in exactly one collection.
+//
+// `Vec.from([7, 42])` was the workaround in both, which is what
+// `tests/matrix/gen.py` uses so its cells measure their carriers instead of
+// this.
+//
+// The `Vec<i64>?` case leaks — a vector held in an optional is freed by nobody
+// (#1305). That predates this: the `Vec.from` spelling leaks identically.
+
+func takes(v: Vec<i64>) -> i64 {
+    return v[1]
+}
+
+test "an annotated let, which always worked" {
+    let ok: Vec<i64> = [7, 42]
+    assert ok[1] == 42
+}
+
+test "a plain parameter, which always worked" {
+    assert takes([7, 42]) == 42
+}
+
+test "a method's parameter on a nested Vec" {
+    mut vv: Vec<Vec<i64>> = Vec.new()
+    vv.push([7, 42])
+    assert vv[0][1] == 42
+    assert vv.len() == 1
+}
+
+test "an optional slot" {
+    let o: Vec<i64>? = [7, 42]
+    mut n = 0
+    if o? as inner {
+        n = inner[1]
+    }
+    assert n == 42
+}
+
+// A `Vec<i64>` receiver deals in `i64`, not in collections, so an array literal
+// argument there says nothing and the element types stay what they were.
+test "a flat Vec is unaffected" {
+    mut v: Vec<i64> = [1, 2]
+    v.push(3)
+    assert v.len() == 3
+    assert v[2] == 3
+}

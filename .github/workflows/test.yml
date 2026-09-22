@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 # Seven jobs that all start at once. Five of them run the gates that need a rask
-# binary, one runs cargo test, one compiles the C runtime on Darwin.
+# binary, one runs cargo test, one builds and runs on Darwin.
 #
 # The shape is "everything in parallel, nothing waits". No job needs another, so
 # the run takes as long as its slowest job and no longer. Each gate job builds
@@ -283,6 +283,15 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/examples_gate.sh
 
+    # The suite's spawning files against the runtime set macOS links — no
+    # green scheduler, tasks on OS threads. On an ubuntu runner, because that
+    # configuration was never built anywhere but a Mac: `spawn` failed to link
+    # there for two releases and a person compiling on their own machine is
+    # what found it (#1180).
+    - name: No-green gate (the source set macOS links)
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/no_green_gate.sh
+
     # The design prototypes, on both backends. differential.sh only scans
     # tests/suite/, and these are main-only so `rask test` runs nothing on them
     # and exits 0 — so the programs written to show Rack/Link working end to end
@@ -552,26 +561,91 @@ jobs:
       run: cargo test --release
       working-directory: compiler
 
-  # The C runtime, compiled on Darwin. Everything above runs on Linux, and the
-  # release ships a macOS binary — so the first time anyone compiled this code
-  # with Apple's headers was release day, twice in a row. Both breaks were the
-  # same kind: glibc hands out a non-POSIX name anyway, Darwin doesn't, and the
-  # Makefile asks for strict POSIX. A green Linux run says nothing about either.
+  # Darwin. Everything above runs on Linux, and the release ships a macOS
+  # binary — so for two releases running, the first time anyone compiled this
+  # code with Apple's headers was release day. Both breaks were the same kind:
+  # glibc hands out a non-POSIX name anyway, Darwin doesn't, and the Makefile
+  # asks for strict POSIX. A green Linux run says nothing about either. And the
+  # release job is `needs: build`, so a macOS failure means no release at all —
+  # the Linux binary doesn't get published either (#1170).
   #
-  # On Darwin this compiles the 26 sources macOS actually links — the Makefile
-  # drops the three Linux-only ones — so it covers the same set `rask build`
-  # feeds to the linker there.
+  # Three things, in the order a break would hit them:
   #
-  # Deliberately just the runtime: no Rust toolchain, no cargo, no gates. That
-  # is where both failures were, it is ~30s of clang, and it needs no cache.
-  # macOS runners bill at 10x, so a full macOS matrix is a real cost; this is
-  # the thin slice that would have caught both. (#1170 asks for the wider leg.)
-  macos-runtime:
-    name: macos-runtime (C runtime compiles on Darwin)
+  #   1. `make -C compiler/runtime` — the 26 sources macOS actually links (the
+  #      Makefile drops the three Linux-only ones), which is where both release
+  #      day failures were.
+  #   2. `cargo build --release -p rask-cli` — what the release job builds. A
+  #      Rust-side `#[cfg(target_os)]` break lands here.
+  #   3. A program compiled and run. This is the only step that exercises ld64,
+  #      and ld64 is the one thing a Linux runner cannot stand in for: it
+  #      rejected every Rask object for two releases because DWARF carried ELF
+  #      section names (#1184), and `ld64.lld` on Linux accepts that object
+  #      happily, so nothing here could catch it.
+  #
+  # Narrow on purpose at step 3: hello-world, three suite files covering
+  # collections, strings and enums, and the spawning files — `spawn` is backed
+  # by OS threads off Linux now (#1180), and this is the only place the real
+  # thing runs on Darwin rather than through the Linux stand-in. Not the full
+  # gates: macOS runners bill at 10x.
+  macos-build:
+    name: macos-build (runtime, compiler and a linked program on Darwin)
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-macos-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-macos-
 
     - name: Build C runtime
       run: make -C compiler/runtime
+
+    - name: Build compiler (release)
+      id: compiler
+      if: ${{ !cancelled() }}
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
+    # Compiles, links through ld64, and runs. A debug build, so the object
+    # carries DWARF — which is the half ld64 refused (#1184).
+    - name: Compile and run a program
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: |
+        set -eu
+        printf 'func main() {\n    println("hello from darwin")\n}\n' > /tmp/hello.rk
+        out=$(compiler/target/release/rask run /tmp/hello.rk)
+        test "$out" = "hello from darwin" || { echo "got: $out"; exit 1; }
+
+    - name: Run suite files natively
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: |
+        set -eu
+        for f in tests/suite/t_week_collection_stubs.rk \
+                 tests/suite/t_message_without_a_result.rk \
+                 tests/suite/t_stdlib_default_argument.rk; do
+          compiler/target/release/rask test "$f"
+        done
+
+    # Every suite file that spawns. Darwin has no green scheduler, so these run
+    # on the thread-backed path — the same one the Linux no-green gate checks,
+    # here on the platform it is for.
+    - name: Spawning suite files
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/no_green_gate.sh

@@ -56,6 +56,10 @@ extend Shared<T, S> {
     /// and the name says so — reach for it where a panic mid-update would leave
     /// an invariant other tasks read torn. Not available under `Local`: nothing
     /// else can observe the tear, and there is no unwind boundary to protect.
+    ///
+    /// Only as the source of a `with`: `with s.staged() as v { … }`. The commit
+    /// happens when the block exits, so a call with no block has nowhere to put
+    /// it, and the checker rejects one (E0846).
     @native("rask_shared_staged_ptr")
     public func staged(self) -> T {}
 

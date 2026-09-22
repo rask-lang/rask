@@ -206,10 +206,6 @@ pub enum ExprKind {
         target: String,
         kind: ConvertKind,
     },
-    /// Spawn expression (spawn { body })
-    Spawn {
-        body: Vec<super::stmt::Stmt>,
-    },
     /// Block call expression (identifier { body }) like spawn_raw { ... }
     BlockCall {
         name: String,
@@ -636,7 +632,6 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::Closure { .. } => "Closure",
         ExprKind::Cast { .. } => "Cast",
         ExprKind::Convert { .. } => "Convert",
-        ExprKind::Spawn { .. } => "Spawn",
         ExprKind::BlockCall { .. } => "BlockCall",
         ExprKind::Unsafe { .. } => "Unsafe",
         ExprKind::Comptime { .. } => "Comptime",

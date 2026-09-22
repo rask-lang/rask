@@ -1635,6 +1635,12 @@ fn aggregate_may_hold_string(ty: &MirType) -> bool {
 fn slot_is_releasable(ty: &MirType) -> bool {
     *ty == MirType::String
         || matches!(ty, MirType::Heap(_))
+        // A closure in a slot is the same case as a block in one. A *bare*
+        // closure local isn't — `ClosureDrop` discharges that one, and the
+        // escape analysis has already said the frame no longer owns a closure
+        // it stored into an aggregate, so this is the only release it gets
+        // (#1253).
+        || matches!(ty, MirType::FuncPtr(_))
         || aggregate_may_hold_string(ty)
 }
 

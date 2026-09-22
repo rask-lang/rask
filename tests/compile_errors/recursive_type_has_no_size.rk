@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a type that contains itself with nothing in between
+// Rejects: `Node` contains itself, so it has no size
+//
+// Every field is stored inline, so a `Node` holding a `Node` needs room for
+// the one inside it, which needs room for the one inside that. No size works.
+//
+// The checker used to accept all of this and leave it to layout, which
+// shrugged — `warning: unknown type 'Node' in layout, defaulting to pointer
+// size (8, 8)` — and then what happened depended on luck (#1280):
+//
+//   - `enum Tree { Node(Tree) }` ran and printed the right answer, because the
+//     program never stored a `Node` payload. Any program that did would have
+//     written through a layout eight bytes wide.
+//   - `struct Node { next: Node? }` reached MIR and died there: "field `next`
+//     holds 32 bytes but its slot is 16 … That is a compiler bug". The backend
+//     was right about the damage and three passes too late to name the cause.
+//
+// The message is also the rung of the decision ladder that was missing. This
+// is exactly the wall where an author needs to be told which door opens it:
+// `Heap<T>` for a single-owner recursive value, `Rack` + `Link<T>?` for nodes
+// that point at each other or need identity.
+
+// ERROR: a struct field is inline, and so is the `?` around it.
+struct Node {
+    value: i64
+    next: Node?
+}
+
+// ERROR: a variant payload is inline too.
+enum Tree {
+    Leaf(i32)
+    Node(Tree)
+}
+
+// ERROR: a tuple doesn't break it either.
+struct Pair {
+    both: (i64, Pair)
+}
+
+// Through another type, which is the case a per-field name check can't see.
+// ERROR: `Edge` holds a `Vertex`, and `Vertex` holds an `Edge`.
+struct Edge {
+    to: Vertex
+}
+
+struct Vertex {
+    id: i64
+    out: Edge?
+}
+
+func main() {
+    println("unreachable")
+}

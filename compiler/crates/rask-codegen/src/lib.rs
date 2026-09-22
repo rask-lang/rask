@@ -12,6 +12,7 @@ pub mod drop_fields;
 mod elem_offsets;
 pub mod layouts;
 mod module;
+pub mod targets;
 mod tests;
 pub mod vtable;
 
@@ -47,6 +48,10 @@ pub enum CodegenError {
     TypeConversionFailed(String),
     FunctionNotFound(String),
     CraneliftError(String),
+    /// A `--target` name that isn't one of ours and isn't a full triple. Its
+    /// own variant because the message is the whole diagnostic — wrapping it
+    /// as a Cranelift error made it read like a backend failure (#1185).
+    UnknownTarget(String),
 }
 
 impl fmt::Display for CodegenError {
@@ -56,6 +61,7 @@ impl fmt::Display for CodegenError {
             CodegenError::TypeConversionFailed(msg) => write!(f, "Type conversion failed: {}", msg),
             CodegenError::FunctionNotFound(name) => write!(f, "Function not found: {}", name),
             CodegenError::CraneliftError(msg) => write!(f, "Cranelift error: {}", msg),
+            CodegenError::UnknownTarget(msg) => write!(f, "{}", msg),
         }
     }
 }

@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `Link<T>` used as a `Map` key, and `link.hash()` (#1268).
+//
+// A link is the node's address (mem.racks/RK2). Hashing its bytes hashes
+// whatever the allocator handed out, which moves with however much the program
+// allocated before the rack was built. `determinism/D7` promises no map
+// iteration order, so that can't produce a wrong answer — what it breaks is
+// D7's other half, where sim derives the map seed from the sim seed so a replay
+// walks the buckets in the same order. The seed replays; the address doesn't.
+//
+// The slot index replays, and the node already carries it. Equality is
+// untouched — two links are equal when they name the same node — so the slot
+// only decides which bucket a key lands in, and equal keys hash equal because
+// a node keeps its slot for as long as it lives.
+//
+// `link.hash()` used to resolve to the *node's* derived hash and then fail to
+// lower at all:
+//
+//     [unmapped-spelling] Link_hash (family Link) …
+//     error: codegen 'main': Function not found: Link_hash
+//
+// The derived hash was also the wrong answer on its face: two distinct nodes
+// holding equal field values would hash the same while `==` on their links
+// says they differ. `hash` is the link's now, like `eq` and `ne`.
+//
+// The interpreter had a third problem underneath: `value_eq` had no arm for a
+// link at all, so a link key could be inserted and never found again.
+
+import memory.Rack
+import memory.Link
+
+struct Node {
+    id: i32
+}
+
+test "a link keys a map by identity" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node { id: 1 })
+    let b = r.insert(Node { id: 2 })
+    mut m: Map<Link<Node>, i32> = Map.new()
+    m.insert(a, 7)
+    m.insert(b, 9)
+    assert m.len() == 2
+    assert m.get(a)?? 0 == 7
+    assert m.get(b)?? 0 == 9
+}
+
+// The visited-set shape this exists for: two links to nodes with equal fields
+// are two different keys.
+test "equal fields are still two keys" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node { id: 1 })
+    let b = r.insert(Node { id: 1 })
+    mut seen: Map<Link<Node>, bool> = Map.new()
+    seen.insert(a, true)
+    assert seen.len() == 1
+    seen.insert(b, true)
+    assert seen.len() == 2
+}
+
+test "hash agrees with ==" {
+    mut r: Rack<Node> = Rack.new()
+    let a = r.insert(Node { id: 1 })
+    let b = r.insert(Node { id: 1 })
+    let same = a
+    assert a == same
+    assert a.hash() == same.hash()
+    assert a != b
+    assert a.hash() != b.hash()
+}

@@ -210,6 +210,36 @@ fn parse_owner(type_name: &str) -> Option<MethodOwner> {
     })
 }
 
+/// What the checker's record says a method call dispatches to.
+///
+/// See the call-site comment in `visit_expr`: the difference between "no body,
+/// and none is wanted" and "not decided yet" is what stops reachability
+/// enqueuing every method that shares a name (#1062).
+enum Dispatch {
+    /// One body, named.
+    Body(String),
+    /// A primitive's operation — an instruction, not a body.
+    Intrinsic,
+    /// The receiver isn't decided here, so any candidate could be the one.
+    Unknown,
+}
+
+/// A receiver that can only ever be itself.
+///
+/// No user body can hang off these — there is no `extend i64` that mono would
+/// mangle as `i64_add` — and none of them is a type parameter in disguise, which
+/// is the case that has to stay open. So a call on one of these with no body in
+/// the table needs nothing generated at all.
+fn is_primitive_receiver(name: &str) -> bool {
+    matches!(
+        name,
+        "bool" | "char" | "string"
+            | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+            | "f32" | "f64"
+    )
+}
+
 impl MethodOwner {
     /// The target's type arguments as written: `["(K, V)"]` for
     /// `Sequence<(K, V)>`, `["K", "V"]` for `Map<K, V>`.
@@ -1409,6 +1439,38 @@ impl<'a> Monomorphizer<'a> {
         names
     }
 
+    /// The element `compare` a `sort()` on this receiver will be lowered to.
+    ///
+    /// `sort()` is `T: Comparable` (std.collections/SO3), so a Vec of
+    /// aggregates is ordered by the element type's own `compare` — and MIR
+    /// lowering decides that, after this pass. So the body is queued from here,
+    /// the same way `r!` queues an error type's `message`.
+    ///
+    /// It used to arrive by accident: the bare-name widening enqueued every
+    /// `compare` in the program, this one among them. Narrowing that took the
+    /// accident away and `sort()` fell back to comparing raw bytes — the
+    /// elements came out ordered by whichever field landed in the first eight
+    /// (#1062).
+    fn sort_comparator_fn(&self, recv_id: NodeId) -> Option<String> {
+        let typed = self.typed?;
+        let ty = self
+            .instantiated_node_types
+            .get(&recv_id)
+            .or_else(|| typed.node_types.get(&recv_id))?;
+        let args = match ty {
+            Type::Generic { base, args } if typed.types.type_name(*base) == "Vec" => args,
+            Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
+            _ => return None,
+        };
+        let elem = match args.first()? {
+            rask_types::GenericArg::Type(inner) => inner,
+            _ => return None,
+        };
+        let name = rask_types::receiver_name(elem, &typed.types)?;
+        let mangled = format!("{}_compare", name);
+        self.method_table.contains_key(&mangled).then_some(mangled)
+    }
+
     fn arg_type_name(&self, id: NodeId) -> Option<String> {
         let typed = self.typed?;
         let ty = self
@@ -1585,6 +1647,17 @@ impl<'a> Monomorphizer<'a> {
                     }
                 });
 
+                // `sort()` on a Vec of aggregates needs the element type's own
+                // `compare`, and nothing in the source names it — see
+                // `sort_comparator_fn`. Before either branch below, because a
+                // `Vec` receiver resolves through the first one and a
+                // still-generic one through the second.
+                if method == "sort" {
+                    if let Some(cmp) = self.sort_comparator_fn(object.id) {
+                        self.enqueue(cmp, Vec::new());
+                    }
+                }
+
                 if let Some((type_id, type_name, method_name)) = dispatched {
                     let mut qualified = format!("{}_{}", type_name, method_name);
                     // A `{x}` and a `{x:>10}` both need the receiver's own
@@ -1680,28 +1753,60 @@ impl<'a> Monomorphizer<'a> {
                     // the JSON encoder with them. That's how `Metadata_compare`
                     // came to be generated for programs that never touch `fs`
                     // (#1062).
-                    let narrowed = self.typed.and_then(|typed| {
-                        let Some(Callee::Method { recv, method: m }) =
-                            typed.call_targets.get(&expr.id)
-                        else {
-                            return None;
-                        };
-                        let name = rask_types::receiver_name(recv, &typed.types)?;
-                        // `{x}` reaches `to_string` or, for an error type,
-                        // `message` (std.fmt/D5) — same resolution the branch
-                        // above does.
-                        let candidates = if m == "to_string" || m == "__fmt" {
-                            vec![format!("{name}_to_string"), format!("{name}_message")]
-                        } else {
-                            vec![format!("{name}_{m}")]
-                        };
-                        candidates
-                            .into_iter()
-                            .find(|q| self.method_table.contains_key(q))
-                    });
+                    // `sort()` on a Vec of aggregates needs the element type's
+                    // own `compare`, and nothing in the source names it — see
+                    // `sort_comparator_fn`.
+                    // Three outcomes, and only the third may widen.
+                    //
+                    // A body to enqueue is the ordinary case. "No body, and
+                    // none is wanted" is a primitive's: `add` on an `i64` is an
+                    // instruction, not a body, and a call whose receiver is an
+                    // `i64` cannot possibly land on `SystemTime_add`. Widening
+                    // there was work with no use — 83 widened calls and 43
+                    // extra functions for a four-line program, the JSON encoder
+                    // and `Metadata_compare` among them (#1062).
+                    //
+                    // What genuinely isn't known is a type parameter: inside a
+                    // generic body a receiver reads as an unresolved name, and
+                    // which body it means is decided at instantiation. Those
+                    // still take every candidate.
+                    let dispatch = match self
+                        .typed
+                        .and_then(|typed| typed.call_targets.get(&expr.id).map(|c| (c, typed)))
+                    {
+                        Some((Callee::Method { recv, method: m }, typed)) => {
+                            match rask_types::receiver_name(recv, &typed.types) {
+                                Some(name) => {
+                                    // `{x}` reaches `to_string` or, for an error
+                                    // type, `message` (std.fmt/D5) — same
+                                    // resolution the branch above does.
+                                    let candidates = if m == "to_string" || m == "__fmt" {
+                                        vec![
+                                            format!("{name}_to_string"),
+                                            format!("{name}_message"),
+                                        ]
+                                    } else {
+                                        vec![format!("{name}_{m}")]
+                                    };
+                                    match candidates
+                                        .into_iter()
+                                        .find(|q| self.method_table.contains_key(q))
+                                    {
+                                        Some(q) => Dispatch::Body(q),
+                                        None if is_primitive_receiver(&name) => {
+                                            Dispatch::Intrinsic
+                                        }
+                                        None => Dispatch::Unknown,
+                                    }
+                                }
+                                None => Dispatch::Unknown,
+                            }
+                        }
+                        _ => Dispatch::Unknown,
+                    };
 
-                    match narrowed {
-                        Some(qualified) => {
+                    match dispatch {
+                        Dispatch::Body(qualified) => {
                             // Only `message` standing in for `to_string` needs
                             // recording; the plain case is the name lowering
                             // would build anyway.
@@ -1710,10 +1815,34 @@ impl<'a> Monomorphizer<'a> {
                             }
                             self.enqueue(qualified, type_args.clone());
                         }
-                        // Receiver type unknown here — enqueue every method with
-                        // this bare name and let the unused ones fall out.
-                        None => {
+                        // A primitive's operation: nothing to generate, and
+                        // nothing else this call could mean.
+                        Dispatch::Intrinsic => {}
+                        // The receiver isn't decided yet — enqueue every method
+                        // with this bare name and let the unused ones fall out.
+                        Dispatch::Unknown => {
                             if let Some(qualified_names) = self.method_by_bare_name.get(method) {
+                                // What is left of #1062, and the only way to see
+                                // it: the widening is invisible in the output
+                                // except as functions nobody called.
+                                if std::env::var("RASK_LIST_WIDENED_CALLS").is_ok() {
+                                    let recv = self
+                                        .typed
+                                        .and_then(|t| t.call_targets.get(&expr.id).map(|c| (c, t)))
+                                        .and_then(|(c, t)| match c {
+                                            Callee::Method { recv, .. } => {
+                                                rask_types::receiver_name(recv, &t.types)
+                                            }
+                                            _ => None,
+                                        })
+                                        .unwrap_or_else(|| "unknown".to_string());
+                                    eprintln!(
+                                        "[widened] .{}() on {} — {} candidates",
+                                        method,
+                                        recv,
+                                        qualified_names.len(),
+                                    );
+                                }
                                 for qname in qualified_names.clone() {
                                     self.enqueue(qname, type_args.clone());
                                 }
@@ -1889,7 +2018,7 @@ impl<'a> Monomorphizer<'a> {
                 self.visit_expr(inner);
             }
             ExprKind::Convert { expr, .. } => self.visit_expr(expr),
-            ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::Comptime { body }
+            ExprKind::Unsafe { body } | ExprKind::Comptime { body }
             | ExprKind::Loop { body, .. } => {
                 for s in body {
                     self.visit_stmt(s);

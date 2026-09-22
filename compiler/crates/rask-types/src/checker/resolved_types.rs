@@ -156,7 +156,7 @@ fn walk_expr(
     out: &mut Vec<TypeError>,
 ) {
     match &expr.kind {
-        ExprKind::Block(body) | ExprKind::Loop { body, .. } | ExprKind::Spawn { body } => {
+        ExprKind::Block(body) | ExprKind::Loop { body, .. } => {
             walk_body(body, node_types, names, out)
         }
         ExprKind::If { then_branch, else_branch, .. } => {

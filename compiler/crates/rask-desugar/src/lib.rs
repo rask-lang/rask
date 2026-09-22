@@ -39,6 +39,22 @@ pub const DESUGAR_ID_BASE: u32 = 10_000_000;
 /// stdlib's. See [`DESUGAR_ID_BASE`].
 pub const DEFAULT_ARGS_ID_BASE: u32 = 20_000_000;
 
+/// Bands for the stdlib's own desugaring.
+///
+/// The stdlib's declarations are desugared in a separate call from the
+/// program's, and each call starts its counter at the base — so with one band
+/// the two runs hand out the same ids for different nodes. Both sets are then
+/// type-checked together into one `node_types`, keyed by id, and the program
+/// (checked second) wins every collision. A stdlib method that desugaring
+/// generated read the program's types and lost its match arm bindings:
+/// `SeekFrom_message: unresolved variable _0`, but only once the program itself
+/// desugared enough nodes to reach the same ids (#1249). Same shape as #463,
+/// one level up.
+pub const STDLIB_DESUGAR_ID_BASE: u32 = 40_000_000;
+
+/// The stdlib's counterpart to [`DEFAULT_ARGS_ID_BASE`].
+pub const STDLIB_DEFAULT_ARGS_ID_BASE: u32 = 50_000_000;
+
 /// Run the whole desugar phase over a list of declarations.
 ///
 /// Both sub-passes always run together. Splitting them was a trap: every
@@ -50,6 +66,25 @@ pub fn desugar(decls: &mut [Decl]) {
     desugar_with_diagnostics(decls);
 }
 
+/// Desugar a single file that can call the stdlib.
+///
+/// `stdlib` is the stdlib's defaulted signatures
+/// (`StubRegistry::defaulted_signatures`). Filling an omitted argument needs
+/// the declaration it was omitted from, and the stdlib's declarations aren't
+/// in `decls` — so without this a defaulted parameter in `stdlib/*.rk` was
+/// parsed and then unusable (#1276). This crate can't read the registry
+/// itself: `rask-stdlib` already depends on it.
+pub fn desugar_with_stdlib(decls: &mut [Decl], stdlib: &[Decl]) -> Vec<DesugarError> {
+    desugar_inner_from(decls, &[], stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+}
+
+/// Desugar the stdlib's own declarations, in their own NodeId bands.
+///
+/// See [`STDLIB_DESUGAR_ID_BASE`].
+pub fn desugar_stdlib(decls: &mut [Decl]) {
+    desugar_inner_from(decls, &[], &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE);
+}
+
 /// Desugar a package whose dependencies are known.
 ///
 /// Only annotation defaults need this: they're filled into attachment text
@@ -58,8 +93,9 @@ pub fn desugar(decls: &mut [Decl]) {
 pub fn desugar_package(
     decls: &mut [Decl],
     dep_annotations: &[(String, Decl)],
+    stdlib: &[Decl],
 ) -> Vec<DesugarError> {
-    desugar_inner(decls, dep_annotations)
+    desugar_inner_from(decls, dep_annotations, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 /// ER26 coverage error from @message desugaring.
@@ -75,6 +111,16 @@ pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
 }
 
 fn desugar_inner(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) -> Vec<DesugarError> {
+    desugar_inner_from(decls, dep_annotations, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+}
+
+fn desugar_inner_from(
+    decls: &mut [Decl],
+    dep_annotations: &[(String, Decl)],
+    stdlib: &[Decl],
+    id_base: u32,
+    default_args_id_base: u32,
+) -> Vec<DesugarError> {
     // TD2: a trait method with a body becomes a real method on every conformer
     // that doesn't write its own. Before anything else walks the tree, so the
     // copies get desugared with everything else — and so `scan_error_message_types`
@@ -86,7 +132,7 @@ fn desugar_inner(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) -> Vec<
     // into a real type parameter with the operator's bound (type.gradual/IN3).
     generalize::generalize_inferred_params(decls);
 
-    let mut desugarer = Desugarer::new(DESUGAR_ID_BASE);
+    let mut desugarer = Desugarer::new(id_base);
     desugarer.scan_error_message_types(decls);
     for (index, decl) in decls.iter_mut().enumerate() {
         desugarer.injected_methods = injected.get(&index).cloned().unwrap_or_default();
@@ -96,7 +142,7 @@ fn desugar_inner(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) -> Vec<
 
     // Defaults need the full declaration list to build their lookup table,
     // so they run as a second sweep rather than inline with the operators.
-    defaults::desugar_default_args(decls);
+    defaults::desugar_default_args(decls, default_args_id_base, stdlib);
 
     // AN3: an annotation attachment gets its declared defaults filled the same
     // way a struct literal does, so every later reader sees a complete one.
@@ -136,10 +182,6 @@ struct Desugarer {
     /// is the override, so generating one alongside it would shadow the prose
     /// the author wrote.
     hand_written_message: std::collections::HashSet<String>,
-    /// Enum names that some signature uses as an error type — the `E` of a
-    /// `T or E` return, each component of a union `E`. ER6's derive runs for
-    /// these and leaves every other enum alone. See `used_as_an_error`.
-    error_positions: std::collections::HashSet<String>,
     /// `@resource` type names, so ER6's derive can stand aside for an enum
     /// carrying one. A generated `message()` has to match every variant, and a
     /// payload variant's pattern must bind its payload — which for a resource
@@ -158,7 +200,6 @@ impl Desugarer {
             errors: Vec::new(),
             error_message_types: std::collections::HashSet::new(),
             hand_written_message: std::collections::HashSet::new(),
-            error_positions: std::collections::HashSet::new(),
             resource_types: std::collections::HashSet::new(),
         }
     }
@@ -174,7 +215,6 @@ impl Desugarer {
     /// generate a call to a method nobody declares.
     fn scan_error_message_types(&mut self, decls: &[Decl]) {
         let has_message = |methods: &[FnDecl]| methods.iter().any(|m| m.name == "message");
-        self.scan_error_positions(decls);
 
         for decl in decls {
             match &decl.kind {
@@ -219,11 +259,12 @@ impl Desugarer {
 
     /// Should ER6's derive run for this enum?
     ///
-    /// Two ways in. `@message` is the explicit request, and has been the only
-    /// one — the annotation's per-variant templates are how `examples/validation`
-    /// writes its error surface. The other is a signature naming the enum as an
-    /// error type, which is ER6 proper: that's the case where the `Error` bound
-    /// is about to be checked, and where a missing `message()` was E0344.
+    /// Every enum, is the answer — ER6 doesn't condition it on anything. It
+    /// used to run only for enums some signature named as the error side of a
+    /// `T or E`, which made a method the type either has or hasn't depend on an
+    /// unrelated function elsewhere in the file: constructing an error to log
+    /// it or to test it compiled or didn't depending on whether a never-called
+    /// function mentioned the type (#1249).
     ///
     /// Two ways out. A hand-written `message()` is the override, so the derive
     /// stands aside rather than shadowing it. And an enum carrying a
@@ -231,62 +272,7 @@ impl Desugarer {
     /// match has to bind its payload, and a bound resource is a use the derived
     /// body has no way to consume (mem.linear/L2, ER42).
     fn derives_message(&self, e: &EnumDecl) -> bool {
-        let wanted =
-            e.attrs.iter().any(|a| a == "message") || self.error_positions.contains(&e.name);
-        wanted && !self.hand_written_message.contains(&e.name) && !self.carries_a_resource(e)
-    }
-
-    /// Which names a signature puts in an error position: the `E` of every
-    /// `T or E` return type in the program, and each component when that `E` is
-    /// a union. ER6's derive is limited to these.
-    ///
-    /// Deriving for *every* enum was the first shape, and it cost more than it
-    /// gave. `examples/cli_calculator.rk` stopped compiling: a derived
-    /// `message()` on its `Expr` tree drags the formatting machinery into
-    /// reachability, and one of the stdlib functions that comes with it,
-    /// `Metadata_compare`, is generated with a struct id whose layout was never
-    /// built — so it read its own fields as the program's first enum and
-    /// refused to order a `Heap<Expr>` (#1062). Beyond that specific bug, a
-    /// `message()` on every enum in every program is work nobody asked for.
-    ///
-    /// What the derive is *for* is ER4: an error enum satisfying the `Error`
-    /// bound with nothing written. A signature naming a type as an error is
-    /// exactly that, and the parser has already rendered `T or E` canonically,
-    /// so it can be read here without a type table.
-    ///
-    /// What this misses is an error type reached only through inference — a
-    /// private function with no declared error, or `or _`. Those still need a
-    /// hand-written `message()`, which is the state every error enum was in
-    /// before this.
-    fn scan_error_positions(&mut self, decls: &[Decl]) {
-        fn note(out: &mut std::collections::HashSet<String>, ret: &Option<String>) {
-            let Some(ret) = ret else { return };
-            let Some((_, err)) = rask_ast::type_str::result_parts(ret) else { return };
-            // A union error lists its components; `strip_generics` keeps the
-            // head so `ParseError<T>` still names `ParseError`.
-            for part in err.split('|') {
-                let name = rask_ast::type_str::bare_name(part.trim());
-                let head = name.split('<').next().unwrap_or(name).trim();
-                if !head.is_empty() {
-                    out.insert(head.to_string());
-                }
-            }
-        }
-        fn walk(out: &mut std::collections::HashSet<String>, methods: &[FnDecl]) {
-            for m in methods {
-                note(out, &m.ret_ty);
-            }
-        }
-        for decl in decls {
-            match &decl.kind {
-                DeclKind::Fn(f) => note(&mut self.error_positions, &f.ret_ty),
-                DeclKind::Struct(s) => walk(&mut self.error_positions, &s.methods),
-                DeclKind::Enum(e) => walk(&mut self.error_positions, &e.methods),
-                DeclKind::Impl(i) => walk(&mut self.error_positions, &i.methods),
-                DeclKind::Trait(t) => walk(&mut self.error_positions, &t.methods),
-                _ => {}
-            }
-        }
+        !self.hand_written_message.contains(&e.name) && !self.carries_a_resource(e)
     }
 
     fn fresh_id(&mut self) -> NodeId {
@@ -742,7 +728,7 @@ impl Desugarer {
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.desugar_expr(inner);
             }
-            ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::BlockCall { body, .. }
+            ExprKind::Unsafe { body } | ExprKind::BlockCall { body, .. }
             | ExprKind::Comptime { body } | ExprKind::Loop { body, .. } => {
                 for s in body {
                     self.desugar_stmt(s);

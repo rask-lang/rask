@@ -41,6 +41,7 @@ static void box_payload_free(int64_t payload_kind, void *data) {
     switch (payload_kind) {
         case RASK_BOX_PAYLOAD_VEC: rask_vec_free((RaskVec *)(intptr_t)handle); break;
         case RASK_BOX_PAYLOAD_MAP: rask_map_free((RaskMap *)(intptr_t)handle); break;
+        case RASK_BOX_PAYLOAD_CLOSURE: rask_closure_free((void *)(intptr_t)handle); break;
         default: break;
     }
 }

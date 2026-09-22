@@ -144,20 +144,20 @@ fn compile_with_c_and_run(fixture_name: &str, c_driver: &str) -> (String, String
     )
 }
 
-/// A nested `join` with one worker deadlocks — and says so (#1130).
+/// A nested `join` runs on one worker (#1130).
 ///
 /// A worker that joins blocks on the target's condvar and stops taking work,
-/// so once every worker is blocked in a join there is nothing left to run the
+/// so once every worker is blocked in a join there was nothing left to run the
 /// tasks they wait for. `using Multitasking(workers: 1)` plus one nested
-/// spawn+join reaches that on every run, and the program used to hang with no
-/// output and no exit — the worst way for a scheduling bug to present.
+/// spawn+join reached that on every run, and the program hung with no output
+/// and no exit — the worst way for a scheduling bug to present.
 ///
-/// Suspending the joining task and letting its worker take other work is the
-/// actual fix and needs the fiber switch that isn't built. Reporting the state
-/// is what this pins: a timed wait, and a worker that finds every other worker
-/// blocked with nothing completed since its last look.
+/// A blocked worker isn't running anything, so the scope starts a replacement
+/// for as long as the join lasts: the worker count is a count of runnable
+/// workers, not a cap on threads. Suspending the joining task and reusing its
+/// thread is still the real fix and needs the fiber switch that isn't built.
 #[test]
-fn nested_join_with_one_worker_reports_the_deadlock() {
+fn a_nested_join_runs_with_one_worker() {
     let rask = rask_binary();
     let tmp = std::env::temp_dir();
     let bin_path = tmp.join(format!("rask_test_nested_join_{}", std::process::id()));
@@ -176,24 +176,30 @@ fn nested_join_with_one_worker_reports_the_deadlock() {
         String::from_utf8_lossy(&compile_out.stderr),
     );
 
-    let run_out = Command::new(&bin_path).output().expect("failed to run binary");
+    // Ten runs: the old failure was deterministic, and the fix is a race
+    // between a blocking worker and the replacement it starts. One green run
+    // proves less than it looks.
+    for run in 0..10 {
+        let out = Command::new(&bin_path).output().expect("failed to run binary");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stdout.contains("got 7"),
+            "run {}: the inner task has to run and its value reach the outer join\n\
+             stdout: {:?}\nstderr: {:?}",
+            run,
+            stdout,
+            stderr,
+        );
+        assert!(
+            out.status.success(),
+            "run {}: exited {:?}: {:?}",
+            run,
+            out.status.code(),
+            stderr,
+        );
+    }
     let _ = std::fs::remove_file(&bin_path);
-
-    let stderr = String::from_utf8_lossy(&run_out.stderr);
-    assert!(
-        stderr.contains("deadlock") && stderr.contains("blocked in join"),
-        "the abort names what is stuck: {:?}",
-        stderr,
-    );
-    assert!(
-        stderr.contains("raise the worker count"),
-        "and what to do about it: {:?}",
-        stderr,
-    );
-    assert!(
-        !run_out.status.success(),
-        "a deadlock is not a successful run",
-    );
 }
 
 /// Trait type parameters and associated types, on both backends.
@@ -1040,6 +1046,120 @@ fn error_try_in_a_function_that_returns_nothing() {
     assert!(
         out.matches("E0316").count() >= 2,
         "should report the helper and main, not stop at the first: {}", out,
+    );
+}
+
+#[test]
+fn try_without_an_error_branch_is_rejected() {
+    // #1251: the same rule one step wider. The check asked "does this return
+    // void?" when the question is "does this return type have a branch to
+    // carry the error?" — and `i64` has one no more than `void` does.
+    //
+    // What the hole cost: `rask check` said OK, then native printed the result
+    // word as if it were the payload (a stack address) and the interpreter
+    // died at run time saying a method was missing on `Result`. Neither named
+    // the program as the problem.
+    let (failed, out) = compile_error_output("try_without_an_error_branch.rk");
+    assert!(failed, "`try` into a return with no error branch must be rejected: {}", out);
+    assert!(
+        out.contains("found `i64`") && out.contains("found `string`")
+            && out.contains("found `Config`"),
+        "should name each return type that has nowhere to put the error: {}", out,
+    );
+    assert!(
+        out.matches("E0316").count() >= 3,
+        "should report all three sites, not stop at the first: {}", out,
+    );
+}
+
+#[test]
+fn a_type_that_contains_itself_is_rejected() {
+    // #1280: the frontend accepted a type it can never lay out. Layout then
+    // guessed pointer size and printed a warning, and what happened next was
+    // luck — an enum ran with an 8-byte layout any real payload would have
+    // written past, and a struct through `T?` reached MIR and died there
+    // blaming itself for a compiler bug.
+    //
+    // The message also has to name the door: `Heap<T>` for a single owner,
+    // `Rack` + `Link<T>?` for nodes that point at each other.
+    let (failed, out) = compile_error_output("recursive_type_has_no_size.rk");
+    assert!(failed, "a type containing itself inline must be rejected: {}", out);
+    assert!(
+        out.matches("E0890").count() >= 4,
+        "the struct, the enum, the tuple and the two-type cycle: {}", out,
+    );
+    assert!(
+        out.contains("Heap<Node>") && out.contains("Rack") && out.contains("Link<Node>"),
+        "should name both containers that break the cycle: {}", out,
+    );
+    // The cycle through a second type names the path, since the field's own
+    // type looks innocent.
+    assert!(
+        out.contains("Vertex -> Edge"),
+        "should spell the chain for an indirect cycle: {}", out,
+    );
+}
+
+#[test]
+fn an_optional_trait_object_is_rejected_with_its_own_reason() {
+    // #1159 made the parse after `any` share the real type-name parse, so
+    // `any io.Reader` works. Sharing it whole would also have admitted
+    // `any Shape?`, which type-checks and then segfaults natively — the value
+    // is never boxed into the option's payload (#1308). The suffix stays
+    // refused, but with a message about the feature rather than the old
+    // "Expected ')', found '?'".
+    let (failed, out) = compile_error_output("optional_trait_object.rk");
+    assert!(failed, "`any Trait?` must be rejected: {}", out);
+    assert!(
+        out.contains("an optional trait object isn't built yet"),
+        "should name the feature, not the punctuation: {}", out,
+    );
+    assert!(
+        out.contains("1308"),
+        "should point at the issue that lifts it: {}", out,
+    );
+}
+
+#[test]
+fn a_failing_benchmark_body_is_reported_not_timed() {
+    // #1182: every pass discarded its result, so a body that panicked still
+    // produced min/max/mean/median — timings for how long it took to fail,
+    // printed beside the benchmarks that worked. Worse, native *did* notice the
+    // non-zero exit and then fell back to the interpreter, which re-ran the
+    // body and timed it: a divide-by-zero benchmark came out at 1.7M ops/sec
+    // and `rask benchmark` exited 0.
+    let rask = rask_binary();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("benchmark_body_fails.rk");
+    let out = Command::new(&rask)
+        .arg("benchmark")
+        .arg(&fixture)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask benchmark");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        !out.status.success(),
+        "a benchmark whose body fails must not exit 0: {}", combined,
+    );
+    assert!(
+        combined.contains("division by zero"),
+        "should say what went wrong: {}", combined,
+    );
+    // The tell for the old behaviour: a timings line for the failing benchmark.
+    assert!(
+        !combined.contains("ops/sec"),
+        "no timings once a body failed — they measure the failure: {}", combined,
+    );
+    assert!(
+        !combined.contains("falling back to interpreter"),
+        "a failed body is not a reason to re-run it on the interpreter: {}", combined,
     );
 }
 
@@ -4195,6 +4315,10 @@ const PANIC_MESSAGES: &[(&str, &str)] = &[
     // for it now — the pinned text changed together, which is the point of
     // this test (#1009).
     ("force_error.rk", "! on a value that was an error: no route"),
+    // ER15's other half: an explicit message replaces both of the above. Native
+    // dropped the string at parse and printed neither it nor the error's own
+    // `message()` (#1257).
+    ("force_with_message.rk", "could not reach the service"),
     ("explicit.rk", "hand written"),
     ("not_implemented.rk", "not yet implemented"),
     ("unreachable_reached.rk", "entered unreachable code"),
@@ -8143,4 +8267,142 @@ fn a_user_error_does_not_drag_the_stdlib_in_with_it() {
         out.contains("E0368"),
         "and `?` on a result, which the stdlib cascade used to displace:\n{out}"
     );
+}
+
+// `--target aarch64-macos` used to emit a Linux ELF object and say nothing
+// (#1185). `target_lexicon` parses a short name leniently — architecture from
+// the name, everything else defaulted — so the format came out ELF for a name
+// that says macOS. Only the artifact catches that, which is what this reads.
+//
+// Whichever of the two the run leaves behind is checked: cross-compiling from
+// here fails at the link step for want of a cross-linker, so the object stays;
+// with one installed the link succeeds and the executable is the stronger
+// check. The host target is left out — it links, and a linked host binary says
+// nothing about the mapping.
+#[test]
+fn a_target_name_emits_the_object_format_it_names() {
+    let host = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
+    let cases = [
+        ("x86_64-macos", &b"\xcf\xfa\xed\xfe"[..]),
+        ("aarch64-macos", &b"\xcf\xfa\xed\xfe"[..]),
+        ("x86_64-linux", &b"\x7fELF"[..]),
+        ("aarch64-linux", &b"\x7fELF"[..]),
+    ];
+    for (target, magic) in cases {
+        if target == host {
+            continue;
+        }
+        let tmp = std::env::temp_dir();
+        let out = tmp.join(format!("rask_target_{}_{}", target, std::process::id()));
+        let obj = tmp.join(format!("rask_target_{}_{}.o", target, std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&obj);
+
+        Command::new(rask_binary())
+            .arg("compile")
+            .arg("--target")
+            .arg(target)
+            .arg(fixture("arithmetic.rk"))
+            .arg("-o")
+            .arg(&out)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+
+        let artifact = if obj.exists() { &obj } else { &out };
+        let bytes = std::fs::read(artifact)
+            .unwrap_or_else(|e| panic!("{}: no artifact at {}: {}", target, artifact.display(), e));
+        assert!(
+            bytes.starts_with(magic),
+            "{}: object starts {:x?}, wanted {:x?}",
+            target,
+            &bytes[..4.min(bytes.len())],
+            magic,
+        );
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&obj);
+    }
+}
+
+// The other half: a name nobody declared is an error, not a guess at what was
+// meant. It used to be accepted by anything shaped like `arch-os`.
+#[test]
+fn a_misspelled_target_is_rejected() {
+    let out = Command::new(rask_binary())
+        .arg("compile")
+        .arg("--target")
+        .arg("aarch64-mac")
+        .arg(fixture("arithmetic.rk"))
+        .arg("-o")
+        .arg(std::env::temp_dir().join(format!("rask_badtarget_{}", std::process::id())))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        text.contains("unknown target 'aarch64-mac'") && text.contains("rask targets"),
+        "the message should name the mistake and where the list is:\n{text}"
+    );
+}
+
+// Mach-O keeps debug info in a `__DWARF` segment under `__debug_*`. Emitted
+// with ELF's `.debug_*` names and no segment — which is what happened — ld64
+// doesn't recognise them as debug sections, treats them as data, and applies
+// DWARF's 8-byte absolute relocations at whatever offset the encoder picked:
+// "pointer not aligned in 'anon-185'+0x23", and no macOS program linked. DWARF
+// was skipped on Mach-O entirely to get the link back, which cost macOS its
+// line numbers (#1184).
+//
+// The section table is read out of the object's own bytes: the names appear
+// verbatim in the Mach-O headers, and looking for the wrong spelling is what
+// catches a regression here.
+#[test]
+fn macho_debug_sections_use_the_macho_spelling() {
+    let tmp = std::env::temp_dir();
+    let out = tmp.join(format!("rask_dwarf_{}", std::process::id()));
+    let obj = tmp.join(format!("rask_dwarf_{}.o", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&obj);
+
+    Command::new(rask_binary())
+        .arg("compile")
+        .arg("--target")
+        .arg("x86_64-macos")
+        .arg(fixture("arithmetic.rk"))
+        .arg("-o")
+        .arg(&out)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask");
+
+    let artifact = if obj.exists() { &obj } else { &out };
+    let bytes = std::fs::read(artifact).expect("no Mach-O artifact");
+    let has = |needle: &str| {
+        bytes
+            .windows(needle.len())
+            .any(|w| w == needle.as_bytes())
+    };
+    assert!(has("__DWARF"), "debug info should be in a __DWARF segment");
+    assert!(has("__debug_info"), "and named __debug_info");
+    assert!(has("__debug_line"), "line table too — that's what a debugger reads");
+    assert!(
+        !has(".debug_info"),
+        "the ELF spelling is what ld64 mistook for data",
+    );
+    // And the object says which platform it is for. Without the load command
+    // ld64 guesses — correctly, and out loud, on every macOS compile. The
+    // command is cmd=0x32 followed by cmdsize=24, which is specific enough to
+    // look for as bytes.
+    let build_version: [u8; 8] = [0x32, 0, 0, 0, 24, 0, 0, 0];
+    assert!(
+        bytes.windows(8).any(|w| w == build_version),
+        "LC_BUILD_VERSION should be among the load commands",
+    );
+
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&obj);
 }

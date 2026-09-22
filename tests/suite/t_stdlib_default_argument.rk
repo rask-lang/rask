@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A stdlib method's defaulted parameter can be left out (#1276).
+//
+// `v.shrink()` was "expected 1 argument, found 0" for an argument
+// `stdlib/collections.rk` declares a default for. Filling an omitted argument
+// happens in desugaring, which builds its table from the declarations it is
+// handed — and the stdlib's come from the stub registry, not from the program's
+// decl list, so the default was parsed and then unreachable. `rask-desugar`
+// can't read the registry itself (`rask-stdlib` already depends on it), so the
+// signatures that carry a default are handed in.
+//
+// It is what SD2 needs: "surface grows by parameter, not by name". `shrink`
+// landed as `shrink(to: usize)` with the argument mandatory because that is
+// what compiled, and `v.shrink(0)` for shrink-to-fit was the workaround wearing
+// the scar.
+//
+// The stdlib's defaults are consulted only where the program declares nothing
+// of that name. The receiver's type isn't known that early, so an instance call
+// is matched by method name alone — filling `Vec`'s default into a call to a
+// program's own `shrink` would turn a diagnostic into a wrong program.
+
+test "an omitted default comes from the stdlib signature" {
+    mut v: Vec<i64> = Vec.with_capacity(32)
+    v.push(1)
+    v.push(2)
+    assert v.allocated() == 32
+    v.shrink()
+    assert v.allocated() == 2
+}
+
+test "and the argument still works, positionally or by name" {
+    mut v: Vec<i64> = Vec.with_capacity(32)
+    v.push(1)
+    v.shrink(8)
+    assert v.allocated() == 8
+
+    mut w: Vec<i64> = Vec.with_capacity(32)
+    w.push(1)
+    w.shrink(to: 4)
+    assert w.allocated() == 4
+}

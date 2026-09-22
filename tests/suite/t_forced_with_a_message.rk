@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `r! "msg"` — the panic text you write instead (type.errors/ER15) — #1257.
+//
+// Native parsed it, accepted it, and printed something else:
+//
+//     interp   error[R0010]: panic: PORT must be a number
+//     native   panic at f.rk:2: ! on a value that was an error
+//
+// Two things gone, not one. The override, and the fallback that a bare `!`
+// does print — with no override native says `! on a value that was an error:
+// non-numeric character`, so it wasn't "the override is ignored, fall back",
+// it was a different message entirely.
+//
+// The parser kept the string on the node as `Unwrap { expr, message }` and the
+// lowering destructured it as `message: _`. Nothing downstream could see it, so
+// the `message()` path ran instead and its reachability query came back empty —
+// which is the fallback being lost as well.
+//
+// `rask test` can't assert on a panic, so this file pins the shape that has to
+// keep working either side of the panic. The message itself is asserted in
+// `compiler/crates/rask-cli/tests/compile_run.rs`.
+
+func port_of(text: string) -> i64 {
+    return text.parse<i64>()! "PORT must be a number"
+}
+
+test "the override doesn't disturb the success path" {
+    assert port_of("8080") == 8080
+}
+
+test "a bare `!` still hands the value back" {
+    let n = "7".parse<i64>()!
+    assert n == 7
+}
+
+test "and an optional's `!` is unaffected" {
+    let v: Vec<i64> = [1, 2, 3]
+    assert v.first()! == 1
+}

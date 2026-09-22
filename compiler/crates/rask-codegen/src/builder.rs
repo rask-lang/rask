@@ -7154,6 +7154,11 @@ impl<'a> FunctionBuilder<'a> {
             // only owning field was an `any Trait` was skipped by the whole
             // walk and the box leaked (#1149's field case).
             MirType::TraitObject { .. } => true,
+            // A closure in a slot is the aggregate's too. The frame frees one
+            // it holds by name (`ClosureDrop`) and a container frees one it
+            // holds as an element (#1149); behind a tag, at a tuple offset or
+            // inside a box it was neither, so it leaked (#1253).
+            MirType::FuncPtr(_) => true,
             MirType::Option(inner) => Self::holds_string_mir(inner, ctx, depth + 1),
             MirType::Result { ok, err } => {
                 Self::holds_string_mir(ok, ctx, depth + 1)
@@ -7288,6 +7293,19 @@ impl<'a> FunctionBuilder<'a> {
             // is what makes this different from `TraitDrop`, which frees the
             // block and leaves the contents to the frame (#1144).
             MirType::TraitObject { .. } => Self::emit_boxed_field_release(builder, base, offset, ctx),
+            // The slot holds the block's address and the block describes
+            // itself — `rask_closure_free` reads its size and its
+            // environment-drop glue out of the header words, so releasing one
+            // needs nothing type-specific. Null is a no-op there, which is what
+            // a niche `none` reads as.
+            //
+            // Only a *heap* closure ever reaches a slot: the escape analysis
+            // makes a store to memory heap-allocate the environment
+            // (`closures::find_escaping_closures`), so there is no stack
+            // address to hand the runtime here.
+            MirType::FuncPtr(_) => {
+                Self::emit_container_release(builder, base, offset, "rask_closure_free", ctx)
+            }
             MirType::Option(inner) => Self::release_tagged(
                 builder, base, offset, crate::layouts::PAYLOAD_OFFSET, ctx,
                 |b, p, ctx| Self::release_strings_mir(b, p, 0, inner, ctx, depth + 1),
@@ -8243,6 +8261,25 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
         adapt_table: &HashMap<String, (ArgAdapt, RetAdapt)>,
     ) -> CallAdapt {
+        // A name the program declares is its own function, never a stdlib one.
+        //
+        // MIR mints `<Type>_<method>` for a stdlib method and codegen resolves
+        // the name, so a user's `func string_pad(s: string)` lands in the same
+        // flat namespace as `string.pad`. The *call* already goes to the right
+        // place — a user function is declared after the stdlib and shadows it —
+        // but the adaptation is keyed on the bare name, so the call site was
+        // built for one signature and adapted for the other:
+        //
+        //     mismatched argument count for `call fn295(v7, v6, v5)`:
+        //     got 3, expected 2
+        //
+        // Cranelift's verifier caught that one because the arities differ. A
+        // same-arity collision would have called through quietly with the
+        // stdlib's argument shape (#1227). A language shouldn't reserve
+        // `string_pad`, so the answer is to ask which namespace the name is in.
+        if ctx.internal_fns.contains(func_name) {
+            return CallAdapt::None;
+        }
         let (arg_adapt, ret_adapt) = adapt_table
             .get(func_name)
             .copied()

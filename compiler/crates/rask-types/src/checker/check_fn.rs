@@ -611,7 +611,7 @@ impl TypeChecker {
         use rask_ast::expr::ExprKind as EK;
         match &expr.kind {
             // Its own frame, its own return.
-            EK::Closure { .. } | EK::Spawn { .. } => false,
+            EK::Closure { .. } => false,
             EK::Block(body)
             | EK::Unsafe { body }
             | EK::Comptime { body }

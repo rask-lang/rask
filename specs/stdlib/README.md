@@ -203,10 +203,10 @@ ensure listener.close()
 
 loop {
     let conn = try listener.accept()
-    spawn {
+    spawn(|| {
         ensure conn.close()
         try handle_connection(conn)
-    }.detach()
+    }).detach()
 }
 ```
 

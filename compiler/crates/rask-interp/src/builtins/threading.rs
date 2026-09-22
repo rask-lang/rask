@@ -59,7 +59,10 @@ impl Interpreter {
                 self.consume_handle(handle);
                 let jh = handle.handle.lock().unwrap().take();
                 match jh {
-                    Some(jh) => match jh.join() {
+                    // Without the slot: a joiner that kept it would leave
+                    // `using Multitasking(workers: 1)` with nothing free to
+                    // run the task it is waiting for (#1111).
+                    Some(jh) => match crate::without_task_slot(|| jh.join()) {
                         // Thread succeeded - return Ok(value)
                         Ok(Ok(val)) => Ok(Value::Enum {
                             name: "Result".to_string(),
@@ -137,7 +140,7 @@ impl Interpreter {
                 // Try receiver first (pool-submitted tasks)
                 let rx = handle.receiver.lock().unwrap().take();
                 if let Some(rx) = rx {
-                    return match rx.recv() {
+                    return match crate::without_task_slot(|| rx.recv()) {
                         Ok(Ok(val)) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
@@ -173,7 +176,10 @@ impl Interpreter {
                 // Fall back to OS thread handle
                 let jh = handle.handle.lock().unwrap().take();
                 match jh {
-                    Some(jh) => match jh.join() {
+                    // Without the slot: a joiner that kept it would leave
+                    // `using Multitasking(workers: 1)` with nothing free to
+                    // run the task it is waiting for (#1111).
+                    Some(jh) => match crate::without_task_slot(|| jh.join()) {
                         Ok(Ok(val)) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
