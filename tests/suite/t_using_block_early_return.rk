@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `return` out of a `using Multitasking` block still shuts the scope down.
+//
+// The teardown used to be a plain statement after the body, so a return walked
+// straight past it: the scheduler was never shut down and its workers were never
+// joined. The answers were all correct — the only symptom was a task that hadn't
+// finished releasing its closure when the process reached the exit-time leak
+// check, which made the leak gate red about one run in five and blamed whichever
+// PR happened to be running (#1320).
+//
+// So this is a leak-gate test more than an output test: the output is the same
+// either way, and `RASK_LEAK_CHECK=1` is what tells the two apart. Measured
+// against the unfixed compiler this leaks; against the fixed one it doesn't.
+//
+// The panicking task is half of what makes it reproducible — the ensure hooks
+// and the message it formats on the way out widen the window enough to hit. The
+// other half is that the `return` is the last thing the scope does: give the
+// program more work afterwards and the worker has time to finish releasing,
+// which closes the window and the test stops testing anything.
+
+@resource
+struct Latch {
+    public id: i32
+}
+
+extend Latch {
+    public func release(take self) -> i32 {
+        return self.id
+    }
+}
+
+test "a return from inside the block still tears the scope down" {
+    using Multitasking {
+        let task = spawn(|| {
+            panic("the task dies here")
+        })
+        let outcome = task.join() catch _ => {
+            return
+        }
+        assert false
+    }
+}
+
+test "and with a linear value the task owns" {
+    using Multitasking {
+        let latch = Latch { id: 5 }
+        let task = spawn(own || {
+            ensure latch.release()
+            panic("dies holding it")
+        })
+        let outcome = task.join() catch _ => {
+            return
+        }
+        assert false
+    }
+}
