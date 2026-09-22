@@ -84,9 +84,13 @@ impl TargetConfig {
         let host_triple = format!("{}-{}", host_arch, host_os);
 
         let target_triple = target.unwrap_or(&host_triple);
-        let parts: Vec<&str> = target_triple.split('-').collect();
-        let target_os = parts.get(1).copied().unwrap_or("unknown");
-        let target_arch = parts.first().copied().unwrap_or("unknown");
+        // Splitting the name on '-' and calling field 1 the OS is right for
+        // Rask's own spelling and wrong for a full triple:
+        // `aarch64-apple-darwin` came out as OS "apple" and the link refused
+        // with "runtime not available for OS 'apple'". Both spellings go
+        // through the target table first (#1185).
+        let (target_arch, target_os) = rask_codegen::targets::arch_and_os(target_triple)?;
+        let (target_arch, target_os) = (target_arch.as_str(), target_os.as_str());
 
         // Check runtime support for this OS
         match target_os {

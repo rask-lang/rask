@@ -76,6 +76,43 @@ pub fn codegen_triple(name: &str) -> Result<&str, String> {
     ))
 }
 
+/// The architecture and OS a target name means, in Rask's own spellings.
+///
+/// Splitting a name on '-' and calling field 1 the OS is right for
+/// `aarch64-macos` and wrong for `aarch64-apple-darwin`, which came out as OS
+/// "apple" — so the link step refused a triple codegen had just built for
+/// (#1185). Both spellings go through the table.
+pub fn arch_and_os(name: &str) -> Result<(String, String), String> {
+    use target_lexicon::OperatingSystem;
+    let triple: Triple = codegen_triple(name)?
+        .parse()
+        .map_err(|e| format!("invalid target '{}': {}", name, e))?;
+    let arch = triple.architecture.to_string();
+    // The cross-compiler prefixes and the runtime's source lists are keyed on
+    // Rask's spelling, not on the sub-architecture a triple carries.
+    let arch = if arch.starts_with("armv") {
+        "arm".to_string()
+    } else if arch.starts_with("riscv64") {
+        "riscv64".to_string()
+    } else {
+        arch
+    };
+    let os = match triple.operating_system {
+        OperatingSystem::Linux => "linux",
+        OperatingSystem::Darwin | OperatingSystem::MacOSX { .. } => "macos",
+        OperatingSystem::Windows => "windows",
+        OperatingSystem::Freebsd => "freebsd",
+        OperatingSystem::None_ | OperatingSystem::Unknown => "none",
+        other => {
+            return Err(format!(
+                "cross-compilation to {} — runtime not available for OS '{}'",
+                name, other,
+            ))
+        }
+    };
+    Ok((arch, os.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +183,25 @@ mod tests {
                 t.triple,
             );
         }
+    }
+
+    /// The full triple and the short name have to agree, which is the half of
+    /// #1185 that made the link step refuse a Mach-O object it had just built.
+    #[test]
+    fn both_spellings_of_a_target_answer_the_same_arch_and_os() {
+        for t in TARGETS {
+            assert_eq!(
+                arch_and_os(t.name).ok(),
+                arch_and_os(t.triple).ok(),
+                "{} vs {}",
+                t.name,
+                t.triple,
+            );
+        }
+        assert_eq!(
+            arch_and_os("aarch64-apple-darwin").unwrap(),
+            ("aarch64".to_string(), "macos".to_string()),
+        );
     }
 
     #[test]

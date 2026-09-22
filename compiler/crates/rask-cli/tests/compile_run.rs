@@ -8627,3 +8627,52 @@ fn a_misspelled_target_is_rejected() {
         "the message should name the mistake and where the list is:\n{text}"
     );
 }
+
+// Mach-O keeps debug info in a `__DWARF` segment under `__debug_*`. Emitted
+// with ELF's `.debug_*` names and no segment — which is what happened — ld64
+// doesn't recognise them as debug sections, treats them as data, and applies
+// DWARF's 8-byte absolute relocations at whatever offset the encoder picked:
+// "pointer not aligned in 'anon-185'+0x23", and no macOS program linked. DWARF
+// was skipped on Mach-O entirely to get the link back, which cost macOS its
+// line numbers (#1184).
+//
+// The section table is read out of the object's own bytes: the names appear
+// verbatim in the Mach-O headers, and looking for the wrong spelling is what
+// catches a regression here.
+#[test]
+fn macho_debug_sections_use_the_macho_spelling() {
+    let tmp = std::env::temp_dir();
+    let out = tmp.join(format!("rask_dwarf_{}", std::process::id()));
+    let obj = tmp.join(format!("rask_dwarf_{}.o", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&obj);
+
+    Command::new(rask_binary())
+        .arg("compile")
+        .arg("--target")
+        .arg("x86_64-macos")
+        .arg(fixture("arithmetic.rk"))
+        .arg("-o")
+        .arg(&out)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask");
+
+    let artifact = if obj.exists() { &obj } else { &out };
+    let bytes = std::fs::read(artifact).expect("no Mach-O artifact");
+    let has = |needle: &str| {
+        bytes
+            .windows(needle.len())
+            .any(|w| w == needle.as_bytes())
+    };
+    assert!(has("__DWARF"), "debug info should be in a __DWARF segment");
+    assert!(has("__debug_info"), "and named __debug_info");
+    assert!(has("__debug_line"), "line table too — that's what a debugger reads");
+    assert!(
+        !has(".debug_info"),
+        "the ELF spelling is what ld64 mistook for data",
+    );
+
+    let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&obj);
+}
