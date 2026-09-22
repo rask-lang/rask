@@ -188,6 +188,17 @@ pub struct Interpreter {
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
     pub(crate) node_types: HashMap<rask_ast::NodeId, rask_types::Type>,
+    /// XC4/XC5: which package each source file belongs to, and which `extend`
+    /// blocks carry their package in the method name because another package
+    /// declares the same method on the same type.
+    ///
+    /// Native puts the package in the symbol; a tree-walker has no symbols, so
+    /// it keys the method the same way and answers a call from whichever
+    /// package is currently executing. Both empty outside a package build.
+    pub(crate) file_packages: HashMap<u16, String>,
+    pub(crate) conformance_disambiguation: HashMap<rask_ast::NodeId, String>,
+    /// The package whose function is running, innermost last.
+    pub(crate) package_stack: Vec<Option<String>>,
     /// What each generic function's type parameters resolved to for the call
     /// currently on the stack, innermost last.
     ///
@@ -293,6 +304,9 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            file_packages: HashMap::new(),
+            conformance_disambiguation: HashMap::new(),
+            package_stack: Vec::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
             call_depth: 0,
@@ -323,6 +337,9 @@ impl Interpreter {
             cli_args: args,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            file_packages: HashMap::new(),
+            conformance_disambiguation: HashMap::new(),
+            package_stack: Vec::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
             call_depth: 0,
@@ -359,6 +376,9 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            file_packages: HashMap::new(),
+            conformance_disambiguation: HashMap::new(),
+            package_stack: Vec::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
             call_depth: 0,
@@ -447,6 +467,34 @@ impl Interpreter {
     /// falls back to unchecked i64 arithmetic.
     pub fn set_node_types(&mut self, node_types: HashMap<rask_ast::NodeId, rask_types::Type>) {
         self.node_types = node_types;
+    }
+
+    /// XC4/XC5: which package wrote each file, and which `extend` blocks need
+    /// the package in their method name.
+    pub fn set_conformance_packages(
+        &mut self,
+        file_packages: HashMap<u16, String>,
+        disambiguation: HashMap<rask_ast::NodeId, String>,
+    ) {
+        self.file_packages = file_packages;
+        self.conformance_disambiguation = disambiguation;
+    }
+
+    /// The package whose code is running. `None` outside a package build, and
+    /// for anything the compiler generated.
+    pub(crate) fn current_package(&self) -> Option<&str> {
+        self.package_stack.last()?.as_deref()
+    }
+
+    /// XC4/XC5: the name a method is registered under for the package that is
+    /// running — `label` becomes `label_liba` where another package also puts a
+    /// `label` on this type.
+    pub(crate) fn conformance_method_name(&self, method: &str) -> Option<String> {
+        if self.conformance_disambiguation.is_empty() {
+            return None;
+        }
+        let pkg = self.current_package()?;
+        Some(rask_types::conformance_symbol(method, pkg))
     }
 
     /// The nominal type name of a runtime value, for matching against a generic

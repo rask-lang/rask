@@ -169,9 +169,18 @@ impl Interpreter {
                 }
                 DeclKind::Impl(impl_decl) => {
                     let base_name = strip_generics(&impl_decl.target_ty).to_string();
+                    // XC5: where another package declares the same method on
+                    // this type, the package goes in the key — otherwise the
+                    // second block read overwrites the first and one library
+                    // runs the other's body.
+                    let suffix = self.conformance_disambiguation.get(&decl.id).cloned();
                     let type_methods = self.methods.entry(base_name).or_default();
                     for method in &impl_decl.methods {
-                        type_methods.insert(method.name.clone(), method.clone());
+                        let key = match &suffix {
+                            Some(pkg) => rask_types::conformance_symbol(&method.name, pkg),
+                            None => method.name.clone(),
+                        };
+                        type_methods.insert(key, method.clone());
                     }
                 }
                 DeclKind::Import(import) => {

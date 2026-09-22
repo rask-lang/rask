@@ -344,14 +344,15 @@ That's E0410, and it is what ships: two blocks in one package are reported at
 the second declaration, two packages at the place that needs the conformance,
 and a collision nobody asks for costs nothing.
 
-XC4 is the part that doesn't hold yet. A use *inside* `liba` is reported too,
-and by the rule it shouldn't be — `libb` isn't in `liba`'s dependency graph.
-The reason isn't the visibility rule, which is a short lookup; it's that
-filtering by it would make `liba` see one conformance while still calling the
-other. Both blocks' `label` land in one method table and lower to one
-`Doc_label`, so `liba` printing `b:7` is what a filtered build actually does.
-A conformance's methods have to carry the package that declared them before
-XC4 means anything, which is XC5's work seen from the other end (#1326).
+XC4 decides who counts as seeing both. `liba` sees one and compiles; the
+program that depends on `liba` and `libb` sees two and gets the error above.
+
+That only means anything because XC5 keeps the two bodies apart underneath. A
+conformance more than one package declares carries the declaring package in its
+symbol — `Doc_label` becomes `Doc_label_liba` — the checker records which one
+each call resolved to, and monomorphization emits both. Without it there is one
+`Doc_label` and the block read last wins, so `liba` calling its own function
+ran `libb`'s body and printed `b:7`.
 
 ## Conditional Conformance
 
@@ -588,7 +589,7 @@ func increment<T: Numeric>(val: T) -> T {
 | Third party declares any other trait for a foreign type | XC2 | Legal, no wrapper needed |
 | Two packages declare the same (type, trait), nobody uses it | XC3 | Not an error — the check is where the conformance is required |
 | One package declares the same (type, trait) twice | XC3 | Compile error at the second declaration |
-| A library and the program linking it see different conformances | XC4/XC5 | Each uses the one its own dependencies give it; the two instantiations are distinct. Not implemented: today the library's own use is E0410 as well (#1326) |
+| A library and the program linking it see different conformances | XC4/XC5 | Each uses the one its own dependencies give it; the two bodies are separate symbols |
 | Trait evolution | TD2 | Adding a required method with a default body is non-breaking; without one it breaks every conformer (major version) |
 | Generic struct fields | G1 | `struct Foo<T: Comparable>` requires T: Comparable at every usage |
 | Negative constraints | — | Not in MVP; workaround via naming convention or separate functions. `T or E` disjointness is the one exception and needs no syntax (GF4) |
@@ -632,6 +633,8 @@ The carve-out started at four — the traits the stdlib's containers key on — 
 Which makes the rule less "these traits get baked into data structures" and more "these traits decide what happens to data whose owner is someone else". `Debug` decides what a line of a log looks like and stays out.
 
 XC5 is the part that makes XC3 more than a slogan. Two conformances in one build, resolved per instantiation (XC4), means the same generic at the same type argument can need two bodies. If the monomorphization key were just the type arguments, one of them would silently win and which one would depend on link order — the exact regression this design exists to prevent, reintroduced at the back.
+
+That turned out to be true of plain methods as well, not just generic instances. Two `extend Doc with Labeled` blocks in two packages both put a `label` on one `Doc`, and both mangled to `Doc_label`: `liba` called its own function, which called `d.label()`, and ran `libb`'s body. So the declaring package is part of the symbol wherever more than one declares it — `Doc_label_liba` — and the checker records which block each call resolved to. It costs nothing in a program without a collision, where there is one block and the name is unchanged.
 
 XC6 admits what it can't do: there is no syntax for "use liba's". Adding one would mean naming conformances, which means a second identity for something that already has a type and a trait. The cases that need it are served by structure — put the use in a package that sees one conformance — and the case that doesn't want either writes its own. I'd rather ship the gap than the naming scheme.
 

@@ -1556,6 +1556,16 @@ impl<'a> MirContext<'a> {
         }
     }
 
+    /// XC5: the package whose `extend` block a call reaches, when more than one
+    /// declares the method. The checker decided it; monomorphization emitted
+    /// the body under the matching symbol.
+    pub fn recorded_conformance_package(&self, node: NodeId) -> Option<String> {
+        match self.call_targets.get(&node)? {
+            rask_types::Callee::Method { package, .. } => package.clone(),
+            rask_types::Callee::Free(_) => None,
+        }
+    }
+
     pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
         match self.call_targets.get(&node)? {
             rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names)

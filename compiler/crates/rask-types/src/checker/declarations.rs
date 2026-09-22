@@ -647,19 +647,15 @@ impl TypeChecker {
         self.resolved.file_packages.get(&span.file_id).map(|s| s.as_str())
     }
 
-    /// XC3: report a conformance that two packages declare, at a place that
-    /// needs it.
+    /// XC3/XC4: report a conformance the code at `span` can reach two
+    /// declarations of.
     ///
-    /// Every declaration counts, not just the ones this package can see, which
-    /// is not what XC4 says. XC4 wants `liba` to keep using its own `Labeled`
-    /// for `Doc` while the program linking it also pulls in `libb`'s — and
-    /// nothing below the checker can tell those two apart yet. Both blocks'
-    /// `label` land in one method table and lower to one `Doc_label`, so
-    /// `liba`'s own call gets whichever block was read last: measured, `liba`
-    /// printed `b:7`. Until a conformance's methods carry the package that
-    /// declared them (#1326), filtering by visibility would trade a loud error
-    /// for a silently wrong answer, which is the thing this whole section
-    /// exists to prevent.
+    /// Visibility is the using package's, not the build's: `liba` keeps using
+    /// its own `Labeled` for `Doc` even when the program linking it also pulls
+    /// in `libb`'s, because `libb` isn't in `liba`'s dependency graph. So the
+    /// same two declarations are a collision in the program and not in either
+    /// library — and the two bodies stay apart all the way down, because XC5
+    /// puts the declaring package in the symbol.
     ///
     /// Reported once per (type, trait, using package): the same pair turns up at
     /// every bound and every call that needs it, and one error is the news.
@@ -675,6 +671,16 @@ impl TypeChecker {
             .conformance_sites(type_id, trait_key)
             .iter()
             .filter(|s| !s.from_stdlib)
+            .filter(|s| match (&here, &s.package) {
+                (Some(here), Some(theirs)) => self
+                    .resolved
+                    .package_deps
+                    .get(here)
+                    .is_some_and(|seen| seen.contains(theirs)),
+                // No package build, or a declaration the compiler generated:
+                // nothing to filter by, so it counts.
+                _ => true,
+            })
             .map(|s| (s.package.clone().unwrap_or_default(), s.span))
             .collect();
         if visible.len() < 2 {
@@ -748,6 +754,44 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
             _ => None,
         }
+    }
+
+    /// XC4/XC5: which package's `extend` block a call at `span` reaches, when
+    /// more than one declares the method.
+    ///
+    /// Visibility is the calling package's, not the build's: `liba` keeps using
+    /// its own `label` for `Doc` while the program linking it also pulls in
+    /// `libb`'s, because `libb` isn't in `liba`'s dependency graph. Code that
+    /// can see both has already been reported (XC3, E0410) — this only has to
+    /// answer for code that can see one.
+    ///
+    /// `None` whenever there is nothing to choose: one block, no package build,
+    /// or a receiver that isn't a user type.
+    pub(super) fn conformance_package_for_call(
+        &self,
+        ty: &Type,
+        method: &str,
+        span: rask_ast::Span,
+    ) -> Option<String> {
+        if self.types.impl_method_packages.is_empty() {
+            return None;
+        }
+        let type_id = self.named_type_id(ty)?;
+        let base = super::type_defs::method_base(method);
+        let sites = self.types.impl_method_packages(type_id, base);
+        if sites.len() < 2 {
+            return None;
+        }
+        let here = self.package_of(span)?;
+        let seen = self.resolved.package_deps.get(here)?;
+        let mut visible = sites.iter().filter(|(pkg, _)| seen.contains(pkg));
+        let first = visible.next()?;
+        // Two visible is XC3's error, already reported at this same call. Don't
+        // pick one behind it.
+        if visible.next().is_some() {
+            return None;
+        }
+        Some(first.0.clone())
     }
 
     /// XC1: the traits a type's owner alone may declare, and whether this one
@@ -927,6 +971,16 @@ impl TypeChecker {
                     name,
                     span,
                 });
+            }
+        }
+        // XC4/XC5: which package this block belongs to, per method. Two
+        // packages can put a `label` on one `Doc`, and nothing in the signature
+        // tells them apart — this does, so a call from `liba` can reach `liba`'s
+        // body and monomorphization can emit both.
+        if let Some(pkg) = self.package_of(span).map(str::to_string) {
+            for m in &new_methods {
+                self.types
+                    .record_impl_method_package(type_id, &m.name, &pkg, decl_id);
             }
         }
         if let Some(def) = self.types.get_mut(type_id) {

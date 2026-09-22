@@ -581,7 +581,11 @@ impl TypeChecker {
             if !matches!(ty, Type::Var(_) | Type::Error) {
                 self.call_targets.insert(
                     node,
-                    Callee::Method { recv: ty.clone(), method: method.clone() },
+                    Callee::Method {
+                        recv: ty.clone(),
+                        method: method.clone(),
+                        package: self.conformance_package_for_call(&ty, &method, span),
+                    },
                 );
             }
         }
@@ -644,7 +648,11 @@ impl TypeChecker {
                 } else if let Some(node) = call_node {
                     self.call_targets.insert(
                         node,
-                        Callee::Method { recv: settled, method: method.clone() },
+                        Callee::Method {
+                            recv: settled.clone(),
+                            method: method.clone(),
+                            package: self.conformance_package_for_call(&settled, &method, span),
+                        },
                     );
                 }
             }

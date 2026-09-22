@@ -75,6 +75,10 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
     interp.set_node_types(result.typed.node_types.clone());
+    interp.set_conformance_packages(
+        result.typed.file_packages.clone(),
+        result.typed.conformance_disambiguation.clone(),
+    );
     interp.set_error_wraps(result.typed.error_wraps.clone());
     interp.set_try_chain_placement(result.typed.try_chain_placement.clone());
     interp.set_fallback_keeps_shape(result.typed.fallback_keeps_shape.clone());
@@ -381,6 +385,10 @@ pub fn cmd_test_interp(path: &str, filter: Option<String>, format: Format) {
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     interp.inject_cfg(&cfg);
     interp.set_node_types(result.typed.node_types.clone());
+    interp.set_conformance_packages(
+        result.typed.file_packages.clone(),
+        result.typed.conformance_disambiguation.clone(),
+    );
     interp.set_error_wraps(result.typed.error_wraps.clone());
     interp.set_try_chain_placement(result.typed.try_chain_placement.clone());
     interp.set_fallback_keeps_shape(result.typed.fallback_keeps_shape.clone());
@@ -1021,6 +1029,10 @@ fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
 
     let mut interp = rask_interp::Interpreter::with_args(vec![path.to_string()]);
     interp.set_node_types(result.typed.node_types.clone());
+    interp.set_conformance_packages(
+        result.typed.file_packages.clone(),
+        result.typed.conformance_disambiguation.clone(),
+    );
     interp.set_error_wraps(result.typed.error_wraps.clone());
     interp.set_try_chain_placement(result.typed.try_chain_placement.clone());
     interp.set_fallback_keeps_shape(result.typed.fallback_keeps_shape.clone());

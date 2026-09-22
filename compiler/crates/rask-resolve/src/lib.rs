@@ -36,7 +36,7 @@ pub use lockfile::LockFile;
 
 use rask_ast::decl::Decl;
 use rask_ast::NodeId;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// True when `name` names a builtin stdlib module.
 ///
@@ -63,6 +63,13 @@ pub struct ResolvedProgram {
     /// `type.generics/XC1` needs and what the merged decl list drops. Empty
     /// outside a package build.
     pub file_packages: HashMap<u16, String>,
+    /// XC4: every package each package can see, transitively, including itself.
+    ///
+    /// A conformance is visible to a package iff the package that declares it is
+    /// in *that* package's dependency graph — not the build's. So `liba` keeps
+    /// using its own `Labeled` for `Doc` even when the program linking it also
+    /// pulls in `libb`'s. Empty outside a package build.
+    pub package_deps: HashMap<String, HashSet<String>>,
 }
 
 /// Extern function signature extracted from C imports or explicit `extern "C"` decls.

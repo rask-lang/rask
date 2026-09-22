@@ -110,6 +110,15 @@ pub struct TypeTable {
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
     pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<String>)>>,
+    /// XC4/XC5: which package's `extend` block each method on a type came from,
+    /// and which block that was. `(TypeId, method name) → [(package, impl decl)]`.
+    ///
+    /// One type can end up holding two `label`s, from two packages, and they are
+    /// indistinguishable by signature — that is the whole point of the
+    /// collision. This says which is which, so a call from `liba` reaches
+    /// `liba`'s body and monomorphization emits both instead of one winning.
+    pub(super) impl_method_packages:
+        HashMap<(TypeId, String), Vec<(String, NodeId)>>,
     /// XC3: `(type, applied trait)` pairs with more than one written
     /// declaration. Empty in every program that doesn't have a collision, which
     /// is nearly all of them — the use-site check reads this first and does
@@ -144,6 +153,7 @@ impl TypeTable {
             conformance_conditions: HashMap::new(),
             declared_at: HashMap::new(),
             ambiguous_conformances: std::collections::HashSet::new(),
+            impl_method_packages: HashMap::new(),
         };
         table.register_builtins();
         table
@@ -575,6 +585,36 @@ impl TypeTable {
             self.ambiguous_conformances.insert((type_id, key));
         }
         None
+    }
+
+    /// XC4/XC5: remember which package's block a method came from.
+    pub(super) fn record_impl_method_package(
+        &mut self,
+        type_id: TypeId,
+        method: &str,
+        package: &str,
+        decl: NodeId,
+    ) {
+        let sites = self
+            .impl_method_packages
+            .entry((type_id, method.to_string()))
+            .or_default();
+        if !sites.iter().any(|(_, d)| *d == decl) {
+            sites.push((package.to_string(), decl));
+        }
+    }
+
+    /// XC4/XC5: the packages whose blocks declare this method on this type.
+    /// One entry is the ordinary case and needs no disambiguation.
+    pub(super) fn impl_method_packages(
+        &self,
+        type_id: TypeId,
+        method: &str,
+    ) -> &[(String, NodeId)] {
+        self.impl_method_packages
+            .get(&(type_id, method.to_string()))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// XC3: is any conformance on this type declared more than once?

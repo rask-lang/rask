@@ -28,7 +28,7 @@ mod resolve;
 mod validate;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TraitTypeParam, TraitAssocType, TypeBinding, TypedProgram, receiver_name};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TraitTypeParam, TraitAssocType, TypeBinding, TypedProgram, receiver_name, conformance_symbol};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext};
@@ -860,10 +860,11 @@ impl TypeChecker {
                     type_defs::Callee::Free(sym) => type_defs::Callee::Free(*sym),
                     // Left as interned ids, not normalized to names: the
                     // receiver's `TypeId` is what dispatch keys on.
-                    type_defs::Callee::Method { recv, method } => {
+                    type_defs::Callee::Method { recv, method, package } => {
                         type_defs::Callee::Method {
                             recv: self.ctx.apply(recv),
                             method: method.clone(),
+                            package: package.clone(),
                         }
                     }
                 };
@@ -919,6 +920,23 @@ impl TypeChecker {
                 .collect()
         };
 
+        // XC5: the blocks whose methods need the declaring package in their
+        // symbol. A method more than one package puts on the same type — two
+        // `label`s on one `Doc` — mangles to one name otherwise, and the pass
+        // that read it last wins.
+        let mut conformance_disambiguation: HashMap<NodeId, String> = HashMap::new();
+        for sites in self.types.impl_method_packages.values() {
+            let mut packages: Vec<&str> = sites.iter().map(|(p, _)| p.as_str()).collect();
+            packages.sort_unstable();
+            packages.dedup();
+            if packages.len() < 2 {
+                continue;
+            }
+            for (pkg, decl) in sites {
+                conformance_disambiguation.insert(*decl, pkg.clone());
+            }
+        }
+
         let program = TypedProgram {
             symbols: self.resolved.symbols,
             c_type_decls: self.c_type_decls,
@@ -928,6 +946,8 @@ impl TypeChecker {
             call_type_args,
             call_targets,
             trait_coercions,
+            file_packages: self.resolved.file_packages.clone(),
+            conformance_disambiguation,
             error_wraps,
             fallback_keeps_shape,
             try_chain_placement,

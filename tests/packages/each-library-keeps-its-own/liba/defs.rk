@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import traitpkg.Labeled
+
+public extend traitpkg.Doc with Labeled {
+    public func label(self) -> string {
+        return "a:{self.n}"
+    }
+}
+
+// XC4: `libb` isn't in `liba`'s dependency graph, so this call sees exactly
+// one conformance and runs it — whatever else the program linking `liba`
+// pulls in.
+public func describe(d: traitpkg.Doc) -> string {
+    return d.label()
+}
