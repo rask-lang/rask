@@ -664,18 +664,23 @@ impl Interpreter {
                 let captured = captured_env.clone();
                 let child = self.spawn_child(captured);
 
+                // The thread starts now; the body waits for one of the scope's
+                // task slots before running, so `workers: n` bounds how many
+                // run at once (#1111).
                 let join_handle = crate::spawn_interp_thread(move || {
-                    let mut interp = child;
-                    match interp.eval_expr(&body) {
-                        Ok(val) => Ok(val),
-                        Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
-                            match diag.error {
-                                RuntimeError::Return(val) => Ok(val),
-                                _ => unreachable!("checked above"),
+                    crate::with_task_slot(move || {
+                        let mut interp = child;
+                        match interp.eval_expr(&body) {
+                            Ok(val) => Ok(val),
+                            Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
+                                match diag.error {
+                                    RuntimeError::Return(val) => Ok(val),
+                                    _ => unreachable!("checked above"),
+                                }
                             }
+                            Err(diag) => Err(interp.task_failure_message(&diag)),
                         }
-                        Err(diag) => Err(interp.task_failure_message(&diag)),
-                    }
+                    })
                 })?;
 
                 // Return TaskHandle (not ThreadHandle) for type distinction

@@ -43,11 +43,15 @@
 // (ctrl.panic/O4) and is safe to run again.
 
 void rask_runtime_init(int64_t worker_count) {
-    (void)worker_count;
+    // There is no scheduler to start, but the worker count still means
+    // something: how many tasks may run at once (#1111). `thread.c` holds the
+    // count, because every task body funnels through it.
+    rask_task_slots_install(worker_count);
 }
 
 void rask_runtime_shutdown(void) {
     rask_await_detached_tasks();
+    rask_task_slots_clear();
 }
 
 // ─── Spawning ──────────────────────────────────────────────

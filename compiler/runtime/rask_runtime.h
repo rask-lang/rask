@@ -1266,6 +1266,14 @@ int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out);
 // Check if the current task has been cancelled. Returns 1 if cancelled.
 int8_t rask_task_cancelled(void);
 
+// `using Multitasking(workers: n)` on a build with no green scheduler: the
+// scope installs the count and a task body waits for one of the slots. Inert
+// while nothing installs one. See thread.c.
+void rask_task_slots_install(int64_t n);
+void rask_task_slots_clear(void);
+void rask_task_slot_release(void);
+void rask_task_slot_retake(void);
+
 // Raise the cancel flag without joining. `rask_task_cancel` does both, and a
 // caller that wants the outcome shape (RASK_JOIN_CANCELLED and the value) needs
 // the flag raised before `rask_task_join_outcome` reads it.

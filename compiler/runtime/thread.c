@@ -127,10 +127,75 @@ typedef struct {
     RaskTaskState *state;
 } TaskEntry;
 
+// ─── Task slots ────────────────────────────────────────────
+//
+// `using Multitasking(workers: n)` bounds how many tasks run at once. Where
+// there is a green scheduler that bound is its worker count; where there isn't,
+// a task is an OS thread and nothing counted them — `workers: 2` with six
+// spawns ran six bodies at once (#1111). So the scope installs a count here and
+// a body waits for one of the slots.
+//
+// Installed only by `rask_runtime_init` in green_threads.c, which exists only
+// on a build without the scheduler, so `slots_total` is 0 and all of this is
+// inert otherwise. Inside such a scope the bound covers every task body,
+// `Thread.spawn` and a pooled job included — they aren't Multitasking tasks and
+// the green build wouldn't count them, which is the one place the two differ.
+
+static pthread_mutex_t slot_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  slot_freed = PTHREAD_COND_INITIALIZER;
+static int64_t         slots_total;   // 0 = no bound installed
+static int64_t         slots_free;
+static __thread int    slot_held;
+
+void rask_task_slots_install(int64_t n) {
+    pthread_mutex_lock(&slot_lock);
+    slots_total = n > 0 ? n : 1;
+    slots_free = slots_total;
+    pthread_mutex_unlock(&slot_lock);
+}
+
+void rask_task_slots_clear(void) {
+    pthread_mutex_lock(&slot_lock);
+    slots_total = 0;
+    pthread_mutex_unlock(&slot_lock);
+}
+
+static void slot_take(void) {
+    pthread_mutex_lock(&slot_lock);
+    if (slots_total == 0) {
+        pthread_mutex_unlock(&slot_lock);
+        return;
+    }
+    while (slots_free == 0) {
+        pthread_cond_wait(&slot_freed, &slot_lock);
+    }
+    slots_free--;
+    pthread_mutex_unlock(&slot_lock);
+    slot_held = 1;
+}
+
+static void slot_give(void) {
+    if (!slot_held) return;
+    slot_held = 0;
+    pthread_mutex_lock(&slot_lock);
+    slots_free++;
+    pthread_cond_signal(&slot_freed);
+    pthread_mutex_unlock(&slot_lock);
+}
+
+// A task blocked in `join` isn't running anything, so it gives its slot up for
+// the duration — without which `workers: 1` could not run a task that joins
+// another. The green build answers the same case by starting a replacement
+// worker.
+void rask_task_slot_release(void) { slot_give(); }
+void rask_task_slot_retake(void) { slot_take(); }
+
 // Run one task body to completion and record how it ended. Shared by the
 // one-thread-per-spawn path below and by the pool workers in threadpool.c,
 // which run many of these back to back on the same thread.
 void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
+    slot_take();
+
     // Set up cancel flag for this thread
     current_cancel_flag = &state->cancel_flag;
 
@@ -183,6 +248,10 @@ void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
         pthread_cond_broadcast(&state->done_cond);
         pthread_mutex_unlock(&state->report_lock);
     }
+
+    // Last, so a joiner waiting for this task's slot doesn't start before the
+    // task has finished reporting.
+    slot_give();
 }
 
 static void *task_thread_entry(void *arg) {
@@ -225,6 +294,9 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
     }
 
     RaskTaskState *state = h->state;
+    // Waiting isn't running: a joiner that kept its slot would leave
+    // `workers: 1` with nothing free to run the task it waits for.
+    rask_task_slot_release();
     if (state->pooled) {
         // No thread of its own — wait for the worker to finish this job.
         pthread_mutex_lock(&state->report_lock);
@@ -236,6 +308,7 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
     } else {
         pthread_join(state->thread, NULL);
     }
+    rask_task_slot_retake();
 
     int status = atomic_load_explicit(&state->status, memory_order_acquire);
     int64_t result;

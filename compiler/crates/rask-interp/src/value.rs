@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 use std::fmt;
 use std::fs::File as StdFile;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, Mutex, RwLock, Weak};
+use std::sync::{mpsc, Arc, Condvar, Mutex, RwLock, Weak};
 use std::sync::LazyLock;
 
 use rask_ast::expr::Expr;
@@ -795,64 +795,74 @@ impl fmt::Debug for ThreadPoolInner {
     }
 }
 
-/// Multitasking runtime — bounded thread pool for spawn() tasks.
+/// The `using Multitasking(workers: n)` scope, and the bound it puts on how
+/// many tasks run at once.
+///
+/// `workers: n` means n *runnable* workers on both backends — a task blocked in
+/// `join` isn't running anything, so it doesn't hold a slot, and native grows a
+/// replacement thread for the duration. Here the count is a plain semaphore: a
+/// task waits for a slot before it starts its body and hands it back at the
+/// end, and `join` gives its slot up while it waits.
+///
+/// This used to start n worker threads reading a channel. Nothing ever sent to
+/// that channel — `spawn(|| …)` as a call, which is the only form, starts its
+/// own thread — so the workers sat idle for the lifetime of every block and
+/// `workers: n` bounded nothing at all: `using Multitasking(2)` with two
+/// hundred spawns ran two hundred tasks at once here and two natively (#1111).
 pub struct MultitaskingRuntime {
     pub workers: usize,
-    pub sender: Mutex<Option<mpsc::Sender<PoolTask>>>,
-    pub pool_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// Slots left. `Mutex` + `Condvar` rather than an atomic, because a task
+    /// that finds none has to wait for one.
+    free: Mutex<usize>,
+    slot_freed: Condvar,
 }
 
 impl MultitaskingRuntime {
-    /// Fallible because it starts its workers here: a target with no threads
-    /// refuses at the first one rather than handing back a runtime that can
-    /// never run anything (#1172).
+    /// Fallible for the browser playground, which has no threads at all: a
+    /// scope that could never run a task refuses to open rather than accepting
+    /// a `spawn` it can't honour (#1172).
     pub fn new(workers: usize) -> Result<Self, crate::RuntimeError> {
-        let (tx, rx) = mpsc::channel::<PoolTask>();
-        let rx = Arc::new(Mutex::new(rx));
-
-        let mut threads = Vec::with_capacity(workers);
-        for _ in 0..workers {
-            let rx = Arc::clone(&rx);
-            threads.push(crate::spawn_interp_thread(move || {
-                loop {
-                    let task = rx.lock().unwrap().recv();
-                    match task {
-                        Ok(task) => (task.work)(),
-                        Err(_) => break, // Channel closed
-                    }
-                }
-            })?);
+        if !crate::HAS_THREADS {
+            return Err(crate::RuntimeError::Generic(
+                "threads not available in browser playground".to_string(),
+            ));
         }
-
         Ok(Self {
             workers,
-            sender: Mutex::new(Some(tx)),
-            pool_threads: Mutex::new(threads),
+            free: Mutex::new(workers.max(1)),
+            slot_freed: Condvar::new(),
         })
     }
 
-    /// Shut down the pool: drop sender, join all workers, then wait for every
-    /// task the block started.
+    /// Wait for a slot to run in.
+    pub fn take_slot(&self) {
+        let mut free = self.free.lock().unwrap();
+        while *free == 0 {
+            free = self.slot_freed.wait(free).unwrap();
+        }
+        *free -= 1;
+    }
+
+    /// Hand a slot back.
+    pub fn give_slot(&self) {
+        let mut free = self.free.lock().unwrap();
+        *free += 1;
+        self.slot_freed.notify_one();
+    }
+
+    /// Wait for every task the block started, which is what block exit means
+    /// (conc.async/C4, std.testing/T19): a task that hangs or panics fails the
+    /// test that spawned it, under that test's name, rather than surfacing
+    /// somewhere later or not at all.
     ///
-    /// conc.async/C4 and std.testing/T19 say the block waits at exit — that is
-    /// what makes a task that hangs or panics fail the test that spawned it,
-    /// under that test's name. Joining the pool threads isn't enough, because
-    /// `spawn(|| …)` doesn't use the pool: it starts a thread of its own and
-    /// leaves its result to a reaper. Those reapers were joined once, at
-    /// process exit, so a task's output arrived after the block had returned —
-    /// and inside a `test` block it was lost outright, the runner having
-    /// restored the captured output before the task ever wrote (#1093).
+    /// A detached task's result goes to a reaper thread, and those were joined
+    /// once, at process exit — so a task's output arrived after the block had
+    /// returned, and inside a `test` block it was lost outright, the runner
+    /// having restored the captured output before the task ever wrote (#1093).
     ///
     /// Draining the whole list is right because C1 allows one block per
     /// process: every reaper standing at this point belongs to this block.
     pub fn shutdown(&self) {
-        *self.sender.lock().unwrap() = None;
-        let mut threads = self.pool_threads.lock().unwrap();
-        for t in threads.drain(..) {
-            let _ = t.join();
-        }
-        // After the pool, not before: a reaper for a pool task is blocked on a
-        // result its worker hasn't sent yet.
         crate::join_detached_reapers();
     }
 }
