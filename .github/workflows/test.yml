@@ -582,10 +582,11 @@ jobs:
   #      section names (#1184), and `ld64.lld` on Linux accepts that object
   #      happily, so nothing here could catch it.
   #
-  # Narrow on purpose at step 3: hello-world plus two suite files that touch
-  # collections, strings and enums. Not the gates — macOS runners bill at 10x,
-  # and `spawn` doesn't link on Darwin yet (#1180), so anything broader is red
-  # for a reason that isn't the change under test. Widen it when #1180 lands.
+  # Narrow on purpose at step 3: hello-world, three suite files covering
+  # collections, strings and enums, and the spawning files — `spawn` is backed
+  # by OS threads off Linux now (#1180), and this is the only place the real
+  # thing runs on Darwin rather than through the Linux stand-in. Not the full
+  # gates: macOS runners bill at 10x.
   macos-build:
     name: macos-build (runtime, compiler and a linked program on Darwin)
     runs-on: macos-latest
@@ -641,3 +642,10 @@ jobs:
                  tests/suite/t_stdlib_default_argument.rk; do
           compiler/target/release/rask test "$f"
         done
+
+    # Every suite file that spawns. Darwin has no green scheduler, so these run
+    # on the thread-backed path — the same one the Linux no-green gate checks,
+    # here on the platform it is for.
+    - name: Spawning suite files
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/no_green_gate.sh
