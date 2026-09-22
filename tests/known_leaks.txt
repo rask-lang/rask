@@ -441,3 +441,11 @@ t_collection_literal_takes_its_slot.rk  # 2 allocations — a Vec behind an opti
 # means calling the release for *its* strategy and the outer box carries a kind,
 # not a strategy. The rest of this file's leaks were #1253's and are gone.
 t_function_type_in_a_slot.rk  # 2 allocations — a Shared holding a Shared, #1302
+
+# A closure that outlives its frame carries its captures into a heap
+# environment, and freeing that block doesn't yet release what's inside it —
+# #1045, and mem.closures says so in the implementation section. The four
+# CM1 tests at the end of this file return closures over a `Vec`, which is
+# exactly that shape. Reachable at all only since `own` went: the same
+# programs needed the keyword before, and nothing in the suite wrote it.
+t_returned_closure_captures.rk  # 2 allocations — a carried Vec in a closure env, #1045

@@ -187,6 +187,8 @@ impl Playground {
             .set_try_chain_placement(checked.typed.try_chain_placement.clone());
         self.interpreter
             .set_fallback_keeps_shape(checked.typed.fallback_keeps_shape.clone());
+        self.interpreter
+            .set_escaping_closures(checked.typed.escaping_closures.clone());
         self.interpreter.set_source_info(PLAYGROUND, source);
         if !checked.package_names.is_empty() {
             self.interpreter.register_packages(&checked.package_names);
