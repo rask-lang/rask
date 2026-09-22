@@ -27,6 +27,10 @@ use rask_types::{ParamMode, Type, TypedProgram};
 pub struct OwnershipResult {
     /// Any errors found during analysis.
     pub errors: Vec<OwnershipError>,
+    /// CM1: closure literals that outlive the frame that built them. Lowering
+    /// and the interpreter read this to decide whether a capture is the value
+    /// or a pointer to it — it is the whole of what `own` used to say.
+    pub escaping_closures: HashSet<rask_ast::NodeId>,
 }
 
 impl OwnershipResult {
@@ -203,6 +207,13 @@ pub struct OwnershipChecker<'a> {
     /// way `spawn(|| …)` is. Only the literal case is in here — a closure that
     /// arrives through a parameter or a call has no body to read.
     closure_literals: HashMap<String, Expr>,
+    /// CM1: closure literals that outlive the frame that built them, so they
+    /// carry their captures instead of pointing at them. Collected before any
+    /// body is walked — see `collect_escaping_closures`.
+    escaping_closures: HashSet<rask_ast::NodeId>,
+    /// `RASK_ESCAPE_AUDIT=1` reports where the inferred answer and the written
+    /// `own` disagree. Read once — this sits on the walk of every closure.
+    escape_audit: bool,
     /// Free-function parameter modes by name → per-position `take` flags.
     ///
     /// Lets a call consume arguments to `take` params without call-site `own`
@@ -298,6 +309,8 @@ impl<'a> OwnershipChecker<'a> {
             module_consts: std::collections::HashSet::new(),
             closure_scope_limits: HashMap::new(),
             closure_literals: HashMap::new(),
+            escaping_closures: HashSet::new(),
+            escape_audit: std::env::var("RASK_ESCAPE_AUDIT").is_ok(),
             mutable_captures: Vec::new(),
             fn_take_params: HashMap::new(),
             fn_deleting_params: HashMap::new(),
@@ -376,6 +389,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.module_consts.insert(c.name.clone());
             }
         }
+        self.collect_escaping_closures(decls);
         for decl in decls {
             self.check_decl(decl);
         }
@@ -383,6 +397,7 @@ impl<'a> OwnershipChecker<'a> {
         self.check_generic_size_fences(decls);
         OwnershipResult {
             errors: self.errors,
+            escaping_closures: self.escaping_closures,
         }
     }
 
@@ -1908,6 +1923,15 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Closure { params, body, is_own, .. } => {
+                if self.escape_audit {
+                    let inferred = self.closure_carries_captures(expr.id);
+                    if inferred != *is_own {
+                        eprintln!(
+                            "ESCAPE-AUDIT: closure at {}..{} written own={} inferred={}",
+                            expr.span.start, expr.span.end, is_own, inferred
+                        );
+                    }
+                }
                 // Collect names from closure params (these shadow outer bindings)
                 let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
@@ -4298,6 +4322,230 @@ impl<'a> OwnershipChecker<'a> {
         projections: &mut HashMap<String, Option<Vec<String>>>,
     ) {
         self.collect_free_vars_inner(expr, locals, out, projections);
+    }
+
+    // ---- Which closures outlive the frame that built them ----
+
+    /// A closure that outlives its frame has to carry its captures; one that
+    /// doesn't can point at them. That isn't a choice — a closure handed to a
+    /// task or stored in a field would be reading a dead frame otherwise — so
+    /// the compiler decides it rather than asking for a word at the literal.
+    ///
+    /// Collected up front, before any body is walked, because the literal is
+    /// where the captures are taken and the escape is usually a line or two
+    /// further down: `let f = || { … }` says nothing, `spawn(f)` says it all.
+    /// Still function-local — nothing here reads past the body it is walking.
+    ///
+    /// Where a closure ends up outliving the frame:
+    ///
+    /// - handed to a `take` parameter, which is where `spawn` lives (its
+    ///   signature is `spawn(take f: func() -> T)`)
+    /// - returned
+    /// - stored into a struct field, or assigned through a field or an index
+    ///
+    /// A borrow parameter is not on the list: PM6 says the callee can't keep
+    /// what it borrowed, so the closure dies with the call.
+    fn collect_escaping_closures(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            match &decl.kind {
+                DeclKind::Fn(f) => self.escapes_in_body(&f.body),
+                DeclKind::Struct(s) => {
+                    for m in &s.methods { self.escapes_in_body(&m.body); }
+                }
+                DeclKind::Enum(e) => {
+                    for m in &e.methods { self.escapes_in_body(&m.body); }
+                }
+                DeclKind::Impl(i) => {
+                    for m in &i.methods { self.escapes_in_body(&m.body); }
+                }
+                // `test` and `benchmark` bodies are function bodies, and the
+                // spawn tests live in them.
+                DeclKind::Test(t) => self.escapes_in_body(&t.body),
+                DeclKind::Benchmark(b) => self.escapes_in_body(&b.body),
+                _ => {}
+            }
+        }
+    }
+
+    fn escapes_in_body(&mut self, body: &[Stmt]) {
+        let mut named: HashMap<String, rask_ast::NodeId> = HashMap::new();
+        self.escapes_in_stmts(body, &mut named);
+    }
+
+    fn escapes_in_stmts(&mut self, body: &[Stmt], named: &mut HashMap<String, rask_ast::NodeId>) {
+        for stmt in body {
+            self.escapes_in_stmt(stmt, named);
+        }
+    }
+
+    fn escapes_in_stmt(&mut self, stmt: &Stmt, named: &mut HashMap<String, rask_ast::NodeId>) {
+        match &stmt.kind {
+            StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => {
+                self.escapes_in_expr(init, named);
+                if matches!(init.kind, ExprKind::Closure { .. }) {
+                    named.insert(name.clone(), init.id);
+                } else {
+                    // A name rebound to something else stops standing for a
+                    // closure, or `let f = g` where `g` held one carries it.
+                    match &init.kind {
+                        ExprKind::Ident(from) => match named.get(from).copied() {
+                            Some(id) => { named.insert(name.clone(), id); }
+                            None => { named.remove(name); }
+                        },
+                        _ => { named.remove(name); }
+                    }
+                }
+            }
+            StmtKind::Assign { target, value, .. } => {
+                self.escapes_in_expr(value, named);
+                self.escapes_in_expr(target, named);
+                // Through a field or an index the closure lands in something
+                // that outlives the assignment; a plain name is just a rebind.
+                if matches!(target.kind, ExprKind::Ident(_)) {
+                    if let ExprKind::Ident(name) = &target.kind {
+                        match self.closure_id_of(value, named) {
+                            Some(id) => { named.insert(name.clone(), id); }
+                            None => { named.remove(name); }
+                        }
+                    }
+                } else {
+                    self.mark_escaping(value, named);
+                }
+            }
+            StmtKind::Return(Some(e)) => {
+                self.escapes_in_expr(e, named);
+                self.mark_escaping(e, named);
+            }
+            StmtKind::Break { value: Some(e), .. } => {
+                self.escapes_in_expr(e, named);
+                self.mark_escaping(e, named);
+            }
+            StmtKind::Expr(e) => self.escapes_in_expr(e, named),
+            StmtKind::LetTuple { init, .. } | StmtKind::MutTuple { init, .. }
+            | StmtKind::LetStruct { init, .. } => self.escapes_in_expr(init, named),
+            StmtKind::While { cond, body, .. } => {
+                self.escapes_in_expr(cond, named);
+                self.escapes_in_stmts(body, named);
+            }
+            StmtKind::WhileLet { expr, body, .. } => {
+                self.escapes_in_expr(expr, named);
+                self.escapes_in_stmts(body, named);
+            }
+            StmtKind::For { iter, body, .. } | StmtKind::ComptimeFor { iter, body, .. } => {
+                self.escapes_in_expr(iter, named);
+                self.escapes_in_stmts(body, named);
+            }
+            StmtKind::Loop { body, .. } | StmtKind::Comptime(body) => {
+                self.escapes_in_stmts(body, named)
+            }
+            StmtKind::Ensure { body, else_handler } => {
+                self.escapes_in_stmts(body, named);
+                if let Some((_, handler)) = else_handler {
+                    self.escapes_in_stmts(handler, named);
+                }
+            }
+            StmtKind::Return(None) | StmtKind::Break { value: None, .. }
+            | StmtKind::Continue(_) | StmtKind::Discard { .. } => {}
+        }
+    }
+
+    fn escapes_in_expr(&mut self, expr: &Expr, named: &mut HashMap<String, rask_ast::NodeId>) {
+        rask_ast::visit::walk_expr_pruned(expr, &mut |e| {
+            match &e.kind {
+                ExprKind::Call { func, args } => {
+                    let takes = match &func.kind {
+                        ExprKind::Ident(name) => self.fn_take_params.get(name).cloned(),
+                        _ => None,
+                    };
+                    for (i, arg) in args.iter().enumerate() {
+                        if takes.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(false) {
+                            self.mark_escaping(&arg.expr, named);
+                        }
+                    }
+                    true
+                }
+                ExprKind::MethodCall { object, method, args, .. } => {
+                    let modes = self.method_param_modes(object, method);
+                    for (i, arg) in args.iter().enumerate() {
+                        let takes = matches!(
+                            modes.as_ref().and_then(|m| m.get(i)),
+                            Some(ParamMode::Take)
+                        );
+                        // A method the signature table can't place is the
+                        // common case for `spawn` on a handle or a group.
+                        // Reading an unplaceable `spawn` as a borrow would hand
+                        // the task a pointer into the frame that spawned it.
+                        if takes || (modes.is_none() && method == "spawn") {
+                            self.mark_escaping(&arg.expr, named);
+                        }
+                    }
+                    true
+                }
+                ExprKind::StructLit { fields, .. } => {
+                    for field in fields {
+                        self.mark_escaping(&field.value, named);
+                    }
+                    true
+                }
+                // Statement order decides what a name stands for, and the
+                // expression walk has none, so the statement walker takes these.
+                // Every shape that holds statements has to be here: `using
+                // Multitasking { … }` is where the spawns live, and routing it
+                // through the plain walk instead lost the `let f = || …` that
+                // `spawn(f)` two lines down needs.
+                ExprKind::Block(body) | ExprKind::BlockCall { body, .. }
+                | ExprKind::Unsafe { body } | ExprKind::Comptime { body }
+                | ExprKind::Loop { body, .. } => {
+                    self.escapes_in_stmts(body, named);
+                    false
+                }
+                ExprKind::UsingBlock { args, body, .. } => {
+                    for a in args { self.escapes_in_expr(&a.expr, named); }
+                    self.escapes_in_stmts(body, named);
+                    false
+                }
+                ExprKind::WithAs { bindings, body } => {
+                    for b in bindings { self.escapes_in_expr(&b.source, named); }
+                    self.escapes_in_stmts(body, named);
+                    false
+                }
+                // A closure body is its own frame's business. What it stores or
+                // returns escapes *its* frame, and the names out here mean
+                // nothing inside it.
+                ExprKind::Closure { body, .. } => {
+                    let mut inner = HashMap::new();
+                    self.escapes_in_expr(body, &mut inner);
+                    false
+                }
+                _ => true,
+            }
+        });
+    }
+
+    /// The closure literal an expression stands for: written there, or bound to
+    /// a name that holds one.
+    fn closure_id_of(
+        &self,
+        expr: &Expr,
+        named: &HashMap<String, rask_ast::NodeId>,
+    ) -> Option<rask_ast::NodeId> {
+        match &expr.kind {
+            ExprKind::Closure { .. } => Some(expr.id),
+            ExprKind::Ident(name) => named.get(name).copied(),
+            _ => None,
+        }
+    }
+
+    fn mark_escaping(&mut self, expr: &Expr, named: &HashMap<String, rask_ast::NodeId>) {
+        if let Some(id) = self.closure_id_of(expr, named) {
+            self.escaping_closures.insert(id);
+        }
+    }
+
+    /// Whether a closure literal carries its captures rather than pointing at
+    /// them. `mem.closures/CM1`: it does exactly when it outlives its frame.
+    fn closure_carries_captures(&self, id: rask_ast::NodeId) -> bool {
+        self.escaping_closures.contains(&id)
     }
 
     // ---- A task's write to a capture nothing reads back ----
