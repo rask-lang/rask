@@ -124,11 +124,21 @@ impl TargetConfig {
         match target_os {
             "linux" => {
                 sources.extend(PTHREAD_SOURCES.iter().map(|s| s.to_string()));
-                sources.extend(LINUX_SOURCES.iter().map(|s| s.to_string()));
+                // RASK_NO_GREEN builds the source set macOS gets, on Linux.
+                // Off Linux there is no green scheduler and the tasks run on
+                // OS threads (`green_threads.c`), and nothing on a Linux
+                // machine exercised that — which is how `spawn` came to fail
+                // at link on macOS for two releases (#1180). This is the seam
+                // that lets a Linux gate check it.
+                if !no_green() {
+                    sources.extend(LINUX_SOURCES.iter().map(|s| s.to_string()));
+                }
             }
             "macos" => {
                 sources.extend(PTHREAD_SOURCES.iter().map(|s| s.to_string()));
-                // No green scheduler on macOS yet (needs kqueue backend)
+                // No green scheduler on macOS yet (needs kqueue backend), so
+                // `green_threads.c` — in the portable set — supplies the
+                // scheduler's entry points on top of pthreads.
             }
             _ => {}
         }
@@ -282,7 +292,21 @@ fn profile_cflags(release: bool) -> Vec<String> {
 /// other platform. `compiler/runtime/Makefile` passes the same pair — the two
 /// have to agree, or `make` builds a dialect nobody ships.
 fn feature_cflags() -> Vec<String> {
-    vec!["-D_GNU_SOURCE".into(), "-D_DARWIN_C_SOURCE".into()]
+    let mut flags = vec!["-D_GNU_SOURCE".to_string(), "-D_DARWIN_C_SOURCE".to_string()];
+    if no_green() {
+        flags.push("-DRASK_NO_GREEN".to_string());
+    }
+    flags
+}
+
+/// Build without the green scheduler, on a platform that could have it.
+///
+/// `RASK_HAS_GREEN` in `rask_runtime.h` reads the same name, so the sources and
+/// the headers agree. What it buys is the ability to run the no-green build on
+/// Linux — the configuration every macOS program gets, and the one nothing here
+/// could exercise.
+fn no_green() -> bool {
+    std::env::var("RASK_NO_GREEN").map(|v| v != "0").unwrap_or(false)
 }
 
 fn extra_cflags() -> Vec<String> {

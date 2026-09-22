@@ -29,9 +29,10 @@
 #include <time.h>
 
 // ─── Constants ──────────────────────────────────────────────
-
-#define RASK_POLL_READY   0
-#define RASK_POLL_PENDING 1
+//
+// RASK_POLL_READY/PENDING are in rask_runtime.h: the thread-backed stand-in
+// off Linux runs the same generated poll functions and has to read the same
+// numbers.
 
 #define TASK_STATE_READY    0
 #define TASK_STATE_RUNNING  1

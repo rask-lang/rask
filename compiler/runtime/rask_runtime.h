@@ -1174,13 +1174,22 @@ void    rask_panic_set_task_id(int64_t id);
 // nothing below this line is defined. `LINUX_SOURCES` in
 // rask-cli/src/commands/link.rs and `LINUX_ONLY` in runtime/Makefile decide the
 // same thing for the build; this is how a portable source asks.
-#ifdef __linux__
+#if defined(__linux__) && !defined(RASK_NO_GREEN)
 #define RASK_HAS_GREEN 1
 #else
 #define RASK_HAS_GREEN 0
 #endif
 
-#if RASK_HAS_GREEN
+// What a task's poll function reports. The state machine the compiler
+// generates returns one of these, so both schedulers — green.c and the
+// thread-backed stand-in in green_threads.c — read the same two numbers.
+#define RASK_POLL_READY   0
+#define RASK_POLL_PENDING 1
+
+// Every name below is defined by green.c on a build that has the scheduler and
+// by green_threads.c on one that doesn't, so a caller needs neither to care.
+// Off Linux a task is an OS thread, which is what Phase A concurrency is
+// (conc.strategy/A1); the difference is that tasks don't multiplex.
 
 void      rask_runtime_init(int64_t worker_count);
 void      rask_runtime_shutdown(void);
@@ -1219,7 +1228,6 @@ void      rask_yield(void);
 // Check cancel flag for the current green task.
 int       rask_green_task_is_cancelled(void);
 
-#endif // RASK_HAS_GREEN
 
 // ─── Threads ───────────────────────────────────────────────
 // Phase A concurrency: one OS thread per spawn (conc.strategy/A1).
@@ -1254,6 +1262,11 @@ int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out);
 
 // Check if the current task has been cancelled. Returns 1 if cancelled.
 int8_t rask_task_cancelled(void);
+
+// Raise the cancel flag without joining. `rask_task_cancel` does both, and a
+// caller that wants the outcome shape (RASK_JOIN_CANCELLED and the value) needs
+// the flag raised before `rask_task_join_outcome` reads it.
+void rask_task_request_cancel(void *h);
 
 // Sleep the current thread for the given number of nanoseconds.
 int64_t rask_sleep_ns(int64_t ns);

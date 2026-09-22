@@ -32,6 +32,15 @@ ifneq ($(shell uname -s),Linux)
 SRCS := $(filter-out $(LINUX_ONLY),$(SRCS))
 endif
 
+# `make RASK_NO_GREEN=1` builds the set macOS links, on Linux. `RASK_HAS_GREEN`
+# in rask_runtime.h reads the same name, and `no_green()` in
+# rask-cli/src/commands/link.rs is the same switch for a real program — which
+# is what tests/no_green_gate.sh runs.
+ifdef RASK_NO_GREEN
+SRCS := $(filter-out $(LINUX_ONLY),$(SRCS))
+CFLAGS += -DRASK_NO_GREEN
+endif
+
 OBJS = $(SRCS:.c=.o)
 LIB  = librask_runtime.a
 

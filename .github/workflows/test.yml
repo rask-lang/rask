@@ -283,6 +283,15 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/examples_gate.sh
 
+    # The suite's spawning files against the runtime set macOS links — no
+    # green scheduler, tasks on OS threads. On an ubuntu runner, because that
+    # configuration was never built anywhere but a Mac: `spawn` failed to link
+    # there for two releases and a person compiling on their own machine is
+    # what found it (#1180).
+    - name: No-green gate (the source set macOS links)
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/no_green_gate.sh
+
     # The design prototypes, on both backends. differential.sh only scans
     # tests/suite/, and these are main-only so `rask test` runs nothing on them
     # and exits 0 — so the programs written to show Rack/Link working end to end

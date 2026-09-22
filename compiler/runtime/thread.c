@@ -335,6 +335,14 @@ int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out) {
     return rask_task_join(h, msg_out);
 }
 
+void rask_task_request_cancel(void *handle) {
+    RaskTaskHandle *h = (RaskTaskHandle *)handle;
+    if (!h || !h->state) {
+        rask_panic("cancel on consumed TaskHandle");
+    }
+    atomic_store_explicit(&h->state->cancel_flag, 1, memory_order_release);
+}
+
 int8_t rask_task_cancelled(void) {
     if (!current_cancel_flag) return 0;
     return atomic_load_explicit(current_cancel_flag, memory_order_acquire) ? 1 : 0;
