@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: giving a stdlib type one of the six conformances its owner keeps
+//
+// `type.generics/XC1` says the six auto-derived traits belong to the package
+// that declares the type. A builtin has a declarer too — the standard library
+// — and the first cut of the check read "no package" as "nothing to compare",
+// so this compiled and linked clean:
+//
+//     extend Vec<i64> with Hashable { func hash(self) -> u64 { return 99 } }
+//
+// Every `Map` and `Set` keyed on a `Vec<i64>` in the program then used that
+// hash, which is precisely the "lookups miss entries the container holds"
+// failure the diagnostic's own text warns about. Across two packages it was
+// caught; against `Vec`, `Map` and `string` it wasn't, and those are the types
+// a program actually puts in containers.
+//
+// The way out is the same one XC1 names everywhere else: a nominal type of
+// your own, which `nominal_core_trait_is_fine` below shows compiling.
+
+struct Doc {
+    public n: i64
+}
+
+// Ours, so ours to answer for.
+type Counted = Doc
+
+extend Counted with Hashable {
+    public func hash(self) -> u64 {
+        return 7
+    }
+    public func eq(self, other: Counted) -> bool {
+        return self.value.n == other.value.n
+    }
+}
+
+// ERROR: `Vec` is the standard library's (E0409)
+extend Vec<i64> with Hashable {
+    public func hash(self) -> u64 {
+        return 99
+    }
+    public func eq(self, other: Vec<i64>) -> bool {
+        return true
+    }
+}
+
+// ERROR: so is `string` (E0409)
+extend string with Comparable {
+    public func compare(self, other: string) -> i64 {
+        return 0
+    }
+}
+
+func main() {
+    let c = Counted(Doc { n: 1 })
+    println("{c.hash()}")
+    return
+}

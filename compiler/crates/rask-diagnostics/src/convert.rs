@@ -545,46 +545,58 @@ impl ToDiagnostic for rask_types::TypeError {
             ForeignCoreConformance {
                 ty, trait_name, owner, here, encoding, span, declared_at,
             } => {
-                let base = if *encoding {
-                    Diagnostic::error(format!("only `{}` can make `{}` {}", owner, ty,
+                // A builtin belongs to the standard library, and the program
+                // that extends it belongs to nobody in particular when the
+                // build has no packages. Both need a name a reader recognises.
+                let owner_name = match owner {
+                    Some(p) => format!("`{}`", p),
+                    None => "the standard library".to_string(),
+                };
+                let here_name = match here {
+                    Some(p) => format!("`{}`", p),
+                    None => "this program".to_string(),
+                };
+                let bare = ty.rsplit('.').next().unwrap_or(ty);
+                let bare = bare.split('<').next().unwrap_or(bare);
+                let mut d = if *encoding {
+                    Diagnostic::error(format!("only {} can make `{}` {}", owner_name, ty,
                         if trait_name.starts_with("Decode") { "decodable" } else { "encodable" }))
-                        .with_primary(*span, format!("this block is in `{}`", here))
-                        .with_secondary(*declared_at, format!(
-                            "`{}` belongs to `{}`, which decides whether its data goes on a wire",
-                            ty, owner))
+                        .with_primary(*span, format!("this block is in {}", here_name))
                         .with_why(format!(
-                            "`{}` has no methods — declaring it doesn't change how `{}` \
+                            "`{}` has no methods — declaring it doesn\'t change how `{}` \
                              serializes, it changes whether it does. That is the declaring \
-                             package's call, and a type its owner marked `@no_encode` would \
+                             package\'s call, and a type its owner marked `@no_encode` would \
                              be overruled from outside (type.generics/XC1).",
                             trait_name, ty
                         ))
                         .with_fix(format!(
-                            "if you need these fields on a wire, carry them in a type `{}` owns:\n\
+                            "if you need these fields on a wire, carry them in a type {} owns:\n\
                              struct {}Wire {{ … }}",
-                            here, ty
+                            here_name, bare
                         ))
                 } else {
                     Diagnostic::error(format!(
-                        "only `{}` can declare `{}` for `{}`", owner, trait_name, ty))
-                        .with_primary(*span, format!("this block is in `{}`", here))
-                        .with_secondary(*declared_at, format!("`{}` belongs to `{}`", ty, owner))
+                        "only {} can declare `{}` for `{}`", owner_name, trait_name, ty))
+                        .with_primary(*span, format!("this block is in {}", here_name))
                         .with_why(format!(
                             "`{}` is one answer per type — `Map`, `Set` and every sort built \
                              on them assume `{}` answers the same way everywhere. A second \
-                             answer from another package doesn't conflict loudly; it makes \
-                             lookups miss entries the container holds. Only `{}` can change \
-                             the one `{}` already has (type.generics/XC1).",
-                            trait_name, ty, owner, ty
+                             answer from elsewhere doesn\'t conflict loudly; it makes lookups \
+                             miss entries the container holds. Only {} can change the one \
+                             `{}` already has (type.generics/XC1).",
+                            trait_name, ty, owner_name, ty
                         ))
                         .with_fix(format!(
                             "put the behaviour you want on a type of your own:\n\
                              type My{} = {}\n\
                              extend My{} with {} {{ … }}",
-                            ty, ty, ty, trait_name
+                            bare, ty, bare, trait_name
                         ))
                 };
-                base.with_code("E0409")
+                if let Some(at) = declared_at {
+                    d = d.with_secondary(*at, format!("`{}` belongs to {}", ty, owner_name));
+                }
+                d.with_code("E0409")
             }
 
             AmbiguousConformance { ty, trait_name, sites, span } => {

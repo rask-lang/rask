@@ -29,6 +29,24 @@ pub(super) struct ConformanceSite {
     pub package: Option<String>,
 }
 
+/// XC1: who a type belongs to.
+///
+/// The rule is "only the package that declares `T` may declare these six
+/// conformances for it", and a builtin has a declarer too — the standard
+/// library. Treating "no package" as "nothing to check" is what let a plain
+/// program give `Vec<i64>` its own `Hashable` and have every `Map` and `Set`
+/// keyed on it start missing entries, which is the exact hazard the rule
+/// exists to stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TypeOwner {
+    /// The standard library, including every builtin.
+    Stdlib,
+    /// A package in this build.
+    Package(String),
+    /// The program itself, where there is no package to name — a single file.
+    Program,
+}
+
 /// Central registry of all types in the program.
 #[derive(Debug, Default)]
 pub struct TypeTable {
@@ -124,6 +142,9 @@ pub struct TypeTable {
     /// is nearly all of them — the use-site check reads this first and does
     /// nothing when it's empty.
     pub(super) ambiguous_conformances: std::collections::HashSet<(TypeId, String)>,
+    /// XC1: who declares each type. Anything unrecorded is a builtin, and
+    /// builtins are the stdlib's.
+    pub(super) declared_by: HashMap<TypeId, TypeOwner>,
     /// XC1: where each type was declared. The span's file id says which package
     /// wrote it, which is how a conformance block knows whether it owns the
     /// type it's extending.
@@ -152,6 +173,7 @@ impl TypeTable {
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
             declared_at: HashMap::new(),
+            declared_by: HashMap::new(),
             ambiguous_conformances: std::collections::HashSet::new(),
             impl_method_packages: HashMap::new(),
         };
@@ -650,9 +672,19 @@ impl TypeTable {
     }
 
     /// MN3: where a conformance was declared, if it was written in source.
-    /// XC1: remember where a type was declared.
-    pub fn record_declared_at(&mut self, type_id: TypeId, span: Span) {
+    /// XC1: remember where a type was declared, and who declared it.
+    pub(super) fn record_declared_at(&mut self, type_id: TypeId, span: Span, owner: TypeOwner) {
         self.declared_at.entry(type_id).or_insert(span);
+        self.declared_by.entry(type_id).or_insert(owner);
+    }
+
+    /// XC1: who declares this type. A type with no recorded declaration is a
+    /// builtin, and builtins are the stdlib's.
+    pub(super) fn declared_by(&self, type_id: TypeId) -> TypeOwner {
+        self.declared_by
+            .get(&type_id)
+            .cloned()
+            .unwrap_or(TypeOwner::Stdlib)
     }
 
     /// The span of a type's declaration, if one was recorded.

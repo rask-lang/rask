@@ -179,13 +179,13 @@ impl TypeChecker {
                     self.check_declared_type_name(&s.name, "struct", decl.span);
                     let id = self.register_struct(s);
                     self.types.record_method_decl(id, decl.id);
-                    self.types.record_declared_at(id, decl.span);
+                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
                 }
                 DeclKind::Enum(e) => {
                     self.check_declared_type_name(&e.name, "enum", decl.span);
                     let id = self.register_enum(e, decl.span);
                     self.types.record_method_decl(id, decl.id);
-                    self.types.record_declared_at(id, decl.span);
+                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
                 }
                 DeclKind::Trait(t) => {
                     self.check_declared_type_name(&t.name, "trait", decl.span);
@@ -226,7 +226,7 @@ impl TypeChecker {
                     // A nominal type (`type MyDoc = traitpkg.Doc`) belongs to
                     // whoever wrote it, which is what makes it XC1's way out.
                     if let Some(id) = self.types.get_type_id(&a.name) {
-                        self.types.record_declared_at(id, decl.span);
+                        self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
                     }
                 }
                 // `const W = 4` then `[i32; W]`. The length has to be known
@@ -794,6 +794,48 @@ impl TypeChecker {
         Some(first.0.clone())
     }
 
+    /// XC1 for a type with no entry in the table — a primitive. It is the
+    /// stdlib's like every other builtin, so any block outside the stdlib is
+    /// foreign.
+    fn check_builtin_core_conformance(&mut self, i: &ImplDecl, span: rask_ast::Span) {
+        use super::type_table::TypeOwner;
+        let here = self.type_owner(span);
+        if here == TypeOwner::Stdlib {
+            return;
+        }
+        for trait_name in &i.trait_names {
+            let Some(encoding) = Self::core_trait(trait_name) else { continue };
+            self.errors.push(TypeError::ForeignCoreConformance {
+                ty: i.target_ty.clone(),
+                trait_name: TypeTable::conformance_display(trait_name),
+                owner: None,
+                here: match &here {
+                    TypeOwner::Package(p) => Some(p.clone()),
+                    _ => None,
+                },
+                encoding,
+                span,
+                declared_at: None,
+            });
+        }
+    }
+
+    /// XC1: who a declaration at `span` belongs to.
+    ///
+    /// The stdlib first, because its files are in no package and "no package"
+    /// has to mean "the stdlib's" rather than "nobody's" — otherwise a program
+    /// could hand `Vec` its own `Hashable` and the check would shrug.
+    pub(super) fn type_owner(&self, span: rask_ast::Span) -> super::type_table::TypeOwner {
+        use super::type_table::TypeOwner;
+        if self.types.stdlib_mode {
+            return TypeOwner::Stdlib;
+        }
+        match self.package_of(span) {
+            Some(p) => TypeOwner::Package(p.to_string()),
+            None => TypeOwner::Program,
+        }
+    }
+
     /// XC1: the traits a type's owner alone may declare, and whether this one
     /// is an encoding marker.
     ///
@@ -816,7 +858,18 @@ impl TypeChecker {
         let base_name = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
         let type_id = match self.types.get_type_id(base_name) {
             Some(id) => id,
-            None => return,
+            None => {
+                // XC1 still applies to a primitive. `string` and the integer
+                // types aren't `Named`, so they have no entry in the table and
+                // the lookup above misses — the block registered unchecked, and
+                // a program's `extend string with Hashable` made `"abc".hash()`
+                // answer 4242 while every `Map` went on using the real one. One
+                // answer per type is exactly what that isn't.
+                if rask_resolve::is_builtin_type(base_name) {
+                    self.check_builtin_core_conformance(i, span);
+                }
+                return;
+            }
         };
         self.types.record_method_decl(type_id, decl_id);
         // G1: record each declared conformance. `scoped` methods stay out of the
@@ -832,22 +885,26 @@ impl TypeChecker {
             // Checked before the duplicate rule below, because a foreign block
             // claiming one of them is wrong whether or not the owner wrote one.
             if let Some(encoding) = Self::core_trait(trait_name) {
-                if let (Some(here), Some(declared_at)) =
-                    (self.package_of(span).map(str::to_string), self.types.declared_at(type_id))
-                {
-                    if let Some(owner) = self.package_of(declared_at).map(str::to_string) {
-                        if owner != here {
-                            self.errors.push(TypeError::ForeignCoreConformance {
-                                ty: base_name.to_string(),
-                                trait_name: TypeTable::conformance_display(trait_name),
-                                owner,
-                                here,
-                                encoding,
-                                span,
-                                declared_at,
-                            });
-                        }
-                    }
+                use super::type_table::TypeOwner;
+                let here = self.type_owner(span);
+                let owner = self.types.declared_by(type_id);
+                if owner != here {
+                    let name_of = |o: &TypeOwner| match o {
+                        TypeOwner::Package(p) => Some(p.clone()),
+                        _ => None,
+                    };
+                    self.errors.push(TypeError::ForeignCoreConformance {
+                        // The target as the block writes it, so the suggested
+                        // `type MyVec = Vec<i64>` names the same thing the
+                        // rejected header did.
+                        ty: i.target_ty.clone(),
+                        trait_name: TypeTable::conformance_display(trait_name),
+                        owner: name_of(&owner),
+                        here: name_of(&here),
+                        encoding,
+                        span,
+                        declared_at: self.types.declared_at(type_id),
+                    });
                 }
             }
             // XC3: two blocks in *one* package claiming the same pair, reported

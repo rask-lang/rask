@@ -1148,23 +1148,27 @@ pub enum TypeError {
     /// type by a package that doesn't own it. Four of them decide what happens
     /// to the type's data inside a container and two decide whether it goes on
     /// a wire at all — both are answers a type gets once, from its owner.
-    #[error("only `{owner}` can declare `{trait_name}` for `{ty}`")]
+    #[error("`{trait_name}` for `{ty}` belongs to whoever declares `{ty}`")]
     ForeignCoreConformance {
         /// The type being extended.
         ty: String,
         /// The trait, spelled as the block writes it.
         trait_name: String,
-        /// The package that declares the type.
-        owner: String,
-        /// The package the block is in.
-        here: String,
+        /// The package that declares the type. `None` is the standard library,
+        /// which owns every builtin — that is what makes `extend Vec<i64> with
+        /// Hashable` in a program an error rather than a shrug.
+        owner: Option<String>,
+        /// The package the block is in. `None` is the program itself, in a
+        /// build with no packages.
+        here: Option<String>,
         /// `Encode`/`Decode`, which say *whether* the data serializes rather
         /// than how — a different message from the container four.
         encoding: bool,
         /// The `extend` header.
         span: Span,
-        /// Where the type is declared.
-        declared_at: Span,
+        /// Where the type is declared. `None` for a builtin, which has no
+        /// declaration in any source the program can be shown.
+        declared_at: Option<Span>,
     },
 
     /// type.generics/XC3, cross-package half: the code here can see two

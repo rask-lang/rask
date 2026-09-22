@@ -233,7 +233,7 @@ There is no orphan rule. Any package may declare `extend T with Trait` for a typ
 
 | Rule | Description |
 |------|-------------|
-| **XC1: Contract traits belong to the owner** | `extend T with Equal`, `Hashable`, `Comparable`, `Cloneable`, `Encode` or `Decode` is legal only in the package that declares `T`. From any other package it's a compile error, the empty-body form included. All six are auto-derived for every eligible type (EQ1/HA1/CO1/CL1, `std.encoding/E12`), so a third party never needs one |
+| **XC1: Contract traits belong to the owner** | `extend T with Equal`, `Hashable`, `Comparable`, `Cloneable`, `Encode` or `Decode` is legal only where `T` is declared. From anywhere else it's a compile error, the empty-body form included. A builtin's declarer is the standard library, so `extend Vec<i64> with Hashable` in a program is the same error as extending a sibling package's type. All six are auto-derived for every eligible type (EQ1/HA1/CO1/CL1, `std.encoding/E12`), so nobody else ever needs one |
 | **XC2: Everything else is open** | For every other trait, `extend T with Trait` is legal wherever both names are visible. No newtype wrapper, no forwarding methods, no ceremony for the case that has no conflict |
 | **XC3: Two conformances never resolve silently** | Two declared conformances for the same (type, trait) pair are a compile error, never a pick. The pair is the *applied* trait, so two different applied forms of one generic trait are two conformances, not one declared twice — that they can still collide on a method name is MN3's, reported once and not twice. Both in one package: the error is at the second declaration. In two packages: at the place that needs the conformance, so a collision nobody uses costs nothing |
 | **XC4: Visibility is the user's, not the build's** | A conformance is visible to a package iff the declaring package is in *that* package's dependency graph. A library keeps using its own conformance even when the program linking it also pulls in someone else's |
@@ -271,6 +271,12 @@ Step 3 gives you a type that compiles; it does not give you liba's behavior. Not
 ### Error Messages
 
 **Third-party contract-trait conformance [XC1]:**
+
+The owner is a package here. Against a builtin it is the standard library,
+which reads the same way — `only the standard library can declare `Hashable`
+for `Vec<i64>`` — and matters more, because `Vec`, `Map` and `string` are the
+types a program actually puts in containers.
+
 ```
 error[E0409]: only `traitpkg` can declare `Hashable` for `traitpkg.Doc`
    |
