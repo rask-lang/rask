@@ -362,7 +362,8 @@ impl StubRegistry {
             }
         }
 
-        rask_desugar::desugar(&mut decls);
+        rask_desugar::desugar_stdlib(&mut decls);
+        lift_inline_methods(&mut decls);
         decls
     }
 
@@ -398,6 +399,60 @@ impl StubRegistry {
         }
 
         decls
+    }
+
+    /// Stdlib declarations that carry a default somewhere — a defaulted
+    /// parameter or a defaulted struct field.
+    ///
+    /// Filling an omitted argument happens in desugaring, which builds its
+    /// table from the declarations it is handed. The stdlib's aren't among
+    /// them, so a defaulted parameter in `stdlib/*.rk` was parsed and thrown
+    /// away: `v.shrink()` reported "expected 1 argument, found 0" for an
+    /// argument the signature defaults, and every SD2 collapse that grows a
+    /// surface by parameter instead of by name was blocked on it (#1276).
+    /// `rask-desugar` can't read this registry itself — this crate already
+    /// depends on it — so the caller hands the list in.
+    ///
+    /// Parsed, not desugared: a default has to be a literal or an enum path
+    /// (`is_valid_default_expr`), and there is nothing in one to rewrite.
+    /// Pruned to the declarations that have a default, because that is all the
+    /// table keeps and the rest would be parsed for nothing.
+    pub fn defaulted_signatures() -> &'static [Decl] {
+        static CACHE: OnceLock<Vec<Decl>> = OnceLock::new();
+        CACHE.get_or_init(|| {
+            let mut decls = Vec::new();
+            let mut next_id: u32 = 4_000_000;
+
+            let defaulted = |f: &FnDecl| f.params.iter().any(|p| p.default.is_some());
+            for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
+                let file_id = stub_file_id(stub_index);
+                let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
+                if !lex_result.is_ok() {
+                    continue;
+                }
+                let mut parser =
+                    rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
+                        .allow_keyword_fn_names();
+                let parse_result = parser.parse();
+                next_id = parser.next_node_id();
+                for decl in parse_result.decls {
+                    let keep = match &decl.kind {
+                        DeclKind::Fn(f) => defaulted(f),
+                        DeclKind::Impl(i) => i.methods.iter().any(defaulted),
+                        DeclKind::Enum(e) => e.methods.iter().any(defaulted),
+                        DeclKind::Struct(s) => {
+                            s.methods.iter().any(defaulted)
+                                || s.fields.iter().any(|f| f.default.is_some())
+                        }
+                        _ => false,
+                    };
+                    if keep {
+                        decls.push(decl);
+                    }
+                }
+            }
+            decls
+        })
     }
 
     /// Return struct and enum declarations from ALL stdlib files (not just those
@@ -547,6 +602,45 @@ impl StubRegistry {
 }
 
 /// Convert a FnDecl to a MethodStub with span.
+/// Move methods written inside a `struct`/`enum` block into an `extend` block.
+///
+/// Everything downstream reads a stdlib method out of an `extend`: the type
+/// checker's list of stdlib bodies is functions and `extend` blocks only, since
+/// re-declaring the type there would mint a second TypeId for the same name. A
+/// method left on the type declaration therefore reached codegen having never
+/// been type-checked, and lowering couldn't tell what its match arms bound —
+/// `SeekFrom_message: unresolved variable _0` (#1249). Today the only such
+/// method is the `message()` ER6 derives, which desugaring just added.
+fn lift_inline_methods(decls: &mut Vec<Decl>) {
+    let mut lifted = Vec::new();
+    for decl in decls.iter_mut() {
+        let (target_ty, methods) = match &mut decl.kind {
+            DeclKind::Enum(e) if !e.methods.is_empty() => {
+                (e.name.clone(), std::mem::take(&mut e.methods))
+            }
+            DeclKind::Struct(s) if !s.methods.is_empty() => {
+                (s.name.clone(), std::mem::take(&mut s.methods))
+            }
+            _ => continue,
+        };
+        lifted.push(Decl {
+            id: decl.id,
+            span: decl.span,
+            kind: DeclKind::Impl(rask_ast::decl::ImplDecl {
+                trait_names: Vec::new(),
+                target_ty,
+                methods,
+                assoc_bindings: Vec::new(),
+                is_unsafe: false,
+                is_scoped: false,
+                where_bounds: Vec::new(),
+                doc: None,
+            }),
+        });
+    }
+    decls.extend(lifted);
+}
+
 fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span) -> MethodStub {
     let self_param = f.params.iter().find(|p| p.name == "self");
     let takes_self = self_param.is_some();

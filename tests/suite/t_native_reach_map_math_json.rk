@@ -12,10 +12,16 @@
 
 import std.math
 import std.json
+import memory.Rack
+import memory.Link
 
 struct Point {
     public x: i64
     public label: string
+}
+
+struct Node {
+    public v: i64
 }
 
 test "map read, modify and modify_with_default" {
@@ -54,6 +60,23 @@ test "map with_capacity" {
     }
     assert(grown.len() == 50)
     assert((grown.get("k30") ?? -1) == 30)
+}
+
+// A link key is the third kind, and it buckets by its node's slot rather than
+// by the address the allocator handed out. `with_capacity` has to make the
+// same choice `new` does — one function decides, and this is the row that says
+// the capacity spelling follows it.
+test "map with_capacity on link keys" {
+    mut rack: Rack<Node> = Rack.new()
+    let first = rack.insert(Node { v: 1 })
+    let second = rack.insert(Node { v: 2 })
+
+    mut m: Map<Link<Node>, string> = Map.with_capacity(8)
+    m.insert(first, "first")
+    m.insert(second, "second")
+    assert(m.len() == 2)
+    assert((m.get(first) ?? "?") == "first")
+    assert((m.get(second) ?? "?") == "second")
 }
 
 test "every math function reaches an implementation" {

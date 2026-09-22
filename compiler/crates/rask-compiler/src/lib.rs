@@ -389,7 +389,10 @@ fn check_loaded(
     rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &config.cfg);
 
     // --- Desugar (accumulate errors, continue) ---
-    let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut parse_result.decls);
+    let desugar_errors = rask_desugar::desugar_with_stdlib(
+        &mut parse_result.decls,
+        rask_stdlib::StubRegistry::defaulted_signatures(),
+    );
     for e in &desugar_errors {
         diags.push(
             Diagnostic::error(e.message.clone())
@@ -678,7 +681,11 @@ fn check_package_scoped(
     // later (type.annotations/AN3).
     let dep_annotations = pkg_ctx.dependency_annotations();
     let desugar_errors =
-        rask_desugar::desugar_package(&mut pkg_ctx.all_decls, &dep_annotations);
+        rask_desugar::desugar_package(
+            &mut pkg_ctx.all_decls,
+            &dep_annotations,
+            rask_stdlib::StubRegistry::defaulted_signatures(),
+        );
     for e in &desugar_errors {
         diags.push(
             Diagnostic::error(e.message.clone())

@@ -161,4 +161,34 @@ test "std.collections — sort_by_key leaves an already-sorted Vec alone" {
     assert v[2].tag == "z"
 }
 
+// Big enough that an O(n²) sort would be obvious: the insertion sort this used
+// to emit took 37 seconds on 40k elements, where the runtime's merge sort takes
+// 10ms. 3000 is small enough to stay instant in the suite and large enough that
+// a quadratic one would stall it.
+//
+// Stability is the interesting half at this size — with 7 distinct keys every
+// element has ~400 ties, so an unstable sort has nowhere to hide.
+test "std.collections — sort_by_key is stable across thousands of ties" {
+    mut v: Vec<Tagged> = []
+    mut i: i64 = 0
+    while i < 3000 {
+        v.push(Tagged { key: i % 7, tag: "x" })
+        i = i + 1
+    }
+    // The tag can't carry the original index, so check the keys are ordered and
+    // count how many elements each key kept.
+    mut breaks = 0
+    mut j = 1
+    v.sort_by_key(|t| { return t.key })
+    while j < v.len() {
+        if v[j].key < v[j - 1].key {
+            breaks = breaks + 1
+        }
+        j = j + 1
+    }
+    assert breaks == 0
+    assert v[0].key == 0
+    assert v[2999].key == 6
+}
+
 func main() {}

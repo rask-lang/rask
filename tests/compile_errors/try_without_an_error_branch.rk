@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `try` in a function whose return type carries no error
+// Rejects: `try` requires function returning Result or Option, found `i64`
+//
+// The sibling file `try_in_void_function.rk` covers `-> void`. Void was never
+// the property that mattered: `try` hands the error to the caller, so the
+// enclosing return has to have a branch to carry it, and `i64` has one no more
+// than `void` does. The check tested for `void` by name, so every other
+// non-carrier walked straight through (#1251).
+//
+// What that cost: `rask check` said OK, and then native printed the result
+// word as if it were the payload — `doubled("")` printed 140730648072344, a
+// stack address — while the interpreter died at run time with "method not
+// found on `Result`". Neither said the program was wrong.
+//
+// `T or E` and `T?` are the two carriers. Everything else lands here.
+
+enum ConfigError {
+    Missing(string)
+}
+
+extend ConfigError with Error {
+    func message(self) -> string {
+        return "nothing set"
+    }
+}
+
+func port_of(text: string) -> i64 or ConfigError {
+    if text == "" {
+        return ConfigError.Missing("port")
+    }
+    return 8080
+}
+
+// ERROR: `i64` has nowhere to put a `ConfigError`.
+func doubled(text: string) -> i64 {
+    let port = try port_of(text)
+    return port * 2
+}
+
+// ERROR: a string return is no different.
+func label(text: string) -> string {
+    let port = try port_of(text)
+    return "port {port}"
+}
+
+struct Config {
+    port: i64
+}
+
+// ERROR: nor is a struct.
+func config_of(text: string) -> Config {
+    let port = try port_of(text)
+    return Config { port: port }
+}
+
+func main() {
+    println("{doubled("")}")
+}

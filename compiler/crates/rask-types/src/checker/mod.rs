@@ -362,10 +362,15 @@ pub struct TypeChecker {
     /// unusable after the block ends. `false` is an explicit "not knowable
     /// here", which is what shadows an outer `true`.
     pub(super) comptime_string_names: Vec<HashMap<String, bool>>,
-    /// ST1: `staged()` calls found outside a `with` binding source, collected by
-    /// the sync-access walk and reported by its caller (the walk itself only
-    /// gathers).
-    pub(super) staged_outside_with: Vec<(String, rask_ast::Span)>,
+    /// ST1: the `with` binding sources seen so far, by node id. A `staged()`
+    /// call is legal in exactly these positions — it hands back a working copy
+    /// that commits when a scope ends, so it needs one — and the check that
+    /// rejects it everywhere else asks here. Recorded before the source is
+    /// inferred, so the method call finds it.
+    pub(super) with_source_ids: std::collections::HashSet<rask_ast::NodeId>,
+    /// `staged()` calls already reported. A body can be inferred more than once
+    /// and the error is about where the call sits, not about a type.
+    pub(super) staged_reported: std::collections::HashSet<rask_ast::NodeId>,
     /// The argument spans of every `spawn` call seen. A use inside one of these
     /// is a use in another task.
     pub(super) spawn_arg_spans: Vec<rask_ast::Span>,
@@ -533,7 +538,8 @@ impl TypeChecker {
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),
             local_shared_uses: Vec::new(),
-            staged_outside_with: Vec::new(),
+            with_source_ids: std::collections::HashSet::new(),
+            staged_reported: std::collections::HashSet::new(),
             allowed_warnings: Vec::new(),
             comptime_string_names: vec![HashMap::new()],
             spawn_arg_spans: Vec::new(),

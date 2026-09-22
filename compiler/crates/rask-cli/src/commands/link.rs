@@ -58,19 +58,6 @@ fn portable_sources(runtime_dir: &Path) -> Result<Vec<String>, String> {
     Ok(sources)
 }
 
-/// Known target triples from the spec tier list.
-const KNOWN_TARGETS: &[&str] = &[
-    // Tier 1
-    "x86_64-linux", "aarch64-linux",
-    "x86_64-macos", "aarch64-macos",
-    // Tier 2
-    "x86_64-windows-msvc", "aarch64-windows-msvc",
-    "wasm32-none",
-    "x86_64-linux-musl", "aarch64-linux-musl",
-    // Tier 3
-    "riscv64-linux", "x86_64-freebsd", "arm-none",
-];
-
 /// Extra link-time inputs (libraries, object files, search paths).
 #[derive(Default)]
 pub struct LinkOptions {
@@ -97,9 +84,13 @@ impl TargetConfig {
         let host_triple = format!("{}-{}", host_arch, host_os);
 
         let target_triple = target.unwrap_or(&host_triple);
-        let parts: Vec<&str> = target_triple.split('-').collect();
-        let target_os = parts.get(1).copied().unwrap_or("unknown");
-        let target_arch = parts.first().copied().unwrap_or("unknown");
+        // Splitting the name on '-' and calling field 1 the OS is right for
+        // Rask's own spelling and wrong for a full triple:
+        // `aarch64-apple-darwin` came out as OS "apple" and the link refused
+        // with "runtime not available for OS 'apple'". Both spellings go
+        // through the target table first (#1185).
+        let (target_arch, target_os) = rask_codegen::targets::arch_and_os(target_triple)?;
+        let (target_arch, target_os) = (target_arch.as_str(), target_os.as_str());
 
         // Check runtime support for this OS
         match target_os {
@@ -133,11 +124,21 @@ impl TargetConfig {
         match target_os {
             "linux" => {
                 sources.extend(PTHREAD_SOURCES.iter().map(|s| s.to_string()));
-                sources.extend(LINUX_SOURCES.iter().map(|s| s.to_string()));
+                // RASK_NO_GREEN builds the source set macOS gets, on Linux.
+                // Off Linux there is no green scheduler and the tasks run on
+                // OS threads (`green_threads.c`), and nothing on a Linux
+                // machine exercised that — which is how `spawn` came to fail
+                // at link on macOS for two releases (#1180). This is the seam
+                // that lets a Linux gate check it.
+                if !no_green() {
+                    sources.extend(LINUX_SOURCES.iter().map(|s| s.to_string()));
+                }
             }
             "macos" => {
                 sources.extend(PTHREAD_SOURCES.iter().map(|s| s.to_string()));
-                // No green scheduler on macOS yet (needs kqueue backend)
+                // No green scheduler on macOS yet (needs kqueue backend), so
+                // `green_threads.c` — in the portable set — supplies the
+                // scheduler's entry points on top of pthreads.
             }
             _ => {}
         }
@@ -252,20 +253,13 @@ fn clang_arch(arch: &str) -> &str {
     }
 }
 
-/// Validate a target triple. Returns Ok if known or parseable.
+/// Validate a target name — the same answer codegen will give.
+///
+/// It used to accept anything shaped like `arch-os`, which is why a
+/// misspelling reached codegen and came back as an object in the wrong format
+/// (#1185). One list, one answer.
 pub fn validate_target(target: &str) -> Result<(), String> {
-    if KNOWN_TARGETS.contains(&target) {
-        return Ok(());
-    }
-    // Accept anything that looks like arch-os or arch-os-env
-    let parts: Vec<&str> = target.split('-').collect();
-    if parts.len() >= 2 && parts.len() <= 3 {
-        return Ok(());
-    }
-    Err(format!(
-        "unknown target '{}' — run `rask targets` to see available targets",
-        target,
-    ))
+    rask_codegen::targets::codegen_triple(target).map(|_| ())
 }
 
 // ─── Runtime object cache ────────────────────────────────────────────────
@@ -298,7 +292,21 @@ fn profile_cflags(release: bool) -> Vec<String> {
 /// other platform. `compiler/runtime/Makefile` passes the same pair — the two
 /// have to agree, or `make` builds a dialect nobody ships.
 fn feature_cflags() -> Vec<String> {
-    vec!["-D_GNU_SOURCE".into(), "-D_DARWIN_C_SOURCE".into()]
+    let mut flags = vec!["-D_GNU_SOURCE".to_string(), "-D_DARWIN_C_SOURCE".to_string()];
+    if no_green() {
+        flags.push("-DRASK_NO_GREEN".to_string());
+    }
+    flags
+}
+
+/// Build without the green scheduler, on a platform that could have it.
+///
+/// `RASK_HAS_GREEN` in `rask_runtime.h` reads the same name, so the sources and
+/// the headers agree. What it buys is the ability to run the no-green build on
+/// Linux — the configuration every macOS program gets, and the one nothing here
+/// could exercise.
+fn no_green() -> bool {
+    std::env::var("RASK_NO_GREEN").map(|v| v != "0").unwrap_or(false)
 }
 
 fn extra_cflags() -> Vec<String> {

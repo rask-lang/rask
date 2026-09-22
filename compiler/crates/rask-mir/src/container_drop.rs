@@ -189,9 +189,12 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // read the closure that captured it while the frame it belongs to is being
     // rewritten.
     let snapshot: Vec<MirFunction> = fns.to_vec();
+    // What the program declares for itself, so a call to one of those is never
+    // mistaken for a runtime free (see `find_already_freed`).
+    let own: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
     for func in fns.iter_mut() {
         insert_for_function(
-            func, &snapshot, &handing_over, &trait_handing, &kept, &trait_kept, &targets,
+            func, &snapshot, &handing_over, &trait_handing, &kept, &trait_kept, &targets, &own,
         );
     }
     let glue = env_drop_glue(fns, &handing_over, &targets);
@@ -1041,6 +1044,7 @@ fn insert_for_function(
     kept: &HashMap<String, Vec<bool>>,
     trait_kept: &HashMap<String, Vec<bool>>,
     targets: &crate::closure_targets::ClosureTargets,
+    own: &HashSet<String>,
 ) {
     let fresh =
         collect_fresh_containers_with(func, all, handing_over, trait_handing, targets);
@@ -1050,7 +1054,7 @@ fn insert_for_function(
     let (escaping, consumed) = find_escaping(func, &fresh, kept, trait_kept);
     let carried = carried_variables(func, &crate::analysis::dominators::DominatorTree::build(func));
     let moved_away = find_moved_away(func, &fresh, &carried);
-    let already_freed = find_already_freed(func, &fresh);
+    let already_freed = find_already_freed(func, &fresh, own);
     let fresh: HashMap<LocalId, &'static str> = fresh
         .into_iter()
         .filter(|(id, _)| !already_freed.contains(id))
@@ -2408,14 +2412,23 @@ fn every_def_is_fresh(
 /// they're done. Adding a second free there is a double free — `sort_by_key`
 /// segfaulted on the way out of `main`. Anything with an explicit free on it
 /// is somebody else's business.
+///
+/// The recognition is by name, so it used to catch the program's own functions
+/// too: `func convert_free(list: Vec<Elem>, …)` reads as a free of `list`, and
+/// the caller stopped releasing the vector it lent (#1248). A name the program
+/// declares is never one of these frees, whatever it ends with.
 fn find_already_freed(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
+    own: &HashSet<String>,
 ) -> HashSet<LocalId> {
     let mut freed = HashSet::new();
     for block in &func.blocks {
         for stmt in &block.statements {
             let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
+            if own.contains(&fref.name) {
+                continue;
+            }
             let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
             let base = head.split('$').next().unwrap_or(head);
             if !base.ends_with("_free") && !base.ends_with("_free_elems") {

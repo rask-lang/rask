@@ -118,6 +118,12 @@ pub struct BenchmarkResult {
     pub max: std::time::Duration,
     pub mean: std::time::Duration,
     pub median: std::time::Duration,
+    /// Why the body stopped, when it did. Every pass used to discard its
+    /// result, so a body that panicked or divided by zero still produced a row
+    /// of min/max/mean/median measuring how long it took to fail — printed next
+    /// to the ones that worked (#1182). There was nowhere to put the reason
+    /// either, which is what this is.
+    pub error: Option<String>,
 }
 
 /// The tree-walk interpreter.
@@ -678,18 +684,23 @@ impl Interpreter {
                 let captured = captured_env.clone();
                 let child = self.spawn_child(captured);
 
+                // The thread starts now; the body waits for one of the scope's
+                // task slots before running, so `workers: n` bounds how many
+                // run at once (#1111).
                 let join_handle = crate::spawn_interp_thread(move || {
-                    let mut interp = child;
-                    match interp.eval_expr(&body) {
-                        Ok(val) => Ok(val),
-                        Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
-                            match diag.error {
-                                RuntimeError::Return(val) => Ok(val),
-                                _ => unreachable!("checked above"),
+                    crate::with_task_slot(move || {
+                        let mut interp = child;
+                        match interp.eval_expr(&body) {
+                            Ok(val) => Ok(val),
+                            Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
+                                match diag.error {
+                                    RuntimeError::Return(val) => Ok(val),
+                                    _ => unreachable!("checked above"),
+                                }
                             }
+                            Err(diag) => Err(interp.task_failure_message(&diag)),
                         }
-                        Err(diag) => Err(interp.task_failure_message(&diag)),
-                    }
+                    })
                 })?;
 
                 // Return TaskHandle (not ThreadHandle) for type distinction

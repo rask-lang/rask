@@ -26,17 +26,48 @@ pub fn result_parts(s: &str) -> Option<(&str, &str)> {
     let s = s.trim();
     let inner = s.strip_prefix("Result<")?.strip_suffix('>')?;
     let mut depth = 0i32;
+    let mut prev = b'\0';
     for (i, b) in inner.bytes().enumerate() {
         match b {
             b'<' | b'(' | b'[' => depth += 1,
+            // The `>` of a function type's `->` closes nothing.
+            b'>' if prev == b'-' => {}
             b'>' | b')' | b']' => depth -= 1,
             b',' if depth == 0 => {
                 return Some((inner[..i].trim(), inner[i + 1..].trim()));
             }
             _ => {}
         }
+        prev = b;
     }
     None
+}
+
+/// Every `sep`-separated part of `s` at bracket depth zero, trimmed.
+///
+/// One part — `s` itself — when there is no top-level separator. Same bracket
+/// counting as `result_parts`, arrow and all, so a union of error types holding
+/// a function type splits where it reads.
+pub fn split_all_top_level(s: &str, sep: char) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut prev = '\0';
+    let mut start = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' if prev == '-' => {}
+            '>' | ')' | ']' => depth -= 1,
+            _ if c == sep && depth == 0 => {
+                out.push(s[start..i].trim());
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+        prev = c;
+    }
+    out.push(s[start..].trim());
+    out
 }
 
 /// Is this rendered type a `T or E` result?
@@ -123,6 +154,39 @@ mod tests {
     }
 
     #[test]
+    fn a_function_types_arrow_is_not_a_closing_bracket() {
+        // `->` ends in a `>`. Counted as a bracket close it takes the depth
+        // negative, the top-level comma is never found, and the error side
+        // comes back empty — so the interpreter wrapped `return Oops.Bad` as
+        // the *success* branch and reported "enum is not callable" at the call
+        // site (#1244).
+        assert_eq!(
+            result_parts("Result<(func(i64) -> i64), Oops>"),
+            Some(("(func(i64) -> i64)", "Oops"))
+        );
+        assert_eq!(
+            result_parts("Result<func(i64) -> i64, Oops>"),
+            Some(("func(i64) -> i64", "Oops"))
+        );
+        assert_eq!(
+            result_parts("Result<func(Vec<i64>, string) -> bool, Oops>"),
+            Some(("func(Vec<i64>, string) -> bool", "Oops"))
+        );
+        assert_eq!(
+            to_source("Result<func(i64) -> i64, Oops>"),
+            "func(i64) -> i64 or Oops"
+        );
+    }
+
+    #[test]
+    fn a_union_splits_into_its_arms() {
+        assert_eq!(split_all_top_level("IoError | ParseError", '|'), vec!["IoError", "ParseError"]);
+        assert_eq!(split_all_top_level("Oops", '|'), vec!["Oops"]);
+        // A `|` is only a separator outside brackets.
+        assert_eq!(split_all_top_level("Fail<A | B>", '|'), vec!["Fail<A | B>"]);
+    }
+
+    #[test]
     fn non_results_are_not_results() {
         for s in ["i64", "Option<V>", "Handle<T>?", "void", "()", "Vec<i64>"] {
             assert!(!is_result(s), "{} read as a result", s);
@@ -158,9 +222,11 @@ pub fn split_generic_name(name: &str) -> Option<(&str, Vec<&str>)> {
     let mut args = Vec::new();
     let mut depth = 0usize;
     let mut start = 0usize;
+    let mut prev = '\0';
     for (i, c) in inner.char_indices() {
         match c {
             '<' | '(' | '[' => depth += 1,
+            '>' if prev == '-' => {}
             '>' | ')' | ']' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => {
                 args.push(inner[start..i].trim());
@@ -168,6 +234,7 @@ pub fn split_generic_name(name: &str) -> Option<(&str, Vec<&str>)> {
             }
             _ => {}
         }
+        prev = c;
     }
     if start < inner.len() {
         args.push(inner[start..].trim());
@@ -268,6 +335,18 @@ mod generic_name_tests {
         assert_eq!(
             split_generic_name("Pair<Vec<i64>, string>"),
             Some(("Pair", vec!["Vec<i64>", "string"]))
+        );
+    }
+
+    #[test]
+    fn a_function_typed_argument_stays_whole() {
+        assert_eq!(
+            split_generic_name("Vec<func(i64) -> i64>"),
+            Some(("Vec", vec!["func(i64) -> i64"]))
+        );
+        assert_eq!(
+            split_generic_name("Map<string, func(i64) -> i64>"),
+            Some(("Map", vec!["string", "func(i64) -> i64"]))
         );
     }
 

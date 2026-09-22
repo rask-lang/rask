@@ -123,6 +123,22 @@ uint64_t rask_int_hash(uint64_t lo, uint64_t hi, int64_t width) {
     return rask_hash_bytes(bytes, width);
 }
 
+// Link-keyed maps: the slot holds a node address, and the bucket comes from the
+// node's slot index rather than that address. `rask_link_slot` says why.
+// Equality stays `memcmp` — two links are equal when they name the same node.
+uint64_t rask_hash_link_key(const void *key, int64_t key_size) {
+    (void)key_size;
+    int64_t slot = rask_link_slot(*(void *const *)key);
+    return rask_int_hash((uint64_t)slot, 0, 8);
+}
+
+// `l.hash()` on a link. Same number the bucket comes from, so a link and the
+// same link used as a Map key agree — and unseeded, like every other `.hash()`
+// (see `map_bucket_hash`).
+uint64_t rask_link_hash(const void *link) {
+    return rask_hash_link_key(&link, 8);
+}
+
 // String-keyed maps: key slot holds a 16-byte RaskStr value, hash/eq use string content
 uint64_t rask_hash_string_key(const void *key, int64_t key_size) {
     (void)key_size;
@@ -308,6 +324,14 @@ RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
         key_offs, n_key_offs, val_offs, n_val_offs);
 }
 
+RaskMap *rask_map_new_link_keys(int64_t key_size, int64_t val_size,
+                                const int32_t *key_offs, int64_t n_key_offs,
+                                const int32_t *val_offs, int64_t n_val_offs) {
+    return map_with_elem_strs(
+        rask_map_new_custom(key_size, val_size, rask_hash_link_key, rask_eq_bytes),
+        key_offs, n_key_offs, val_offs, n_val_offs);
+}
+
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq) {
     return map_new_custom_cap(key_size, val_size, hash, eq, MAP_INITIAL_CAP);
@@ -326,6 +350,14 @@ RaskMap *rask_map_new_string_keys_cap(int64_t key_size, int64_t val_size, int64_
                                       const int32_t *val_offs, int64_t n_val_offs) {
     return map_with_elem_strs(
         map_new_custom_cap(key_size, val_size, rask_hash_string_key, rask_eq_string_key, cap),
+        key_offs, n_key_offs, val_offs, n_val_offs);
+}
+
+RaskMap *rask_map_new_link_keys_cap(int64_t key_size, int64_t val_size, int64_t cap,
+                                    const int32_t *key_offs, int64_t n_key_offs,
+                                    const int32_t *val_offs, int64_t n_val_offs) {
+    return map_with_elem_strs(
+        map_new_custom_cap(key_size, val_size, rask_hash_link_key, rask_eq_bytes, cap),
         key_offs, n_key_offs, val_offs, n_val_offs);
 }
 

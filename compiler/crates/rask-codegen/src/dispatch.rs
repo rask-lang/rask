@@ -364,6 +364,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         ),
         StdlibEntry::simple("f64_compare", "rask_f64_compare_total", &[types::F64, types::F64], Some(types::I64), false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
+        // `sort_by_key`: the elements, the parallel keys, and a comparator over
+        // two keys. Panics only on a keys/elements length mismatch, which is
+        // lowering's own bug rather than the program's.
+        StdlibEntry::simple(
+            "Vec_sort_by_keys", "rask_vec_sort_by_keys",
+            &[types::I64, types::I64, types::I64], None, true,
+        ),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
         StdlibEntry::simple("Vec_swap", "rask_vec_swap", &[types::I64, types::I64, types::I64], None, true),
         // The runtime compares the element bytes through a pointer, so the
@@ -487,6 +494,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // width bytes taken little-endian from lo and then hi, so one entry point
         // covers a 1-byte bool through a 16-byte u128 (#813).
         StdlibEntry::simple("int_hash", "rask_int_hash", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Link_hash", "rask_link_hash", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_as_ptr", "rask_string_ptr", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_is_empty", "rask_string_is_empty", &[types::I64], Some(types::I64), false),
         // find/rfind return `usize?` and the runtime signals "not found" with -1.
@@ -825,6 +833,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Map_new_link_keys", c_name: "rask_map_new_link_keys",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 2, tags: 2 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Map_with_capacity_link_keys", c_name: "rask_map_new_link_keys_cap",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
         },
         // Map.with_capacity(n): (key_size, val_size, cap) — the two sizes
         // injected at lowering, the same as `Map_new`, with `cap` kept after

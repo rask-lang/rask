@@ -134,6 +134,17 @@
 # writeback deferred to when the value is actually driven.
 p08_sequence.rk  # sequence — #1046 (interp run)
 
+# The closure form of `Shared.read`/`write` — #1311. It type-checks, compiles,
+# and hands back a number from a slot nobody wrote; the numbers change between
+# runs. The cause is already written down in `rask-mir`'s `with` lowering, which
+# was moved off this same closure-passing path because the closure's return type
+# was hardcoded i64. The expression form still takes the old path.
+#
+# The interpreter is right for all three strategies as of #1155 — `Local`
+# ignored its argument and `Mutex` had no closure arm before that, so only
+# `Readers` ran the closure at all.
+t_shared_closure_access.rk  # Shared closure access — #1311 (native compile)
+
 # `extern "C"` needs dlsym and a C ABI, which a tree walker doesn't have — the
 # same reason `examples/19_unsafe.rk` is on known_fail_examples.txt. Not a bug
 # in either backend and not a roadmap item; the interpreter is never going to

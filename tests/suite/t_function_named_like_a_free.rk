@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A user function whose name ends in `_free` (#1248).
+//
+// The drop pass has to know which containers somebody else already released,
+// or it emits a second free and the program segfaults on the way out of
+// `main`. It recognised those by name: a call whose name ends in `_free` or
+// `_free_elems` frees the container in its first argument.
+//
+// That caught the program's own functions too. `convert_free(ints, f)` reads
+// as a free of `ints`, so `main` stopped releasing the vector it was only
+// lending — two allocations a call, the header and the buffer. Renaming the
+// function to `convert_keep` and changing nothing else made it clean, which is
+// the whole tell.
+//
+// The mangled name of a generic instance is `convert_free$i32_string`, and the
+// recogniser strips the `$…` before looking at the suffix, so being generic
+// made no difference either way — the suffix is the whole story.
+//
+// A name the program declares is never one of those frees, whatever it ends
+// with. Nothing tells an author that `_free` is spoken for, and nothing
+// should have to.
+
+func convert_free<Elem, Made>(list: Vec<Elem>, f: func(Elem) -> Made) -> Vec<Made> {
+    mut out: Vec<Made> = Vec.new()
+    for it in list {
+        out.push(f(it))
+    }
+    return out
+}
+
+// Not generic, same suffix, same Vec parameter.
+func first_or_free(list: Vec<i32>) -> i32 {
+    if list.len() == 0 {
+        return -1
+    }
+    return list[0]
+}
+
+// The control: byte-identical to `convert_free` but for the name.
+func convert_keep<Elem, Made>(list: Vec<Elem>, f: func(Elem) -> Made) -> Vec<Made> {
+    mut out: Vec<Made> = Vec.new()
+    for it in list {
+        out.push(f(it))
+    }
+    return out
+}
+
+test "a generic named `_free` gives the right answer" {
+    let ints: Vec<i32> = [1, 2, 3]
+    let labels: Vec<string> = convert_free(ints, |x| "n{x}")
+    assert labels.join(",") == "n1,n2,n3"
+}
+
+test "the control spells the same answer" {
+    let ints: Vec<i32> = [1, 2, 3]
+    let labels: Vec<string> = convert_keep(ints, |x| "n{x}")
+    assert labels.join(",") == "n1,n2,n3"
+}
+
+test "a plain function named `_free` still borrows its Vec" {
+    let ints: Vec<i32> = [7, 8]
+    assert first_or_free(ints) == 7
+}

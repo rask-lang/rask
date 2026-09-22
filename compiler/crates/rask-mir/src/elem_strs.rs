@@ -91,6 +91,10 @@ pub fn container_tag(rendered: &str) -> Option<i64> {
 pub const BOX_PAYLOAD_NONE: i64 = 0;
 pub const BOX_PAYLOAD_VEC: i64 = 1;
 pub const BOX_PAYLOAD_MAP: i64 = 2;
+/// A closure block. Same reason as the two byte stores: the box holds the
+/// address and the frame that built the closure gave it away, so the block
+/// comes back when the box's last reference does (#1253).
+pub const BOX_PAYLOAD_CLOSURE: i64 = 3;
 
 /// The payload kind for a rendered type name.
 pub fn box_payload_kind(rendered: &str) -> i64 {
@@ -98,6 +102,54 @@ pub fn box_payload_kind(rendered: &str) -> i64 {
         Some(ELEM_VEC) => BOX_PAYLOAD_VEC,
         Some(ELEM_MAP) => BOX_PAYLOAD_MAP,
         _ => BOX_PAYLOAD_NONE,
+    }
+}
+
+/// The payload kind for a checker type, with its rendered head where it has
+/// one.
+///
+/// A function type has no head name to render — `head_name` answers `None` for
+/// it — so asking by string alone could only ever say `NONE`, and every
+/// `Shared.local(|x| …)` leaked the closure.
+pub fn box_payload_kind_of(ty: &rask_types::Type, rendered_head: Option<&str>) -> i64 {
+    if matches!(ty, rask_types::Type::Fn { .. }) {
+        return BOX_PAYLOAD_CLOSURE;
+    }
+    rendered_head.map(box_payload_kind).unwrap_or(BOX_PAYLOAD_NONE)
+}
+
+/// Which `Map` constructor a key type wants.
+///
+/// A string key hashes and compares by its contents. A *link* key compares by
+/// its word — two links are equal when they name the same node — but hashing
+/// that word hashes the address the allocator handed out, which moves with
+/// whatever the program allocated before the rack was built. Sim replays the
+/// map seed so a replay walks the buckets in the same order (determinism/D7),
+/// and an address in the hash input is the one thing that doesn't replay, so a
+/// link key buckets by its node's slot instead (#1268). Anything else buckets
+/// by its word.
+///
+/// One place, because three call sites used to spell the string case by hand
+/// and a fourth kind would have had to find all of them.
+pub fn map_ctor_for(key_ty: &MirType) -> &'static str {
+    match key_ty {
+        MirType::String => "Map_new_string_keys",
+        MirType::Link(_) => "Map_new_link_keys",
+        MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => "Map_new_link_keys",
+        _ => "Map_new",
+    }
+}
+
+/// The same decision for `Map.with_capacity(n)`, which takes the capacity
+/// between the sizes and the tags but buckets by exactly the same rule.
+///
+/// Derived from `map_ctor_for` rather than repeating the match, so a fourth key
+/// kind is added in one place and this follows.
+pub fn map_ctor_with_capacity(key_ty: &MirType) -> &'static str {
+    match map_ctor_for(key_ty) {
+        "Map_new_string_keys" => "Map_with_capacity_string_keys",
+        "Map_new_link_keys" => "Map_with_capacity_link_keys",
+        _ => "Map_with_capacity",
     }
 }
 
@@ -159,6 +211,8 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Map_new_string_keys", 2, 2, "Map_free"),
     ("Map_with_capacity", 3, 2, "Map_free"),
     ("Map_with_capacity_string_keys", 3, 2, "Map_free"),
+    ("Map_with_capacity_link_keys", 3, 2, "Map_free"),
+    ("Map_new_link_keys", 2, 2, "Map_free"),
     // `keys`, `values` and `entries` walk a map and hand back a fresh Vec of
     // what they found — a `Map_` name with a `Vec` result, which is why the
     // free is written down rather than read off the prefix.

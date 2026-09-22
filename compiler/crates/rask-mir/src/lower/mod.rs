@@ -1027,6 +1027,17 @@ impl<'a> MirContext<'a> {
                 if name.starts_with("Map<") || name == "Map" {
                     return MirType::Ptr; // Map handle (opaque pointer)
                 }
+                // A closure, spelled. `type_to_mir` answers this from the
+                // checker's `Type::Fn`; an annotation reaches MIR as a string
+                // and came through here as a bare `Ptr`, so
+                // `let o: func(i64) -> i64? = …` typed its slot the same as any
+                // other address and nothing gave the block back (#1253).
+                if Self::is_callable_ty_str(name)
+                    && !name.starts_with("Sequence<")
+                    && !name.starts_with("SequenceMut<")
+                {
+                    return MirType::FuncPtr(crate::types::SignatureId(0));
+                }
                 if let Some(node) = name.strip_prefix("Link<").and_then(|s| s.strip_suffix('>')) {
                     return match self.resolve_type_str(node.trim()) {
                         MirType::Struct(sid) => MirType::Link(sid),
@@ -1350,8 +1361,14 @@ impl<'a> MirContext<'a> {
                 let type_str = format!("{}", ty);
                 self.resolve_type_str(&type_str)
             }
-            // Raw pointers and function types are pointer-sized
-            Type::RawPtr(_) | Type::Fn { .. } => MirType::Ptr,
+            Type::RawPtr(_) => MirType::Ptr,
+            // A closure is a pointer to its block, and saying so in the type is
+            // what lets a carrier holding one give it back. `MirType::Ptr` is
+            // every other pointer as well, so a tuple element or an optional's
+            // payload spelled that way carried no way to tell a closure from an
+            // address — and nothing freed it (#1253). It is also what makes
+            // `func(…) -> …?` a niche: a present closure is never null.
+            Type::Fn { .. } => MirType::FuncPtr(crate::types::SignatureId(0)),
             // Tuple → struct-like layout with positional fields
             Type::Tuple(fields) => {
                 MirType::Tuple(fields.iter().map(|t| self.type_to_mir(t)).collect())
@@ -2913,7 +2930,7 @@ impl<'a> MirLowerer<'a> {
             match &e.kind {
                 // Their own functions, with their own obligations — a consume
                 // in there is not this frame's.
-                ExprKind::Closure { .. } | ExprKind::Spawn { .. } => return false,
+                ExprKind::Closure { .. } => return false,
                 // Statements. They run through `lower_block`, which asks about
                 // each of them on its own; walking in from here would emit the
                 // cancellation at the wrong point — before the block, whether
@@ -3438,8 +3455,7 @@ impl<'a> MirLowerer<'a> {
             | ExprKind::Loop { body, .. }
             | ExprKind::UsingBlock { body, .. }
             | ExprKind::Unsafe { body }
-            | ExprKind::Comptime { body }
-            | ExprKind::Spawn { body } => bodies.push(body),
+            | ExprKind::Comptime { body } => bodies.push(body),
             ExprKind::Closure { body, .. } => kids.push(body),
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
                 kids.push(condition);
@@ -5583,7 +5599,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.walk_free_vars_block(body, bound, seen, free);
             }
-            ExprKind::Spawn { body } | ExprKind::BlockCall { body, .. }
+            ExprKind::BlockCall { body, .. }
             | ExprKind::Loop { body, .. } => {
                 self.walk_free_vars_block(body, bound, seen, free);
             }

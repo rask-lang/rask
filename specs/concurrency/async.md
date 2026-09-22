@@ -122,6 +122,18 @@ let results = try group.join_all()
 | **C5: Sequential blocks OK** | After one block exits cleanly, another may be opened (new runtime, possibly different config). Non-overlapping only |
 | **C6: Libraries don't install runtimes** | Only application code opens `using Multitasking`. Libraries call `spawn()` assuming the caller already did. Violation triggers C1's nesting error |
 
+`workers: n` is how many tasks may be *running*, not a cap on threads. A task
+blocked in `join` isn't running anything, so it doesn't hold a slot — without
+that, `workers: 1` plus one nested spawn+join had nobody left to run the inner
+task and hung.
+
+All three runtimes read it that way: the green scheduler starts a replacement
+worker for as long as a join lasts, and the two thread-backed ones (off Linux,
+and the interpreter) hold n slots that a task takes before it runs and gives up
+while it waits. Reusing a blocked worker's thread needs the fiber switch; until
+then a nested join costs a thread per level, and the green scheduler reports a
+deadlock rather than growing past 32 of them.
+
 `using ThreadPool(config) { ... }` works the same way for CPU-bound pools. The two can be combined with `using Multitasking, ThreadPool { }` (installs both; teardown in reverse order on block exit).
 
 <!-- test: parse -->

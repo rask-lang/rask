@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `comptime mut x = expr` — ctrl.comptime/CT1 (#1220).
+//
+// It parsed without complaint, evaluated nothing anyone could see, and declared
+// no name:
+//
+//     comptime mut doubled = 21 * 2
+//     println("{doubled}")
+//
+//     error[E0200]: undefined symbol: `doubled`
+//         = fix: check spelling or add an import
+//
+// The parser had a case for `comptime for` and then fell through to the block
+// form, so this parsed as `comptime { mut doubled = 21 * 2 }`. The declaration
+// landed inside that implicit block and died with it — which is also why an
+// *unused* one was accepted in silence, and why the error blamed the use with
+// advice about imports.
+//
+// CT1 says the expression runs at compile time and the variable is an ordinary
+// local, so that is what it parses as now: the initialiser is wrapped in a
+// comptime expression and the binding stays in the enclosing scope.
+
+test "a comptime variable is visible afterwards" {
+    comptime mut doubled = 21 * 2
+    assert doubled == 42
+}
+
+test "and it's an ordinary mutable local" {
+    comptime mut n = 6 * 7
+    n = n + 1
+    assert n == 43
+}
+
+test "`comptime let` too" {
+    comptime let fixed = 21 * 2
+    assert fixed == 42
+}
+
+// The forms that already worked, so a regression in either shows up here.
+const DOUBLED = comptime 21 * 2
+
+test "the constant form still works" {
+    assert DOUBLED == 42
+}
+
+test "the expression form still works" {
+    let x = comptime 21 * 2
+    assert x == 42
+}
+
+test "the block form still works" {
+    comptime {
+        mut inner = 21 * 2
+        assert inner == 42
+    }
+}

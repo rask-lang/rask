@@ -151,6 +151,11 @@ Releases: https://github.com/rask-lang/rask/releases
 
 If the compiler panics saying a name "belongs to `Vec`" but nothing declares it, MIR has minted an internal spelling nobody accounted for. `INTERNAL_SPELLINGS` in `rask-stdlib/src/mir_metadata.rs` says what each one stands for, and the panic is deliberate — the alternative answer, "no declaration, so the caller owns what came back", frees a string the container still holds. `RASK_LIST_UNMAPPED_SPELLINGS=1` reports each one and carries on instead of stopping at the first, so one sweep over the corpus lists them all.
 
+If a program generates functions nobody calls, `RASK_LIST_WIDENED_CALLS=1`
+prints every method call reachability couldn't pin to one receiver. Each one
+enqueues every method sharing that bare name, so one line there can be twenty
+functions in the output. A four-line program used to print 83 of them (#1062).
+
 SIGILL means a Cranelift trap — an `unreachable` was reached, usually a match on an out-of-range tag. `gdb -batch -ex run -ex 'bt 25' ./binary` gets the frame.
 
 **Things that will waste your time:**

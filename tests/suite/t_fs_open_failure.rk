@@ -22,11 +22,9 @@ import fs
 import io.File
 
 func open_result(path: string) -> string {
-    let o = fs.open(path)
-    o catch e => {
+    mut f = fs.open(path) catch e => {
         return "{e}"
     }
-    mut f = try o
     let t = f.read_text()
     f.close()
     if t is string as s {
@@ -37,11 +35,9 @@ func open_result(path: string) -> string {
 }
 
 func create_result(path: string) -> string {
-    let c = fs.create_file(path)
-    c catch e => {
+    mut f = fs.create_file(path) catch e => {
         return "{e}"
     }
-    mut f = try c
     let _ = f.write_text("hello\n")
     f.close()
     return "created"

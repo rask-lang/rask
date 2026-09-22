@@ -166,7 +166,7 @@ func twice(f: func()) {
 func bad_closure_consumes_borrow() {
     let c = Conn { id: 1 }
     twice(|| {
-        // ERROR: the closure borrowed `c` and cannot give it away [E0890]
+        // ERROR: the closure borrowed `c` and cannot give it away [E0891]
         c.close()
     })
 }

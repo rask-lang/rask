@@ -141,7 +141,14 @@ impl TypeChecker {
         // literal stayed open and defaulted to `i32`: `a[1] = 5` into an
         // `[i64?; 3]` stored four bytes into an eight-byte payload, and the
         // upper half came back as whatever the stack held (#835).
-        if matches!(expr.kind, ExprKind::Int(..) | ExprKind::Float(..)) {
+        // A collection literal is the same case one shape out: `let o: Vec<i64>?
+        // = [7, 42]` fills the *present* side, so what the literal is being
+        // asked for is the `Vec<i64>` inside. Left unpeeled, the slot said
+        // nothing the literal could read and it typed itself from its own
+        // elements — `expected Vec<i64>, found [i32; 2]` (#1233). The layer it
+        // skipped is added back by the ordinary optional widening at the
+        // binding.
+        if matches!(expr.kind, ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::Array(..)) {
             if let Some(inner) = expected.as_option() {
                 let inner = inner.clone();
                 return self.infer_expr_expecting(expr, &inner);
@@ -459,7 +466,24 @@ impl TypeChecker {
         matches!(ty, Type::F32 | Type::F64)
     }
 
+    /// The type of `expr`, recorded against its node.
+    ///
+    /// The recording used to sit at the bottom of the match below, which a
+    /// dozen arms never reach — they `return` out of it. So a `catch`, a `try`,
+    /// a closure, a `??`, a `select` and seven others type-checked fine and
+    /// left `node_types` with no entry, and everything downstream that asks
+    /// "what is this expression" got nothing. MIR lowering is the one that
+    /// notices: `let v = make() catch _ => { return }` bound a function value
+    /// with no recorded type, so `v(2)` lowered as a call to a *function named
+    /// `v`* and lowering gave up on the return type (#1244).
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Type {
+        let ty = self.infer_expr_kind(expr);
+        self.node_types.insert(expr.id, ty.clone());
+        self.note_node_origin(expr);
+        ty
+    }
+
+    fn infer_expr_kind(&mut self, expr: &Expr) -> Type {
         let ty = match &expr.kind {
             // Literals
             ExprKind::Int(value, suffix) => {
@@ -694,7 +718,30 @@ impl TypeChecker {
                 type_args,
             } => {
                 self.in_stmt_expr = false;
-                self.check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span)
+                let ty = self
+                    .check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span);
+                // ST1: `staged()` hands back a working copy and commits it when
+                // a scope exits, so it only means anything as the source of
+                // one. `let v = s.staged()` type-checked as an ordinary method
+                // call and then neither backend had anything to run: native
+                // stopped at "Function not found: Shared_staged", the
+                // interpreter knows the name only as a `with` source (#1156).
+                // The statement form was rejected already; every other position
+                // reached codegen.
+                if method == "staged"
+                    && args.is_empty()
+                    && !self.with_source_ids.contains(&expr.id)
+                    && self.staged_reported.insert(expr.id)
+                {
+                    if self.sync_type_of(object).is_some() {
+                        self.errors.push(TypeError::StagedOutsideWith {
+                            name: Self::sync_source_text(object)
+                                .unwrap_or_else(|| "shared".to_string()),
+                            span: expr.span,
+                        });
+                    }
+                }
+                ty
             }
 
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
@@ -1860,62 +1907,6 @@ impl TypeChecker {
 
             ExprKind::Comptime { body } => self.check_block_body(body),
 
-            ExprKind::Spawn { body } => {
-                // CC1: direct spawn must be lexically inside a `using Multitasking { }` block
-                if self.multitasking_depth == 0 {
-                    self.errors.push(TypeError::SpawnOutsideBlock { span: expr.span });
-                }
-
-                // Spawn blocks are like anonymous functions - they have their own return type
-                let outer_return_type = self.current_return_type.take();
-                let outer_try_blocks = std::mem::take(&mut self.try_block_errors);
-                let outer_accumulate = self.accumulate_errors;
-                let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
-                self.accumulate_errors = false;
-                let spawn_return_type = self.ctx.fresh_var();
-                self.current_return_type = Some(spawn_return_type.clone());
-
-                // Check all statements except the last (which we infer separately)
-                let last_idx = body.len().saturating_sub(1);
-                for (i, stmt) in body.iter().enumerate() {
-                    if i < last_idx {
-                        self.check_stmt(stmt);
-                    }
-                }
-
-                // Infer the return type from the last statement (only process once)
-                let inner_type = if let Some(last) = body.last() {
-                    match &last.kind {
-                        StmtKind::Expr(e) => self.infer_expr(e),
-                        StmtKind::Return(_) => {
-                            self.check_stmt(last);
-                            Type::Never
-                        }
-                        _ => {
-                            self.check_stmt(last);
-                            Type::Unit
-                        }
-                    }
-                } else {
-                    Type::Unit
-                };
-
-                self.ctx.add_constraint(TypeConstraint::Equal(
-                    spawn_return_type.clone(),
-                    inner_type,
-                    expr.span,
-                ));
-
-                self.current_return_type = outer_return_type;
-                self.try_block_errors = outer_try_blocks;
-                self.accumulate_errors = outer_accumulate;
-                self.inferred_errors = outer_inferred_errors;
-
-                Type::UnresolvedGeneric {
-                    name: "ThreadHandle".to_string(),
-                    args: vec![GenericArg::Type(Box::new(spawn_return_type))],
-                }
-            }
 
             ExprKind::UsingBlock { name, args, body } => {
                 // Validate context name
@@ -1966,6 +1957,10 @@ impl TypeChecker {
                 let mut guard_elem_types: std::collections::HashMap<String, Type> =
                     std::collections::HashMap::new();
                 for binding in bindings {
+                    // Before inferring it: the `staged()` check runs while the
+                    // source is inferred and asks this set whether the call has
+                    // a block to commit at.
+                    self.with_source_ids.insert(binding.source.id);
                     let raw_ty = self.infer_expr(&binding.source);
                     // Deciding whether to unwrap needs the source's concrete type.
                     // A module-level const initialized with `Mutex.new(...)` is still
@@ -2324,11 +2319,7 @@ impl TypeChecker {
         // here. `doubled(Meters { … })` gets its `T.Out` back as `Meters` —
         // without this the call's type stays `T.Out` and every use of the
         // result reports against a type nobody wrote.
-        let ty = self.resolve_assoc_projections(ty);
-
-        self.node_types.insert(expr.id, ty.clone());
-        self.note_node_origin(expr);
-        ty
+        self.resolve_assoc_projections(ty)
     }
 
 
@@ -3758,7 +3749,37 @@ impl TypeChecker {
             }
             _ => obj_ty,
         };
-        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+        // std.collections/C4 says the slot picks a collection literal's shape,
+        // and for a method the slot is the parameter — which isn't known here:
+        // a method resolves through a deferred constraint, after the arguments
+        // have already been given types. So `vv.push([7, 42])` on a
+        // `Vec<Vec<i64>>` typed the literal from its own elements and then
+        // failed against the parameter: "expected `Vec<i64>`, found `[i32; 2]`"
+        // (#1233).
+        //
+        // What *is* known here is the receiver. A `Vec<C>` deals in exactly one
+        // collection — its element type — so an array literal handed to any of
+        // its methods can only be meant as one of those, whatever position it
+        // sits in. That is the C4 rule read off the receiver instead of off the
+        // parameter, not a guess about which method it is.
+        //
+        // Only when the element is itself a collection shape: on a `Vec<i64>`
+        // an array-literal argument isn't an element and this says nothing. A
+        // `Map`'s value slot is positional and isn't covered — `Vec.from([…])`
+        // is still the spelling there.
+        let elem_shape = self
+            .first_type_arg(&self.ctx.apply(&obj_ty), "Vec")
+            .filter(|t| self.collection_elem_type(t).is_some());
+        let arg_types: Vec<_> = args
+            .iter()
+            .map(|a| match (&a.expr.kind, &elem_shape) {
+                (ExprKind::Array(_), Some(want)) => {
+                    let want = want.clone();
+                    self.infer_expr_expecting(&a.expr, &want)
+                }
+                _ => self.infer_expr(&a.expr),
+            })
+            .collect();
 
         // TR5 for a collection element. `Vec<any Shape>.push(Circle { … })` has
         // to box, but the parameter type here is the container's element
@@ -5163,14 +5184,22 @@ impl TypeChecker {
             });
             return false;
         }
-        // A function that returns nothing has nowhere to send the error either,
-        // and unlike a test block it isn't a place where ending the run is the
-        // right answer. This used to fall through: `func helper() { try f() }`
-        // type-checked, then native panicked with a message about test blocks
-        // and the interpreter dropped the error on the floor and carried on.
-        // The unresolved-operand path below has always reported this; the
-        // concrete-Result path is where it leaked.
-        if matches!(resolved, Type::Unit) {
+        // Nowhere to send the error. This used to name `void` alone, so
+        // `func doubled(t: string) -> i64 { let p = try port_of(t) … }`
+        // type-checked and then native printed the result word as if it were
+        // the payload (#1251). `void` was never the property that mattered —
+        // having an error branch is, and `i64` has one no more than `void`
+        // does.
+        //
+        // Not pinned yet, or already broken, stays quiet: a type variable gets
+        // its error branch from the unification below, and piling on after an
+        // earlier error just buries it.
+        if !matches!(resolved, Type::Result { .. } | Type::Var(_) | Type::Error)
+            && !matches!(
+                resolved,
+                Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }
+            )
+        {
             self.errors.push(TypeError::TryInNonPropagatingContext {
                 return_ty: resolved,
                 span,
@@ -6199,7 +6228,7 @@ fn body_returns_a_value(body: &Expr) -> bool {
         match &expr.kind {
             // A nested closure's `return` is its own.
             ExprKind::Closure { .. } => false,
-            ExprKind::Block(body) | ExprKind::Loop { body, .. } | ExprKind::Spawn { body } => {
+            ExprKind::Block(body) | ExprKind::Loop { body, .. } => {
                 in_stmts(body)
             }
             ExprKind::If { then_branch, else_branch, .. } => {

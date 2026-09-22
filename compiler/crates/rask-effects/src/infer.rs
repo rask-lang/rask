@@ -439,11 +439,6 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         }
 
         // Spawn is an async source (AS1)
-        ExprKind::Spawn { body } => {
-            effects.io = true;
-            effects.async_ = true;
-            classify_body(body, effects, callees);
-        }
 
         // Recurse into all other expression kinds
         ExprKind::Binary { left, right, .. } => {
@@ -804,13 +799,6 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan) -> bool {
             r
         }
         ExprKind::Closure { body, .. } => rt_scan_expr(body, depth, rs),
-        ExprKind::Spawn { body } => {
-            let was = rs.in_spawn;
-            rs.in_spawn = true;
-            let r = rt_scan_stmts(body, depth, rs);
-            rs.in_spawn = was;
-            r
-        }
         ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. }
         | ExprKind::Loop { body, .. } | ExprKind::Unsafe { body } => rt_scan_stmts(body, depth, rs),
         ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
@@ -1114,19 +1102,12 @@ mod tests {
         assert!(effects["c_function"].io, "INF5: extern is conservative IO");
     }
 
+    /// `spawn(|| …)` is a call, which is the only form there is — the block
+    /// form was a variant nothing produced (#1115). This used to build that
+    /// variant, so it proved a path no program could reach.
     #[test]
-    fn spawn_expr_is_async() {
-        let decls = vec![make_fn("run", vec![
-            Stmt {
-                id: NodeId(0),
-                kind: StmtKind::Expr(Expr {
-                    id: NodeId(0),
-                    kind: ExprKind::Spawn { body: vec![] },
-                    span: sp(),
-                }),
-                span: sp(),
-            },
-        ])];
+    fn spawn_is_async() {
+        let decls = vec![make_fn("run", vec![expr_stmt(call("spawn", vec![]))])];
         let effects = infer(&decls);
         assert!(effects["run"].async_);
         assert!(effects["run"].io, "AS3: Async implies IO");

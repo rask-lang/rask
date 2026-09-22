@@ -894,6 +894,40 @@ impl<'a> MirLowerer<'a> {
         (MirOperand::Local(result_local), trait_obj_ty)
     }
 
+    /// Wrap a lowered closure into the layers its parameter declares.
+    ///
+    /// Every other argument shape reaches `coerce_into_wrapper` through the
+    /// non-closure branch; a closure literal was lowered and passed straight
+    /// through, so a `func(…) -> … ?` parameter got a bare closure pointer
+    /// where the callee reads a tag. It answered `none` with the closure
+    /// sitting right there — and only when the callee was too big to inline,
+    /// because the inliner substitutes the argument instead of going through
+    /// the ABI (#1275).
+    ///
+    /// Wrapping means *storing* the closure into the option slot, which the
+    /// escape analysis reads as a hand-over: the environment goes on the heap
+    /// and the frame stops owning it. That is what made the first attempt leak
+    /// 32 bytes a call and got it reverted. The slot is the owner now — a
+    /// `FuncPtr` in an aggregate is released with the aggregate (#1253) — so
+    /// the hand-over lands somewhere.
+    fn wrap_closure_arg(
+        &mut self,
+        op: MirOperand,
+        mir_ty: MirType,
+        declared: Option<&String>,
+    ) -> (MirOperand, MirType) {
+        let Some(dst_ty) = declared.map(|s| self.ctx.resolve_type_str(s)) else {
+            return (op, mir_ty);
+        };
+        let op = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::Argument,
+            op,
+            &mir_ty,
+            &dst_ty,
+        );
+        (op, mir_ty)
+    }
+
     /// Parameter types a closure argument at position `i` should take, read off
     /// the callee's declared `func(...)` parameter. Empty when the callee is
     /// unknown or that parameter isn't a function type.
@@ -1834,7 +1868,8 @@ impl<'a> MirLowerer<'a> {
                             // the call that carries it (#963).
                             spawn_boxes_result = self.spawn_result_boxed;
                         }
-                        lowered
+                        let (op, mir_ty) = lowered;
+                        self.wrap_closure_arg(op, mir_ty, callee_params.get(i).and_then(|o| o.as_ref()))
                     } else {
                         let agg_mut = callee_agg_mutate.get(i).copied().unwrap_or(false);
                         let (op, mir_ty) = self.lower_call_arg(&a.expr, smut, agg_mut)?;
@@ -3386,7 +3421,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Unwrap (postfix !) - panic on None/Err
-            ExprKind::Unwrap { expr: inner, message: _ } => {
+            ExprKind::Unwrap { expr: inner, message: override_text } => {
                 let (val, _inner_ty) = self.lower_expr(inner)?;
                 let niche = self.option_niche(inner, &_inner_ty);
                 let is_niche = niche.is_some();
@@ -3412,7 +3447,20 @@ impl<'a> MirLowerer<'a> {
                 // Reachability picked the method and queued its body;
                 // naming it here instead is how `json.encode` once reached
                 // codegen as a function nothing emits.
-                if !self.lower_forced_error_panic(expr, inner, &val)? {
+                // ER15's other half: `r! "msg"` says what to print instead.
+                // The parser kept the string on the node and nothing here read
+                // it, so native printed neither the override nor the fallback —
+                // `panic at f.rk:2: ! on a value that was an error` where the
+                // interpreter printed `panic: PORT must be a number` (#1257).
+                if let Some(text) = override_text {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("panic".to_string()),
+                        args: vec![MirOperand::Constant(crate::operand::MirConst::String(
+                            text.clone(),
+                        ))],
+                    }));
+                } else if !self.lower_forced_error_panic(expr, inner, &val)? {
                     // No message to reach for: an absent `T?`, or an error
                     // type whose `message()` has no body to instantiate.
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -4068,9 +4116,6 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Spawn — synthesize a closure function and call rask_closure_spawn
-            ExprKind::Spawn { body } => {
-                self.lower_spawn(body)
-            }
 
             // Block call (e.g., spawn_raw { ... })
             ExprKind::BlockCall { name, body } => {
@@ -5357,8 +5402,10 @@ impl<'a> MirLowerer<'a> {
                                 let kind = args
                                     .first()
                                     .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).cloned())
-                                    .and_then(|ty| self.head_name(&ty))
-                                    .map(|h| crate::elem_strs::box_payload_kind(&h))
+                                    .map(|ty| {
+                                        let head = self.head_name(&ty);
+                                        crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                                    })
                                     .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
                             }
@@ -5410,12 +5457,18 @@ impl<'a> MirLowerer<'a> {
                                 let from_spelling = super::generic_args_of_str(name)
                                     .and_then(|args| args.first().copied())
                                     .map(|arg| self.ctx.resolve_type_str(arg));
-                                let has_string_keys = matches!(from_checker, Some(MirType::String))
-                                    || matches!(from_spelling, Some(MirType::String));
-                                if has_string_keys {
-                                    format!("{func_name}_string_keys")
-                                } else {
-                                    func_name
+                                // Same decision either way; `with_capacity`
+                                // just lands on the constructor that also takes
+                                // the capacity.
+                                let with_cap = func_name == "Map_with_capacity";
+                                match from_checker.or(from_spelling) {
+                                    Some(k) if with_cap => {
+                                        crate::elem_strs::map_ctor_with_capacity(&k).to_string()
+                                    }
+                                    Some(k) => {
+                                        crate::elem_strs::map_ctor_for(&k).to_string()
+                                    }
+                                    None => func_name,
                                 }
                             } else {
                                 func_name
@@ -5589,7 +5642,10 @@ impl<'a> MirLowerer<'a> {
                 if expected.is_empty() {
                     expected = elem_params.clone();
                 }
-                self.lower_closure_expecting(params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id), false)?
+                let (op, mir_ty) = self.lower_closure_expecting(
+                    params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id), false,
+                )?;
+                self.wrap_closure_arg(op, mir_ty, callee_params.get(i + 1).and_then(|o| o.as_ref()))
             } else {
                 let (op, mir_ty) = self.lower_call_arg(&arg.expr, smut, agg_mut)?;
                 let declared = callee_params
@@ -5767,8 +5823,10 @@ impl<'a> MirLowerer<'a> {
             let kind = args
                 .first()
                 .and_then(|a| self.ctx.lookup_raw_type(a.expr.id).cloned())
-                .and_then(|ty| self.head_name(&ty))
-                .map(|head| crate::elem_strs::box_payload_kind(&head))
+                .map(|ty| {
+                    let head = self.head_name(&ty);
+                    crate::elem_strs::box_payload_kind_of(&ty, head.as_deref())
+                })
                 .unwrap_or(crate::elem_strs::BOX_PAYLOAD_NONE);
             all_args.push(MirOperand::Constant(MirConst::Int(kind)));
         }
@@ -8609,8 +8667,7 @@ impl<'a> MirLowerer<'a> {
             ],
         }));
 
-        // A string key hashes by its contents; anything else by its word.
-        let ctor = if key_name == "string" { "Map_new_string_keys" } else { "Map_new" };
+        let ctor = crate::elem_strs::map_ctor_for(&key_ty);
         let map = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map),

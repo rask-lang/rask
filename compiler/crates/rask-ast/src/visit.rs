@@ -105,7 +105,6 @@ pub fn walk_expr_pruned<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr) -> bool
         }
 
         ExprKind::Block(body)
-        | ExprKind::Spawn { body }
         | ExprKind::BlockCall { body, .. }
         | ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }

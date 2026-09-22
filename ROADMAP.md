@@ -250,9 +250,13 @@ while another is blocked joining it is where
 [#299](https://github.com/rask-lang/rask/issues/299)'s panic semantics and
 [#1130](https://github.com/rask-lang/rask/issues/1130)'s deadlock meet.
 
-[#1130](https://github.com/rask-lang/rask/issues/1130) is the one that matters:
-a task that joins another deadlocks when every worker is blocked in join. A
-language whose pitch includes "no function coloring" cannot have that.
+[#1130](https://github.com/rask-lang/rask/issues/1130) was the one that
+mattered: a task that joined another deadlocked when every worker was blocked
+in join. A language whose pitch includes "no function coloring" cannot have
+that. It runs now — a blocked worker isn't running anything, so the scope
+starts a replacement for the duration — which buys correctness at one OS thread
+per simultaneously-blocked join. Reusing the blocked worker's thread is the
+fiber switch, and that is what the rest of this milestone is about.
 
 [#298](https://github.com/rask-lang/rask/issues/298) ·
 [#299](https://github.com/rask-lang/rask/issues/299) ·

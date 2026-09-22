@@ -2494,15 +2494,6 @@ impl<'a> Printer<'a> {
                 self.format_postfix_receiver(inner);
                 self.emit(&format!(".{}<{}>()", kind.surface(), target));
             }
-            ExprKind::Spawn { body } => {
-                self.emit("spawn {");
-                self.emit_newline();
-                self.indent += 1;
-                self.format_stmts(body);
-                self.indent -= 1;
-                self.emit_indent();
-                self.emit("}");
-            }
             ExprKind::Loop { label, body } => {
                 if let Some(lbl) = label {
                     self.emit(lbl);

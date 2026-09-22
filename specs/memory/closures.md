@@ -279,7 +279,7 @@ FIX: Use Shared<T> for shared mutable state:
 | `own` closure captures Copy type | Value copied (same as non-own) |
 | `own` closure captures move-only type | Type moved into closure, source invalid |
 | `own` closure captures resource type | Resource consumed by closure; must be used within or returned |
-| Non-`own` closure captures resource type | Resource borrowed; consuming it in the body is an error (E0890) |
+| Non-`own` closure captures resource type | Resource borrowed; consuming it in the body is an error (E0891) |
 | Nested closures | Each level borrows/moves from its immediate outer scope |
 | Pure closure (no captures) | Self-contained either way; `own` is redundant but allowed |
 | Mutable capture of a Copy type | Borrows mutably (not copied), mutations visible to caller |
@@ -294,7 +294,7 @@ moves the resource in and leaves the outer binding with nothing to owe.
 func twice(f: func()) { f() f() }
 
 let c = Conn.open(1)
-twice(|| { c.close() })         // error[E0890] — the closure borrowed `c`
+twice(|| { c.close() })         // error[E0891] — the closure borrowed `c`
 twice(own || { c.close() })     // fine: `c` is the closure's now
 ```
 

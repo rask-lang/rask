@@ -100,7 +100,7 @@ test "std.collections — shrink releases capacity, with and without a floor" {
     mut v: Vec<i32> = Vec.new()
     v.reserve(64)
     v.push(1)
-    v.shrink(0)
+    v.shrink()
     assert v.len() == 1
     mut w: Vec<i32> = Vec.new()
     w.reserve(64)

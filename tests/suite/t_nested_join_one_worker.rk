@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A task that joins another task, with fewer workers than levels (#1130).
+//
+// A worker that joins blocks on the target task and stops taking work. With
+// one worker, the inner task never got picked up: no output, no exit, every
+// run. `workers: 2` printed the answer, so the worker count was a lower bound
+// on how deep joins could nest — and nothing said so until the program hung.
+//
+// A blocked worker isn't running anything, so the scope starts a replacement
+// for as long as the join lasts. `workers: n` counts runnable workers, not
+// threads. That is not the same as suspending the joining task and reusing its
+// thread, which is the fiber switch and isn't built — this gives up one OS
+// thread per simultaneously-blocked join, and past 32 of them the runtime
+// reports the deadlock instead.
+
+test "a task joins another with one worker to run both" {
+    using Multitasking(workers: 1) {
+        let outer = spawn(|| {
+            let inner = spawn(|| { return 7 })
+            let v = inner.join() catch e => { return 0 }
+            return v
+        })
+        let r = outer.join() catch e => { return }
+        assert r == 7
+    }
+}
+
+test "four levels deep, still one worker" {
+    using Multitasking(workers: 1) {
+        let a = spawn(|| {
+            let b = spawn(|| {
+                let c = spawn(|| {
+                    let d = spawn(|| { return 1 })
+                    let dv = d.join() catch e => { return -1 }
+                    return dv + 1
+                })
+                let cv = c.join() catch e => { return -1 }
+                return cv + 1
+            })
+            let bv = b.join() catch e => { return -1 }
+            return bv + 1
+        })
+        let r = a.join() catch e => { return }
+        assert r == 4
+    }
+}
+
+test "several tasks joining at once, one worker" {
+    using Multitasking(workers: 1) {
+        let x = spawn(|| {
+            let inner = spawn(|| { return 2 })
+            let v = inner.join() catch e => { return 0 }
+            return v
+        })
+        ensure x.detach()
+        let y = spawn(|| {
+            let inner = spawn(|| { return 3 })
+            let v = inner.join() catch e => { return 0 }
+            return v
+        })
+        ensure y.detach()
+        let xv = x.join() catch e => { return }
+        let yv = y.join() catch e => { return }
+        assert xv + yv == 5
+    }
+}
+
+// The scope that never nests never grows a thread — nothing here to observe
+// that from inside the language, but a plain spawn+join has to keep working on
+// one worker, which is the path the new check sits on.
+test "a plain spawn and join is unchanged" {
+    using Multitasking(workers: 1) {
+        let h = spawn(|| { return 11 })
+        let v = h.join() catch e => { return }
+        assert v == 11
+    }
+}

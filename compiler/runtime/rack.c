@@ -554,6 +554,28 @@ int64_t rask_rack_is_empty(const RaskRack *r) {
     return (!r || r->len == 0) ? 1 : 0;
 }
 
+// A link's hash, and the one thing about a node that doesn't move: its slot.
+//
+// A link *is* the node's address (mem.racks/RK2), so hashing its bytes hashes
+// whatever the allocator handed out — which moves with however much the program
+// allocated before the rack was built. `determinism/D7` doesn't promise a map
+// iteration order, so that can't produce a wrong answer; what it breaks is the
+// other half of D7, where sim derives the map seed from the sim seed so a
+// replay walks the buckets in the same order. The seed replays, the address
+// doesn't (#1268).
+//
+// The slot index replays. Equality is still the address — two links are equal
+// when they name the same node — so this only decides which bucket a key lands
+// in, and equal keys hash equal because the same node has the same slot for as
+// long as it lives.
+//
+// Links from two different racks can share a slot number and collide. That
+// costs a probe, not an answer.
+int64_t rask_link_slot(const void *link) {
+    if (rask_link_is_none(link)) return -1;
+    return node_of((void *)link)->slot_index;
+}
+
 int64_t rask_rack_contains(const RaskRack *r, const void *link) {
     if (!r || rask_link_is_none(link)) return 0;
     const RackNode *n = node_of((void *)link);

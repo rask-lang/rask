@@ -126,6 +126,7 @@ typedef struct {
 #define RASK_BOX_PAYLOAD_NONE 0
 #define RASK_BOX_PAYLOAD_VEC  1
 #define RASK_BOX_PAYLOAD_MAP  2
+#define RASK_BOX_PAYLOAD_CLOSURE 3
 
 #define RASK_OWNED_KIND_SHIFT 28
 #define RASK_OWNED_OFFSET_MASK 0x0FFFFFFF
@@ -295,6 +296,9 @@ void     rask_vec_sort_f64(RaskVec *v);
 void     rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
+// Order `v` by a parallel Vec of keys, stably. `comparator` is a closure block
+// over two keys — same shape sort_by takes. `keys` is read, not reordered.
+void     rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator);
 void     rask_vec_reverse(RaskVec *v);
 void     rask_vec_swap(RaskVec *v, int64_t i, int64_t j);
 int64_t  rask_vec_contains(const RaskVec *v, const void *elem);
@@ -613,6 +617,9 @@ RaskMap *rask_map_new(int64_t key_size, int64_t val_size,
 RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size,
                                   const int32_t *key_offs, int64_t n_key_offs,
                                   const int32_t *val_offs, int64_t n_val_offs);
+RaskMap *rask_map_new_link_keys(int64_t key_size, int64_t val_size,
+                                const int32_t *key_offs, int64_t n_key_offs,
+                                const int32_t *val_offs, int64_t n_val_offs);
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq);
 // `Map.with_capacity(n)`. A hint, like the Vec one: it pre-allocates the
@@ -623,6 +630,9 @@ RaskMap *rask_map_new_cap(int64_t key_size, int64_t val_size, int64_t cap,
 RaskMap *rask_map_new_string_keys_cap(int64_t key_size, int64_t val_size, int64_t cap,
                                       const int32_t *key_offs, int64_t n_key_offs,
                                       const int32_t *val_offs, int64_t n_val_offs);
+RaskMap *rask_map_new_link_keys_cap(int64_t key_size, int64_t val_size, int64_t cap,
+                                    const int32_t *key_offs, int64_t n_key_offs,
+                                    const int32_t *val_offs, int64_t n_val_offs);
 // Releases every string the keys and values hold, then the map itself.
 void     rask_map_free(RaskMap *m);
 int64_t  rask_map_len(const RaskMap *m);
@@ -651,6 +661,8 @@ uint64_t rask_int_hash(uint64_t lo, uint64_t hi, int64_t width);
 int      rask_eq_bytes(const void *a, const void *b, int64_t key_size);
 // Hashes a RaskStr by content — what string-keyed maps and string.hash() use.
 uint64_t rask_hash_string_key(const void *key, int64_t key_size);
+uint64_t rask_hash_link_key(const void *key, int64_t key_size);
+uint64_t rask_link_hash(const void *link);
 // Pins the per-process seed mixed into the above (see map.c) — a hook for a
 // future sim runtime, unused today.
 void     rask_map_set_seed(uint64_t seed);
@@ -705,6 +717,7 @@ void      rask_rack_print_stats(void);
 // Edge maintenance. `set` writes the slot and keeps the target's incoming list
 // in step; `forget` drops the record without writing, for a holder that is
 // going away while its target stays alive.
+int64_t   rask_link_slot(const void *link);
 void      rask_link_set(void **slot, void *target);
 // `payload.<field at offset> = target` for a node of some rack. The node's own
 // link fields keep their edge record inline in the header, so this unlinks and
@@ -1122,13 +1135,22 @@ void    rask_panic_set_task_id(int64_t id);
 // nothing below this line is defined. `LINUX_SOURCES` in
 // rask-cli/src/commands/link.rs and `LINUX_ONLY` in runtime/Makefile decide the
 // same thing for the build; this is how a portable source asks.
-#ifdef __linux__
+#if defined(__linux__) && !defined(RASK_NO_GREEN)
 #define RASK_HAS_GREEN 1
 #else
 #define RASK_HAS_GREEN 0
 #endif
 
-#if RASK_HAS_GREEN
+// What a task's poll function reports. The state machine the compiler
+// generates returns one of these, so both schedulers — green.c and the
+// thread-backed stand-in in green_threads.c — read the same two numbers.
+#define RASK_POLL_READY   0
+#define RASK_POLL_PENDING 1
+
+// Every name below is defined by green.c on a build that has the scheduler and
+// by green_threads.c on one that doesn't, so a caller needs neither to care.
+// Off Linux a task is an OS thread, which is what Phase A concurrency is
+// (conc.strategy/A1); the difference is that tasks don't multiplex.
 
 void      rask_runtime_init(int64_t worker_count);
 void      rask_runtime_shutdown(void);
@@ -1167,7 +1189,6 @@ void      rask_yield(void);
 // Check cancel flag for the current green task.
 int       rask_green_task_is_cancelled(void);
 
-#endif // RASK_HAS_GREEN
 
 // ─── Threads ───────────────────────────────────────────────
 // Phase A concurrency: one OS thread per spawn (conc.strategy/A1).
@@ -1202,6 +1223,19 @@ int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out);
 
 // Check if the current task has been cancelled. Returns 1 if cancelled.
 int8_t rask_task_cancelled(void);
+
+// `using Multitasking(workers: n)` on a build with no green scheduler: the
+// scope installs the count and a task body waits for one of the slots. Inert
+// while nothing installs one. See thread.c.
+void rask_task_slots_install(int64_t n);
+void rask_task_slots_clear(void);
+void rask_task_slot_release(void);
+void rask_task_slot_retake(void);
+
+// Raise the cancel flag without joining. `rask_task_cancel` does both, and a
+// caller that wants the outcome shape (RASK_JOIN_CANCELLED and the value) needs
+// the flag raised before `rask_task_join_outcome` reads it.
+void rask_task_request_cancel(void *h);
 
 // Sleep the current thread for the given number of nanoseconds.
 int64_t rask_sleep_ns(int64_t ns);
