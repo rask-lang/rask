@@ -66,11 +66,23 @@ pub fn desugar(decls: &mut [Decl]) {
     desugar_with_diagnostics(decls);
 }
 
+/// Desugar a single file that can call the stdlib.
+///
+/// `stdlib` is the stdlib's defaulted signatures
+/// (`StubRegistry::defaulted_signatures`). Filling an omitted argument needs
+/// the declaration it was omitted from, and the stdlib's declarations aren't
+/// in `decls` — so without this a defaulted parameter in `stdlib/*.rk` was
+/// parsed and then unusable (#1276). This crate can't read the registry
+/// itself: `rask-stdlib` already depends on it.
+pub fn desugar_with_stdlib(decls: &mut [Decl], stdlib: &[Decl]) -> Vec<DesugarError> {
+    desugar_inner_from(decls, &[], stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+}
+
 /// Desugar the stdlib's own declarations, in their own NodeId bands.
 ///
 /// See [`STDLIB_DESUGAR_ID_BASE`].
 pub fn desugar_stdlib(decls: &mut [Decl]) {
-    desugar_inner_from(decls, &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE);
+    desugar_inner_from(decls, &[], &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE);
 }
 
 /// Desugar a package whose dependencies are known.
@@ -81,8 +93,9 @@ pub fn desugar_stdlib(decls: &mut [Decl]) {
 pub fn desugar_package(
     decls: &mut [Decl],
     dep_annotations: &[(String, Decl)],
+    stdlib: &[Decl],
 ) -> Vec<DesugarError> {
-    desugar_inner(decls, dep_annotations)
+    desugar_inner_from(decls, dep_annotations, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 /// ER26 coverage error from @message desugaring.
@@ -98,12 +111,13 @@ pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> Vec<DesugarError> {
 }
 
 fn desugar_inner(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) -> Vec<DesugarError> {
-    desugar_inner_from(decls, dep_annotations, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
+    desugar_inner_from(decls, dep_annotations, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 fn desugar_inner_from(
     decls: &mut [Decl],
     dep_annotations: &[(String, Decl)],
+    stdlib: &[Decl],
     id_base: u32,
     default_args_id_base: u32,
 ) -> Vec<DesugarError> {
@@ -128,7 +142,7 @@ fn desugar_inner_from(
 
     // Defaults need the full declaration list to build their lookup table,
     // so they run as a second sweep rather than inline with the operators.
-    defaults::desugar_default_args(decls, default_args_id_base);
+    defaults::desugar_default_args(decls, default_args_id_base, stdlib);
 
     // AN3: an annotation attachment gets its declared defaults filled the same
     // way a struct literal does, so every later reader sees a complete one.

@@ -5,7 +5,7 @@
 //! Builds a function lookup table from declarations, then rewrites
 //! call sites to fill in default values for missing arguments.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use rask_ast::decl::{Decl, DeclKind, FnDecl, Param};
 use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, FieldInit};
 use rask_ast::stmt::{Stmt, StmtKind};
@@ -21,9 +21,22 @@ fn base_type_name(name: &str) -> &str {
 /// Builds a lookup table of function signatures, then rewrites call sites
 /// so that missing arguments with defaults are filled in and named
 /// arguments are resolved to positional form.
-pub(crate) fn desugar_default_args(decls: &mut [Decl], id_base: u32) {
+/// `outer` holds declarations the program can call but doesn't contain — the
+/// stdlib's.
+///
+/// A default is filled from `outer` only where the program declares nothing of
+/// that name. The receiver's type isn't known here — this pass runs before
+/// resolution — so an instance call is matched by method name alone, and a
+/// program with its own `shrink(to: usize)` would otherwise have `Vec`'s
+/// default filled into a call to *its* method: "expected 1 argument" would
+/// become a call that type-checks and does something else. Withholding the
+/// stdlib's default on a name collision costs a diagnostic the author already
+/// gets today; filling the wrong one costs a wrong program. Filling it where
+/// the receiver's type is known is #1312.
+pub(crate) fn desugar_default_args(decls: &mut [Decl], id_base: u32, outer: &[Decl]) {
     let lookup = FunctionLookup::build(decls);
     let mut ctx = DefaultDesugarer {
+        outer: FunctionLookup::build(outer),
         lookup,
         // Own band, clear of the stdlib's parsed ids and of operator
         // desugaring's. See DESUGAR_ID_BASE for why the bands must not overlap.
@@ -86,6 +99,13 @@ struct FunctionLookup {
     /// Struct field defaults (FD1): base type name -> [(field name, default expr)].
     /// Only structs with at least one defaulted field are recorded.
     struct_defaults: HashMap<String, Vec<(String, Expr)>>,
+    /// Every name declared here, defaulted or not. The maps above hold only
+    /// the defaulted ones, so they can't answer "does this program declare a
+    /// `shrink` of its own?" — and the stdlib fallback must not fill an
+    /// argument into a call to the program's own same-named method.
+    declared_fns: HashSet<String>,
+    declared_methods: HashSet<String>,
+    declared_types: HashSet<String>,
 }
 
 impl FunctionLookup {
@@ -94,15 +114,21 @@ impl FunctionLookup {
         let mut methods: HashMap<(String, String), Vec<Param>> = HashMap::new();
         let mut methods_by_name: HashMap<String, Vec<Vec<Param>>> = HashMap::new();
         let mut struct_defaults: HashMap<String, Vec<(String, Expr)>> = HashMap::new();
+        let mut declared_fns: HashSet<String> = HashSet::new();
+        let mut declared_methods: HashSet<String> = HashSet::new();
+        let mut declared_types: HashSet<String> = HashSet::new();
 
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
+                    declared_fns.insert(f.name.clone());
                     if f.params.iter().any(|p| p.default.is_some()) {
                         functions.insert(f.name.clone(), f.params.clone());
                     }
                 }
                 DeclKind::Struct(s) => {
+                    declared_types.insert(base_type_name(&s.name).to_string());
+                    declared_methods.extend(s.methods.iter().map(|m| m.name.clone()));
                     let defaults: Vec<(String, Expr)> = s.fields.iter()
                         .filter_map(|f| f.default.as_ref().map(|d| (f.name.clone(), d.clone())))
                         .collect();
@@ -116,6 +142,8 @@ impl FunctionLookup {
                     }
                 }
                 DeclKind::Enum(e) => {
+                    declared_types.insert(base_type_name(&e.name).to_string());
+                    declared_methods.extend(e.methods.iter().map(|m| m.name.clone()));
                     for m in &e.methods {
                         Self::register_method(
                             &e.name, m, &mut methods, &mut methods_by_name,
@@ -123,6 +151,7 @@ impl FunctionLookup {
                     }
                 }
                 DeclKind::Impl(i) => {
+                    declared_methods.extend(i.methods.iter().map(|m| m.name.clone()));
                     for m in &i.methods {
                         Self::register_method(
                             &i.target_ty, m, &mut methods, &mut methods_by_name,
@@ -133,7 +162,15 @@ impl FunctionLookup {
             }
         }
 
-        Self { functions, methods, methods_by_name, struct_defaults }
+        Self {
+            functions,
+            methods,
+            methods_by_name,
+            struct_defaults,
+            declared_fns,
+            declared_methods,
+            declared_types,
+        }
     }
 
     fn register_method(
@@ -331,6 +368,9 @@ fn clone_expr_kind(
 
 struct DefaultDesugarer {
     lookup: FunctionLookup,
+    /// The stdlib's defaulted signatures. Consulted only when the program
+    /// declares nothing of that name — see `desugar_default_args`.
+    outer: FunctionLookup,
     next_id: u32,
 }
 
@@ -551,7 +591,16 @@ impl DefaultDesugarer {
 
     /// FD2: fill in defaults for struct-literal fields the caller omitted.
     fn fill_struct_defaults(&mut self, name: &str, fields: &mut Vec<FieldInit>) {
-        let Some(defaults) = self.lookup.struct_defaults.get(base_type_name(name)) else {
+        let Some(defaults) = self
+            .lookup
+            .struct_defaults
+            .get(base_type_name(name))
+            .or_else(|| {
+                (!self.lookup.declared_types.contains(base_type_name(name)))
+                    .then(|| self.outer.struct_defaults.get(base_type_name(name)))
+                    .flatten()
+            })
+        else {
             return;
         };
         // Clone out so we don't hold a borrow on self.lookup while mutating.
@@ -593,8 +642,16 @@ impl DefaultDesugarer {
         match &mut expr.kind {
             ExprKind::Call { func, args } => {
                 if let ExprKind::Ident(name) = &func.kind {
-                    if let Some(params) = self.lookup.lookup_function(name) {
-                        let params = params.to_vec();
+                    let found = self
+                        .lookup
+                        .lookup_function(name)
+                        .or_else(|| {
+                            (!self.lookup.declared_fns.contains(name.as_str()))
+                                .then(|| self.outer.lookup_function(name))
+                                .flatten()
+                        })
+                        .map(|p| p.to_vec());
+                    if let Some(params) = found {
                         let next_id = &mut self.next_id;
                         let mut id_gen = || {
                             let id = NodeId(*next_id);
@@ -621,12 +678,22 @@ impl DefaultDesugarer {
                 // name. The fallback only fires when no type of that name has
                 // such a method, and it already requires the name to be
                 // unambiguous across the program.
+                // The stdlib's signatures are consulted only when the program
+                // declares no method of that name at all — not merely no
+                // defaulted one. A program with its own `shrink(to: usize)`
+                // and no default would otherwise have `Vec`'s default filled
+                // into a call to *its* method, turning "expected 1 argument"
+                // into a call that type-checks and does the wrong thing.
+                let own = !self.lookup.declared_methods.contains(method.as_str());
                 let params = if let ExprKind::Ident(type_name) = &object.kind {
                     self.lookup.lookup_static_method(type_name, method)
                         .or_else(|| self.lookup.lookup_instance_method(method))
+                        .or_else(|| own.then(|| self.outer.lookup_static_method(type_name, method)).flatten())
+                        .or_else(|| own.then(|| self.outer.lookup_instance_method(method)).flatten())
                         .map(|p| p.to_vec())
                 } else {
                     self.lookup.lookup_instance_method(method)
+                        .or_else(|| own.then(|| self.outer.lookup_instance_method(method)).flatten())
                         .map(|p| p.to_vec())
                 };
 
@@ -853,7 +920,7 @@ mod tests {
         };
 
         let mut decls = vec![struct_decl, main];
-        desugar_default_args(&mut decls, crate::DEFAULT_ARGS_ID_BASE);
+        desugar_default_args(&mut decls, crate::DEFAULT_ARGS_ID_BASE, &[]);
 
         let DeclKind::Fn(f) = &decls[1].kind else { panic!("expected fn") };
         let StmtKind::Expr(e) = &f.body[0].kind else { panic!("expected expr stmt") };
@@ -906,7 +973,7 @@ mod tests {
         };
 
         let mut decls = vec![struct_decl, main];
-        desugar_default_args(&mut decls, crate::DEFAULT_ARGS_ID_BASE);
+        desugar_default_args(&mut decls, crate::DEFAULT_ARGS_ID_BASE, &[]);
 
         let DeclKind::Fn(f) = &decls[1].kind else { panic!("expected fn") };
         let StmtKind::Expr(e) = &f.body[0].kind else { panic!("expected expr stmt") };

@@ -220,7 +220,10 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &cfg);
 
     // --- Desugar (operators + default/named args) ---
-    let desugar_errors = rask_desugar::desugar_with_diagnostics(&mut parse_result.decls);
+    let desugar_errors = rask_desugar::desugar_with_stdlib(
+        &mut parse_result.decls,
+        rask_stdlib::StubRegistry::defaulted_signatures(),
+    );
     for e in &desugar_errors {
         diags.push(
             rask_diagnostics::Diagnostic::error(e.message.clone())
@@ -271,7 +274,10 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
                     .collect()
             })
             .unwrap_or_default();
-        rask_desugar::desugar_with_diagnostics(&mut sibling_decls);
+        rask_desugar::desugar_with_stdlib(
+            &mut sibling_decls,
+            rask_stdlib::StubRegistry::defaulted_signatures(),
+        );
         parse_result.decls.extend(sibling_decls);
 
         match rask_resolve::resolve_package_with_cfg(

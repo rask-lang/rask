@@ -57,7 +57,8 @@ before someone else spends an afternoon on it: those 60 are not a pile of
 near-synonyms. They are roughly 16 sequence adapters, 12 methods for bounded
 capacity, about 20 core operations, and a tail. The name-families SD2 actually
 targets — `shrink_to_fit`/`shrink_to`, `sort`/`sort_by`, `min`/`min_by` — are
-worth one entry each.
+worth one entry each. A stdlib method can carry a default argument now, which
+is what those collapses need; `shrink(to: usize = 0)` is the first.
 
 So the budget is being blown by **structure**, not by naming, and two things
 decide whether it can ever be met:

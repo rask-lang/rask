@@ -329,12 +329,14 @@ for score in scores.values() { println(format("{}", score)) }
 Infallible, best-effort. If the allocator can't provide a smaller block, the collection keeps its current allocation.
 
 One method, because `shrink_to_fit()` was `shrink_to(0)` with the argument
-left out, and `std.api/SD5` gives one operation one spelling.
+left out, and `std.api/SD5` gives one operation one spelling. The argument
+defaults to 0, which is `SD2` — the surface grows by parameter.
 
 <!-- test: parse -->
 ```rask
-vec.shrink(0)      // give back everything past len — the old shrink_to_fit
+vec.shrink()       // give back everything past len — the old shrink_to_fit
 vec.shrink(n)      // give back everything past n, or past len when that's larger
+vec.shrink(to: n)  // the same, named
 ```
 
 ## Capacity Introspection
@@ -345,7 +347,7 @@ vec.shrink(n)      // give back everything past n, or past len when that's large
 | `vec.capacity()` | `usize?` | `none` = unbounded, value = max capacity |
 | `vec.is_bounded()` | `bool` | `capacity()?` |
 | `vec.remaining()` | `usize?` | `none` = unbounded, value = slots available |
-| `vec.allocated()` | `usize` | How many elements the buffer has room for — the same unit as `len()`, and a different question from `capacity()`, which is the bound. May exceed `len()`; `shrink(0)` gives the difference back |
+| `vec.allocated()` | `usize` | How many elements the buffer has room for — the same unit as `len()`, and a different question from `capacity()`, which is the bound. May exceed `len()`; `shrink()` gives the difference back |
 
 ## Comptime Collections with Freeze
 
