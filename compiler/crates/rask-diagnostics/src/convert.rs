@@ -1933,6 +1933,19 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("an associated type is read off the conformance, not guessed from the methods — that is what keeps it a lookup instead of a search [type.associated-types/AT2]")
             }
 
+            InherentMethodOnPrimitive { ty, method, span } => {
+                Diagnostic::error(format!(
+                    "`{}` takes conformances, not methods of its own", ty
+                ))
+                .with_code("E0892")
+                .with_primary(*span, format!("`{}` can't be an inherent method here", method))
+                .with_fix(format!(
+                    "write it as a conformance:\n    extend {} with SomeTrait {{ func {}(…) }}",
+                    ty, method
+                ))
+                .with_why("a primitive's own methods are the compiler's, so an `extend` block on one adds nothing anyone can call — the method silently didn't exist. A conformance is different: it registers against a trait, which is how `2.0 * meters` becomes writable [type.operator-resolution/OR6]")
+            }
+
             UnknownAssocType { assoc, trait_name, known, span } => {
                 let d = Diagnostic::error(format!(
                     "no associated type `{}` on `{}`",

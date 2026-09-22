@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// std.api-design/SD7–SD9 — the composability litmus, run.
+//
+// The claim is Julia's property, statically: two pieces of code that have never
+// heard of each other work together because the algorithm asked for the least
+// it needed and the type answered. The test is Raido's 32.32 fixed-point
+// number — a type the stdlib has never heard of — flowing through `min` and
+// `+` with **zero stdlib changes**.
+//
+// The stdlib functions below are the ones api-design.md names, untouched:
+// `min<T: Comparable>` (std.math/G1) and the `Add` conformance, not a
+// `Fixed`-specific sibling and not a cast.
+//
+// This is the Number from projects/raido/src/value.rk, copied so the test
+// stands alone: the upper 32 bits are the integer part, the lower 32 the
+// fraction.
+
+struct Fixed {
+    raw: i64
+}
+
+const FRAC_BITS: i64 = 32
+
+extend Fixed {
+    func from_int(n: i64) -> Fixed {
+        return Fixed { raw: n << FRAC_BITS }
+    }
+
+    func zero() -> Fixed {
+        return Fixed { raw: 0 }
+    }
+
+    func to_int(self) -> i64 {
+        return self.raw >> FRAC_BITS
+    }
+}
+
+// The whole conformance surface a number type needs. `Comparable` comes from
+// ORD2's derive — one field, so the lexicographic order is the raw order.
+extend Fixed with Add {
+    func add(self, other: Fixed) -> Fixed {
+        return Fixed { raw: self.raw + other.raw }
+    }
+}
+
+extend Fixed with Mul<i64> {
+    func mul(self, k: i64) -> Fixed {
+        return Fixed { raw: self.raw * k }
+    }
+}
+
+// The direction that could not be written before: the scalar on the left.
+extend i64 with Mul<Fixed> {
+    type Out = Fixed
+
+    func mul(self, x: Fixed) -> Fixed {
+        return Fixed { raw: x.raw * self }
+    }
+}
+
+func window() -> Vec<Fixed> {
+    mut v: Vec<Fixed> = Vec.new()
+    v.push(Fixed.from_int(5))
+    v.push(Fixed.from_int(2))
+    v.push(Fixed.from_int(9))
+    return v
+}
+
+test "SD7/SD8 — a user number type through generic stdlib math" {
+    let readings: Vec<Fixed> = window()
+
+    // std.math/G1: `min<T: Comparable>`, no `Fixed` anywhere in its signature.
+    let smallest = min(readings[0], readings[1])
+    assert smallest.to_int() == 2
+
+    mut total = Fixed.zero()
+    mut alerts = 0
+    let alarm_level = Fixed.from_int(6)
+    for r in readings {
+        // The operator trait, not a `Fixed` method.
+        total = total + r
+        // Comparable again.
+        if r > alarm_level {
+            alerts = alerts + 1
+        }
+    }
+    assert total.to_int() == 16
+    assert alerts == 1
+}
+
+test "SD8 — scaling reads the same in both directions" {
+    let x = Fixed.from_int(7)
+    assert (x * 3).to_int() == 21
+    assert (3 * x).to_int() == 21
+}
+
+func main() {}

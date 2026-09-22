@@ -647,6 +647,26 @@ impl TypeChecker {
 
     pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId, span: rask_ast::Span) {
         let base_name = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
+        // OR6: a primitive's own methods are the compiler's. An `extend f64 {
+        // … }` block used to register nowhere at all and the method simply
+        // didn't exist — `(2.0).doubled()` came back "no method `doubled` on
+        // `f64`", pointing at the call rather than at the block that never
+        // took. The stdlib writes `extend char { … }` and `extend string { … }`
+        // for real, so those keep working; a conformance on any primitive is
+        // how a program adds to one.
+        if !self.types.stdlib_mode
+            && i.trait_names.is_empty()
+            && rask_ast::primitives::is_scalar(base_name)
+        {
+            for m in &i.methods {
+                self.errors.push(TypeError::InherentMethodOnPrimitive {
+                    ty: base_name.to_string(),
+                    method: m.name.clone(),
+                    span: m.span,
+                });
+            }
+            return;
+        }
         let type_id = match self.impl_target_id(&i.target_ty) {
             Some(id) => id,
             None => return,

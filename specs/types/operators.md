@@ -177,7 +177,20 @@ enum Ordering { Less, Equal, Greater }
 
 ## Arithmetic Traits
 
-Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr`.
+Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr`. They are declared in [`stdlib/ops.rk`](../../stdlib/ops.rk), each one `<Rhs = Self>` with a `type Out = Self`:
+
+<!-- test: skip -->
+```rask
+public trait Mul<Rhs = Self> {
+    type Out = Self
+
+    func mul(self, rhs: Rhs) -> Self.Out
+}
+```
+
+`a * b` resolves on the ordered pair `(typeof a, typeof b)` against those traits, not as a method lookup on `a` — so `2.0 * meters` is writable, and so is a `Meters * Meters` that answers in `SquareMeters`. The rules are `type.operator-resolution`; this table is just the roster.
+
+The line above used to describe nothing: no such trait existed anywhere, and operators were duck-typed on the method name.
 
 ## Division and Remainder
 
@@ -252,6 +265,7 @@ One idiom loses its short spelling. `if a < 0 != b < 0` — "do these differ in 
 
 ### See Also
 
+- `type.operator-resolution` — how `a OP b` picks a conformance from both operand types
 - `type.overflow` — Integer overflow behavior
 - `type.primitives` — Primitive types
 - `type.traits` — Trait system

@@ -611,6 +611,14 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// OR6: `extend f64 { … }` — an inherent method on a primitive.
+    #[error("`{ty}` takes conformances, not methods of its own")]
+    InherentMethodOnPrimitive {
+        ty: String,
+        method: String,
+        span: Span,
+    },
+
     /// AT1: `type X = ...` or `Self.X` naming something no trait declares.
     #[error("no associated type `{assoc}` on `{trait_name}`")]
     UnknownAssocType {
@@ -1410,6 +1418,7 @@ impl TypeError {
             | TraitArity { .. }
             | MissingAssocType { .. }
             | UnknownAssocType { .. }
+            | InherentMethodOnPrimitive { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
             | StringAddForbidden { .. }
