@@ -4249,9 +4249,6 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Spawn — synthesize a closure function and call rask_closure_spawn
-            ExprKind::Spawn { body } => {
-                self.lower_spawn(body)
-            }
 
             // Block call (e.g., spawn_raw { ... })
             ExprKind::BlockCall { name, body } => {

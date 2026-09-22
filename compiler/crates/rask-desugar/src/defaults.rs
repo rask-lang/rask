@@ -513,7 +513,7 @@ impl DefaultDesugarer {
                 for b in bindings { self.desugar_expr(&mut b.source); }
                 for s in body { self.desugar_stmt(s); }
             }
-            ExprKind::Spawn { body } | ExprKind::Unsafe { body }
+            ExprKind::Unsafe { body }
             | ExprKind::BlockCall { body, .. } | ExprKind::Comptime { body }
             | ExprKind::Loop { body, .. } => {
                 for s in body { self.desugar_stmt(s); }

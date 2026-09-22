@@ -3005,13 +3005,6 @@ impl Resolver {
             ExprKind::Cast { expr: inner, .. } | ExprKind::Convert { expr: inner, .. } => {
                 self.resolve_expr(inner);
             }
-            ExprKind::Spawn { body } => {
-                self.scopes.push(ScopeKind::Block);
-                for stmt in body {
-                    self.resolve_stmt(stmt);
-                }
-                self.scopes.pop();
-            }
             ExprKind::Loop { label, body } => {
                 self.scopes.push(ScopeKind::Loop { label: label.clone() });
                 for stmt in body {

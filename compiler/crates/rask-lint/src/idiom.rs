@@ -267,7 +267,6 @@ fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mu
         }
         ExprKind::Block(stmts)
         | ExprKind::UsingBlock { body: stmts, .. }
-        | ExprKind::Spawn { body: stmts }
         | ExprKind::Comptime { body: stmts }
         | ExprKind::BlockCall { body: stmts, .. }
         | ExprKind::Loop { body: stmts, .. } => {

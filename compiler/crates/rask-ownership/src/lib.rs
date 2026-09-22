@@ -2337,76 +2337,6 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_block(body);
                 self.active_with_bindings.truncate(prev_count);
             }
-            ExprKind::Spawn { body } => {
-                // Collect free variables from spawn body
-                let mut captures = Vec::new();
-                let empty_params = HashSet::new();
-                for stmt in body {
-                    self.collect_free_vars_stmt(stmt, &empty_params, &mut captures);
-                }
-                captures.dedup();
-
-                // Separate resource captures
-                let resource_captures: Vec<String> = captures.iter()
-                    .filter(|name| self.resource_bindings.contains(*name))
-                    .cloned()
-                    .collect();
-
-                // Move resource captures in outer scope
-                for name in &resource_captures {
-                    self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
-                }
-
-                // Shared borrow for non-resource captures
-                for name in &captures {
-                    if !resource_captures.contains(name) {
-                        if self.bindings.contains_key(name) {
-                            self.borrows.push(ActiveBorrow::new(
-                                name.clone(),
-                                BorrowMode::Shared,
-                                BorrowScope::Persistent { block_id: self.current_block },
-                                expr.span,
-                            ));
-                        }
-                    }
-                }
-
-                // Check spawn body with isolated state
-                let saved_bindings = self.bindings.clone();
-                let saved_borrows = self.borrows.clone();
-                let saved_resources = self.resource_bindings.clone();
-                let saved_ensure = self.ensure_registered.clone();
-
-                self.resource_bindings.clear();
-                self.ensure_registered.clear();
-
-                // Register captures in spawn scope
-                for name in &resource_captures {
-                    self.bindings.insert(name.clone(), BindingState::Owned);
-                    self.resource_bindings.insert(name.clone());
-                }
-                for name in &captures {
-                    if !resource_captures.contains(name) {
-                        self.bindings.insert(name.clone(), BindingState::Owned);
-                    }
-                }
-
-                self.check_block(body);
-
-                // Check resource consumption at spawn exit
-                self.check_resource_consumption_in_closure(expr.span, "spawn");
-
-                // Restore outer scope
-                self.bindings = saved_bindings;
-                self.borrows = saved_borrows;
-                self.resource_bindings = saved_resources;
-                self.ensure_registered = saved_ensure;
-
-                // Remove moved resources from outer tracking
-                for name in &resource_captures {
-                    self.resource_bindings.remove(name);
-                }
-            }
             ExprKind::BlockCall { name: _, body } => {
                 self.check_block(body);
             }
@@ -4555,9 +4485,6 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::WithAs { bindings, body } => {
                 for b in bindings { self.collect_free_vars_inner(&b.source, locals, out, projections); }
-                self.collect_free_vars_body_inner(body, locals, out, projections);
-            }
-            ExprKind::Spawn { body } => {
                 self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message, .. } => {

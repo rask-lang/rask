@@ -876,7 +876,7 @@ let input = loop {
 ```rask
 loop {
     let conn = server.accept()
-    spawn { handle(conn) }.detach()
+    spawn(|| { handle(conn) }).detach()
 }
 ```
 
@@ -1019,9 +1019,9 @@ Both return `!` (Never type) so they coerce to any type. `todo()` marks unfinish
 
 ```rask
 // Spawn and join
-let handle = spawn { compute() }
+let handle = spawn(|| { return compute() })
 let result = try handle.join()
-spawn { background_work() }.detach()
+spawn(|| { background_work() }).detach()
 
 // Channels
 let (tx, rx) = Channel<Message>.buffered(100)

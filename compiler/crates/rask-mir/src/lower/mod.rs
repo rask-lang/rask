@@ -2984,7 +2984,7 @@ impl<'a> MirLowerer<'a> {
             match &e.kind {
                 // Their own functions, with their own obligations — a consume
                 // in there is not this frame's.
-                ExprKind::Closure { .. } | ExprKind::Spawn { .. } => return false,
+                ExprKind::Closure { .. } => return false,
                 // Statements. They run through `lower_block`, which asks about
                 // each of them on its own; walking in from here would emit the
                 // cancellation at the wrong point — before the block, whether
@@ -3509,8 +3509,7 @@ impl<'a> MirLowerer<'a> {
             | ExprKind::Loop { body, .. }
             | ExprKind::UsingBlock { body, .. }
             | ExprKind::Unsafe { body }
-            | ExprKind::Comptime { body }
-            | ExprKind::Spawn { body } => bodies.push(body),
+            | ExprKind::Comptime { body } => bodies.push(body),
             ExprKind::Closure { body, .. } => kids.push(body),
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
                 kids.push(condition);
@@ -5665,7 +5664,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.walk_free_vars_block(body, bound, seen, free);
             }
-            ExprKind::Spawn { body } | ExprKind::BlockCall { body, .. }
+            ExprKind::BlockCall { body, .. }
             | ExprKind::Loop { body, .. } => {
                 self.walk_free_vars_block(body, bound, seen, free);
             }

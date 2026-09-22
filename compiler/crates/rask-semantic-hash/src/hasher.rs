@@ -836,10 +836,6 @@ impl Hasher {
                 self.feed_str(target);
                 self.feed_tag(*kind as u8);
             }
-            ExprKind::Spawn { body } => {
-                self.feed_tag(72);
-                self.hash_stmts(body);
-            }
             ExprKind::BlockCall { name, body } => {
                 self.feed_tag(73);
                 self.feed_str(name);

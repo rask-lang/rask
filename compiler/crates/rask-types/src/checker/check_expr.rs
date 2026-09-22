@@ -1867,62 +1867,6 @@ impl TypeChecker {
 
             ExprKind::Comptime { body } => self.check_block_body(body),
 
-            ExprKind::Spawn { body } => {
-                // CC1: direct spawn must be lexically inside a `using Multitasking { }` block
-                if self.multitasking_depth == 0 {
-                    self.errors.push(TypeError::SpawnOutsideBlock { span: expr.span });
-                }
-
-                // Spawn blocks are like anonymous functions - they have their own return type
-                let outer_return_type = self.current_return_type.take();
-                let outer_try_blocks = std::mem::take(&mut self.try_block_errors);
-                let outer_accumulate = self.accumulate_errors;
-                let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
-                self.accumulate_errors = false;
-                let spawn_return_type = self.ctx.fresh_var();
-                self.current_return_type = Some(spawn_return_type.clone());
-
-                // Check all statements except the last (which we infer separately)
-                let last_idx = body.len().saturating_sub(1);
-                for (i, stmt) in body.iter().enumerate() {
-                    if i < last_idx {
-                        self.check_stmt(stmt);
-                    }
-                }
-
-                // Infer the return type from the last statement (only process once)
-                let inner_type = if let Some(last) = body.last() {
-                    match &last.kind {
-                        StmtKind::Expr(e) => self.infer_expr(e),
-                        StmtKind::Return(_) => {
-                            self.check_stmt(last);
-                            Type::Never
-                        }
-                        _ => {
-                            self.check_stmt(last);
-                            Type::Unit
-                        }
-                    }
-                } else {
-                    Type::Unit
-                };
-
-                self.ctx.add_constraint(TypeConstraint::Equal(
-                    spawn_return_type.clone(),
-                    inner_type,
-                    expr.span,
-                ));
-
-                self.current_return_type = outer_return_type;
-                self.try_block_errors = outer_try_blocks;
-                self.accumulate_errors = outer_accumulate;
-                self.inferred_errors = outer_inferred_errors;
-
-                Type::UnresolvedGeneric {
-                    name: "ThreadHandle".to_string(),
-                    args: vec![GenericArg::Type(Box::new(spawn_return_type))],
-                }
-            }
 
             ExprKind::UsingBlock { name, args, body } => {
                 // Validate context name
@@ -6324,7 +6268,7 @@ fn body_returns_a_value(body: &Expr) -> bool {
         match &expr.kind {
             // A nested closure's `return` is its own.
             ExprKind::Closure { .. } => false,
-            ExprKind::Block(body) | ExprKind::Loop { body, .. } | ExprKind::Spawn { body } => {
+            ExprKind::Block(body) | ExprKind::Loop { body, .. } => {
                 in_stmts(body)
             }
             ExprKind::If { then_branch, else_branch, .. } => {

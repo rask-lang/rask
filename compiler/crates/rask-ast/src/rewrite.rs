@@ -274,7 +274,6 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
         }
 
         ExprKind::Block(body)
-        | ExprKind::Spawn { body }
         | ExprKind::BlockCall { body, .. }
         | ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }

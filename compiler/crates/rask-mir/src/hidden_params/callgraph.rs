@@ -354,8 +354,7 @@ fn collect_callees_from_expr(pass: &HiddenParamPass, expr: &Expr, callees: &mut 
             }
         }
         ExprKind::Closure { body, .. } => collect_callees_from_expr(pass, body, callees),
-        ExprKind::Spawn { body }
-        | ExprKind::Unsafe { body }
+        ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }
         | ExprKind::BlockCall { body, .. }
         | ExprKind::Loop { body, .. } => {

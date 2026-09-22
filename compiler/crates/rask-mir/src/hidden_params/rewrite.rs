@@ -387,8 +387,7 @@ fn rewrite_expr(pass: &mut HiddenParamPass, caller: &str, expr: &mut Expr) {
             // so hidden params from the enclosing scope are accessible.
             rewrite_expr(pass, caller, body);
         }
-        ExprKind::Spawn { body }
-        | ExprKind::Unsafe { body }
+        ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }
         | ExprKind::BlockCall { body, .. }
         | ExprKind::Loop { body, .. } => {

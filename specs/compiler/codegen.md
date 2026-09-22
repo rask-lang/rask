@@ -281,7 +281,7 @@ FIX: Ensure all call sites provide concrete type arguments.
 
 1. **C ABI implementation** — Platform-specific calling convention handling for unsafe FFI. Significant per-platform work.
 2. **Debug info strategy** — Cranelift DWARF incomplete. Options: print debugging initially, upstream Cranelift DWARF, or prioritize LLVM backend.
-3. **Green task runtime** — `spawn { }` requires M:N scheduler. Defer until after basic threading.
+3. **Green task runtime** — `spawn(|| …)` on an M:N scheduler rather than a thread per task. Defer until after basic threading.
 4. **Stack overflow detection** — Guard pages or stack probes for deep recursion.
 
 ### See Also

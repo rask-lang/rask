@@ -292,11 +292,6 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
         ExprKind::Closure { body, .. } => {
             visit_expr(body, index);
         }
-        ExprKind::Spawn { body } => {
-            for stmt in body {
-                visit_stmt(stmt, index);
-            }
-        }
         ExprKind::Loop { body, .. } => {
             for stmt in body {
                 visit_stmt(stmt, index);

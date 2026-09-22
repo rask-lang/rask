@@ -971,7 +971,7 @@ impl TypeChecker {
                 return;
             }
             // Own frame, own caller — `try` there is the callee's business.
-            EK::Closure { .. } | EK::Spawn { .. } => return,
+            EK::Closure { .. } => return,
 
             EK::Binary { left, right, .. } => {
                 kids.push(left);

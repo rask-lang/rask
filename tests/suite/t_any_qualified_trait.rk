@@ -51,9 +51,9 @@ func sink(w: any io.Writer, data: string) -> bool {
     return true
 }
 
-// The same name in a return position and inside a generic argument, which is
-// where the old copy of the parse would also have stopped.
-func first_writer(ws: Vec<any io.Writer>) -> bool {
+// And inside a generic argument, which is the other place the old copy of the
+// parse would have stopped.
+func any_writers(ws: Vec<any io.Writer>) -> bool {
     return ws.len() > 0
 }
 
@@ -62,7 +62,7 @@ func pick(g: any Greeter) -> any Greeter {
     return g
 }
 
-test "a qualified trait parses in a parameter" {
+test "the file compiles, which is what the qualified signatures assert" {
     let l = Loud { name: "rask" }
     assert hail(l) == "HI rask"
 }

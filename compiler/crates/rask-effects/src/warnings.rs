@@ -311,7 +311,6 @@ impl<'a> WarnContext<'a> {
                 self.in_thread_pool = was_in_tp;
             }
 
-            ExprKind::Spawn { body } => self.check_stmts(body, warnings),
 
             // Recurse into other expressions
             ExprKind::Binary { left, right, .. } => {
@@ -814,11 +813,7 @@ mod tests {
         }]);
         let main = make_fn("main", vec![
             expr_stmt(call("serve_client")),
-            expr_stmt(Expr {
-                id: NodeId(0),
-                kind: ExprKind::Spawn { body: vec![expr_stmt(call("tick"))] },
-                span: sp(),
-            }),
+            expr_stmt(call("spawn")),
         ]);
 
         let (_, warnings) = crate::infer_effects(&[handler, main]);

@@ -2848,63 +2848,6 @@ impl Interpreter {
                 Ok(result)
             }
 
-            ExprKind::Spawn { body } => {
-                use crate::value::ACTIVE_RUNTIME;
-
-                let body = body.clone();
-                let captured = self.env.capture_snapshot();
-                let child = self.spawn_child(captured);
-
-                // Read the active runtime from the process-global slot (CC3 fallback if None)
-                let runtime = ACTIVE_RUNTIME.read().unwrap().clone();
-                let rt = match runtime {
-                    Some(rt) => rt,
-                    None => {
-                        return Err(RuntimeDiagnostic::new(
-                            RuntimeError::Panic(SPAWN_NO_RUNTIME_MSG.to_string()),
-                            expr.span,
-                        ));
-                    }
-                };
-
-                // Submit to the multitasking thread pool
-                let (result_tx, result_rx) = std::sync::mpsc::channel();
-                let task = PoolTask {
-                    work: Box::new(move || {
-                        let mut interp = child;
-                        let mut result = Value::Unit;
-                        for stmt in &body {
-                            match interp.exec_stmt(stmt) {
-                                Ok(val) => result = val,
-                                Err(e) => {
-                                    let _ = result_tx.send(Err(interp.task_failure_message(&e)));
-                                    return;
-                                }
-                            }
-                        }
-                        let _ = result_tx.send(Ok(result));
-                    }),
-                };
-
-                {
-                    let sender = rt.sender.lock().unwrap();
-                    if let Some(tx) = sender.as_ref() {
-                        let _ = tx.send(task);
-                    }
-                }
-
-                let handle_inner = Arc::new(ThreadHandleInner {
-                    handle: Mutex::new(None),
-                    receiver: Mutex::new(Some(result_rx)),
-                    task_id: crate::value::next_task_id(),
-                });
-
-                // Register handle for affine tracking (conc.async/H1)
-                let ptr = Arc::as_ptr(&handle_inner) as usize;
-                self.resource_tracker.register_handle(ptr, "TaskHandle", self.env.scope_depth());
-
-                Ok(Value::TaskHandle(handle_inner))
-            }
 
             ExprKind::Assert { condition, message } => {
                 if self.eval_cond_scoped(condition)? {
