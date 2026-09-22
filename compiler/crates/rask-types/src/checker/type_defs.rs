@@ -163,6 +163,21 @@ pub enum TypeDef {
         name: String,
         fields: Vec<(String, Type)>,
     },
+    /// OR6: a primitive, so it has somewhere to carry conformances and the
+    /// methods that come with them.
+    ///
+    /// `extend f64 { … }` — an inherent method on a primitive — stays illegal.
+    /// What lands here is `extend f64 with Mul<Meters>`: the conformance tables
+    /// are keyed by `TypeId`, and without an entry a primitive had none to be
+    /// keyed by, which is why the right-hand direction of every unit and vector
+    /// operator was unwritable.
+    ///
+    /// Registered under its own name map, not `type_names` — `f64` in source
+    /// still means `Type::F64`, never `Named(id)`.
+    Primitive {
+        name: String,
+        methods: Vec<MethodSig>,
+    },
     /// Nominal type alias: same layout as underlying, distinct identity.
     NominalAlias {
         name: String,

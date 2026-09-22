@@ -6831,7 +6831,8 @@ impl<'a> MirLowerer<'a> {
                         Some(fields.iter().map(|(_, t)| spell(t)).collect())
                     }
                     rask_types::TypeDef::NominalAlias { underlying, .. } => Some(vec![spell(underlying)]),
-                    rask_types::TypeDef::Trait { .. } => None,
+                    rask_types::TypeDef::Trait { .. }
+                    | rask_types::TypeDef::Primitive { .. } => None,
                 }
             }
             fn type_params(&self, name: &str) -> Vec<String> {

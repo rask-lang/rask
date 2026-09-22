@@ -117,6 +117,9 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
+    // OR2: the operator traits. After num.rk so the numeric roster is in
+    // place; nothing here has a body, so load order is otherwise free.
+    ("ops.rk", include_str!("../../../../stdlib/ops.rk")),
     ("reflect.rk", include_str!("../../../../stdlib/reflect.rk")),
     ("fmt.rk", include_str!("../../../../stdlib/fmt.rk")),
     ("encoding.rk", include_str!("../../../../stdlib/encoding.rk")),

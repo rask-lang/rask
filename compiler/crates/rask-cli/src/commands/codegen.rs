@@ -222,19 +222,8 @@ pub fn cmd_mir(path: &str, format: Format) {
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
-    let type_names: std::collections::HashMap<rask_types::TypeId, String> = typed.types.iter()
-        .enumerate()
-        .map(|(i, def)| {
-            let name = match def {
-                rask_types::TypeDef::Struct { name, .. } => name.clone(),
-                rask_types::TypeDef::Enum { name, .. } => name.clone(),
-                rask_types::TypeDef::Trait { name, .. } => name.clone(),
-                rask_types::TypeDef::Union { name, .. } => name.clone(),
-                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
-            };
-            (rask_types::TypeId(i as u32), name)
-        })
-        .collect();
+    let type_names: std::collections::HashMap<rask_types::TypeId, String> =
+        typed.types.type_name_map();
     let trait_methods: std::collections::HashMap<String, Vec<String>> = typed.types.iter()
         .filter_map(|def| {
             if let rask_types::TypeDef::Trait { name, .. } = def {

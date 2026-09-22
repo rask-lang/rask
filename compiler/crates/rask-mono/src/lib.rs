@@ -762,7 +762,8 @@ fn monomorphize_inner(
                     | rask_types::TypeDef::Enum { name, .. }
                     | rask_types::TypeDef::Trait { name, .. }
                     | rask_types::TypeDef::Union { name, .. }
-                    | rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
+                    | rask_types::TypeDef::NominalAlias { name, .. }
+                    | rask_types::TypeDef::Primitive { name, .. } => name.clone(),
                 };
                 (rask_types::TypeId(i as u32), name)
             })

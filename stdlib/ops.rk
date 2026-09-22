@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// The operator traits (type.operator-resolution/OR2).
+//
+// `a * b` picks the conformance registered for the ordered pair
+// `(typeof a, typeof b)`. Both sides of that pair are written here: `Rhs` is
+// the right operand's type, `Out` is what the pair answers with. Both default
+// to `Self`, so the homogeneous case — `extend Point with Add` — says nothing
+// it doesn't have to.
+//
+// A conformance may be written by a package that owns neither type, which is
+// what makes `f64 * Meters` expressible at all. Primitives answer to these
+// traits without a block: the compiler registers their pairs (`i64 + i64`,
+// `u64 << u32`) the same way a written one would be, and lowers them to machine
+// instructions.
+
+// ─── Arithmetic ─────────────────────────────────────────────────
+
+public trait Add<Rhs = Self> {
+    type Out = Self
+
+    func add(self, rhs: Rhs) -> Self.Out
+}
+
+public trait Sub<Rhs = Self> {
+    type Out = Self
+
+    func sub(self, rhs: Rhs) -> Self.Out
+}
+
+public trait Mul<Rhs = Self> {
+    type Out = Self
+
+    func mul(self, rhs: Rhs) -> Self.Out
+}
+
+public trait Div<Rhs = Self> {
+    type Out = Self
+
+    func div(self, rhs: Rhs) -> Self.Out
+}
+
+/// `%` — the remainder, sign of the dividend (type.operators/AR2).
+public trait Rem<Rhs = Self> {
+    type Out = Self
+
+    func rem(self, rhs: Rhs) -> Self.Out
+}
+
+public trait Neg {
+    type Out = Self
+
+    func neg(self) -> Self.Out
+}
+
+// ─── Bitwise ────────────────────────────────────────────────────
+
+public trait BitAnd<Rhs = Self> {
+    type Out = Self
+
+    func bit_and(self, rhs: Rhs) -> Self.Out
+}
+
+public trait BitOr<Rhs = Self> {
+    type Out = Self
+
+    func bit_or(self, rhs: Rhs) -> Self.Out
+}
+
+public trait BitXor<Rhs = Self> {
+    type Out = Self
+
+    func bit_xor(self, rhs: Rhs) -> Self.Out
+}
+
+public trait BitNot {
+    type Out = Self
+
+    func bit_not(self) -> Self.Out
+}
+
+// The shift amount is its own type, which is the whole reason the shifts sit
+// outside the homogeneous operators. `Shl<u32>` answering in `Self` says it.
+
+public trait Shl<Rhs = Self> {
+    type Out = Self
+
+    func shl(self, rhs: Rhs) -> Self.Out
+}
+
+public trait Shr<Rhs = Self> {
+    type Out = Self
+
+    func shr(self, rhs: Rhs) -> Self.Out
+}

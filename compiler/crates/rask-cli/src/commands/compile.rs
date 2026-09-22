@@ -44,19 +44,7 @@ pub(super) fn build_mono_decls(mono: &MonoProgram, decls: &[Decl], include_const
 
 /// Extract type name map from typed program.
 pub(super) fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask_types::TypeId, String> {
-    typed.types.iter()
-        .enumerate()
-        .map(|(i, def)| {
-            let name = match def {
-                rask_types::TypeDef::Struct { name, .. } => name.clone(),
-                rask_types::TypeDef::Enum { name, .. } => name.clone(),
-                rask_types::TypeDef::Trait { name, .. } => name.clone(),
-                rask_types::TypeDef::Union { name, .. } => name.clone(),
-                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
-            };
-            (rask_types::TypeId(i as u32), name)
-        })
-        .collect()
+    typed.types.type_name_map()
 }
 
 /// Nominal newtype name → the type string it wraps.

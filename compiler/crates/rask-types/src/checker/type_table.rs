@@ -106,6 +106,12 @@ pub struct TypeTable {
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
     pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<String>)>>,
+    /// OR6: the `TypeDef::Primitive` standing in for each primitive, so a
+    /// conformance written against one has a `TypeId` to be filed under.
+    ///
+    /// Deliberately not `type_names`: a name that resolves there becomes
+    /// `Type::Named(id)` in a signature, and `f64` has to stay `Type::F64`.
+    pub(super) primitive_ids: HashMap<String, TypeId>,
 }
 
 impl TypeTable {
@@ -129,6 +135,7 @@ impl TypeTable {
             assoc_bindings: HashMap::new(),
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
+            primitive_ids: HashMap::new(),
         };
         table.register_builtins();
         table
@@ -171,6 +178,22 @@ impl TypeTable {
                 .cloned()
                 .expect("a c_* type resolves to a primitive spelling");
             self.builtins.insert((*name).to_string(), ty);
+        }
+
+        // OR6: one entry per primitive, so a conformance written against one
+        // has a `TypeId` to be filed under and the methods it brings have
+        // somewhere to live.
+        for name in PRIMITIVE_CONFORMANCE_TARGETS {
+            // Straight into the table, deliberately skipping `register_type`:
+            // the name maps are what turn a spelling into `Type::Named`, and
+            // `string` going through them made `string.from_utf8(…)` resolve
+            // against an entry with no methods on it.
+            let id = TypeId(self.types.len() as u32);
+            self.types.push(TypeDef::Primitive {
+                name: (*name).to_string(),
+                methods: Vec::new(),
+            });
+            self.primitive_ids.insert((*name).to_string(), id);
         }
 
         let option_id = self.register_type(TypeDef::Enum {
@@ -232,6 +255,7 @@ impl TypeTable {
             TypeDef::Trait { name, .. } => name.clone(),
             TypeDef::Union { name, .. } => name.clone(),
             TypeDef::NominalAlias { name, .. } => name.clone(),
+            TypeDef::Primitive { name, .. } => name.clone(),
         };
 
         // Option/Result have fixed builtin TypeIds. Redeclaration from stdlib
@@ -1165,6 +1189,52 @@ impl TypeTable {
     /// (`Handle<T>`, `Pool<T>`, `Foo<K, V>`). The display/base name is just the
     /// head — strip the parameter list so `Type::Generic { base, args }` renders
     /// as `Handle<Player>`, not `Handle<T><Player>`.
+    /// Every registered type's `TypeId` paired with its declared name.
+    ///
+    /// MIR, codegen and the comptime evaluator each need this map and each had
+    /// its own copy of the match that builds it; a new `TypeDef` variant made
+    /// that four edits for one fact.
+    pub fn type_name_map(&self) -> HashMap<TypeId, String> {
+        self.types
+            .iter()
+            .enumerate()
+            .map(|(i, def)| (TypeId(i as u32), Self::def_name(def).to_string()))
+            .collect()
+    }
+
+    /// The name a `TypeDef` declares, whatever kind it is.
+    pub fn def_name(def: &TypeDef) -> &str {
+        match def {
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::Trait { name, .. }
+            | TypeDef::Union { name, .. }
+            | TypeDef::NominalAlias { name, .. }
+            | TypeDef::Primitive { name, .. } => name,
+        }
+    }
+
+    /// OR6: the registered stand-in for a primitive, by its source spelling.
+    pub fn primitive_id(&self, name: &str) -> Option<TypeId> {
+        self.primitive_ids.get(name).copied()
+    }
+
+    /// The `TypeId` a conformance written against this type is filed under.
+    ///
+    /// A struct or enum answers with its own; a primitive with its stand-in.
+    /// Anything else — a tuple, an array, a closure — has no conformance
+    /// surface to write on.
+    pub fn conformance_target(&self, ty: &Type) -> Option<TypeId> {
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => Some(*id),
+            Type::UnresolvedNamed(name) => self
+                .get_type_id(name)
+                .or_else(|| self.primitive_id(name)),
+            Type::UnresolvedGeneric { name, .. } => self.get_type_id(name),
+            _ => primitive_spelling(ty).and_then(|n| self.primitive_id(n)),
+        }
+    }
+
     pub fn type_name(&self, id: TypeId) -> String {
         let name = match self.get(id) {
             Some(TypeDef::Struct { name, .. }) => name,
@@ -1172,6 +1242,7 @@ impl TypeTable {
             Some(TypeDef::Trait { name, .. }) => name,
             Some(TypeDef::Union { name, .. }) => name,
             Some(TypeDef::NominalAlias { name, .. }) => name,
+            Some(TypeDef::Primitive { name, .. }) => name,
             None => return format!("<type#{}>", id.0),
         };
         name.split('<').next().unwrap_or(name).to_string()
@@ -1318,4 +1389,38 @@ pub fn trait_ref_args(trait_ref: &str) -> Vec<String> {
         args.push(last.to_string());
     }
     args
+}
+
+/// OR6: the primitives a conformance may be written against.
+///
+/// `string` is here for the operator traits it can carry from a package
+/// (`Path`'s `/` is one), not for `+` — `type.strings` keeps concatenation a
+/// method (E0397). `void`, `none` and the C aliases have no operators to
+/// answer for.
+pub const PRIMITIVE_CONFORMANCE_TARGETS: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128",
+    "u8", "u16", "u32", "u64", "u128",
+    "f32", "f64", "bool", "char", "string",
+];
+
+/// The source spelling of a primitive type, or `None` for everything else.
+pub fn primitive_spelling(ty: &Type) -> Option<&'static str> {
+    Some(match ty {
+        Type::I8 => "i8",
+        Type::I16 => "i16",
+        Type::I32 => "i32",
+        Type::I64 => "i64",
+        Type::I128 => "i128",
+        Type::U8 => "u8",
+        Type::U16 => "u16",
+        Type::U32 => "u32",
+        Type::U64 => "u64",
+        Type::U128 => "u128",
+        Type::F32 => "f32",
+        Type::F64 => "f64",
+        Type::Bool => "bool",
+        Type::Char => "char",
+        Type::String => "string",
+        _ => return None,
+    })
 }

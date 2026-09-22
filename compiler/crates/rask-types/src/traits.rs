@@ -588,7 +588,8 @@ impl<'a> TraitChecker<'a> {
             | TypeDef::Enum { name, .. }
             | TypeDef::Trait { name, .. }
             | TypeDef::Union { name, .. }
-            | TypeDef::NominalAlias { name, .. } => name,
+            | TypeDef::NominalAlias { name, .. }
+            | TypeDef::Primitive { name, .. } => name,
         }
     }
 
@@ -1256,6 +1257,7 @@ impl<'a> TraitChecker<'a> {
                         TypeDef::Trait { name, .. } => name.clone(),
                         TypeDef::Union { name, .. } => name.clone(),
                         TypeDef::NominalAlias { name, .. } => name.clone(),
+                        TypeDef::Primitive { name, .. } => name.clone(),
                     }
                 } else {
                     format!("Type({})", id.0)
