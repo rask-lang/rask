@@ -652,7 +652,7 @@ fn insert_aggregate_release(
         .enumerate()
         .flat_map(|(gi, g)| g.iter().map(move |l| (*l, gi)))
         .collect();
-    let mut block_local = |blocked: &mut HashSet<usize>, id: &LocalId| {
+    let block_local = |blocked: &mut HashSet<usize>, id: &LocalId| {
         if let Some(gi) = group_of.get(id) {
             blocked.insert(*gi);
         }

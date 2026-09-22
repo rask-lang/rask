@@ -9,8 +9,7 @@ use super::{
     LoweringError, MirLowerer, TypedOperand,
 };
 use crate::{
-    operand::MirConst, types::{EnumLayoutId, StructLayoutId},
-    BlockId, FunctionRef, LocalId, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
+    operand::MirConst, types::{EnumLayoutId, StructLayoutId}, FunctionRef, LocalId, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType,
 };
 use rask_ast::{
@@ -4502,7 +4501,7 @@ impl<'a> MirLowerer<'a> {
     /// this form and something about it was wrong.
     fn comptime_annotation_const(
         &mut self,
-        expr: &Expr,
+        _expr: &Expr,
         object: &Expr,
         field: &str,
     ) -> Result<Option<TypedOperand>, LoweringError> {
@@ -8292,8 +8291,6 @@ impl<'a> MirLowerer<'a> {
         obj_ty: &MirType,
         depth: u32,
     ) -> Result<Option<MirOperand>, LoweringError> {
-        const MAX_DEPTH: u32 = 4;
-
         let lit = |this: &mut Self, text: &str| {
             let _ = this;
             MirOperand::Constant(MirConst::String(text.to_string()))

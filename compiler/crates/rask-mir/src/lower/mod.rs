@@ -1643,24 +1643,6 @@ impl<'a> MirContext<'a> {
         }
     }
 
-    pub fn type_prefix_str(s: &str) -> Option<String> {
-        let s = s.trim();
-        match s {
-            "string" => Some("string".to_string()),
-            "bool" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
-            | "f32" | "f64" | "char" => None,
-            _ => {
-                // "Vec<...>" → "Vec", "Map<...>" → "Map", etc.
-                if let Some(pos) = s.find('<') {
-                    Some(s[..pos].to_string())
-                } else if s.chars().next().map_or(false, |c| c.is_uppercase()) {
-                    Some(s.to_string())
-                } else {
-                    None
-                }
-            }
-        }
-    }
 }
 
 /// Supplementary metadata for a local variable, keyed by variable name.
@@ -1925,7 +1907,7 @@ impl<'a> MirLowerer<'a> {
     pub(crate) fn record_module_const_meta(&mut self, name: &str, init: &Expr) {
         let ExprKind::MethodCall { object, args, .. } = &init.kind else { return };
         let ExprKind::Ident(type_name) = &object.kind else { return };
-        let Some(prefix) = MirContext::type_prefix_str(type_name) else { return };
+        let Some(prefix) = type_prefix_from_str(type_name) else { return };
         if let Some(inner) = args.first().and_then(|a| {
             self.ctx.lookup_raw_type(a.expr.id)
                 .and_then(|t| MirContext::type_prefix(t, self.ctx.type_names))
@@ -5593,7 +5575,7 @@ impl<'a> MirLowerer<'a> {
                 if let Some(s) = start { self.walk_free_vars(s, bound, seen, free); }
                 if let Some(e) = end { self.walk_free_vars(e, bound, seen, free); }
             }
-            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch, else_binding } => {
+            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch, else_binding: _ } => {
                 self.walk_free_vars(inner, bound, seen, free);
                 let mut then_bound = bound.clone();
                 collect_pattern_names(pattern, &mut then_bound);
@@ -6032,16 +6014,8 @@ pub(crate) fn type_names_a_parameter(ty: &Type) -> Option<String> {
     }
 }
 
-/// Return type for known stdlib functions that don't return I64.
-/// Supplements func_sigs (which only has user-defined functions).
-///
-/// Primary source: stub-derived metadata. Suffix-based patterns serve as
-/// fallbacks for user type methods and methods not yet in stubs.
-fn stdlib_return_mir_type(func_name: &str) -> MirType {
-    stdlib_return_mir_type_in(func_name, None)
-}
-
-/// Same, but able to resolve a named error type against the program's layouts.
+/// Return type for a known stdlib function, resolving a named error type
+/// against the program's layouts.
 ///
 /// A stub's `T or E` used to lose `E` outright — the metadata parser wrote I64
 /// into the error slot no matter what was declared. That gave the Result an

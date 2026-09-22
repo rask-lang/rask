@@ -67,7 +67,6 @@ pub(super) struct OperatorMatch {
     pub applied: String,
     /// OR12: the conformance has no body — the compiler answers this pair.
     pub builtin: bool,
-    pub self_id: TypeId,
 }
 
 impl TypeChecker {
@@ -361,7 +360,6 @@ impl TypeChecker {
             filed,
             applied: applied.to_string(),
             builtin,
-            self_id,
         })
     }
 

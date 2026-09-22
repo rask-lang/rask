@@ -382,7 +382,7 @@ fn try_inline_call(
     let mut local_map: HashMap<LocalId, LocalId> = HashMap::new();
 
     // Map callee params to argument operands (we'll assign args to new locals)
-    for (i, param) in callee.params.iter().enumerate() {
+    for param in callee.params.iter() {
         let new_id = LocalId(next_local);
         next_local += 1;
         local_map.insert(param.id, new_id);
