@@ -367,6 +367,27 @@ impl Interpreter {
                     }),
                 }
             }
+            // The closure form, which had no arm at all here: `s.read(|v| …)`
+            // on a `Mutex` box reported "no method `read` on type `Mutex`"
+            // while the same call on a `Readers` box ran (#1155). One lock for
+            // both, as below.
+            "read" | "write" if args.len() == 1 => {
+                let closure = args.into_iter().next().unwrap();
+                let snapshot = {
+                    let guard = mutex.lock().map_err(|e| {
+                        RuntimeError::Panic(format!("Shared.{}: lock poisoned: {}", method, e))
+                    })?;
+                    guard.clone()
+                };
+                let result = self.call_closure_with_arg(&closure, snapshot)?;
+                if method == "write" {
+                    let mut guard = mutex.lock().map_err(|e| {
+                        RuntimeError::Panic(format!("Shared.write: lock poisoned: {}", e))
+                    })?;
+                    *guard = result.clone();
+                }
+                Ok(result)
+            }
             // `read`/`write` on the `Mutex` strategy both take the one lock it
             // has — slower than `Readers` would be there, never wrong (SH5).
             "read" | "write" if args.is_empty() => {
