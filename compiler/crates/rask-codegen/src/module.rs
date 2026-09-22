@@ -132,8 +132,14 @@ impl CodeGenerator {
     }
 
     /// Create a code generator targeting a specific platform (XT2).
-    pub fn new_with_target(triple: &str, build_mode: BuildMode) -> CodegenResult<Self> {
+    ///
+    /// `name` is a Rask target name or a full triple; `crate::targets` turns
+    /// one into the other. Going straight to `Triple::from_str` is what made
+    /// `aarch64-macos` an ELF object — the parse is lenient and defaults every
+    /// field the name doesn't spell (#1185).
+    pub fn new_with_target(name: &str, build_mode: BuildMode) -> CodegenResult<Self> {
         use std::str::FromStr;
+        let triple = crate::targets::codegen_triple(name).map_err(CodegenError::UnknownTarget)?;
         let target = target_lexicon::Triple::from_str(triple)
             .map_err(|e| CodegenError::CraneliftError(format!("invalid target '{}': {}", triple, e)))?;
 

@@ -8547,3 +8547,83 @@ fn a_user_error_does_not_drag_the_stdlib_in_with_it() {
         "and `?` on a result, which the stdlib cascade used to displace:\n{out}"
     );
 }
+
+// `--target aarch64-macos` used to emit a Linux ELF object and say nothing
+// (#1185). `target_lexicon` parses a short name leniently — architecture from
+// the name, everything else defaulted — so the format came out ELF for a name
+// that says macOS. Only the artifact catches that, which is what this reads.
+//
+// Whichever of the two the run leaves behind is checked: cross-compiling from
+// here fails at the link step for want of a cross-linker, so the object stays;
+// with one installed the link succeeds and the executable is the stronger
+// check. The host target is left out — it links, and a linked host binary says
+// nothing about the mapping.
+#[test]
+fn a_target_name_emits_the_object_format_it_names() {
+    let host = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
+    let cases = [
+        ("x86_64-macos", &b"\xcf\xfa\xed\xfe"[..]),
+        ("aarch64-macos", &b"\xcf\xfa\xed\xfe"[..]),
+        ("x86_64-linux", &b"\x7fELF"[..]),
+        ("aarch64-linux", &b"\x7fELF"[..]),
+    ];
+    for (target, magic) in cases {
+        if target == host {
+            continue;
+        }
+        let tmp = std::env::temp_dir();
+        let out = tmp.join(format!("rask_target_{}_{}", target, std::process::id()));
+        let obj = tmp.join(format!("rask_target_{}_{}.o", target, std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&obj);
+
+        Command::new(rask_binary())
+            .arg("compile")
+            .arg("--target")
+            .arg(target)
+            .arg(fixture("arithmetic.rk"))
+            .arg("-o")
+            .arg(&out)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+
+        let artifact = if obj.exists() { &obj } else { &out };
+        let bytes = std::fs::read(artifact)
+            .unwrap_or_else(|e| panic!("{}: no artifact at {}: {}", target, artifact.display(), e));
+        assert!(
+            bytes.starts_with(magic),
+            "{}: object starts {:x?}, wanted {:x?}",
+            target,
+            &bytes[..4.min(bytes.len())],
+            magic,
+        );
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::remove_file(&obj);
+    }
+}
+
+// The other half: a name nobody declared is an error, not a guess at what was
+// meant. It used to be accepted by anything shaped like `arch-os`.
+#[test]
+fn a_misspelled_target_is_rejected() {
+    let out = Command::new(rask_binary())
+        .arg("compile")
+        .arg("--target")
+        .arg("aarch64-mac")
+        .arg(fixture("arithmetic.rk"))
+        .arg("-o")
+        .arg(std::env::temp_dir().join(format!("rask_badtarget_{}", std::process::id())))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        text.contains("unknown target 'aarch64-mac'") && text.contains("rask targets"),
+        "the message should name the mistake and where the list is:\n{text}"
+    );
+}

@@ -58,19 +58,6 @@ fn portable_sources(runtime_dir: &Path) -> Result<Vec<String>, String> {
     Ok(sources)
 }
 
-/// Known target triples from the spec tier list.
-const KNOWN_TARGETS: &[&str] = &[
-    // Tier 1
-    "x86_64-linux", "aarch64-linux",
-    "x86_64-macos", "aarch64-macos",
-    // Tier 2
-    "x86_64-windows-msvc", "aarch64-windows-msvc",
-    "wasm32-none",
-    "x86_64-linux-musl", "aarch64-linux-musl",
-    // Tier 3
-    "riscv64-linux", "x86_64-freebsd", "arm-none",
-];
-
 /// Extra link-time inputs (libraries, object files, search paths).
 #[derive(Default)]
 pub struct LinkOptions {
@@ -252,20 +239,13 @@ fn clang_arch(arch: &str) -> &str {
     }
 }
 
-/// Validate a target triple. Returns Ok if known or parseable.
+/// Validate a target name — the same answer codegen will give.
+///
+/// It used to accept anything shaped like `arch-os`, which is why a
+/// misspelling reached codegen and came back as an object in the wrong format
+/// (#1185). One list, one answer.
 pub fn validate_target(target: &str) -> Result<(), String> {
-    if KNOWN_TARGETS.contains(&target) {
-        return Ok(());
-    }
-    // Accept anything that looks like arch-os or arch-os-env
-    let parts: Vec<&str> = target.split('-').collect();
-    if parts.len() >= 2 && parts.len() <= 3 {
-        return Ok(());
-    }
-    Err(format!(
-        "unknown target '{}' — run `rask targets` to see available targets",
-        target,
-    ))
+    rask_codegen::targets::codegen_triple(target).map(|_| ())
 }
 
 // ─── Runtime object cache ────────────────────────────────────────────────

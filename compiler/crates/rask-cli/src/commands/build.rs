@@ -1022,30 +1022,27 @@ fn dirs_home() -> Option<PathBuf> {
 }
 
 /// List available cross-compilation targets (XT9).
+///
+/// From `rask_codegen::targets`, which is also what maps a name to a triple —
+/// a list that advertised a target codegen would build for something else is
+/// how `aarch64-macos` came to emit ELF (#1185).
 pub fn cmd_targets() {
+    use rask_codegen::targets::{Tier, TARGETS};
     println!("{}", "Available targets:".green().bold());
     println!();
 
-    println!("  {} (tested, guaranteed):", "Tier 1".yellow().bold());
-    println!("    x86_64-linux");
-    println!("    aarch64-linux");
-    println!("    x86_64-macos");
-    println!("    aarch64-macos");
-    println!();
-
-    println!("  {} (builds, best-effort):", "Tier 2".yellow());
-    println!("    x86_64-windows-msvc");
-    println!("    aarch64-windows-msvc");
-    println!("    wasm32-none");
-    println!("    x86_64-linux-musl");
-    println!("    aarch64-linux-musl");
-    println!();
-
-    println!("  {} (community):", "Tier 3".dimmed());
-    println!("    riscv64-linux");
-    println!("    x86_64-freebsd");
-    println!("    arm-none");
-    println!();
+    let tiers = [
+        (Tier::One, "Tier 1".yellow().bold(), "tested, guaranteed"),
+        (Tier::Two, "Tier 2".yellow(), "builds, best-effort"),
+        (Tier::Three, "Tier 3".dimmed(), "community"),
+    ];
+    for (tier, heading, note) in tiers {
+        println!("  {} ({}):", heading, note);
+        for t in TARGETS.iter().filter(|t| t.tier == tier) {
+            println!("    {:<22} {}", t.name, t.triple.dimmed());
+        }
+        println!();
+    }
 
     // Detect and show host
     let host = std::env::consts::ARCH;
