@@ -21,9 +21,6 @@ pub struct BuildOptions {
     pub no_cache: bool,
     /// Bypass all caching (build script + compilation). Spec: struct.build/LC2.
     pub force: bool,
-    /// Max parallel threads for dependency checking. Spec: struct.build/PP3.
-    /// None = CPU count (default).
-    pub jobs: Option<usize>,
 }
 
 impl Default for BuildOptions {
@@ -34,7 +31,6 @@ impl Default for BuildOptions {
             target: None,
             no_cache: false,
             force: false,
-            jobs: None,
         }
     }
 }
@@ -573,82 +569,13 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
         }
     }
 
-    // === LC1 Step 7: Check all packages, codegen root only ===
-    let mut dep_errors = 0;
-
-    // Check dependencies in parallel by dependency level (PP1-PP3)
-    let dep_levels = toposort_levels(&registry, root_id);
-    let max_jobs = opts.jobs.unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
-    });
-
-    if opts.verbose {
-        println!("  {} {} job(s)", "Parallelism:".dimmed(), max_jobs);
-    }
-
-    for level in &dep_levels {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let level_errors = AtomicUsize::new(0);
-
-        // Process packages in chunks of max_jobs (PP3)
-        for chunk in level.chunks(max_jobs) {
-            std::thread::scope(|s| {
-                for &pkg_id in chunk {
-                    let registry = &registry;
-                    let level_errors = &level_errors;
-                    let verbose = opts.verbose;
-
-                    s.spawn(move || {
-                        let pkg = match registry.get(pkg_id) {
-                            Some(p) => p,
-                            None => return,
-                        };
-
-                        if verbose {
-                            println!("  {} {}", "Checking".dimmed(), pkg.path_string());
-                        }
-
-                        let mut all_decls: Vec<_> = pkg.all_decls().cloned().collect();
-                        let dep_annotations =
-                            rask_compiler::dependency_annotations(registry, pkg_id);
-                        rask_desugar::desugar_package(
-                            &mut all_decls,
-                            &dep_annotations,
-                            rask_stdlib::StubRegistry::defaulted_signatures(),
-                        );
-
-                        let pkg_source_files: Vec<_> = pkg.files.iter()
-                            .map(|f| (f.path.clone(), f.source.clone()))
-                            .collect();
-
-                        match rask_resolve::resolve_package(&all_decls, registry, pkg_id) {
-                            Ok(resolved) => {
-                                if let Err(errors) = rask_types::typecheck(resolved, &all_decls) {
-                                    for error in &errors {
-                                        crate::show_diagnostic_multi(&error.to_diagnostic(), &pkg_source_files);
-                                    }
-                                    level_errors.fetch_add(errors.len(), Ordering::Relaxed);
-                                }
-                            }
-                            Err(errors) => {
-                                for error in &errors {
-                                    crate::show_diagnostic_multi(&error.to_diagnostic(), &pkg_source_files);
-                                }
-                                level_errors.fetch_add(errors.len(), Ordering::Relaxed);
-                            }
-                        }
-                    });
-                }
-            });
-        }
-
-        dep_errors += level_errors.load(Ordering::Relaxed);
-        if dep_errors > 0 {
-            break; // Don't check later levels if earlier ones failed
-        }
-    }
+    // The root's check (`check_package`) merges every package's declarations
+    // into one program and checks that, so a dependency's bodies are checked
+    // there. A second, per-package pass used to run first, in parallel, and it
+    // handed the checker only that package's own declarations — so a
+    // dependency naming a type from *its* dependency failed with `unknown type
+    // Doc` before the real check ever ran (#1295).
+    let dep_errors = 0;
 
     PreparedBuild {
         registry,
@@ -930,60 +857,6 @@ pub fn cmd_update(path: &str) {
             }
         }
     }
-}
-
-/// Topological sort of dependency packages into parallel levels (Kahn's algorithm).
-/// Returns levels where all packages in a level are independent of each other.
-/// Root package is excluded (it compiles separately after all deps).
-fn toposort_levels(
-    registry: &rask_resolve::PackageRegistry,
-    root_id: rask_resolve::PackageId,
-) -> Vec<Vec<rask_resolve::PackageId>> {
-    use std::collections::HashMap;
-
-    // Build in-degree map: pkg depends on dep → pkg gets +1 in-degree
-    let mut in_deg: HashMap<rask_resolve::PackageId, usize> = HashMap::new();
-    for pkg in registry.packages() {
-        if pkg.id == root_id { continue; }
-        in_deg.entry(pkg.id).or_insert(0);
-    }
-    for pkg in registry.packages() {
-        if pkg.id == root_id { continue; }
-        for &dep_id in &pkg.imports {
-            if dep_id != root_id && in_deg.contains_key(&dep_id) {
-                *in_deg.get_mut(&pkg.id).unwrap() += 1;
-            }
-        }
-    }
-
-    let mut levels = Vec::new();
-
-    loop {
-        // Collect packages with no unresolved dependencies
-        let level: Vec<_> = in_deg.iter()
-            .filter(|(_, &deg)| deg == 0)
-            .map(|(&id, _)| id)
-            .collect();
-
-        if level.is_empty() { break; }
-
-        for &id in &level {
-            in_deg.remove(&id);
-        }
-
-        // Decrement in-degree for packages that depended on this level
-        let level_set: std::collections::HashSet<_> = level.iter().copied().collect();
-        for pkg in registry.packages() {
-            if let Some(deg) = in_deg.get_mut(&pkg.id) {
-                let resolved = pkg.imports.iter().filter(|d| level_set.contains(d)).count();
-                *deg -= resolved;
-            }
-        }
-
-        levels.push(level);
-    }
-
-    levels
 }
 
 /// Clean build artifacts (OD6).

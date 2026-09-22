@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Two dependencies each conform `traitpkg.Doc` to `traitpkg.Labeled`. Neither
+// is wrong on its own; the program that pulls in both is where the collision
+// exists, so that's where type.generics/XC3 reports it. Which `label` this
+// printed would otherwise come down to which block the compiler read last.
+
+import traitpkg
+import liba
+import libb
+
+func main() {
+    let d = traitpkg.make_doc(7)
+    println(d.label())
+    return
+}

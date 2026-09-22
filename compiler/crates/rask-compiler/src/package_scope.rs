@@ -561,10 +561,11 @@ pub fn unqualify_diagnostics(
     diags: &mut [rask_diagnostics::Diagnostic],
     exports: &HashMap<String, HashMap<String, String>>,
 ) {
-    let mut back: Vec<(String, String)> = Vec::new();
+    // Each entry is (compiler name, how the program spells it, the bare name).
+    let mut back: Vec<(String, String, String)> = Vec::new();
     for (pkg, map) in exports {
         for (original, q) in map {
-            back.push((q.clone(), format!("{}.{}", pkg, original)));
+            back.push((q.clone(), format!("{}.{}", pkg, original), original.clone()));
         }
     }
     if back.is_empty() {
@@ -576,10 +577,29 @@ pub fn unqualify_diagnostics(
     back.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
 
     let rewrite = |s: &mut String| {
-        for (q, spelled) in &back {
-            if s.contains(q.as_str()) {
-                *s = s.replace(q.as_str(), spelled);
+        for (q, spelled, bare) in &back {
+            if !s.contains(q.as_str()) {
+                continue;
             }
+            // Where the name sits inside a longer identifier, the compiler
+            // built that identifier from it — the fix for a duplicate
+            // conformance suggests `type MyDoc = ...`, which is `MyDoc_traitpkg`
+            // at this point. A dotted path can't go in the middle of an
+            // identifier, so that one gets the bare name and reads `MyDoc`;
+            // anywhere else gets the spelling the program uses.
+            let mut out = String::with_capacity(s.len());
+            let mut rest = s.as_str();
+            while let Some(at) = rest.find(q.as_str()) {
+                let glued = rest[..at]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
+                out.push_str(&rest[..at]);
+                out.push_str(if glued { bare } else { spelled });
+                rest = &rest[at + q.len()..];
+            }
+            out.push_str(rest);
+            *s = out;
         }
     };
     for d in diags {

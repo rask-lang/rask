@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import traitpkg.Labeled
+
+public extend traitpkg.Doc with Labeled {
+    public func label(self) -> string {
+        return "b:{self.n}"
+    }
+}
