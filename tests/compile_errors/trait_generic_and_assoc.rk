@@ -8,7 +8,7 @@
 // every required signature unmatchable at once.
 
 struct Meters { v: f64 }
-struct SquareMeters { v: f64 }
+
 
 trait Scale<Rhs> {
     func scale(self, k: Rhs) -> Self
@@ -73,15 +73,11 @@ extend Meters with Mul<f64> {
     }
 }
 
-// ERROR: `Meters` would carry two `mul`s, and MN1 gives a type one. Rejected
-// ERROR: here rather than miscompiled — MIR resolves the call by name, so the
-// ERROR: wrong body ran on the other's argument and the binary segfaulted
-extend Meters with Mul<Meters> {
-    type Out = SquareMeters
-    func mul(self, other: Meters) -> SquareMeters {
-        return SquareMeters { v: self.v * other.v }
-    }
-}
+// Two `Mul`s on one `Meters` used to be rejected here — MN1 gives a type one
+// `mul`, and MIR resolved the call by name, so the wrong body ran on the
+// other's argument and the binary segfaulted. Operator resolution picks from
+// the argument's type now and each conformance's method is filed under it, so
+// the pair is legal: it moved to tests/suite/t_operator_resolution.rk.
 
 struct Blob { bytes: Vec<u8> }
 

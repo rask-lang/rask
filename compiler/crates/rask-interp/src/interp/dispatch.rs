@@ -680,6 +680,45 @@ impl Interpreter {
     /// doesn't recognise a method, the answer is the Rask implementation rather
     /// than an error — that's what makes a module written in Rask reachable from
     /// the interpreter instead of shadowed by its Rust twin.
+    /// OR1: run the body the checker's pair resolution picked.
+    ///
+    /// The receiver's type comes from the value rather than from the recorded
+    /// target: inside a generic body the target still names the type parameter,
+    /// and here the concrete value is in hand. `None` means the conformance has
+    /// no body — `instant - instant` is a declaration of what the pair answers
+    /// with, not a function — so the caller falls back to the layer that has
+    /// the arithmetic.
+    pub(crate) fn call_operator_conformance(
+        &mut self,
+        target: &rask_types::OperatorTarget,
+        receiver: Value,
+        args: Vec<Value>,
+    ) -> Option<Result<Value, RuntimeError>> {
+        let ty = Self::nominal_type_name(&receiver)
+            .or_else(|| Self::runtime_type_name(&receiver))?;
+        let mut names = vec![target.method.clone()];
+        // A bare `T: Mul` bound files the method under the parameter's own name
+        // (`mul$T`). The argument in hand is what it stands for.
+        if let Some(rhs) = rask_ast::operators::method_rhs(&target.method) {
+            if let Some(arg) = args.first().and_then(Self::runtime_type_name) {
+                if arg != rhs {
+                    names.push(format!(
+                        "{}${}",
+                        rask_ast::operators::method_display(&target.method),
+                        arg
+                    ));
+                }
+            }
+        }
+        for name in names {
+            match self.call_rask_method(&ty, &name, receiver.clone(), args.clone()) {
+                Err(RuntimeError::NoSuchMethod { .. }) => {}
+                other => return Some(other),
+            }
+        }
+        None
+    }
+
     pub(crate) fn call_rask_method(
         &mut self,
         type_name: &str,

@@ -1541,7 +1541,9 @@ impl TypeChecker {
             Type::UnresolvedNamed(ref name)
                 if self.current_type_param_bounds.contains_key(name) =>
             {
-                self.resolve_bounded_type_param_method(name.clone(), method, args, ret, span)
+                self.resolve_bounded_type_param_method(
+                    name.clone(), method, args, ret, span, call_node,
+                )
             }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
@@ -1567,6 +1569,7 @@ impl TypeChecker {
         args: Vec<Type>,
         ret: Type,
         span: Span,
+        call_node: Option<NodeId>,
     ) -> Result<bool, TypeError> {
         let bounds = self
             .current_type_param_bounds
@@ -1586,6 +1589,44 @@ impl TypeChecker {
                     .find(|m| m.name == method)
             })
         };
+
+        // OR1/OR4: an operator reached through a bound resolves to the pair the
+        // *bound* names — `T: Mul<f64>` is `Mul<f64>`, whichever type `T` turns
+        // out to be. The conformance's method is filed under that argument, so
+        // record it here; monomorphization substitutes the receiver on the way
+        // into each instantiation and the symbol comes out right.
+        if let Some(node) = call_node {
+            if let Some(applied) = bounds
+                .iter()
+                .find(|b| {
+                    let base = b.split('<').next().unwrap_or(b).trim();
+                    rask_ast::operators::operator_trait_method(base) == Some(method.as_str())
+                })
+                .cloned()
+            {
+                if let Some(filed) = rask_ast::operators::conformance_method_name(
+                    &param,
+                    std::slice::from_ref(&applied),
+                    &method,
+                ) {
+                    // CALL6: dispatch keys on this, and mono carries it into
+                    // each instantiation with `T` replaced — which is what
+                    // makes `Meters_mul$f64` reachable from a generic body.
+                    self.call_targets.insert(
+                        node,
+                        Callee::Method { recv: receiver.clone(), method: filed.clone() },
+                    );
+                    self.operator_targets.insert(
+                        node,
+                        super::operators::OperatorTarget {
+                            recv: receiver.clone(),
+                            method: filed,
+                            applied,
+                        },
+                    );
+                }
+            }
+        }
 
         let Some(sig) = sig else {
             // Bounded, but no bound provides this method.

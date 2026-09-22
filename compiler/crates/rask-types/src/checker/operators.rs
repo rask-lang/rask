@@ -361,7 +361,7 @@ impl TypeChecker {
             self.operator_targets.insert(
                 node,
                 OperatorTarget {
-                    recv: self.types.type_name(found.self_id),
+                    recv: recv.clone(),
                     method: found.filed.clone(),
                     applied: found.applied,
                 },
@@ -383,19 +383,15 @@ impl TypeChecker {
 /// MIR reads this instead of deciding for itself whether `a * b` is a machine
 /// instruction or a call: on a primitive receiver it is both, depending on the
 /// right operand, and only the checker knows which pair it settled on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OperatorTarget {
-    /// The receiver type's name, as method symbols are prefixed with it.
-    pub recv: String,
-    /// The desugared operator method (`mul`).
+    /// The receiver the pair resolved on. A `Type` rather than a name because
+    /// inside a generic body it is still the type parameter — monomorphization
+    /// substitutes it on the way into each instantiation, the same as it does
+    /// for an ordinary dispatch target.
+    pub recv: Type,
+    /// The conformance method as it is filed (`mul$f64`).
     pub method: String,
     /// The applied trait the pair resolved to (`Mul<Meters>`).
     pub applied: String,
-}
-
-impl OperatorTarget {
-    /// The function symbol this call dispatches to.
-    pub fn symbol(&self) -> String {
-        format!("{}_{}", self.recv, self.method)
-    }
 }

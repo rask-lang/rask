@@ -307,6 +307,7 @@ pub fn compile_to_object(
     // carried its records onto them. Lowering wants one map for both.
     let all_node_types = mono.all_node_types(typed);
     let all_call_targets = mono.all_call_targets(typed);
+    let all_operator_targets = mono.all_operator_targets(typed);
     let all_error_wraps = mono.all_error_wraps(typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
@@ -315,6 +316,7 @@ pub fn compile_to_object(
         &mono.enum_layouts,
         &all_node_types,
         &all_call_targets,
+        &all_operator_targets,
         &type_names,
     )
     .with_comptime_globals(comptime_globals)
@@ -633,6 +635,7 @@ pub fn compile_tests_to_object(
     // carried its records onto them. Lowering wants one map for both.
     let all_node_types = mono.all_node_types(typed);
     let all_call_targets = mono.all_call_targets(typed);
+    let all_operator_targets = mono.all_operator_targets(typed);
     let all_error_wraps = mono.all_error_wraps(typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
@@ -641,6 +644,7 @@ pub fn compile_tests_to_object(
         &mono.enum_layouts,
         &all_node_types,
         &all_call_targets,
+        &all_operator_targets,
         &type_names,
     )
         .with_comptime_globals(comptime_globals)
@@ -833,6 +837,7 @@ pub fn compile_benchmarks_to_object(
     // carried its records onto them. Lowering wants one map for both.
     let all_node_types = mono.all_node_types(typed);
     let all_call_targets = mono.all_call_targets(typed);
+    let all_operator_targets = mono.all_operator_targets(typed);
     let all_error_wraps = mono.all_error_wraps(typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
@@ -841,6 +846,7 @@ pub fn compile_benchmarks_to_object(
         &mono.enum_layouts,
         &all_node_types,
         &all_call_targets,
+        &all_operator_targets,
         &type_names,
     )
         .with_comptime_globals(comptime_globals)

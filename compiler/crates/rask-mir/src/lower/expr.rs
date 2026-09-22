@@ -7316,10 +7316,19 @@ impl<'a> MirLowerer<'a> {
         // is what it means. There's no function to call, so the lowering below
         // is the answer.
         if let Some(target) = self.ctx.operator_targets.get(&call) {
-            let symbol = target.symbol();
+            let Some(prefix) =
+                super::MirContext::conformance_prefix(&target.recv, self.ctx.type_names)
+            else {
+                return Ok(None);
+            };
+            let symbol = format!("{}_{}", prefix, target.method);
             let emitted = self.func_sigs.contains_key(&symbol)
                 || self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", symbol)));
-            if emitted {
+            // An aggregate receiver never falls back. A machine multiply on two
+            // struct pointers is #399 all over again — it computes on addresses
+            // and hands back garbage — so a missing body is "function not
+            // found" at the call, not silence.
+            if emitted || matches!(obj_ty, MirType::Struct(_) | MirType::Enum(_)) {
                 return Ok(None);
             }
         }

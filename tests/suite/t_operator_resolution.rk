@@ -96,3 +96,28 @@ test "primitive arithmetic is untouched" {
     assert 7 / 2 == 3
     assert -7 % 3 == -1
 }
+
+// AT3/AT6: the projection in generic code. `T.Out` is written, then read off
+// T's conformance once T is known. The body's `x.mul(2.0)` has to reach the
+// conformance filed under `mul$f64`, in an instantiation whose nodes the
+// checker never saw — native lowered it as a machine multiply on two struct
+// pointers before the dispatch record was carried across.
+//
+// `Feet` rather than `Meters`: a type carrying two `Mul`s has two `Out`s, and
+// a bare `T.Out` doesn't say which bound it was projected through (#1330).
+struct Feet { v: f64 }
+
+extend Feet with Mul<f64> {
+    func mul(self, k: f64) -> Feet {
+        return Feet { v: self.v * k }
+    }
+}
+
+func doubled<T: Mul<f64>>(x: T) -> T.Out {
+    return x.mul(2.0)
+}
+
+test "OR1 — through a generic bound" {
+    let f = Feet { v: 4.5 }
+    assert doubled(f).v == 9.0
+}

@@ -313,6 +313,7 @@ impl<'a> MirContext<'a> {
         enum_layouts: &'a [EnumLayout],
         node_types: &'a HashMap<NodeId, Type>,
         call_targets: &'a HashMap<NodeId, rask_types::Callee>,
+        operator_targets: &'a HashMap<NodeId, rask_types::OperatorTarget>,
         type_names: &'a HashMap<rask_types::TypeId, String>,
     ) -> Self {
         Self {
@@ -320,6 +321,7 @@ impl<'a> MirContext<'a> {
             enum_layouts,
             node_types,
             call_targets,
+            operator_targets,
             type_names,
             // Straight off the checker — never optional.
             type_defs: &typed.types,
@@ -328,7 +330,6 @@ impl<'a> MirContext<'a> {
             error_wraps: &typed.error_wraps,
             fallback_keeps_shape: &typed.fallback_keeps_shape,
             try_chain_placement: &typed.try_chain_placement,
-            operator_targets: &typed.operator_targets,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
             comptime_globals: empty::comptime_globals(),
@@ -1506,6 +1507,20 @@ impl<'a> MirContext<'a> {
     /// Extends `stdlib_type_prefix` to also handle user-defined struct/enum
     /// types from extend blocks. Monomorphization produces qualified names
     /// like "Person_greet"; this ensures MIR calls match.
+    /// OR6: the prefix a *conformance* method's symbol carries.
+    ///
+    /// Not `builtin_method_prefix`: that collapses widths, so every float
+    /// receiver answers `f64` and an `extend f32 with Mul<…>` body would be
+    /// called under someone else's name. A conformance is filed on the type as
+    /// written.
+    pub fn conformance_prefix(
+        ty: &Type,
+        type_names: &HashMap<rask_types::TypeId, String>,
+    ) -> Option<String> {
+        Self::type_prefix(ty, type_names)
+            .or_else(|| rask_types::primitive_spelling(ty).map(str::to_string))
+    }
+
     pub fn type_prefix(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> Option<String> {
         if let Some(s) = Self::stdlib_type_prefix(ty) {
             return Some(s.to_string());
@@ -1574,7 +1589,7 @@ impl<'a> MirContext<'a> {
         // off the MIR type instead would collapse `f32` onto `f64` — the width
         // collapse the builtin prefixes want and a conformance symbol doesn't.
         if let Some(target) = self.operator_targets.get(&node) {
-            return Some(target.recv.clone());
+            return Self::conformance_prefix(&target.recv, self.type_names);
         }
         match self.call_targets.get(&node)? {
             rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names)
