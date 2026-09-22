@@ -36,6 +36,28 @@ func main() {
         let k = spawn(f)
         k.join()
         println("{named}")
+
+        // A read before the write is not a use of what the write produced.
+        mut seen = 0
+        let r = spawn(|| {
+            println("starting at {seen}")
+            // ERROR: E0892 — nothing after this wants the new value
+            seen += 1
+        })
+        r.join()
+        println("{seen}")
+
+        // Every write here is read — by the next iteration, which writes again.
+        // The accumulation still goes nowhere, so the whole chain is lost.
+        mut total = 0
+        let a = spawn(|| {
+            for i in 0..10 {
+                // ERROR: E0892 — the only reader is another write that's lost
+                total += i
+            }
+        })
+        a.join()
+        println("{total}")
     }
 }
 

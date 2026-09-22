@@ -55,16 +55,6 @@ struct ForMutateInfo {
     span: Span,
 }
 
-/// What a task body does with the captures it was given a copy of.
-#[derive(Default)]
-struct TaskWrites {
-    /// Captures the body assigns to, at the first such assignment.
-    written_at: HashMap<String, Span>,
-    /// Captures the body reads somewhere other than the expansion of their own
-    /// compound assignment. A read is what makes a write worth doing.
-    read: HashSet<String>,
-}
-
 /// Ownership and borrow checker.
 pub struct OwnershipChecker<'a> {
     /// The typed program from type checking.
@@ -4300,16 +4290,26 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Collect free variables with field projection tracking.
     /// `projections` maps captured var name → narrowest field projection used in the closure.
+    fn collect_free_vars_with_projections(
+        &self,
+        expr: &Expr,
+        locals: &HashSet<String>,
+        out: &mut Vec<String>,
+        projections: &mut HashMap<String, Option<Vec<String>>>,
+    ) {
+        self.collect_free_vars_inner(expr, locals, out, projections);
+    }
+
     // ---- A task's write to a capture nothing reads back ----
 
     /// A closure handed to `spawn` gets a **copy** of every capture, and the
-    /// task's environment dies when the task does. So a write to a capture that
-    /// nothing in the body reads back goes nowhere: the counter in the task is
-    /// not the counter the parent prints, and `join()` is not a write-back.
+    /// task's environment dies when the task does. So a write to a capture the
+    /// task never puts to use goes nowhere: the counter in the task is not the
+    /// counter the parent prints, and `join()` is not a write-back.
     ///
     /// Only Copy captures ever reach here. Anything bigger is already rejected
-    /// as an escaping borrow (SL2) or moved in by `own`, and a move leaves the
-    /// parent nothing to read.
+    /// as an escaping borrow (SL2) or moved in, and a move leaves the parent
+    /// nothing to read.
     ///
     /// The write is dead, and deadness is decidable from the body alone, so it
     /// is an error rather than a lint. The fix is a value that outlives the
@@ -4327,16 +4327,15 @@ impl<'a> OwnershipChecker<'a> {
         let ExprKind::Closure { params, body, .. } = &closure.kind else { return };
         let locals: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
-        let mut scan = TaskWrites::default();
-        self.scan_task_writes_expr(body, &locals, &mut scan);
+        // Nothing in the environment survives the task, so every capture starts
+        // out with no use ahead of it. A read walking backwards is what puts one
+        // there.
+        let all_reads = self.task_reads(body, &locals);
+        let mut lost = Vec::new();
+        self.task_used_expr(body, &locals, &HashSet::new(), &all_reads, &mut lost);
 
-        // Deterministic order: the body's, not the map's.
-        let mut lost: Vec<(String, Span)> = scan
-            .written_at
-            .into_iter()
-            .filter(|(name, _)| !scan.read.contains(name))
-            .collect();
         lost.sort_by_key(|(_, span)| (span.start, span.end));
+        lost.dedup();
         for (name, span) in lost {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::TaskWriteLost { name, spawn_span: arg.span },
@@ -4345,135 +4344,236 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Reads and writes a task body performs on its captures.
+    /// Backward walk over a task body answering, at each point, which captures
+    /// still have a use ahead of them.
     ///
-    /// Containers recurse so a write inside an `if` or a loop is still found;
-    /// everything else is a read, collected through the capture walker so no
-    /// expression shape is missed. Missing a read would reject a working
-    /// program, so every arm that isn't a container hands the whole expression
-    /// over rather than picking it apart.
-    fn scan_task_writes_expr(&self, expr: &Expr, locals: &HashSet<String>, scan: &mut TaskWrites) {
+    /// Plain liveness is not enough, and the loop is why. In
+    ///
+    ///     for i in 0..10 { total += i }
+    ///
+    /// every write is read — by the next iteration. Liveness calls that live and
+    /// the whole accumulation is still thrown away, because the only thing the
+    /// reads feed is another write that goes nowhere. So a read only counts when
+    /// it reaches a *use*: a write whose target has no use ahead of it
+    /// contributes none of its own reads, which lets the chain collapse to
+    /// nothing in one fixpoint. (Compilers call these faint variables — dead
+    /// ones, plus the ones that only keep themselves alive.)
+    ///
+    /// Over-approximating is the safe direction: a capture in the set is one
+    /// this reports nothing about.
+    fn task_used_expr(
+        &self,
+        expr: &Expr,
+        locals: &HashSet<String>,
+        used_out: &HashSet<String>,
+        all_reads: &HashSet<String>,
+        lost: &mut Vec<(String, Span)>,
+    ) -> HashSet<String> {
         match &expr.kind {
-            ExprKind::Block(stmts) => self.scan_task_writes_body(stmts, locals, scan),
+            ExprKind::Block(stmts) => {
+                self.task_used_body(stmts, locals, used_out, all_reads, lost)
+            }
+            // Branches are alternatives, so what either one needs is needed
+            // before the test.
             ExprKind::If { cond, then_branch, else_branch, .. } => {
-                self.scan_task_reads(cond, locals, scan);
-                self.scan_task_writes_expr(then_branch, locals, scan);
-                if let Some(e) = else_branch { self.scan_task_writes_expr(e, locals, scan); }
+                let mut used = self.task_used_expr(then_branch, locals, used_out, all_reads, lost);
+                match else_branch {
+                    Some(e) => used.extend(self.task_used_expr(e, locals, used_out, all_reads, lost)),
+                    None => used.extend(used_out.iter().cloned()),
+                }
+                used.extend(self.task_reads(cond, locals));
+                used
             }
             ExprKind::IfLet { expr: scrutinee, then_branch, else_branch, .. } => {
-                self.scan_task_reads(scrutinee, locals, scan);
-                self.scan_task_writes_expr(then_branch, locals, scan);
-                if let Some(e) = else_branch { self.scan_task_writes_expr(e, locals, scan); }
+                let mut used = self.task_used_expr(then_branch, locals, used_out, all_reads, lost);
+                match else_branch {
+                    Some(e) => used.extend(self.task_used_expr(e, locals, used_out, all_reads, lost)),
+                    None => used.extend(used_out.iter().cloned()),
+                }
+                used.extend(self.task_reads(scrutinee, locals));
+                used
             }
             ExprKind::Match { scrutinee, arms } => {
-                self.scan_task_reads(scrutinee, locals, scan);
+                let mut used = HashSet::new();
                 for arm in arms {
-                    if let Some(g) = &arm.guard { self.scan_task_reads(g, locals, scan); }
-                    self.scan_task_writes_expr(&arm.body, locals, scan);
+                    used.extend(self.task_used_expr(&arm.body, locals, used_out, all_reads, lost));
+                    if let Some(g) = &arm.guard {
+                        used.extend(self.task_reads(g, locals));
+                    }
                 }
+                if arms.is_empty() {
+                    used.extend(used_out.iter().cloned());
+                }
+                used.extend(self.task_reads(scrutinee, locals));
+                used
             }
             // A nested closure borrows the task's environment, so a write in
-            // there is one the task can still read back. Reads only.
-            _ => self.scan_task_reads(expr, locals, scan),
+            // there is one the task can still read back. Everything it names
+            // counts as used.
+            _ => {
+                let mut used = used_out.clone();
+                used.extend(self.task_reads(expr, locals));
+                used
+            }
         }
     }
 
-    fn scan_task_writes_body(&self, body: &[Stmt], locals: &HashSet<String>, scan: &mut TaskWrites) {
+    fn task_used_body(
+        &self,
+        body: &[Stmt],
+        locals: &HashSet<String>,
+        used_out: &HashSet<String>,
+        all_reads: &HashSet<String>,
+        lost: &mut Vec<(String, Span)>,
+    ) -> HashSet<String> {
+        // A backward walk needs each statement's scope, which only a forward
+        // one knows: a name a `let` introduces shadows the capture below it.
+        let mut scopes = Vec::with_capacity(body.len());
         let mut scope = locals.clone();
         for stmt in body {
-            self.scan_task_writes_stmt(stmt, &scope, scan);
+            scopes.push(scope.clone());
             Self::names_declared_by(stmt, &mut scope);
         }
+
+        let mut used = used_out.clone();
+        for (stmt, scope) in body.iter().zip(scopes.iter()).rev() {
+            used = self.task_used_stmt(stmt, scope, &used, all_reads, lost);
+        }
+        used
     }
 
-    fn scan_task_writes_stmt(&self, stmt: &Stmt, locals: &HashSet<String>, scan: &mut TaskWrites) {
+    fn task_used_stmt(
+        &self,
+        stmt: &Stmt,
+        locals: &HashSet<String>,
+        used_out: &HashSet<String>,
+        all_reads: &HashSet<String>,
+        lost: &mut Vec<(String, Span)>,
+    ) -> HashSet<String> {
         match &stmt.kind {
             StmtKind::Assign { target, value, .. } => {
                 let root = Self::extract_root_and_fields(target).0;
                 let captured = root
                     .as_ref()
                     .filter(|r| !locals.contains(*r) && self.bindings.contains_key(*r));
-                if let Some(name) = captured {
-                    scan.written_at.entry(name.clone()).or_insert(stmt.span);
-                    // A variable reading itself on the way into its own new
-                    // value is not the read that saves the write — `count =
-                    // count + 1` is as lost as `count += 1`, and the compound
-                    // form is stored with `value` already expanded to the long
-                    // one anyway. What counts is a read somewhere else.
-                    self.scan_task_reads_except(value, locals, scan, Some(name));
-                    // An index into the target — `grid[i] = x` — is read, not written.
-                    if let ExprKind::Index { index, .. } = &target.kind {
-                        self.scan_task_reads(index, locals, scan);
-                    }
-                    return;
+                let Some(name) = captured else {
+                    let mut used = used_out.clone();
+                    used.extend(self.task_reads(target, locals));
+                    used.extend(self.task_reads(value, locals));
+                    return used;
+                };
+                if !used_out.contains(name) {
+                    // Nothing ahead wants what this writes, so the write is
+                    // thrown away — and so is everything it read to get there.
+                    lost.push((name.clone(), stmt.span));
+                    return used_out.clone();
                 }
-                self.scan_task_reads(target, locals, scan);
-                self.scan_task_reads(value, locals, scan);
+                let mut used = used_out.clone();
+                // The write replaces the value, so what was there is wanted
+                // only where the new value is built from it — `n = n + 1`, or a
+                // write to one field of a struct that keeps the others.
+                used.remove(name);
+                used.extend(self.task_reads(value, locals));
+                if !matches!(target.kind, ExprKind::Ident(_)) {
+                    used.insert(name.clone());
+                    used.extend(self.task_reads(target, locals));
+                }
+                used
             }
-            StmtKind::Expr(e) => self.scan_task_writes_expr(e, locals, scan),
+            StmtKind::Expr(e) => self.task_used_expr(e, locals, used_out, all_reads, lost),
             StmtKind::Mut { init, .. } | StmtKind::Let { init, .. }
             | StmtKind::MutTuple { init, .. } | StmtKind::LetTuple { init, .. }
-            | StmtKind::LetStruct { init, .. } => self.scan_task_reads(init, locals, scan),
-            StmtKind::Return(Some(e)) | StmtKind::Break { value: Some(e), .. } => {
-                self.scan_task_reads(e, locals, scan)
+            | StmtKind::LetStruct { init, .. } => {
+                let mut used = used_out.clone();
+                used.extend(self.task_reads(init, locals));
+                used
             }
+            // A return leaves the task, so nothing after it runs and only what
+            // it hands back is wanted.
+            StmtKind::Return(Some(e)) => self.task_reads(e, locals),
+            StmtKind::Return(None) => HashSet::new(),
+            // Where the jump lands takes a CFG to say. Everything the body
+            // reads is the answer that can't be wrong.
+            StmtKind::Break { .. } | StmtKind::Continue(_) => all_reads.clone(),
             StmtKind::While { cond, body, .. } => {
-                self.scan_task_reads(cond, locals, scan);
-                self.scan_task_writes_body(body, locals, scan);
+                let mut used = self.task_used_loop(body, locals, used_out, all_reads, lost);
+                used.extend(self.task_reads(cond, locals));
+                used
             }
             StmtKind::WhileLet { expr, body, .. } => {
-                self.scan_task_reads(expr, locals, scan);
-                self.scan_task_writes_body(body, locals, scan);
+                let mut used = self.task_used_loop(body, locals, used_out, all_reads, lost);
+                used.extend(self.task_reads(expr, locals));
+                used
             }
-            StmtKind::Loop { body, .. } => self.scan_task_writes_body(body, locals, scan),
+            StmtKind::Loop { body, .. } => {
+                self.task_used_loop(body, locals, used_out, all_reads, lost)
+            }
             StmtKind::For { iter, body, .. } => {
-                self.scan_task_reads(iter, locals, scan);
-                self.scan_task_writes_body(body, locals, scan);
+                let mut used = self.task_used_loop(body, locals, used_out, all_reads, lost);
+                used.extend(self.task_reads(iter, locals));
+                used
             }
-            StmtKind::Ensure { body, else_handler } => {
-                self.scan_task_writes_body(body, locals, scan);
-                if let Some((_, handler)) = else_handler {
-                    self.scan_task_writes_body(handler, locals, scan);
-                }
-            }
-            StmtKind::Comptime(body) => self.scan_task_writes_body(body, locals, scan),
             StmtKind::ComptimeFor { iter, body, .. } => {
-                self.scan_task_reads(iter, locals, scan);
-                self.scan_task_writes_body(body, locals, scan);
+                let mut used = self.task_used_loop(body, locals, used_out, all_reads, lost);
+                used.extend(self.task_reads(iter, locals));
+                used
             }
-            StmtKind::Return(None) | StmtKind::Break { value: None, .. }
-            | StmtKind::Continue(_) | StmtKind::Discard { .. } => {}
+            // An `ensure` body runs at every exit, including ones this walk has
+            // no edge for, so read it and claim nothing about writes inside.
+            StmtKind::Ensure { body, else_handler } => {
+                let mut used = used_out.clone();
+                used.extend(self.task_reads_body(body, locals));
+                if let Some((_, handler)) = else_handler {
+                    used.extend(self.task_reads_body(handler, locals));
+                }
+                used
+            }
+            StmtKind::Comptime(body) => {
+                let mut used = used_out.clone();
+                used.extend(self.task_reads_body(body, locals));
+                used
+            }
+            StmtKind::Discard { .. } => used_out.clone(),
         }
     }
 
-    fn scan_task_reads(&self, expr: &Expr, locals: &HashSet<String>, scan: &mut TaskWrites) {
-        self.scan_task_reads_except(expr, locals, scan, None);
+    /// A loop body runs again, so what it needs on entry it also needs on the
+    /// way out. Grow the set until that stops adding anything, then walk it once
+    /// more — the reports only mean something at the fixpoint.
+    fn task_used_loop(
+        &self,
+        body: &[Stmt],
+        locals: &HashSet<String>,
+        used_out: &HashSet<String>,
+        all_reads: &HashSet<String>,
+        lost: &mut Vec<(String, Span)>,
+    ) -> HashSet<String> {
+        let mut body_out = used_out.clone();
+        loop {
+            let mark = lost.len();
+            let body_in = self.task_used_body(body, locals, &body_out, all_reads, lost);
+            lost.truncate(mark);
+            let grown: HashSet<String> = body_out.union(&body_in).cloned().collect();
+            if grown == body_out {
+                break;
+            }
+            body_out = grown;
+        }
+        self.task_used_body(body, locals, &body_out, all_reads, lost)
     }
 
-    fn scan_task_reads_except(
-        &self,
-        expr: &Expr,
-        locals: &HashSet<String>,
-        scan: &mut TaskWrites,
-        skip: Option<&str>,
-    ) {
+    fn task_reads(&self, expr: &Expr, locals: &HashSet<String>) -> HashSet<String> {
         let mut names = Vec::new();
         self.collect_free_vars_inner(expr, locals, &mut names, &mut HashMap::new());
-        for name in names {
-            if Some(name.as_str()) == skip { continue }
-            scan.read.insert(name);
-        }
+        names.into_iter().collect()
     }
 
-    fn collect_free_vars_with_projections(
-        &self,
-        expr: &Expr,
-        locals: &HashSet<String>,
-        out: &mut Vec<String>,
-        projections: &mut HashMap<String, Option<Vec<String>>>,
-    ) {
-        self.collect_free_vars_inner(expr, locals, out, projections);
+    fn task_reads_body(&self, body: &[Stmt], locals: &HashSet<String>) -> HashSet<String> {
+        let mut names = Vec::new();
+        self.collect_free_vars_body_inner(body, locals, &mut names, &mut HashMap::new());
+        names.into_iter().collect()
     }
+
 
     fn collect_free_vars_inner(
         &self,

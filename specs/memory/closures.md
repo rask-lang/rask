@@ -227,7 +227,7 @@ Two rules follow.
 | Rule | Description |
 |------|-------------|
 | **SP1: A borrow can't cross** | A closure that borrows a capture and is handed to `spawn` is a compile error (E0862). The task could outlive the spawning scope. `own` is the fix for a value the task should have; `Shared` reached through a clone is the fix for one both sides need |
-| **SP2: A write nothing reads back is an error** | Inside a spawned closure, a write to a capture that the body never reads again is a compile error (E0892). The task is writing its own copy and the copy is about to die, so the write goes nowhere |
+| **SP2: A write the task never uses is an error** | Inside a spawned closure, a write to a capture that nothing downstream puts to use is a compile error (E0892). The task is writing its own copy and the copy is about to die, so the write goes nowhere |
 
 SP2 is what closes the hole SP1 leaves. SP1 only bites on captures big enough to have a
 scope; a Copy capture is copied either way, so `mut count = 0` followed by `spawn(|| {
@@ -243,9 +243,21 @@ let t = total.clone()
 spawn(own || { with t.write() as c { c += 1 } })
 ```
 
-A write the task reads back is doing work, so it stays legal — a task that sums into a
+A write the task puts to use is doing work, so it stays legal — a task that sums into a
 local and returns it, or counts something for its own output, is unaffected. `join()` hands
 back the closure's return value; it is not a write-back for captures.
+
+"Puts to use" is stricter than "reads again", and the loop is why:
+
+```rask
+spawn(|| {
+    for i in 0..10 { total += i }     // error E0892
+})
+```
+
+Every write here is read — by the next iteration. The accumulation is still thrown away,
+because the only thing those reads feed is another write that goes nowhere. So a read only
+counts when it reaches a use, which lets the whole chain collapse at once.
 
 Deadness here is decidable from the closure body alone, which is why it's an error and not
 a lint: no program wants the write it rejects.
