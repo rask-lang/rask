@@ -21,13 +21,13 @@ fn base_type_name(name: &str) -> &str {
 /// Builds a lookup table of function signatures, then rewrites call sites
 /// so that missing arguments with defaults are filled in and named
 /// arguments are resolved to positional form.
-pub(crate) fn desugar_default_args(decls: &mut [Decl]) {
+pub(crate) fn desugar_default_args(decls: &mut [Decl], id_base: u32) {
     let lookup = FunctionLookup::build(decls);
     let mut ctx = DefaultDesugarer {
         lookup,
         // Own band, clear of the stdlib's parsed ids and of operator
         // desugaring's. See DESUGAR_ID_BASE for why the bands must not overlap.
-        next_id: crate::DEFAULT_ARGS_ID_BASE,
+        next_id: id_base,
     };
     for decl in decls {
         ctx.desugar_decl(decl);
@@ -853,7 +853,7 @@ mod tests {
         };
 
         let mut decls = vec![struct_decl, main];
-        desugar_default_args(&mut decls);
+        desugar_default_args(&mut decls, crate::DEFAULT_ARGS_ID_BASE);
 
         let DeclKind::Fn(f) = &decls[1].kind else { panic!("expected fn") };
         let StmtKind::Expr(e) = &f.body[0].kind else { panic!("expected expr stmt") };
@@ -906,7 +906,7 @@ mod tests {
         };
 
         let mut decls = vec![struct_decl, main];
-        desugar_default_args(&mut decls);
+        desugar_default_args(&mut decls, crate::DEFAULT_ARGS_ID_BASE);
 
         let DeclKind::Fn(f) = &decls[1].kind else { panic!("expected fn") };
         let StmtKind::Expr(e) = &f.body[0].kind else { panic!("expected expr stmt") };

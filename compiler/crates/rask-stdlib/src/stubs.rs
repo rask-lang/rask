@@ -362,7 +362,8 @@ impl StubRegistry {
             }
         }
 
-        rask_desugar::desugar(&mut decls);
+        rask_desugar::desugar_stdlib(&mut decls);
+        lift_inline_methods(&mut decls);
         decls
     }
 
@@ -547,6 +548,44 @@ impl StubRegistry {
 }
 
 /// Convert a FnDecl to a MethodStub with span.
+/// Move methods written inside a `struct`/`enum` block into an `extend` block.
+///
+/// Everything downstream reads a stdlib method out of an `extend`: the type
+/// checker's list of stdlib bodies is functions and `extend` blocks only, since
+/// re-declaring the type there would mint a second TypeId for the same name. A
+/// method left on the type declaration therefore reached codegen having never
+/// been type-checked, and lowering couldn't tell what its match arms bound —
+/// `SeekFrom_message: unresolved variable _0` (#1249). Today the only such
+/// method is the `message()` ER6 derives, which desugaring just added.
+fn lift_inline_methods(decls: &mut Vec<Decl>) {
+    let mut lifted = Vec::new();
+    for decl in decls.iter_mut() {
+        let (target_ty, methods) = match &mut decl.kind {
+            DeclKind::Enum(e) if !e.methods.is_empty() => {
+                (e.name.clone(), std::mem::take(&mut e.methods))
+            }
+            DeclKind::Struct(s) if !s.methods.is_empty() => {
+                (s.name.clone(), std::mem::take(&mut s.methods))
+            }
+            _ => continue,
+        };
+        lifted.push(Decl {
+            id: decl.id,
+            span: decl.span,
+            kind: DeclKind::Impl(rask_ast::decl::ImplDecl {
+                trait_names: Vec::new(),
+                target_ty,
+                methods,
+                is_unsafe: false,
+                is_scoped: false,
+                where_bounds: Vec::new(),
+                doc: None,
+            }),
+        });
+    }
+    decls.extend(lifted);
+}
+
 fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span) -> MethodStub {
     let self_param = f.params.iter().find(|p| p.name == "self");
     let takes_self = self_param.is_some();

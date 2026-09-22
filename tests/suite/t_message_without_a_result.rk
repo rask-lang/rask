@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// ER6's `message()` exists on an enum that no signature names as an error
+// (#1249).
+//
+// The derive used to run only for enums some `T or E` in the program mentioned.
+// So this file compiled or didn't depending on whether an unrelated function
+// existed elsewhere: adding a never-called `func f() -> i64 or ConfigError`
+// switched `message()` on, deleting it took it away. ER6 doesn't condition the
+// derive on anything — every enum has one — and constructing an error to log it,
+// test it, or collect a `Vec` of them never goes through a result.
+//
+// Making the derive unconditional turned up two more, both in the stdlib's own
+// enums:
+//
+//   * A derived method lands inside the `enum` block, and everything downstream
+//     reads stdlib methods out of `extend` blocks — so it reached codegen having
+//     never been type-checked. `compilable_decls` hands it over as an `extend`
+//     now.
+//   * The stdlib and the program are desugared in two calls that both start
+//     their NodeId counter at the same base, so they mint the same ids for
+//     different nodes. Checked together into one id-keyed table, the program
+//     won, and `SeekFrom.Start(_0)` read the type of whatever program node
+//     shared its id — `unresolved variable _0`, in a program that never
+//     mentions `SeekFrom`. The stdlib's desugaring has its own band now.
+
+import io.SeekFrom
+
+enum ConfigError {
+    Missing(string)
+    Malformed(string)
+}
+
+enum Plain {
+    First
+    SecondOne
+}
+
+test "an error enum no signature mentions still has a message" {
+    let a: ConfigError = ConfigError.Missing("port")
+    assert a.message() == "missing: port"
+}
+
+test "the variant name is humanized, payloads interpolated" {
+    assert Plain.First.message() == "first"
+    assert Plain.SecondOne.message() == "second one"
+    assert ConfigError.Malformed("8x").message() == "malformed: 8x"
+}
+
+test "a stdlib enum gets it too" {
+    assert SeekFrom.Start(3).message() == "start: 3"
+}
+
+test "a hand-written message still wins" {
+    assert Mood.Sour.message() == "not happy"
+}
+
+enum Mood {
+    Sour
+}
+
+extend Mood {
+    func message(self) -> string {
+        return "not happy"
+    }
+}
