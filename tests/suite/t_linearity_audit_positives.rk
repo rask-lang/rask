@@ -274,7 +274,7 @@ test "conc.async/CH1 — and one carrying something ordinary" {
 // once and leave nobody owing it.
 //
 // `own` is what makes it writable at all. A plain closure borrows its
-// captures, so consuming one inside the body is E0885 — which is the whole
+// captures, so consuming one inside the body is E0890 — which is the whole
 // point of that rejection: nothing bounds how many times a closure runs.
 //
 // The interpreter used to report a leak here for a program that ran

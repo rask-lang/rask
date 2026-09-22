@@ -3615,7 +3615,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     "cannot consume `{}` — the closure borrowed it",
                     name
                 ))
-                .with_code("E0885")
+                .with_code("E0890")
                 .with_primary(self.span, format!("this consumes `{}`", name))
                 .with_secondary(*closure_at, format!("this closure captured `{}` by borrow", name))
                 .with_help(format!(
