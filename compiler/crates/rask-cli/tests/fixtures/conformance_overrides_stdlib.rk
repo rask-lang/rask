@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// XC2: a program may declare a non-core trait for a type it doesn't own. The
+// stdlib hand-writes `Displayable` for both of these, so the program's block
+// lands on an existing declaration — legal, and the program's wins.
+//
+// E0407 (XC3) shipped reading the *current* pass's stdlib mode to decide
+// whether to report, which says nothing about where the first registration
+// came from. Every stdlib type with a hand-written conformance was then
+// un-overridable: `Method`/`Displayable`, `JsonValue`/`Displayable`,
+// `Stdin`/`Reader` and the rest, since the stdlib always registers first.
+
+import http.Method
+import json.JsonValue
+
+extend Method with Displayable {
+    public func to_string(self) -> string {
+        return "method"
+    }
+}
+
+extend JsonValue with Displayable {
+    public func to_string(self) -> string {
+        return "json"
+    }
+}
+
+func main() {
+    println("{Method.Get}")
+    return
+}

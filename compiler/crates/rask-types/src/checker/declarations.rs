@@ -3,6 +3,7 @@
 
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl, UnionDecl, TypeAliasDecl};
 use rask_resolve::SymbolKind;
+use super::type_table::TypeTable;
 use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, BinaryFieldSpec, BinaryStructInfo, Endian};
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
@@ -647,7 +648,26 @@ impl TypeChecker {
             .collect();
         for trait_name in &i.trait_names {
             self.types.record_conformance(type_id, trait_name);
-            self.types.record_conformance_span(type_id, trait_name, span);
+            // XC3: two blocks claiming the same pair. Reported here rather than
+            // where the conformance is used, because both are in this package —
+            // the cross-package half needs the use site and the declaring
+            // package's name, neither of which the checker has yet (#1299).
+            //
+            // Keyed on the applied trait (GT/AT), so two different applied
+            // forms are two conformances rather than one declared twice. They
+            // can still collide on a method name — that's MN3's E0889, and
+            // keying this way is what keeps it from being reported twice.
+            let first =
+                self.types
+                    .record_conformance_span(type_id, trait_name, decl_id, span);
+            if let Some(first) = first {
+                self.errors.push(TypeError::DuplicateConformance {
+                    ty: base_name.to_string(),
+                    trait_name: TypeTable::conformance_display(trait_name),
+                    first,
+                    span,
+                });
+            }
             if !condition.is_empty() {
                 self.types.record_conformance_condition(type_id, trait_name, condition.clone());
             }
@@ -836,6 +856,10 @@ impl TypeChecker {
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
         let is_binary = s.attrs.iter().any(|a| a == "binary");
+        // E16: the owner's refusal, recorded on the type. The field-level
+        // `@no_serialize` narrows the wire form; this says there isn't one.
+        let no_encode = s.attrs.iter().any(|a| a == "no_encode");
+        let no_decode = s.attrs.iter().any(|a| a == "no_decode");
 
         // For @binary structs, convert binary field specifiers to runtime types
         let (fields, binary_info) = if is_binary {
@@ -870,6 +894,8 @@ impl TypeChecker {
             // declarations are collected. @resource is the seed; transitive
             // linearity propagates from there.
             is_transitive_resource: is_resource,
+            no_encode,
+            no_decode,
         });
 
         if let Some(info) = binary_info {
@@ -1009,6 +1035,9 @@ impl TypeChecker {
             // ER42/L1: refined by `propagate_resource_linearity` once all
             // declarations are visible.
             is_transitive_resource: false,
+            // E16, as on a struct.
+            no_encode: e.attrs.iter().any(|a| a == "no_encode"),
+            no_decode: e.attrs.iter().any(|a| a == "no_decode"),
         });
         for (variant, field_names) in variant_names {
             self.types

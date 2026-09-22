@@ -11,6 +11,20 @@ use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
+/// MN3/XC3: an `extend T with Trait` block, as the conformance table remembers
+/// it. Auto-derive records no site at all, so having one means it was written.
+///
+/// `from_stdlib` is what XC3 turns on. It has to be the *first* registration's,
+/// not the pass currently running: a program overriding a stdlib type's
+/// `Displayable` was reported as a same-package duplicate when the guard read
+/// the current pass's mode instead.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ConformanceSite {
+    pub span: Span,
+    pub decl: NodeId,
+    pub from_stdlib: bool,
+}
+
 /// Central registry of all types in the program.
 #[derive(Debug, Default)]
 pub struct TypeTable {
@@ -85,9 +99,9 @@ pub struct TypeTable {
     pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
     /// AT2/AT8: `(type, applied trait) → associated type → what it answers with`.
     pub(super) assoc_bindings: HashMap<(TypeId, String), HashMap<String, Type>>,
-    /// MN3: where each conformance was written, so a collision between two of
-    /// them is reported once, on the later one.
-    pub(super) conformance_spans: HashMap<(TypeId, String), Span>,
+    /// MN3/XC3: where each conformance was written, so a collision between two
+    /// of them is reported once, on the later one.
+    pub(super) conformance_spans: HashMap<(TypeId, String), ConformanceSite>,
     /// CC1/CC2: conditional-conformance conditions. (TypeId, trait base) → the
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
@@ -168,6 +182,8 @@ impl TypeTable {
             ],
             methods: vec![],
             is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
         });
         self.option_type_id = Some(option_id);
 
@@ -180,6 +196,8 @@ impl TypeTable {
             ],
             methods: vec![],
             is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
         });
         self.result_type_id = Some(result_id);
 
@@ -196,6 +214,8 @@ impl TypeTable {
                 .collect(),
             methods: vec![],
             is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
         });
     }
 
@@ -430,6 +450,11 @@ impl TypeTable {
         format!("{}<{}>", base, args.join(", "))
     }
 
+    /// The trait base name as an error should print it.
+    pub(super) fn conformance_display(trait_name: &str) -> String {
+        Self::conformance_key(trait_name)
+    }
+
     /// G1: record that a type conforms to a trait (declared or auto-derived).
     pub fn record_conformance(&mut self, type_id: TypeId, trait_name: &str) {
         let self_name = self.type_name(type_id);
@@ -486,11 +511,42 @@ impl TypeTable {
     }
 
     /// MN3: remember where a conformance was declared.
-    pub fn record_conformance_span(&mut self, type_id: TypeId, trait_name: &str, span: Span) {
+    ///
+    /// XC3: returns the earlier block's span when this pair already has one and
+    /// both blocks are the program's own — the same-package clash, reported at
+    /// the second declaration. A program block landing on a stdlib one is an
+    /// override across a package boundary, legal for every non-core trait by
+    /// XC2, and it *takes the slot* so a second program block is blamed on the
+    /// program's first rather than on the stdlib's.
+    ///
+    /// Re-registering the same block is never a duplicate: the stdlib's
+    /// declarations are collected once as stubs and again as bodies.
+    pub fn record_conformance_span(
+        &mut self,
+        type_id: TypeId,
+        trait_name: &str,
+        decl: NodeId,
+        span: Span,
+    ) -> Option<Span> {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
         let key = self.applied_conformance_key(trait_name, &self_base);
-        self.conformance_spans.entry((type_id, key)).or_insert(span);
+        let from_stdlib = self.stdlib_mode;
+        let mine = ConformanceSite { span, decl, from_stdlib };
+        match self.conformance_spans.get(&(type_id, key.clone())) {
+            Some(first) if first.decl == decl => None,
+            Some(first) if !first.from_stdlib && !from_stdlib => Some(first.span),
+            Some(first) => {
+                if first.from_stdlib && !from_stdlib {
+                    self.conformance_spans.insert((type_id, key), mine);
+                }
+                None
+            }
+            None => {
+                self.conformance_spans.insert((type_id, key), mine);
+                None
+            }
+        }
     }
 
     /// MN3: where a conformance was declared, if it was written in source.
@@ -498,7 +554,7 @@ impl TypeTable {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name);
         let key = self.applied_conformance_key(trait_name, self_base);
-        self.conformance_spans.get(&(type_id, key)).copied()
+        self.conformance_spans.get(&(type_id, key)).map(|s| s.span)
     }
 
     /// AT6: the associated type `assoc` on this type, when exactly one of its

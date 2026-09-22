@@ -3956,7 +3956,40 @@ impl<'a> MirLowerer<'a> {
                         func: FunctionRef::internal(init_fn.to_string()),
                         args: vec![worker_count],
                     }));
+
+                    // The teardown is a scope exit, not a trailing statement. It
+                    // used to be pushed after the body and nothing else, so a
+                    // `return` inside the block walked straight past it: the
+                    // scheduler was never shut down, its workers were never
+                    // joined, and a task still releasing its closure raced the
+                    // process to the exit-time leak check (#1320, ~1 run in 5).
+                    // Registered the way `ensure` is, so every path out of the
+                    // body runs it — `return`, `try`'s error path, the tail.
+                    let cleanup_block = self.builder.create_block();
+                    let continue_block = self.builder.create_block();
+                    self.builder
+                        .push_stmt(MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block }));
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                        target: continue_block,
+                    }));
+                    self.builder.switch_to_block(cleanup_block);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(shutdown_fn.to_string()),
+                        args: vec![],
+                    }));
+                    self.builder
+                        .terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                    self.ensure_stack.push(cleanup_block);
+                    self.builder.switch_to_block(continue_block);
+
                     let result = self.lower_block(body);
+
+                    // Leaving the block normally: stop the cleanup chain covering
+                    // it, then call the teardown here. A return inside the body
+                    // has already gone through the cleanup block instead.
+                    self.ensure_stack.pop();
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
                         func: FunctionRef::internal(shutdown_fn.to_string()),

@@ -4113,6 +4113,7 @@ impl TypeChecker {
             // substitute them directly instead of using unconstrained fresh vars
             let ret = sig.ret.clone();
             let bounds = sig.type_param_bounds.clone();
+            let param_type_params = sig.param_type_params.clone();
             if let Some(ta) = type_args {
                 if ta.len() == 1 {
                     let explicit_ty = self.resolve_type_name(&ta[0], span);
@@ -4124,6 +4125,24 @@ impl TypeChecker {
                         self.check_type_arg_bound(&explicit_ty, bound, span);
                     }
                     return self.freshen_module_return_type_with(&ret, &explicit_ty);
+                }
+            }
+
+            // No written type argument, so the argument's own type is what
+            // supplies the parameter — check the bound against it there.
+            //
+            // Without this the spelling decided whether the rule applied:
+            // `json.encode<Session>(s)` reported an unencodable field and
+            // `json.encode(s)` compiled clean, then produced whatever the
+            // encoder made of a function pointer.
+            for (param_name, bound) in &bounds {
+                for (idx, holder) in param_type_params.iter().enumerate() {
+                    if holder.as_deref() != Some(param_name.as_str()) {
+                        continue;
+                    }
+                    if let Some(arg_ty) = arg_types.get(idx).cloned() {
+                        self.check_type_arg_bound(&arg_ty, bound, span);
+                    }
                 }
             }
 

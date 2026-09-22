@@ -889,6 +889,19 @@ fn compile_trait_object_dispatch() {
     assert_eq!(stdout, "square=16\ncircle=75\n");
 }
 
+// XC2/XC3: a program overriding a non-core trait the stdlib hand-wrote for one
+// of its own types. E0407 first shipped guarding on the *current* pass's stdlib
+// mode, which says nothing about where the already-kept registration came from
+// — so every stdlib type with a hand-written conformance became un-overridable.
+// Runs rather than just checks: the point is that the program's block is the
+// one that supplies the method, so the output has to be the program's spelling.
+#[test]
+fn a_program_may_override_a_stdlib_conformance() {
+    let (stdout, code) = compile_and_run("conformance_overrides_stdlib.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "method\n");
+}
+
 // ─── Compile-error tests (should fail to compile) ────────────
 
 fn compile_error(name: &str) -> bool {

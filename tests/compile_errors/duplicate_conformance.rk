@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: two `extend T with Trait` blocks claiming the same pair
+//
+// XC3. Conformances used to be filed in a set, so the second declaration
+// landed on the first and vanished — and since the *methods* were registered
+// per block, the last block read supplied them. Reordering two files changed
+// which `label()` the program ran, with nothing reported.
+//
+// `scoped` doesn't change the answer. It keeps the methods out of the type's
+// inherent namespace (MN4), which is about how you call them; the conformance
+// is still declared and there is still only room for one.
+//
+// Two blocks naming *different* traits is the ordinary case and stays legal,
+// as does one block naming several (CD1) — both are below the marker's span on
+// purpose, so a diagnostic that over-fires shows up as a failure here.
+
+import http.Method
+
+trait Labeled {
+    func label(self) -> string
+}
+
+trait Shouty {
+    func shout(self) -> string
+}
+
+struct Doc {
+    n: i64
+}
+
+extend Doc with Labeled {
+    func label(self) -> string {
+        return "doc {self.n}"
+    }
+}
+
+// ERROR: `Doc` already declares conformance to `Labeled` (E0407)
+extend Doc with Labeled {
+    func label(self) -> string {
+        return "second"
+    }
+}
+
+struct Memo {
+    n: i64
+}
+
+extend Memo with Labeled {
+    func label(self) -> string {
+        return "memo {self.n}"
+    }
+}
+
+// ERROR: a `scoped` block is still a declaration (E0407)
+scoped extend Memo with Labeled {
+    func label(self) -> string {
+        return "scoped"
+    }
+}
+
+// A program block landing on a *stdlib* one is an override, not a clash (XC2),
+// and the program's takes the slot — so a second program block is reported
+// against the program's first, never against the stdlib's.
+extend Method with Displayable {
+    func to_string(self) -> string {
+        return "first"
+    }
+}
+
+// ERROR: the program's own first block is the one this collides with (E0407)
+extend Method with Displayable {
+    func to_string(self) -> string {
+        return "second"
+    }
+}
+
+// Two *different* applied forms of one generic trait are two conformances, not
+// one declared twice — so this is MN3's E0889 about the two `scale`s, and XC3
+// stays quiet. Reported once, not twice.
+struct Meters {
+    v: f64
+}
+
+trait Scale<Rhs = Self> {
+    func scale(self, rhs: Rhs) -> Self
+}
+
+extend Meters with Scale<f64> {
+    func scale(self, k: f64) -> Meters {
+        return Meters { v: self.v * k }
+    }
+}
+
+// ERROR: both `scale`s want the type's one method name (E0889, MN3)
+extend Meters with Scale<Meters> {
+    func scale(self, o: Meters) -> Meters {
+        return Meters { v: self.v * o.v }
+    }
+}
+
+// Legal from here down: one type, two different traits.
+struct Note {
+    n: i64
+}
+
+extend Note with Labeled {
+    func label(self) -> string {
+        return "note {self.n}"
+    }
+}
+
+extend Note with Shouty {
+    func shout(self) -> string {
+        return "NOTE"
+    }
+}
+
+// Legal: one block, both traits (CD1).
+struct Tag {
+    n: i64
+}
+
+extend Tag with Labeled, Shouty {
+    func label(self) -> string {
+        return "tag {self.n}"
+    }
+
+    func shout(self) -> string {
+        return "TAG"
+    }
+}
+
+func main() {
+    println(Note { n: 1 }.label())
+    println(Tag { n: 2 }.shout())
+    return
+}

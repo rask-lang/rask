@@ -503,6 +503,45 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(format!("change this to type `{}`", expected))
             }
 
+            SerializationOptedOut { ty, trait_name, attr, span } => {
+                let verb = if trait_name == "Encode" { "serialized" } else { "decoded" };
+                Diagnostic::error(format!("`{}` is marked `@{}`", ty, attr))
+                    .with_code("E0408")
+                    .with_primary(*span, format!("`{}` can't be {} here", ty, verb))
+                    .with_why(format!(
+                        "`@{}` is how `{}` says its data doesn't belong in a wire \
+                         format. Its fields would serialize fine — that's usually \
+                         the reason the annotation is there [std.encoding/E16].",
+                        attr, ty
+                    ))
+                    .with_fix(format!(
+                        "declare a type holding the fields you did mean to send, and \
+                         encode that one. Or drop `@{}` from `{}` if it no longer applies.",
+                        attr, ty
+                    ))
+            }
+
+            DuplicateConformance { ty, trait_name, first, span } => {
+                Diagnostic::error(format!(
+                    "`{}` already declares conformance to `{}`",
+                    ty, trait_name
+                ))
+                .with_code("E0407")
+                .with_primary(*span, "second declaration of the same conformance")
+                .with_secondary(*first, "the first one is here")
+                .with_why(format!(
+                    "Which `{}` methods `{}` gets would come down to which block \
+                     the compiler read last (type.generics/XC3).",
+                    trait_name, ty
+                ))
+                .with_fix(format!(
+                    "keep one block, or give the second behaviour its own type:\n\
+                     type My{} = {}\n\
+                     extend My{} with {} {{ … }}",
+                    ty, ty, ty, trait_name
+                ))
+            }
+
             Undefined(name) => Diagnostic::error(format!("undefined type: `{}`", name))
                 .with_code("E0309")
                 .with_primary(Span::new(0, 0), "type not found")

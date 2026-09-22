@@ -32,6 +32,16 @@ impl BuiltinModules {
                     params: m.params.iter().map(|(_, ty)| parse_stub_type(ty)).collect(),
                     ret: parse_stub_type(&m.ret_ty),
                     type_param_bounds: m.type_param_bounds.clone(),
+                    // The declared type string is still intact here, before
+                    // parse_stub_type erases a type parameter into `_Any`.
+                    param_type_params: m.params.iter()
+                        .map(|(_, ty)| {
+                            let t = ty.trim();
+                            m.type_param_bounds.iter()
+                                .find(|(n, _)| n == t)
+                                .map(|(n, _)| n.clone())
+                        })
+                        .collect(),
                 }
             }).collect();
             modules.insert(module_name.to_string(), sigs);
