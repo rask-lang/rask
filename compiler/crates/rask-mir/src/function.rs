@@ -2,7 +2,7 @@
 
 //! MIR function representation - control-flow graph of basic blocks.
 
-use crate::{ContainerKind, MirStmt, MirTerminator, MirType, Span};
+use crate::{ContainerKind, MirStmt, MirTerminator, MirType};
 
 /// MIR function
 #[derive(Debug, Clone)]

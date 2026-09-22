@@ -134,6 +134,10 @@ pub struct Monomorphizer<'a> {
     pub instantiated_node_types: HashMap<NodeId, rask_types::Type>,
     /// Dispatch targets for the copies, same idea as `instantiated_node_types`.
     pub instantiated_call_targets: HashMap<NodeId, rask_types::Callee>,
+    /// OR1: the same, for the operator calls a conformance answered. An
+    /// instantiated body's nodes are new, and the receiver the checker recorded
+    /// was still the type parameter.
+    pub instantiated_operator_targets: HashMap<NodeId, rask_types::OperatorTarget>,
     /// ER31a error wraps for the copies, same idea. The wrapping variant names a
     /// concrete enum, so it carries over unchanged.
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
@@ -567,6 +571,21 @@ impl<'a> Monomorphizer<'a> {
                 }
                 DeclKind::Impl(i) => {
                     for method in &i.methods {
+                        // OR4: `Mul<f64>` and `Mul<Meters>` on one type both
+                        // call their method `mul`, and one `Meters_mul` symbol
+                        // between them would mean the second body overwrote the
+                        // first. The applied argument goes into the name, the
+                        // same rule the checker files them under.
+                        let filed;
+                        let method = match rask_ast::operators::conformance_method_name(
+                            &i.target_ty, &i.trait_names, &method.name,
+                        ) {
+                            Some(name) => {
+                                filed = FnDecl { name, ..method.clone() };
+                                &filed
+                            }
+                            None => method,
+                        };
                         register_method(
                             &i.target_ty, method, decl,
                             &mut method_table, &mut method_by_bare_name,
@@ -621,6 +640,7 @@ impl<'a> Monomorphizer<'a> {
             in_test_body: false,
             instantiated_node_types: HashMap::new(),
             instantiated_call_targets: HashMap::new(),
+            instantiated_operator_targets: HashMap::new(),
             instantiated_error_wraps: HashMap::new(),
             instantiated_fallback_keeps_shape: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
@@ -716,6 +736,33 @@ impl<'a> Monomorphizer<'a> {
                     self.instantiated_call_targets.insert(new_id, c);
                 }
             }
+            if let Some(target) = typed.operator_targets.get(&old_id) {
+                if let Some(recv) = Self::concretize(&target.recv, type_args, &bindings) {
+                    // A bare `T: Mul` bound files the method under the
+                    // parameter's own name (`mul$T`); it means this
+                    // instantiation's type.
+                    let method = rask_ast::operators::method_rhs(&target.method)
+                        .and_then(|rhs| bindings.get(rhs).copied())
+                        .and_then(|bound| Self::type_spelling(bound))
+                        .map(|name| {
+                            format!(
+                                "{}${}",
+                                rask_ast::operators::method_display(&target.method),
+                                name
+                            )
+                        })
+                        .unwrap_or_else(|| target.method.clone());
+                    self.instantiated_operator_targets.insert(
+                        new_id,
+                        rask_types::OperatorTarget {
+                            recv,
+                            method,
+                            applied: target.applied.clone(),
+                            builtin: target.builtin,
+                        },
+                    );
+                }
+            }
             // ER31a: the wrapping variant names a concrete enum, so it carries
             // over as-is — no substitution to do.
             if let Some(wrap) = typed.error_wraps.get(&old_id) {
@@ -747,6 +794,16 @@ impl<'a> Monomorphizer<'a> {
     ///
     /// Single-letter uppercase names are type parameters (type.gradual/PC3), so
     /// they're the marker for "this came from the generic and wasn't resolved".
+    /// The name a concrete type is spelled by, for a conformance method's
+    /// filed name. `None` for anything a conformance header can't name.
+    fn type_spelling(ty: &Type) -> Option<String> {
+        rask_types::primitive_spelling(ty).map(str::to_string).or_else(|| match ty {
+            Type::UnresolvedNamed(name) => Some(name.clone()),
+            Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+    }
+
     fn concretize(
         ty: &Type,
         type_args: &[Type],
@@ -1664,8 +1721,20 @@ impl<'a> Monomorphizer<'a> {
                         .get(&expr.id)
                         .or_else(|| typed.call_targets.get(&expr.id))?;
                     match callee {
-                        Callee::Method { method, package, .. } => callee
+                        // An instantiated copy's receiver comes through as the
+                        // name it was substituted with rather than as an interned
+                        // id, so resolve that too — otherwise the call falls back
+                        // to widening by bare name, and a conformance method
+                        // filed as `mul$f64` has no bare name to be found under.
+                        Callee::Method { method, recv, package } => callee
                             .recv_type_id()
+                            .or_else(|| match recv {
+                                Type::UnresolvedNamed(name)
+                                | Type::UnresolvedGeneric { name, .. } => {
+                                    typed.types.get_type_id(name)
+                                }
+                                _ => None,
+                            })
                             .map(|id| {
                                 (id, typed.types.type_name(id), method.clone(), package.clone())
                             }),

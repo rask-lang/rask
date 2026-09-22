@@ -750,6 +750,16 @@ impl TypeChecker {
             }
         }
 
+        // OR1: the ordered pair gets first refusal. A conformance registered
+        // for `(receiver, argument)` decides what runs and what the result type
+        // is; anything else falls through to the primitive and stdlib paths
+        // below, which is where `i64 + i64` is answered.
+        if let Some(resolved) =
+            self.resolve_operator_pair(&ty, &method, &args, &ret, span, call_node)
+        {
+            return resolved;
+        }
+
         match &ty {
             // Source error already reported — suppress cascading method errors
             Type::Error => Ok(false),
@@ -821,6 +831,32 @@ impl TypeChecker {
                         if let Some(inner) = self.ctx.apply(arg).as_option().cloned() {
                             self.unify(&ty, &inner, span)?;
                             return self.unify(&ret, &Type::Bool, span);
+                        }
+                    }
+                }
+                // OR1: `3 * duration` — an unsuffixed literal on the left of
+                // an operator whose right operand isn't a number. Nothing else
+                // ties the literal to anything, so it would default to `i32`
+                // and miss the `i64` conformance the pair was written for.
+                if self.ctx.literal_vars.contains_key(id) {
+                    match self.literal_receiver_pair(&ty, &method, &args) {
+                        Ok(Some(settled)) => {
+                            self.unify(&ty, &settled, span)?;
+                            return self.resolve_method(
+                                settled, method, args, ret, span, call_node,
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(candidates) => {
+                            let right = self.render_type(
+                                &self.resolve_named(&self.ctx.apply(&args[0])),
+                            );
+                            return Err(TypeError::AmbiguousLiteralOperand {
+                                right,
+                                op: Self::operator_spelling(&method).to_string(),
+                                candidates,
+                                span,
+                            });
                         }
                     }
                 }
@@ -1535,7 +1571,9 @@ impl TypeChecker {
             Type::UnresolvedNamed(ref name)
                 if self.current_type_param_bounds.contains_key(name) =>
             {
-                self.resolve_bounded_type_param_method(name.clone(), method, args, ret, span)
+                self.resolve_bounded_type_param_method(
+                    name.clone(), method, args, ret, span, call_node,
+                )
             }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
@@ -1561,6 +1599,7 @@ impl TypeChecker {
         args: Vec<Type>,
         ret: Type,
         span: Span,
+        call_node: Option<NodeId>,
     ) -> Result<bool, TypeError> {
         let bounds = self
             .current_type_param_bounds
@@ -1580,6 +1619,54 @@ impl TypeChecker {
                     .find(|m| m.name == method)
             })
         };
+
+        // OR1/OR4: an operator reached through a bound resolves to the pair the
+        // *bound* names — `T: Mul<f64>` is `Mul<f64>`, whichever type `T` turns
+        // out to be. The conformance's method is filed under that argument, so
+        // record it here; monomorphization substitutes the receiver on the way
+        // into each instantiation and the symbol comes out right.
+        if let Some(node) = call_node {
+            if let Some(applied) = bounds
+                .iter()
+                .find(|b| {
+                    let base = b.split('<').next().unwrap_or(b).trim();
+                    rask_ast::operators::operator_trait_method(base) == Some(method.as_str())
+                })
+                .cloned()
+            {
+                if let Some(filed) = rask_ast::operators::conformance_method_name(
+                    &param,
+                    std::slice::from_ref(&applied),
+                    &method,
+                ) {
+                    // CALL6: dispatch keys on this, and mono carries it into
+                    // each instantiation with `T` replaced — which is what
+                    // makes `Meters_mul$f64` reachable from a generic body.
+                    self.call_targets.insert(
+                        node,
+                        Callee::Method {
+                            recv: receiver.clone(),
+                            method: filed.clone(),
+                            package: self.conformance_package_for_call(&receiver, "", span),
+                        },
+                    );
+                    self.operator_targets.insert(
+                        node,
+                        super::operators::OperatorTarget {
+                            recv: receiver.clone(),
+                            method: filed,
+                            applied,
+                            // A bound names the trait, not the conformance, so
+                            // whether the instantiation's is `@builtin` isn't
+                            // known here. No stdlib `@builtin` pair is reachable
+                            // through a bound today; if one becomes so, the
+                            // backends' "is there a body" fallback catches it.
+                            builtin: false,
+                        },
+                    );
+                }
+            }
+        }
 
         let Some(sig) = sig else {
             // Bounded, but no bound provides this method.
@@ -2254,53 +2341,6 @@ impl TypeChecker {
                 self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
             }
 
-            // Instant arithmetic: instant + duration -> Instant
-            ("Instant", "add") if args.len() == 1 => {
-                let duration_ty = Type::UnresolvedNamed("Duration".to_string());
-                self.unify(&args[0], &duration_ty, span)?;
-                self.unify(ret, &Type::UnresolvedNamed("Instant".to_string()), span)
-            }
-            // Instant subtraction: overloaded on argument type
-            //   instant - instant -> Duration
-            //   instant - duration -> Instant
-            ("Instant", "sub") if args.len() == 1 => {
-                let arg = self.ctx.apply(&args[0]);
-                // The RHS can show up three ways depending on where it came
-                // from: `UnresolvedNamed("Instant")` fresh off a call chain,
-                // `UnresolvedNamed("time.Instant")` off a module-qualified
-                // parameter annotation, or `Named(id)` once an ordinary
-                // variable gets fully resolved. Only the first matched below,
-                // so `end - start` reported "expected Instant, found Instant"
-                // (or "found time.Instant") for the other two. `resolve_named`
-                // strips the module qualifier to a real type; `nameable` turns
-                // that back into the plain name string this match wants.
-                let arg = self.nameable(&self.resolve_named(&arg));
-                match &arg {
-                    Type::UnresolvedNamed(n) if n == "Instant" => {
-                        self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
-                    }
-                    Type::UnresolvedNamed(n) if n == "Duration" => {
-                        self.unify(ret, &Type::UnresolvedNamed("Instant".to_string()), span)
-                    }
-                    Type::Var(_) => {
-                        // Argument type not yet resolved — defer
-                        self.ctx.add_constraint(TypeConstraint::HasMethod {
-                            ty: Type::UnresolvedNamed(type_name.to_string()),
-                            method: method.to_string(),
-                            args: args.to_vec(),
-                            ret: ret.clone(),
-                            span,
-                            call_node: None,
-                        });
-                        Ok(false)
-                    }
-                    _ => Err(TypeError::Mismatch {
-                        expected: Type::UnresolvedNamed("Instant".to_string()),
-                        found: arg.clone(),
-                        span,
-                    }),
-                }
-            }
             // Instant comparisons
             ("Instant", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {
                 let instant_ty = Type::UnresolvedNamed("Instant".to_string());
@@ -2308,12 +2348,6 @@ impl TypeChecker {
                 self.unify(ret, &Type::Bool, span)
             }
 
-            // Duration arithmetic: duration +/- duration -> Duration
-            ("Duration", "add" | "sub") if args.len() == 1 => {
-                let duration_ty = Type::UnresolvedNamed("Duration".to_string());
-                self.unify(&args[0], &duration_ty, span)?;
-                self.unify(ret, &duration_ty, span)
-            }
             // Duration comparisons
             ("Duration", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {
                 let duration_ty = Type::UnresolvedNamed("Duration".to_string());

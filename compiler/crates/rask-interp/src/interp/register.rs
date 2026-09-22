@@ -176,9 +176,22 @@ impl Interpreter {
                     let suffix = self.conformance_disambiguation.get(&decl.id).cloned();
                     let type_methods = self.methods.entry(base_name).or_default();
                     for method in &impl_decl.methods {
+                        // OR4: `Mul<f64>` and `Mul<Meters>` on one type both
+                        // call their method `mul`, so file each under the
+                        // applied argument — one entry between them would keep
+                        // whichever block was registered last.
+                        let name = rask_ast::operators::conformance_method_name(
+                            &impl_decl.target_ty,
+                            &impl_decl.trait_names,
+                            &method.name,
+                        )
+                        .unwrap_or_else(|| method.name.clone());
+                        // XC5 on top of that: two packages can put the same
+                        // method on one type, and the applied argument doesn't
+                        // tell those apart either.
                         let key = match &suffix {
-                            Some(pkg) => rask_types::conformance_symbol(&method.name, pkg),
-                            None => method.name.clone(),
+                            Some(pkg) => rask_types::conformance_symbol(&name, pkg),
+                            None => name,
                         };
                         type_methods.insert(key, method.clone());
                     }

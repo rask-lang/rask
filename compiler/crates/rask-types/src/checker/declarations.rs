@@ -466,21 +466,31 @@ impl TypeChecker {
 
     /// MN1/MN3: two conformances of one generic trait to one type each ask for
     /// a method of the same name. When the signatures differ there is no one
-    /// `m.mul(x)` to resolve to — MIR picks the first by name and runs its body
-    /// on the other's argument, which segfaults rather than failing to compile.
+    /// `m.render(x)` to resolve to — MIR picks the first by name and runs its
+    /// body on the other's argument, which segfaults rather than failing to
+    /// compile.
     ///
-    /// Resolving the call from the argument's type is operator resolution's
-    /// job (`type.operator-resolution/OR1`), not a method lookup's. Until that
-    /// exists this pair is rejected where it is written.
+    /// The operator traits are the exception, and the reason this rule always
+    /// named them: `type.operator-resolution/OR1` resolves `Mul<f64>` against
+    /// `Mul<Meters>` from the argument's type, and each conformance's `mul` is
+    /// filed under the applied argument so the two bodies keep separate
+    /// symbols. Every other generic trait still has only the name to go on.
+    /// OR6: the table entry an `extend` block's methods and conformances go
+    /// under. A struct or enum answers with its own id, a primitive with its
+    /// stand-in — `extend f64 with Mul<Meters>` has to land somewhere.
+    pub(super) fn impl_target_id(&self, target_ty: &str) -> Option<crate::types::TypeId> {
+        let base = target_ty.split('<').next().unwrap_or(target_ty).trim();
+        self.types
+            .get_type_id(base)
+            .or_else(|| self.types.primitive_id(base))
+    }
+
     fn check_overlapping_conformances(&mut self, i: &ImplDecl, span: rask_ast::Span) {
         // `scoped extend` is MN4's answer to exactly this and would be the
         // escape hatch, but nothing outside the parser reads the flag yet — a
         // scoped block's methods still land in the inherent namespace and
         // segfault the same way. Don't offer a door that isn't there.
-        let Some(type_id) = self
-            .types
-            .get_type_id(i.target_ty.split('<').next().unwrap_or(&i.target_ty))
-        else {
+        let Some(type_id) = self.impl_target_id(&i.target_ty) else {
             return;
         };
         let self_ty = match self.resolve_impl_self_type(&i.target_ty) {
@@ -489,6 +499,9 @@ impl TypeChecker {
         };
         for trait_ref in &i.trait_names {
             let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim().to_string();
+            if rask_ast::operators::operator_trait_method(&base).is_some() {
+                continue;
+            }
             let siblings: Vec<String> = self
                 .types
                 .applied_conformances(type_id, &base)
@@ -866,7 +879,27 @@ impl TypeChecker {
 
     pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId, span: rask_ast::Span) {
         let base_name = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
-        let type_id = match self.types.get_type_id(base_name) {
+        // OR6: a primitive's own methods are the compiler's. An `extend f64 {
+        // … }` block used to register nowhere at all and the method simply
+        // didn't exist — `(2.0).doubled()` came back "no method `doubled` on
+        // `f64`", pointing at the call rather than at the block that never
+        // took. The stdlib writes `extend char { … }` and `extend string { … }`
+        // for real, so those keep working; a conformance on any primitive is
+        // how a program adds to one.
+        if !self.types.stdlib_mode
+            && i.trait_names.is_empty()
+            && rask_ast::primitives::is_scalar(base_name)
+        {
+            for m in &i.methods {
+                self.errors.push(TypeError::InherentMethodOnPrimitive {
+                    ty: base_name.to_string(),
+                    method: m.name.clone(),
+                    span: m.span,
+                });
+            }
+            return;
+        }
+        let type_id = match self.impl_target_id(&i.target_ty) {
             Some(id) => id,
             None => {
                 // XC1 still applies to a primitive. `string` and the integer
@@ -1015,11 +1048,34 @@ impl TypeChecker {
         } else {
             decl_params.clone()
         };
+        // OR4: a type may carry `Mul<f64>` and `Mul<Meters>` at once, and both
+        // blocks call their method `mul`. The applied argument goes into the
+        // name it's filed under so the two don't overwrite each other here —
+        // and so they don't emit one symbol between them downstream.
         let new_methods: Vec<_> = i
             .methods
             .iter()
-            .map(|m| self.method_signature(m, &decl_params, &owner_patterns))
+            .map(|m| {
+                let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
+                if let Some(filed) = rask_ast::operators::conformance_method_name(
+                    &i.target_ty,
+                    &i.trait_names,
+                    &m.name,
+                ) {
+                    sig.name = filed;
+                }
+                sig
+            })
             .collect();
+        // OR12: `@builtin` says the pair's types are written here and the
+        // arithmetic is the compiler's — `instant - instant` is a machine
+        // subtraction on two nanosecond counts. The backends have to know
+        // there's no body before they look for one.
+        for (m, sig) in i.methods.iter().zip(new_methods.iter()) {
+            if m.attrs.iter().any(|a| a == "builtin") {
+                self.types.record_builtin_method(type_id, &sig.name);
+            }
+        }
         // M7: one name per member. A field and a method that share one make
         // `h.run` and `h.run(5)` reach different things, which is the reader
         // problem M6 exists to avoid — so the declaration is the error, and
@@ -1061,7 +1117,8 @@ impl TypeChecker {
             match def {
                 TypeDef::Struct { methods, .. }
                 | TypeDef::Enum { methods, .. }
-                | TypeDef::NominalAlias { methods, .. } => {
+                | TypeDef::NominalAlias { methods, .. }
+                | TypeDef::Primitive { methods, .. } => {
                     methods.extend(new_methods);
                 }
                 _ => {}

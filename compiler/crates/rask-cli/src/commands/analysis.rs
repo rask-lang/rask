@@ -93,6 +93,9 @@ fn typecheck_single(path: &str, format: Format, multi: bool, verbose: bool) {
                         println!("  type {} = {:?} with ({})", name, underlying, with_traits.join(", "));
                     }
                 }
+                // A primitive's entry exists to carry conformances (OR6); it
+                // declares nothing this listing hasn't already said.
+                rask_types::TypeDef::Primitive { .. } => {}
             }
         }
 

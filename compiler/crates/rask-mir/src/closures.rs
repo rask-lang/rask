@@ -883,7 +883,7 @@ fn insert_closure_drops(
     let mut drops_to_insert: Vec<(usize, Vec<LocalId>)> = Vec::new();
 
     for (block_idx, block) in func.blocks.iter().enumerate() {
-        let mut back_edge_drops = |target: &crate::BlockId, out: &mut Vec<(usize, Vec<LocalId>)>| {
+        let back_edge_drops = |target: &crate::BlockId, out: &mut Vec<(usize, Vec<LocalId>)>| {
             if !dom.dominates(*target, block.id) {
                 return;
             }

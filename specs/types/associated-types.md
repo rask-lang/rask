@@ -45,7 +45,7 @@ That is the whole reason this was affordable enough to promote. `rejected-featur
 | **AT9: Not through `any`** | A method whose signature mentions an associated type has no vtable slot, and calling it through `any Trait` is a compile error at the call site (`type.traits/TR4`). Creating the `any` value is still fine |
 | **AT10: Conditional conformance** | The binding may name the block's type parameters (`extend Ring<T> with Wrap { type Out = Ring<T> }`), resolved per instantiation like every other part of a conditional conformance (CC1) |
 
-### Two of them on one type is not writable yet
+### Two of them on one type
 
 AT8 keys the binding on the applied trait, so the two `Out`s in
 
@@ -55,9 +55,11 @@ extend Meters with Mul<f64>    { type Out = Meters }
 extend Meters with Mul<Meters> { type Out = SquareMeters }
 ```
 
-never get confused for each other. What has no answer is `m.mul(x)`: `MN1` gives a type one `mul`, and both conformances want it. So the second block is rejected where it's written, naming the first.
+never get confused for each other. `m.mul(x)` used to have no answer, though: `MN1` gives a type one `mul` and both conformances want it, so the second block was rejected where it was written.
 
-That is the right place for the refusal and the wrong place to leave it. Choosing between the two from the argument's type is `type.operator-resolution/OR1` — resolution on the ordered pair rather than a method lookup on the left operand — and `MN4`'s `scoped extend` is the general answer for a conformance whose methods stay out of the namespace. Both are ahead of this, and neither changes anything here: the binding is already keyed the way they need it.
+`type.operator-resolution/OR1` is what settled it — the argument's type picks the conformance, and each one's `mul` is filed under the argument it takes, so the two bodies keep separate symbols. It holds for the operator traits, where the argument is something to go on. For every other generic trait `MN1` still applies, and `MN4`'s `scoped extend` is the general answer for a conformance whose methods stay out of the namespace.
+
+One thing the pair doesn't reach is the projection: `T.Out` in a generic signature doesn't record which bound it came through, so on a type carrying two `Mul`s there are two `Out`s and no way to say which ([#1330](https://github.com/rask-lang/rask/issues/1330)).
 
 ## Using one from generic code
 
@@ -84,7 +86,7 @@ func chain<A: Mul<f64>, B: Mul<f64>>(a: A, b: B) -> ... where A.Out == B.Out
 
 ## What this unblocks
 
-**Operator resolution.** `type.operator-resolution` was blocked outright on this; `trait Mul<Rhs> { type Out ... }` is its first line. Two of its own rules stop being operator-specific and become the general feature:
+**Operator resolution.** `type.operator-resolution` was blocked outright on this; `trait Mul<Rhs> { type Out ... }` is its first line, and it landed on top of this. Two of its own rules stopped being operator-specific and became the general feature:
 
 - OR3's "`Out` defaults to `Self`" is AT4 — a declared default in the trait, not an operator convenience.
 - OR3's "`Rhs` defaults to `Self`" is `type.generics/GT4`, the same rule for trait type parameters.
@@ -125,6 +127,6 @@ Rask has one member-access operator and `Token.Plus` already reads a type's memb
 
 - `type.generics` — GT1–GT4, trait type parameters; G1, declared conformance; CC1, conditional conformance
 - `type.traits` — TR4, the `any` restriction AT9 confirms
-- `type.operator-resolution` — the feature this unblocks
+- `type.operator-resolution` — the feature this unblocked
 - [#1165](https://github.com/rask-lang/rask/issues/1165) — the promotion decision
 - [#1164](https://github.com/rask-lang/rask/issues/1164) — trait type parameters, the prerequisite

@@ -90,7 +90,11 @@ trait Base {
 }
 
 // A default declared one level up is part of what the sub-trait promises.
-trait Sub: Base {
+//
+// Not called `Tagged`: that's the subtraction operator's trait now, and a program
+// declaring a name the stdlib already uses breaks the stdlib's own conformances
+// to it (#1329).
+trait Tagged: Base {
     func tag(self) -> string {
         return "sub{self.id()}"
     }
@@ -100,7 +104,7 @@ struct Alpha {
     n: i64
 }
 
-extend Alpha with Sub {
+extend Alpha with Tagged {
     func id(self) -> i64 {
         return self.n
     }

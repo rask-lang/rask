@@ -4,10 +4,10 @@
 
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
-    operand::MirConst, stmt::ClosureCapture, types::StructLayoutId, BlockBuilder, FunctionRef,
+    operand::MirConst, types::StructLayoutId, FunctionRef,
     MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
-use rask_ast::expr::{CallArg, Expr, ExprKind};
+use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::{NodeId, Span};
 
 /// Which runtime calls a box's `with` block takes and drops access through.

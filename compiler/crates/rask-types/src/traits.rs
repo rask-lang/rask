@@ -344,8 +344,12 @@ impl<'a> TraitChecker<'a> {
             // one name. Match the one this conformance asks for; falling back
             // to the first by name checked `Mul<Meters>` against the `f64`
             // method and reported a mismatch on a block that was correct.
-            let by_name: Vec<&MethodSig> =
-                type_methods.iter().filter(|m| m.name == required.name).collect();
+            // OR4: an operator conformance files its method under the applied
+            // argument (`mul$f64`), so compare on the name the trait asked for.
+            let by_name: Vec<&MethodSig> = type_methods
+                .iter()
+                .filter(|m| rask_ast::operators::method_display(&m.name) == required.name)
+                .collect();
             let found = by_name
                 .iter()
                 .find(|m| self.signatures_match(required, m))
@@ -592,7 +596,8 @@ impl<'a> TraitChecker<'a> {
             | TypeDef::Enum { name, .. }
             | TypeDef::Trait { name, .. }
             | TypeDef::Union { name, .. }
-            | TypeDef::NominalAlias { name, .. } => name,
+            | TypeDef::NominalAlias { name, .. }
+            | TypeDef::Primitive { name, .. } => name,
         }
     }
 
@@ -1271,6 +1276,7 @@ impl<'a> TraitChecker<'a> {
                         TypeDef::Trait { name, .. } => name.clone(),
                         TypeDef::Union { name, .. } => name.clone(),
                         TypeDef::NominalAlias { name, .. } => name.clone(),
+                        TypeDef::Primitive { name, .. } => name.clone(),
                     }
                 } else {
                     format!("Type({})", id.0)

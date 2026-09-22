@@ -230,6 +230,15 @@ fn add_typedef(def: &TypeDef, formatter: &TypeFormatter, items: &mut Vec<Complet
                 ..Default::default()
             });
         }
+        // OR6: a primitive's entry carries the conformances written on it, and
+        // those methods really are callable on a value of that type.
+        TypeDef::Primitive { methods, .. } => {
+            for method in methods {
+                if method.self_param != SelfParam::None {
+                    items.push(method_to_completion(method, formatter));
+                }
+            }
+        }
     }
 }
 

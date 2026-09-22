@@ -170,6 +170,21 @@ pub enum TypeDef {
         name: String,
         fields: Vec<(String, Type)>,
     },
+    /// OR6: a primitive, so it has somewhere to carry conformances and the
+    /// methods that come with them.
+    ///
+    /// `extend f64 { … }` — an inherent method on a primitive — stays illegal.
+    /// What lands here is `extend f64 with Mul<Meters>`: the conformance tables
+    /// are keyed by `TypeId`, and without an entry a primitive had none to be
+    /// keyed by, which is why the right-hand direction of every unit and vector
+    /// operator was unwritable.
+    ///
+    /// Registered under its own name map, not `type_names` — `f64` in source
+    /// still means `Type::F64`, never `Named(id)`.
+    Primitive {
+        name: String,
+        methods: Vec<MethodSig>,
+    },
     /// Nominal type alias: same layout as underlying, distinct identity.
     NominalAlias {
         name: String,
@@ -382,6 +397,14 @@ pub struct TypedProgram {
     /// expression's NodeId. The single source of truth for dispatch — lowering
     /// and the hidden-param pass read this instead of mangling type names.
     pub call_targets: HashMap<NodeId, Callee>,
+    /// OR1: operator calls the pair resolved to a conformance, keyed by the
+    /// MethodCall's NodeId.
+    ///
+    /// `a * b` is a machine instruction on some pairs and a call on others, and
+    /// on a primitive receiver the right operand is what decides — so the
+    /// backends read the answer here rather than each deciding again from the
+    /// receiver alone.
+    pub operator_targets: HashMap<NodeId, super::operators::OperatorTarget>,
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     pub trait_coercions: HashMap<NodeId, String>,
     /// XC4: which package wrote each source file, by file id. A span carries

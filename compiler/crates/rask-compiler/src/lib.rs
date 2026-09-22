@@ -404,11 +404,11 @@ fn check_loaded(
     rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &config.cfg);
 
     // --- Desugar (accumulate errors, continue) ---
-    let desugar_errors = rask_desugar::desugar_with_stdlib(
+    let desugared = rask_desugar::desugar_with_stdlib(
         &mut parse_result.decls,
         rask_stdlib::StubRegistry::defaulted_signatures(),
     );
-    for e in &desugar_errors {
+    for e in &desugared.errors {
         diags.push(
             Diagnostic::error(e.message.clone())
                 .with_code("E0338")
@@ -447,7 +447,12 @@ fn check_loaded(
     //     ownership/effects can still run and show accumulated diagnostics) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
+        rask_types::typecheck_with_stdlib_lenient(
+            resolved,
+            &parse_result.decls,
+            &stdlib_decls,
+            &desugared.operator_calls,
+        );
     for e in &type_errors {
         diags.push(e.to_diagnostic());
     }
@@ -695,13 +700,13 @@ fn check_package_scoped(
     // attachment text here, before name resolution, so they can't be looked up
     // later (type.annotations/AN3).
     let dep_annotations = pkg_ctx.dependency_annotations();
-    let desugar_errors =
+    let desugared =
         rask_desugar::desugar_package(
             &mut pkg_ctx.all_decls,
             &dep_annotations,
             rask_stdlib::StubRegistry::defaulted_signatures(),
         );
-    for e in &desugar_errors {
+    for e in &desugared.errors {
         diags.push(
             Diagnostic::error(e.message.clone())
                 .with_code("E0338")
@@ -790,7 +795,12 @@ fn check_package_scoped(
     // --- Typecheck (lenient — always returns TypedProgram + errors) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
     let (typed, type_errors) =
-        rask_types::typecheck_with_stdlib_lenient(resolved, &pkg_ctx.all_decls, &stdlib_decls);
+        rask_types::typecheck_with_stdlib_lenient(
+            resolved,
+            &pkg_ctx.all_decls,
+            &stdlib_decls,
+            &desugared.operator_calls,
+        );
     for e in &type_errors {
         diags.push(e.to_diagnostic());
     }
