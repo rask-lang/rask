@@ -633,6 +633,26 @@ jobs:
         out=$(compiler/target/release/rask run /tmp/hello.rk)
         test "$out" = "hello from darwin" || { echo "got: $out"; exit 1; }
 
+    # Linking was never the finish line for #1184. ld64 doesn't copy DWARF into
+    # the executable — it writes a debug map pointing back at the object files,
+    # and `rask` deletes its object as soon as the link returns, so a binary
+    # that links can still show a debugger nothing. `dsymutil` runs at the end
+    # of a Mach-O link now, and this checks the bundle it produces actually
+    # carries the program's source file and its line table.
+    - name: Debug info survives the link
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: |
+        set -eu
+        printf 'func main() {\n    println("dwarf")\n}\n' > /tmp/dwarf.rk
+        compiler/target/release/rask compile /tmp/dwarf.rk -o /tmp/dwarfbin
+        test -d /tmp/dwarfbin.dSYM || { echo "no .dSYM next to the binary"; exit 1; }
+        dwarfdump --debug-info /tmp/dwarfbin.dSYM > /tmp/dwarf-info.txt
+        grep -q 'dwarf\.rk' /tmp/dwarf-info.txt || {
+          echo "the .dSYM names no source file:"; cat /tmp/dwarf-info.txt; exit 1; }
+        dwarfdump --debug-line /tmp/dwarfbin.dSYM > /tmp/dwarf-line.txt
+        grep -q 'dwarf\.rk' /tmp/dwarf-line.txt || {
+          echo "the .dSYM has no line table:"; cat /tmp/dwarf-line.txt; exit 1; }
+
     - name: Run suite files natively
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: |
