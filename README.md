@@ -14,7 +14,7 @@ Somewhere between Rust and Go. Closer to Rust on safety, closer to Go on ceremon
 
 **[Why a new language?](WHY_RASK.md)**
 
-**Status** (measured 2026-09-21, v0.3.0). Compiler (Cranelift backend) and interpreter both run programs, and all five validation programs — including the HTTP JSON server — run natively. 85 open issues, mostly codegen getting memory release wrong: see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
+**Status** (measured 2026-09-22, v0.4.0). Compiler (Cranelift backend) and interpreter both run programs, and all five validation programs — including the HTTP JSON server — run natively. 85 open issues, mostly codegen getting memory release wrong: see [issues](https://github.com/rask-lang/rask/issues). It's a solo project, so fixes come in waves.
 
 ---
 
@@ -100,8 +100,9 @@ That's most of the cost. What you get back: no lifetime annotations in signature
 - Native codegen (Cranelift): structs, closures, Vec/Map, threads, channels, file I/O
 - Build system: packages, workspaces, watch mode
 - Tooling: `rask build/check/lint/fmt/test`, LSP
+- Sequences: `v.filter(p).map(f)` is a lazy chain, and a plain closure is a `Sequence<T>`
 
-**Next:** the sequence protocol (`Vec.iter()` returning a `Sequence`, [#1046](https://github.com/rask-lang/rask/issues/1046)), the value-position matrix that v0.4 is named for, and the memory-release bugs in codegen. See [ROADMAP.md](ROADMAP.md) for the order and why.
+**Next:** concurrency you can trust — a task that panics while another is blocked joining it, and the fiber switch that gets the blocked worker's thread back. See [ROADMAP.md](ROADMAP.md) for the order and why.
 
 ---
 

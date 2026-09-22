@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+import sequence.Sequence
+
 // `Vec.as_sequence()` — the chain head a collection stands for (SEQ48).
 //
 // Written in Rask, in `stdlib/collections.rk`, so both backends run one
@@ -75,7 +77,64 @@ test "a sequence over an empty Vec yields nothing" {
     assert v.as_sequence().count() == 0u64
 }
 
-// A method call on the element is deliberately absent: `for w in
-// words.as_sequence() { w.len() }` fails native lowering with "method `len` on
-// receiver of unresolved type" — MIR doesn't carry the element type out of a
-// Rask-bodied sequence source. Same gap as #1046, noted there.
+// Calling a method on the element used to fail native lowering with "method
+// `len` on receiver of unresolved type". MIR knew a `Sequence<T>` holds `T`;
+// the checker didn't, so the loop variable kept a free type variable and
+// dispatch had nothing to name. These four are the shapes that broke.
+
+test "a method on a string element" {
+    let words: Vec<string> = ["alpha", "beta", "gamma", "delta"]
+    mut long = 0u64
+    for w in words.as_sequence() {
+        if w.len() > 4u64 {
+            long = long + w.len()
+        }
+    }
+    assert long == 15u64
+}
+
+test "a method on the element of an adapted chain" {
+    let words: Vec<string> = ["alpha", "beta", "gamma"]
+    mut seen = 0
+    for w in words.as_sequence().filter(|s| s.len() > 4u64) {
+        if w.starts_with("a") {
+            seen = seen + 1
+        }
+    }
+    assert seen == 1
+}
+
+test "a method on a struct element" {
+    let pts: Vec<Point> = [Point { x: 1, y: 2 }, Point { x: 3, y: 4 }]
+    mut total = 0
+    for p in pts.as_sequence() {
+        total = total + p.sum()
+    }
+    assert total == 10
+}
+
+test "a method on half of a tuple element" {
+    mut letters = 0
+    for (n, name) in pairs() {
+        letters = letters + n + name.len().wrap<i64>()
+    }
+    assert letters == 9
+}
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+extend Point {
+    public func sum(self) -> i64 {
+        return self.x + self.y
+    }
+}
+
+func pairs() -> Sequence<(i64, string)> {
+    return |yield| {
+        if !yield((1, "one")) { return }
+        if !yield((2, "two")) { return }
+    }
+}

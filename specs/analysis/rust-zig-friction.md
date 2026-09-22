@@ -94,7 +94,7 @@ One item recurs in beginner material that appears on neither list as such:
 | `Box`/`Rc`/`RefCell` zoo | `Heap`/`Shared`/`Rack`, chosen by problem not composed | **yes** |
 | Executor-agnostic async | No coloring; fibers | no — Phase B, designed not built |
 | Structured concurrency with async | Same | no |
-| Implementing `Iterator` manually | `Sequence` is a closure | no — blocked on #1046 |
+| Implementing `Iterator` manually | `Sequence` is a closure | **yes** |
 | `const fn` limits | `comptime` runs a large subset of the language | partly |
 | Borrow checker rejecting valid code | Still has one. Fewer ways to trip it, not none | n/a |
 | Writing correct `unsafe` | Same word, same gate, same difficulty | n/a |
