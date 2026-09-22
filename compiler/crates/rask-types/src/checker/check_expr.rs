@@ -466,7 +466,24 @@ impl TypeChecker {
         matches!(ty, Type::F32 | Type::F64)
     }
 
+    /// The type of `expr`, recorded against its node.
+    ///
+    /// The recording used to sit at the bottom of the match below, which a
+    /// dozen arms never reach — they `return` out of it. So a `catch`, a `try`,
+    /// a closure, a `??`, a `select` and seven others type-checked fine and
+    /// left `node_types` with no entry, and everything downstream that asks
+    /// "what is this expression" got nothing. MIR lowering is the one that
+    /// notices: `let v = make() catch _ => { return }` bound a function value
+    /// with no recorded type, so `v(2)` lowered as a call to a *function named
+    /// `v`* and lowering gave up on the return type (#1244).
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Type {
+        let ty = self.infer_expr_kind(expr);
+        self.node_types.insert(expr.id, ty.clone());
+        self.note_node_origin(expr);
+        ty
+    }
+
+    fn infer_expr_kind(&mut self, expr: &Expr) -> Type {
         let ty = match &expr.kind {
             // Literals
             ExprKind::Int(value, suffix) => {
@@ -2302,11 +2319,7 @@ impl TypeChecker {
         // here. `doubled(Meters { … })` gets its `T.Out` back as `Meters` —
         // without this the call's type stays `T.Out` and every use of the
         // result reports against a type nobody wrote.
-        let ty = self.resolve_assoc_projections(ty);
-
-        self.node_types.insert(expr.id, ty.clone());
-        self.note_node_origin(expr);
-        ty
+        self.resolve_assoc_projections(ty)
     }
 
 

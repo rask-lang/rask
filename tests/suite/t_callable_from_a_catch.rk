@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A function value that arrives through a `catch` is still callable (#1244).
+//
+// The issue was filed as "there is no way to write a Result whose success type
+// is a function", because `func make() -> func(i64) -> i64 or Oops` reads as a
+// function returning `i64 or Oops` — the inner return takes the `or`. That
+// reading is the right one, and the other one has a spelling already:
+// parenthesise the success side. What was broken is what happened next.
+//
+// `let v = make() catch _ => …` bound the function and then `v(2)` failed in
+// MIR lowering, because a `catch` had no recorded type. Twelve arms of
+// `infer_expr` returned early out of the match and skipped the line that
+// records one, so a `catch`, a `try`, a closure, a `??` and eight others
+// type-checked fine and left nothing in the table. Lowering asked what `v` was,
+// got nothing, and lowered `v(2)` as a call to a function named `v`.
+
+enum Oops {
+    Bad
+}
+
+func make(fail: bool) -> (func(i64) -> i64) or Oops {
+    if fail {
+        return Oops.Bad
+    }
+    return |n| { return n + 40 }
+}
+
+test "a function out of a catch can be called" {
+    let v = make(false) catch _ => { return }
+    assert v(2) == 42
+}
+
+test "the annotated binding works the same way" {
+    let v: func(i64) -> i64 = make(false) catch _ => { return }
+    assert v(7) == 47
+}
+
+test "the error side still reaches the handler" {
+    mut caught = false
+    let v = make(true) catch _ => {
+        caught = true
+        return
+    }
+    assert caught
+}
+
+// `try` is the other way the payload arrives, and it was one of the twelve.
+func through_try() -> i64 or Oops {
+    let v = try make(false)
+    return v(1)
+}
+
+test "a function out of a try can be called" {
+    let n = through_try() catch _ => { return }
+    assert n == 41
+}

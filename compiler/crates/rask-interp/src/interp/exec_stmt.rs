@@ -906,44 +906,24 @@ fn value_option_depth(value: &Value) -> usize {
     }
 }
 
-/// Parse `Result<T, E>` and return the error type component names.
+/// The names on the error side of `Result<T, E>`, one per arm of a union.
+///
+/// The split is `rask_ast::type_str`'s, not a copy: this one counted the `>` of
+/// a function type's `->` as a closing bracket, so `Result<(func(i64) -> i64),
+/// Oops>` had no top-level comma, the error side came back empty, and `return
+/// Oops.Bad` was wrapped as the success branch (#1244).
 fn extract_err_names(ty: &str) -> Vec<String> {
-    let Some(rest) = ty.strip_prefix("Result<").and_then(|s| s.strip_suffix('>')) else {
+    let Some((_, err_str)) = rask_ast::type_str::result_parts(ty) else {
         return Vec::new();
     };
-    let mut depth: i32 = 0;
-    let mut split_at: Option<usize> = None;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth -= 1,
-            ',' if depth == 0 => { split_at = Some(i); break; }
-            _ => {}
-        }
-    }
-    let Some(idx) = split_at else { return Vec::new() };
-    let err_str = rest[idx + 1..].trim();
+    // `(E1 | E2)` — the parens are the union's, not a type's.
     let err_str = err_str
         .strip_prefix('(').and_then(|s| s.strip_suffix(')'))
         .map(str::trim)
         .unwrap_or(err_str);
-    let mut out = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-    for (i, c) in err_str.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth -= 1,
-            '|' if depth == 0 => {
-                out.push(err_str[start..i].trim().to_string());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    if start < err_str.len() {
-        out.push(err_str[start..].trim().to_string());
-    }
-    out
+    rask_ast::type_str::split_all_top_level(err_str, '|')
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 

@@ -592,17 +592,7 @@ fn is_type_param_name(name: &str) -> bool {
 
 /// The T of a `Result<T, E>` string, as written.
 fn result_ok_type(ret_ty: &str) -> Option<String> {
-    let rest = ret_ty.trim().strip_prefix("Result<")?.strip_suffix('>')?;
-    let mut depth: i32 = 0;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth -= 1,
-            ',' if depth == 0 => return Some(rest[..i].trim().to_string()),
-            _ => {}
-        }
-    }
-    None
+    rask_ast::type_str::result_parts(ret_ty).map(|(ok, _)| ok.to_string())
 }
 
 /// Add whatever optional layers `ty` asks for that `value` doesn't already
@@ -639,49 +629,27 @@ pub(crate) fn option_depth(value: &Value) -> usize {
     }
 }
 
-/// Extract the E type names from a `Result<T, E>` string. Handles union
-/// errors `Result<T, A | B | C>` by returning each component.
+/// The E type names of a `Result<T, E>`, one per arm of a union error.
+///
+/// The split is `rask_ast::type_str`'s. Three hand-written copies of it lived
+/// in this crate, all counting the `>` of a function type's `->` as a closing
+/// bracket — so `Result<(func(i64) -> i64), Oops>` had no top-level comma, this
+/// answered with nothing, and `return Oops.Bad` was wrapped as the *success*
+/// branch. The caller then bound the enum and reported "enum is not callable"
+/// at the call site, while native ran it (#1244).
 fn extract_result_err_names(ret_ty: &str) -> Vec<String> {
-    let Some(rest) = ret_ty.strip_prefix("Result<").and_then(|s| s.strip_suffix('>')) else {
+    let Some((_, err_str)) = rask_ast::type_str::result_parts(ret_ty) else {
         return Vec::new();
     };
-    // Split at the top-level comma separating T from E.
-    let mut depth: i32 = 0;
-    let mut split_at: Option<usize> = None;
-    for (i, c) in rest.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth -= 1,
-            ',' if depth == 0 => { split_at = Some(i); break; }
-            _ => {}
-        }
-    }
-    let Some(idx) = split_at else { return Vec::new() };
-    let err_str = rest[idx + 1..].trim();
-    // Strip outer parens if present.
+    // `(E1 | E2)` — those parens belong to the union, not to a type.
     let err_str = err_str
         .strip_prefix('(').and_then(|s| s.strip_suffix(')'))
         .map(str::trim)
         .unwrap_or(err_str);
-    // Split by `|` at depth 0 (for union errors).
-    let mut out = Vec::new();
-    let mut depth = 0;
-    let mut start = 0;
-    for (i, c) in err_str.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth -= 1,
-            '|' if depth == 0 => {
-                out.push(err_str[start..i].trim().to_string());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    if start < err_str.len() {
-        out.push(err_str[start..].trim().to_string());
-    }
-    out
+    rask_ast::type_str::split_all_top_level(err_str, '|')
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 impl Interpreter {
