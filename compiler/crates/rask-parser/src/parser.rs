@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{AnnotationDecl, BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
@@ -1516,6 +1516,7 @@ impl Parser {
                     is_comptime: true,
                     comptime_type: Some(comptime_type.clone()),
                     bounds: vec![],
+                    default: None,
                 });
 
                 name_suffix.push_str("comptime ");
@@ -1529,17 +1530,29 @@ impl Parser {
                     bounds = self.parse_trait_bounds()?;
                 }
 
+                // GT4: `<Rhs = Self>` — the meaning of the bare trait name.
+                let default = if self.match_token(&TokenKind::Eq) {
+                    Some(self.parse_type_name()?)
+                } else {
+                    None
+                };
+
                 type_params.push(TypeParam {
                     name: param_name.clone(),
                     is_comptime: false,
                     comptime_type: None,
                     bounds: bounds.clone(),
+                    default: default.clone(),
                 });
 
                 name_suffix.push_str(&param_name);
                 if !bounds.is_empty() {
                     name_suffix.push_str(": ");
                     name_suffix.push_str(&bounds.join(" + "));
+                }
+                if let Some(d) = &default {
+                    name_suffix.push_str(" = ");
+                    name_suffix.push_str(d);
                 }
             }
 
@@ -1623,6 +1636,7 @@ impl Parser {
                     is_comptime: false,
                     comptime_type: None,
                     bounds,
+                    default: None,
                 }),
             }
 
@@ -1968,26 +1982,17 @@ impl Parser {
         self.expect(&TokenKind::Trait)?;
         let name = self.expect_ident()?;
 
-        // `TraitDecl` has nowhere to put a type parameter, so this used to skip
-        // one silently. The name then resolved to nothing in the method
-        // signatures, and every conformance failed claiming the type was
-        // missing a method the block plainly had (#1164). Say so here instead,
-        // and keep parsing so the rest of the file still reports.
-        if self.check(&TokenKind::Lt) {
-            let span = self.current().span;
-            let err = ParseError {
-                span,
-                message: format!("generic traits aren't implemented — `{name}` can't take a type parameter"),
-                hint: Some("name the type concretely on the methods, or drop the parameter".to_string()),
-                why: Some("nothing records the parameter, so a conformance to the trait would fail claiming a missing method".to_string()),
-            };
-            self.record_error(err);
-            self.advance();
-            while !self.check(&TokenKind::Gt) && !self.at_end() {
-                self.advance();
-            }
-            self.expect(&TokenKind::Gt)?;
-        }
+        // GT1: `trait Scale<Rhs>`. The parameter is bound by the conformance
+        // header and substituted through every required signature before it's
+        // checked. It used to be skipped without being recorded, so the name
+        // resolved to nothing and every conformance failed claiming a missing
+        // method the block plainly had (#1164).
+        let type_params = if self.match_token(&TokenKind::Lt) {
+            let (params, _suffix) = self.parse_type_params()?;
+            params
+        } else {
+            Vec::new()
+        };
 
         // Super-traits: trait Display: ToString, Debug { ... }
         let mut super_traits = Vec::new();
@@ -2006,6 +2011,7 @@ impl Parser {
         self.skip_newlines();
 
         let mut methods = Vec::new();
+        let mut assoc_types = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
             let saved_pos = self.pos;
             let method_doc = self.take_doc();
@@ -2013,6 +2019,8 @@ impl Parser {
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, false, vec![], method_doc)? {
                     methods.push(Self::as_method(fn_decl));
                 }
+            } else if self.check(&TokenKind::Type) {
+                assoc_types.push(self.parse_assoc_type_decl()?);
             } else if let TokenKind::Ident(_) = self.current_kind() {
                 let mut fn_decl = self.parse_trait_method_shorthand()?;
                 fn_decl.doc = method_doc;
@@ -2033,7 +2041,32 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, is_unsafe, is_duck, attrs, doc }))
+        Ok(DeclKind::Trait(TraitDecl { name, type_params, super_traits, methods, assoc_types, is_pub, is_unsafe, is_duck, attrs, doc }))
+
+    }
+
+    /// AT1: `type Out`, `type Out: Comparable`, `type Out = Self`.
+    fn parse_assoc_type_decl(&mut self) -> Result<AssocTypeDecl, ParseError> {
+        let start = self.current().span;
+        self.expect(&TokenKind::Type)?;
+        let name = self.expect_ident()?;
+        let bounds = if self.match_token(&TokenKind::Colon) {
+            self.parse_trait_bounds()?
+        } else {
+            Vec::new()
+        };
+        let default = if self.match_token(&TokenKind::Eq) {
+            Some(self.parse_type_name()?)
+        } else {
+            None
+        };
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(AssocTypeDecl {
+            name,
+            bounds,
+            default,
+            span: Span::with_file(start.start, end, start.file_id),
+        })
     }
 
     /// Skip the rest of a malformed trait-body member: to the newline that ends
@@ -2075,24 +2108,14 @@ impl Parser {
         }
     }
 
-    /// A trait body holds method signatures and nothing else. `type` gets its own
-    /// wording because an associated type is a planned feature rather than a
-    /// mistake, so "only methods here" would read as a flat refusal.
+    /// TD4: a trait body holds method signatures and associated types.
     fn trait_body_error(&self) -> ParseError {
         let span = self.current().span;
-        if self.check(&TokenKind::Type) {
-            return ParseError {
-                span,
-                message: "a trait body holds methods, and associated types aren't implemented yet".to_string(),
-                hint: Some("name a concrete return type on the method for now".to_string()),
-                why: Some("a trait states what conformers must provide, and today that is method signatures only — letting a conformer name a type is a separate feature".to_string()),
-            };
-        }
         ParseError {
             span,
-            message: format!("only methods can go in a trait body, found {}", self.current_kind().display_name()),
+            message: format!("a trait body holds methods and associated types, found {}", self.current_kind().display_name()),
             hint: Some("move the declaration out of the trait".to_string()),
-            why: Some("a trait states what conformers must provide, and that is method signatures".to_string()),
+            why: Some("a trait states what conformers must provide: method signatures and the types they name".to_string()),
         }
     }
 
@@ -2179,8 +2202,24 @@ impl Parser {
         self.skip_newlines();
 
         let mut methods = Vec::new();
+        let mut assoc_bindings = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
             let saved_pos = self.pos;
+            // AT2: `type Out = Meters` — what this conformance answers with.
+            if self.check(&TokenKind::Type) {
+                match self.parse_assoc_type_binding() {
+                    Ok(b) => assoc_bindings.push(b),
+                    Err(e) => {
+                        self.record_error(e);
+                        self.synchronize_to_next_method();
+                        if self.pos == saved_pos && !self.at_end() {
+                            self.advance();
+                        }
+                    }
+                }
+                self.skip_newlines();
+                continue;
+            }
             let mut method_attrs = Vec::new();
             while self.check(&TokenKind::At) {
                 match self.parse_attribute() {
@@ -2215,7 +2254,22 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Impl(ImplDecl { trait_names, target_ty, methods, is_unsafe, is_scoped, where_bounds, doc }))
+        Ok(DeclKind::Impl(ImplDecl { trait_names, target_ty, methods, is_unsafe, is_scoped, where_bounds, assoc_bindings, doc }))
+    }
+
+    /// AT2: `type Out = Meters` inside an `extend ... with Trait` block.
+    fn parse_assoc_type_binding(&mut self) -> Result<AssocTypeBinding, ParseError> {
+        let start = self.current().span;
+        self.expect(&TokenKind::Type)?;
+        let name = self.expect_ident()?;
+        self.expect(&TokenKind::Eq)?;
+        let ty = self.parse_type_name()?;
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(AssocTypeBinding {
+            name,
+            ty,
+            span: Span::with_file(start.start, end, start.file_id),
+        })
     }
 
     fn parse_import_decl(&mut self) -> Result<DeclKind, ParseError> {

@@ -308,15 +308,36 @@ impl<'a> TraitChecker<'a> {
             }
         }
 
-        // Get the trait's required methods
-        let required_methods = self.get_trait_methods(trait_name)?;
+        // GT2/AT6: the trait's parameters come from the header, and each
+        // `Self.X` from what the conformance answers with. Without this the
+        // signature still says `Rhs` and `Self.Out`, neither of which any
+        // implementation can match — which is what made every conformance to a
+        // generic trait fail claiming a missing method (#1164).
+        let subst = self.conformance_substitution(ty, trait_name);
+        let required_methods: Vec<MethodSig> = self
+            .get_trait_methods(trait_name)?
+            .into_iter()
+            .map(|m| substitute_signature(&m, &subst))
+            .collect();
 
         // Get the type's available methods
         let type_methods = self.get_type_methods(ty);
 
         // Check each required method exists with matching signature
         for required in &required_methods {
-            if let Some(found) = type_methods.iter().find(|m| m.name == required.name) {
+            // GT3/AT8: a type may carry two conformances of one generic trait
+            // (`Mul<f64>` and `Mul<Meters>`), and then two methods answer to
+            // one name. Match the one this conformance asks for; falling back
+            // to the first by name checked `Mul<Meters>` against the `f64`
+            // method and reported a mismatch on a block that was correct.
+            let by_name: Vec<&MethodSig> =
+                type_methods.iter().filter(|m| m.name == required.name).collect();
+            let found = by_name
+                .iter()
+                .find(|m| self.signatures_match(required, m))
+                .or(by_name.first())
+                .copied();
+            if let Some(found) = found {
                 // Check signature matches
                 if !self.signatures_match(required, found) {
                     return Err(TraitError::SignatureMismatch {
@@ -694,6 +715,76 @@ impl<'a> TraitChecker<'a> {
     /// Get methods required by a trait (public accessor for trait object resolution).
     pub fn get_trait_methods_public(&self, trait_name: &str) -> Vec<MethodSig> {
         self.get_trait_methods(trait_name).unwrap_or_default()
+    }
+
+    /// GT2/AT6: what a trait's written signatures mean for one conformance.
+    ///
+    /// Maps `Rhs` to the argument the header gave it (or the declared default),
+    /// and `Self.Out` to what the conformance's `type Out = ...` named (or the
+    /// trait's default for it). Both are lookups: nothing is solved for.
+    pub fn conformance_substitution(
+        &self,
+        self_ty: &Type,
+        trait_ref: &str,
+    ) -> HashMap<String, Type> {
+        let mut map = HashMap::new();
+        let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim();
+        let Some(TypeDef::Trait { type_params, assoc_types, .. }) =
+            self.types.get_type_id(base).and_then(|id| self.types.get(id))
+        else {
+            return map;
+        };
+
+        let written = crate::checker::type_table::trait_ref_args(trait_ref);
+        for (i, p) in type_params.iter().enumerate() {
+            let arg = written.get(i).cloned().or_else(|| p.default.clone());
+            if let Some(arg) = arg {
+                if arg == "Self" {
+                    map.insert(p.name.clone(), self_ty.clone());
+                } else if let Ok(t) = crate::checker::parse_type_string(&arg, self.types) {
+                    map.insert(p.name.clone(), t);
+                }
+            }
+        }
+
+        if assoc_types.is_empty() {
+            return map;
+        }
+        let type_id = self.named_type_id(self_ty);
+        for a in assoc_types {
+            let bound = type_id
+                .and_then(|id| self.types.assoc_binding(id, trait_ref, &a.name))
+                .cloned()
+                .or_else(|| match a.default.as_deref() {
+                    Some("Self") => Some(self_ty.clone()),
+                    Some(d) => crate::checker::parse_type_string(d, self.types).ok(),
+                    None => None,
+                });
+            if let Some(t) = bound {
+                map.insert(format!("Self.{}", a.name), t);
+            } else {
+                // AT2: the conformance never said. Leave the projection as
+                // written so the unanswered-associated-type error is the one
+                // the author sees, not a pile of signature mismatches.
+            }
+        }
+        map
+    }
+
+    /// MN3: what a conformance of `trait_ref` by `self_ty` has to provide, with
+    /// the trait's parameters and associated types already filled in.
+    pub fn required_signatures(&self, self_ty: &Type, trait_ref: &str) -> Vec<MethodSig> {
+        let subst = self.conformance_substitution(self_ty, trait_ref);
+        self.get_trait_methods(trait_ref)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| substitute_signature(&m, &subst))
+            .collect()
+    }
+
+    /// MN2: could one implementation serve both of these?
+    pub fn signatures_agree(&self, a: &MethodSig, b: &MethodSig) -> bool {
+        self.signatures_match(a, b)
     }
 
     /// Get methods required by a trait.
@@ -1095,6 +1186,11 @@ impl<'a> TraitChecker<'a> {
     }
 
     /// Format a method signature for error messages.
+    /// A signature as a reader would write it: `func scale(self, f64) -> Meters`.
+    ///
+    /// Used to print the checker's own `Debug` — `fn scale(self, I64) ->
+    /// Named(TypeId(104))` — which names a type by its slot in a table nobody
+    /// outside the compiler can see.
     fn format_signature(&self, sig: &MethodSig) -> String {
         let self_str = match sig.self_param {
             SelfParam::None => "",
@@ -1104,12 +1200,17 @@ impl<'a> TraitChecker<'a> {
         };
         let params_str: Vec<String> = sig.params.iter().map(|(t, mode)| {
             match mode {
-                ParamMode::Take => format!("take {:?}", t),
-                ParamMode::Mutate => format!("mutate {:?}", t),
-                ParamMode::Default => format!("{:?}", t),
+                ParamMode::Take => format!("take {}", self.type_name(t)),
+                ParamMode::Mutate => format!("mutate {}", self.type_name(t)),
+                ParamMode::Default => self.type_name(t),
             }
         }).collect();
-        format!("fn {}({}{}) -> {:?}", sig.name, self_str, params_str.join(", "), sig.ret)
+        let base = sig.name.split('<').next().unwrap_or(&sig.name);
+        let ret = self.type_name(&sig.ret);
+        if ret == "()" {
+            return format!("func {}({}{})", base, self_str, params_str.join(", "));
+        }
+        format!("func {}({}{}) -> {}", base, self_str, params_str.join(", "), ret)
     }
 
     /// Get a human-readable name for a type.
@@ -1128,7 +1229,45 @@ impl<'a> TraitChecker<'a> {
                     format!("Type({})", id.0)
                 }
             }
-            _ => format!("{:?}", ty),
+            Type::Unit => "()".to_string(),
+            // A placeholder standing in for the implementing type, in both the
+            // spellings that reach here (a declared trait writes `Self`, a
+            // compiler-provided one uses a type variable).
+            Type::Var(_) => "Self".to_string(),
+            Type::Generic { base, args } => {
+                let inner: Vec<String> = args
+                    .iter()
+                    .map(|a| match a {
+                        GenericArg::Type(t) => self.type_name(t),
+                        other => format!("{}", other),
+                    })
+                    .collect();
+                format!("{}<{}>", self.types.type_name(*base), inner.join(", "))
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                let inner: Vec<String> = args
+                    .iter()
+                    .map(|a| match a {
+                        GenericArg::Type(t) => self.type_name(t),
+                        other => format!("{}", other),
+                    })
+                    .collect();
+                format!("{}<{}>", name, inner.join(", "))
+            }
+            Type::UnresolvedNamed(name) => name.clone(),
+            Type::Tuple(elems) => {
+                let inner: Vec<String> = elems.iter().map(|e| self.type_name(e)).collect();
+                format!("({})", inner.join(", "))
+            }
+            Type::Result { ok, err } if matches!(**err, Type::None) => {
+                format!("{}?", self.type_name(ok))
+            }
+            Type::Result { ok, err } => {
+                format!("{} or {}", self.type_name(ok), self.type_name(err))
+            }
+            Type::Array { elem, len } => format!("[{}; {}]", self.type_name(elem), len),
+            Type::RawPtr(inner) => format!("*{}", self.type_name(inner)),
+            _ => format!("{}", ty),
         }
     }
 
@@ -1415,6 +1554,8 @@ mod tests {
         };
 
         types.register_type(TypeDef::Trait {
+            type_params: Vec::new(),
+            assoc_types: Vec::new(),
             name: "Show".to_string(),
             super_traits: vec![],
             methods: vec![show()],
@@ -1478,5 +1619,83 @@ mod tests {
             "Ring<Coin> should satisfy Show (Coin: Show)");
         assert!(checker.check_satisfies(&ring_of(blob), "Show", Span::new(0, 0)).is_err(),
             "Ring<Blob> must NOT satisfy Show (Blob is not Show)");
+    }
+}
+
+/// Rewrite a required signature under a conformance's substitution (GT2/AT6).
+pub fn substitute_signature(m: &MethodSig, map: &HashMap<String, Type>) -> MethodSig {
+    if map.is_empty() {
+        return m.clone();
+    }
+    MethodSig {
+        owner_patterns: m.owner_patterns.clone(),
+        type_params: m.type_params.clone(),
+        name: m.name.clone(),
+        self_param: m.self_param,
+        params: m
+            .params
+            .iter()
+            .map(|(t, mode)| (substitute_type(t, map), *mode))
+            .collect(),
+        ret: substitute_type(&m.ret, map),
+    }
+}
+
+/// Replace every written name the substitution covers. A name it doesn't cover
+/// is left alone — an unbound `Rhs` or an unsupplied `Self.Out` is reported
+/// where it was written, not silently turned into something else.
+pub fn substitute_type(ty: &Type, map: &HashMap<String, Type>) -> Type {
+    match ty {
+        Type::UnresolvedNamed(name) => map.get(name).cloned().unwrap_or_else(|| ty.clone()),
+        // AT3: `Self.Out`. The base is substituted first so a projection on a
+        // trait parameter (`Rhs.Out`) follows the same path.
+        Type::Assoc { base, name } => {
+            let base = substitute_type(base, map);
+            let key = format!("{}.{}", base, name);
+            if let Some(t) = map.get(&key) {
+                return t.clone();
+            }
+            Type::Assoc { base: Box::new(base), name: name.clone() }
+        }
+        Type::UnresolvedGeneric { name, args } => {
+            let args: Vec<GenericArg> = args
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(Box::new(substitute_type(t, map))),
+                    other => other.clone(),
+                })
+                .collect();
+            match map.get(name) {
+                // `Vec` never stands in for a parameter, but a parameter used
+                // bare with arguments would — keep the base if it's mapped.
+                Some(Type::UnresolvedNamed(n)) => Type::UnresolvedGeneric { name: n.clone(), args },
+                _ => Type::UnresolvedGeneric { name: name.clone(), args },
+            }
+        }
+        Type::Generic { base, args } => Type::Generic {
+            base: *base,
+            args: args
+                .iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(Box::new(substitute_type(t, map))),
+                    other => other.clone(),
+                })
+                .collect(),
+        },
+        Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| substitute_type(e, map)).collect()),
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(substitute_type(elem, map)),
+            len: *len,
+        },
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(substitute_type(ok, map)),
+            err: Box::new(substitute_type(err, map)),
+        },
+        Type::Union(parts) => Type::Union(parts.iter().map(|p| substitute_type(p, map)).collect()),
+        Type::Fn { params, ret } => Type::Fn {
+            params: params.iter().map(|p| substitute_type(p, map)).collect(),
+            ret: Box::new(substitute_type(ret, map)),
+        },
+        _ => ty.clone(),
     }
 }

@@ -17,6 +17,8 @@ impl<'a> TypeFormatter<'a> {
         match ty {
             Type::Unit => "void".to_string(),
             Type::Never => "!".to_string(),
+            // AT3: a projection, shown as written.
+            Type::Assoc { base, name } => format!("{}.{}", self.format(base), name),
             Type::Bool => "bool".to_string(),
             Type::I8 => "i8".to_string(),
             Type::I16 => "i16".to_string(),

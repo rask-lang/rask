@@ -349,6 +349,13 @@ impl InferenceContext {
                 ret: Box::new(self.apply(ret)),
             },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
+            // AT3: solving the base is all that happens here — reading `Out`
+            // off the conformance needs the type table, so `resolve_named` does
+            // it once the base is concrete.
+            Type::Assoc { base, name } => Type::Assoc {
+                base: Box::new(self.apply(base)),
+                name: name.clone(),
+            },
             Type::Array { elem, len } => Type::Array {
                 elem: Box::new(self.apply(elem)),
                 len: *len,

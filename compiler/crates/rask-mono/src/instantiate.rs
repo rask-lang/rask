@@ -798,6 +798,7 @@ pub fn instantiate_function_with_params(
             is_comptime: false,
             comptime_type: None,
             bounds: Vec::new(),
+            default: None,
         })
         .collect();
     let mut substitutor = TypeSubstitutor::new(&params, type_args);
@@ -824,6 +825,7 @@ pub fn substitute_type_in_string(
             is_comptime: false,
             comptime_type: None,
             bounds: Vec::new(),
+            default: None,
         })
         .collect();
     TypeSubstitutor::new(&params, type_args).substitute_type_string(type_str)
@@ -844,6 +846,7 @@ fn named_params(names: Vec<String>, declared: &[TypeParam]) -> Vec<TypeParam> {
                     is_comptime: false,
                     comptime_type: None,
                     bounds: Vec::new(),
+                    default: None,
                 })
         })
         .collect()
@@ -872,6 +875,7 @@ pub fn instantiate_function_from(
                                 is_comptime: false,
                                 comptime_type: None,
                                 bounds: Vec::new(),
+                                default: None,
                             })
                     })
                     .collect();

@@ -630,6 +630,7 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
                 trait_names: Vec::new(),
                 target_ty,
                 methods,
+                assoc_bindings: Vec::new(),
                 is_unsafe: false,
                 is_scoped: false,
                 where_bounds: Vec::new(),

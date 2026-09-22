@@ -2298,11 +2298,28 @@ impl TypeChecker {
         // methods, so at most one step in a chain can do this.
         let ty = self.unwrap_try_chain_step(expr, ty);
 
+        // AT6: a projection whose base has settled is read off the conformance
+        // here. `doubled(Meters { … })` gets its `T.Out` back as `Meters` —
+        // without this the call's type stays `T.Out` and every use of the
+        // result reports against a type nobody wrote.
+        let ty = self.resolve_assoc_projections(ty);
+
         self.node_types.insert(expr.id, ty.clone());
         self.note_node_origin(expr);
         ty
     }
 
+
+    /// AT6: read every settled projection in a type off its conformance.
+    ///
+    /// Cheap to skip: most types hold none, and the walk only runs when one is
+    /// there.
+    pub(super) fn resolve_assoc_projections(&self, ty: Type) -> Type {
+        if !contains_assoc(&ty) {
+            return ty;
+        }
+        self.resolve_named(&self.ctx.apply(&ty))
+    }
 
     /// Remember where a node came from, for the open-node census. Off unless
     /// `RASK_TRACE_OPEN_NODES` is set — a span and a kind name per expression
@@ -2753,7 +2770,11 @@ impl TypeChecker {
                     self.coerce_into(CoercionSite::Argument, arg_ty, param.clone(), span);
                 }
 
-                ret
+                // AT6: `func doubled<T: Mul<f64>>(x: T) -> T.Out` answers with
+                // a projection whose base only settles once the arguments have
+                // been checked. This is that moment — read it off T's
+                // conformance now rather than handing the caller `T.Out`.
+                self.resolve_assoc_projections(ret)
             }
             Type::Var(_) => {
                 let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
@@ -6313,4 +6334,19 @@ fn body_returns_a_value(body: &Expr) -> bool {
 /// `p` contains `p.health`; `p.health` and `p.score` are disjoint (F2).
 fn paths_overlap(a: &[String], b: &[String]) -> bool {
     a.iter().zip(b.iter()).all(|(x, y)| x == y)
+}
+
+/// Does this type hold a projection anywhere inside it?
+fn contains_assoc(ty: &Type) -> bool {
+    match ty {
+        Type::Assoc { .. } => true,
+        Type::Result { ok, err } => contains_assoc(ok) || contains_assoc(err),
+        Type::Array { elem, .. } | Type::RawPtr(elem) => contains_assoc(elem),
+        Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(contains_assoc),
+        Type::Fn { params, ret } => params.iter().any(contains_assoc) || contains_assoc(ret),
+        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+            args.iter().any(|a| matches!(a, GenericArg::Type(t) if contains_assoc(t)))
+        }
+        _ => false,
+    }
 }

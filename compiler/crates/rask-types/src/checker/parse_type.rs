@@ -99,6 +99,18 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         ));
     }
 
+    // AT3: a projection — `Self.Out`, `T.Out`. A dot that isn't one of these
+    // belongs to a module path (already stripped above) or a C namespace, and
+    // both of those are registered under their dotted spelling.
+    if let Some((head, tail)) = s.split_once('.') {
+        if is_projection(head, tail, types) {
+            return Ok(Type::Assoc {
+                base: Box::new(parse_type_string(head, types)?),
+                name: tail.to_string(),
+            });
+        }
+    }
+
     // Raw pointer: *T
     if s.starts_with('*') {
         let inner = parse_type_string(&s[1..], types)?;
@@ -408,3 +420,25 @@ fn parse_fn_type(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     })
 }
 
+
+/// AT3: does `head.tail` name an associated type rather than a module or C type?
+///
+/// `Self` on the left always does. Otherwise the left has to be a type
+/// parameter — a name nothing declares — and the right has to look like a type.
+/// `c.Rect` fails on both counts: it's registered under that exact spelling,
+/// and `c` isn't a type name.
+fn is_projection(head: &str, tail: &str, types: &TypeTable) -> bool {
+    let plain = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || c == '_');
+    if !plain(head) || !plain(tail) {
+        return false;
+    }
+    if !tail.starts_with(|c: char| c.is_ascii_uppercase()) {
+        return false;
+    }
+    if head == "Self" {
+        return true;
+    }
+    head.starts_with(|c: char| c.is_ascii_uppercase())
+        && types.get_type_id(head).is_none()
+        && types.get_type_id(&format!("{}.{}", head, tail)).is_none()
+}
