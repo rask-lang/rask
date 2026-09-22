@@ -29,9 +29,10 @@
 #include <time.h>
 
 // ─── Constants ──────────────────────────────────────────────
-
-#define RASK_POLL_READY   0
-#define RASK_POLL_PENDING 1
+//
+// RASK_POLL_READY/PENDING are in rask_runtime.h: the thread-backed stand-in
+// off Linux runs the same generated poll functions and has to read the same
+// numbers.
 
 #define TASK_STATE_READY    0
 #define TASK_STATE_RUNNING  1
@@ -39,6 +40,20 @@
 #define TASK_STATE_COMPLETE 3
 
 #define DEQUE_CAP 1024
+
+// How many extra workers a scope may grow when its own are stuck in join.
+//
+// A worker that joins blocks and stops taking work, so `using
+// Multitasking(workers: 1)` with one nested spawn+join had nobody left to run
+// the inner task and the program hung (#1130). A blocked worker isn't running
+// anything, so the scope starts a replacement for the duration — which makes
+// the worker count a count of *runnable* workers rather than a cap on threads.
+//
+// Suspending the joining task and reusing its thread is the real answer and
+// needs the fiber switch that isn't built. This needs one OS thread per
+// simultaneously-blocked join, which is why it is capped: past this depth the
+// deadlock report is still what you get.
+#define JOIN_HELPER_SLOTS 32
 #define MAX_EVENTS_PER_POLL 64
 
 // ─── Green task ─────────────────────────────────────────────
@@ -228,7 +243,13 @@ typedef struct WorkerArg WorkerArg;
 typedef struct {
     pthread_t       *workers;
     WorkerArg       *worker_args;   // one per worker: scheduler + its own id
-    int              worker_count;
+    int              worker_count;  // what the program asked for
+    int              worker_slots;  // worker_count + JOIN_HELPER_SLOTS
+    // Threads that exist, so deques that are initialized. Only ever grows, and
+    // a stealer reading a stale smaller value simply doesn't target the newest
+    // worker — see `helper_spawn`.
+    atomic_int       live_workers;
+    pthread_mutex_t  grow_lock;
     WorkDeque       *local;        // local[worker_id]
     GlobalQueue      global;
     RaskIoEngine    *io;
@@ -479,7 +500,8 @@ static void *worker_entry(void *arg) {
 
         // 2. Steal from a random peer
         if (!task) {
-            int target = (int)(xorshift32() % (uint32_t)s->worker_count);
+            int live = atomic_load_explicit(&s->live_workers, memory_order_acquire);
+            int target = (int)(xorshift32() % (uint32_t)(live > 0 ? live : 1));
             if (target != my_id) {
                 task = deque_steal(&s->local[target]);
             }
@@ -546,9 +568,14 @@ void rask_runtime_init(int64_t worker_count) {
     }
 
     s->worker_count = (int)worker_count;
-    s->workers = (pthread_t *)calloc((size_t)worker_count, sizeof(pthread_t));
-    s->local   = (WorkDeque *)calloc((size_t)worker_count, sizeof(WorkDeque));
-    s->worker_args = (WorkerArg *)calloc((size_t)worker_count, sizeof(WorkerArg));
+    // Room for the replacements a blocked join needs. The slots are allocated
+    // up front because a stealer indexes this array without a lock, so it must
+    // not move; only `live_workers` grows.
+    s->worker_slots = s->worker_count + JOIN_HELPER_SLOTS;
+    size_t slots = (size_t)s->worker_slots;
+    s->workers = (pthread_t *)calloc(slots, sizeof(pthread_t));
+    s->local   = (WorkDeque *)calloc(slots, sizeof(WorkDeque));
+    s->worker_args = (WorkerArg *)calloc(slots, sizeof(WorkerArg));
     if (!s->workers || !s->local || !s->worker_args) {
         fprintf(stderr, "rask: scheduler arrays alloc failed\n");
         abort();
@@ -563,6 +590,8 @@ void rask_runtime_init(int64_t worker_count) {
     atomic_init(&s->shutdown, 0);
     atomic_init(&s->blocked_in_join, 0);
     atomic_init(&s->completions, 0);
+    atomic_init(&s->live_workers, s->worker_count);
+    pthread_mutex_init(&s->grow_lock, NULL);
     pthread_mutex_init(&s->park_lock, NULL);
     pthread_cond_init(&s->park_cond, NULL);
     pthread_mutex_init(&s->done_lock, NULL);
@@ -612,8 +641,9 @@ void rask_runtime_shutdown(void) {
     pthread_cond_broadcast(&s->park_cond);
     pthread_mutex_unlock(&s->park_lock);
 
-    // Join worker threads
-    for (int i = 0; i < s->worker_count; i++) {
+    // Join worker threads — including any replacement a blocked join started.
+    int live = atomic_load_explicit(&s->live_workers, memory_order_acquire);
+    for (int i = 0; i < live; i++) {
         pthread_join(s->workers[i], NULL);
     }
 
@@ -624,6 +654,7 @@ void rask_runtime_shutdown(void) {
     pthread_cond_destroy(&s->park_cond);
     pthread_mutex_destroy(&s->done_lock);
     pthread_cond_destroy(&s->done_cond);
+    pthread_mutex_destroy(&s->grow_lock);
     free(s->local);
     free(s->worker_args);
     free(s->workers);
@@ -652,17 +683,59 @@ void *rask_green_spawn(void *poll_fn, void *state, int64_t state_size) {
     return h;
 }
 
-// Wait for `t`, and say so instead of hanging when nobody can finish it.
+// Start a replacement worker, because every existing one is blocked in a join.
+//
+// A blocked worker isn't running anything, so the scope is short of runnable
+// workers for as long as the join lasts. The replacement is a whole thread
+// rather than a reused one: `execute_task` is not reentrant — one `jmp_buf` per
+// thread in panic.c, `tl_current_task` cleared rather than restored, ensure and
+// access stacks swapped without saving the outer task's — so running a nested
+// task on the blocked worker's stack is not the shortcut it looks like.
+//
+// It lives until the scope ends. Retiring it when the join returns would need a
+// handshake with a thread that may be mid-task, and there is nothing to gain:
+// an idle worker parks.
+//
+// Returns 0 when the slots are spent, which is when the report below is still
+// the answer.
+static int helper_spawn(GreenScheduler *s) {
+    pthread_mutex_lock(&s->grow_lock);
+    int id = atomic_load_explicit(&s->live_workers, memory_order_relaxed);
+    if (id >= s->worker_slots) {
+        pthread_mutex_unlock(&s->grow_lock);
+        return 0;
+    }
+    // Initialized before it is published: a stealer that sees the new count
+    // indexes straight into this deque.
+    deque_init(&s->local[id]);
+    s->worker_args[id].sched = s;
+    s->worker_args[id].id = id;
+    int err = pthread_create(&s->workers[id], NULL, worker_entry, &s->worker_args[id]);
+    if (err != 0) {
+        pthread_mutex_unlock(&s->grow_lock);
+        return 0;
+    }
+    atomic_store_explicit(&s->live_workers, id + 1, memory_order_release);
+    pthread_mutex_unlock(&s->grow_lock);
+    return 1;
+}
+
+// Wait for `t`, growing the pool rather than starving it.
 //
 // A worker that joins blocks here and stops taking work, so once every worker
 // is blocked in a join there is nothing left to run the tasks they are waiting
-// for. `using Multitasking(workers: 1)` with one nested spawn+join reaches that
+// for. `using Multitasking(workers: 1)` with one nested spawn+join reached that
 // state on every run, and the program hung with no output and no exit — the
 // worst way for a scheduling bug to present.
 //
-// Suspending the joining task and letting its worker pick up other work is the
-// actual fix, and it needs the fiber switch that isn't built yet (#1130). Until
-// then this reports the state rather than sitting in it.
+// So when the worker about to block is the last runnable one, the scope starts
+// a replacement first (`helper_spawn`). The check is exact — every worker
+// blocked, counting this one — so a scope that never nests never grows.
+//
+// Suspending the joining task and reusing its thread is still the real fix, and
+// it needs the fiber switch that isn't built (#1130). This gives up a thread
+// per simultaneously-blocked join instead, and past `JOIN_HELPER_SLOTS` of them
+// the report below is what you get.
 //
 // Called with `t->done_lock` held and `t->done` false.
 static void join_wait(GreenTask *t) {
@@ -679,6 +752,11 @@ static void join_wait(GreenTask *t) {
                                             memory_order_acq_rel) + 1;
     unsigned seen = atomic_load_explicit(&s->completions, memory_order_acquire);
 
+    // Nobody left to run what this join waits for.
+    if (blocked >= atomic_load_explicit(&s->live_workers, memory_order_acquire)) {
+        helper_spawn(s);
+    }
+
     while (!t->done) {
         struct timespec deadline;
         clock_gettime(CLOCK_REALTIME, &deadline);
@@ -692,14 +770,16 @@ static void join_wait(GreenTask *t) {
         // doesn't reach here: a worker running it is not blocked.
         blocked = atomic_load_explicit(&s->blocked_in_join, memory_order_acquire);
         unsigned now = atomic_load_explicit(&s->completions, memory_order_acquire);
-        if (blocked >= s->worker_count && now == seen) {
+        int live = atomic_load_explicit(&s->live_workers, memory_order_acquire);
+        if (blocked >= live && now == seen && !helper_spawn(s)) {
             fprintf(stderr,
                     "rask: deadlock — all %d worker(s) of `using Multitasking` are "
-                    "blocked in join, so nothing is left to run the tasks they wait "
+                    "blocked in join, and the %d replacements a blocked join may "
+                    "start are spent, so nothing is left to run the tasks they wait "
                     "for.\n"
-                    "  a task that joins another task needs a worker free to run it; "
-                    "raise the worker count above the depth of nested joins.\n",
-                    s->worker_count);
+                    "  a join this deep needs a thread per level; restructure so "
+                    "fewer than %d tasks join at once.\n",
+                    s->worker_count, JOIN_HELPER_SLOTS, JOIN_HELPER_SLOTS);
             abort();
         }
         seen = now;

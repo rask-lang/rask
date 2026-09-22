@@ -876,7 +876,10 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, "type is still open here")
                     .with_fix(format!("annotate it: `let {}: {} = …`", name, shown))
                     .with_help(format!(
-                        "nothing in scope pins this down, so there's no type to compile against.                          Writing it out settles it: `let {}: {} = …`.                          If you think it should have been inferable, that's a compiler bug worth reporting.",
+                        "nothing in scope pins this down, so there's no type to compile \
+                         against. Writing it out settles it: `let {}: {} = …`. If you \
+                         think it should have been inferable, that's a compiler bug \
+                         worth reporting.",
                         name, shown
                     ))
                     .with_why("every value needs a known type before it can be compiled — guessing one would silently pick the wrong size for a float, a string, or a struct")
@@ -1212,6 +1215,31 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help("write the field as `Link<T>?` for now")
                     .with_fix("add `?` — `target: Link<Entity>?`")
                     .with_why("a required edge needs two things this prototype doesn't have: a batch to build it in (a cycle needs one side written before its target exists) and a declared delete policy — cascade or restrict — for when its target dies, since there is no `none` to fall back to. An optional edge needs neither. Inside a container (`Vec<Link<T>>`, `Map<K, Link<T>>`) a bare link is fine either way: delete drops the entry rather than nulling it")
+            }
+
+            RecursiveTypeHasNoSize { name, through, span } => {
+                Diagnostic::error(format!("`{}` contains itself, so it has no size", name))
+                    .with_code("E0890")
+                    .with_primary(
+                        *span,
+                        if through.is_empty() {
+                            format!("this field is a `{}`, the type being declared", name)
+                        } else {
+                            format!("this field reaches `{}` again: {}", name, through)
+                        },
+                    )
+                    .with_help(format!(
+                        "store it in its own block: `Heap<{}>?`, or give the nodes identity with a `Rack` and `Link<{}>?`",
+                        name, name
+                    ))
+                    .with_fix(format!(
+                        "`Heap<{}>?` when each one has a single owner, or a `Rack` and `Link<{}>?` when they point at each other",
+                        name, name
+                    ))
+                    .with_why(format!(
+                        "a field is stored inline, so `{name}` needs room for the `{name}` inside it, which needs room for the one inside that, and no size satisfies it. `Heap<T>` puts the value in a block of its own and leaves the address in the field — that is the one for a list or a tree, where each node has a single owner. `Rack` plus `Link<T>?` is the one for nodes that point at each other or need identity [mem.racks]. `T?` and a tuple are inline too, so neither of them breaks the cycle on its own",
+                        name = name
+                    ))
             }
 
             LinkNotOrderable { op, recv, span } => {
@@ -2215,7 +2243,10 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_primary(*span, format!("the lock this takes is released at the end of `.{}()`", method))
                     .with_fix(format!("`{}.get()` to copy the value out, or `{}.{}().field` to read one field", recv, recv, method))
                     .with_help(format!(
-                        "three forms, by what you need: `{recv}.get()` copies the whole value out (Copy types),                          `{recv}.{method}().field` reads or writes one field under the lock, and                          `with {recv}.{method}() as v {{ … }}` holds it across several statements.",
+                        "three forms, by what you need: `{recv}.get()` copies the whole value \
+                         out (Copy types), `{recv}.{method}().field` reads or writes one \
+                         field under the lock, and `with {recv}.{method}() as v {{ … }}` \
+                         holds it across several statements.",
                         recv = recv, method = method,
                     ))
                     .with_why("inline access is scoped to the chain it starts (conc.sync/R5), so a `.read()` with nothing chained takes a lock, releases it, and hands back a value that was only valid while it was held")
@@ -3469,7 +3500,8 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
                 .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
                 .with_help(format!(
-                    "commit the cleanup where `{0}` is acquired, so every way out runs it:                      `ensure {0}.<consume>()` (e.g. `.close()`, `.detach()`)",
+                    "commit the cleanup where `{0}` is acquired, so every way out runs it: \
+                     `ensure {0}.<consume>()` (e.g. `.close()`, `.detach()`)",
                     name
                 ))
                 .with_fix(format!(
@@ -3490,7 +3522,8 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     )
                     .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
                     .with_help(format!(
-                        "commit the cleanup on the next line, then use `{0}` freely:                          `ensure {0}.<consume>()` (e.g. `.close()`, `.rollback()`)",
+                        "commit the cleanup on the next line, then use `{0}` freely: \
+                         `ensure {0}.<consume>()` (e.g. `.close()`, `.rollback()`)",
                         name
                     ))
                     .with_fix(format!(

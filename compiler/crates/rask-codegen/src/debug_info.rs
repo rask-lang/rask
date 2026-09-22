@@ -401,22 +401,6 @@ pub fn emit_dwarf(
         return Ok(());
     }
 
-    // WORKAROUND (#1184): no debug info on Mach-O.
-    //
-    // The sections below are named the ELF way — ".debug_info" with no segment.
-    // Mach-O wants them as "__debug_info" inside a "__DWARF" segment, so ld64
-    // reads them as ordinary data, tries to apply DWARF's 8-byte absolute
-    // relocations, and refuses the object:
-    //
-    //   ld: pointer not aligned in 'anon-185'+0x23
-    //
-    // That killed every macOS program, hello-world included. Emitting nothing
-    // costs macOS its line numbers; emitting this costs macOS everything.
-    // #1184 has the real fix and how to check it without a Mac.
-    if object.format() == object::BinaryFormat::MachO {
-        return Ok(());
-    }
-
     let symbol_map: Vec<SymbolId> = functions.iter().map(|f| f.symbol_id).collect();
 
     let encoding = Encoding {
@@ -620,14 +604,22 @@ pub fn emit_dwarf(
         CodegenError::CraneliftError(format!("DWARF section: {}", e))
     })?;
 
+    // Mach-O keeps debug info in a `__DWARF` segment under `__debug_*`; ELF
+    // has no segment and spells them `.debug_*`. Named the ELF way in a
+    // Mach-O object, ld64 doesn't see them as debug sections, treats them as
+    // data, and applies DWARF's 8-byte absolute relocations at whatever
+    // offset the encoder picked — "pointer not aligned in 'anon-185'+0x23",
+    // and no macOS program linked at all (#1184).
+    let macho = object.format() == object::BinaryFormat::MachO;
     let mut obj_sections: HashMap<SectionId, object::write::SectionId> = HashMap::new();
     for (id, bytes, _) in &section_data {
-        let name = dwarf_section_name(*id);
+        let name = dwarf_section_name(*id, macho);
         if name.is_empty() {
             continue;
         }
+        let segment = if macho { &b"__DWARF"[..] } else { &[][..] };
         let sec_id = object.add_section(
-            Vec::new(),
+            segment.to_vec(),
             name.as_bytes().to_vec(),
             object::SectionKind::Debug,
         );
@@ -656,15 +648,25 @@ pub fn emit_dwarf(
     Ok(())
 }
 
-fn dwarf_section_name(id: SectionId) -> &'static str {
-    match id {
-        SectionId::DebugInfo => ".debug_info",
-        SectionId::DebugAbbrev => ".debug_abbrev",
-        SectionId::DebugLine => ".debug_line",
-        SectionId::DebugStr => ".debug_str",
-        SectionId::DebugRanges => ".debug_ranges",
-        SectionId::DebugStrOffsets => ".debug_str_offsets",
-        SectionId::DebugLineStr => ".debug_line_str",
+/// The section name for a DWARF piece, in the spelling the binary format uses.
+///
+/// Empty means "we don't emit this one".
+fn dwarf_section_name(id: SectionId, macho: bool) -> &'static str {
+    match (id, macho) {
+        (SectionId::DebugInfo, false) => ".debug_info",
+        (SectionId::DebugAbbrev, false) => ".debug_abbrev",
+        (SectionId::DebugLine, false) => ".debug_line",
+        (SectionId::DebugStr, false) => ".debug_str",
+        (SectionId::DebugRanges, false) => ".debug_ranges",
+        (SectionId::DebugStrOffsets, false) => ".debug_str_offsets",
+        (SectionId::DebugLineStr, false) => ".debug_line_str",
+        (SectionId::DebugInfo, true) => "__debug_info",
+        (SectionId::DebugAbbrev, true) => "__debug_abbrev",
+        (SectionId::DebugLine, true) => "__debug_line",
+        (SectionId::DebugStr, true) => "__debug_str",
+        (SectionId::DebugRanges, true) => "__debug_ranges",
+        (SectionId::DebugStrOffsets, true) => "__debug_str_offs",
+        (SectionId::DebugLineStr, true) => "__debug_line_str",
         _ => "",
     }
 }

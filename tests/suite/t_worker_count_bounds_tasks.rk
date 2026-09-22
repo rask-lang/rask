@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `using Multitasking(workers: n)` bounds how many tasks run at once (#1111).
+//
+// It bounded nothing on the interpreter. The block built a pool of n worker
+// threads reading a channel, and `spawn(|| …)` — the only form there is —
+// started a thread of its own and never used it. So the workers sat idle for
+// the lifetime of every block, six tasks under `workers: 2` all ran at once
+// here, and two ran at once natively.
+//
+// The bound is the same rule on both backends now: n tasks *running*. A task
+// blocked in `join` isn't running anything, so it gives its slot up for the
+// duration — which is what lets `workers: 1` run a task that joins another
+// (see `t_nested_join_one_worker.rk`), and natively is a replacement thread
+// while the join lasts.
+//
+// A module-level atomic, not a `Shared`: `spawn` moves what it captures, so a
+// local can only reach one task, and reading a `Shared` through a closure is a
+// native divergence of its own (#1311).
+
+import sync.Atomic
+import sync.SeqCst
+import async.spawn
+
+const RUNNING: Atomic<i64> = Atomic<i64>.new(0)
+const PEAK: Atomic<i64> = Atomic<i64>.new(0)
+
+// The spin is long enough that the tasks overlap if they're allowed to — with
+// the bound gone, six of them under `workers: 2` peaked at six. A sleep would
+// be the obvious way to hold a task open and isn't available to a spawned body
+// on both backends. Sized so the interpreter, which runs the loop one
+// expression at a time, still finishes in a couple of seconds.
+func busy() -> i64 {
+    let now = RUNNING.fetch_add(1, SeqCst) + 1
+    mut seen = PEAK.load(SeqCst)
+    while now > seen {
+        PEAK.store(now, SeqCst)
+        seen = PEAK.load(SeqCst)
+    }
+    mut spin: i64 = 0
+    mut total: i64 = 0
+    while spin < 400000 {
+        total = total + spin
+        spin = spin + 1
+    }
+    RUNNING.fetch_sub(1, SeqCst)
+    return total
+}
+
+test "workers: 2 runs at most two tasks at once" {
+    PEAK.store(0, SeqCst)
+    RUNNING.store(0, SeqCst)
+    using Multitasking(workers: 2) {
+        let a = spawn(|| { return busy() })
+        ensure a.detach()
+        let b = spawn(|| { return busy() })
+        ensure b.detach()
+        let c = spawn(|| { return busy() })
+        ensure c.detach()
+        let d = spawn(|| { return busy() })
+        ensure d.detach()
+        let e = spawn(|| { return busy() })
+        ensure e.detach()
+        let f = spawn(|| { return busy() })
+        ensure f.detach()
+        let av = a.join() catch x => { return }
+        let bv = b.join() catch x => { return }
+        let cv = c.join() catch x => { return }
+        let dv = d.join() catch x => { return }
+        let ev = e.join() catch x => { return }
+        let fv = f.join() catch x => { return }
+    }
+    assert PEAK.load(SeqCst) <= 2
+    assert PEAK.load(SeqCst) >= 1
+}

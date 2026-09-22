@@ -2412,6 +2412,80 @@ impl<'a> MirLowerer<'a> {
         less
     }
 
+    /// A standalone three-way comparison over two keys, as a closure block.
+    ///
+    /// The runtime's sorts take the comparison as a closure — a code pointer
+    /// plus an environment — and answer in `Ordering` tags, which its adapter
+    /// turns into a sign by subtracting one. So: Less 0, Equal 1, Greater 2,
+    /// built from two `<` tests, because `<` is the one comparison that works
+    /// for every key type (numbers through Cranelift, aggregates through
+    /// codegen's field-by-field ordering, strings through `string_lt`).
+    ///
+    /// No captures — the keys arrive as arguments — so the environment is empty
+    /// and there is nothing for the caller to free.
+    fn emit_key_comparator(&mut self, key_ty: &MirType) -> MirOperand {
+        let wrapper_name = format!("{}__keycmp_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+
+        let mut wb = crate::BlockBuilder::new(wrapper_name.clone(), MirType::I64);
+        wb.add_param("__env".to_string(), MirType::Ptr);
+        let a = wb.add_param("__a".to_string(), key_ty.clone());
+        let b = wb.add_param("__b".to_string(), key_ty.clone());
+
+        let saved = std::mem::replace(&mut self.builder, wb);
+
+        let check_greater = self.builder.create_block();
+        let ret_less = self.builder.create_block();
+        let ret_greater = self.builder.create_block();
+        let ret_equal = self.builder.create_block();
+
+        let a_lt_b = self.emit_key_less(key_ty, a, b);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(a_lt_b),
+            then_block: ret_less,
+            else_block: check_greater,
+        }));
+
+        self.builder.switch_to_block(check_greater);
+        let b_lt_a = self.emit_key_less(key_ty, b, a);
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(b_lt_a),
+            then_block: ret_greater,
+            else_block: ret_equal,
+        }));
+
+        for (block, tag) in [(ret_less, 0), (ret_equal, 1), (ret_greater, 2)] {
+            self.builder.switch_to_block(block);
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+                value: Some(MirOperand::Constant(MirConst::Int(tag))),
+            }));
+        }
+
+        // No trailing `terminate` here: every block above ends in its own
+        // return, and terminating again would land on whichever block is
+        // current — it overwrote `return Greater` with `return Equal`, so a
+        // comparator that could say "less" and "equal" but never "greater"
+        // sorted 200 elements into 78 out-of-order pairs.
+        let wb = std::mem::replace(&mut self.builder, saved);
+        self.func_sigs.insert(wrapper_name.clone(), super::FuncSig {
+            ret_ty: MirType::I64,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_ty_strs: Vec::new(),
+        });
+        self.synthesized_functions.push(wb.finish());
+
+        let block = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
+            dst: block,
+            func_name: wrapper_name,
+            captures: Vec::new(),
+            heap: false,
+        }));
+        MirOperand::Local(block)
+    }
+
     /// `v.sort_by_key(f)` — in place, and stable (SO1). Two elements whose keys
     /// tie can differ in every other field, so their order is observable — the
     /// argument that lets `sort` use the platform sort doesn't reach here.
@@ -2517,142 +2591,29 @@ impl<'a> MirLowerer<'a> {
             vec![MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&key_ty)))],
         );
 
-        // Insertion sort over [1, n), keeping `vec` and `keys` in lockstep.
+        // The sort itself is the runtime's merge sort, over the keys.
         //
-        // Stable, which is what `sort_by_key` has to be: the interpreter sorts
-        // with Rust's stable sort, so anything else here makes the two backends
-        // disagree on tied keys. A selection sort doesn't qualify — lifting the
-        // minimum out of the tail reorders the equal elements it jumps over.
-        // Insertion sort only ever swaps a pair the comparison calls *strictly*
-        // less, so equal keys never cross.
+        // This used to be an insertion sort emitted right here — correct and
+        // stable and O(n²), which on a large Vec is dramatically slower than
+        // `sort_by` over the same data. The reason was that the runtime's sorts
+        // need the comparison as something callable from C, and the key
+        // comparison is generated MIR: that is what lets an arbitrary key type
+        // work, since a struct, enum or tuple key goes through codegen's own
+        // field-by-field ordering and a string key routes to `string_lt`.
         //
-        // O(n²) in the worst case, where `sort`/`sort_by` hand off to the
-        // runtime's qsort/merge sort. Those take the comparison as a C function
-        // pointer or a closure, and this comparison is neither — it's emitted
-        // MIR, which is what lets an arbitrary key type (a struct, an enum, a
-        // tuple) be compared field-by-field by codegen at all. Reusing the
-        // runtime's sort means giving it a callable comparator over keys; #942
-        // has the plan.
-        let i = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: i,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
-        }));
-
-        let i_check = self.builder.create_block();
-        let i_body = self.builder.create_block();
-        let i_inc = self.builder.create_block();
-        let i_done = self.builder.create_block();
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: i_check }));
-
-        self.builder.switch_to_block(i_check);
-        let i_cond = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: i_cond,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Lt,
-                left: MirOperand::Local(i),
-                right: MirOperand::Local(n),
-            },
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(i_cond),
-            then_block: i_body,
-            else_block: i_done,
-        }));
-
-        // Walk element `i` down past every predecessor with a bigger key.
-        let j = self.builder.alloc_temp(MirType::I64);
-        self.builder.switch_to_block(i_body);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: j,
-            rvalue: MirRValue::Use(MirOperand::Local(i)),
-        }));
-
-        let j_check = self.builder.create_block();
-        let j_body = self.builder.create_block();
-        let j_shift = self.builder.create_block();
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: j_check }));
-
-        self.builder.switch_to_block(j_check);
-        let j_positive = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: j_positive,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Gt,
-                left: MirOperand::Local(j),
-                right: MirOperand::Constant(MirConst::Int(0)),
-            },
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(j_positive),
-            then_block: j_body,
-            else_block: i_inc,
-        }));
-
-        self.builder.switch_to_block(j_body);
-        let j_prev = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: j_prev,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Sub,
-                left: MirOperand::Local(j),
-                right: MirOperand::Constant(MirConst::Int(1)),
-            },
-        }));
-        let key_j = self.builder.alloc_temp(key_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(key_j),
-            func: FunctionRef::internal("Vec_get".to_string()),
-            args: vec![MirOperand::Local(keys), MirOperand::Local(j)],
-        }));
-        let key_prev = self.builder.alloc_temp(key_ty.clone());
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(key_prev),
-            func: FunctionRef::internal("Vec_get".to_string()),
-            args: vec![MirOperand::Local(keys), MirOperand::Local(j_prev)],
-        }));
-        let less = self.emit_key_less(&key_ty, key_j, key_prev);
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(less),
-            then_block: j_shift,
-            else_block: i_inc,
-        }));
-
-        self.builder.switch_to_block(j_shift);
+        // So the comparison becomes a standalone function and its address goes
+        // over as a closure block, the same shape `sort_by` already takes
+        // (#942). The runtime sorts an index permutation and moves the elements
+        // once; stability comes from the merge sort plus indices that start in
+        // order, which is what `sort_by_key` has to guarantee because the
+        // interpreter's Rust sort does.
+        let cmp = self.emit_key_comparator(&key_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Vec_swap".to_string()),
-            args: vec![MirOperand::Local(vec_local), MirOperand::Local(j), MirOperand::Local(j_prev)],
+            func: FunctionRef::internal("Vec_sort_by_keys".to_string()),
+            args: vec![MirOperand::Local(vec_local), MirOperand::Local(keys), cmp],
         }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal("Vec_swap".to_string()),
-            args: vec![MirOperand::Local(keys), MirOperand::Local(j), MirOperand::Local(j_prev)],
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: j,
-            rvalue: MirRValue::Use(MirOperand::Local(j_prev)),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: j_check }));
 
-        self.builder.switch_to_block(i_inc);
-        let i_next = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: i_next,
-            rvalue: MirRValue::BinaryOp {
-                op: crate::operand::BinOp::Add,
-                left: MirOperand::Local(i),
-                right: MirOperand::Constant(MirConst::Int(1)),
-            },
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: i,
-            rvalue: MirRValue::Use(MirOperand::Local(i_next)),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: i_check }));
-
-        self.builder.switch_to_block(i_done);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Vec_free".to_string()),

@@ -222,10 +222,10 @@ macro_rules! methods_with_arity {
 // than from a declaration.
 //
 // `staged` is missing on purpose, and not because it doesn't exist: it is
-// declared, the checker accepts it, and `with s.staged() as v` runs on both
-// backends. What has no implementation anywhere is the bare `s.staged()` this
-// list would claim — see #1156. Adding the name asserts a method call that
-// answers, and that one doesn't.
+// declared and `with s.staged() as v` runs on both backends. It just isn't a
+// method call — a working copy that commits when a scope ends needs the scope,
+// so the checker now rejects the call in every other position (E0846, #1156).
+// This list is for names a method call answers, and no call to this one does.
 const SHARED_METHODS: &[&str] = &[
     "read", "write", "try_read", "try_write", "clone",
     "get", "set", "replace", "take",

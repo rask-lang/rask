@@ -86,6 +86,49 @@ where
 }
 
 
+/// Does this thread hold one of the scope's task slots?
+///
+/// A task that blocks in `join` isn't running anything, so it hands its slot
+/// back for the duration — which is the same rule native follows, where a
+/// blocked worker gets a replacement thread. Only a thread that holds one may
+/// give it up, hence the flag.
+thread_local! {
+    static HOLDS_TASK_SLOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run a spawned task's body under the `using Multitasking(workers: n)` bound.
+///
+/// Waits for a slot, runs, hands the slot back. Outside a scope — which `spawn`
+/// rejects before it gets here — there is no bound and nothing to wait for.
+pub(crate) fn with_task_slot<T>(body: impl FnOnce() -> T) -> T {
+    let runtime = value::ACTIVE_RUNTIME.read().unwrap().clone();
+    let Some(runtime) = runtime else { return body() };
+    runtime.take_slot();
+    HOLDS_TASK_SLOT.with(|h| h.set(true));
+    let out = body();
+    HOLDS_TASK_SLOT.with(|h| h.set(false));
+    runtime.give_slot();
+    out
+}
+
+/// Wait for something, without holding a task slot while waiting.
+///
+/// `join` on a task is the case that matters: a joiner that kept its slot would
+/// leave `using Multitasking(workers: 1)` unable to run the task it waits for.
+pub(crate) fn without_task_slot<T>(wait: impl FnOnce() -> T) -> T {
+    if !HOLDS_TASK_SLOT.with(|h| h.get()) {
+        return wait();
+    }
+    let runtime = value::ACTIVE_RUNTIME.read().unwrap().clone();
+    let Some(runtime) = runtime else { return wait() };
+    HOLDS_TASK_SLOT.with(|h| h.set(false));
+    runtime.give_slot();
+    let out = wait();
+    runtime.take_slot();
+    HOLDS_TASK_SLOT.with(|h| h.set(true));
+    out
+}
+
 /// Stack for a thread running interpreted Rask code.
 ///
 /// Sized so that both profiles reach a comparable Rask recursion depth (~465),

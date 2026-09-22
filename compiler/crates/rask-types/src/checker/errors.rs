@@ -250,6 +250,15 @@ pub enum TypeError {
     NonOptionalLink {
         span: Span,
     },
+    /// A struct or enum that reaches itself through inline storage only, so no
+    /// finite layout exists. `through` spells the chain when it goes via other
+    /// types: `Node -> Edge -> Node`.
+    #[error("`{name}` contains itself, so it has no size")]
+    RecursiveTypeHasNoSize {
+        name: String,
+        through: String,
+        span: Span,
+    },
     /// mem.racks/RK11: `<`, `compare` or `sort` on links. A link is the node's
     /// address, so the answer would come from the allocator. `op` is what the
     /// source wrote.
@@ -1334,6 +1343,7 @@ impl TypeError {
             | LocalSharedSent { .. }
             | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
+            | RecursiveTypeHasNoSize { .. }
             | LinkNotOrderable { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }

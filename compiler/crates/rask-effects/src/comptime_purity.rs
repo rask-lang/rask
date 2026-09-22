@@ -123,7 +123,6 @@ fn first_impure_call(body: &[rask_ast::stmt::Stmt], effects: &EffectMap) -> Opti
                 let recv = callee_name(object).unwrap_or_default();
                 (format!("{}.{}", recv, method), e.span)
             }
-            ExprKind::Spawn { .. } => ("spawn".to_string(), e.span),
             _ => return,
         };
         // Two sources: the ground-truth table for a stdlib call, and the

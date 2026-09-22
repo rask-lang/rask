@@ -1108,6 +1108,13 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, args: type_args } if name == "Link" => {
                 match method.as_str() {
                     "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
+                    // `hash` is the link's, not the node's. Falling through
+                    // gave it the node's derived hash, which disagrees with
+                    // `==` in both directions: two distinct nodes holding equal
+                    // fields hashed the same while their links compare
+                    // different. Equal keys have to hash equal, and here equal
+                    // means the same node (#1268).
+                    "hash" if args.is_empty() => self.unify(&ret, &Type::U64, span),
                     _ => {
                         let node_ty = if let Some(GenericArg::Type(t)) = type_args.first() {
                             *t.clone()
@@ -2390,6 +2397,43 @@ impl TypeChecker {
         }
     }
 
+    /// `s.read(|v| …)` and its three siblings: tie the closure to the box.
+    ///
+    /// The arms used to invent a fresh variable for the result and unify the
+    /// return with *that*, which relates the call to nothing. So the binding
+    /// was left open — `let doubled = s.read(|v| { return v * 2 })` reported
+    /// "couldn't work out the type of `doubled`" while the same line with
+    /// `: i64` written on it was fine, which reads like an inference hiccup
+    /// rather than a missing constraint (#1155).
+    ///
+    /// Two constraints, both off the closure's own `Type::Fn`: its parameter is
+    /// the box's `T`, so `|v| v * 2` knows `v` is an `i64` instead of guessing
+    /// from use, and its return is the call's `R`. `try_read`/`try_write` wrap
+    /// that `R` in an optional, which is the only difference between the four.
+    fn unify_accessor_closure(
+        &mut self,
+        closure_ty: &Type,
+        inner_type: &Type,
+        ret: &Type,
+        span: Span,
+        optional: bool,
+    ) -> Result<bool, TypeError> {
+        let result = match self.ctx.apply(closure_ty) {
+            Type::Fn { params, ret: closure_ret } => {
+                if let Some(param) = params.first() {
+                    let _ = self.unify(param, inner_type, span);
+                }
+                *closure_ret
+            }
+            // Not pinned yet — the closure's own type arrives from a deferred
+            // constraint. A variable here still ties the two together once it
+            // is, which is what the old code was missing.
+            _ => self.ctx.fresh_var(),
+        };
+        let answer = if optional { Type::option(result) } else { result };
+        self.unify(ret, &answer, span)
+    }
+
     pub(super) fn resolve_concurrency_generic_method(
         &mut self,
         type_name: &str,
@@ -2428,13 +2472,11 @@ impl TypeChecker {
             }
             // Shared<T>.read(|T| -> R) -> R  (closure-based, try_read)
             ("Shared", "read") if args.len() == 1 => {
-                let result_var = self.ctx.fresh_var();
-                self.unify(ret, &result_var, span)
+                self.unify_accessor_closure(&args[0], &inner_type, ret, span, false)
             }
             // Shared<T>.write(|T| -> R) -> R  (closure-based, try_write)
             ("Shared", "write") if args.len() == 1 => {
-                let result_var = self.ctx.fresh_var();
-                self.unify(ret, &result_var, span)
+                self.unify_accessor_closure(&args[0], &inner_type, ret, span, false)
             }
             // Shared<T>.staged() -> T  (ST1: a working copy under the
             // exclusive lock, committed as one move on any non-panic exit)
@@ -2443,15 +2485,11 @@ impl TypeChecker {
             }
             // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_read") if args.len() == 1 => {
-                let result_var = self.ctx.fresh_var();
-                let opt_ty = Type::option(result_var);
-                self.unify(ret, &opt_ty, span)
+                self.unify_accessor_closure(&args[0], &inner_type, ret, span, true)
             }
             // Shared<T>.try_write(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_write") if args.len() == 1 => {
-                let result_var = self.ctx.fresh_var();
-                let opt_ty = Type::option(result_var);
-                self.unify(ret, &opt_ty, span)
+                self.unify_accessor_closure(&args[0], &inner_type, ret, span, true)
             }
             // The single-expression shorthands `Cell` had (conc.sync API table).
             ("Shared", "get" | "take") if args.is_empty() => {

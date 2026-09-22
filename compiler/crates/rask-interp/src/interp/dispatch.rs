@@ -499,6 +499,39 @@ impl Interpreter {
             // `write` are the same operation here; the verb is intent the
             // reader can see, not a different call (conc.sync/SH5).
             Value::Cell(ref c) => match method {
+                // The closure form. This arm ignored `args` entirely, so
+                // `s.read(|v| v * 2)` on a `Local` box handed back the value
+                // and never ran the closure — 5 where the `Readers` strategy
+                // answered 10 on the same program (#1155).
+                //
+                // `write` runs it under the same lock and keeps what it
+                // returns, which is what makes it a write.
+                "read" | "write" if args.len() == 1 => {
+                    let closure = args.into_iter().next().unwrap();
+                    let snapshot = { c.lock().unwrap().clone() };
+                    let result = self.call_closure_with_arg(&closure, snapshot)?;
+                    if method == "write" {
+                        *c.lock().unwrap() = result.clone();
+                    }
+                    Ok(result)
+                }
+                // R3: a `Local` box is never contended, so the non-blocking
+                // pair always succeeds — the same answer wrapped in `Some`.
+                "try_read" | "try_write" if args.len() == 1 => {
+                    let closure = args.into_iter().next().unwrap();
+                    let snapshot = { c.lock().unwrap().clone() };
+                    let result = self.call_closure_with_arg(&closure, snapshot)?;
+                    if method == "try_write" {
+                        *c.lock().unwrap() = result.clone();
+                    }
+                    Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![result],
+                        variant_index: 0,
+                        origin: None,
+                    })
+                }
                 "read" | "write" => {
                     let guard = c.lock().unwrap();
                     Ok(guard.clone())

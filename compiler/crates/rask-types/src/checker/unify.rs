@@ -1128,6 +1128,23 @@ impl TypeChecker {
                     // to T. Disjointness (ER3) makes this unambiguous.
                     let resolved_err = self.ctx.apply(err);
                     let resolved_ok = self.ctx.apply(ok);
+                    // Both sides through the name table before they are
+                    // compared. A type that reached here as
+                    // `UnresolvedNamed("ParseError")` and one that reached here
+                    // as `Named(TypeId(17))` are the same type spelled two
+                    // ways, and `==` on the enum says they aren't — so the
+                    // error went to the *success* branch and the author was
+                    // told to change `ParseError` into an `i64`:
+                    //
+                    //     let n = text.parse<i64>() catch e => { return e }
+                    //     error[E0308]: expected `i64`, found `ParseError`
+                    //
+                    // The stdlib's own signatures are where the unresolved
+                    // spelling comes from, which is why the same code against a
+                    // user function was fine (#1255).
+                    let resolved_err = self.resolve_named(&resolved_err);
+                    let resolved_ok = self.resolve_named(&resolved_ok);
+                    let resolved_ret = self.resolve_named(&resolved_ret);
                     // ER39: inferred err. If err is unresolved and the return
                     // value doesn't match ok, treat as an err and accumulate.
                     // Don't unify err here — leave it for the function-level

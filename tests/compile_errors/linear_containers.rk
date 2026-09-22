@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Compile Error: linear values in a container (mem.resource-types/RC1-RC3)
 //
+// Two kinds of linear value, and they are linear for different reasons: a
+// `@resource` struct because of what it holds, a `Heap<T>` because it *is* the
+// allocation someone has to give back. Both are covered — the Vec check used to
+// catch only the first (#1245).
+//
 // Vec and Map drop can't consume their elements, and `Rack.delete` frees a node
 // rather than handing it back, so a linear value (@resource, a transitively-
 // linear struct/enum, or an optional/tuple/array built from one) can't live in
@@ -9,6 +14,7 @@
 // covered below.
 
 import memory.Rack
+import memory.Heap
 
 @resource
 struct File {
@@ -80,6 +86,40 @@ func vec_optional() -> void {
 
 // Route: type alias
 type alias FileList = Vec<File>          // ERROR [RC1]: `Vec` cannot hold linear value `File`
+
+// ── The same rule for `Heap<T>`, which is linear by being the obligation ──
+//
+// A `@resource` struct is linear because of what it holds; a `Heap<T>` *is* the
+// obligation — the allocation someone has to give back. `Vec<Heap<i64>>`
+// type-checked for a while because the Vec check asked "does this hold anything
+// linear inside it", and a `Heap` holds a plain `i64`. The Map half asked the
+// right question, which is how the asymmetry turned up (#1245).
+
+func vec_of_heap() -> void {
+    let hs: Vec<Heap<i64>> = Vec.new()   // ERROR [RC1]: `Vec` cannot hold linear value `Heap<i64>`
+    return
+}
+
+// Inferred through a push, with no annotation to read it off.
+func vec_of_heap_inferred() -> void {
+    // ERROR [RC1]: element unifies to `Heap<i64>` through the push below
+    mut hs = Vec.new()
+    hs.push(Heap(7))
+    return
+}
+
+func heap_param(hs: Vec<Heap<i64>>) -> void {   // ERROR [RC1]: `Vec` cannot hold linear value `Heap<i64>`
+    return
+}
+
+struct HasHeapVec {
+    boxes: Vec<Heap<i64>>                // ERROR [RC1]: `Vec` cannot hold linear value `Heap<i64>`
+}
+
+func map_of_heap() -> void {
+    let m: Map<string, Heap<i64>> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `Heap<i64>`
+    return
+}
 
 // ── RC3: Map ────────────────────────────────────────────────────────
 

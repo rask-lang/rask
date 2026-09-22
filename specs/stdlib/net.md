@@ -48,10 +48,10 @@ ensure listener.close()
 
 loop {
     let conn = try listener.accept()
-    spawn {
+    spawn(|| {
         ensure conn.close()
         try handle(conn)
-    }.detach()
+    }).detach()
 }
 ```
 
