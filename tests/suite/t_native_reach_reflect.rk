@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// reflect.* and FieldInfo.* marked `@native` with no dispatch row.
+//
+// All of these resolve at comptime, so the absent dispatch row is correct.
+// Three names on the list can't be exercised here — `reflect.size_of`,
+// `align_of` and `is_copy` refuse on BOTH backends with the same message,
+// because the compiler has two size models that disagree (#791). Agreeing to
+// refuse is not a divergence, so they stay off this file until #791 settles
+// which model answers.
+
+import std.reflect
+
+annotation @label {
+    name: string
+}
+
+struct Row {
+    @label(name: "id")
+    public id: i64
+    public value: string
+}
+
+test "reflect.fields and FieldInfo has/get" {
+    mut seen = ""
+    comptime for f in reflect.fields<Row>() {
+        seen = "{seen}{f.name};"
+        comptime if f.has<label>() {
+            seen = "{seen}@{f.get<label>().name};"
+        }
+    }
+    assert(seen == "id;@id;value;")
+}
+
+test "reflect predicates" {
+    assert(reflect.name_of<Row>() == "Row")
+    assert(reflect.is_struct<Row>())
+    assert(!reflect.is_enum<Row>())
+    assert(!reflect.is_flat<Row>())
+    assert(reflect.is_float<f64>())
+    assert(reflect.is_integer<i64>())
+    assert(!reflect.is_map<Row>())
+    assert(!reflect.is_optional<Row>())
+    assert(!reflect.is_resource<Row>())
+    assert(!reflect.is_vec<Row>())
+}

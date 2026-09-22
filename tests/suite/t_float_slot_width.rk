@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Every position a float can sit in a word-wide slot, read back.
+//
+// `mem`'s rule since #629: a float in an 8-byte slot lives there as an `f64`,
+// so an `f32` is widened on the way in and demoted on the way out. Four sites
+// disagreed with it and each produced a quiet wrong answer rather than a crash
+// — #902, #972, and both halves of #973. Quiet is the problem: `2.5` came back
+// as `2`, which reads as a rounding bug, and `1.5` came back as `0`, which
+// reads as an uninitialised field.
+//
+// The rule has one home now (`rask_mono::abi::payload_repr`, with
+// `slot_storage_type` / `value_to_ptr` / `load_scalar_slot` as the read-write
+// pair), and this is the grid that says so. Nothing covered all of it: the
+// enum rows were green only because no variant in the suite carried a float.
+//
+// A new carrier for a scalar payload belongs here as a new row.
+
+struct Holder<T> {
+    public v: T
+}
+
+struct Flat {
+    public a: f32
+    public b: f64
+}
+
+struct Bad {
+    public why: string
+}
+
+extend Bad {
+    public func message(self) -> string {
+        return self.why
+    }
+}
+
+enum Slot<T> {
+    Nothing
+    Has(T)
+}
+
+enum PlainF {
+    Nothing
+    Has(f32)
+}
+
+enum PlainD {
+    Nothing
+    Has(f64)
+}
+
+func make_f32() -> f32 or Bad {
+    return 7.5
+}
+
+func through<T>(x: T) -> T {
+    return x
+}
+
+test "a float keeps its value through a generic struct field" {
+    assert(Holder<f32> { v: 1.5 }.v == 1.5)
+    assert(Holder<f64> { v: 2.5 }.v == 2.5)
+}
+
+test "and through a concrete one" {
+    let f = Flat { a: 3.5, b: 4.5 }
+    assert(f.a == 3.5)
+    assert(f.b == 4.5)
+}
+
+test "through an optional and a result payload" {
+    let of: f32? = 5.5
+    assert((of ?? 0.0) == 5.5)
+    let od: f64? = 6.5
+    assert((od ?? 0.0) == 6.5)
+    assert((make_f32() catch _ => 0.0) == 7.5)
+}
+
+test "through a container element and a map value" {
+    let v: Vec<f32> = [8.5]
+    assert((v.get(0) ?? 0.0) == 8.5)
+
+    mut m: Map<string, f32> = Map.new()
+    m.insert("k", 9.5)
+    assert((m.get("k") ?? 0.0) == 9.5)
+
+    let arr: [f32; 2] = [10.5, 11.5]
+    assert(arr[0] == 10.5)
+    assert(arr[1] == 11.5)
+}
+
+test "through a tuple element and a generic function" {
+    let t = (12.5, 1)
+    assert(t.0 == 12.5)
+    assert(through(13.5) == 13.5)
+}
+
+// The row that was wrong for concrete payloads as well as generic ones. The
+// enum arm of `lower_field_access` computed an offset and never consulted the
+// slot's storage width, so an `f64` came back truncated to its integer part
+// and an `f32` came back as the zero low half of a double.
+test "and through an enum payload, plain or generic" {
+    let pf = PlainF.Has(14.5)
+    assert(match pf { Has(v) => v, Nothing => 0.0 } == 14.5)
+
+    let pd = PlainD.Has(15.5)
+    assert(match pd { Has(v) => v, Nothing => 0.0 } == 15.5)
+
+    let gf: Slot<f32> = Slot.Has(16.5)
+    assert(match gf { Has(v) => v, Nothing => 0.0 } == 16.5)
+
+    let gd: Slot<f64> = Slot.Has(17.5)
+    assert(match gd { Has(v) => v, Nothing => 0.0 } == 17.5)
+}
