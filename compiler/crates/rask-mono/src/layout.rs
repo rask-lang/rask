@@ -146,9 +146,10 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::String => (16, 8), // 16-byte SSO inline (RaskStr union)
         ty if ty.is_option() => {
             let inner = ty.as_option().unwrap();
-            // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.
+            // Niche optimization: `Link<T>?` is the node's address with null
+            // for `none` — one word, no tag.
             if matches!(inner, Type::UnresolvedGeneric { name, .. }
-                if name == "Handle" || name == "Link")
+                if name == "Link")
             {
                 return (8, 8);
             }
@@ -1161,25 +1162,25 @@ mod tests {
     }
 
     #[test]
-    fn option_handle_niche_optimized() {
-        // Option<Handle<T>> uses niche sentinel — same size as Handle (8 bytes, no tag)
-        let handle_ty = Type::UnresolvedGeneric {
-            name: "Handle".to_string(),
+    fn option_link_niche_optimized() {
+        // `Link<T>?` uses null for `none` — same size as a link, no tag
+        let link_ty = Type::UnresolvedGeneric {
+            name: "Link".to_string(),
             args: vec![rask_types::GenericArg::Type(Box::new(Type::I32))],
         };
-        let (size, align) = tsa(&Type::option(handle_ty));
+        let (size, align) = tsa(&Type::option(link_ty));
         assert_eq!(size, 8);
         assert_eq!(align, 8);
     }
 
     #[test]
-    fn handle_size() {
-        // Handle<T> is 8 bytes (packed i64: index:32 | gen:32)
-        let handle_ty = Type::UnresolvedGeneric {
-            name: "Handle".to_string(),
+    fn link_size() {
+        // `Link<T>` is the node's address — 8 bytes, nothing else
+        let link_ty = Type::UnresolvedGeneric {
+            name: "Link".to_string(),
             args: vec![rask_types::GenericArg::Type(Box::new(Type::I32))],
         };
-        let (size, align) = tsa(&handle_ty);
+        let (size, align) = tsa(&link_ty);
         assert_eq!(size, 8);
         assert_eq!(align, 8);
     }

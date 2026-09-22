@@ -2013,12 +2013,12 @@ impl<'a> FunctionBuilder<'a> {
             // Instant) have empty layouts and stay pointer-sized scalars.
             RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
             RaskType::Named(_) => false,
-            // The niche options — `Handle<T>?` and `Link<T>?` — are one word
-            // with a sentinel for `none`, so they load like a scalar. Answering
-            // "aggregate" here handed back the field's *address*, and a root
-            // edge read as a stack address instead of the node it named.
+            // The niche option — `Link<T>?` — is one word with null for
+            // `none`, so it loads like a scalar. Answering "aggregate" here
+            // handed back the field's *address*, and a root edge read as a
+            // stack address instead of the node it named.
             ty if ty.is_option() && matches!(ty.as_option().unwrap(),
-                RaskType::UnresolvedGeneric { name, .. } if name == "Handle" || name == "Link")
+                RaskType::UnresolvedGeneric { name, .. } if name == "Link")
                 => false,
             // The same option with its payload already resolved to a `TypeId`.
             // `Generic`/`Named` payloads are the runtime-opaque pointer types

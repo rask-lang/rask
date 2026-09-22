@@ -3527,7 +3527,7 @@ impl TypeChecker {
                 // "Function not found: Heap_new". Every sibling — `Link`,
                 // `Shared`, `Mutex` — says "no method `new` found for type";
                 // `Heap` was the one stdlib name that didn't.
-                && (matches!(base_name, "Vec" | "Map" | "Pool" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic" | "Heap")
+                && (matches!(base_name, "Vec" | "Map" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic" | "Heap")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
                 let obj_ty = if name.contains('<') {
@@ -6000,31 +6000,6 @@ impl TypeChecker {
         self.types.resolve_type_names(index) == self.types.resolve_type_names(key)
     }
 
-    /// True if `index` is a `Handle<U>` whose `U` matches the pool's element
-    /// type. Cross-pool handles of the same element type aren't statically
-    /// distinguishable (that's the runtime pool_id check), so accept them;
-    /// only a statically-wrong element type is rejected.
-    fn index_is_matching_handle(&self, index: &Type, pool_elem: &Type) -> bool {
-        let handle_arg = match index {
-            Type::UnresolvedGeneric { name, args } if name == "Handle" => args.first(),
-            Type::Generic { base, args }
-                if self.types.get_type_id("Handle").map_or(false, |id| id == *base) =>
-            {
-                args.first()
-            }
-            _ => return false,
-        };
-        let Some(GenericArg::Type(u)) = handle_arg else {
-            return true; // bare `Handle` — nothing to compare
-        };
-        let u = self.ctx.apply(u);
-        // Unresolved on either side — don't reject.
-        if matches!(u, Type::Var(_) | Type::Error) || matches!(pool_elem, Type::Var(_) | Type::Error)
-        {
-            return true;
-        }
-        self.types.resolve_type_names(&u) == self.types.resolve_type_names(pool_elem)
-    }
 }
 
 /// What `container_elem_type` could work out about a `for` loop's source.

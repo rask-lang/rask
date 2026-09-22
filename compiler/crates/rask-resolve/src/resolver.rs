@@ -3394,7 +3394,7 @@ mod tests {
     }
 
     /// The other side of the same rule: a stdlib type that isn't in BI1's set is
-    /// an ordinary name, and a program may have it. `Handle` and `Pool` were
+    /// an ordinary name, and a program may have it. `Link` and `Rack` were
     /// refused here until the box family moved out of the always-in-scope table
     /// and into `memory` — being a closed compiler type (mem.shared-rack-heap/BX1–BX4) is
     /// about who may define one, not about who can see the name unasked.
@@ -3402,7 +3402,7 @@ mod tests {
     fn test_a_stdlib_type_name_outside_bi1_is_declarable() {
         for name in [
             "Duration", "Timer", "Instant", "StringBuilder", "Budget9",
-            "Pool", "Handle", "Rack", "Link", "Mutex", "Shared", "Heap",
+            "Rack", "Link", "Mutex", "Shared", "Heap",
         ] {
             let decls = vec![make_struct_decl(name)];
             assert!(
