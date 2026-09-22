@@ -2169,6 +2169,28 @@ impl CodeGenerator {
     pub fn emit_object(self, path: &str) -> CodegenResult<()> {
         let mut product = self.module.finish();
 
+        // Mach-O objects say which platform they were built for, in an
+        // LC_BUILD_VERSION load command. Ours carried none, so ld64 guessed on
+        // every single macOS compile:
+        //
+        //   ld: warning: no platform load command found in 'rask_hello.o',
+        //       assuming: macOS
+        //
+        // It guessed right, and a warning on every build is still a warning on
+        // every build. arm64 macOS starts at 11.0; x86_64 goes back further,
+        // and picking 11.0 there would refuse to run on a Mac that works.
+        if product.object.format() == object::BinaryFormat::MachO {
+            let minos = match product.object.architecture() {
+                object::Architecture::Aarch64 => 11 << 16, // 11.0.0
+                _ => (10 << 16) | (12 << 8),               // 10.12.0
+            };
+            let mut version = object::write::MachOBuildVersion::default();
+            version.platform = object::macho::PLATFORM_MACOS;
+            version.minos = minos;
+            version.sdk = minos;
+            product.object.set_macho_build_version(version);
+        }
+
         // Emit DWARF debug info in debug builds
         if self.build_mode == BuildMode::Debug {
             if let (Some(line_map), Some(source_file)) = (&self.line_map, &self.source_file_name) {

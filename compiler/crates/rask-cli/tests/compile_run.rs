@@ -8678,6 +8678,15 @@ fn macho_debug_sections_use_the_macho_spelling() {
         !has(".debug_info"),
         "the ELF spelling is what ld64 mistook for data",
     );
+    // And the object says which platform it is for. Without the load command
+    // ld64 guesses — correctly, and out loud, on every macOS compile. The
+    // command is cmd=0x32 followed by cmdsize=24, which is specific enough to
+    // look for as bytes.
+    let build_version: [u8; 8] = [0x32, 0, 0, 0, 24, 0, 0, 0];
+    assert!(
+        bytes.windows(8).any(|w| w == build_version),
+        "LC_BUILD_VERSION should be among the load commands",
+    );
 
     let _ = std::fs::remove_file(&out);
     let _ = std::fs::remove_file(&obj);
