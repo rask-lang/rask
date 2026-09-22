@@ -7,6 +7,7 @@
 func main() {}
 
 struct Meters { v: f64 }
+
 struct SquareMeters { v: f64 }
 
 extend Meters with Mul<f64> {
@@ -35,7 +36,7 @@ test "OR1 — the left operand no longer decides on its own" {
 test "OR1 — the same pair through the method spelling" {
     let d = Meters { v: 4.0 }
     assert d.mul(0.5).v == 2.0
-    assert (0.5).mul(d).v == 2.0
+    assert 0.5.mul(d).v == 2.0
 }
 
 // AT8/OR4: a second `Mul` on the same type, with its own `Out`. Both blocks

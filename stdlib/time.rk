@@ -242,7 +242,6 @@ extend Duration with Mul<i64> {
     }
 }
 
-
 extend i64 with Mul<Duration> {
     type Out = Duration
 
