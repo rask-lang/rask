@@ -296,6 +296,9 @@ void     rask_vec_sort_f64(RaskVec *v);
 void     rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
 void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
+// Order `v` by a parallel Vec of keys, stably. `comparator` is a closure block
+// over two keys — same shape sort_by takes. `keys` is read, not reordered.
+void     rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator);
 void     rask_vec_reverse(RaskVec *v);
 void     rask_vec_swap(RaskVec *v, int64_t i, int64_t j);
 int64_t  rask_vec_contains(const RaskVec *v, const void *elem);

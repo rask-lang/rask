@@ -365,6 +365,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         ),
         StdlibEntry::simple("f64_compare", "rask_f64_compare_total", &[types::F64, types::F64], Some(types::I64), false),
         StdlibEntry::simple("Vec_sort_by", "rask_vec_sort_by", &[types::I64, types::I64], None, false),
+        // `sort_by_key`: the elements, the parallel keys, and a comparator over
+        // two keys. Panics only on a keys/elements length mismatch, which is
+        // lowering's own bug rather than the program's.
+        StdlibEntry::simple(
+            "Vec_sort_by_keys", "rask_vec_sort_by_keys",
+            &[types::I64, types::I64, types::I64], None, true,
+        ),
         StdlibEntry::simple("Vec_reverse", "rask_vec_reverse", &[types::I64], None, false),
         StdlibEntry::simple("Vec_swap", "rask_vec_swap", &[types::I64, types::I64, types::I64], None, true),
         // The runtime compares the element bytes through a pointer, so the

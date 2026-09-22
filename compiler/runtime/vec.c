@@ -1090,6 +1090,76 @@ void rask_vec_sort_by(RaskVec *v, int64_t comparator) {
     rask_stable_sort(v->data, v->len, v->elem_size, rask_sort_by_adapter);
 }
 
+// sort_by_key(vec, keys, comparator) — order `v` by a parallel Vec of keys.
+//
+// `sort_by_key` extracts each element's key once into `keys` and then has to
+// sort `v` by them. It used to do that with an insertion sort emitted in MIR:
+// correct and stable, and O(n²), because the key comparison lives in generated
+// code and there was no way to hand it to a sort written in C. There is now —
+// lowering emits a standalone comparator and passes its closure block, the same
+// shape `sort_by` takes — so this is the merge sort doing the work (#942).
+//
+// Sorted indirectly, through an index permutation: the comparator reads keys
+// and the payload being moved is elements, so the two can't be the same array.
+// The merge sort is stable and the indices start in order, which is exactly
+// what stability means here — two elements whose keys tie keep their original
+// order, and `sort_by_key` has to guarantee that because the interpreter does.
+//
+// `keys` is read, not reordered. It belongs to the lowering, which drops it.
+static __thread const char *rask_key_data;
+static __thread int64_t     rask_key_size;
+
+static int rask_sort_keys_adapter(const void *pa, const void *pb) {
+    RaskCmpFn fn = (RaskCmpFn)(uintptr_t)CLOSURE_FUNC(rask_sort_comparator);
+    int64_t env = CLOSURE_ENV(rask_sort_comparator);
+    const char *ka = rask_key_data + *(const int64_t *)pa * rask_key_size;
+    const char *kb = rask_key_data + *(const int64_t *)pb * rask_key_size;
+    int64_t va, vb;
+    if (rask_sort_by_ptr) {
+        va = (int64_t)(uintptr_t)ka;
+        vb = (int64_t)(uintptr_t)kb;
+    } else {
+        va = *(const int64_t *)ka;
+        vb = *(const int64_t *)kb;
+    }
+    // Same Ordering-tag-to-sign conversion `sort_by` needs: Less 0, Equal 1,
+    // Greater 2.
+    return (int)(fn(env, va, vb) - RASK_ORDERING_EQUAL);
+}
+
+void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator) {
+    vec_check_no_borrows(v, "sort_by_key");
+    if (!v || v->len <= 1 || !keys || !comparator) return;
+    if (keys->len < v->len) {
+        rask_panic("sort_by_key: fewer keys than elements");
+        return;
+    }
+
+    int64_t n = v->len;
+    int64_t *order = (int64_t *)rask_alloc(rask_safe_mul(n, (int64_t)sizeof(int64_t)));
+    for (int64_t i = 0; i < n; i++) order[i] = i;
+
+    rask_sort_comparator = comparator;
+    rask_sort_by_ptr = keys->elem_size > 8;
+    rask_key_data = keys->data;
+    rask_key_size = keys->elem_size;
+    rask_stable_sort(order, n, (int64_t)sizeof(int64_t), rask_sort_keys_adapter);
+    rask_key_data = NULL;
+
+    // Permute through a copy: moving elements one at a time would overwrite a
+    // source that a later index still refers to.
+    int64_t es = v->elem_size;
+    int64_t bytes = rask_safe_mul(n, es);
+    char *sorted = (char *)rask_alloc(bytes);
+    for (int64_t i = 0; i < n; i++) {
+        memcpy(sorted + i * es, v->data + order[i] * es, (size_t)es);
+    }
+    memcpy(v->data, sorted, (size_t)bytes);
+
+    rask_realloc(sorted, bytes, 0);
+    rask_realloc(order, rask_safe_mul(n, (int64_t)sizeof(int64_t)), 0);
+}
+
 // reverse(vec) — in-place reversal.
 void rask_vec_reverse(RaskVec *v) {
     vec_check_no_borrows(v, "reverse");

@@ -821,7 +821,8 @@ pub fn keeps_no_arguments(qualified_name: &str) -> bool {
 ///
 /// Eager helpers only. A sequence that holds a closure past the call *is*
 /// keeping it, so this list must never grow a lazy one.
-const BORROWS_ITS_CALLBACK: &[&str] = &["Vec_sort_by", "Vec_map", "Vec_filter"];
+const BORROWS_ITS_CALLBACK: &[&str] =
+    &["Vec_sort_by", "Vec_sort_by_keys", "Vec_map", "Vec_filter"];
 
 /// Does this call use its callback up before returning?
 pub fn borrows_its_callback(qualified_name: &str) -> bool {

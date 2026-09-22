@@ -263,9 +263,9 @@ Two forms: count or collect. There is no `retain` — invert the predicate on `r
 | **SO2: In-place** | Sorting mutates the Vec. No new allocation (may use O(log n) stack) |
 | **SO3: Comparable required** | `sort()` requires `T: Comparable`. Custom ordering uses `sort_by` |
 
-`sort_by` and `sort_by_key` are where the guarantee earns its keep: a comparator can look at part of an element and a key extractor does by definition, so two that tie can differ in every other field and their order *is* observable. `sort_by` is backed by a merge sort; `sort_by_key` compares extracted keys and only ever swaps a pair the comparison calls strictly less, so equal keys never cross.
+`sort_by` and `sort_by_key` are where the guarantee earns its keep: a comparator can look at part of an element and a key extractor does by definition, so two that tie can differ in every other field and their order *is* observable. Both are backed by the same merge sort — `sort_by_key` extracts each key once and sorts an index permutation by them, so a tie leaves the elements in the order they were already in.
 
-`sort` hands off to the platform sort, which is faster and needs no scratch buffer. That's sound wherever `Comparable` compares whole elements — two that tie are then indistinguishable and there is nothing for stability to preserve — and it isn't where a hand-written `compare` ignores a field. See #942.
+`sort` hands off to the platform sort, which is faster and needs no scratch buffer. That's sound wherever `Comparable` compares whole elements — two that tie are then indistinguishable and there is nothing for stability to preserve — and it isn't where a hand-written `compare` ignores a field.
 
 | Method | Signature | Semantics |
 |--------|-----------|-----------|
