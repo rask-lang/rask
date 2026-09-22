@@ -5572,6 +5572,13 @@ impl<'a> MirLowerer<'a> {
         // already have queued one before this was reached.
         wb_mark: usize,
     ) -> Result<TypedOperand, LoweringError> {
+        // OR4: an operator the pair resolved is filed under the applied
+        // argument (`mul$f64`), because two conformances of one operator on one
+        // type both call their method `mul`. That's the name the body was
+        // emitted under, so it's the name to call.
+        let filed = self.ctx.operator_targets.get(&expr.id).map(|t| t.method.clone());
+        let method = filed.as_ref().unwrap_or(method);
+
         // Generic method: append type arg to name (e.g. parse<i32> → parse_i32)
         let method = if let Some(ta) = type_args {
             if let Some(ty_name) = ta.first() {

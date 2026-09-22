@@ -567,6 +567,21 @@ impl<'a> Monomorphizer<'a> {
                 }
                 DeclKind::Impl(i) => {
                     for method in &i.methods {
+                        // OR4: `Mul<f64>` and `Mul<Meters>` on one type both
+                        // call their method `mul`, and one `Meters_mul` symbol
+                        // between them would mean the second body overwrote the
+                        // first. The applied argument goes into the name, the
+                        // same rule the checker files them under.
+                        let filed;
+                        let method = match rask_ast::operators::conformance_method_name(
+                            &i.target_ty, &i.trait_names, &method.name,
+                        ) {
+                            Some(name) => {
+                                filed = FnDecl { name, ..method.clone() };
+                                &filed
+                            }
+                            None => method,
+                        };
                         register_method(
                             &i.target_ty, method, decl,
                             &mut method_table, &mut method_by_bare_name,

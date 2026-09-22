@@ -38,6 +38,27 @@ test "OR1 — the same pair through the method spelling" {
     assert (0.5).mul(d).v == 2.0
 }
 
+// AT8/OR4: a second `Mul` on the same type, with its own `Out`. Both blocks
+// call their method `mul` and both have a body — which is exactly the pair
+// `type.associated-types` recorded as unwritable until the operator resolved
+// from the argument.
+extend Meters with Mul<Meters> {
+    type Out = SquareMeters
+
+    func mul(self, other: Meters) -> SquareMeters {
+        return SquareMeters { v: self.v * other.v }
+    }
+}
+
+test "OR4 — two conformances of one operator on one type" {
+    let a = Meters { v: 3.0 }
+    let b = Meters { v: 4.0 }
+    let area: SquareMeters = a * b
+    assert area.v == 12.0
+    // The other conformance is still reachable from the same receiver.
+    assert (a * 2.0).v == 6.0
+}
+
 // OR3: both defaults declared on the trait, so this is `Add<Meters>` answering
 // in `Meters`.
 extend Meters with Add {

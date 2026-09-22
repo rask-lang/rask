@@ -459,12 +459,15 @@ impl TypeChecker {
 
     /// MN1/MN3: two conformances of one generic trait to one type each ask for
     /// a method of the same name. When the signatures differ there is no one
-    /// `m.mul(x)` to resolve to — MIR picks the first by name and runs its body
-    /// on the other's argument, which segfaults rather than failing to compile.
+    /// `m.render(x)` to resolve to — MIR picks the first by name and runs its
+    /// body on the other's argument, which segfaults rather than failing to
+    /// compile.
     ///
-    /// Resolving the call from the argument's type is operator resolution's
-    /// job (`type.operator-resolution/OR1`), not a method lookup's. Until that
-    /// exists this pair is rejected where it is written.
+    /// The operator traits are the exception, and the reason this rule always
+    /// named them: `type.operator-resolution/OR1` resolves `Mul<f64>` against
+    /// `Mul<Meters>` from the argument's type, and each conformance's `mul` is
+    /// filed under the applied argument so the two bodies keep separate
+    /// symbols. Every other generic trait still has only the name to go on.
     /// OR6: the table entry an `extend` block's methods and conformances go
     /// under. A struct or enum answers with its own id, a primitive with its
     /// stand-in — `extend f64 with Mul<Meters>` has to land somewhere.
@@ -489,6 +492,9 @@ impl TypeChecker {
         };
         for trait_ref in &i.trait_names {
             let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim().to_string();
+            if rask_ast::operators::operator_trait_method(&base).is_some() {
+                continue;
+            }
             let siblings: Vec<String> = self
                 .types
                 .applied_conformances(type_id, &base)
@@ -751,10 +757,24 @@ impl TypeChecker {
         } else {
             decl_params.clone()
         };
+        // OR4: a type may carry `Mul<f64>` and `Mul<Meters>` at once, and both
+        // blocks call their method `mul`. The applied argument goes into the
+        // name it's filed under so the two don't overwrite each other here —
+        // and so they don't emit one symbol between them downstream.
         let new_methods: Vec<_> = i
             .methods
             .iter()
-            .map(|m| self.method_signature(m, &decl_params, &owner_patterns))
+            .map(|m| {
+                let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
+                if let Some(filed) = rask_ast::operators::conformance_method_name(
+                    &i.target_ty,
+                    &i.trait_names,
+                    &m.name,
+                ) {
+                    sig.name = filed;
+                }
+                sig
+            })
             .collect();
         // M7: one name per member. A field and a method that share one make
         // `h.run` and `h.run(5)` reach different things, which is the reader
