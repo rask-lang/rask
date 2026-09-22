@@ -11,16 +11,18 @@ use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
-/// Where a (type, trait) conformance came from — G1 auto-derive, or an
-/// `extend T with Trait` block and whether that block was the stdlib's.
+/// MN3/XC3: an `extend T with Trait` block, as the conformance table remembers
+/// it. Auto-derive records no site at all, so having one means it was written.
 ///
-/// The origin has to be the *first* registration's, not the pass currently
-/// running: a program overriding a stdlib type's `Displayable` was reported as
-/// a same-package duplicate because the guard read the current pass's mode.
+/// `from_stdlib` is what XC3 turns on. It has to be the *first* registration's,
+/// not the pass currently running: a program overriding a stdlib type's
+/// `Displayable` was reported as a same-package duplicate when the guard read
+/// the current pass's mode instead.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum ConformanceOrigin {
-    Derived,
-    Declared { decl: NodeId, span: Span, from_stdlib: bool },
+pub(super) struct ConformanceSite {
+    pub span: Span,
+    pub decl: NodeId,
+    pub from_stdlib: bool,
 }
 
 /// Central registry of all types in the program.
@@ -93,13 +95,13 @@ pub struct TypeTable {
     /// apart. Binding happens here, where the TypeId is still known.
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
     /// G1: declared/derived trait conformances (nominal). TypeId → trait base
-    /// name → where that conformance came from.
-    ///
-    /// XC3 needs the declaration site: a second declared conformance for the
-    /// same pair is an error that has to name both, and until this held the
-    /// site it was a set — so the second one landed on the first and the last
-    /// `extend` block silently won, link order and all.
-    pub(super) conformances: HashMap<TypeId, HashMap<String, ConformanceOrigin>>,
+    /// names the type conforms to, from `extend T with Trait` and auto-derive.
+    pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
+    /// AT2/AT8: `(type, applied trait) → associated type → what it answers with`.
+    pub(super) assoc_bindings: HashMap<(TypeId, String), HashMap<String, Type>>,
+    /// MN3/XC3: where each conformance was written, so a collision between two
+    /// of them is reported once, on the later one.
+    pub(super) conformance_spans: HashMap<(TypeId, String), ConformanceSite>,
     /// CC1/CC2: conditional-conformance conditions. (TypeId, trait base) → the
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
@@ -124,6 +126,8 @@ impl TypeTable {
             variant_field_names: HashMap::new(),
             type_method_decls: HashMap::new(),
             conformances: HashMap::new(),
+            assoc_bindings: HashMap::new(),
+            conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
         };
         table.register_builtins();
@@ -400,9 +404,44 @@ impl TypeTable {
         self.types.get_mut(id.0 as usize)
     }
 
-    /// The key a conformance is filed under: generic args stripped.
+    /// The base name of a trait reference: `Mul<f64>` → `Mul`.
     fn conformance_key(trait_name: &str) -> String {
         trait_name.split('<').next().unwrap_or(trait_name).trim().to_string()
+    }
+
+    /// GT2/GT3: the key a conformance is filed under — the trait *with its
+    /// arguments*, so `Mul<f64>` and `Mul<Meters>` on one type stay apart.
+    ///
+    /// Written-out defaults are filled in and `Self` becomes the conforming
+    /// type's name, so `extend Meters with Mul` and `extend Meters with
+    /// Mul<Meters>` land on the same key when `Rhs` defaults to `Self`.
+    /// A trait with no parameters keys on its bare name, exactly as before.
+    pub fn applied_conformance_key(&self, trait_name: &str, self_name: &str) -> String {
+        let base = Self::conformance_key(trait_name);
+        let Some(TypeDef::Trait { type_params, .. }) =
+            self.get_type_id(&base).and_then(|id| self.get(id))
+        else {
+            return base;
+        };
+        if type_params.is_empty() {
+            return base;
+        }
+        let written = trait_ref_args(trait_name);
+        let mut args = Vec::new();
+        for (i, p) in type_params.iter().enumerate() {
+            let arg = match written.get(i) {
+                Some(a) => a.clone(),
+                None => match &p.default {
+                    Some(d) => d.clone(),
+                    // GT4: no argument and no default. The arity error is
+                    // reported at the header; key on what was written so the
+                    // conformance still exists for everything else.
+                    None => return base,
+                },
+            };
+            args.push(if arg == "Self" { self_name.to_string() } else { arg });
+        }
+        format!("{}<{}>", base, args.join(", "))
     }
 
     /// The trait base name as an error should print it.
@@ -410,69 +449,146 @@ impl TypeTable {
         Self::conformance_key(trait_name)
     }
 
-    /// G1: record a compiler-derived conformance. Trait names are stored
-    /// base-only (generic args stripped).
-    ///
-    /// Never displaces a declared one: auto-derive runs after the `extend`
-    /// blocks are registered, and an override (EQ2/HA2/CO2) is the whole point
-    /// of letting a type declare a core trait for itself.
+    /// G1: record that a type conforms to a trait (declared or auto-derived).
     pub fn record_conformance(&mut self, type_id: TypeId, trait_name: &str) {
-        self.conformances
-            .entry(type_id)
-            .or_default()
-            .entry(Self::conformance_key(trait_name))
-            .or_insert(ConformanceOrigin::Derived);
+        let self_name = self.type_name(type_id);
+        let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
+        let key = self.applied_conformance_key(trait_name, &self_base);
+        self.conformances.entry(type_id).or_default().insert(key);
     }
 
-    /// XC3: record a conformance an `extend T with Trait` block declared.
-    ///
-    /// Returns the earlier block's span only when both blocks are the program's
-    /// own — that's the same-package clash XC3 reports at the declaration. A
-    /// program block landing on a stdlib one is an override across a package
-    /// boundary, legal for any non-core trait by XC2, and the program's block
-    /// takes the slot so a *second* program block reports against it rather
-    /// than against the stdlib.
-    ///
-    /// Re-registering the same block is never a duplicate: the stdlib's
-    /// declarations are collected once as stubs and again as bodies.
-    pub fn record_declared_conformance(
+    /// AT2/AT8: record `type Out = Meters` for one conformance.
+    pub fn record_assoc_binding(
         &mut self,
         type_id: TypeId,
         trait_name: &str,
-        decl_id: NodeId,
+        assoc: &str,
+        ty: Type,
+    ) {
+        let self_name = self.type_name(type_id);
+        let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
+        let key = self.applied_conformance_key(trait_name, &self_base);
+        self.assoc_bindings
+            .entry((type_id, key))
+            .or_default()
+            .insert(assoc.to_string(), ty);
+    }
+
+    /// AT6: read an associated type off a conformance. A lookup, never a search.
+    pub fn assoc_binding(&self, type_id: TypeId, trait_name: &str, assoc: &str) -> Option<&Type> {
+        let self_name = self.type_name(type_id);
+        let self_base = self_name.split('<').next().unwrap_or(&self_name);
+        let key = self.applied_conformance_key(trait_name, self_base);
+        if let Some(t) = self.assoc_bindings.get(&(type_id, key)).and_then(|m| m.get(assoc)) {
+            return Some(t);
+        }
+        // A bare `Mul` asking about a type with exactly one `Mul<...>`
+        // conformance still has one answer. Two of them is the caller's
+        // problem to disambiguate, and it gets nothing here.
+        let base = Self::conformance_key(trait_name);
+        if trait_name.contains('<') {
+            return None;
+        }
+        let mut found = None;
+        for ((id, key), m) in &self.assoc_bindings {
+            if *id != type_id || Self::conformance_key(key) != base {
+                continue;
+            }
+            if let Some(t) = m.get(assoc) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(t);
+            }
+        }
+        found
+    }
+
+    /// MN3: remember where a conformance was declared.
+    ///
+    /// XC3: returns the earlier block's span when this pair already has one and
+    /// both blocks are the program's own — the same-package clash, reported at
+    /// the second declaration. A program block landing on a stdlib one is an
+    /// override across a package boundary, legal for every non-core trait by
+    /// XC2, and it *takes the slot* so a second program block is blamed on the
+    /// program's first rather than on the stdlib's.
+    ///
+    /// Re-registering the same block is never a duplicate: the stdlib's
+    /// declarations are collected once as stubs and again as bodies.
+    pub fn record_conformance_span(
+        &mut self,
+        type_id: TypeId,
+        trait_name: &str,
+        decl: NodeId,
         span: Span,
     ) -> Option<Span> {
+        let self_name = self.type_name(type_id);
+        let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
+        let key = self.applied_conformance_key(trait_name, &self_base);
         let from_stdlib = self.stdlib_mode;
-        let mine = ConformanceOrigin::Declared { decl: decl_id, span, from_stdlib };
-        let slot = self
-            .conformances
-            .entry(type_id)
-            .or_default()
-            .entry(Self::conformance_key(trait_name))
-            .or_insert(ConformanceOrigin::Derived);
-        match *slot {
-            ConformanceOrigin::Declared { decl, .. } if decl == decl_id => None,
-            ConformanceOrigin::Declared { span: first, from_stdlib: false, .. }
-                if !from_stdlib =>
-            {
-                Some(first)
-            }
-            // A stdlib declaration being overridden by the program's, or a
-            // stdlib block re-read: the program's wins, the stdlib's yields.
-            ConformanceOrigin::Declared { from_stdlib: true, .. } => {
-                if !from_stdlib {
-                    *slot = mine;
+        let mine = ConformanceSite { span, decl, from_stdlib };
+        match self.conformance_spans.get(&(type_id, key.clone())) {
+            Some(first) if first.decl == decl => None,
+            Some(first) if !first.from_stdlib && !from_stdlib => Some(first.span),
+            Some(first) => {
+                if first.from_stdlib && !from_stdlib {
+                    self.conformance_spans.insert((type_id, key), mine);
                 }
                 None
             }
-            // Program block first, stdlib re-read after — can't happen with
-            // the current ordering, and the program's still wins if it does.
-            ConformanceOrigin::Declared { .. } => None,
-            ConformanceOrigin::Derived => {
-                *slot = mine;
+            None => {
+                self.conformance_spans.insert((type_id, key), mine);
                 None
             }
         }
+    }
+
+    /// MN3: where a conformance was declared, if it was written in source.
+    pub fn conformance_span(&self, type_id: TypeId, trait_name: &str) -> Option<Span> {
+        let self_name = self.type_name(type_id);
+        let self_base = self_name.split('<').next().unwrap_or(&self_name);
+        let key = self.applied_conformance_key(trait_name, self_base);
+        self.conformance_spans.get(&(type_id, key)).map(|s| s.span)
+    }
+
+    /// AT6: the associated type `assoc` on this type, when exactly one of its
+    /// conformances declares one by that name.
+    ///
+    /// Used where the bound that named the projection isn't at hand — resolving
+    /// `T.Out` at a call, once `T` is concrete. Two conformances answering to
+    /// one name have no single answer, and this gives none rather than picking:
+    /// disambiguating is the caller's, and `type.operator-resolution/OR1` is
+    /// what does it for the operator traits.
+    pub fn assoc_binding_any(&self, type_id: TypeId, assoc: &str) -> Option<&Type> {
+        let mut found = None;
+        for ((id, _), m) in &self.assoc_bindings {
+            if *id != type_id {
+                continue;
+            }
+            if let Some(t) = m.get(assoc) {
+                if found.is_some_and(|f| f != t) {
+                    return None;
+                }
+                found = Some(t);
+            }
+        }
+        found
+    }
+
+    /// GT3: every applied form of `base` this type conforms to.
+    pub fn applied_conformances(&self, type_id: TypeId, base: &str) -> Vec<String> {
+        self.conformances
+            .get(&type_id)
+            .map(|set| {
+                let mut v: Vec<String> = set
+                    .iter()
+                    .filter(|k| Self::conformance_key(k) == base)
+                    .cloned()
+                    .collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default()
     }
 
     /// G1: does the type declare (or auto-derive) conformance to the trait?
@@ -487,11 +603,22 @@ impl TypeTable {
         let Some(set) = self.conformances.get(&type_id) else {
             return false;
         };
-        if set.contains_key(&base) {
+        // GT3: `Mul` asks whether any applied form is declared; `Mul<f64>` asks
+        // for that one. The canonical key fills in defaults and `Self`, so a
+        // bare header and its written-out equivalent agree.
+        if trait_name.contains('<') {
+            let self_name = self.type_name(type_id);
+            let self_base = self_name.split('<').next().unwrap_or(&self_name);
+            let key = self.applied_conformance_key(trait_name, self_base);
+            if set.contains(&key) {
+                return true;
+            }
+        } else if set.iter().any(|k| Self::conformance_key(k) == base) {
             return true;
         }
-        set.keys()
-            .any(|declared| self.trait_extends(declared, &base, &mut Vec::new()))
+        set.iter().any(|declared| {
+            self.trait_extends(&Self::conformance_key(declared), &base, &mut Vec::new())
+        })
     }
 
     /// Is `target` somewhere in `trait_name`'s super-trait closure? `seen` keeps
@@ -1147,4 +1274,33 @@ impl TypeTable {
     pub fn const_length(&self, name: &str) -> Option<usize> {
         self.const_lengths.get(name).copied()
     }
+}
+
+/// The written-out arguments of a trait reference: `Mul<f64, i64>` → `["f64", "i64"]`.
+pub fn trait_ref_args(trait_ref: &str) -> Vec<String> {
+    let Some(open) = trait_ref.find('<') else { return Vec::new() };
+    let Some(close) = trait_ref.rfind('>') else { return Vec::new() };
+    if close <= open + 1 {
+        return Vec::new();
+    }
+    let inner = &trait_ref[open + 1..close];
+    let mut args = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (i, c) in inner.char_indices() {
+        match c {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                args.push(inner[start..i].trim().to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = inner[start..].trim();
+    if !last.is_empty() {
+        args.push(last.to_string());
+    }
+    args
 }

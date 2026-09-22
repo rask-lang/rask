@@ -74,6 +74,30 @@ extend Method with Displayable {
     }
 }
 
+// Two *different* applied forms of one generic trait are two conformances, not
+// one declared twice — so this is MN3's E0889 about the two `scale`s, and XC3
+// stays quiet. Reported once, not twice.
+struct Meters {
+    v: f64
+}
+
+trait Scale<Rhs = Self> {
+    func scale(self, rhs: Rhs) -> Self
+}
+
+extend Meters with Scale<f64> {
+    func scale(self, k: f64) -> Meters {
+        return Meters { v: self.v * k }
+    }
+}
+
+// ERROR: both `scale`s want the type's one method name (E0889, MN3)
+extend Meters with Scale<Meters> {
+    func scale(self, o: Meters) -> Meters {
+        return Meters { v: self.v * o.v }
+    }
+}
+
 // Legal from here down: one type, two different traits.
 struct Note {
     n: i64

@@ -78,6 +78,26 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
 }
 
 /// Information about a user-defined type.
+/// GT1/GT4/GT5: a trait's type parameter as declared.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitTypeParam {
+    pub name: String,
+    /// GT5: what a conformance's argument must satisfy.
+    pub bounds: Vec<String>,
+    /// GT4: what the bare trait name means. `None` makes the argument required.
+    pub default: Option<String>,
+}
+
+/// AT1/AT4/AT5: an associated type a conformance supplies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitAssocType {
+    pub name: String,
+    /// AT5: what the conformance's binding must satisfy.
+    pub bounds: Vec<String>,
+    /// AT4: what a conformance that omits the binding gets.
+    pub default: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum TypeDef {
     Struct {
@@ -117,8 +137,12 @@ pub enum TypeDef {
     },
     Trait {
         name: String,
+        /// GT1: `trait Scale<Rhs>` — bound by the conformance header.
+        type_params: Vec<TraitTypeParam>,
         super_traits: Vec<String>,
         methods: Vec<MethodSig>,
+        /// AT1: types a conformance supplies.
+        assoc_types: Vec<TraitAssocType>,
         /// TR3: names of methods that declare their own type parameters.
         /// These can't be dispatched through `any` — no vtable slot.
         generic_methods: Vec<String>,
@@ -142,7 +166,7 @@ pub enum TypeDef {
 }
 
 /// Method name without its type-parameter suffix: `convert<T>` → `convert`.
-fn method_base(name: &str) -> &str {
+pub(crate) fn method_base(name: &str) -> &str {
     name.split('<').next().unwrap_or(name)
 }
 

@@ -28,6 +28,7 @@ Trait conformance is declared — `extend Type with Trait` says the type satisfi
 | **TD1: Module-scoped** | Traits must be module-scoped |
 | **TD2: Default methods** | Traits may contain default implementations |
 | **TD3: Composition** | Traits may compose using `:` syntax |
+| **TD4: Members** | A trait body holds methods and associated types (`type Out`). Anything else — a `const`, a nested `struct` — is an error at the line that wrote it |
 
 | Trait Form | Meaning |
 |------------|---------|
@@ -48,6 +49,34 @@ trait Name {
 ```
 
 Nominal is the default because conformance is a semantic claim, not just a shape: `compare()` existing doesn't make it a total order. The declaration states intent, gives the compiler a place to check signatures, and gives readers and tools a place to look.
+
+## Trait Type Parameters
+
+A trait can take type parameters, and the conformance says what they are:
+
+```rask
+trait Scale<Rhs> {
+    func scale(self, k: Rhs) -> Self
+}
+
+extend Meters with Scale<f64> {
+    func scale(self, k: f64) -> Meters {
+        return Meters { v: self.v * k }
+    }
+}
+```
+
+The header binds `Rhs` to `f64`, so what the conformance owes is `scale(self, k: f64) -> Meters` — `Self` and `Rhs` are both substituted before the signature is checked.
+
+| Rule | Description |
+|------|-------------|
+| **GT1: Parameters on the declaration** | `trait Scale<Rhs>` — one or two parameters, the same cap generic types carry. `Self` is always in scope and is not one of them |
+| **GT2: The header applies them** | `extend T with Scale<f64>` substitutes through every required signature. A header that gives the wrong number of arguments is an error naming the trait's arity |
+| **GT3: The applied trait is the conformance** | `Mul<f64>` and `Mul<Meters>` are different conformances of one trait, each with its own signatures and its own associated types (`type.associated-types/AT8`). A bare `T: Mul` bound means the defaulted instantiation, not "some instantiation". Both of them *on one type* is rejected at the second block while MN1 still decides the call — see AT8 |
+| **GT4: Declared defaults** | `trait Mul<Rhs = Self>` lets `Mul` be written bare and mean `Mul<Self>`. Without a default the argument is required, in a bound and in a conformance header alike |
+| **GT5: Bounds on the parameter** | `trait Scale<Rhs: Numeric>` is checked where the conformance names its argument, the same as a bound on a generic struct's parameter |
+
+Associated types are the other half of this: a parameter is what the *conformance* chooses, an associated type is what the conformance *reports*. See [associated-types.md](associated-types.md).
 
 ## Duck Traits Are Package-Internal
 
@@ -170,7 +199,7 @@ One type, one method name, one meaning — with an opt-out scoped to the collisi
 |------|-------------|
 | **MN1: Single namespace** | Methods defined in `extend T with Trait { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
 | **MN2: Shared implementation** | Two conformances requiring the same method name share the one implementation — legal iff both signatures match it. One implementation means one definition: two blocks each defining `label` on the same type is a duplicate method, whichever traits they name (XC3) |
-| **MN3: Conflict needs scoping** | If the signatures disagree, the second conformance declaration is a compile error naming both traits — unless it is declared `scoped` |
+| **MN3: Conflict needs scoping** | If the signatures disagree, the second conformance declaration is a compile error naming both traits — unless it is declared `scoped`. This covers two applied forms of one generic trait (`Mul<f64>` and `Mul<Meters>` on the same type) as much as two different traits. `scoped` is parsed but not yet honoured ([#1303](https://github.com/rask-lang/rask/issues/1303)), so today the error stands either way |
 | **MN4: Scoped conformance** | `scoped extend T with Trait { ... }` — methods in a scoped conformance do not enter T's inherent namespace. Reachable through trait dispatch (generic bounds, `any Trait`) and trait-qualified calls |
 | **MN5: Trait-qualified call** | `Trait.method(value, args)` — mirrors `Type.method()` static-call syntax. Legal for any conformance, needed only for scoped ones |
 
@@ -206,7 +235,7 @@ There is no orphan rule. Any package may declare `extend T with Trait` for a typ
 |------|-------------|
 | **XC1: Core traits belong to the owner** | `extend T with Equal`, `Hashable`, `Comparable` or `Cloneable` is legal only in the package that declares `T`. From any other package it's a compile error, the empty-body form included. These four are auto-derived for every eligible type (EQ1/HA1/CO1/CL1), so a third party never needs one |
 | **XC2: Everything else is open** | For every other trait, `extend T with Trait` is legal wherever both names are visible. No newtype wrapper, no forwarding methods, no ceremony for the case that has no conflict |
-| **XC3: Two conformances never resolve silently** | Two declared conformances for the same (type, trait) pair are a compile error, never a pick. Both in one package: the error is at the second declaration. In two packages: at the place that needs the conformance, so a collision nobody uses costs nothing |
+| **XC3: Two conformances never resolve silently** | Two declared conformances for the same (type, trait) pair are a compile error, never a pick. The pair is the *applied* trait, so two different applied forms of one generic trait are two conformances, not one declared twice — that they can still collide on a method name is MN3's, reported once and not twice. Both in one package: the error is at the second declaration. In two packages: at the place that needs the conformance, so a collision nobody uses costs nothing |
 | **XC4: Visibility is the user's, not the build's** | A conformance is visible to a package iff the declaring package is in *that* package's dependency graph. A library keeps using its own conformance even when the program linking it also pulls in someone else's |
 | **XC5: Conformance is part of the instantiation** | A generic instance is keyed by its type arguments *and* the conformances resolved for its bounds. `show<Doc>` under two different `Labeled` conformances is two instances, so neither can silently get the other's code |
 | **XC6: Disambiguation is a nominal type** | Nothing names a conformance, so there is no syntax for choosing between two. `type MyDoc = Doc` is a distinct type (`type.aliases/T2`) that carries its own conformance (`T13`) |
@@ -519,7 +548,7 @@ func increment<T: Numeric>(val: T) -> T {
 | Negative constraints | — | Not in MVP; workaround via naming convention or separate functions. `T or E` disjointness is the one exception and needs no syntax (GF4) |
 | `f<T>() -> T or E` called with `T = E` | GF4 | Compile error on the call, naming the parameter (`type.errors/ER3a`) |
 | `f<T>() -> T?` called with `T = U?` | — | Legal — optionals nest, layers stay distinct (`type.optionals/OPT28`) |
-| Associated types | — | Not in MVP; deferred |
+| Associated types | `type.associated-types/AT1`–`AT10` | Promoted. Read off a unique conformance; equality constraints (`where T.Out == U`) stay out (AT7) |
 | More than 2 type params | — | Not in MVP; traits limited to 1-2 parameters |
 | Omitted bounds (private) | GF2 | Inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | Container method access | GF1 | Methods on containers (like `Vec<T>.len()`) don't require constraints on T |

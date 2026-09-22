@@ -196,6 +196,24 @@ fn nested_join_with_one_worker_reports_the_deadlock() {
     );
 }
 
+/// Trait type parameters and associated types, on both backends.
+///
+/// `trait Mul<Rhs> { type Out … }` is what operator resolution is built on and
+/// neither half worked: the parameter was parsed and dropped, so every
+/// conformance failed claiming a missing method the block plainly had, and
+/// `type Out` in a trait body hung the parser outright (#1164, #1165).
+#[test]
+fn generic_traits_and_associated_types_run() {
+    let expected = "6\n12\n6\n8\n15\n10\n";
+    let (native, code) = run_native("trait_generic_and_assoc.rk");
+    assert_eq!(code, 0, "native: {native}");
+    assert_eq!(native, expected, "native");
+
+    let (interp, code) = run_interp("trait_generic_and_assoc.rk");
+    assert_eq!(code, 0, "interp: {interp}");
+    assert_eq!(interp, expected, "interp");
+}
+
 #[test]
 fn extern_c_export_returns_through_c_frames() {
     // The export form (`public extern "C" func name() { ... }`) had no working
