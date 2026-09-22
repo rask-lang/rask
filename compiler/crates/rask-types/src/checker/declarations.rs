@@ -177,22 +177,16 @@ impl TypeChecker {
             match &decl.kind {
                 DeclKind::Struct(s) => {
                     self.check_declared_type_name(&s.name, "struct", decl.span);
-                    self.reject_unregistered_operator_methods(&s.name, &[], &s.methods);
                     let id = self.register_struct(s);
                     self.types.record_method_decl(id, decl.id);
                 }
                 DeclKind::Enum(e) => {
                     self.check_declared_type_name(&e.name, "enum", decl.span);
-                    self.reject_unregistered_operator_methods(&e.name, &[], &e.methods);
                     let id = self.register_enum(e, decl.span);
                     self.types.record_method_decl(id, decl.id);
                 }
                 DeclKind::Trait(t) => {
                     self.check_declared_type_name(&t.name, "trait", decl.span);
-                    // OR1a on the declaration that started it: a trait asking
-                    // for `add` makes every conformer's block illegal, and the
-                    // fix is here rather than at each of them.
-                    self.reject_operator_methods_on_trait(&t.name, &t.methods);
                     // DT1: shape-matching stops at the package boundary
                     if t.is_pub && t.is_duck {
                         self.errors.push(TypeError::PublicDuckTrait {
@@ -474,99 +468,6 @@ impl TypeChecker {
     /// `Mul<Meters>` from the argument's type, and each conformance's `mul` is
     /// filed under the applied argument so the two bodies keep separate
     /// symbols. Every other generic trait still has only the name to go on.
-    /// OR1/OR2: an operator's method belongs to its conformance.
-    ///
-    /// `extend Meters { func mul(self, k: f64) -> Meters }` reads like an
-    /// overload and is one method with an operator's name: `MN1` gives the type
-    /// one `mul`, so it can never also conform to `Mul`, and `T: Mul` as a
-    /// bound wouldn't accept it. One spelling — say which pair it answers.
-    ///
-    /// `eq`, `lt` and the rest of comparison are not here: OR9 keeps `Equal`
-    /// and `Comparable` same-type and off the pair, so an inherent `compare`
-    /// stays an inherent `compare`.
-    pub(super) fn reject_unregistered_operator_methods(
-        &mut self,
-        target_ty: &str,
-        trait_names: &[String],
-        methods: &[rask_ast::decl::FnDecl],
-    ) {
-        self.reject_operator_methods(target_ty, trait_names, methods, true)
-    }
-
-    /// The same, for a trait declaration: there is no block to write, so the
-    /// fix is to bound on the operator trait or rename the method.
-    pub(super) fn reject_operator_methods_on_trait(
-        &mut self,
-        trait_ty: &str,
-        methods: &[rask_ast::decl::FnDecl],
-    ) {
-        self.reject_operator_methods(trait_ty, &[], methods, false)
-    }
-
-    fn reject_operator_methods(
-        &mut self,
-        target_ty: &str,
-        trait_names: &[String],
-        methods: &[rask_ast::decl::FnDecl],
-        writable: bool,
-    ) {
-        let base = target_ty.split('<').next().unwrap_or(target_ty).trim();
-        // `stdlib/ops.rk` declares the traits themselves.
-        if rask_ast::operators::operator_trait_method(base).is_some() {
-            return;
-        }
-        for m in methods {
-            let Some(trait_name) = rask_ast::operators::operator_trait(&m.name) else {
-                continue;
-            };
-            // Only a method that could *be* the operator's. The trait declares
-            // `func add(self, rhs: Rhs) -> Self.Out`, so a `mutate self` or a
-            // void return is a method that happens to share the name and can
-            // never be the conformance — a set's `add(mutate self, v)`, a
-            // counter's. Those keep the name; `+` on such a type doesn't
-            // type-check anyway, for want of a value to be.
-            if !Self::could_be_operator_method(m, &trait_name) {
-                continue;
-            }
-            let declared = trait_names.iter().any(|t| {
-                t.split('<').next().unwrap_or(t).trim() == trait_name
-            });
-            if declared {
-                continue;
-            }
-            // The header the block wants, with `Rhs` read off the parameter —
-            // omitted when it's `Self`, since GT4 defaults it there.
-            let rhs = m
-                .params
-                .iter()
-                .find(|p| p.name != "self")
-                .map(|p| p.ty.split('<').next().unwrap_or(&p.ty).trim().to_string());
-            let header = match rhs {
-                Some(rhs) if rhs != base => format!("{}<{}>", trait_name, rhs),
-                _ => trait_name.to_string(),
-            };
-            self.errors.push(TypeError::OperatorMethodWithoutConformance {
-                ty: base.to_string(),
-                method: m.name.clone(),
-                trait_name: trait_name.to_string(),
-                header: writable.then_some(header),
-                span: m.span,
-            });
-        }
-    }
-
-    /// Does this method have the shape an operator conformance's would?
-    fn could_be_operator_method(m: &rask_ast::decl::FnDecl, trait_name: &str) -> bool {
-        let takes_value_self = m
-            .params
-            .first()
-            .is_some_and(|p| p.name == "self" && !p.is_mutate && !p.is_take);
-        let operands = m.params.iter().filter(|p| p.name != "self").count();
-        let wanted = if rask_ast::operators::is_unary_operator_trait(trait_name) { 0 } else { 1 };
-        let answers = m.ret_ty.as_deref().is_some_and(|t| !t.trim().is_empty() && t != "void");
-        takes_value_self && operands == wanted && answers
-    }
-
     /// OR6: the table entry an `extend` block's methods and conformances go
     /// under. A struct or enum answers with its own id, a primitive with its
     /// stand-in — `extend f64 with Mul<Meters>` has to land somewhere.
@@ -746,7 +647,6 @@ impl TypeChecker {
 
     pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId, span: rask_ast::Span) {
         let base_name = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
-        self.reject_unregistered_operator_methods(&i.target_ty, &i.trait_names, &i.methods);
         // OR6: a primitive's own methods are the compiler's. An `extend f64 {
         // … }` block used to register nowhere at all and the method simply
         // didn't exist — `(2.0).doubled()` came back "no method `doubled` on

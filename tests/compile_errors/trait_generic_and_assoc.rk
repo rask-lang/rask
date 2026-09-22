@@ -91,20 +91,14 @@ extend Meters with Ordered<f64> {
 
 struct Feet { v: f64 }
 
-// ERROR: `mul` is `Mul`'s method, and MN1 gives `Feet` one of them — so the
-// ERROR: block that writes it is the block that says which pair it answers
 extend Feet {
     func mul(self, k: f64) -> Feet {
         return Feet { v: self.v * k }
     }
 }
 
-// Legal: a `mutate self` with no answer could never be the conformance's
-// method, so the name isn't reserved against it.
-struct Tally { n: i64 }
-
-extend Tally {
-    func add(mutate self, k: i64) {
-        self.n = self.n + k
-    }
+func scale_it(f: Feet) -> Feet {
+    // ERROR: the method is there and the conformance isn't, so nothing says
+    // ERROR: what this pair means — `f.mul(2.0)` is still an ordinary call
+    return f * 2.0
 }

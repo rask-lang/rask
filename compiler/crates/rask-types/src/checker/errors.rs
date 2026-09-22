@@ -611,15 +611,21 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// OR1/OR2: an operator's method declared outside a conformance.
-    #[error("`{method}` is `{trait_name}`'s method — declare the conformance")]
-    OperatorMethodWithoutConformance {
-        ty: String,
-        method: String,
+    /// OR1/OR8: an operator whose operand pair names no conformance.
+    #[error("no `{op}` for `{left}`")]
+    NoOperatorConformance {
+        left: String,
+        /// `None` for the unary operators, which have one operand.
+        right: Option<String>,
+        /// The operator as written (`*`), not the desugared method name.
+        op: String,
+        /// The trait the pair would conform to (`Mul`).
         trait_name: String,
-        /// The header the block wants, with `Rhs` read off the parameter.
-        /// `None` on a trait declaration, where there is no block to write.
-        header: Option<String>,
+        /// The header the left operand wants, with `Rhs` read off the right.
+        header: String,
+        /// The left operand already has a method by this name, without a
+        /// conformance — so the fix is a header, not a body.
+        has_inherent: bool,
         span: Span,
     },
 
@@ -1431,7 +1437,7 @@ impl TypeError {
             | MissingAssocType { .. }
             | UnknownAssocType { .. }
             | InherentMethodOnPrimitive { .. }
-            | OperatorMethodWithoutConformance { .. }
+            | NoOperatorConformance { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
             | StringAddForbidden { .. }

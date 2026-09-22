@@ -1933,23 +1933,38 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("an associated type is read off the conformance, not guessed from the methods — that is what keeps it a lookup instead of a search [type.associated-types/AT2]")
             }
 
-            OperatorMethodWithoutConformance { ty, method, trait_name, header, span } => {
-                Diagnostic::error(format!(
-                    "`{}` is `{}`'s method — declare the conformance", method, trait_name
-                ))
-                .with_code("E0893")
-                .with_primary(*span, format!("`{}` declared on `{}`, not by a conformance", method, ty))
-                .with_fix(match header {
-                    Some(header) => format!(
-                        "extend {} with {} {{ … }}\n— or, if it isn't the operator, give it a name that isn't `{}`",
-                        ty, header, method
-                    ),
-                    None => format!(
-                        "`{}` already asks for this — bound on it instead of on `{}`\n— or, if it isn't the operator, give it a name that isn't `{}`",
-                        trait_name, ty, method
-                    ),
+            NoOperatorConformance {
+                left, right, op, trait_name, header, has_inherent, span,
+            } => {
+                let title = match right {
+                    Some(right) => format!("no `{}` between `{}` and `{}`", op, left, right),
+                    None => format!("`{}` has no `{}`", left, op),
+                };
+                let d = Diagnostic::error(title)
+                    .with_code("E0894")
+                    .with_primary(*span, match right {
+                        Some(right) => format!("`{}` on the left, `{}` on the right", left, right),
+                        None => format!("nothing defines `{}` on a `{}`", op, left),
+                    });
+                // The method is often already there — an `extend Meters { func
+                // mul(…) }` that predates the conformance. Then the fix is one
+                // header, not a body, and saying so is the difference between a
+                // one-word edit and a rewrite.
+                d.with_fix(if *has_inherent {
+                    format!(
+                        "`{}` has the method — move it under the header that registers it:\n                             extend {} with {} {{ … }}",
+                        left, left, header
+                    )
+                } else {
+                    format!("extend {} with {} {{ … }}", left, header)
                 })
-                .with_why("an operator resolves from both operand types against a declared conformance, so a `mul` nobody registered is a method with an operator's name and none of its meaning — and `T: Mul` as a bound wouldn't accept it. The twelve operator method names belong to their traits [type.operator-resolution/OR1]")
+                    .with_why(&format!(
+                        "an operator is resolved from both operand types, in order, against a \
+                         conformance somebody declared — so `{}` is the one place that says what \
+                         this pair means, and until it exists the result type isn't defined \
+                         [type.operator-resolution/OR1]",
+                        trait_name
+                    ))
             }
 
             InherentMethodOnPrimitive { ty, method, span } => {

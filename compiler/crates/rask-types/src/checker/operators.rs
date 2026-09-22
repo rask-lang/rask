@@ -75,6 +75,7 @@ impl TypeChecker {
         recv: &Type,
         method: &str,
         args: &[Type],
+        written_as_operator: bool,
     ) -> PairOutcome {
         let Some(trait_base) = operator_trait(method) else {
             return PairOutcome::NotAnOperator;
@@ -84,8 +85,25 @@ impl TypeChecker {
         };
         let declared = self.types.applied_conformances(self_id, trait_base);
         if declared.is_empty() {
-            // No conformance at all: the primitive and stdlib paths below
-            // answer `i64 + i64` and everything else that was working before.
+            // OR1: an operator answers to a conformance. A primitive receiver
+            // is the exception — `i64 + i64` is the language's own pair, and
+            // the paths below have it.
+            //
+            // `a.mul(b)` written out is not an operator and never was: it is an
+            // ordinary method call, and a type with a `mul` of its own keeps it.
+            if written_as_operator
+                && super::type_table::primitive_spelling(recv).is_none()
+                && !matches!(recv, Type::Var(_) | Type::Error)
+            {
+                // Wait for the right operand to have a type before saying what
+                // it is. Reported now, `meters * 2.0` reads "no `*` between
+                // `Meters` and `_`", which names the operand the reader can
+                // already see and not the one they can't.
+                if args.iter().any(|a| self.is_unsettled(a)) {
+                    return PairOutcome::Defer;
+                }
+                return PairOutcome::NoPair;
+            }
             return PairOutcome::NotAnOperator;
         }
 
@@ -160,6 +178,47 @@ impl TypeChecker {
         self.matched(self_id, &applied, method, args)
     }
 
+    /// OR8: the pair names no conformance, and the operator has nothing to be.
+    fn no_operator_conformance(
+        &self,
+        recv: &Type,
+        method: &str,
+        args: &[Type],
+        span: Span,
+    ) -> super::TypeError {
+        let trait_name = operator_trait(method).unwrap_or("Add").to_string();
+        let left = self.render_type(recv);
+        let right = args
+            .first()
+            .map(|a| self.render_type(&self.resolve_named(&self.ctx.apply(a))));
+        // `extend Meters with Mul<f64>` — the argument's own type is the `Rhs`
+        // the author wants, and when it's the receiver's the default covers it.
+        let header = match &right {
+            Some(r) if *r != left => format!("{}<{}>", trait_name, r),
+            _ => trait_name.clone(),
+        };
+        let has_inherent = self
+            .types
+            .conformance_target(recv)
+            .and_then(|id| self.types.get(id))
+            .is_some_and(|def| match def {
+                TypeDef::Struct { methods, .. }
+                | TypeDef::Enum { methods, .. }
+                | TypeDef::NominalAlias { methods, .. }
+                | TypeDef::Primitive { methods, .. } => methods.iter().any(|m| m.name == method),
+                _ => false,
+            });
+        super::TypeError::NoOperatorConformance {
+            left,
+            right,
+            op: Self::operator_spelling(method).to_string(),
+            trait_name,
+            header,
+            has_inherent,
+            span,
+        }
+    }
+
     /// OR6/OR1: the primitive an unsuffixed literal on the *left* of an
     /// operator must be, when exactly one primitive forms a pair with the type
     /// on the right.
@@ -229,6 +288,11 @@ impl TypeChecker {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Has this operand no type yet?
+    fn is_unsettled(&self, ty: &Type) -> bool {
+        matches!(self.resolve_named(&self.ctx.apply(ty)), Type::Var(_))
     }
 
     /// Is this operand an unsuffixed literal still waiting for a type?
@@ -323,7 +387,8 @@ impl TypeChecker {
         span: Span,
         call_node: Option<NodeId>,
     ) -> Option<Result<bool, super::TypeError>> {
-        match self.operator_conformance(recv, method, args) {
+        let written_as_operator = call_node.is_some_and(|n| self.operator_calls.contains(&n));
+        match self.operator_conformance(recv, method, args, written_as_operator) {
             PairOutcome::NotAnOperator => None,
             PairOutcome::Found(found) => {
                 Some(self.apply_operator_match(found, recv, args, ret, span, call_node))
@@ -342,15 +407,9 @@ impl TypeChecker {
                 });
                 Some(Ok(false))
             }
-            PairOutcome::NoPair => {
-                let right = self.resolve_named(&self.ctx.apply(&args[0]));
-                Some(Err(super::TypeError::IncomparableOperands {
-                    left: self.nameable(recv),
-                    right: self.nameable(&right),
-                    op: Self::operator_spelling(method).to_string(),
-                    span,
-                }))
-            }
+            PairOutcome::NoPair => Some(Err(self.no_operator_conformance(
+                recv, method, args, span,
+            ))),
         }
     }
 

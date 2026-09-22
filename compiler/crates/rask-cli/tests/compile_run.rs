@@ -1497,8 +1497,11 @@ fn error_bad_interpolation() {
 fn error_nominal_trait_not_listed() {
     let (failed, out) = compile_error_output("nominal_trait_not_listed.rk");
     assert!(failed, "an unlisted trait must not be inherited: {}", out);
+    // The arithmetic is named by its operator rather than by the method
+    // desugaring produced: `+` resolves against a declared `Add`, and the
+    // newtype's `with (…)` list doesn't have one.
     assert!(
-        out.contains("no method `lt`") && out.contains("no method `add`"),
+        out.contains("no method `lt`") && out.contains("no `+` between `OnlyEq`"),
         "should reject both the unlisted ordering and the arithmetic: {}", out,
     );
 }

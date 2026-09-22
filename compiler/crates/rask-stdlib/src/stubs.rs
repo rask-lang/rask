@@ -125,6 +125,13 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("encoding.rk", include_str!("../../../../stdlib/encoding.rk")),
 ];
 
+/// The stdlib's compilable declarations, with what desugaring recorded.
+pub struct CompilableStdlib {
+    pub decls: Vec<Decl>,
+    /// OR1: the stdlib's own method calls that were operators.
+    pub operator_calls: std::collections::HashSet<rask_ast::NodeId>,
+}
+
 /// A method extracted from a stub file.
 #[derive(Debug, Clone)]
 pub struct MethodStub {
@@ -318,6 +325,15 @@ impl StubRegistry {
     /// Used by the monomorphizer, interpreter, and codegen which need
     /// real implementations, not stub signatures.
     pub fn compilable_decls() -> Vec<Decl> {
+        Self::compilable().decls
+    }
+
+    /// The same, with what desugaring recorded about the stdlib's own bodies.
+    ///
+    /// The checker checks those bodies along with the program, and the stdlib
+    /// writes operators too — so it needs to know which of its calls were
+    /// operators for the same reason it needs to know about the program's.
+    pub fn compilable() -> CompilableStdlib {
         let mut decls = Vec::new();
         // Start NodeIds high to avoid collision with user code NodeIds.
         let mut next_id: u32 = 1_000_000;
@@ -370,9 +386,9 @@ impl StubRegistry {
             }
         }
 
-        rask_desugar::desugar_stdlib(&mut decls);
+        let desugared = rask_desugar::desugar_stdlib(&mut decls);
         lift_inline_methods(&mut decls);
-        decls
+        CompilableStdlib { decls, operator_calls: desugared.operator_calls }
     }
 
     /// Return struct/enum definitions from stdlib files that have compilable

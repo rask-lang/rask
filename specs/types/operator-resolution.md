@@ -46,14 +46,14 @@ public trait Mul<Rhs = Self> {
 | Rule | Description |
 |------|-------------|
 | **OR1: Resolution on the ordered pair** | `a OP b` selects the operator-trait conformance registered for `(typeof a, typeof b)`, in that order. It is not a method lookup on `a` |
-| **OR1a: The method names belong to the traits** | `add`, `sub`, `mul`, `div`, `rem`, `neg`, `bit_and`, `bit_or`, `bit_xor`, `bit_not`, `shl`, `shr` are declared in a conformance or not at all. A plain `extend Meters { func mul(self, k: f64) -> Meters }` is an error naming the header it wants, because MN1 gives the type one `mul` and that one has to be the conformance's. A method that could not *be* the operator's — `mutate self`, a void return, the wrong arity — keeps the name; a set's `add(mutate self, v)` is not an operator. A *trait* asking for one is the same error on the declaration that started it: `trait Summable { func add(self, other: Self) -> Self }` is `Add` spelled twice |
 | **OR2: Declared operator traits** | `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` are declared traits taking `<Rhs>` and carrying an associated `Out`. `Neg` and `BitNot` are unary — no `Rhs`, `Out` only. They live in [`stdlib/ops.rk`](../../stdlib/ops.rk) |
 | **OR3: Both default to `Self`** | The operator traits are declared `trait Mul<Rhs = Self> { type Out = Self … }`, so this is `type.generics/GT4` and `type.associated-types/AT4` rather than an operator rule. `extend Point with Add` is `Add<Point>` answering in `Point`; `extend Meters with Mul<f64>` answers in `Meters` |
 | **OR4: One conformance per pair** | At most one conformance of a given operator trait for a given `(Self, Rhs)` in a build. A second is a use-site error naming both packages — the same collision rule retroactive conformance already carries (#312). Two conformances of one operator to *different* pairs are fine and are what OR1 tells apart |
 | **OR5: `Out` is read, not inferred** | OR4 makes the conformance unique, so `Out` is read off it — `type.associated-types/AT6`, which holds for every associated type for the same reason. No inference search and no ambiguity |
 | **OR6: Primitives take conformances only** | `extend f64 with Mul<Meters>` is legal. `extend f64 { … }` — an inherent method on a primitive — remains illegal |
 | **OR7: No implicit symmetry, pending `@commutative`** | Defining `Meters * f64` does not by itself generate `f64 * Meters`. Whether `@commutative` may generate the flip is open — see below |
-| **OR8: A missing pair is a compile error** | Naming both operand types and the operator as it was written, at check time |
+| **OR8: A missing pair is a compile error** | Naming both operand types and the operator as it was written, at check time. The left operand having a method of that name is not a conformance — `extend Meters { func mul(…) }` leaves `m * 2.0` undefined, and the error says the header is what's missing |
+| **OR8a: Method syntax is not the operator** | `a.mul(b)` written out is an ordinary method call. It reaches the conformance when there is one, and an inherent `mul` when there isn't — so a type is free to have a `mul`, an `add` or a `div` that means something else. Only the operator requires the conformance |
 | **OR9: Comparison stays same-type** | `Equal` and `Comparable` keep `Self` on both sides and are not resolved on the pair. Mixed-signedness integer comparison remains the builtin exception (`type.operators/ORD4`) |
 | **OR10: Resolution is static** | The pair comes from static types only. No runtime component, no dispatch table in the binary, no cost at the call site |
 | **OR11: Compound assignment needs `Out == Self`** | `a *= b` requires the `(A, B)` conformance to answer in `A`. Otherwise the assignment would change the variable's type |
@@ -121,7 +121,7 @@ Anything still ambiguous waits for literal defaulting rather than picking.
 
 - **The hardcoded stdlib pairs are gone.** `("Instant", "add")`, `("Instant", "sub")` and their neighbours are ordinary conformances in `stdlib/time.rk`, and the three rows of the arithmetic table that had never been implemented came with them.
 - **Primitives gained a conformance surface.** Their method tables are still closed to inherent methods (OR6), but a conformance can be written on one.
-- **Existing inherent operator methods became conformances.** `extend Meters { func mul(…) }` no longer serves `*`; it is `extend Meters with Mul<f64>`. The rewrite is mechanical and the compiler prints the header (E0893).
+- **Existing inherent operator methods stopped serving operators.** `extend Meters { func mul(…) }` is still a method and `m.mul(2.0)` still calls it; what it no longer does is answer `*`. The rewrite is mechanical and the compiler prints the header (E0894).
 - **A type can carry two conformances of one operator.** Each one's method is filed under the applied argument, so the two keep separate symbols.
 - **`operators.md`'s "Operator traits: `Add`, `Sub`, …" line describes something that exists.**
 
@@ -169,9 +169,9 @@ Both are the messages that decide whether the feature is trusted, so they are no
 | `instant - instant` | OR12 | `Duration`, declared `@builtin` in `stdlib/time.rk` |
 | `3 * duration` | OR1 | `Duration` — the literal takes the `i64` the pair was written for |
 | `x.mul(2.0)` inside `func f<T: Mul<f64>>` | OR1, AT6 | The bound names the pair; `T.Out` is read off it |
-| `extend Meters { func mul(self, k: f64) -> Meters }` | OR1a | Compile error (E0893) naming the header: `extend Meters with Mul<f64>` |
-| `extend Holder { func add(mutate self, v: i64) }` | OR1a | Legal — an operator's method takes `self` by value and answers with something |
-| `trait Summable { func add(self, other: Self) -> Self }` | OR1a | Compile error on the trait: that is `Add`, and a conformer could only have one `add` |
+| `m * 2.0` where `Meters` has an inherent `mul` | OR8 | Compile error (E0894) naming both operands and the header the method wants |
+| `m.mul(2.0)` where `Meters` has an inherent `mul` | OR8a | Legal — an ordinary method call, which is all it ever was |
+| `extend Holder { func add(mutate self, v: i64) }` | OR8a | Legal; `holder + v` is not |
 
 ---
 
@@ -193,13 +193,15 @@ The first two are ordinary compile-time work. Rask already had the second: #312 
 
 The Julia comparison also produced a caution worth recording: part of why Julia composes so well is that nothing can reject you. A checked system buys early errors and pays for them with errors in cases Julia would simply have run. OR8 is that bill. I think it is the right trade for a language that has to run on a sensor, but it is a real cost and not a free win.
 
-### Why the rule is on the declaration, not the call
+### Where the operator/method distinction is kept
 
-Desugaring erases the difference between `a * b` and `a.mul(b)` before anything downstream can act on it, so "this call came from an operator" isn't a question the checker can ask. The obvious answer — carry a marker from desugar into the checker — is a lot of plumbing for a fact that turns a working spelling into an error.
+Desugaring rewrites `a * b` to `a.mul(b)`, so by the time anything can act on it the two are one node kind — and only one of them has to resolve against a conformance. The first draft of the implementation answered that by reserving the twelve method names at the declaration: a method called `mul` had to come from a `with Mul` block, whatever the call site did.
 
-OR1a asks the question at the declaration instead, where nothing has been erased: a method with an operator's name and an operator's shape is the conformance's, and the block that writes it says which pair it answers. That leaves no call site where an operator could resolve to something a conformance didn't register, without any marker — and it puts the diagnostic on the line that needs changing, with the header to write, rather than on the call.
+That works and it costs a language restriction nobody asked for. A registry's `add`, a buffer's, a builder's `div` — none of them is an operator, and all of them would have had to be renamed.
 
-The shape test is what keeps a set's `add(mutate self, v: i64)` legal. The trait declares `func add(self, rhs: Rhs) -> Self.Out`, so a `mutate self` or a void return can never be the conformance, and reserving the name against it would buy nothing. One casualty in the corpus — a `TextBuffer.add(text)` that is now `push`, which is what the collections call it.
+So desugar hands the fact over instead: it records which calls it rewrote, and the checker reads that. Six signatures carry it — desugar's three entry points, the checker's three — and in exchange OR1 is true as written, the names stay free, and the error lands on the operator with both operand types in it.
+
+It's the same shape as every other thing the front end knows and the back end would otherwise re-derive: `operator_targets` for which pairs resolved to a call, `call_targets` for dispatch. A pass that erases a distinction says what it erased.
 
 ### What was considered and rejected
 
