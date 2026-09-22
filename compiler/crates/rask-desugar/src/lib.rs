@@ -396,10 +396,7 @@ impl Desugarer {
             };
 
             let body_expr = match template {
-                MessageTemplate::Format(tmpl) => {
-                    // String with interpolation — desugaring pass handles {name}
-                    Expr { id: self.fresh_id(), kind: ExprKind::String(tmpl), span: sp }
-                }
+                MessageTemplate::Format(tmpl) => self.template_expr(tmpl, sp),
                 MessageTemplate::Delegate(binding) => {
                     // e.message() — delegate to inner error
                     Expr {
@@ -866,19 +863,6 @@ impl Desugarer {
                 Some(desugared) => desugared,
                 None => ExprKind::String(String::new()),
             };
-            // Already handled. The legacy scan below must not see the result:
-            // `"{{braces}}"` desugars to the literal `{braces}`, which that
-            // scanner would happily read as an interpolation (#521).
-            return;
-        }
-        // Legacy: raw strings with { that weren't parsed as StringInterp (shouldn't happen,
-        // but kept for safety during transition)
-        if let ExprKind::String(s) = &expr.kind {
-            if s.contains('{') {
-                if let Some(desugared) = self.desugar_string_interpolation(s, span) {
-                    expr.kind = desugared;
-                }
-            }
         }
     }
 
@@ -1262,76 +1246,67 @@ impl Desugarer {
         Some(result.kind)
     }
 
-    /// Legacy: Parse string interpolation and produce a concat chain.
+    /// A `@message` template becomes the node the parser would have built for
+    /// the same text written as a string literal.
     ///
-    /// `"hello {name}, you are {age}"` becomes:
-    /// `"hello ".concat(name.to_string()).concat(", you are ").concat(age.to_string())`
-    fn desugar_string_interpolation(&mut self, s: &str, span: rask_ast::Span) -> Option<ExprKind> {
-        let segments = parse_interpolation_segments(s)?;
-
-        // Build expressions for each segment
-        let mut exprs: Vec<Expr> = Vec::new();
-        for seg in &segments {
-            match seg {
+    /// The derived `message()` body is the one interpolated string nobody typed,
+    /// so its template never went through the parser. It used to get a second
+    /// interpolation implementation of its own, re-scanning the finished string
+    /// literal for braces — two copies of brace escaping, spec splitting and
+    /// concat building, one of them reading text the other had already produced.
+    /// Parsing the template here leaves one.
+    ///
+    /// A piece that doesn't parse stays literal text: `@message` templates come
+    /// from an attribute the author wrote, and an error pointing into a method
+    /// nobody can see is worse than the braces surviving into the message.
+    fn template_expr(&mut self, tmpl: String, span: rask_ast::Span) -> Expr {
+        let Some(pieces) = parse_interpolation_segments(&tmpl) else {
+            return Expr { id: self.fresh_id(), kind: ExprKind::String(tmpl), span };
+        };
+        let mut segments = Vec::new();
+        for piece in &pieces {
+            match piece {
                 InterpSegment::Literal(text) => {
-                    exprs.push(Expr {
-                        id: self.fresh_id(),
-                        kind: ExprKind::String(text.clone()),
-                        span,
-                    });
+                    segments.push(rask_ast::expr::StringSegment::Literal(text.clone()));
                 }
-                InterpSegment::Expr(expr_str, offset_in_str) => {
+                InterpSegment::Expr(text) => {
                     // `{p}` or `{p:debug}`, split the same way the parser does.
                     // Dropping the spec here is what made a derived `message()`
                     // demand `Displayable` of a struct payload: the generator
-                    // wrote `{p:debug}`, `parse_expr` read `p` and stopped, and
-                    // the `:debug` went nowhere.
-                    let (expr_text, spec) = match rask_ast::fmt_spec::split_spec(expr_str) {
+                    // wrote `{p:debug}`, the expression read `p` and stopped,
+                    // and the `:debug` went nowhere.
+                    let (expr_text, spec) = match rask_ast::fmt_spec::split_spec(text) {
                         Some(pos) => (
-                            &expr_str[..pos],
-                            rask_ast::fmt_spec::parse_spec(&expr_str[pos + 1..]),
+                            &text[..pos],
+                            rask_ast::fmt_spec::parse_spec(&text[pos + 1..]),
                         ),
-                        None => (expr_str.as_str(), None),
+                        None => (text.as_str(), None),
                     };
-                    let lex = rask_lexer::Lexer::new_with_file_id(expr_text, span.file_id).tokenize();
-                    if !lex.errors.is_empty() {
-                        return None; // Parse error — leave as raw string
+                    match self.parse_fragment(expr_text, span) {
+                        Some(parsed) => {
+                            segments.push(rask_ast::expr::StringSegment::Expr(Box::new(parsed), spec))
+                        }
+                        None => {
+                            return Expr { id: self.fresh_id(), kind: ExprKind::String(tmpl), span }
+                        }
                     }
-                    let mut parser = rask_parser::Parser::new_with_file_id(lex.tokens, 0, span.file_id);
-                    let mut parsed = parser.parse_expr().ok()?;
-
-                    // Remap spans from 0-based (within expr_str) to absolute file position.
-                    // span.start is the opening quote, +1 for the content start, +offset for position within content.
-                    let abs_offset = span.start + 1 + *offset_in_str;
-                    offset_expr_spans(&mut parsed, abs_offset);
-
-                    exprs.push(self.render_expr(parsed, spec));
                 }
             }
         }
+        Expr { id: self.fresh_id(), kind: ExprKind::StringInterp(segments), span }
+    }
 
-        if exprs.is_empty() {
+    /// Parse a snippet of expression text that isn't in any source file.
+    fn parse_fragment(&self, text: &str, span: rask_ast::Span) -> Option<Expr> {
+        let lex = rask_lexer::Lexer::new_with_file_id(text, span.file_id).tokenize();
+        if !lex.errors.is_empty() {
             return None;
         }
-        if exprs.len() == 1 {
-            return Some(exprs.remove(0).kind);
-        }
-
-        // Chain with the internal concat: first.__concat(second)...
-        let mut result = exprs.remove(0);
-        for seg_expr in exprs {
-            result = Expr {
-                id: self.fresh_id(),
-                kind: ExprKind::MethodCall {
-                    object: Box::new(result),
-                    method: "__concat".to_string(),
-                    type_args: None,
-                    args: vec![CallArg { name: None, mode: ArgMode::Default, expr: seg_expr }],
-                },
-                span,
-            };
-        }
-        Some(result.kind)
+        let mut parser = rask_parser::Parser::new_with_file_id(lex.tokens, 0, span.file_id);
+        let mut parsed = parser.parse_expr().ok()?;
+        // The fragment's spans start at 0; point them at the template instead.
+        offset_expr_spans(&mut parsed, span.start);
+        Some(parsed)
     }
 
     fn desugar_match_arm(&mut self, arm: &mut MatchArm) {
@@ -1453,11 +1428,6 @@ fn extract_message_attr_template(attr: &str) -> Option<String> {
     Some(stripped.to_string())
 }
 
-/// Strip generic args from a `using` block name: "ThreadPool(4)" → "ThreadPool".
-fn base_type_name(name: &str) -> &str {
-    name.split('<').next().unwrap_or(name)
-}
-
 /// Map binary operators to method names (if they should be desugared).
 /// The map itself lives in `rask_ast` — the checker reads it too, to tell a
 /// desugared operator apart from a real method call.
@@ -1519,8 +1489,8 @@ fn offset_expr_spans(expr: &mut Expr, offset: usize) {
 /// Segment of an interpolated string.
 enum InterpSegment {
     Literal(String),
-    /// Expression text and its byte offset within the original string content.
-    Expr(String, usize),
+    /// The text between the braces, spec and all.
+    Expr(String),
 }
 
 /// Parse a string containing `{expr}` interpolation into segments.
@@ -1531,24 +1501,12 @@ fn parse_interpolation_segments(s: &str) -> Option<Vec<InterpSegment>> {
     let mut literal = String::new();
     let mut chars = s.chars().peekable();
     let mut has_interp = false;
-    let mut byte_pos: usize = 0;
 
     while let Some(c) = chars.next() {
-        byte_pos += c.len_utf8();
-        // fmt/F4: `{{` and `}}` are literal braces, not an interpolation. This
-        // scanner runs on strings the parser handed on untouched (the spec test
-        // runner, mainly), so it needs the same rule.
-        if c == '{' && chars.peek() == Some(&'{') {
+        // fmt/F4: `{{` and `}}` are literal braces, not an interpolation.
+        if (c == '{' || c == '}') && chars.peek() == Some(&c) {
             chars.next();
-            byte_pos += 1;
-            literal.push('{');
-            has_interp = true;
-            continue;
-        }
-        if c == '}' && chars.peek() == Some(&'}') {
-            chars.next();
-            byte_pos += 1;
-            literal.push('}');
+            literal.push(c);
             has_interp = true;
             continue;
         }
@@ -1557,23 +1515,18 @@ fn parse_interpolation_segments(s: &str) -> Option<Vec<InterpSegment>> {
             if !literal.is_empty() {
                 segments.push(InterpSegment::Literal(std::mem::take(&mut literal)));
             }
-            let expr_start = byte_pos; // byte offset right after '{'
             let mut expr_str = String::new();
             let mut depth = 1;
             for ch in chars.by_ref() {
-                byte_pos += ch.len_utf8();
                 if ch == '{' {
                     depth += 1;
-                    expr_str.push(ch);
                 } else if ch == '}' {
                     depth -= 1;
                     if depth == 0 { break; }
-                    expr_str.push(ch);
-                } else {
-                    expr_str.push(ch);
                 }
+                expr_str.push(ch);
             }
-            segments.push(InterpSegment::Expr(expr_str, expr_start));
+            segments.push(InterpSegment::Expr(expr_str));
         } else {
             literal.push(c);
         }
@@ -1594,7 +1547,7 @@ mod tests {
         let segs = parse_interpolation_segments("hello {name}").unwrap();
         assert_eq!(segs.len(), 2);
         assert!(matches!(&segs[0], InterpSegment::Literal(s) if s == "hello "));
-        assert!(matches!(&segs[1], InterpSegment::Expr(s, 7) if s == "name"));
+        assert!(matches!(&segs[1], InterpSegment::Expr(s) if s == "name"));
     }
 
     #[test]
