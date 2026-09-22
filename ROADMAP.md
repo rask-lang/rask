@@ -34,13 +34,13 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 532 of 537, 5 registered red | `tests/differential.sh` |
-| Programs that leak | 3, holding 10 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
-| Matrix cells clean on both backends | 284 of 286 | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 534 | `tests/memcheck_gate.sh` |
-| Examples with a pinned golden | 36 of 38 | `tests/examples_gate.sh` |
+| Suite programs agreeing on both backends | 539 green, 8 registered red | `tests/differential.sh` |
+| Programs that leak | 3, holding 4 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 281 of 283, 5 pairs skipped | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 0 of 541 | `tests/memcheck_gate.sh` |
+| Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 37 of 85 open issues | issue search |
+| Open bugs | 39 of 85 open issues | issue search |
 | Open design questions | 22 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
@@ -153,10 +153,16 @@ a *task* boundary when the task panics. That waits on
 [#299](https://github.com/rask-lang/rask/issues/299) — captures aren't unwound
 at all yet — which is v0.5's theme, not this one.
 
-## v0.4 — A value works in every position
+## v0.4 — A value works in every position — **shipped 2026-09-22**
 
-**Done when `tests/matrix/run.sh` is green. Today: 284 of 286 cells clean, and
-the 2 that aren't are out of this milestone (see below).**
+**Done when `tests/matrix/run.sh` is green. It is: 281 of 283 cells clean, 2
+registered red, 0 new, and 5 pairs skipped as pairs the design rules out.**
+
+Read the cell count against the old one with care — it was 284 of 286 while
+`Vec<Heap<T>>` still compiled. Fixing [#1245](https://github.com/rask-lang/rask/issues/1245)
+turned three of those cells from "should be rejected and isn't" into pairs that
+aren't legal Rask, so they moved to `gen.py`'s SKIPS with `std.collections/C4`
+next to them. Fewer cells, one more enforced rule.
 
 These read as unrelated bugs and aren't. A closure works as a local and not out
 of a `Map`; a function works as an argument and not as a struct field. Nothing
@@ -164,7 +170,7 @@ enumerated value-kind × position, so the holes were found one report at a time.
 The deliverable is the matrix — every payload kind in every carrier, one small
 program per cell, run on both backends — and then the bugs it lights up.
 
-The matrix exists: `tests/matrix/gen.py` writes 286 cells over 18 payloads and
+The matrix exists: `tests/matrix/gen.py` writes 283 cells over 18 payloads and
 16 carriers, `tests/matrix/run.sh` runs them, and `tests/matrix/known_red.txt`
 holds each red cell to what it claims — which backend fails it and how far that
 backend gets. A registered cell that starts passing is reported so the line gets
@@ -190,9 +196,29 @@ through an inline lock chain, and
 [#1228](https://github.com/rask-lang/rask/issues/1228), a closure in a struct
 field leaking once the struct is a `Vec` element.
 
-[#1046](https://github.com/rask-lang/rask/issues/1046) is still open and still
-in: the sequence adapters are written and work, and `Vec.iter()` not returning a
-`Sequence` is the position they can't occupy.
+**[#1046](https://github.com/rask-lang/rask/issues/1046) closed, and not the way
+it was written.** It was filed as "the adapters wait for `Vec.iter()` to return a
+`Sequence`". `.iter()` is gone instead (SEQ48) — a collection is its own chain
+head, so `v.filter(p)` and `for x in v` are the spellings and there is no second
+call whose return type needs changing. The adapters landed, `v.filter(p)` hands
+back a `Sequence<T>` rather than a second `Vec`, and fusion is untouched:
+`v.filter(p).to_vec()` is the same index loop with no closure it always was.
+
+The last thing left under that number was a value failing in a position, which
+is why it belonged here. A method call on the element of a Rask-bodied sequence
+died in lowering — `for w in words.as_sequence() { w.len() }` gave "method `len`
+on receiver of unresolved type". MIR knew a `Sequence<T>` holds `T`; the
+checker's own `container_elem_type` special-cased `Iterator` and `Range` and let
+`Sequence` fall through to "element type isn't readable from here", so the loop
+variable kept a free type variable and dispatch had nothing to name. One arm,
+four shapes in `t34_vec_as_sequence.rk`.
+
+Two things that carried #1046's number are not it and are filed on their own:
+[#1324](https://github.com/rask-lang/rask/issues/1324), the interpreter writing a
+`mutate` parameter back before a lazy chain has run, and
+[#1325](https://github.com/rask-lang/rask/issues/1325), a `Vec` not filling a
+`Sequence<T>` parameter because SEQ48's coercion only runs inside Vec's own
+adapter bodies.
 
 **Four came out of this list.** Same rule the three below came out under — a
 version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
@@ -212,6 +238,12 @@ version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
   `Vec.from([…])`; the carriers still measure their carriers.
 - **#1248** — a generic function whose name ends in `_free` leaks the `Vec` it
   returns. A name collision in the ownership metadata, not a position.
+
+Three of those four are fixed anyway, off the backlog rather than off this
+milestone — #1245, #1233 and #1248 all came in with #1298. #1244 is the one
+still open, and it was briefly closed by that same batch without anything in it
+answering the question; the repro still fails and it has been reopened. Its two
+cells are the 2 red in the number above.
 
 **What this list used to say.** It named eight. Two were already closed when
 the milestone was written (#843, #886), and three were not bugs at all — they

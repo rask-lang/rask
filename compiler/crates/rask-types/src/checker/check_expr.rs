@@ -5745,6 +5745,16 @@ impl TypeChecker {
                 if matches!(ty, Type::UnresolvedGeneric { name, .. } if name == "Range") {
                     return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
                 }
+                // A `Sequence<T>` yields `T`. MIR has known this since #1046 —
+                // the checker never did, so `for w in v.as_sequence()` left `w`
+                // with a free variable and `w.len()` died in lowering with no
+                // receiver type. Nominal, so match on either spelling.
+                if matches!(
+                    self.generic_name_of(ty).as_deref(),
+                    Some("Sequence") | Some("SequenceMut")
+                ) {
+                    return arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known);
+                }
                 match self.generic_base_name(ty) {
                     Some("Vec") => arg(0).map_or(ContainerElem::Deferred, ContainerElem::Known),
                     // stdlib.collections: a map iterates its (key, value) entries.
