@@ -1137,9 +1137,6 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().call(*pop_ref, &[]);
             }
 
-            // ── Pool checked access ────────────────────────────────────
-            MirStmtKind::PoolCheckedAccess { dst, pool, handle } => Self::lower_pool_checked_access(builder, dst, pool, handle, ctx)?,
-
             // ── Closure support ──────────────────────────────────────────
 
             MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => Self::lower_closure_create(builder, dst, func_name, captures, heap, ctx)?,
@@ -2009,19 +2006,19 @@ impl<'a> FunctionBuilder<'a> {
             | RaskType::F32 | RaskType::F64
             | RaskType::Char
             | RaskType::Fn { .. } => false,
-            // Runtime-opaque pointer types (Vec, Map, Pool, Handle, Channel, ...)
+            // Runtime-opaque pointer types (Vec, Map, Rack, Channel, ...)
             RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,
             // A named type is an aggregate when it's a user struct or enum —
             // one with real bytes. Runtime-opaque handles (TcpListener, File,
             // Instant) have empty layouts and stay pointer-sized scalars.
             RaskType::UnresolvedNamed(n) => Self::named_layout_size(n, ctx) > 0,
             RaskType::Named(_) => false,
-            // The niche options — `Handle<T>?` and `Link<T>?` — are one word
-            // with a sentinel for `none`, so they load like a scalar. Answering
-            // "aggregate" here handed back the field's *address*, and a root
-            // edge read as a stack address instead of the node it named.
+            // The niche option — `Link<T>?` — is one word with null for
+            // `none`, so it loads like a scalar. Answering "aggregate" here
+            // handed back the field's *address*, and a root edge read as a
+            // stack address instead of the node it named.
             ty if ty.is_option() && matches!(ty.as_option().unwrap(),
-                RaskType::UnresolvedGeneric { name, .. } if name == "Handle" || name == "Link")
+                RaskType::UnresolvedGeneric { name, .. } if name == "Link")
                 => false,
             // The same option with its payload already resolved to a `TypeId`.
             // `Generic`/`Named` payloads are the runtime-opaque pointer types
@@ -2730,7 +2727,6 @@ impl<'a> FunctionBuilder<'a> {
                         | MirType::Tuple(_)
                         | MirType::Array { .. }
                         | MirType::Ptr
-                        | MirType::Handle
                         // A `Heap<T>` standing where a `T` is expected (HP5):
                         // the block's address is the aggregate's address, so
                         // there is nothing to spill. Spilling it passed the
@@ -2804,129 +2800,6 @@ impl<'a> FunctionBuilder<'a> {
         let src_addr = builder.use_var(*src_var);
         Self::copy_bytes(builder, src_addr, 0, addr_val, offset as i32, size);
         true
-    }
-
-    fn lower_pool_checked_access(
-        builder: &mut ClifFunctionBuilder,
-        dst: &LocalId,
-        pool: &LocalId,
-        handle: &LocalId,
-        ctx: &CodegenCtx,
-    ) -> CodegenResult<()> {
-        let pool_val = builder.use_var(*ctx.var_map.get(pool)
-            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                "Pool variable not found".to_string()
-            ))?);
-        let handle_val = builder.use_var(*ctx.var_map.get(handle)
-            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                "Handle variable not found".to_string()
-            ))?);
-
-        // Determine result type before emitting IR
-        let is_struct = ctx.locals.iter()
-            .find(|l| l.id == *dst)
-            .map(|l| matches!(&l.ty, MirType::Struct(_)))
-            .unwrap_or(false);
-        let load_ty = ctx.locals.iter()
-            .find(|l| l.id == *dst)
-            .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
-            .unwrap_or(types::I64);
-
-        if ctx.build_mode == BuildMode::Release {
-            // ── Inline pool access (release mode) ──────────────
-            // Emits bounds check + generation check + data load directly
-            // as Cranelift IR, avoiding the C function call overhead.
-            //
-            // Pool layout (verified by _Static_assert in pool.c):
-            //   offset 16: slot_stride (i64)
-            //   offset 24: cap (i64)
-            //   offset 40: slots (ptr)
-            // Slot layout (stride varies by elem_size):
-            //   offset 0: generation (u32)
-            //   offset 8: data (elem_size bytes)
-            use crate::layouts::*;
-
-            // 1. Extract index and generation from packed i64 handle
-            //    handle = index:32 | generation:32
-            let index = builder.ins().band_imm(handle_val, 0xFFFF_FFFF_i64);
-            let gen_i64 = builder.ins().ushr_imm(handle_val, 32);
-            let gen = builder.ins().ireduce(types::I32, gen_i64);
-
-            // 2. Bounds check: index < cap
-            let cap = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_CAP_OFFSET);
-            let oob = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, index, cap);
-
-            let panic_block = builder.create_block();
-            let bounds_ok = builder.create_block();
-            builder.ins().brif(oob, panic_block, &[], bounds_ok, &[]);
-
-            Self::emit_panic_block(builder, panic_block, "pool access with invalid handle", ctx);
-
-            // bounds_ok: load slots pointer and stride, compute slot address
-            builder.switch_to_block(bounds_ok);
-            builder.seal_block(bounds_ok);
-            let slots = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_SLOTS_OFFSET);
-            let stride = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_STRIDE_OFFSET);
-            let slot_offset = builder.ins().imul(index, stride);
-            let slot_addr = builder.ins().iadd(slots, slot_offset);
-
-            // 3. Generation check
-            let slot_gen = builder.ins().load(types::I32, MemFlags::new(), slot_addr, SLOT_GEN_OFFSET);
-            let gen_mismatch = builder.ins().icmp(IntCC::NotEqual, gen, slot_gen);
-
-            let gen_panic_block = builder.create_block();
-            let ok_block = builder.create_block();
-            builder.ins().brif(gen_mismatch, gen_panic_block, &[], ok_block, &[]);
-
-            Self::emit_panic_block(builder, gen_panic_block, "pool access with invalid handle", ctx);
-
-            // ok_block: load data (single predecessor, seal immediately)
-            builder.switch_to_block(ok_block);
-            builder.seal_block(ok_block);
-            let var = ctx.var_map.get(dst)
-                .ok_or_else(|| CodegenError::UnsupportedFeature(
-                    "Pool access destination not found".to_string()
-                ))?;
-            // Always return pointer to slot data — pool[h] is used
-            // for mutation, so callers need the address.
-            let data_ptr = builder.ins().iadd_imm(slot_addr, SLOT_DATA_OFFSET as i64);
-            builder.def_var(*var, data_ptr);
-        } else {
-            // ── Debug mode: call C function ──────────────────────
-            let call_inst = if let Some(file_str) = ctx.source_file {
-                if let (Some(func_ref), Some(gv)) = (
-                    ctx.func_refs.get("pool_get_checked"),
-                    ctx.string_globals.get(file_str),
-                ) {
-                    let file_ptr = builder.ins().global_value(types::I64, *gv);
-                    let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
-                    let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
-                    builder.ins().call(*func_ref, &[pool_val, handle_val, file_ptr, line_val, col_val])
-                } else {
-                    let func_ref = ctx.func_refs.get("Pool_checked_access")
-                        .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
-                    builder.ins().call(*func_ref, &[pool_val, handle_val])
-                }
-            } else {
-                let func_ref = ctx.func_refs.get("Pool_checked_access")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
-                builder.ins().call(*func_ref, &[pool_val, handle_val])
-            };
-
-            let results = builder.inst_results(call_inst);
-            if !results.is_empty() {
-                let ptr = results[0];
-                let var = ctx.var_map.get(dst)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "Pool access destination not found".to_string()
-                    ))?;
-                // Always return raw pointer — pool[h] is used for
-                // mutation (pool[h].field = val), so callers need
-                // the address, not the loaded value.
-                builder.def_var(*var, ptr);
-            }
-        }
-        Ok(())
     }
 
     fn lower_closure_create(
@@ -3882,7 +3755,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
             | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
-            | MirType::Char | MirType::Handle | MirType::Ptr => {
+            | MirType::Char | MirType::Ptr => {
                 let a = builder.ins().load(types::I64, MemFlags::new(), lhs, 0);
                 let b = builder.ins().load(types::I64, MemFlags::new(), rhs, 0);
                 Ok(builder.ins().icmp(IntCC::Equal, a, b))
@@ -4063,7 +3936,7 @@ impl<'a> FunctionBuilder<'a> {
             }
             MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
             | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
-            | MirType::Char | MirType::Handle | MirType::Ptr => {
+            | MirType::Char | MirType::Ptr => {
                 let lty = mir_to_cranelift_type(ty)?;
                 let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
@@ -4491,7 +4364,7 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(builder.ins().isub(gt, lt))
             }
             MirType::Bool | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
-            | MirType::Char | MirType::Handle => {
+            | MirType::Char => {
                 let lty = mir_to_cranelift_type(ty)?;
                 let a = builder.ins().load(lty, MemFlags::new(), lhs, 0);
                 let b = builder.ins().load(lty, MemFlags::new(), rhs, 0);
@@ -5640,15 +5513,15 @@ impl<'a> FunctionBuilder<'a> {
                         // Return dummy value — real data is in the stack slot
                         builder.ins().iconst(types::I64, 0)
                     } else {
-                        // No slot means a niche `Handle?` or `Link<T>?`: the
-                        // value itself is the option. A miss still comes back
-                        // NULL, so answer with that type's `none` instead of
-                        // loading through it — `Map<K, Handle<T>>` segfaulted
-                        // on every lookup that found nothing (#561).
+                        // No slot means a niche `Link<T>?`: the value itself is
+                        // the option. A miss still comes back NULL, so answer
+                        // with that type's `none` instead of loading through it
+                        // — `Map<K, Link<T>>` segfaulted on every lookup that
+                        // found nothing (#561).
                         let none_word = ctx.locals.iter()
                             .find(|l| l.id == *dst_id)
                             .and_then(|l| l.ty.niche_none())
-                            .unwrap_or(crate::layouts::HANDLE_NONE_SENTINEL);
+                            .unwrap_or(rask_mono::abi::LINK_NONE_SENTINEL);
                         let miss_block = builder.create_block();
                         let hit_block = builder.create_block();
                         let merge_block = builder.create_block();
@@ -7333,7 +7206,6 @@ impl<'a> FunctionBuilder<'a> {
             ContainerKind::Vec => "rask_vec_free",
             ContainerKind::Map => "rask_map_free",
             ContainerKind::Rack => "rask_rack_free",
-            ContainerKind::Pool => "rask_pool_free",
         }
     }
 
@@ -8303,38 +8175,6 @@ impl<'a> FunctionBuilder<'a> {
             .unwrap_or_default()
     }
 
-    /// The same entries for a pooled element, off the tag lowering appended.
-    ///
-    /// A pooled element doesn't have to be a struct: `Pool<string>` and
-    /// `Pool<Vec<i64>>` hold elements that *are* the owned thing. Reading the
-    /// argument's local can't see that — MIR types every container as a bare
-    /// `Ptr` — so lowering settles the tag from the checker's type and passes
-    /// it as the last argument. The tag is not a runtime argument, so it comes
-    /// back off the value list before the call is built.
-    fn pooled_owned_descriptor(
-        mir_args: &[MirOperand],
-        args: &mut Vec<Value>,
-        ctx: &CodegenCtx,
-    ) -> (Vec<i32>, Option<String>) {
-        // Pool, element, tag. Anything else is a call this didn't build, and
-        // popping a value off one of those would drop the element instead.
-        if mir_args.len() != 3 || args.len() != 3 {
-            return (Vec::new(), None);
-        }
-        args.pop();
-        let Some(MirOperand::Constant(MirConst::Int(tag))) = mir_args.last() else {
-            return (Vec::new(), None);
-        };
-        let owned =
-            crate::elem_offsets::string_offsets_for_tag(*tag, ctx.struct_layouts, ctx.enum_layouts)
-                .unwrap_or_default();
-        // R5: a `@resource` element makes a non-empty drop a panic, and the
-        // message names the element type. Both ride the same "told once, on the
-        // first insert" route as the descriptor.
-        let resource = crate::elem_offsets::resource_elem_name(*tag, ctx.struct_layouts)
-            .map(str::to_string);
-        (owned, resource)
-    }
 
     /// `Link<T>` / `Link<T>?` → 0, `Vec<Link<T>>` → 1, `Map<K, Link<T>>` → 2.
     /// Must agree with the `RASK_RACK_FIELD_*` defines in rask_runtime.h.
@@ -8804,60 +8644,6 @@ impl<'a> FunctionBuilder<'a> {
                         builder.ins().stack_store(e, ss, (i * 4) as i32);
                     }
                     args.push(builder.ins().stack_addr(types::I64, ss, 0));
-                }
-                CallAdapt::None
-            }
-
-            // Pool insert: the element's bytes by address, its size, and what
-            // one element owns — the same entries a rack node carries, off the
-            // same layout. `Pool.new()` has no argument to read `T` off, so
-            // this is where the runtime learns it; without it a pooled struct's
-            // strings and `Vec` fields were freed by nobody.
-            "Pool_insert" | "Pool_try_insert" => {
-                let (elem_size, is_struct) = Self::struct_elem_size(mir_args, 1, ctx);
-                if args.len() >= 2 && !is_struct {
-                    let val = args[1];
-                    args[1] = Self::value_to_ptr(builder, val);
-                }
-                let (owned, resource) = Self::pooled_owned_descriptor(mir_args, args, ctx);
-                args.push(builder.ins().iconst(types::I64, elem_size));
-                args.push(builder.ins().iconst(types::I64, owned.len() as i64));
-                if owned.is_empty() {
-                    args.push(builder.ins().iconst(types::I64, 0));
-                } else {
-                    // The runtime copies it on the first insert, so a stack
-                    // slot is enough to hand it over.
-                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot, (owned.len() * 4) as u32, 0,
-                    ));
-                    for (i, entry) in owned.iter().enumerate() {
-                        let e = builder.ins().iconst(types::I32, *entry as i64);
-                        builder.ins().stack_store(e, ss, (i * 4) as i32);
-                    }
-                    args.push(builder.ins().stack_addr(types::I64, ss, 0));
-                }
-                // R5's three: is the element a resource, and what is it called.
-                // The name goes over on a stack slot for the same reason the
-                // descriptor does — the runtime copies it on the first insert.
-                match &resource {
-                    Some(name) => {
-                        args.push(builder.ins().iconst(types::I64, 1));
-                        let bytes = name.as_bytes();
-                        let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                            StackSlotKind::ExplicitSlot, bytes.len() as u32, 0,
-                        ));
-                        for (i, b) in bytes.iter().enumerate() {
-                            let v = builder.ins().iconst(types::I8, *b as i64);
-                            builder.ins().stack_store(v, ss, i as i32);
-                        }
-                        args.push(builder.ins().stack_addr(types::I64, ss, 0));
-                        args.push(builder.ins().iconst(types::I64, bytes.len() as i64));
-                    }
-                    None => {
-                        args.push(builder.ins().iconst(types::I64, 0));
-                        args.push(builder.ins().iconst(types::I64, 0));
-                        args.push(builder.ins().iconst(types::I64, 0));
-                    }
                 }
                 CallAdapt::None
             }

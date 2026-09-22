@@ -283,128 +283,10 @@ fn expand_scientific(rendered: &str) -> String {
     }
 }
 
-/// Global pool ID counter. Each Pool gets a unique ID.
-static NEXT_POOL_ID: AtomicU32 = AtomicU32::new(1);
-
 /// Process-global active Multitasking runtime slot (conc.async/C1).
 /// At most one `using Multitasking { }` block may be active per process.
 pub static ACTIVE_RUNTIME: LazyLock<RwLock<Option<Arc<MultitaskingRuntime>>>> =
     LazyLock::new(|| RwLock::new(None));
-
-/// Allocate the next unique pool ID.
-pub fn next_pool_id() -> u32 {
-    NEXT_POOL_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-/// Internal pool storage. Sparse array with generation counters for handle validation.
-#[derive(Debug, Clone)]
-pub struct PoolData {
-    pub pool_id: u32,
-    /// Sparse storage: each slot is (generation, Option<Value>).
-    pub slots: Vec<(u32, Option<Value>)>,
-    /// Free slot indices available for reuse.
-    pub free_list: Vec<u32>,
-    /// Count of live elements.
-    pub len: usize,
-    /// Type parameter for generic Pool<T> (e.g., "Node" in Pool<Node>).
-    pub type_param: Option<String>,
-    /// mem.pools/PL2: capacity bound. `None` = unbounded (grows on demand);
-    /// `Some(n)` = a `with_capacity(n)` pool that never exceeds `n` live elements.
-    pub capacity: Option<usize>,
-}
-
-impl PoolData {
-    pub fn new() -> Self {
-        Self {
-            pool_id: next_pool_id(),
-            slots: Vec::new(),
-            free_list: Vec::new(),
-            len: 0,
-            type_param: None,
-            capacity: None,
-        }
-    }
-
-    pub fn with_type_param(type_param: Option<String>) -> Self {
-        Self {
-            pool_id: next_pool_id(),
-            slots: Vec::new(),
-            free_list: Vec::new(),
-            len: 0,
-            type_param,
-            capacity: None,
-        }
-    }
-
-    /// mem.pools/PL8: a bounded pool at its capacity limit rejects new inserts.
-    pub fn is_full(&self) -> bool {
-        self.capacity.map_or(false, |cap| self.len >= cap)
-    }
-
-    /// Validate a handle against this pool. Returns the slot index on success.
-    pub fn validate(&self, pool_id: u32, index: u32, generation: u32) -> Result<usize, String> {
-        if pool_id != self.pool_id {
-            return Err("handle from wrong pool".to_string());
-        }
-        let idx = index as usize;
-        if idx >= self.slots.len() {
-            return Err("invalid handle index".to_string());
-        }
-        let (slot_gen, ref slot_val) = self.slots[idx];
-        if slot_gen != generation {
-            return Err("stale handle".to_string());
-        }
-        if slot_val.is_none() {
-            return Err("stale handle".to_string());
-        }
-        Ok(idx)
-    }
-
-    /// Insert a value into the pool. Returns (index, generation) for the handle.
-    pub fn insert(&mut self, value: Value) -> (u32, u32) {
-        if let Some(free_idx) = self.free_list.pop() {
-            let idx = free_idx as usize;
-            let gen = self.slots[idx].0; // generation was already bumped on remove
-            self.slots[idx].1 = Some(value);
-            self.len += 1;
-            (free_idx, gen)
-        } else {
-            let idx = self.slots.len() as u32;
-            let gen = 1u32; // first generation for new slots
-            self.slots.push((gen, Some(value)));
-            self.len += 1;
-            (idx, gen)
-        }
-    }
-
-    /// Remove a value at the given validated index. Bumps generation for the slot.
-    pub fn remove_at(&mut self, idx: usize) -> Option<Value> {
-        let (ref mut gen, ref mut slot) = self.slots[idx];
-        if let Some(val) = slot.take() {
-            *gen = gen.saturating_add(1); // bump generation (saturating per spec)
-            self.free_list.push(idx as u32);
-            self.len -= 1;
-            Some(val)
-        } else {
-            None
-        }
-    }
-
-    /// Collect all valid (index, generation) pairs.
-    pub fn valid_handles(&self) -> Vec<(u32, u32)> {
-        self.slots
-            .iter()
-            .enumerate()
-            .filter_map(|(i, (gen, slot))| {
-                if slot.is_some() {
-                    Some((i as u32, *gen))
-                } else {
-                    None
-                }
-            })
-            .collect()
-    }
-}
 
 /// Global rack ID counter. Each Rack gets a unique ID.
 static NEXT_STORE_ID: AtomicU32 = AtomicU32::new(1);
@@ -502,7 +384,7 @@ pub fn node_key(node: &Arc<Mutex<StructData>>) -> usize {
 
 /// Internal rack storage — the arena half of `Rack<T>` + `Link<T>`.
 ///
-/// Unlike `PoolData` there are no generation counters, because there is no
+/// There are no generation counters, because there is no
 /// stale state to detect: `delete` walks every incoming edge and nulls it, so
 /// a link is either absent or valid. Slots hold the node's `Arc<Mutex<StructData>>`,
 /// and a `Value::Link` holds that same Arc — following a link is a pointer
@@ -653,7 +535,6 @@ pub enum TypeConstructorKind {
     Map,
     String,
     Char,
-    Pool,
     Rack,
     Cell,
     Channel,
@@ -1083,8 +964,6 @@ pub enum Value {
     Type(String),
     /// Cell<T> (CE1–CE6: single heap-allocated mutable value)
     Cell(Arc<Mutex<Value>>),
-    /// Pool (sparse storage with generation counters)
-    Pool(Arc<Mutex<PoolData>>),
     /// Rack (arena of nodes; edges into it are fixed at delete)
     Rack(Arc<Mutex<RackData>>),
     /// Link — one edge to a node. Holds the node pointer directly, so following
@@ -1093,18 +972,6 @@ pub enum Value {
     Link {
         rack_id: u32,
         node: Arc<Mutex<StructData>>,
-    },
-    /// Handle (opaque reference into a pool)
-    Handle {
-        pool_id: u32,
-        index: u32,
-        generation: u32,
-    },
-    /// WeakHandle (non-owning reference into a pool — may become invalid)
-    WeakHandle {
-        pool_id: u32,
-        index: u32,
-        generation: u32,
     },
     /// Thread handle (from spawn_raw or spawn_thread)
     ThreadHandle(Arc<ThreadHandleInner>),
@@ -1402,11 +1269,8 @@ impl Value {
             Value::Instant(_) => "Instant",
             Value::Type(_) => "type",
             Value::Cell(_) => "Cell",
-            Value::Pool(_) => "Pool",
             Value::Rack(_) => "Rack",
             Value::Link { .. } => "Link",
-            Value::Handle { .. } => "Handle",
-            Value::WeakHandle { .. } => "WeakHandle",
             Value::ThreadHandle(_) => "ThreadHandle",
             Value::TaskHandle(_) => "TaskHandle",
             Value::TaskGroup(_) => "TaskGroup",
@@ -1456,7 +1320,7 @@ impl Value {
     ///
     /// Structs, enums, and nominals are copied structurally — their value-type
     /// fields recurse, so nested aggregates are independent too. Reference/box
-    /// types (Vec, Map, String, Cell, Shared, Mutex, Pool, handles) keep sharing
+    /// types (Vec, Map, String, Cell, Shared, Mutex, Rack, links) keep sharing
     /// their storage: they're move-only, so the source is already dead, and boxes
     /// alias by design. Resource-tracked structs (@resource) are move-only linear
     /// values — never duplicate their storage.
@@ -1519,18 +1383,6 @@ impl Value {
             Value::Cell(c) => {
                 let inner = c.lock().unwrap().deep_clone();
                 Value::Cell(Arc::new(Mutex::new(inner)))
-            }
-            Value::Pool(p) => {
-                let pool = p.lock().unwrap();
-                let mut new_pool = PoolData::new();
-                new_pool.slots = pool.slots.iter().map(|(gen, opt)| {
-                    (*gen, opt.as_ref().map(|v| v.deep_clone()))
-                }).collect();
-                new_pool.free_list = pool.free_list.clone();
-                new_pool.len = pool.len;
-                new_pool.type_param = pool.type_param.clone();
-                new_pool.capacity = pool.capacity;
-                Value::Pool(Arc::new(Mutex::new(new_pool)))
             }
             Value::Closure { params, body, captured_env } => {
                 // Deep-cloning a closure detaches it from what it borrowed, so
@@ -1678,7 +1530,6 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Map => "Map",
                     TypeConstructorKind::String => "string",
                     TypeConstructorKind::Char => "char",
-                    TypeConstructorKind::Pool => "Pool",
                     TypeConstructorKind::Rack => "Rack",
                     TypeConstructorKind::Cell => "Cell",
                     TypeConstructorKind::Channel => "Channel",
@@ -1730,10 +1581,6 @@ impl fmt::Display for Value {
                 let inner = c.lock().unwrap();
                 write!(f, "Cell({})", inner)
             }
-            Value::Pool(p) => {
-                let pool = p.lock().unwrap();
-                write!(f, "<Pool len={}>", pool.len)
-            }
             Value::Rack(s) => {
                 let rack = s.lock().unwrap();
                 write!(f, "<Rack len={}>", rack.len)
@@ -1744,16 +1591,6 @@ impl fmt::Display for Value {
                 let guard = node.lock().unwrap();
                 write!(f, "{}", Value::Struct(Arc::new(Mutex::new(guard.clone()))))
             }
-            Value::Handle {
-                pool_id,
-                index,
-                generation,
-            } => write!(f, "Handle({}, {}, {})", pool_id, index, generation),
-            Value::WeakHandle {
-                pool_id,
-                index,
-                generation,
-            } => write!(f, "WeakHandle({}, {}, {})", pool_id, index, generation),
             Value::ThreadHandle(_) => write!(f, "<ThreadHandle>"),
             Value::TaskHandle(_) => write!(f, "<TaskHandle>"),
             Value::TaskGroup(tasks) => write!(f, "<TaskGroup len={}>", tasks.lock().unwrap().len()),

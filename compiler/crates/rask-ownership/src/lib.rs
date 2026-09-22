@@ -38,12 +38,8 @@ impl OwnershipResult {
 /// W2 tracking: active `with` block binding info.
 #[derive(Debug, Clone)]
 struct WithBindingInfo {
-    /// Collection variable name (e.g. "pool" from `with pool[h] as entity`)
+    /// Collection variable name (e.g. "rows" from `with rows[i] as r`)
     collection_name: String,
-    /// Handle/key variable name (e.g. "h")
-    handle_name: String,
-    /// Whether the collection is a Pool (relaxed W2 rules) vs Vec/Map/string
-    is_pool: bool,
     /// Span of the `with` binding for error messages
     span: Span,
 }
@@ -115,8 +111,6 @@ pub struct OwnershipChecker<'a> {
     ensure_spans: HashMap<String, Span>,
     /// True when inside an `ensure` body (defer moves).
     in_ensure: bool,
-    /// Pool type names with frozen context (CC3/PF5: no writes, inserts, removes, clears).
-    frozen_contexts: HashSet<String>,
     /// Active `with` block bindings for W2 checking.
     active_with_bindings: Vec<WithBindingInfo>,
     /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
@@ -172,7 +166,7 @@ pub struct OwnershipChecker<'a> {
     /// A `delete` of one of those bindings is picking an arbitrary node rather
     /// than a node the caller named, so it invalidates every other link local.
     rack_iterations: Vec<(Option<String>, Vec<String>)>,
-    /// Parameter type strings: param name → type annotation (e.g. "Pool<Entity>").
+    /// Parameter type strings: param name → type annotation (e.g. "Vec<Entity>").
     param_type_strings: HashMap<String, String>,
     /// SL1: Bindings created by `const` from non-copy expressions (block-scoped borrows).
     /// Maps binding name → block_id where the borrow was created.
@@ -272,7 +266,6 @@ impl<'a> OwnershipChecker<'a> {
             ensure_registered: HashSet::new(),
             ensure_spans: HashMap::new(),
             in_ensure: false,
-            frozen_contexts: HashSet::new(),
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
             coarse_resources: HashMap::new(),
@@ -590,7 +583,6 @@ impl<'a> OwnershipChecker<'a> {
         self.ensure_registered.clear();
         self.ensure_spans.clear();
         self.in_ensure = false;
-        self.frozen_contexts.clear();
         self.active_with_bindings.clear();
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
@@ -618,16 +610,6 @@ impl<'a> OwnershipChecker<'a> {
 
     fn check_fn(&mut self, fn_decl: &FnDecl) {
         self.reset_body_state();
-
-        // CC3/PF5: Track frozen pool contexts
-        for clause in &fn_decl.context_clauses {
-            if clause.is_frozen {
-                self.frozen_contexts.insert(clause.ty.clone());
-                if let Some(name) = &clause.name {
-                    self.frozen_contexts.insert(name.clone());
-                }
-            }
-        }
 
         for param in &fn_decl.params {
             if param.is_take && param.ty.starts_with("Link<") {
@@ -1765,65 +1747,21 @@ impl<'a> OwnershipChecker<'a> {
                 for rack_arg in &method_deleting_args {
                     self.kill_links_for_deleting_arg(rack_arg, expr.span);
                 }
-                // CC3/PF5: Check for mutations on frozen pool contexts
-                if matches!(method.as_str(), "insert" | "remove" | "clear") {
-                    if let ExprKind::Ident(name) = &object.kind {
-                        if self.frozen_contexts.contains(name) {
-                            self.errors.push(OwnershipError {
-                                kind: OwnershipErrorKind::FrozenContextMutation {
-                                    context_ty: name.clone(),
-                                    operation: method.clone(),
-                                },
-                                span: expr.span,
-                            });
-                        }
-                    }
-                }
                 // W2: Check structural mutations inside `with` blocks
                 if matches!(method.as_str(), "insert" | "remove" | "clear" | "push" | "pop") {
                     if let ExprKind::Ident(coll_name) = &object.kind {
                         for wb in &self.active_with_bindings {
                             if wb.collection_name == *coll_name {
-                                if wb.is_pool {
-                                    // W2d: clear is always forbidden
-                                    if method == "clear" {
-                                        self.errors.push(OwnershipError {
-                                            kind: OwnershipErrorKind::WithBlockClear {
-                                                collection: coll_name.clone(),
-                                                binding_span: wb.span,
-                                            },
-                                            span: expr.span,
-                                        });
-                                    }
-                                    // W2c: remove(bound_handle) is forbidden
-                                    else if method == "remove" {
-                                        if let Some(first_arg) = args.first() {
-                                            if let ExprKind::Ident(arg_name) = &first_arg.expr.kind {
-                                                if *arg_name == wb.handle_name {
-                                                    self.errors.push(OwnershipError {
-                                                        kind: OwnershipErrorKind::WithBlockBoundHandleRemoved {
-                                                            handle: arg_name.clone(),
-                                                            collection: coll_name.clone(),
-                                                            binding_span: wb.span,
-                                                        },
-                                                        span: expr.span,
-                                                    });
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // W2a/W2b: insert and remove(other) are allowed for Pool
-                                } else {
-                                    // W2: non-pool collections — all structural mutations forbidden
-                                    self.errors.push(OwnershipError {
-                                        kind: OwnershipErrorKind::WithBlockStructuralMutation {
-                                            collection: coll_name.clone(),
-                                            operation: method.clone(),
-                                            binding_span: wb.span,
-                                        },
-                                        span: expr.span,
-                                    });
-                                }
+                                // W2: a structural mutation can reallocate the
+                                // buffer the binding names.
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::WithBlockStructuralMutation {
+                                        collection: coll_name.clone(),
+                                        operation: method.clone(),
+                                        binding_span: wb.span,
+                                    },
+                                    span: expr.span,
+                                });
                                 break;
                             }
                         }
@@ -2318,17 +2256,10 @@ impl<'a> OwnershipChecker<'a> {
                 for binding in bindings {
                     self.check_expr(&binding.source);
                     // W2: Track binding info for structural mutation checking
-                    if let ExprKind::Index { object, index } = &binding.source.kind {
+                    if let ExprKind::Index { object, .. } = &binding.source.kind {
                         if let ExprKind::Ident(coll_name) = &object.kind {
-                            let handle_name = if let ExprKind::Ident(h) = &index.kind {
-                                h.clone()
-                            } else {
-                                String::new()
-                            };
                             self.active_with_bindings.push(WithBindingInfo {
                                 collection_name: coll_name.clone(),
-                                handle_name,
-                                is_pool: self.is_pool_type(coll_name),
                                 span: binding.source.span,
                             });
                         }
@@ -3581,7 +3512,7 @@ impl<'a> OwnershipChecker<'a> {
     /// anything else returns None (treated as non-Copy, the safe default).
     fn type_from_name(&self, name: &str) -> Option<Type> {
         // `Handle<Item>` has to reach `is_copy`, which answers by base name for
-        // Handle/WeakHandle and stays conservative for every other container.
+        // `Link` and stays conservative for every other container.
         // Returning None here made a captured `n: Handle<Item>` parameter look
         // non-Copy, so an `own` closure marked it moved (#768). The arguments
         // aren't needed — nothing downstream inspects them.
@@ -3625,7 +3556,7 @@ impl<'a> OwnershipChecker<'a> {
     /// named explicitly instead.
     fn is_native_opaque_generic(base_name: &str) -> bool {
         matches!(base_name,
-            "Vec" | "Map" | "Wide" | "Cell" | "Pool" | "Handle" | "WeakHandle"
+            "Vec" | "Map" | "Wide" | "Cell"
             | "Rack" | "Link"
             | "TaskHandle" | "TaskGroup" | "Sender" | "Receiver" | "ThreadHandle")
     }
@@ -3736,15 +3667,15 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
 
-            // Handle/WeakHandle/Link are Copy: a machine word naming a node,
-            // whose whole point is to be duplicated freely (mem.pools). For
+            // A `Link` is Copy: a machine word naming a node,
+            // whose whole point is to be duplicated freely (mem.racks). For
             // `Link<T>` the rack spec says so from the other side — RK5 has
             // using one after its node is deleted reported "as a use after free
             // rather than as a move", which only reads as a rule if links copy.
             // Without it, `v.push(link)` consumed the name and a later
             // `rack.delete(link)` drew a bogus use-after-move.
             //
-            // The other compiler-native generics (Vec, Map, Pool, ...) have no
+            // The other compiler-native generics (Vec, Map, Rack, ...) have no
             // fields visible to the type system — their layout lives in the
             // runtime, not in a struct decl — so field-based inference can't
             // see them and they stay hardcoded move-only.
@@ -3756,7 +3687,7 @@ impl<'a> OwnershipChecker<'a> {
             Type::Generic { base, args } => {
                 let base_name = self.program.types.type_name(*base);
                 if Self::is_native_opaque_generic(&base_name) {
-                    matches!(base_name.as_str(), "Handle" | "WeakHandle" | "Link")
+                    base_name.as_str() == "Link"
                 } else if let Some(def) = self.program.types.get(*base) {
                     match def {
                         rask_types::TypeDef::Struct { type_params, fields, is_unique, .. } => {
@@ -3802,11 +3733,11 @@ impl<'a> OwnershipChecker<'a> {
             // SIMD vectors: NOT Copy (large, stack-allocated)
             Type::SimdVector { .. } => false,
 
-            // Unresolved types: conservative, except Handle/WeakHandle/Link,
+            // Unresolved types: conservative, except `Link`,
             // which are Copy regardless of how the name was spelled — same
             // three as the resolved `Type::Generic` arm above.
             Type::UnresolvedGeneric { name, .. } => {
-                matches!(name.as_str(), "Handle" | "WeakHandle" | "Link")
+                name.as_str() == "Link"
             }
             Type::UnresolvedNamed(_) => false,
 
@@ -3858,7 +3789,7 @@ impl<'a> OwnershipChecker<'a> {
             // non-generic one, once its own type parameter is substituted
             // with the type argument at this instantiation (`Wrapping<u8>` is
             // one byte, not whatever the unsubstituted `T` would default to).
-            // The compiler-native generics (Vec, Pool, ...) declare an empty
+            // The compiler-native generics (Vec, Map, ...) declare an empty
             // field list — their real layout lives in the runtime, not in the
             // struct decl — so summing fields would say 0 instead of their
             // actual size. Keep them at the old flat 8-byte guess rather than
@@ -3925,7 +3856,7 @@ impl<'a> OwnershipChecker<'a> {
                 // The compiler-native generics have no fields to blame — same
                 // gap `is_copy` has to work around for the same reason.
                 if Self::is_native_opaque_generic(&base_name) {
-                    if matches!(base_name.as_str(), "Vec" | "Map" | "Pool") {
+                    if matches!(base_name.as_str(), "Vec" | "Map") {
                         MoveReason::OwnsHeapMemory { type_name }
                     } else {
                         MoveReason::Unknown
@@ -4002,26 +3933,6 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Check if a binding's type is Pool (for W2 pool-aware rules).
-    fn is_pool_type(&self, name: &str) -> bool {
-        // Check resolved types from type checker
-        if let Some(ty) = self.binding_types.get(name) {
-            if let Type::Generic { base, .. } = ty {
-                if let Some(def) = self.program.types.get(*base) {
-                    return matches!(def,
-                        rask_types::TypeDef::Struct { name, .. }
-                        | rask_types::TypeDef::Enum { name, .. }
-                        if name == "Pool"
-                    );
-                }
-            }
-        }
-        // Fallback: check parameter type strings (e.g. "Pool<Entity>")
-        if let Some(ty_str) = self.param_type_strings.get(name) {
-            return ty_str.starts_with("Pool<") || ty_str == "Pool";
-        }
-        false
-    }
 
     /// Look up the move reason for a binding by name.
     fn move_reason_for(&self, name: &str) -> MoveReason {
@@ -5374,10 +5285,10 @@ impl<'a> OwnershipChecker<'a> {
     /// directly, or through nested fields/variants/tuples/optionals.
     ///
     /// Uses `is_linear_value`, not `type_is_transitive_resource`: the latter
-    /// recurses into *every* generic arg and so treats `Handle<File>`,
-    /// `Pool<File>`, etc. as linear. A handle is a copyable value and a pool is
-    /// the sanctioned resource container (its own drop story is R5, not L1), so
-    /// binding one must not demand consumption (`mem.resource-types/RC2`).
+    /// recurses into *every* generic arg and so would treat `Link<File>` as
+    /// linear. A link is a copyable reference, so binding one must not demand
+    /// consumption. (No container takes a linear value at all now —
+    /// `mem.resource-types/RC1`–RC3 reject it at the type.)
 
     /// Why the field walk can't reach a resource inside this type — `None` when it
     /// can, i.e. the type is a plain struct with named fields. Every shape that

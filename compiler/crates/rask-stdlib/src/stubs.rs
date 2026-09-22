@@ -817,7 +817,7 @@ mod tests {
     fn all_types_loaded() {
         let reg = StubRegistry::load();
         let expected = [
-            "Vec", "Map", "Pool", "Handle", "string", "Option", "Result", "File", "Random",
+            "Vec", "Map", "Rack", "Link", "string", "Option", "Result", "File", "Random",
             "fs", "net", "json", "cli", "io", "std", "http",
             "JsonValue", "JsonError", "JsonParser",
             "Headers", "Request", "Response", "HttpServer", "Responder", "HttpClient",
@@ -933,21 +933,15 @@ mod tests {
     }
 
     #[test]
-    fn pool_full_api() {
+    fn rack_full_api() {
         let reg = StubRegistry::load();
         let expected = [
-            "new", "with_capacity", "remove", "get", "len",
-            "is_empty", "clear",
+            "new", "insert", "delete", "len", "is_empty", "contains", "nodes",
+            "clear", "snapshot", "corresponding",
         ];
         for method in &expected {
-            assert!(reg.has_method("Pool", method), "Pool missing method: {}", method);
+            assert!(reg.has_method("Rack", method), "Rack missing method: {}", method);
         }
-    }
-
-    #[test]
-    fn pool_insert_discoverable() {
-        let reg = StubRegistry::load();
-        assert!(reg.has_method("Pool", "insert"), "Pool missing method: insert");
     }
 
     #[test]
@@ -1057,7 +1051,7 @@ mod tests {
     fn self_receiver_consistency() {
         let reg = StubRegistry::load();
         // Static methods should NOT take self
-        let statics = [("Vec", "new"), ("Map", "new"), ("Pool", "new")];
+        let statics = [("Vec", "new"), ("Map", "new"), ("Rack", "new")];
         for (ty, method) in &statics {
             let m = reg.lookup_method(ty, method).unwrap();
             assert!(!m.takes_self, "{}.{} should be static (no self)", ty, method);

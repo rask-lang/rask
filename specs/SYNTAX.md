@@ -579,36 +579,17 @@ func sort(items: Vec<T>) {
 }
 ```
 
-**Context clauses with `using`:**
+**Context blocks with `using`:**
 ```rask
-// Unnamed context (mutable by default)
-func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
-    h.health -= amount
-}
-
-// Frozen context (read-only, no structural mutations)
-func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
-    return h.health
-}
-
-// Named context (auto-resolution + structural operations)
-func spawn(count: i32) using enemies: Pool<Enemy> -> Vec<Handle<Enemy>> {
-    let handles = Vec.new()
-    for i in 0..count {
-        handles.push(enemies.insert(Enemy.new()))
-    }
-    return handles
-}
-
-// Multiple contexts
-func transfer(from: Handle<Player>, to: Handle<Player>, item: Handle<Item>)
-    using players: Pool<Player>, items: Pool<Item>
-{
-    from.inventory.remove(item)
-    to.inventory.add(item)
-    items[item].owner = to    // auto-wraps to Handle<Player>?
+// `using` installs a process-global slot for a block's lexical extent.
+// It never appears on a signature.
+using Multitasking {
+    let t = spawn(|| { return work() })
+    t.join()
 }
 ```
+
+There used to be a signature form as well — `func damage(h: Handle<Player>) using Pool<Player>` — which declared a pool the compiler threaded in as a hidden parameter. Pools are gone (rask-lang/rask#908) and so is the clause; a signature `using` is now a parse error that tells you to pass the thing as a parameter.
 
 **Constraints with `where`:**
 ```rask
@@ -626,24 +607,14 @@ func debug_sort(items: Vec<T>) where T: Comparable + Debug {
 }
 ```
 
-**Combined `with` and `where`:**
+**Signature order:**
 ```rask
-func process_all(handles: Vec<Handle<T>>)
-    using Pool<T>
-    where T: Processable
-{
-    for h in handles {
-        h.process()
-    }
-}
-
-// Full signature order: generics → params → return → with → where
-public func complex<K, V>(map: Map<K, V>, key: K) -> V or NotFound
-    using values: Pool<V>
+// generics → params → return → where
+public func lookup<K, V>(map: Map<K, V>, key: K) -> V or NotFound
     where K: HashKey, V: Clone
 {
-    let v_handle = try map.get(key)
-    return v_handle.clone()
+    let v = try map.get(key)
+    return v.clone()
 }
 ```
 
@@ -943,9 +914,9 @@ let result = search: loop {
 
 ## Ownership & Memory Syntax
 
-Pool access, `ensure` cleanup, and `@resource` types are shown in the sections above (see [Structs](#structs), [Generics](#generics), [Parameter modes](#functions)). For full semantics, see:
+Rack access, `ensure` cleanup, and `@resource` types are shown in the sections above (see [Structs](#structs), [Generics](#generics), [Parameter modes](#functions)). For full semantics, see:
 
-- [pools.md](memory/pools.md) — Handle-based access, context clauses
+- [racks.md](memory/racks.md) — nodes with stable identity, links that live in fields
 - [ensure.md](control/ensure.md) — Deferred cleanup
 - [resource-types.md](memory/resource-types.md) — Must-consume types
 - [parameters.md](memory/parameters.md) — Parameter modes (borrow, mutate, take)

@@ -1,7 +1,7 @@
 <!-- id: conc.phase-b -->
 <!-- status: proposed -->
 <!-- summary: Phase B compiler transforms — vtable ABI, closure state machines, separate compilation, FFI boundaries -->
-<!-- depends: concurrency/runtime-strategy.md, concurrency/io-context.md, compiler/hidden-params.md, compiler/memory-layout.md, compiler/effects.md, types/traits.md -->
+<!-- depends: concurrency/runtime-strategy.md, concurrency/io-context.md, compiler/memory-layout.md, compiler/effects.md, types/traits.md -->
 
 # Phase B Compiler Transforms
 
@@ -289,7 +289,6 @@ Rejected in favor of stackful fibers. See `conc.runtime` §Design Rationale.
 - `conc.strategy` — Phase A/B implementation strategy
 - `conc.runtime` — Task structure, pluggable reactor, preemption, process-global slot
 - `conc.io-context` — Runtime discovery via process-global slot
-- `comp.hidden-params` — Hidden parameter compiler pass
 - `comp.effects` — Effect tracking (IO/Async/Mutation metadata)
 - `compiler.layout/V1-V5` — Vtable memory layout
 - `type.traits/TR12-TR13` — Vtable dispatch, fat pointer structure

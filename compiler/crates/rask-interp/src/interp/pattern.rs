@@ -358,10 +358,6 @@ impl Interpreter {
             // Pointer equality is address equality — `p == q` asks whether
             // they point at the same place, never what is stored there.
             (Value::RawPtr(a), Value::RawPtr(b)) => a.same_place(b),
-            (Value::Handle { pool_id: p1, index: i1, generation: g1 },
-             Value::Handle { pool_id: p2, index: i2, generation: g2 }) => {
-                p1 == p2 && i1 == i2 && g1 == g2
-            }
             // Field-wise, the same shape `value_hash` already uses. Without this
             // two structurally equal structs never compared equal, so a Map keyed
             // by a struct could be inserted into but never read: `m.insert(Id {

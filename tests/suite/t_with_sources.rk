@@ -20,8 +20,6 @@
 
 import sync.Shared
 import sync.Mutex
-import memory.Pool
-import memory.Handle
 
 struct Row {
     key: string
@@ -44,17 +42,6 @@ test "with over a Vec element" {
         first.bump()
     }
     assert v[0].n == 3
-}
-
-// An element of a Pool, reached by handle — the case the re-resolution rules
-// are written for.
-test "with over a pool element" {
-    mut p: Pool<Row> = Pool.new()
-    let h = p.insert(Row { key: "b", n: 10 })
-    with p[h] as r {
-        r.bump()
-    }
-    assert p[h].n == 11
 }
 
 // An element through a field of `self` — the receiver is a place, the *source*

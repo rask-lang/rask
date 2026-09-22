@@ -29,7 +29,7 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
         "i8" | "i16" | "i32" | "i64" | "i128"
         | "u8" | "u16" | "u32" | "u64" | "u128"
         | "f64" | "bool" | "char" | "string"
-        | "Vec" | "Map" | "Pool" | "Handle" | "Rack" | "Link"
+        | "Vec" | "Map" | "Rack" | "Link"
         | "Result" | "Option"
         | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
         | "JsonValue" | "Path" | "Args" | "Duration" => StdlibLayer::Pure,
@@ -140,14 +140,6 @@ const MAP_METHODS: &[&str] = &[
     "insert", "get", "remove", "contains", "keys", "values",
     "len", "is_empty", "clear", "clone",
 ];
-
-const POOL_METHODS: &[&str] = &[
-    "insert", "alloc", "get", "get_mut", "remove",
-    "len", "is_empty", "contains", "clear",
-    "handles", "cursor", "clone",
-];
-
-const HANDLE_METHODS: &[&str] = &["eq", "ne"];
 
 /// `Rack<T>` — structural ops only. There is no `get`: a link is followed by
 /// field access, not redeemed at the container (analysis.fourth-option).
@@ -318,7 +310,7 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "i8", "i16", "i32", "i64", "i128",
     "u8", "u16", "u32", "u64", "u128",
     "f64", "bool", "char", "string",
-    "Vec", "Map", "Pool", "Handle", "Rack", "Link",
+    "Vec", "Map", "Rack", "Link",
     "Result", "Option",
     "File", "Metadata",
     "TcpListener", "TcpConnection",
@@ -366,8 +358,6 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "string" => STRING_METHODS,
         "Vec" => VEC_METHODS,
         "Map" => MAP_METHODS,
-        "Pool" => POOL_METHODS,
-        "Handle" => HANDLE_METHODS,
         "Rack" => STORE_METHODS,
         "Link" => LINK_METHODS,
         "Result" => RESULT_METHODS,

@@ -1,17 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: linear values in Vec/Map (mem.resource-types/RC1, RC3)
+// Compile Error: linear values in a container (mem.resource-types/RC1-RC3)
 //
 // Two kinds of linear value, and they are linear for different reasons: a
 // `@resource` struct because of what it holds, a `Heap<T>` because it *is* the
 // allocation someone has to give back. Both are covered — the Vec check used to
 // catch only the first (#1245).
 //
-// Vec and Map drop can't consume their elements, so a linear value (@resource,
-// a transitively-linear struct/enum, or an optional/tuple/array built from one)
-// can't live inside them — it would be silently dropped, breaking
-// consume-exactly-once. Pool<T> (RC2) and T? (RC4) are the sanctioned
-// containers. Every route a linear type can reach a Vec/Map is covered below.
+// Vec and Map drop can't consume their elements, and `Rack.delete` frees a node
+// rather than handing it back, so a linear value (@resource, a transitively-
+// linear struct/enum, or an optional/tuple/array built from one) can't live in
+// any of them — it would be silently dropped, breaking consume-exactly-once.
+// `T?` (RC4) is what's left. Every route a linear type can reach a container is
+// covered below.
 
+import memory.Rack
 import memory.Heap
 
 @resource
@@ -130,6 +132,22 @@ func map_value() -> void {
 // Route: Map key is linear (a resource key is as unconsumable on drop as a value)
 func map_key() -> void {
     let m: Map<File, string> = Map.new()   // ERROR [RC3]: `Map` cannot hold linear value `File`
+    return
+}
+
+// ── RC2: Rack ───────────────────────────────────────────────────────
+
+// `Pool.remove` answered `T?`, which is what made a pool the one container a
+// linear value could live in. `Rack.delete` answers nothing, so a rack is in
+// with Vec and Map (rask-lang/rask#908).
+func rack_node() -> void {
+    let r: Rack<File> = Rack.new()         // ERROR [RC2]: `Rack` cannot hold linear value `File`
+    return
+}
+
+// Route: transitively linear node
+func rack_wrapper() -> void {
+    let r: Rack<Wrapper> = Rack.new()      // ERROR [RC2]: `Rack` cannot hold linear value `Wrapper`
     return
 }
 

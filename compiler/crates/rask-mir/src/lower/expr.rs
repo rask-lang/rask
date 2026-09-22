@@ -534,13 +534,7 @@ impl<'a> MirLowerer<'a> {
             // the sentinel: `v.push(none)` into a `Vec<Link<T>?>` built
             // `Some(0)` in a 16-byte slot instead of writing the one word.
             //
-            // A link keeps the option spelling; a handle collapses to bare
-            // `Handle`, which is what `type_to_mir` still does for it.
-            let repr = match &option_ty {
-                MirType::Option(inner) if matches!(**inner, MirType::Link(_)) => option_ty.clone(),
-                _ => MirType::Handle,
-            };
-            return Ok((MirOperand::Constant(MirConst::Int(sentinel)), repr));
+            return Ok((MirOperand::Constant(MirConst::Int(sentinel)), option_ty.clone()));
         }
         let result_local = self.builder.alloc_temp(option_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -1206,13 +1200,13 @@ impl<'a> MirLowerer<'a> {
                     // A field does have storage — point at it, *if* pointing at
                     // it is what the callee reads.
                     //
-                    // A runtime handle is already an address: a `Pool`, `Vec`,
+                    // A runtime handle is already an address: a `Vec`,
                     // `Map` or `Rack` field holds the pointer, and the callee's
                     // local is typed to be that pointer. Handing over the
                     // field's address instead added a level nothing removes, so
                     // `move(mutate state.entities)` gave the callee a pointer to
                     // the *struct* and it read the struct's bytes as a
-                    // `RaskPool` header. That was benign only while it landed on
+                    // container header. That was benign only while it landed on
                     // a zero field; real field widths moved it onto something
                     // else and `examples/game_loop` segfaulted (#1083).
                     if matches!(&arg.kind, ExprKind::Field { .. }) {
@@ -1533,13 +1527,6 @@ impl<'a> MirLowerer<'a> {
                         (&ty, &narrow_ty),
                         (MirType::Option(_), Some(n)) if !matches!(n, MirType::Option(_))
                     );
-                    // A niche `Handle?` keeps the handle as its whole value, so
-                    // narrowing it is a rename, not an extraction. Reading
-                    // field 0 loaded through the handle and crashed (#438's
-                    // rule, missed on this path).
-                    if needs_narrow && matches!(&ty, MirType::Option(inner) if **inner == MirType::Handle) {
-                        return Ok((MirOperand::Local(id), narrow_ty.unwrap()));
-                    }
                     if needs_narrow {
                         let inner_ty = narrow_ty.unwrap();
                         let inner_local = self.builder.alloc_temp(inner_ty.clone());
@@ -2125,10 +2112,12 @@ impl<'a> MirLowerer<'a> {
                 // Built-in variant constructors: Ok(v), Err(v), Some(v)
                 match func_name.as_str() {
                     "Some" if self.is_niche_option_expr(expr) => {
-                        // Niche: Some(handle) is just the handle value
+                        // Niche: `Some(link)` is just the link value.
                         let val = arg_operands.into_iter().next()
                             .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
-                        return Ok((val, MirType::Handle));
+                        let ty = self.ctx.lookup_node_type(expr.id)
+                            .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:niche_some"));
+                        return Ok((val, ty));
                     }
                     "Ok" | "Some" | "Err" => {
                         let tag = self.variant_tag(&func_name);
@@ -2703,63 +2692,6 @@ impl<'a> MirLowerer<'a> {
                         self.ctx.lookup_raw_type(object.id)
                             .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
                     });
-
-                // Pool index: emit PoolCheckedAccess for generation checking.
-                if self.index_object_is_pool(object) {
-                    // If result_ty is I64 (default), try to extract the element type
-                    // from the pool's generic parameter (Pool<Entity> → Entity)
-                    let result_ty = if matches!(result_ty, MirType::I64) {
-                        // Extract element type from the Pool<T> generic argument,
-                        // whether the checker left it resolved (Generic) or not
-                        // (UnresolvedGeneric).
-                        self.ctx.lookup_raw_type(object.id)
-                            .and_then(|ty| match ty {
-                                rask_types::Type::Generic { args, .. }
-                                | rask_types::Type::UnresolvedGeneric { args, .. } => {
-                                    args.first().and_then(|a| match a {
-                                        rask_types::GenericArg::Type(t) => Some(t.as_ref()),
-                                        _ => None,
-                                    })
-                                }
-                                _ => None,
-                            })
-                            .map(|elem_ty| self.ctx.type_to_mir(elem_ty))
-                            .filter(|t| !matches!(t, MirType::Ptr | MirType::I64))
-                            .unwrap_or(result_ty)
-                    } else {
-                        result_ty
-                    };
-                    let pool_local = self.as_local(obj_op);
-                    let handle_local = self.as_local(idx_op);
-                    // `PoolCheckedAccess` hands back the slot's address, always —
-                    // that's what the write path needs (`pool[h].field = v`
-                    // projects a store onto it) and what an aggregate read wants
-                    // anyway, since an aggregate local *is* an address.
-                    //
-                    // A scalar read needs the value, and it says so here with a
-                    // load rather than leaving codegen to work out which of the
-                    // two a given destination meant. It used to declare the
-                    // destination with the element's own type and let codegen
-                    // store an address into it, which is a Cranelift panic
-                    // outright: "declared type of variable var10 doesn't match
-                    // type of value v13" (#719).
-                    if result_ty.passed_by_address() {
-                        let slot = self.pool_slot_addr(
-                            pool_local,
-                            handle_local,
-                            result_ty.clone(),
-                        );
-                        return Ok((MirOperand::Local(slot), result_ty));
-                    }
-                    let slot_addr =
-                        self.pool_slot_addr(pool_local, handle_local, MirType::Ptr);
-                    let value_local = self.builder.alloc_temp(result_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                        dst: value_local,
-                        rvalue: MirRValue::Deref(MirOperand::Local(slot_addr)),
-                    }));
-                    return Ok((MirOperand::Local(value_local), result_ty));
-                }
 
                 let index_name = type_prefix
                     .map(|prefix| {
@@ -4131,43 +4063,11 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
-                // Default: simple alias binding (Pool, Vec/Map element, ...)
-                // W2a/W2b: Track pool bindings for re-resolution after pool mutators
-                let mut pool_binding_keys: Vec<String> = Vec::new();
+                // Default: simple alias binding (Vec/Map element, ...)
                 // Vec[i] / Map[k] writeback info: (collection, index/key, item_local, setter_name).
                 // Captured per binding so we can emit Vec_set / Map_set after the body runs.
                 let mut coll_writebacks: Vec<(MirOperand, MirOperand, LocalId, &'static str)> = Vec::new();
                 for binding in bindings {
-                    // Does the binding read a pool slot? Decides aliasing below, and
-                    // unlike `pool_info` it holds for `self.tasks[h]` as well as a
-                    // plain `tasks[h]` — the pool's type is what matters, not whether
-                    // it happens to be reachable by bare name.
-                    let source_is_pool = match &binding.source.kind {
-                        ExprKind::Index { object, .. } => self.index_object_is_pool(object),
-                        _ => false,
-                    };
-
-                    // Before lowering, extract pool/handle info for re-resolution tracking
-                    let pool_info = if let ExprKind::Index { object, index } = &binding.source.kind {
-                        if let ExprKind::Ident(coll_name) = &object.kind {
-                            if source_is_pool {
-                                let pool_local = self.locals.get(coll_name).map(|(id, _)| *id);
-                                let handle_local = if let ExprKind::Ident(h) = &index.kind {
-                                    self.locals.get(h).map(|(id, _)| *id)
-                                } else {
-                                    None
-                                };
-                                pool_local.zip(handle_local).map(|(p, h)| (coll_name.clone(), p, h))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    };
-
                     // Detect `with vec[i] as item` / `with map[k] as item` so we
                     // can write `item` back to the collection once the body
                     // finishes. Without this, mutations through `item` are lost.
@@ -4191,40 +4091,16 @@ impl<'a> MirLowerer<'a> {
                     };
 
                     let (val, val_ty) = self.lower_expr(&binding.source)?;
-                    // A `with pool[h] as e` binding must alias the pool slot, not
-                    // copy it: `pool[h]` yields a pointer into the arena, and a
-                    // struct `Assign Use` would value-copy it, so writes through
-                    // `e` would land in the copy and never reach the pool (#402).
-                    // Reuse the access result local directly as the binding. Vec/
-                    // Map bindings still copy + write back below (their element
-                    // isn't a stable pointer).
-                    let local = match (source_is_pool, &val) {
-                        (true, MirOperand::Local(id)) => {
-                            self.locals.insert(binding.name.clone(), (*id, val_ty.clone()));
-                            *id
-                        }
-                        _ => {
-                            let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
-                            self.locals.insert(binding.name.clone(), (local, val_ty.clone()));
-                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                                dst: local,
-                                rvalue: MirRValue::Use(val),
-                            }));
-                            local
-                        }
-                    };
+                    let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
+                    self.locals.insert(binding.name.clone(), (local, val_ty.clone()));
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local,
+                        rvalue: MirRValue::Use(val),
+                    }));
 
                     if let Some((obj_op, idx_op, setter_name)) = coll_writeback_info {
                         let _ = val_ty;
                         coll_writebacks.push((obj_op, idx_op, local, setter_name));
-                    }
-
-                    // Register pool binding for re-resolution
-                    if let Some((pool_name, pool_local, handle_local)) = pool_info {
-                        self.with_pool_bindings.entry(pool_name.clone())
-                            .or_default()
-                            .push((handle_local, local, pool_local));
-                        pool_binding_keys.push(pool_name);
                     }
                 }
                 let result = self.lower_block(body);
@@ -4235,15 +4111,6 @@ impl<'a> MirLowerer<'a> {
                         func: FunctionRef::internal(setter_name.to_string()),
                         args: vec![obj_op, idx_op, MirOperand::Local(item_local)],
                     }));
-                }
-                // Clean up pool binding registrations
-                for key in &pool_binding_keys {
-                    if let Some(entries) = self.with_pool_bindings.get_mut(key) {
-                        entries.pop();
-                        if entries.is_empty() {
-                            self.with_pool_bindings.remove(key);
-                        }
-                    }
                 }
                 result
             }
@@ -5543,15 +5410,6 @@ impl<'a> MirLowerer<'a> {
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
                             }
 
-                            // Pool.new() / Pool.with_capacity(n): inject elem_size
-                            // so the pool allocates correctly-sized slots for struct
-                            // elements. with_capacity keeps its `n` after elem_size.
-                            if base_name == "Pool" && (method == "new" || method == "with_capacity") {
-                                let elem_size = self.generic_arg_slot_size(expr.id, 0);
-                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
-                                arg_operands.insert(0, size_op);
-                            }
-
                             // Vec.new() / Vec.with_capacity(n): inject elem_size so
                             // the runtime allocates correct slots.
                             if base_name == "Vec"
@@ -6000,7 +5858,7 @@ impl<'a> MirLowerer<'a> {
         // overwrote the option, and reading an element then took a tag out of a
         // bare slot. It crashed on three elements and not two, decided entirely
         // by which push came last.
-        if matches!(qualified_name.as_str(), "Vec_push" | "Vec_set" | "Pool_insert") {
+        if matches!(qualified_name.as_str(), "Vec_push" | "Vec_set") {
             let declared = self.container_elem_mir_type(object.id, 0);
             if let Some(arg_ty) = declared.as_ref().or_else(|| arg_types.first()) {
                 if !matches!(arg_ty, MirType::I64) {
@@ -6138,39 +5996,6 @@ impl<'a> MirLowerer<'a> {
             // same reason.
             self.extract_payload_type(expr)
                 .map(|elem| super::option_of(vec_slot_type(elem)))
-        } else if qualified_name == "Pool_try_insert" {
-            // `try_insert` answers `Handle<T>?`, not `T?` — a niche, one word
-            // with the all-ones handle for `none`. Without this the local came
-            // back as a tagged `i64?` while the checker knew it was a niche, and
-            // `r is none` was lowered from whichever of the two the reader
-            // consulted (#959-adjacent).
-            Some(MirType::Option(Box::new(MirType::Handle)))
-        } else if qualified_name == "Pool_get" || qualified_name == "Pool_remove" {
-            // Both return T? — extract T from the tracked element type. Without
-            // this `remove` answered `i64?` regardless of what the pool held,
-            // so reading a struct back out of it dereferenced a field offset
-            // into a scalar (#356).
-            let elem_ty = self.tracked_elem_of(object)
-                // Then whatever the receiver's own type says it holds — a
-                // `Vec<T>`/`Pool<T>` element or a `Map<K, V>` value, resolved or
-                // not. This used to read the first generic arg of an
-                // `UnresolvedGeneric` only, so a resolved type or a Map missed.
-                .or_else(|| self.collection_elem_of_expr(object))
-                .unwrap_or_else(|| crate::fallback::i64_fallback("lower/expr:vec_get_elem"));
-            // `remove` hands the element over, `get` only lends it. So a
-            // removed `Vec` or `Map` is the frame's to free and the local has
-            // to say which container it holds — MIR spells every container a
-            // bare `Ptr`, and `Pool<Vec<string>>.remove(h)` left the whole
-            // vector to nobody. A *borrowed* element must keep saying `Ptr`,
-            // or the frame frees what the pool still has.
-            let elem_ty = if qualified_name == "Pool_remove" {
-                self.container_elem_payload_type(object.id, 0)
-                    .filter(|t| matches!(t, MirType::Container(_)))
-                    .unwrap_or(elem_ty)
-            } else {
-                elem_ty
-            };
-            Some(super::option_of(elem_ty))
         } else if matches!(qualified_name.as_str(), "Rack_insert" | "Rack_corresponding") {
             // Both hand back a link. The stub says `Link<T>`, which reaches MIR
             // without `T`'s layout attached — and a link without its layout
@@ -6351,8 +6176,6 @@ impl<'a> MirLowerer<'a> {
             None
         };
 
-        // Pool.alloc(value) → Pool_insert(pool, elem_ptr)
-        // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
         let (final_name, final_args) = if qualified_name.starts_with("string_parse")
             && Self::parse_variant_for_slot(&ret_ty).is_some()
         {
@@ -6371,8 +6194,6 @@ impl<'a> MirLowerer<'a> {
             let by_slot = Self::parse_variant_for_slot(&ret_ty)
                 .expect("checked just above");
             (by_slot.to_string(), all_args)
-        } else if qualified_name == "Pool_alloc" && all_args.len() == 2 {
-            ("Pool_insert".to_string(), all_args)
         } else if qualified_name == "Vec_get" {
             // Safe `.get()` → Option-returning runtime (none on OOB, no panic).
             ("Vec_get_opt".to_string(), all_args)
@@ -6415,19 +6236,7 @@ impl<'a> MirLowerer<'a> {
 
         let result_local = self.builder.alloc_temp(ret_ty.clone());
         let container_edge = self.container_edge_call(&final_name, &final_args);
-        // What one pooled element owns, settled here because here is where the
-        // checker's type is. MIR calls every container a bare `Ptr`, so codegen
-        // looking at the argument's local can tell a `Pool<Point>` from a
-        // `Pool<i64>` but not a `Pool<Vec<i64>>` from a pool of raw addresses.
-        // A `Pool<string>` or `Pool<Vec<_>>` element *is* the owned thing, and
-        // with nothing describing that the runtime freed the slot and left the
-        // string or the vector behind. Codegen pops this back off and expands it
-        // into the offset entries `rask_owned_release` reads.
-        let mut final_args = final_args;
-        if matches!(final_name.as_str(), "Pool_insert" | "Pool_try_insert") {
-            let tag = self.container_elem_tag(object.id, 0);
-            final_args.push(MirOperand::Constant(MirConst::Int(tag)));
-        }
+        let final_args = final_args;
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_local),
             func: FunctionRef::internal(final_name.clone()),
@@ -6466,23 +6275,6 @@ impl<'a> MirLowerer<'a> {
                 },
             }));
             return Ok((MirOperand::Local(narrowed), MirType::F32));
-        }
-
-        // W2a/W2b: Re-resolve pool bindings after pool mutators inside `with` blocks
-        if matches!(final_name.as_str(),
-            "Pool_insert" | "Pool_remove" | "Pool_clear" | "Pool_drain" | "Pool_alloc"
-        ) {
-            if let ExprKind::Ident(pool_var) = &object.kind {
-                if let Some(bindings) = self.with_pool_bindings.get(pool_var) {
-                    for &(handle_local, binding_local, pool_local) in bindings {
-                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
-                            dst: binding_local,
-                            pool: pool_local,
-                            handle: handle_local,
-                        }));
-                    }
-                }
-            }
         }
 
         Ok((MirOperand::Local(result_local), ret_ty))
@@ -9591,7 +9383,7 @@ impl<'a> MirLowerer<'a> {
         if method == "unwrap" && args.is_empty() {
             if let ExprKind::MethodCall { method: inner_method, object: inner_obj, .. } = &object.kind {
                 if inner_method == "get" {
-                    // Only rewrite Map_get → Map_get_unwrap, not Pool_get
+                    // Only rewrite Map_get → Map_get_unwrap
                     let is_map = if let ExprKind::Ident(name) = &inner_obj.kind {
                         self.meta(name.as_str())
                             .and_then(|m| m.type_prefix.as_deref())

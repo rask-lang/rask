@@ -14,14 +14,6 @@ impl Interpreter {
                     RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() }
                 })
             }
-            (Value::Pool(p), Value::Handle { pool_id, index, generation }) => {
-                let pool = p.lock().unwrap();
-                let slot_idx = pool.validate(*pool_id, *index, *generation)
-                    .map_err(RuntimeError::Panic)?;
-                pool.slots[slot_idx].1.clone().ok_or_else(|| {
-                    RuntimeError::Panic("pool slot is empty".to_string())
-                })
-            }
             (Value::Map(m), _) => {
                 let map = m.lock().unwrap();
                 map.get(&MapKey(key.clone()))
@@ -46,13 +38,6 @@ impl Interpreter {
                 } else {
                     Err(RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() })
                 }
-            }
-            (Value::Pool(p), Value::Handle { pool_id, index, generation }) => {
-                let mut pool = p.lock().unwrap();
-                let slot_idx = pool.validate(*pool_id, *index, *generation)
-                    .map_err(RuntimeError::Panic)?;
-                pool.slots[slot_idx].1 = Some(value);
-                Ok(())
             }
             (Value::Map(m), _) => {
                 m.lock().unwrap().insert(MapKey(key.clone()), value);

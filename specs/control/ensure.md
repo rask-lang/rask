@@ -302,43 +302,37 @@ func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> void
 }
 ```
 
-## Pool Cleanup
+## Many resources, one at a time
 
-Cleaning up pools of linear resources:
+No container holds a linear value (`mem.resources/RC1`–RC3), so "process a
+hundred files" is a hundred acquisitions each consumed on its own path — not a
+collection someone has to remember to drain:
 
 <!-- test: parse -->
 ```rask
 func process_many_files(paths: Vec<string>) -> void or Error {
-    mut files: Pool<File> = Pool.new()
-    ensure files.take_all_with(|f| { f.close(); })
-
     for path in paths {
         let file = try File.open(path)
-        let h = files.insert(file)
-        // ... use files[h] ...
+        ensure file.close()
+        try handle(file)
     }
-
-    // Normal exit: ensure takes and closes all files
-    // Early return (error): ensure still takes and closes all files
     return
 }
 ```
 
-Errors during cleanup (e.g., `close()` fails) are ignored by default (ER1). If cleanup errors matter, explicitly `take_all` before returning:
+The `ensure` is inside the loop, so it runs at the end of each iteration — the
+file is closed before the next one opens, and an error on iteration seven still
+closes iteration seven's file on the way out.
+
+Errors during cleanup (e.g., `close()` fails) are ignored by default (ER1). If a
+close error matters, consume the resource explicitly instead of ensuring it:
 
 <!-- test: parse -->
 ```rask
 func process_many_files_careful(paths: Vec<string>) -> void or Error {
-    mut files: Pool<File> = Pool.new()
-
     for path in paths {
         let file = try File.open(path)
-        let h = files.insert(file)
-        // ... use files[h] ...
-    }
-
-    // Explicit take_all - propagate close errors
-    for file in files.take_all() {
+        try handle(file)
         try file.close()
     }
     return
@@ -520,20 +514,16 @@ func modify_database(db: Database) -> void or Error {
 }
 ```
 
-**Pattern 3: Pool cleanup**
+**Pattern 3: one resource per iteration**
 
 <!-- test: skip -->
 ```rask
 func process_many(paths: Vec<string>) -> void or Error {
-    mut resources: Pool<Resource> = Pool.new()
-    ensure resources.take_all_with(|r| { r.cleanup(); })
-
     for path in paths {
         let r = try Resource.open(path)
-        resources.insert(r)
+        ensure r.cleanup()
+        try process(r)
     }
-
-    // Process resources...
     return
 }
 ```

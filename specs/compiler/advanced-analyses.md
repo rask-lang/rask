@@ -1,13 +1,18 @@
 <!-- id: comp.advanced -->
 <!-- status: implemented -->
-<!-- summary: Advanced compile-time analyses for stale handle detection and bounds elimination -->
-<!-- depends: memory/pools.md, memory/borrowing.md, compiler/generation-coalescing.md -->
+<!-- summary: Interval analysis for bounds-check elimination, and the grow/shrink effect inference -->
+<!-- depends: memory/borrowing.md, memory/racks.md -->
+<!-- implemented-by: compiler/crates/rask-mir/src/analysis/intervals.rs, compiler/crates/rask-effects/ -->
 
 # Advanced Compile-Time Analyses
 
-Rask catches memory safety bugs at compile time through structural rules rather than whole-program analysis. This spec describes additional static analyses that close the gap between Rask's runtime safety checks and Rust's compile-time guarantees — specifically for stale handle detection and bounds check elimination.
+Rask catches memory safety bugs at compile time through structural rules rather than whole-program analysis. Two analyses go beyond those rules: interval analysis, which removes bounds checks it can prove redundant, and effect inference, which tells the rest of the compiler which calls restructure a collection.
 
-**Design goal:** Catch 80%+ of stale handle bugs at compile time while maintaining 5× faster compilation than Rust.
+**Design goal:** stay linear, and stay out of the way. Every analysis here is per-function, with summaries for the stdlib.
+
+## What used to be here
+
+Most of this spec was handle typestate analysis (TS1–TS8), must-alias tracking (MA1–MA5), and the frozen-context effect rules built on top of them — 1,450 lines of compiler whose whole job was proving away the generation check a `Pool<T>` performed on every access. Pools are gone (rask-lang/rask#908), and a `Link<T>` is followed rather than redeemed, so there is no check to prove away and no stale state to track. See `mem.racks/RK3`: delete nulls every incoming edge, so the invalid state doesn't exist to be analysed for.
 
 ## Performance Target
 
@@ -15,116 +20,8 @@ Rask catches memory safety bugs at compile time through structural rules rather 
 |--------|--------------|-------------|-----------|
 | Compilation throughput | ~100K LOC/sec | **500K LOC/sec** | No whole-program borrow checking, no lifetime inference |
 | Analysis overhead | 30-40% (borrow checking + MIR) | **< 10%** | Local analyses only, lazy evaluation |
-| Per-function complexity | O(n²) worst case (NLL) | **O(n × k)** average, k < 10 | Specialized to handles, not all references |
 
 I chose 5× faster because Rask's local-only analysis eliminates the most expensive parts of Rust's compilation: region inference, non-lexical lifetimes, trait coherence checking. The analyses described here are targeted and cheap.
-
----
-
-## Handle Typestate Analysis
-
-Track handle validity states through control flow to catch stale handle access at compile time.
-
-| Rule | Description |
-|------|-------------|
-| **TS1: Four states** | Handles have states: Fresh (just created), Valid (checked/accessed), Unknown (unchecked), Invalid (removed) |
-| **TS2: Conservative join** | At control flow merge points, take the lower bound: Invalid < Unknown < Valid < Fresh |
-| **TS3: Must-alias tracking** | Assignment `h2 = h1` makes h2 a must-alias of h1; they share state transitions |
-| **TS4: Invalidation propagates** | `pool.remove(h)` makes h and all must-aliases Invalid |
-| **TS5: Structural mutation widens** | `pool.insert()` or `pool.remove(other)` widens Unknown/Valid handles to Unknown |
-| **TS6: Successful access narrows** | `pool[h]` or `pool.get(h) is Some` narrows to Valid in continuation |
-| **TS7: Local analysis** | Typestate tracking is intraprocedural; function parameters default to Unknown |
-| **TS8: Error on Invalid access** | Accessing a handle in Invalid state is a compile error |
-
-<!-- test: compile-fail: unbuilt -->
-```rask
-import memory.Pool
-import memory.Handle
-
-struct Player { health: i64 }
-
-func bad_example() {
-    mut pool = Pool<Player>.new()
-    let h = pool.insert(Player { health: 100 })  // h: Fresh
-    pool.remove(h)                               // h: Invalid
-    pool[h].health -= 10                         // ERROR [comp.advanced/TS8]: h is Invalid
-}
-```
-
-> **None of the TS rules below are implemented.** The two rejection blocks in
-> this section are marked `unbuilt`: they compile today, and the harness holds
-> them to that, so the day TS8 lands the annotation is what fails and asks to be
-> corrected.
->
-> They were `compile-fail` with no stage, which the old harness scored as a pass
-> — the fragments named a `pool` that doesn't exist, so they failed at *resolve*
-> and never reached TS8. Written out as programs the analysis could actually run
-> on, they compile clean, directly and through a must-alias.
->
-> This matters beyond the section: `mem.ownership` promises use-after-free
-> through a stale handle is "caught at the access, never silent", and TS8 is
-> where that gets caught.
-
-### State Transitions
-
-| Operation | State Before | State After | Must-Aliases |
-|-----------|--------------|-------------|--------------|
-| `h = pool.insert(x)` | — | Fresh | None (new handle) |
-| `pool[h]` access | Any | Valid | Unchanged |
-| `pool.get(h)?` narrow | Any | Valid (true branch) | Unchanged |
-| `pool.remove(h)` | Any | Invalid | All become Invalid |
-| `pool.insert(x)` | Unknown/Valid | Unknown | Unchanged |
-| `h2 = h1` | s | s | h2 aliases h1 |
-| Function boundary | s | Unknown | Aliases cleared |
-
-### Must-Alias Tracking
-
-| Rule | Description |
-|------|-------------|
-| **MA1: Copy creates alias** | `h2 = h1` makes h2 a must-alias of h1 |
-| **MA2: Fresh handles don't alias** | `pool.insert()` returns a handle that doesn't alias existing handles |
-| **MA3: Function calls break aliases** | Passing a handle to a function breaks must-alias relationships (conservative) |
-| **MA4: Reassignment breaks alias** | `h = new_value` removes h from its alias set |
-| **MA5: Local scope only** | Alias tracking within function scope; cross-function aliasing conservatively Unknown |
-
-<!-- test: compile-fail: unbuilt -->
-```rask
-import memory.Pool
-import memory.Handle
-
-struct Player { health: i64 }
-
-func alias_example() {
-    mut pool = Pool<Player>.new()
-    let h1 = pool.insert(Player { health: 100 })  // h1: Fresh, aliases: {}
-    let h2 = h1                                   // h2: Fresh, aliases: {h1}
-    pool.remove(h1)                               // h1 Invalid, h2 too (via alias)
-    pool[h2].health -= 10                         // ERROR [comp.advanced/TS8]
-}
-```
-
-### Flow-Sensitive Narrowing
-
-| Rule | Description |
-|------|-------------|
-| **FN1: Check narrows** | Successful `pool.get(h)?` predicate narrows h to Valid in the true branch |
-| **FN2: Access narrows** | `pool[h]` access narrows h to Valid for subsequent uses in same basic block |
-| **FN3: Mutation widens** | Pool structural mutation (insert/remove of other handles) widens to Unknown |
-| **FN4: Loop reset** | Each loop iteration resets to pre-loop state |
-
-<!-- test: parse -->
-```rask
-func safe_access(h: Handle<Player>) using Pool<Player> {
-    // h: Unknown (parameter)
-    if pool.get(h) == none {
-        return  // h: Invalid here (narrowed in false continuation)
-    }
-    // h: Valid here (narrowed by check)
-    pool[h].health -= 10  // OK: h is Valid
-}
-```
-
----
 
 ## Interval Analysis
 
@@ -137,16 +34,17 @@ Demand-driven value range propagation to eliminate bounds checks and catch overf
 | **IV3: Backward propagation** | At query point (bounds check), walk backward through SSA graph to compute ranges |
 | **IV4: Conditional narrowing** | After `if x > 5`, narrow x to `[6, +∞)` in true branch |
 | **IV5: Loop widening** | Widen loop variables to conservative over-approximation at fixpoint |
-| **IV6: Eliminate provable checks** | If range proves `i < array.len()`, eliminate the bounds check |
+| **IV6: Eliminate provable checks** | If range proves `i < collection.len()`, eliminate the bounds check |
 | **IV7: Local analysis** | Per-function with interprocedural summaries for known stdlib functions |
 
 <!-- test: parse -->
 ```rask
-func process(pool: Pool<Entity>) {
-    for i in 0..pool.len() {       // i: [0, pool.len())
-        let h = pool.handles()[i] // Bounds check eliminated: i provably < len
-        process_entity(pool[h])
+func total(scores: Vec<i64>) -> i64 {
+    mut sum = 0
+    for i in 0..scores.len() {   // i: [0, scores.len())
+        sum += scores[i]         // bounds check eliminated: i provably < len
     }
+    return sum
 }
 ```
 
@@ -166,7 +64,6 @@ func process(pool: Pool<Entity>) {
 |------|-------------|
 | **BE1: Provable in-bounds** | If range analysis proves `0 <= i < len`, eliminate the check |
 | **BE2: Conservative default** | If analysis is uncertain, keep the check |
-| **BE3: Handle index bounds** | `pool.handles()[i]` eliminates check if `i in [0, pool.len())` |
 | **BE4: Slice bounds** | `array[start..end]` eliminates checks if `0 <= start <= end <= len` |
 
 <!-- test: parse -->
@@ -182,184 +79,38 @@ func safe_slice(data: Vec<i32>, start: usize, end: usize) -> Vec<i32> {
 
 ---
 
-## Effect System for Pool Mutations
+## Effect Inference
 
-Formalize Rask's `using Pool<T>` context clauses as a lightweight effect system to track structural mutations.
-
-| Rule | Description |
-|------|-------------|
-| **EF1: Pool effects** | Operations have effects: `Access<Pool<T>>`, `Grow<Pool<T>>`, `Shrink<Pool<T>>` |
-| **EF2: Frozen context** | `using frozen Pool<T>` forbids Grow and Shrink effects |
-| **EF3: Effect inference** | Private functions infer effects; public functions must declare frozen explicitly |
-| **EF4: Effect checking** | Calling a Shrink function from frozen context is a compile error |
-| **EF5: Frozen iteration** | In frozen contexts, the compiler may eliminate generation checks during iteration (see `comp.gen-coalesce/FZ1`). `h.field` auto-resolution uses standard generation checks |
-| **EF6: Effect polymorphism** | Functions can be effect-polymorphic: work with both frozen and mutable pools |
-
-<!-- test: skip -->
-```rask
-// Frozen context — structural mutations forbidden
-func render(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> {
-    for h in entities {
-        draw(pool[h])        // OK: Access effect allowed
-        pool.remove(h)       // ERROR [comp.advanced/EF4]: Shrink effect forbidden
-    }
-}
-```
-
-### Effect Annotations
-
-| Annotation | Allowed Effects | Generation Checks | Use Case |
-|------------|-----------------|-------------------|----------|
-| `using Pool<T>` | Access, Grow, Shrink | Normal (coalesced) | Default |
-| `using frozen Pool<T>` | Access only | Checked (optimizable in iteration) | Read-only passes |
-| `using name: Pool<T>` | Access, Grow, Shrink | Normal | Structural ops via name |
-| `using frozen name: Pool<T>` | Access only | Checked (optimizable in iteration) | Explicit frozen access |
-
-### Effect Lattice
-
-| Effect | Meaning | Invalidates Typestate? |
-|--------|---------|----------------------|
-| `Access<Pool<T>>` | Read/write handle fields | No |
-| `Grow<Pool<T>>` | Insert new elements | Widens to Unknown |
-| `Shrink<Pool<T>>` | Remove elements | Invalidates removed handle |
-
-<!-- test: parse -->
-```rask
-// Effect-polymorphic: works with frozen or mutable
-func count_alive(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> -> usize {
-    return entities.filter(|h| pool[h].alive).count()
-}
-
-func cleanup(entities: Vec<Handle<Entity>>) using Pool<Entity> {
-    for h in entities {
-        if pool[h].health <= 0 {
-            pool.remove(h)  // OK: we have Shrink effect
-        }
-    }
-}
-```
-
----
-
-## Frozen Context Lint for Public Functions
-
-Public functions that use `using Pool<T>` but perform no structural mutations should declare `frozen`. The compiler detects this and warns.
+Calls are classified by what they do to a collection's shape. This is metadata, not a type-system constraint (`CORE_DESIGN` principle 9): nothing in a signature carries it, and no function is coloured by it.
 
 | Rule | Description |
 |------|-------------|
-| **FL1: Missing frozen warning** | If a public function's body performs no `Grow` or `Shrink` effects on a pool context, warn: "add `frozen` — this function only reads" |
-| **FL2: Private functions exempt** | Private functions already have frozen inferred (EF3). The lint targets public functions only |
-| **FL3: IDE quick-fix** | IDE offers "Add `frozen` modifier" quick action |
-| **FL4: Ghost text** | IDE shows `frozen` as ghost text on public functions where the lint fires |
+| **EF1: Structural effects** | A call carries `Grow` (insert, alloc), `Shrink` (remove, delete, clear, drain), both, or neither |
+| **EF3: Inference, not annotation** | Effects are inferred from the body, transitively. Nothing is written in a signature |
+| **EF4: What reads them** | `for mutate` structural-mutation rejection (`ctrl.loops/LP14`), the `with`-block rule (`mem.borrowing/W2`), and the blocking-I/O-in-a-loop warning (`comp.effects/CW2`) |
 
-```
-WARNING [comp.advanced/FL1]: public function only reads from pool
-   |
-2  |  public func get_health(h: Handle<Player>) using Pool<Player> -> i32 {
-   |                                                  ^^^^^^^^^^^^ consider `frozen Pool<Player>`
-3  |      return h.health
-   |
-FIX: Add frozen modifier:
-  public func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
-```
-
-This is a **lint**, not an inference — because adding `frozen` to a public signature is an API change. The compiler suggests it; the user decides.
+The effect map is where "which calls can move the buffer under a borrow" is answered once, rather than at each of the three sites that ask.
 
 ---
 
 ## Compilation Performance Model
 
-All analyses are designed for linear or near-linear time complexity.
-
 | Analysis | Complexity | Cost Model | Typical Overhead |
 |----------|------------|------------|------------------|
-| **Handle typestate** | O(n × k) | n = program points, k = handles in scope (< 10) | 2-5% compile time |
-| **Must-alias tracking** | O(n × k) | SSA form makes this near-linear | 1-2% compile time |
 | **Interval analysis** | O(n) lazy | Only computed at query points | 1-3% (demand-driven) |
-| **Effect inference** | O(n) | Standard constraint solving, Hindley-Milner style | < 1% (reuses type inference) |
-| **Total overhead** | O(n × k) | k is small constant | **< 10% compile time** |
+| **Effect inference** | O(n) | Standard constraint solving | < 1% (reuses type inference) |
 
 ### Comparison with Rust
 
-| Component | Rust (rustc) | Rask (proposed) | Speedup Factor |
-|-----------|--------------|-----------------|----------------|
-| Borrow checking | O(n²) worst case (NLL) | O(n × k), k < 10 | 10-100× faster |
+| Component | Rust (rustc) | Rask | Speedup Factor |
+|-----------|--------------|------|----------------|
+| Borrow checking | O(n²) worst case (NLL) | Syntactic scopes, no inference | 10-100× faster |
 | Lifetime inference | Region inference + NLL | Not needed (no lifetimes) | ∞ (eliminated) |
 | Trait coherence | Global analysis | Local only | 5-10× faster |
 | Monomorphization | Same | Same | 1× (same) |
 | **Overall** | 100K LOC/sec | **500K LOC/sec** | **5× faster** |
 
-I achieve 5× faster compilation by eliminating the most expensive Rust analyses (lifetime inference, global coherence) and replacing whole-program borrow checking with targeted local analyses specialized for Rask's pool+handle model.
-
----
-
-## Error Messages
-
-**Stale handle access [TS8]:**
-```
-ERROR [comp.advanced/TS8]: stale handle access
-   |
-5  |  pool.remove(h)
-   |  ^^^^^^^^^^^^^^ handle invalidated here
-8  |  pool[h].health -= 10
-   |  ^^^^^^^ handle is Invalid (provably stale)
-
-WHY: Handle typestate analysis proves this handle was removed and is no longer valid.
-
-FIX: Check validity before access:
-
-  if pool.get(h) is Some {
-      pool[h].health -= 10
-  }
-```
-
-**Aliased handle removed [TS4]:**
-```
-ERROR [comp.advanced/TS8]: stale handle access via alias
-   |
-3  |  let h2 = h1
-   |         ^^ h2 is a must-alias of h1
-5  |  pool.remove(h1)
-   |  ^^^^^^^^^^^^^^ h1 invalidated here (h2 also becomes Invalid)
-6  |  pool[h2].update()
-   |  ^^^^^^^ handle is Invalid (h2 aliased h1)
-
-WHY: h2 is a copy of h1. When h1 is removed, h2 becomes stale too.
-
-FIX: Don't access h2 after removing h1.
-```
-
-**Frozen context violation [EF4]:**
-```
-ERROR [comp.advanced/EF4]: structural mutation in frozen context
-   |
-2  |  func render(h: Handle<Entity>) using frozen Pool<Entity> {
-   |                                       ------ context is frozen
-3  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ Shrink effect forbidden in frozen context
-
-WHY: Frozen contexts guarantee no structural mutations.
-
-FIX: Remove the frozen annotation if mutation is needed:
-
-  func render(h: Handle<Entity>) using Pool<Entity> { ... }
-```
-
-**Bounds check not eliminated [BE2]:**
-```
-NOTE [comp.advanced/BE2]: bounds check could not be eliminated
-   |
-5  |  let index = compute_index()
-   |                ^^^^^^^^^^^^^^^ range unknown
-6  |  array[index]
-   |  ^^^^^ bounds check retained (conservative)
-
-NOTE: Consider adding a range check:
-
-  if index < array.len() {
-      array[index]  // Check eliminated here
-  }
-```
+I achieve 5× faster compilation by eliminating the most expensive Rust analyses (lifetime inference, global coherence) and replacing whole-program borrow checking with structural rules that need no analysis at all.
 
 ---
 
@@ -367,15 +118,9 @@ NOTE: Consider adding a range check:
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Handle passed to function | TS7 | Caller state preserved; callee sees Unknown |
-| Must-alias across function call | MA3 | Conservative: aliases broken at call boundary |
-| Loop with conditional remove | TS4, FN4 | Each iteration resets to pre-loop state |
 | Range analysis timeout | BE2 | Conservative: keep the check |
-| Effect inference failure | EF3 | Public functions require explicit annotation |
-| External handle in frozen context | PF5 | Standard generation check; writes are compile error |
-| Typestate at merge with Unknown | TS2 | Join takes lower bound (e.g., Valid ∧ Unknown = Unknown) |
-| Generation overflow | — | Not addressed by static analysis (runtime invariant) |
-| Concurrent mutation | — | Not addressed (use Mutex for cross-task pools) |
+| Effect through a closure | EF3 | The closure's body contributes to the enclosing function's effects |
+| Effect through a trait object | EF3 | Conservative: assume both Grow and Shrink |
 
 ---
 
@@ -383,149 +128,15 @@ NOTE: Consider adding a range check:
 
 ### Rationale
 
-**TS1–TS8 (handle typestate):** Stale handle access is Rask's biggest gap vs Rust. Rust's borrow checker proves references are valid at compile time; Rask uses generation counters at runtime. Typestate analysis closes 80%+ of this gap by tracking handle validity through control flow. The must-alias analysis (TS3, MA1–MA5) is critical — it catches bugs like "copy handle, remove original, use copy."
-
-I chose a four-state lattice (Fresh > Valid > Unknown > Invalid) because it balances precision and cost. More states (e.g., tracking which specific operations invalidated a handle) would give better error messages but quadratic cost. Four states gives us "definitely invalid" (provable error) and "checked valid" (optimization opportunity) with linear analysis.
-
 **IV1–IV7 (interval analysis):** GCC's Project Ranger showed that demand-driven VRP is nearly free — you only pay for queries you make. By triggering analysis lazily at bounds checks, we avoid computing ranges for all variables. The backward SSA walk (IV3) is fast because SSA has no cycles (except through φ-nodes at loop headers, where we widen conservatively).
 
-**EF1–EF6 (effect system):** Rask already has `using Pool<T>` clauses. I formalized them as an effect system to make the guarantees explicit. Frozen contexts forbid structural mutations — the `frozen` modifier is a context property, not a separate type. `h.field` auto-resolution in frozen contexts uses standard generation checks; the compiler may optimize away checks during iteration when it can prove no structural mutations occur. Effect inference (EF3) means most code doesn't need annotations — the compiler figures it out.
+**EF1–EF4 (effects):** this started as a formalisation of `using frozen Pool<T>` — a clause that let a signature promise it wouldn't restructure the pool, so the compiler could skip generation checks during iteration. The clause and the checks both went with `Pool`. What survived is the half that was never about pools: three unrelated rules each need to know whether a call can move a buffer under something that is borrowing into it, and this is where that question gets one answer.
 
-**5× compilation speed vs Rust:** This is achievable because:
+**Why handle typestate is gone rather than ported.** It was the right analysis for the wrong model. A handle is a ticket redeemed at a container, so it can be stale, so a generation check runs on every access, so an analysis that proves the check redundant pays for itself. A link is an address the rack keeps current: `delete` nulls every edge pointing at the node before it returns, and a local link the rack can't reach is rejected outright (`mem.racks/RK5`). There is no third state, so there is nothing for a four-state lattice to say.
+
+**5× compilation speed vs Rust:** achievable because:
 1. **No lifetime inference** — Rust's region inference is expensive. Rask has no lifetimes.
 2. **No non-lexical lifetimes (NLL)** — NLL is O(n²) worst case. Rask's borrow scopes are syntactic (expression-scoped, block-scoped).
 3. **Local-only analysis** — Rust's borrow checker is interprocedural for trait coherence and some lifetime checks. Rask's analyses are per-function with summaries.
-4. **Specialized analyses** — Typestate is specialized for pool handles, not all references. This is much cheaper than general borrow checking.
+4. **Structure over analysis** — the safety properties fall out of the rules (single owner, scoped borrows, delete-time edge fixup) rather than out of a solver.
 5. **Lazy evaluation** — Range analysis is demand-driven. Don't pay for what you don't query.
-
-The target of 500K LOC/sec is based on Rask's simpler type system, lack of lifetimes, and local-only analyses. Rust spends 30-40% of compile time on borrow checking and MIR building. Rask's advanced analyses (proposed here) should be < 10% because they're targeted and lazy.
-
-### Implementation Roadmap
-
-**Phase 1: Foundational (2-3 months)**
-- **Handle typestate tracking (TS1-TS8)** — Core dataflow framework
-- **Must-alias analysis (MA1-MA5)** — Track handle aliasing
-- **Flow-sensitive narrowing (FN1-FN4)** — Extend existing `is` pattern narrowing
-- Infrastructure: SSA form, CFG construction, dataflow solver
-
-**Phase 2: Optimization (1-2 months)**
-- **Interval analysis (IV1-IV7)** — Demand-driven VRP
-- **Bounds check elimination (BE1-BE4)** — Use interval analysis to prove safety
-- **Effect formalization (EF1-EF6)** — Make frozen contexts explicit
-- Integration with existing generation coalescing (comp.gen-coalesce)
-
-**Phase 3: Refinement (ongoing)**
-- Interprocedural summaries for typestate (optional precision improvement)
-- Loop-sensitive range analysis (optional for complex loops)
-- SMT-backed verification for opt-in deep analysis (`rask verify --deep`)
-- Performance profiling and optimization
-
-### Patterns & Guidance
-
-**When typestate catches bugs:**
-```rask
-// Pattern: remove then use
-let h = pool.insert(entity)
-pool.remove(h)
-pool[h].health -= 10  // ERROR: caught at compile time
-
-// Pattern: aliased remove
-let h1 = pool.insert(a)
-let h2 = h1
-pool.remove(h1)
-pool[h2].update()  // ERROR: caught via must-alias
-
-// Pattern: conditional invalidation
-let h = get_handle()
-if should_cleanup {
-    pool.remove(h)
-}
-pool[h].render()  // ERROR: h is Invalid in one path
-```
-
-**When typestate doesn't catch (requires runtime check):**
-```rask
-// Pattern: cross-function aliasing
-let h1 = pool.insert(a)
-let h2 = get_other_handle()  // Unknown whether h1 == h2
-pool.remove(h1)
-pool[h2].update()  // OK at compile time, runtime generation check
-
-// Pattern: conditional with Unknown
-func process(h: Handle<Entity>) using Pool<Entity> {
-    // h is Unknown (parameter)
-    pool[h].update()  // OK: runtime check (can't prove Invalid)
-}
-```
-
-**Optimization patterns for frozen contexts:**
-```rask
-// Hot read path — generation checks optimizable via frozen context (FZ1)
-func render_all() using frozen entities: Pool<Entity> {
-    for entity in entities.values() {
-        renderer.draw(entity)
-    }
-}
-
-// Multi-phase processing
-func tick(mut pool: Pool<Entity>) {
-    // Phase 1: Mutable updates
-    for h in pool.handles() {
-        pool[h].update_physics()
-    }
-
-    // Phase 2: Read-only render (call frozen-context function)
-    render_all(pool)
-}
-```
-
-**Bounds check elimination patterns:**
-```rask
-// Pattern: loop with known bounds
-for i in 0..array.len() {
-    process(array[i])  // Bounds check eliminated
-}
-
-// Pattern: validated range
-if start < end and end <= data.len() {
-    for i in start..end {
-        use(data[i])  // Bounds check eliminated
-    }
-}
-
-// Pattern: stride access
-for i in (0..n).step_by(2) {
-    if i + 1 < array.len() {
-        pair(array[i], array[i+1])  // Both checks eliminated
-    }
-}
-```
-
-### Research Connections
-
-This design draws from recent PL research:
-
-- **Typestate:** Plaid language, Rust's typestate pattern, Obsidian (blockchain typestate)
-- **Demand-driven analysis:** GCC Project Ranger (lazy VRP), LLVM's on-demand analysis passes
-- **Effect systems:** Koka, Scala 3 capture checking, System Capybara (capture tracking for ownership)
-- **Local separation logic:** Prusti (ETH Zurich), Verus (Microsoft/CMU), RefinedC's Lithium proof search
-- **Session types:** Ferrite (judgmental embedding in Rust), Linear Actris (deadlock freedom from linearity)
-
-The novel contribution here is **combining typestate specifically for pool handles with Rask's ownership model**. Existing typestate systems (Plaid, Rust pattern) don't have first-class handle types. Existing separation logic tools (Prusti, Verus) are opt-in verification frameworks, not default compiler passes. Rask makes typestate checking automatic for pool handles while keeping compilation fast.
-
-### Metrics Validation
-
-| Metric | Target | This Design | Status |
-|--------|--------|-------------|--------|
-| MC (Mechanical Correctness) | >= 0.90 | Stale handle detection at compile time | ✓ Improved |
-| TC (Transparency of Cost) | >= 0.90 | Effects make mutations visible | ✓ Maintained |
-| SN (Syntactic Noise) | <= 0.30 | Effect inference (no annotations needed) | ✓ Maintained |
-| Compilation Speed | 5× Rust | Local analyses, lazy evaluation, no lifetimes | ✓ Achievable |
-
-### See Also
-
-- [Pools and Handles](../memory/pools.md) — Handle-based storage (`mem.pools`)
-- [Generation Coalescing](generation-coalescing.md) — Existing optimization (`comp.gen-coalesce`)
-- [Borrowing](../memory/borrowing.md) — Expression-scoped views (`mem.borrowing`)
-- [Resource Types](../memory/resource-types.md) — Must-consume checking (`mem.resources`)
-- [Context Clauses](../memory/context-clauses.md) — `using` syntax (`mem.context`)

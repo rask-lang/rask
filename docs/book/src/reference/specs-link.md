@@ -24,7 +24,7 @@ Key specifications:
 | Ownership | [ownership.md](https://github.com/rask-lang/rask/blob/main/specs/memory/ownership.md) |
 | Borrowing | [borrowing.md](https://github.com/rask-lang/rask/blob/main/specs/memory/borrowing.md) |
 | Collections | [collections.md](https://github.com/rask-lang/rask/blob/main/specs/stdlib/collections.md) |
-| Pools | [pools.md](https://github.com/rask-lang/rask/blob/main/specs/memory/pools.md) |
+| Racks and Links | [racks.md](https://github.com/rask-lang/rask/blob/main/specs/memory/racks.md) |
 | Error Types | [error-types.md](https://github.com/rask-lang/rask/blob/main/specs/types/error-types.md) |
 | Concurrency | [async.md](https://github.com/rask-lang/rask/blob/main/specs/concurrency/async.md) |
 

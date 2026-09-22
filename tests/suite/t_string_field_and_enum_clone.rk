@@ -3,7 +3,7 @@
 // carries one. Both were silently wrong on native only — found by running
 // text_editor, where they showed up as edits storing empty text and redo
 // trapping on an out-of-range tag.
-import memory.Pool
+import memory.Rack
 
 struct Line {
     text: string
@@ -34,20 +34,20 @@ test "a string literal assigned through a Vec element" {
     assert v[0].text == "replaced"
 }
 
-test "a string literal assigned through a Pool handle" {
-    mut p: Pool<Line> = Pool.new()
-    let h = p.insert(Line { text: "orig" })
-    p[h].text = "replaced"
-    assert p[h].text == "replaced"
+test "a string literal assigned through a link" {
+    mut r: Rack<Line> = Rack.new()
+    let line = r.insert(Line { text: "orig" })
+    line.text = "replaced"
+    assert line.text == "replaced"
 }
 
 test "reading a field before overwriting it keeps the old value" {
-    mut p: Pool<Line> = Pool.new()
-    let h = p.insert(Line { text: "before" })
-    let old = p[h].text
-    p[h].text = "after"
+    mut r: Rack<Line> = Rack.new()
+    let line = r.insert(Line { text: "before" })
+    let old = line.text
+    line.text = "after"
     assert old == "before"
-    assert p[h].text == "after"
+    assert line.text == "after"
 }
 
 test "cloning an enum that carries strings" {

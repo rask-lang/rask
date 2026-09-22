@@ -437,11 +437,6 @@ fn names_bound_in(decl: &Decl) -> HashSet<String> {
         for p in &f.params {
             out.insert(p.name.clone());
         }
-        for c in &f.context_clauses {
-            if let Some(n) = &c.name {
-                out.insert(n.clone());
-            }
-        }
     };
     match &decl.kind {
         DeclKind::Fn(f) => params_of(f, &mut out),

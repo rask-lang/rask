@@ -5,9 +5,9 @@
 //! `Vec.new()` allocates a `RaskVec` and, on the first push, a data array.
 //! Nothing in the pipeline ever freed either (#1027) — a vector built in a
 //! loop leaked the handle, the array, and every heap string in it, once per
-//! turn. `Map`, `Rack` and `Pool` are the same — and for the last two that
-//! sentence stayed aspirational until #1048: their frees existed in the runtime
-//! and no constructor of theirs was on the list this pass reads.
+//! turn. `Map` and `Rack` are the same — and for the rack that sentence stayed
+//! aspirational until #1048: its free existed in the runtime and no constructor
+//! of its own was on the list this pass reads.
 //!
 //! Modelled on `trait_drop.rs`, which solves the same problem for trait
 //! objects, and shares its rules: track only *fresh* allocations — the

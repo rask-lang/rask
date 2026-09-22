@@ -27,7 +27,7 @@ Precise memory layout for enums, closures, trait objects, and other compound typ
 | `i64`, `u64`, `f64` | 8 | 8 |
 | `isize`, `usize` | 8 | 8 (64-bit target) |
 | `*T` (pointer) | 8 | 8 |
-| `Handle<T>` | 8 | 8 (u64 internally) |
+| `Link<T>` | 8 | 8 (the node's address) |
 
 ## Structs
 
@@ -120,18 +120,20 @@ Certain types have unused bit patterns that can encode enum discriminants withou
 
 | Rule | Description |
 |------|-------------|
-| **N1: Handle niche** | `Handle<T>?` uses generation=0 to represent `none` (8 bytes, not 16) |
+| **N1: Link niche** | `Link<T>?` uses the null address for `none` (8 bytes, not 16) |
 | **N2: Reference niche** | `(&T)?` uses null pointer for `none` (8 bytes, not 16) |
 | **N3: NonZero types** | Future: `NonZeroU32?` etc. use zero as `none` |
 
-**Handle<T>? Layout:**
+**Link<T>? Layout:**
 ```
-// Without niche (naive):       16 bytes = [tag: u8][pad: 7][Handle: 8]
-// With niche (optimized):        8 bytes = [index: u32][generation: u32]
-//   where generation=0 means `none`, generation>0 means present
+// Without niche (naive):       16 bytes = [tag: u8][pad: 7][Link: 8]
+// With niche (optimized):        8 bytes = [addr: u64]
+//   where 0 means `none`, anything else is the node's address
 ```
 
-**Priority:** Handle niche optimization MUST be implemented before ABI stabilization. This is critical for graph algorithms using Pool handles.
+Null is the right sentinel here rather than a chosen-by-hand one: a niche picks a value its own domain can't produce, and for an address that is null. It also means a freshly zeroed rack chunk arrives with every edge already reading as `none`.
+
+**Priority:** the link niche MUST be implemented before ABI stabilization. Graph code is full of `Link<T>?` fields and doubling each one is not acceptable.
 
 ## Closures
 
@@ -354,26 +356,32 @@ struct Map<K, V> {
 
 Internal bucket structure and hashing strategy are implementation-defined and subject to change. Do not depend on internal layout.
 
-### Pool<T>
+### Rack<T>
 
-```rask
-struct Pool<T> {
-    data: *T,              // offset 0: dense array
-    len: usize,            // offset 8: element count
-    cap: usize,            // offset 16: capacity
-    free_head: u32,        // offset 24: freelist head
-    generation: *u32,      // offset 32: generation array
-}
-// Total: 40 bytes
+A rack is a handle to a runtime structure (`RaskRack`), not a layout the ABI
+pins down. What the ABI *does* pin down is the shape of a node, because that is
+what a `Link<T>` points into:
+
+```
+slot: [ inline edge records ][ RackNode header ][ T payload ]
+                                                 ^
+                                                 Link<T> points here
 ```
 
-Handle:
-```rask
-struct Handle<T> {
-    index: u32,         // offset 0: slot index
-    generation: u32,    // offset 4: generation counter
-}
-// Total: 8 bytes
+The header sits immediately before the payload, so `link.field` is the same
+base+offset load a pointer-to-struct gets — no adjustment, no lookup. Slots live
+in fixed-size chunks the rack never reallocates, which is what makes a node's
+address stable for its whole life (`mem.racks/RK1`).
+
+One inline edge record precedes the header per `Link`-typed field the node
+declares, so overwriting such a field finds its record by arithmetic and unlinks
+in constant time whatever the in-degree (RK10). Links held anywhere else — a
+struct outside the rack, a `Vec` or `Map` element — go on a separate list the
+fixup scans.
+
+`Link<T>`:
+```
+// 8 bytes: the payload address. Nothing else.
 ```
 
 ## String

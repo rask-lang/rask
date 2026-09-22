@@ -1,7 +1,7 @@
 <!-- id: std.iteration -->
 <!-- status: decided -->
-<!-- summary: Iteration modes for Vec, Pool, and Map collections -->
-<!-- depends: stdlib/collections.md, memory/pools.md, control/loops.md, types/sequence-protocol.md -->
+<!-- summary: Iteration modes for Vec, Map, and Rack collections -->
+<!-- depends: stdlib/collections.md, control/loops.md, types/sequence-protocol.md -->
 
 # Collection Iteration Patterns
 
@@ -19,7 +19,7 @@ Four iteration modes per collection: value (default, read-only), mutable (read-w
 | Collection | Value Mode (Default) | Mutable Mode | Index Mode | Take All Mode |
 |------------|---------------------|--------------|------------|--------------|
 | `Vec<T>` | `for item in vec` -> borrowed `T` | `for mutate item in vec` -> mutable `T` | `for i in 0..vec.len()` -> `usize` | `for item in vec.take_all()` -> `T` |
-| `Pool<T>` | `for item in pool` -> borrowed `T` | `for mutate item in pool` -> mutable `T` | `for h in pool.handles()` -> `Handle<T>` | `for item in pool.take_all()` -> `T` |
+| `Rack<T>` | `for n in rack` -> `Link<T>` | — links already write through | `for n in rack.nodes()` -> `Link<T>` | — `delete` frees, it doesn't hand back |
 | `Map<K,V>` | `for (k, v) in map` -> `(K, borrowed V)` | `for mutate (k, v) in map` -> `(K, mutable V)` | `for k in map.keys()` -> `K` | `for (k,v) in map.take_all()` -> `(K, V)` |
 
 ## Value Access
@@ -42,14 +42,14 @@ vec[i] = value            // Mutate in place
 
 | Rule | Description |
 |------|-------------|
-| **R1: No structural mutation** | `pool.remove(h)`, `pool.insert(x)` forbidden inside value loops |
+| **R1: No structural mutation** | `vec.remove(i)`, `vec.push(x)`, `rack.delete(n)` forbidden inside value loops |
 | **R2: Read-only** | Value mode is read-only. Use index mode for mutation |
 | **R3: No take parameters** | Cannot pass borrowed items to `take` parameters |
 
 | Operation | In Value Loop | Reason |
 |-----------|---------------|--------|
-| `pool.remove(h)` | Forbidden | Structural mutation |
-| `pool.insert(item)` | Forbidden | Structural mutation |
+| `vec.remove(i)` | Forbidden | Structural mutation |
+| `vec.push(item)` | Forbidden | Structural mutation |
 | Field mutation | Forbidden | Value mode is read-only |
 | Read-only access | Allowed | Natural use case |
 | `take` param | Forbidden | Ownership transfer impossible |
@@ -110,13 +110,13 @@ for mutate (key, value) in config {
 }
 ```
 
-**Pool mutable iteration:**
+**Rack iteration needs no mode.** A link carries write access with it, so
+walking a rack and writing through the links is the plain loop:
 
 <!-- test: skip -->
 ```rask
-for mutate entity in pool {
-    entity.health -= 10
-    entity.velocity *= 0.9
+for e in world.nodes() {
+    e.health -= 10
 }
 ```
 
@@ -126,7 +126,7 @@ for mutate entity in pool {
 |------|-----|
 | Mutate element fields | `for mutate item in vec` — clean, intent clear |
 | Mutate + access other elements | `for mutate item in vec` — MI3 allows reads |
-| Structural mutation (insert/remove) | Index mode — `for i in 0..` or `for h in pool.handles()` |
+| Structural mutation (insert/remove) | Index mode — `for i in 0..`, or collect links with `rack.nodes()` first |
 | Swap or reorder elements | Index mode — need indices for `vec.swap(i, j)` |
 
 ## Take-All Iteration
@@ -140,7 +140,6 @@ for mutate entity in pool {
 | Collection | Method | Yields |
 |------------|--------|--------|
 | `Vec<T>` | `.take_all()` | `Vec<T>`, iterated as `T` |
-| `Pool<T>` | `.take_all()` | `Vec<T>`, iterated as `T` |
 | `Map<K,V>` | `.take_all()` | `Vec<(K, V)>`, iterated as `(K, V)` |
 
 <!-- test: skip -->
@@ -188,7 +187,7 @@ for entity in entities {
 | Rule | Description |
 |------|-------------|
 | **L1: No value iteration** | `Vec<Linear>` forbids value iteration (would alias). Use `.take_all()` |
-| **L2: Pool iteration OK** | Pool value iteration works - items borrowed one at a time, no aliasing |
+| **L2: No linear elements to iterate** | No container holds a linear value (`mem.resources/RC1`–RC3), so this only ever concerns a `Vec` being drained |
 
 <!-- test: skip -->
 ```rask
@@ -252,24 +251,18 @@ FIX: Use take_all to consume:
 ```
 ERROR [std.iteration/R1]: cannot mutate collection during value iteration
    |
-3  |  for item in pool {
-   |              ^^^^ value iteration borrows pool
-4  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ cannot mutate
+3  |  for item in vec {
+   |              ^^^ value iteration borrows vec
+4  |      vec.remove(i)
+   |      ^^^^^^^^^^^^^ cannot mutate
 
-FIX: Use index mode or collect first:
+FIX: collect the indices first, then remove:
 
-  // Option 1: Index mode
-  for h in pool.handles() {
-      if pool[h].expired { pool.remove(h) }
+  mut to_remove: Vec<usize> = Vec.new()
+  for i in 0..vec.len() {
+      if vec[i].expired { to_remove.push(i) }
   }
-
-  // Option 2: Collect first
-  let to_remove = Vec.new()
-  for item in pool {
-      if item.expired { to_remove.push(h) }
-  }
-  for h in to_remove { pool.remove(h) }
+  for i in to_remove.rev() { vec.remove(i) }
 ```
 
 ```
@@ -386,6 +379,6 @@ let vec = vec.take_all().filter(|item| !item.expired).to_vec()
 ### See Also
 
 - `std.collections` — Vec, Map APIs
-- `mem.pools` — Pool and Handle types
+- `mem.racks` — Rack and Link types
 - `ctrl.loops` — Loop syntax and desugaring
 - `type.sequence` — Sequence protocol, adapters, terminals

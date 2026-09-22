@@ -882,7 +882,7 @@ impl<'a> MirLowerer<'a> {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
-            | MirType::FuncPtr(_) | MirType::Handle | MirType::Link(_)
+            | MirType::FuncPtr(_) | MirType::Link(_)
             | MirType::Container(_) | MirType::Heap(_) => 8,
             MirType::I128 | MirType::U128 => 16,
             MirType::String => 16,
@@ -897,7 +897,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// The single slot-size authority for a value stored in a collection
-    /// (Vec/Map element or key/value, Channel/Shared/Mutex/Pool element).
+    /// (Vec/Map element or key/value, Channel/Shared/Mutex element).
     ///
     /// Keyed on the resolved `Type` — no type-name string parsing. Delegates to
     /// the mono layout tables (via `type_to_mir`): scalars occupy an 8-byte slot
@@ -937,7 +937,7 @@ impl<'a> MirLowerer<'a> {
             | MirType::I16 | MirType::U16
             | MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char
             | MirType::I64 | MirType::U64 | MirType::F64
-            | MirType::Ptr | MirType::FuncPtr(_) | MirType::Handle => 8,
+            | MirType::Ptr | MirType::FuncPtr(_) => 8,
             // Struct/Enum/Tuple/Option/Result/Union/Array/... — layout size.
             _ => ty.size() as i64,
         }
@@ -975,7 +975,7 @@ impl<'a> MirLowerer<'a> {
         let size = self.ctx.lookup_raw_type(node_id).and_then(|ty| {
             // `Channel<T>.buffered()` resolves to `(Sender<T>, Receiver<T>)` — the
             // element type lives in the tuple's first component. Everything else
-            // (Vec/Map/Shared/Mutex/Pool) resolves to the wrapper directly.
+            // (Vec/Map/Shared/Mutex) resolves to the wrapper directly.
             let container = match ty {
                 Type::Tuple(elems) => elems.first()?,
                 other => other,

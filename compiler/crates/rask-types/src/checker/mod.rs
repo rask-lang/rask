@@ -94,13 +94,6 @@ pub struct PendingSelfMutation {
     pub span: rask_ast::Span,
 }
 
-/// A deferred frozen-context write check. See `pending_frozen_writes`.
-#[derive(Debug, Clone)]
-pub struct PendingFrozenWrite {
-    pub ty: crate::types::Type,
-    pub span: rask_ast::Span,
-}
-
 impl BindingKind {
     pub fn is_read_only(&self) -> bool {
         matches!(
@@ -381,9 +374,6 @@ pub struct TypeChecker {
     /// The argument spans of every `spawn` call seen. A use inside one of these
     /// is a use in another task.
     pub(super) spawn_arg_spans: Vec<rask_ast::Span>,
-    /// mem.pools/PF5 frozen-context write sites, deferred for the same reason as
-    /// `pending_mutations` — the check needs the handle's element type.
-    pub(super) pending_frozen_writes: Vec<PendingFrozenWrite>,
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
@@ -422,12 +412,6 @@ pub struct TypeChecker {
     /// validated after `register_impl_methods` so an error type whose `message()`
     /// comes from an `extend` block is recognized regardless of declaration order.
     pub(super) pending_result_validations: Vec<(Type, rask_ast::Span)>,
-    /// mem.pools/PF5: element types `T` of the current function's
-    /// `using frozen Pool<T>` clauses. A write through a `Handle<T>`
-    /// (`h.field = v`) in such a context is rejected. Structural ops
-    /// (insert/remove/clear on the named binding) are caught by the effects
-    /// analysis (`rask-effects`), so they aren't re-checked here.
-    pub(super) frozen_context_elems: Vec<Type>,
     /// S2: view bindings (`s[i..]`, `s.trim()`) whose source type was still a
     /// variable during the walk — a field, a loop variable, an inferred local.
     /// Validated after solving, so `const q = self.url[i..]` is caught too.
@@ -559,12 +543,10 @@ impl TypeChecker {
             allowed_warnings: Vec::new(),
             comptime_string_names: vec![HashMap::new()],
             spawn_arg_spans: Vec::new(),
-            pending_frozen_writes: Vec::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
             pending_result_validations: Vec::new(),
-            frozen_context_elems: Vec::new(),
             pending_catch_void_checks: Vec::new(),
         }
     }
@@ -669,12 +651,11 @@ impl TypeChecker {
         self.solve_constraints();
 
         // #310: validate index expression types (integer for Vec/slice/string,
-        // K for Map, Handle<T> for Pool) BEFORE literal defaults land, so a
+        // K for Map) BEFORE literal defaults land, so a
         // literal index can adapt to an integer Map key instead of forcing i32.
         self.validate_pending_index();
         self.validate_pending_mutations();
         self.validate_spawn_captures();
-        self.validate_pending_frozen_writes();
 
         // #314: verify generic call type args satisfy their declared bounds.
         self.validate_pending_bound_checks();
@@ -1059,9 +1040,6 @@ impl TypeChecker {
                 container: ctx.apply(&container),
                 found: ctx.apply(&found),
                 kind: match kind {
-                    errors::IndexErrorKind::ExpectedHandle(h) => {
-                        errors::IndexErrorKind::ExpectedHandle(ctx.apply(&h))
-                    }
                     errors::IndexErrorKind::ExpectedKey(k) => {
                         errors::IndexErrorKind::ExpectedKey(ctx.apply(&k))
                     }

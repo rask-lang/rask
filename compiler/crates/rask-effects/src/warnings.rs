@@ -584,7 +584,6 @@ mod tests {
                 type_params: vec![],
                 params: vec![],
                 ret_ty: None,
-                context_clauses: vec![],
                 body,
                 is_pub: false,
                 is_private: false,

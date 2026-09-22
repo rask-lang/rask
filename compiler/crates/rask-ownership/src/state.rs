@@ -34,14 +34,14 @@ pub enum BorrowMode {
 ///
 /// Rask has two borrow scopes based on the "Can it grow?" rule:
 /// - **Persistent**: String, struct fields, arrays - valid until block end
-/// - **Instant**: Vec, Map, Pool - released at semicolon
+/// - **Instant**: Vec, Map - released at semicolon
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BorrowScope {
     /// Borrow is valid until the block ends.
     /// Used for fixed-size sources (String, struct fields, arrays, parameters).
     Persistent { block_id: u32 },
     /// Borrow is valid until the statement ends (semicolon).
-    /// Used for growable sources (Vec, Map, Pool).
+    /// Used for growable sources (Vec, Map).
     Instant { stmt_id: u32 },
 }
 

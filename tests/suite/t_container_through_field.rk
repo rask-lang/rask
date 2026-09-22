@@ -8,20 +8,18 @@
 // The same loop or index on a *local* worked, which is what made it look
 // arbitrary (#632):
 //
-//     let direct = pool[h]           // fine
-//     let viafield = w.entities[h]   // E0361: couldn't work out the type
+//     let direct = rows[i]        // fine
+//     let viafield = w.rows[i]    // E0361: couldn't work out the type
 //
 // Both now register a constraint that re-runs once the container settles, the
 // same shape the `!` fix in #620 used.
 //
-// Also covered here: `for h in pool` iterates the *handle* snapshot
-// (mem.pools/PF1-PF4). Native typed the binding as the pool's value type
-// instead, so it read each 8-byte handle as an element struct and `pool[h]`
-// panicked with "pool access with invalid handle". `for h in pool.handles()`
-// always worked, which is why nothing caught it.
+// Also covered here: `for n in rack.nodes()` reached through a field, which is
+// the same question one container further out — the link snapshot has to give
+// up its node type before `n.active` can mean anything.
 //
-// Spec: type.gradual (inference), mem.pools (PF1-PF4)
-import memory.Pool
+// Spec: type.gradual (inference), mem.racks (RK1)
+import memory.Rack
 
 struct Entity {
     public hp: i64
@@ -34,7 +32,7 @@ struct Row {
 }
 
 struct World {
-    entities: Pool<Entity>
+    entities: Rack<Entity>
     rows: Vec<Row>
     index: Map<string, i64>
 }
@@ -70,21 +68,20 @@ extend World {
         return v
     }
 
-    // for over a Pool field — yields handles
+    // for over a Rack field — yields links, which have to reach `Entity`
     func count_active(self) -> i64 {
         mut n = 0
-        for h in self.entities {
-            if self.entities[h].active {
+        for e in self.entities.nodes() {
+            if e.active {
                 n = n + 1
             }
         }
         return n
     }
 
-    // index into a Pool field, bare binding — the exact shape #632 reported
+    // the first node's field, read through the field-reached rack
     func first_hp(self) -> i64 {
-        for h in self.entities {
-            let e = self.entities[h]
+        for e in self.entities.nodes() {
             return e.hp
         }
         return -1
@@ -92,27 +89,27 @@ extend World {
 }
 
 // The same two loops over locals — the shapes that always worked.
-func local_pool_active() -> i64 {
-    mut p: Pool<Entity> = Pool.new()
-    let a = p.insert(Entity { hp: 10, active: true })
-    let b = p.insert(Entity { hp: 20, active: false })
-    let c = p.insert(Entity { hp: 30, active: true })
+func local_rack_active() -> i64 {
+    mut r: Rack<Entity> = Rack.new()
+    r.insert(Entity { hp: 10, active: true })
+    r.insert(Entity { hp: 20, active: false })
+    r.insert(Entity { hp: 30, active: true })
     mut n = 0
-    for h in p {
-        if p[h].active {
+    for e in r.nodes() {
+        if e.active {
             n = n + 1
         }
     }
     return n
 }
 
-func local_pool_via_handles() -> i64 {
-    mut p: Pool<Entity> = Pool.new()
-    let a = p.insert(Entity { hp: 10, active: true })
-    let b = p.insert(Entity { hp: 20, active: false })
+func local_rack_total_hp() -> i64 {
+    mut r: Rack<Entity> = Rack.new()
+    r.insert(Entity { hp: 10, active: true })
+    r.insert(Entity { hp: 20, active: false })
     mut total = 0
-    for h in p.handles() {
-        total = total + p[h].hp
+    for e in r.nodes() {
+        total = total + e.hp
     }
     return total
 }
@@ -126,10 +123,10 @@ func build() -> World {
     index.insert("a", 10)
     index.insert("b", 20)
 
-    mut entities: Pool<Entity> = Pool.new()
-    let e1 = entities.insert(Entity { hp: 5, active: true })
-    let e2 = entities.insert(Entity { hp: 7, active: false })
-    let e3 = entities.insert(Entity { hp: 9, active: true })
+    mut entities: Rack<Entity> = Rack.new()
+    entities.insert(Entity { hp: 5, active: true })
+    entities.insert(Entity { hp: 7, active: false })
+    entities.insert(Entity { hp: 9, active: true })
 
     return World { entities: entities, rows: rows, index: index }
 }
@@ -146,15 +143,15 @@ test "type.gradual — indexing a Vec or Map field into a bare binding" {
     assert w.lookup("b") == 20
 }
 
-test "mem.pools/PF1 — `for h in pool` over a field yields handles" {
+test "mem.racks/RK1 — a rack reached through a field knows its node type" {
     let w = build()
     assert w.count_active() == 2
     assert w.first_hp() == 5
 }
 
-test "mem.pools/PF1 — `for h in pool` over a local yields handles too" {
-    assert local_pool_active() == 2
-    assert local_pool_via_handles() == 30
+test "mem.racks/RK1 — the same loops over a local rack" {
+    assert local_rack_active() == 2
+    assert local_rack_total_hp() == 30
 }
 
 func main() {
@@ -162,5 +159,5 @@ func main() {
     println("{w.total_n()}")
     println(w.keys_joined())
     println("{w.count_active()}")
-    println("{local_pool_active()}")
+    println("{local_rack_active()}")
 }

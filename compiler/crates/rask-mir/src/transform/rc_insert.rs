@@ -329,25 +329,6 @@ fn container_handles_from(
                     }
                 }
                 match &stmt.kind {
-                    // A pool element is *in* the pool's slot, not a copy of
-                    // one, so reading it is reaching through whatever holds the
-                    // pool. Same shape as the `Vec.get` views above, and it
-                    // needs the same treatment now that a pool in a struct
-                    // field is freed with the struct:
-                    //
-                    //     _44 = pool_access(_43[_42])
-                    //     rc_dec_contents(_20)   // frees the World, pool and all
-                    //     _46 = _45.0            // reads the slot that just went
-                    //
-                    // `w.first_hp()` gave 8590327353766614987 for an `hp` of 5.
-                    MirStmtKind::PoolCheckedAccess { dst, pool, .. } => {
-                        let root = views.get(pool).or_else(|| from.get(pool)).copied();
-                        if let Some(root) = root {
-                            if views.insert(*dst, root).is_none() {
-                                changed = true;
-                            }
-                        }
-                    }
                     MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } => {
                         let Some(base) = uses::operand_local(base) else { continue };
                         // A container handle out of an aggregate this frame

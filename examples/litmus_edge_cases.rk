@@ -267,33 +267,31 @@ test "string Copy — pass to function and keep original" {
     assert copy == "immutable"
 }
 
-// ─── Pool with string fields ────────────────────────────────────
+// ─── Rack nodes with string fields ──────────────────────────────
 
 struct Entity {
     name: string
     health: i32
 }
 
-test "Pool — string fields Copy correctly" {
-    mut pool = Pool.new()
-    let h = pool.insert(Entity { name: "Hero", health: 100 })
+test "Rack — string fields Copy correctly" {
+    mut rack = Rack.new()
+    let e = rack.insert(Entity { name: "Hero", health: 100 })
     // Read string field — should be Copy, not move
-    let name1 = pool[h].name
-    let name2 = pool[h].name
+    let name1 = e.name
+    let name2 = e.name
     assert name1 == "Hero"
     assert name2 == "Hero"
-    assert pool[h].health == 100
+    assert e.health == 100
 }
 
-test "Pool — modify non-string field after reading string" {
-    mut pool = Pool.new()
-    let h = pool.insert(Entity { name: "Hero", health: 100 })
-    let name = pool[h].name
-    with pool[h] as e {
-        e.health = 50
-    }
+test "Rack — modify non-string field after reading string" {
+    mut rack = Rack.new()
+    let e = rack.insert(Entity { name: "Hero", health: 100 })
+    let name = e.name
+    e.health = 50
     assert name == "Hero"
-    assert pool[h].health == 50
+    assert e.health == 50
 }
 
 // ─── Vec.get with narrowing ─────────────────────────────────────
@@ -436,7 +434,7 @@ test "Response.bad_request creates 400" {
 // ─── File I/O round-trip ────────────────────────────────────────
 
 import fs
-import memory.Pool
+import memory.Rack
 import http.Response
 
 test "fs write and read round-trip" {

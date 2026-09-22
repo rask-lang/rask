@@ -31,7 +31,6 @@ pub const LINT_RULES: &[&str] = &[
     "idiom/equality-absent-check",
     "idiom/match-on-optional",
     "idiom/mod-for-index",
-    "idiom/too-many-contexts",
     "style/snake-case-func",
     "style/pascal-case-type",
     "style/public-return-type",

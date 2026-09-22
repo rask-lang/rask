@@ -113,8 +113,6 @@ Always available without import:
 |------|-------------|
 | `Vec<T>` | Growable array |
 | `Map<K, V>` | Key-value map |
-| `Pool<T>` | Handle-based sparse storage |
-| `Handle<T>` | Opaque identifier into Pool |
 
 ### Strings
 
@@ -422,7 +420,7 @@ The following are **not** part of stdlib — use packages:
 - [strings.md](strings.md) — String types
 - [iteration.md](iteration.md) — Collection iteration
 - [testing.md](testing.md) — Test framework
-- [memory/pools.md](../memory/pools.md) — Pool and Handle
+- [memory/racks.md](../memory/racks.md) — Rack and Link
 - [memory/resource-types.md](../memory/resource-types.md) — Resource type semantics (linear resources)
 - [control/ensure.md](../control/ensure.md) — Cleanup mechanism
 - [concurrency/README.md](../concurrency/README.md) — Concurrency primitives

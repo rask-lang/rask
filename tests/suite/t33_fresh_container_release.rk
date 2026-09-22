@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-import memory.Pool
-import memory.Handle
+import memory.Rack
+import memory.Link
 
 // A runtime call that hands back a container: does the caller free it?
 //
@@ -91,63 +91,28 @@ test "a fresh Vec of strings handed back to the caller" {
     assert m.len() == 2
 }
 
-// A pool's accessors are the same shape as a map's: a `Pool_` name handing back
+// A rack's accessor is the same shape as a map's: a `Rack_` name handing back
 // a `Vec`, which is why the free is written down and not read off the prefix.
-test "pool handles land in a Vec the caller owns" {
-    mut p = Pool<i32>.new()
-    let a = p.insert(1)
-    let b = p.insert(2)
-    let hs = p.handles()
-    assert hs.len() == 2
+// A struct node rather than a bare `i32`: the interpreter takes only struct
+// nodes, which is the shape a graph is written in anyway (rask-lang/rask#1297).
+struct Cell { n: i32 }
+
+test "rack nodes land in a Vec the caller owns" {
+    mut r = Rack<Cell>.new()
+    let a = r.insert(Cell { n: 1 })
+    let b = r.insert(Cell { n: 2 })
+    let ns = r.nodes()
+    assert ns.len() == 2
 }
 
-test "draining a pool hands the caller a Vec" {
-    mut p = Pool<i32>.new()
-    let a = p.insert(1)
-    let b = p.insert(2)
-    let d = p.drain()
-    assert d.len() == 2
-    assert p.len() == 0
+func nodes_of(r: Rack<Cell>) -> Vec<Link<Cell>> {
+    return r.nodes()
 }
 
-// `values` is the third one, and it hides behind its declared type: the stdlib
-// says `Iterator<T>`, but `rask_pool_values` builds the same plain `RaskVec`
-// its two neighbours do. Going by the declaration there was nothing to free,
-// so it leaked 96 bytes per call.
-test "a pool's values land in a Vec the caller owns" {
-    mut p = Pool<i32>.new()
-    let a = p.insert(1)
-    let b = p.insert(2)
-    mut n = 0
-    for x in p.values() {
-        n = n + x
-    }
-    assert n == 3
-}
-
-func handles_of(p: Pool<i32>) -> Vec<Handle<i32>> {
-    return p.handles()
-}
-
-func values_of(p: Pool<i32>) -> Iterator<i32> {
-    return p.values()
-}
-
-test "a pool's values handed back to the caller are freed once" {
-    mut p = Pool<i32>.new()
-    let a = p.insert(4)
-    mut n = 0
-    for x in values_of(p) {
-        n = n + x
-    }
-    assert n == 4
-    assert p.len() == 1
-}
-
-test "a pool's handles handed back to the caller are freed once" {
-    mut p = Pool<i32>.new()
-    let a = p.insert(1)
-    let hs = handles_of(p)
-    assert hs.len() == 1
-    assert p.len() == 1
+test "a rack's nodes handed back to the caller are freed once" {
+    mut r = Rack<Cell>.new()
+    let a = r.insert(Cell { n: 1 })
+    let ns = nodes_of(r)
+    assert ns.len() == 1
+    assert r.len() == 1
 }

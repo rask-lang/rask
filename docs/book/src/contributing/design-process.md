@@ -30,7 +30,7 @@ Rask is validated against test programs that must work naturally:
 
 Design decisions are evaluated using concrete metrics:
 - Clone overhead (% of lines with .clone())
-- Handle access cost (nanoseconds)
+- Graph edge-write cost (nanoseconds)
 - Compile times (seconds per 1000 LOC)
 - Binary size
 - Memory usage
@@ -54,7 +54,7 @@ Major changes follow an RFC process:
 Every design has tradeoffs. Rask makes these intentional choices:
 
 - **More `.clone()` calls** - Better than lifetime annotations (our view)
-- **Handle overhead** - Better than raw pointers with manual tracking
+- **An edge write touches the target too** - Better than raw pointers with manual tracking
 - **No storable references** - Simpler mental model, requires restructuring some patterns
 - **Explicit costs** - Better than hidden complexity
 

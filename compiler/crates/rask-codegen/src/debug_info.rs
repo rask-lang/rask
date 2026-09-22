@@ -208,7 +208,6 @@ fn mir_type_to_var_info(
         rask_mir::MirType::Char     => ("char".into(), 4, TypeKind::Unsigned),
         rask_mir::MirType::Ptr      => ("ptr".into(), 8, TypeKind::Address),
         rask_mir::MirType::String   => ("string".into(), 8, TypeKind::Address),
-        rask_mir::MirType::Handle   => ("Handle".into(), 8, TypeKind::Signed),
         rask_mir::MirType::Struct(StructLayoutId { id, byte_size, .. }) => {
             let sname = struct_layouts.get(*id as usize)
                 .map(|s| s.name.clone())

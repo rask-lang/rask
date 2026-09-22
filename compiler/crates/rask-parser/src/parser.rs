@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, CImportDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
@@ -643,7 +643,6 @@ impl Parser {
                         type_params: vec![],
                         params: vec![],
                         ret_ty: None,
-                        context_clauses: vec![],
                         body: top_level_stmts,
                         is_pub: false, is_private: false,
                         is_comptime: false,
@@ -950,8 +949,7 @@ impl Parser {
         self.skip_newlines();
         self.expect(&TokenKind::RParen)?;
 
-        // Parse `using` clauses and `->` return type (either order accepted)
-        let mut context_clauses = self.parse_using_clauses()?;
+        self.reject_signature_using()?;
 
         let ret_ty = if self.match_token(&TokenKind::Arrow) {
             Some(self.parse_type_name()?)
@@ -971,10 +969,7 @@ impl Parser {
             None
         };
 
-        // Also accept `using` after return type
-        if context_clauses.is_empty() {
-            context_clauses = self.parse_using_clauses()?;
-        }
+        self.reject_signature_using()?;
 
         // `where` closes the signature (after return type + using clauses).
         self.parse_where_clause(&mut type_params)?;
@@ -1004,73 +999,41 @@ impl Parser {
 
         let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         let fn_span = self.span(fn_start, fn_end);
-        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span }))
+        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span }))
     }
 
-    fn parse_using_clauses(&mut self) -> Result<Vec<ContextClause>, ParseError> {
-        // Skip newlines that might appear between return type and `using`
+    /// `using` on a signature is gone. It only ever declared a pool context, and
+    /// pools went with it (rask-lang/rask#908), so a signature has no ambient
+    /// dependency to declare any more. The block form — `using Multitasking { … }`
+    /// — is a different thing and still parses, one statement at a time.
+    fn reject_signature_using(&mut self) -> Result<(), ParseError> {
+        // Peek past newlines so `func f()\n    using X` is caught too, and put
+        // the position back when it isn't a `using`.
+        let saved = self.pos;
         if self.check(&TokenKind::Newline) {
-            // Peek past newlines to see if `using` follows
-            let saved = self.pos;
             self.skip_newlines();
-            if !self.check(&TokenKind::Using) {
-                self.pos = saved;
-                return Ok(vec![]);
-            }
         }
-
-        if !self.match_token(&TokenKind::Using) {
-            return Ok(vec![]);
+        if !self.check(&TokenKind::Using) {
+            self.pos = saved;
+            return Ok(());
         }
-
-        let mut clauses = Vec::new();
-        loop {
-            self.skip_newlines();
-            let clause_start = self.current().span.start;
-
-            // Check for `frozen` modifier
-            let is_frozen = if let TokenKind::Ident(ref name) = self.current_kind().clone() {
-                if name == "frozen" {
-                    self.advance();
-                    true
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            // Peek: Ident Colon means named context, otherwise unnamed
-            let name = if let TokenKind::Ident(ref ident) = self.current_kind().clone() {
-                // Look ahead for `name:`
-                if self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].kind == TokenKind::Colon {
-                    let n = ident.clone();
-                    self.advance(); // consume name
-                    self.advance(); // consume colon
-                    Some(n)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-
-            let ty = self.parse_type_name()?;
-            let clause_end = self.tokens[self.pos.saturating_sub(1)].span.end;
-
-            clauses.push(ContextClause {
-                name,
-                ty,
-                is_frozen,
-                span: self.span(clause_start, clause_end),
-            });
-
-            if !self.match_token(&TokenKind::Comma) {
-                break;
-            }
-        }
-
-        Ok(clauses)
+        let span = self.current().span;
+        Err(ParseError {
+            span,
+            message: "`using` is not a signature clause".to_string(),
+            hint: Some(
+                "pass what the function needs as a parameter, or open a block: \
+                 `using Multitasking { … }`"
+                    .to_string(),
+            ),
+            why: Some(
+                "a signature `using` clause declared a `Pool<T>` the compiler threaded \
+                 in as a hidden parameter. Pools are gone, and with them the one thing \
+                 the clause named — a `Rack<T>` needs no context, because a `Link<T>` \
+                 is the node rather than a ticket to look one up"
+                    .to_string(),
+            ),
+        })
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, ParseError> {
@@ -2136,7 +2099,7 @@ impl Parser {
         self.skip_newlines();
         self.expect(&TokenKind::RParen)?;
 
-        let mut context_clauses = self.parse_using_clauses()?;
+        self.reject_signature_using()?;
 
         let ret_ty = if self.match_token(&TokenKind::Arrow) {
             Some(self.parse_type_name()?)
@@ -2144,9 +2107,7 @@ impl Parser {
             None
         };
 
-        if context_clauses.is_empty() {
-            context_clauses = self.parse_using_clauses()?;
-        }
+        self.reject_signature_using()?;
 
         self.parse_where_clause(&mut type_params)?;
 
@@ -2165,7 +2126,6 @@ impl Parser {
             type_params,
             params,
             ret_ty,
-            context_clauses,
             body,
             is_pub: false, is_private: false,
             is_comptime: false,
@@ -2607,7 +2567,6 @@ impl Parser {
                 type_params: vec![],
                 params,
                 ret_ty,
-                context_clauses: vec![],
                 body,
                 is_pub: true,
                 is_private: false,
@@ -5225,8 +5184,7 @@ impl Parser {
         let mut contexts: Vec<(String, Vec<CallArg>)> = Vec::new();
         loop {
             let mut name = self.expect_ident()?;
-            // Generic args on context types: `using Pool<Entity>, Multitasking { ... }`
-            // (mem.context-clauses/CC4). Mirrors the loop in parse_base_type.
+            // Generic args on context types. Mirrors the loop in parse_base_type.
             if self.match_token(&TokenKind::Lt) {
                 name.push('<');
                 loop {

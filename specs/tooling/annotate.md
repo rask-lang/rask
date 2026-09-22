@@ -1,7 +1,7 @@
 <!-- id: tool.annotate -->
 <!-- status: proposed -->
 <!-- summary: rask annotate — ghost text materialized as a read-only report for diffs, review, and terminals -->
-<!-- depends: compiler/effects.md, memory/parameters.md, memory/closures.md, concurrency/io-context.md, types/gradual-constraints.md, memory/context-clauses.md, tooling/describe-schema.md -->
+<!-- depends: compiler/effects.md, memory/parameters.md, memory/closures.md, concurrency/io-context.md, types/gradual-constraints.md, tooling/describe-schema.md -->
 
 # Annotate
 
@@ -25,20 +25,18 @@ Annotations are computed when displayed and stored nowhere — the same lifecycl
 $ rask annotate src/round.rk
 
 src/round.rk
-   1 | func damage(h, amount) {                     « func damage(h: Handle<Player>, amount: i32) · using Pool<Player>
-   2 |     with pools[h] as player {
-   3 |         player.hp -= amount
-   4 |     }
-   5 | }
-   6 |
-   7 | func run_round(seed: i32) {                  « func run_round(seed: i32) -> void or Error · [io]
-   8 |     mut player = Player.new(seed)
-   9 |     apply_damage(mutate player, 10)
-  10 |     let report = try http.post(STATS_URL, player.encode())
+   1 | func damage(p, amount) {                     « func damage(p: Link<Player>, amount: i32)
+   2 |     p.hp -= amount
+   3 | }
+   4 |
+   5 | func run_round(seed: i32) {                  « func run_round(seed: i32) -> void or Error · [io]
+   6 |     mut player = Player.new(seed)
+   7 |     apply_damage(mutate player, 10)
+   8 |     let report = try http.post(STATS_URL, player.encode())
      |                                              « ⟨pauses⟩
-  11 |     spawn(own || { archive(report) }).detach()
+   9 |     spawn(own || { archive(report) }).detach()
      |                                              « [moves: report (Response)]
-  12 | }
+  10 | }
 ```
 
 ## What Gets Annotated
@@ -59,7 +57,6 @@ Not every ghost earns a place in a diff. The cut:
 | `own` closure captures | `[moves: name (T)]`, `[copies: name (T)]` (`mem.closures`) | review |
 | Consuming match arms | `[takes]`, `[consumes]` (`type.enums`) | review |
 | Inferred private signatures | full signature on the `func` line (`type.gradual`) | review |
-| Inferred `using` clauses | `using Pool<Player>` (`mem.context`) | review |
 | Inferred binding types | `: Vec<string>` | full |
 | Non-`own` closure captures | `[borrows: …]`, `[inline]` (`mem.closures`) | full |
 | Borrowing match arms | `[borrows]`, `[mutates]`, `[reads]` (`type.enums`) | full |
@@ -102,7 +99,7 @@ DF2 is the piece even an IDE reviewer doesn't get: the IDE ghosts the buffer you
 | Rule | Description |
 |------|-------------|
 | **JS1: Versioned schema** | `--json` emits `{version, file, annotations: [...]}` following `tool.describe` conventions (version field, empty arrays over null) |
-| **JS2: Annotation record** | `{line, span: [start, end], kind, text, tier}`. Kinds: `param_mode`, `pause`, `effects`, `captures`, `match_mode`, `inferred_signature`, `inferred_context`, `binding_type`, `borrow_scope`, `optimization`, `param_name` |
+| **JS2: Annotation record** | `{line, span: [start, end], kind, text, tier}`. Kinds: `param_mode`, `pause`, `effects`, `captures`, `match_mode`, `inferred_signature`, `binding_type`, `borrow_scope`, `optimization`, `param_name` |
 | **JS3: Drift record** | With `--diff`, adds `drift: [{file, line, function, kind, before, after, via}]` |
 
 ```json
@@ -165,8 +162,6 @@ ERROR [tool.annotate/AN5]: cannot annotate — file does not typecheck
 Cheapest first slice: effect labels. `rask-effects` already computes the map and `Effects::label()` already renders the exact ghost strings — it's unit-tested and has no callers. Precedent for the command shape: `rask unsafe` (`cmd_unsafe_report`), which dumps compiler-classified unsafe operations as grouped text or `--json` — the same "information without enforcement" surface this spec generalizes.
 
 The LSP inlay-hint provider and annotate should share one span→label layer (AN3 is a rule, not an aspiration): today `inlay_hints.rs` is hard-coded to inferred binding types, and every other ghost in this table is unimplemented on both surfaces. Building the shared layer once serves both.
-
-`rask check --explicit-context` (specced in `comp.hidden-params`, unimplemented) is subsumed by `kind: inferred_context`.
 
 ### See Also
 

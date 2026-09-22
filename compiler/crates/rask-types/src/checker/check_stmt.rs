@@ -37,7 +37,7 @@ impl TypeChecker {
     ///
     /// This is deliberately *not* the `Index` constraint, though both wait on
     /// the same field to resolve: indexing a container and iterating it don't
-    /// agree on Map or Pool. `m[k]` is a `V` while `for e in m` is a `(K, V)`,
+    /// agree on a Map. `m[k]` is a `V` while `for e in m` is a `(K, V)`,
     /// and `p[h]` is a `T` while `for h in p` is a `Handle<T>`.
     fn iter_elem_type(&mut self, iter_ty: &Type, span: Span) -> Type {
         let resolved = self.ctx.apply(iter_ty);
@@ -171,10 +171,9 @@ impl TypeChecker {
                 // index/field assign, and mutating method calls all forbidden.
                 if let Some(root) = Self::root_ident_name(target) {
                     // Writing *through* a reference is not mutating the binding
-                    // that holds it: `h.field = v` on a `Handle<T>` lands in pool
-                    // storage (mem.context/CC1), and `l.field = v` on a `Link<T>`
-                    // lands in the node, because a link is the node's address.
-                    // Only a bare rebind (`h = other`) mutates the binding.
+                    // that holds it: `l.field = v` on a `Link<T>` lands in the
+                    // node, because a link is the node's address. Only a bare
+                    // rebind (`l = other`) mutates the binding.
                     //
                     // Whether the root is such a reference depends on its type,
                     // and at this point the type is often still a variable — a
@@ -224,15 +223,6 @@ impl TypeChecker {
                             }
                             _ => {}
                         }
-                    }
-                    // mem.pools/PF5: a write through a handle whose element type is
-                    // backed by a frozen context is rejected. Needs the element
-                    // type, so it waits for solving too.
-                    if writes_through_place {
-                        self.pending_frozen_writes.push(super::PendingFrozenWrite {
-                            ty: self.lookup_local(&root).unwrap_or(Type::Error),
-                            span: stmt.span,
-                        });
                     }
                     // ESAD Phase 2: Reject mutation of persistently borrowed sources
                     if let Some(borrow) = self.check_persistent_borrow_conflict(&root) {

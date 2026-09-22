@@ -668,22 +668,6 @@ impl<'a> Printer<'a> {
             self.emit(&ty);
         }
 
-        // `using players: Pool<Player>` declares what the body reaches for
-        // without naming it at the call site. The printer dropped the clause, so
-        // the body then read a name nothing had declared (#805).
-        for (i, clause) in f.context_clauses.iter().enumerate() {
-            self.emit(if i == 0 { " using " } else { ", " });
-            if clause.is_frozen {
-                self.emit("frozen ");
-            }
-            if let Some(ref name) = clause.name {
-                self.emit(name);
-                self.emit(": ");
-            }
-            let ty = self.format_type(&clause.ty);
-            self.emit(&ty);
-        }
-
         if f.body.is_empty() && is_trait_decl {
             // Trait method declaration with no body — no braces
         } else if f.body.is_empty() && self.comments_within(f.span) {

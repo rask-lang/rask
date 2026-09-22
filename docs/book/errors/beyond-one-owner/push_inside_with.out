@@ -7,7 +7,7 @@ error[E0808]: cannot push `items` inside `with` block
  14 |         items.push(Item { count: 9 })
     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ push not allowed inside with block
     = fix: move the structural mutation outside the with block
-    = why: items can reallocate, and the borrowed element moves with it — that
-          window is what `with` is protecting. A rack has no such window: a node
-          keeps its address for as long as it lives, so a `Link<T>` stays good
-          across inserts and deletes and needs no `with` at all [mem.racks]
+    = why: items can reallocate, invalidating the borrowed element. If the
+          elements reference each other and get deleted individually, that is
+          what a `Rack` is for — a node never moves, so nothing invalidates
+          [mem.borrowing/W2]
