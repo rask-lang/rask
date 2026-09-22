@@ -7395,6 +7395,7 @@ mod tests {
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
+        let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let empty_type_defs = rask_types::TypeTable::default();
@@ -7422,6 +7423,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
+            operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -7470,6 +7472,7 @@ mod tests {
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
+        let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let empty_type_defs = rask_types::TypeTable::default();
@@ -7497,6 +7500,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
+            operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -7554,6 +7558,7 @@ mod tests {
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
+        let empty_operator_targets = HashMap::new();
         let empty_resource_types = std::collections::HashSet::new();
         let empty_nominal = HashMap::new();
         let empty_type_defs = rask_types::TypeTable::default();
@@ -7581,6 +7586,7 @@ mod tests {
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
+            operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
             nominal_underlying: &empty_nominal,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),

@@ -1100,6 +1100,7 @@ mod tests {
             node_types: std::collections::HashMap::new(),
             call_type_args: std::collections::HashMap::new(),
             call_targets: std::collections::HashMap::new(),
+            operator_targets: std::collections::HashMap::new(),
             trait_coercions: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
