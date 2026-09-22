@@ -229,6 +229,10 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // TraitObject. It's still a fat pointer, and sizing it at 8 gave a
         // struct field half the room for one — the vtable half landed in
         // whatever followed (#474).
+        // AT6: projections resolve during type checking. One that got here
+        // named a conformance that doesn't exist, and the error for that is
+        // already reported — lay it out as a word rather than panicking on top.
+        Type::Assoc { .. } => (8, 8),
         Type::UnresolvedNamed(name) if name.starts_with("any ") => (16, 8),
         // A raw pointer field written `*u8` arrives as a name too. It's a
         // pointer, so the fallback size was right — but it went through the

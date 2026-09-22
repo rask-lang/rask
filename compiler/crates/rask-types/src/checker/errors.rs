@@ -555,6 +555,63 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// G1: the block has the method, with a signature the trait doesn't ask
+    /// for. Distinct from `TraitNotSatisfied` because "you're missing methods"
+    /// pointing at a block that plainly has them is the worst kind of wrong
+    /// (#1164) — the answer is which signature, not which method.
+    #[error("`{ty}.{method}` doesn't match what `{trait_name}` requires")]
+    ConformanceSignatureMismatch {
+        ty: String,
+        trait_name: String,
+        method: String,
+        expected: String,
+        found: String,
+        span: Span,
+    },
+
+    /// MN3/GT3: two conformances of one generic trait to one type, asking for
+    /// the same method with different signatures. The conformances are each
+    /// well-formed; what has no answer is which `mul` a `m.mul(x)` means.
+    #[error("`{ty}` conforms to both `{first}` and `{second}`, and they want different `{method}`s")]
+    OverlappingTraitConformance {
+        ty: String,
+        first: String,
+        second: String,
+        method: String,
+        span: Span,
+    },
+
+    /// GT2: a bound or conformance header giving a generic trait the wrong
+    /// number of arguments, or leaving an undefaulted one out.
+    #[error("`{trait_name}` takes {expected} type argument(s), found {found}")]
+    TraitArity {
+        trait_name: String,
+        /// Parameters as declared, for the message: `["Rhs"]`.
+        params: Vec<String>,
+        expected: usize,
+        found: usize,
+        span: Span,
+    },
+
+    /// AT2: a conformance that doesn't say what an associated type answers with.
+    #[error("`{ty}`'s `{trait_name}` conformance doesn't say what `{assoc}` is")]
+    MissingAssocType {
+        ty: String,
+        trait_name: String,
+        assoc: String,
+        span: Span,
+    },
+
+    /// AT1: `type X = ...` or `Self.X` naming something no trait declares.
+    #[error("no associated type `{assoc}` on `{trait_name}`")]
+    UnknownAssocType {
+        assoc: String,
+        trait_name: String,
+        /// Declared associated types, for a did-you-mean.
+        known: Vec<String>,
+        span: Span,
+    },
+
     /// std.encoding/E12: an `Encode`/`Decode` bound that fails because of a
     /// specific field. Separate from `TraitNotSatisfied` because the advice is
     /// different — these markers are derived from the shape, not written out,
@@ -1307,6 +1364,11 @@ impl TypeError {
             | ComptimeFieldNameNotString { .. }
             | TraitNotSatisfied { .. }
             | NoSuchTrait { .. }
+            | ConformanceSignatureMismatch { .. }
+            | OverlappingTraitConformance { .. }
+            | TraitArity { .. }
+            | MissingAssocType { .. }
+            | UnknownAssocType { .. }
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
             | StringAddForbidden { .. }

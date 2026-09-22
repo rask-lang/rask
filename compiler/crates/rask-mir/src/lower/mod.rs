@@ -1389,6 +1389,10 @@ impl<'a> MirContext<'a> {
             },
             // Should not reach MIR lowering
             Type::Var(_) | Type::Error => MirType::Ptr,
+            // AT6: a projection resolves during type checking; one reaching
+            // MIR named a conformance that doesn't exist and was already
+            // reported.
+            Type::Assoc { .. } => MirType::Ptr,
         }
     }
 

@@ -196,6 +196,30 @@ pub struct TypeParam {
     pub comptime_type: Option<String>,
     /// Trait bounds (for regular type parameters)
     pub bounds: Vec<String>,
+    /// GT4: `trait Mul<Rhs = Self>` — what the parameter means when a bound or
+    /// conformance header writes the trait bare. Only traits declare these.
+    pub default: Option<String>,
+}
+
+/// GT1/AT1: a trait member the conformance supplies, not a method.
+///
+/// `type Out`, `type Out: Comparable`, `type Out = Self`.
+#[derive(Debug, Clone)]
+pub struct AssocTypeDecl {
+    pub name: String,
+    /// AT5: every conformance's binding must satisfy these.
+    pub bounds: Vec<String>,
+    /// AT4: what a conformance that omits the binding gets.
+    pub default: Option<String>,
+    pub span: Span,
+}
+
+/// AT2: `type Out = Meters` inside an `extend T with Trait` block.
+#[derive(Debug, Clone)]
+pub struct AssocTypeBinding {
+    pub name: String,
+    pub ty: String,
+    pub span: Span,
 }
 
 /// A struct declaration.
@@ -436,9 +460,14 @@ pub struct UnionDecl {
 #[derive(Debug, Clone)]
 pub struct TraitDecl {
     pub name: String,
+    /// GT1: `trait Scale<Rhs>` — bound by the conformance header, substituted
+    /// through every required signature before it's checked.
+    pub type_params: Vec<TypeParam>,
     /// Super-traits: `trait Display: ToString, Debug`
     pub super_traits: Vec<String>,
     pub methods: Vec<FnDecl>,
+    /// AT1: associated types the conformance supplies.
+    pub assoc_types: Vec<AssocTypeDecl>,
     pub is_pub: bool,
     /// Whether this is an `unsafe trait`.
     pub is_unsafe: bool,
@@ -465,6 +494,8 @@ pub struct ImplDecl {
     /// target (`extend Ring<T> with Displayable where T: Displayable`). Each
     /// entry is a type param and its required trait bounds.
     pub where_bounds: Vec<TypeParam>,
+    /// AT2: `type Out = Meters` lines in the block.
+    pub assoc_bindings: Vec<AssocTypeBinding>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }

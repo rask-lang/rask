@@ -1506,7 +1506,6 @@ mod tests {
         // ["allow", "go"] with a single error, and an error count alone said
         // the case passed.
         for src in [
-            "trait Mul {\n    type Out\n    func mul(self, rhs: f64) -> f64\n}",
             "trait Thing {\n    const N = 3\n    func go(self) -> i64\n}",
             "trait Thing {\n    struct Nested { a: i64 }\n    func go(self) -> i64\n}",
             "trait Thing {\n    public\n    func go(self) -> i64\n}",
@@ -1526,32 +1525,68 @@ mod tests {
         }
     }
 
-    // `type` says the feature is missing rather than "methods only" — an
-    // associated type is planned, not a typo (#1165).
+    // AT1/AT4/AT5: `type Out`, with its bound and its default, is a trait
+    // member the parser keeps. It used to hang the body loop, then (once that
+    // was guarded) report as unimplemented.
     #[test]
-    fn associated_type_says_it_is_unimplemented() {
-        let result = parse("trait Mul {\n    type Out\n    func mul(self, rhs: f64) -> f64\n}");
-        assert!(result.errors[0].message.contains("associated types aren't implemented"),
-            "got: {}", result.errors[0].message);
+    fn trait_body_holds_associated_types() {
+        let result = parse(
+            "trait Mul {\n    type Out\n    type Key: Comparable\n    type Same = Self\n\
+             \n    func mul(self, rhs: f64) -> Self.Out\n}",
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Trait(ref t) => {
+                let names: Vec<&str> = t.assoc_types.iter().map(|a| a.name.as_str()).collect();
+                assert_eq!(names, ["Out", "Key", "Same"]);
+                assert_eq!(t.assoc_types[1].bounds, ["Comparable"]);
+                assert_eq!(t.assoc_types[2].default.as_deref(), Some("Self"));
+                assert_eq!(t.methods.len(), 1);
+                assert_eq!(t.methods[0].ret_ty.as_deref(), Some("Self.Out"));
+            }
+            _ => panic!("expected trait"),
+        }
     }
 
-    // A type parameter on a trait was skipped silently, leaving the name
-    // unresolved in the signatures and every conformance failing for a reason
-    // that wasn't true (#1164). TraitDecl still has nowhere to put it, so the
-    // parse says so rather than dropping it.
+    // GT1/GT4/GT5: a trait's type parameters, with bounds and defaults. These
+    // used to be skipped without being recorded, so the name resolved to
+    // nothing in the signatures and every conformance failed claiming a missing
+    // method the block plainly had (#1164).
     #[test]
-    fn generic_trait_says_it_is_unimplemented() {
-        let result = parse("trait Mul<Rhs> {\n    func mul(self, rhs: f64) -> f64\n}");
-        assert!(!result.is_ok(), "expected an error");
-        assert!(result.errors[0].message.contains("generic traits aren't implemented"),
-            "got: {}", result.errors[0].message);
-        // Parsing continues past it — the trait and its method still land.
+    fn trait_records_its_type_params() {
+        let result = parse("trait Mul<Rhs = Self, K: Comparable> {\n    func mul(self, rhs: Rhs) -> Self\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Trait(ref t) => {
                 assert_eq!(t.name, "Mul");
+                let names: Vec<&str> = t.type_params.iter().map(|p| p.name.as_str()).collect();
+                assert_eq!(names, ["Rhs", "K"]);
+                assert_eq!(t.type_params[0].default.as_deref(), Some("Self"));
+                assert_eq!(t.type_params[1].bounds, ["Comparable"]);
                 assert_eq!(t.methods.len(), 1);
             }
             _ => panic!("expected trait"),
+        }
+    }
+
+    // AT2: `type Out = Meters` in the conformance. The extend loop used to
+    // reject it outright ("Expected 'func', found 'type'").
+    #[test]
+    fn extend_block_records_assoc_bindings() {
+        let result = parse(
+            "extend Meters with Mul<f64> {\n    type Out = Meters\n\
+             \n    func mul(self, k: f64) -> Meters { return self }\n}",
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        match result.decls[0].kind {
+            DeclKind::Impl(ref i) => {
+                assert_eq!(i.trait_names, ["Mul<f64>"]);
+                assert_eq!(i.assoc_bindings.len(), 1);
+                assert_eq!(i.assoc_bindings[0].name, "Out");
+                assert_eq!(i.assoc_bindings[0].ty, "Meters");
+                assert_eq!(i.methods.len(), 1);
+            }
+            _ => panic!("expected extend"),
         }
     }
 

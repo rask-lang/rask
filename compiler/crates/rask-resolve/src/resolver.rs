@@ -3249,6 +3249,7 @@ mod tests {
                     is_scoped: false,
                     where_bounds: vec![],
                     doc: None,
+                    assoc_bindings: Vec::new(),
                 }),
                 span: Span::new(0, 10),
             },

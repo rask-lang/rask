@@ -73,6 +73,7 @@ pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
                                 is_scoped: false,
                                 where_bounds: vec![],
                                 doc: None,
+                                assoc_bindings: Vec::new(),
                             }),
                             span: DUMMY,
                         });

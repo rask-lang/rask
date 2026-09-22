@@ -261,7 +261,7 @@ impl TypeChecker {
         }
         for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
-                self.register_impl_methods(i, decl.id);
+                self.register_impl_methods(i, decl.id, decl.span);
             }
         }
         // ER3/ER4: validate `T or E` in declared field/payload/target types now
@@ -419,7 +419,219 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId) {
+    /// AT1: does this trait (by its written reference) declare `assoc`?
+    fn trait_declares_assoc(&self, trait_ref: &str, assoc: &str) -> bool {
+        let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim();
+        matches!(
+            self.types.get_type_id(base).and_then(|id| self.types.get(id)),
+            Some(TypeDef::Trait { assoc_types, .. }) if assoc_types.iter().any(|a| a.name == assoc)
+        )
+    }
+
+    /// GT2/GT4: does a written trait reference give each parameter an argument
+    /// (or leave one that has a default)? Reports and returns false if not.
+    fn check_trait_arity(&mut self, trait_ref: &str, span: rask_ast::Span) -> bool {
+        let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim();
+        let Some(TypeDef::Trait { type_params, .. }) =
+            self.types.get_type_id(base).and_then(|id| self.types.get(id))
+        else {
+            return true;
+        };
+        if type_params.is_empty() {
+            return true;
+        }
+        let params: Vec<String> = type_params.iter().map(|p| p.name.clone()).collect();
+        let required = type_params.iter().filter(|p| p.default.is_none()).count();
+        let found = super::type_table::trait_ref_args(trait_ref).len();
+        if found >= required && found <= type_params.len() {
+            return true;
+        }
+        self.errors.push(TypeError::TraitArity {
+            trait_name: trait_ref.to_string(),
+            expected: if found > type_params.len() { type_params.len() } else { required },
+            params,
+            found,
+            span,
+        });
+        false
+    }
+
+    /// MN1/MN3: two conformances of one generic trait to one type each ask for
+    /// a method of the same name. When the signatures differ there is no one
+    /// `m.mul(x)` to resolve to — MIR picks the first by name and runs its body
+    /// on the other's argument, which segfaults rather than failing to compile.
+    ///
+    /// Resolving the call from the argument's type is operator resolution's
+    /// job (`type.operator-resolution/OR1`), not a method lookup's. Until that
+    /// exists this pair is rejected where it is written.
+    fn check_overlapping_conformances(&mut self, i: &ImplDecl, span: rask_ast::Span) {
+        // `scoped extend` is MN4's answer to exactly this and would be the
+        // escape hatch, but nothing outside the parser reads the flag yet — a
+        // scoped block's methods still land in the inherent namespace and
+        // segfault the same way. Don't offer a door that isn't there.
+        let Some(type_id) = self
+            .types
+            .get_type_id(i.target_ty.split('<').next().unwrap_or(&i.target_ty))
+        else {
+            return;
+        };
+        let self_ty = match self.resolve_impl_self_type(&i.target_ty) {
+            Some(t) => t,
+            None => return,
+        };
+        for trait_ref in &i.trait_names {
+            let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim().to_string();
+            let siblings: Vec<String> = self
+                .types
+                .applied_conformances(type_id, &base)
+                .into_iter()
+                .filter(|k| !self.same_applied_trait(k, trait_ref, &i.target_ty))
+                .collect();
+            for other in siblings {
+                // Report once, on whichever block comes later — the first one
+                // was fine on its own, the second is what made the name
+                // ambiguous.
+                let mine = self.types.conformance_span(type_id, trait_ref);
+                let theirs = self.types.conformance_span(type_id, &other);
+                if let (Some(mine), Some(theirs)) = (mine, theirs) {
+                    if mine.start < theirs.start {
+                        continue;
+                    }
+                }
+                let mut clash = None;
+                {
+                    let checker = crate::traits::TraitChecker::new(&self.types);
+                    let mine = checker.required_signatures(&self_ty, trait_ref);
+                    let theirs = checker.required_signatures(&self_ty, &other);
+                    for a in &mine {
+                        if let Some(b) = theirs.iter().find(|b| b.name == a.name) {
+                            if !checker.signatures_agree(a, b) {
+                                clash = Some(a.name.clone());
+                                break;
+                            }
+                        }
+                    }
+                }
+                if let Some(method) = clash {
+                    self.errors.push(TypeError::OverlappingTraitConformance {
+                        ty: i.target_ty.clone(),
+                        first: other,
+                        second: trait_ref.clone(),
+                        method,
+                        span,
+                    });
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Do two written trait references name the same conformance of this type?
+    fn same_applied_trait(&self, a: &str, b: &str, self_ty: &str) -> bool {
+        let base = self_ty.split('<').next().unwrap_or(self_ty);
+        self.types.applied_conformance_key(a, base) == self.types.applied_conformance_key(b, base)
+    }
+
+    /// AT2/AT5: the block answers every associated type its traits declare, the
+    /// answers satisfy their bounds, and nothing in it answers a name no trait
+    /// asked for.
+    fn check_conformance_assoc_types(&mut self, i: &ImplDecl, span: rask_ast::Span) -> bool {
+        let before = self.errors.len();
+        let mut misspelled = false;
+        for b in &i.assoc_bindings {
+            if i.trait_names.iter().any(|t| self.trait_declares_assoc(t, &b.name)) {
+                continue;
+            }
+            // Name the trait the author most likely meant: the first listed one
+            // (or the block itself when it declares no conformance at all).
+            let (trait_name, known) = match i.trait_names.first() {
+                Some(t) => {
+                    let base = t.split('<').next().unwrap_or(t).trim().to_string();
+                    let known = match self.types.get_type_id(&base).and_then(|id| self.types.get(id)) {
+                        Some(TypeDef::Trait { assoc_types, .. }) => {
+                            assoc_types.iter().map(|a| a.name.clone()).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    (base, known)
+                }
+                None => (i.target_ty.clone(), Vec::new()),
+            };
+            self.errors.push(TypeError::UnknownAssocType {
+                assoc: b.name.clone(),
+                trait_name,
+                known,
+                span: b.span,
+            });
+            misspelled = true;
+        }
+        // A misspelled binding is also, technically, a missing one. Saying both
+        // makes the typo look like two problems; the did-you-mean above is the
+        // whole fix.
+        if misspelled {
+            return false;
+        }
+
+        for trait_ref in &i.trait_names {
+            let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim().to_string();
+            let Some(TypeDef::Trait { assoc_types, .. }) =
+                self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+            else {
+                continue;
+            };
+            let assoc_types = assoc_types.clone();
+            for a in &assoc_types {
+                let written = i.assoc_bindings.iter().find(|b| b.name == a.name);
+                if written.is_none() && a.default.is_none() {
+                    self.errors.push(TypeError::MissingAssocType {
+                        ty: i.target_ty.clone(),
+                        trait_name: trait_ref.clone(),
+                        assoc: a.name.clone(),
+                        span,
+                    });
+                    continue;
+                }
+                // AT5: whatever it answers with has to satisfy the bounds the
+                // trait put on it. One check against a named type — no search.
+                if a.bounds.is_empty() {
+                    continue;
+                }
+                let (bound_str, bound_span) = match written {
+                    Some(b) => (b.ty.clone(), b.span),
+                    None => (a.default.clone().unwrap_or_default(), span),
+                };
+                let resolved = if bound_str == "Self" {
+                    self.resolve_impl_self_type(&i.target_ty)
+                } else {
+                    parse_type_string(&bound_str, &self.types).ok()
+                };
+                let Some(bound_ty) = resolved else { continue };
+                let mut failed = Vec::new();
+                {
+                    let mut checker = crate::traits::TraitChecker::new(&self.types);
+                    for want in &a.bounds {
+                        if checker.check_satisfies(&bound_ty, want, bound_span).is_err() {
+                            failed.push(want.clone());
+                        }
+                    }
+                }
+                for want in failed {
+                    self.errors.push(TypeError::TraitNotSatisfied {
+                        ty: bound_str.clone(),
+                        trait_name: want,
+                        context: super::TraitBoundContext::ConformanceHeader,
+                        span: bound_span,
+                    });
+                }
+            }
+        }
+        // An unanswered `Self.Out` leaves every signature mentioning it
+        // unmatchable, so checking them would report a pile of missing methods
+        // on top of the one real problem.
+        self.errors.len() == before
+    }
+
+    pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId, span: rask_ast::Span) {
         let base_name = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
         let type_id = match self.types.get_type_id(base_name) {
             Some(id) => id,
@@ -435,8 +647,50 @@ impl TypeChecker {
             .collect();
         for trait_name in &i.trait_names {
             self.types.record_conformance(type_id, trait_name);
+            self.types.record_conformance_span(type_id, trait_name, span);
             if !condition.is_empty() {
                 self.types.record_conformance_condition(type_id, trait_name, condition.clone());
+            }
+        }
+        // AT2/AT8: file each `type Out = ...` under the conformance that asked
+        // for it. A binding no listed trait declares is reported at the check
+        // pass, where the block's span is available.
+        for b in &i.assoc_bindings {
+            let Ok(bound_ty) = parse_type_string(&b.ty, &self.types) else { continue };
+            for trait_name in &i.trait_names {
+                if self.trait_declares_assoc(trait_name, &b.name) {
+                    self.types.record_assoc_binding(type_id, trait_name, &b.name, bound_ty.clone());
+                }
+            }
+        }
+        // AT4: a declared default is as much this conformance's answer as a
+        // written binding, and everything reading one goes through the same
+        // lookup — so fill it in here rather than making every reader know
+        // about defaults. Without this `extend Meters with Mul<f64>` under a
+        // `type Out = Self` default had no `Out` at all, and `T.Out` in generic
+        // code came back unresolved.
+        let self_ty = self.resolve_impl_self_type(&i.target_ty);
+        for trait_name in &i.trait_names {
+            let base = trait_name.split('<').next().unwrap_or(trait_name).trim().to_string();
+            let Some(TypeDef::Trait { assoc_types, .. }) =
+                self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+            else {
+                continue;
+            };
+            let defaults: Vec<(String, String)> = assoc_types
+                .iter()
+                .filter(|a| !i.assoc_bindings.iter().any(|b| b.name == a.name))
+                .filter_map(|a| a.default.clone().map(|d| (a.name.clone(), d)))
+                .collect();
+            for (name, default) in defaults {
+                let resolved = if default == "Self" {
+                    self_ty.clone()
+                } else {
+                    parse_type_string(&default, &self.types).ok()
+                };
+                if let Some(ty) = resolved {
+                    self.types.record_assoc_binding(type_id, trait_name, &name, ty);
+                }
             }
         }
         // The receiver's parameters as its *declaration* spells them, not as the
@@ -771,8 +1025,15 @@ impl TypeChecker {
     fn validate_trait_signature_names(&mut self, decls: &[Decl]) {
         for decl in decls {
             let DeclKind::Trait(t) = &decl.kind else { continue };
+            // AT1: `Self.Out` is only a type if the trait declares `Out`.
+            let assoc_names: Vec<String> =
+                t.assoc_types.iter().map(|a| a.name.clone()).collect();
             for m in &t.methods {
-                let allowed = signature_type_param_names(m);
+                let mut allowed = signature_type_param_names(m);
+                // GT1: the trait's own parameters are in scope for every
+                // signature it declares.
+                allowed.extend(t.type_params.iter().map(|p| p.name.clone()));
+                self.validate_trait_projections(m, t, &assoc_names);
                 for p in &m.params {
                     if p.name == "self" || p.ty.is_empty() {
                         continue;
@@ -790,6 +1051,38 @@ impl TypeChecker {
         }
     }
 
+    /// AT1/AT3: every `Self.X` a signature writes has to be a member the trait
+    /// declares. The name carries a dot, so the ordinary unresolved-name check
+    /// reads it as a module path and lets it through.
+    fn validate_trait_projections(
+        &mut self,
+        m: &rask_ast::decl::FnDecl,
+        t: &TraitDecl,
+        assoc_names: &[String],
+    ) {
+        let mut check = |written: &str, span: rask_ast::Span, errors: &mut Vec<TypeError>| {
+            for name in projection_names(written) {
+                if assoc_names.iter().any(|a| a == &name) {
+                    continue;
+                }
+                errors.push(TypeError::UnknownAssocType {
+                    assoc: name,
+                    trait_name: t.name.split('<').next().unwrap_or(&t.name).to_string(),
+                    known: assoc_names.to_vec(),
+                    span,
+                });
+            }
+        };
+        for p in &m.params {
+            if p.name != "self" && !p.ty.is_empty() {
+                check(&p.ty, p.name_span, &mut self.errors);
+            }
+        }
+        if let Some(rt) = &m.ret_ty {
+            check(rt, m.span, &mut self.errors);
+        }
+    }
+
     pub(super) fn register_trait(&mut self, t: &TraitDecl) {
         let methods = t.methods.iter().map(|m| self.method_signature(m, &[], &[])).collect();
         let generic_methods = t.methods.iter()
@@ -797,10 +1090,28 @@ impl TypeChecker {
             .map(|m| m.name.clone())
             .collect();
 
+        let type_params = t.type_params.iter()
+            .filter(|p| !p.is_comptime)
+            .map(|p| super::TraitTypeParam {
+                name: p.name.clone(),
+                bounds: p.bounds.clone(),
+                default: p.default.clone(),
+            })
+            .collect();
+        let assoc_types = t.assoc_types.iter()
+            .map(|a| super::TraitAssocType {
+                name: a.name.clone(),
+                bounds: a.bounds.clone(),
+                default: a.default.clone(),
+            })
+            .collect();
+
         self.types.register_type(TypeDef::Trait {
             name: t.name.clone(),
+            type_params,
             super_traits: t.super_traits.clone(),
             methods,
+            assoc_types,
             generic_methods,
             is_unsafe: t.is_unsafe,
             is_duck: t.is_duck,
@@ -1499,7 +1810,19 @@ impl TypeChecker {
                 // type must have each trait method with a matching signature.
                 // Generic targets (`extend Ring<T> with ...`) are checked per
                 // instantiation (CC1), so skip them here.
-                if !i.trait_names.is_empty() && !i.target_ty.contains('<') {
+                // GT2/AT2/AT5: the header gives every trait parameter an
+                // argument and the block answers every associated type. Both
+                // run before the signature check — an unbound parameter or an
+                // unanswered `Self.Out` makes every signature unmatchable, and
+                // reporting that as "missing methods" is what #1164 was.
+                let arity_ok = i
+                    .trait_names
+                    .iter()
+                    .fold(true, |ok, t| self.check_trait_arity(t, decl.span) && ok);
+                self.check_overlapping_conformances(i, decl.span);
+                let assoc_ok = self.check_conformance_assoc_types(i, decl.span);
+
+                if arity_ok && assoc_ok && !i.trait_names.is_empty() && !i.target_ty.contains('<') {
                     if let Some(target_ty) = self.current_self_type.clone() {
                         let mut trait_errors = Vec::new();
                         {
@@ -1519,6 +1842,29 @@ impl TypeChecker {
                                     trait_name,
                                     known: self.declared_trait_names(),
                                     span: decl.span,
+                                });
+                                continue;
+                            }
+                            // The method is there and its signature is wrong —
+                            // say that, at the method. "Missing methods" on a
+                            // block that has them is what #1164 reported.
+                            if let crate::traits::TraitError::SignatureMismatch {
+                                method, expected, found, ..
+                            } = &e
+                            {
+                                let at = i
+                                    .methods
+                                    .iter()
+                                    .find(|m| super::type_defs::method_base(&m.name) == super::type_defs::method_base(method))
+                                    .map(|m| m.span)
+                                    .unwrap_or(decl.span);
+                                self.errors.push(TypeError::ConformanceSignatureMismatch {
+                                    ty: i.target_ty.clone(),
+                                    trait_name,
+                                    method: method.clone(),
+                                    expected: expected.clone(),
+                                    found: found.clone(),
+                                    span: at,
                                 });
                                 continue;
                             }
@@ -2006,6 +2352,37 @@ pub(super) fn header_type_params(
         }
         if types.get_type_id(word).is_none() {
             out.insert(word.to_string());
+        }
+    }
+    out
+}
+
+/// The `X` of every `Self.X` written in a type string.
+///
+/// A projection only ever has `Self` on the left inside a trait body — a bound
+/// type parameter's projection (`T.Out`) is resolved where the parameter is,
+/// not here.
+pub(super) fn projection_names(written: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = written.as_bytes();
+    let mut i = 0usize;
+    while let Some(pos) = written[i..].find("Self.") {
+        let at = i + pos;
+        // Must start a name, not end one: `MySelf.x` isn't a projection.
+        let starts_name = at == 0 || {
+            let prev = bytes[at - 1];
+            !(prev as char).is_alphanumeric() && prev != b'_' && prev != b'.'
+        };
+        let rest = &written[at + 5..];
+        let end = rest
+            .find(|c: char| !c.is_alphanumeric() && c != '_')
+            .unwrap_or(rest.len());
+        if starts_name && end > 0 {
+            out.push(rest[..end].to_string());
+        }
+        i = at + 5 + end.max(1);
+        if i >= written.len() {
+            break;
         }
     }
     out

@@ -1109,6 +1109,13 @@ impl<'a> Printer<'a> {
         }
         self.emit("trait ");
         self.emit(&t.name);
+        // GT1: the parameter list. Dropping it changes the program the same way
+        // dropping `duck` does — the conformance the source declared stops
+        // being the one the trait asks for.
+        if !t.type_params.is_empty() {
+            let params: Vec<String> = t.type_params.iter().map(Self::type_param_text).collect();
+            self.emit(&format!("<{}>", params.join(", ")));
+        }
         for (i, sup) in t.super_traits.iter().enumerate() {
             self.emit(if i == 0 { ": " } else { ", " });
             self.emit(sup);
@@ -1117,6 +1124,22 @@ impl<'a> Printer<'a> {
         self.emit_newline();
 
         self.indent += 1;
+        // AT1: associated types come first — they're what the methods below
+        // are written in terms of.
+        for a in &t.assoc_types {
+            self.emit_indent();
+            self.emit(&format!("type {}", a.name));
+            if !a.bounds.is_empty() {
+                self.emit(&format!(": {}", a.bounds.join(" + ")));
+            }
+            if let Some(d) = &a.default {
+                self.emit(&format!(" = {d}"));
+            }
+            self.emit_newline();
+        }
+        if !t.assoc_types.is_empty() && !t.methods.is_empty() {
+            self.emit_blank_line();
+        }
         self.format_block_members(&t.methods, true);
         self.indent -= 1;
         self.emit_indent();
@@ -1171,10 +1194,35 @@ impl<'a> Printer<'a> {
         self.emit_newline();
 
         self.indent += 1;
+        // AT2: what this conformance answers with.
+        for b in &imp.assoc_bindings {
+            self.emit_indent();
+            self.emit(&format!("type {} = {}", b.name, b.ty));
+            self.emit_newline();
+        }
+        if !imp.assoc_bindings.is_empty() && !imp.methods.is_empty() {
+            self.emit_blank_line();
+        }
         self.format_block_members(&imp.methods, false);
         self.indent -= 1;
         self.emit_indent();
         self.emit("}");
+    }
+
+    /// `T`, `T: A + B`, `Rhs = Self`, `comptime N: usize`.
+    fn type_param_text(p: &rask_ast::decl::TypeParam) -> String {
+        if p.is_comptime {
+            let ty = p.comptime_type.clone().unwrap_or_default();
+            return format!("comptime {}: {}", p.name, ty);
+        }
+        let mut out = p.name.clone();
+        if !p.bounds.is_empty() {
+            out.push_str(&format!(": {}", p.bounds.join(" + ")));
+        }
+        if let Some(d) = &p.default {
+            out.push_str(&format!(" = {d}"));
+        }
+        out
     }
 
     fn format_import_decl(&mut self, imp: &ImportDecl) {
