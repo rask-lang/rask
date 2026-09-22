@@ -4597,7 +4597,9 @@ impl<'a> OwnershipChecker<'a> {
     ///
     /// Plain liveness is not enough, and the loop is why. In
     ///
-    ///     for i in 0..10 { total += i }
+    /// ```text
+    /// for i in 0..10 { total += i }
+    /// ```
     ///
     /// every write is read — by the next iteration. Liveness calls that live and
     /// the whole accumulation is still thrown away, because the only thing the
