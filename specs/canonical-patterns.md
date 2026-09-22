@@ -126,9 +126,11 @@ let vec = list.into_vec()
 | `has_*` | Containment predicate | `bool` | `has_field(name)`, `has_extension(ext)` |
 | `with_*` | Builder-style setter (one-shot setting) | `Self` | `with_capacity(n)`, `with_timeout(d)` |
 | `*_or(default)` | Value with fallback | `T` | `env_or(k, d)` |
-| `try_*` | Fallible variant of a panicking sibling | `T or E` | `try_push()`, `try_insert()` |
+| `try_*` | Fallible variant of a sibling that panics or blocks | `T or E`, or `T?` when the failure has one cause | `try_push()`, `try_read()` |
 
-**`try_*` is narrow:** it exists only where a panicking default sibling exists (`push`/`try_push`). Operations that are inherently fallible just return `T or E` under their plain name (`parse<T>`, `from_utf8`, `to_cstring`) — the return type already says it can fail.
+**`try_*` is narrow:** it exists only where a default sibling exists that the caller might not want — one that panics (`push`/`try_push`) or one that blocks (`read`/`try_read`). Operations that are inherently fallible just return `T or E` under their plain name (`parse<T>`, `from_utf8`, `to_cstring`) — the return type already says it can fail.
+
+**Count the causes, then pick the return type.** `try_push` can fail because the collection is bounded and full or because the allocator said no, and the caller does different things about each, so it answers `void or GrowError<T>` and carries the rejected value back. `try_read` fails for exactly one reason — someone else holds the lock — and an error type for that carries nothing a caller could branch on, so it answers `T?`. Same as the probe rule below: inventing a one-variant error enum is ceremony charged for information that doesn't exist. `conc.sync/R3` is the case in hand; this row used to demand `T or E` flatly and made the lint report that spec as a violation of this one.
 
 **Rendering is not conversion:** `to_string()` is for types that already hold text — a `StringView`, a string slice, a `Span`, a `cstring`. `display()` is for turning a value into something a person reads. A `Point` has no text in it to convert, so it gets `display()`; keeping one verb for both also collided with fallible conversions like `cstring.to_string() -> string or Utf8Error`, which no `Displayable` signature can match (`std.fmt/D1`).
 
