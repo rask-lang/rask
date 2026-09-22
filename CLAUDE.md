@@ -302,7 +302,7 @@ Systems language where **safety is invisible**. Eliminate abstraction tax, cover
 
 ## Core Principles
 
-Unifying thread: **safety through visibility.** Safety mechanisms are visible in source (explicit `ensure`, `mutate`, `take`, `own`, scoped `with`) rather than hidden in destructors, lifetime annotations, or effect types. The compiler guarantees invariants; the source shows the mechanism.
+Unifying thread: **safety through visibility.** Safety mechanisms are visible in source (explicit `ensure`, `mutate`, `take`, scoped `with`) rather than hidden in destructors, lifetime annotations, or effect types. The compiler guarantees invariants; the source shows the mechanism.
 
 1. **Transparency of Cost** — Major costs visible in code (allocations, locks, I/O). Small costs (bounds checks) can be implicit.
 2. **Mechanical Safety** — Safety by structure. Data races, null derefs, and dangling pointers impossible by construction; use-after-free through a stale handle is caught at the access, never silent.
@@ -326,6 +326,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 |------|----------|------|
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
 | Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](specs/memory/borrowing.md) |
+| Closures | Capture mode is inferred — a closure that outlives its frame carries what it captured, one that stays points at it. No `own` keyword | [closures.md](specs/memory/closures.md) |
 | Linearity | Consume exactly once (L1–L6) — shared by `@resource` and `Heap<T>` | [linear.md](specs/memory/linear.md) |
 | Scoped access | A value held elsewhere, reached through `with` — `Shared<T, S>`, Rack+Link, Heap. `Cell` and `Mutex<T>` are gone; `Local`/`Readers`/`Mutex` are strategies on `Shared` | [shared-rack-heap.md](specs/memory/shared-rack-heap.md) |
 | Collections | Vec, Map, Rack+Link for graphs | [collections.md](specs/stdlib/collections.md), [racks.md](specs/memory/racks.md) |

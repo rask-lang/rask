@@ -67,7 +67,7 @@ func main() -> void {
     let (tx, rx) = Channel<string>.buffered(5)
 
     // Spawn producer thread - `own` moves the Sender into the closure
-    let producer = Thread.spawn(own || {
+    let producer = Thread.spawn(|| {
         let _ = tx.send("Message 1")
         let _ = tx.send("Message 2")
         let _ = tx.send("Message 3")
@@ -75,7 +75,7 @@ func main() -> void {
     })
 
     // Spawn consumer thread - `own` moves the Receiver into the closure
-    let consumer = Thread.spawn(own || {
+    let consumer = Thread.spawn(|| {
         for _ in 0..3 {
             if rx.receive() is string as msg {
                 println("Received: {msg}")
@@ -92,13 +92,13 @@ func main() -> void {
 
     let (sync_tx, sync_rx) = Channel<i32>.unbuffered()
 
-    let sender_thread = Thread.spawn(own || {
+    let sender_thread = Thread.spawn(|| {
         print("Sending 100...\n")
         let _ = sync_tx.send(100)  // Blocks until received
         print("Send complete\n")
     })
 
-    let receiver_thread = Thread.spawn(own || {
+    let receiver_thread = Thread.spawn(|| {
         print("Waiting to receive...\n")
         if sync_rx.receive() is i32 as value {  // Blocks until sent
             println("Received: {value}")
@@ -140,7 +140,7 @@ func main() -> void {
         mut handles = Vec.new()
 
         for i in 0..8 {
-            let h = ThreadPool.spawn(own || {
+            let h = ThreadPool.spawn(|| {
                 println("Pool task {i} running")
             })
             handles.push(h)

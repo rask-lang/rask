@@ -17,11 +17,11 @@ func parallel_max(readings: Vec<f64>) -> f64 or Error {
 
         // `own` moves the captures in. A spawned closure outlives the block
         // that made it, so borrowing them wouldn't be safe (SL2).
-        let h1 = spawn(own || {
+        let h1 = spawn(|| {
             return vec_max(first_half)
         })
         ensure h1.detach()
-        let h2 = spawn(own || {
+        let h2 = spawn(|| {
             return vec_max(second_half)
         })
         ensure h2.detach()
@@ -38,7 +38,7 @@ func channel_sum(n: i32) -> i32 or Error {
     using Multitasking {
         mut (tx, rx) = Channel<i32>.buffered(n)
 
-        let producer = spawn(own || {
+        let producer = spawn(|| {
             for i in 1..(n + 1) {
                 tx.send(i)
             }
@@ -72,7 +72,7 @@ func estimate_pi(total: i32, num_tasks: i32) -> f64 {
         for task_id in 0..num_tasks {
             let seed = task_id * 1000 + 42
             let iters = per_task
-            spawn(own || {
+            spawn(|| {
                 // 2^31 doesn't fit in an i32, so the whole LCG runs at i64.
                 mut state: i64 = seed as i64
                 mut inside = 0

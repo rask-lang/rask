@@ -28,21 +28,21 @@ func flight_tracker() -> i32 {
         let s2 = sightings.clone()
         let s3 = sightings.clone()
 
-        let h1 = spawn(own || {
+        let h1 = spawn(|| {
             with s1.write() as s {
                 s.push("SAS937")
                 s.push("BAW123")
             }
         })
         ensure h1.detach()
-        let h2 = spawn(own || {
+        let h2 = spawn(|| {
             with s2.write() as s {
                 s.push("DLH456")
                 s.push("AFR789")
             }
         })
         ensure h2.detach()
-        let h3 = spawn(own || {
+        let h3 = spawn(|| {
             s3.write().push("UAL100")
         })
         ensure h3.detach()
@@ -74,7 +74,7 @@ func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
         mut (done_tx, done_rx) = Channel<bool>.buffered(num_tasks)
         for i in 0..num_tasks {
             let task_done = done_tx.clone()
-            spawn(own || {
+            spawn(|| {
                 for j in 0..count_per_task {
                     // Relaxed is enough: nothing here depends on the order of
                     // anything but the counter itself.
@@ -99,13 +99,13 @@ func shared_config_update() -> i32 {
 
         // `Shared` holds a Copy value here, so `set`/`get` are the whole API —
         // `write()` is for reaching into something with methods or fields.
-        let atc = spawn(own || {
+        let atc = spawn(|| {
             config.set(37000)
             tx.send(true)
         })
         ensure atc.detach()
 
-        let pilot = spawn(own || {
+        let pilot = spawn(|| {
             rx.receive()!
             return config.get()
         })

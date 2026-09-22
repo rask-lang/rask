@@ -9,7 +9,7 @@ import thread.Thread
 // join() confirms the thread finished (Thread.spawn's handle is void).
 test "conc.async/S3 — thread returns a computed value via channel" {
     let (tx, rx) = Channel<i64>.buffered(1)
-    Thread.spawn(own || {
+    Thread.spawn(|| {
         mut acc = 0
         mut i = 1
         while i <= 10 {
@@ -33,9 +33,9 @@ test "conc.async/S4 — spawn multiple threads and join each" {
     let txa = tx.clone()
     let txb = tx.clone()
     let txc = tx.clone()
-    let h1 = Thread.spawn(own || { let _ = txa.send(100); return })
-    let h2 = Thread.spawn(own || { let _ = txb.send(200); return })
-    let h3 = Thread.spawn(own || { let _ = txc.send(300); return })
+    let h1 = Thread.spawn(|| { let _ = txa.send(100); return })
+    let h2 = Thread.spawn(|| { let _ = txb.send(200); return })
+    let h3 = Thread.spawn(|| { let _ = txc.send(300); return })
     h1.join()
     h2.join()
     h3.join()
@@ -61,7 +61,7 @@ test "mem.ownership/T2 — own moves a Vec into the thread" {
     data.push(7)
     data.push(8)
     data.push(9)
-    Thread.spawn(own || {
+    Thread.spawn(|| {
         mut s = 0
         for x in data {
             s += x
@@ -80,7 +80,7 @@ test "mem.ownership/T2 — own moves a Vec into the thread" {
 // pushes into a channel the main thread only reads after join returns.
 test "conc.async/H2 — join happens-before the reader" {
     let (tx, rx) = Channel<i64>.buffered(1)
-    let h = Thread.spawn(own || {
+    let h = Thread.spawn(|| {
         let _ = tx.send(42)
         return
     })

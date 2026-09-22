@@ -44,6 +44,7 @@ pub struct MonoProgram {
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
+    pub instantiated_escaping_closures: HashSet<NodeId>,
 }
 
 impl MonoProgram {
@@ -84,6 +85,12 @@ impl MonoProgram {
     pub fn all_fallback_keeps_shape(&self, typed: &TypedProgram) -> HashSet<NodeId> {
         let mut merged = typed.fallback_keeps_shape.clone();
         merged.extend(self.instantiated_fallback_keeps_shape.iter().copied());
+        merged
+    }
+
+    pub fn all_escaping_closures(&self, typed: &TypedProgram) -> HashSet<NodeId> {
+        let mut merged = typed.escaping_closures.clone();
+        merged.extend(self.instantiated_escaping_closures.iter().copied());
         merged
     }
 }
@@ -890,6 +897,7 @@ fn monomorphize_inner(
         instantiated_call_targets: mono.instantiated_call_targets,
         instantiated_error_wraps: mono.instantiated_error_wraps,
         instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
+        instantiated_escaping_closures: mono.instantiated_escaping_closures,
     })
 }
 
@@ -1089,6 +1097,7 @@ mod tests {
             trait_coercions: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
+            escaping_closures: std::collections::HashSet::new(),
             try_chain_placement: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),

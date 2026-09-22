@@ -12,7 +12,7 @@
 // unwritable, and `16_shared_state.rk`'s lock-free puzzle used a lock.
 //
 // A counter reached from several tasks is a module-level `const`, the shape
-// `conc.sync` uses for `METRICS`. `spawn` needs `own ||`, which moves what it
+// `conc.sync` uses for `METRICS`. `spawn` needs `||`, which moves what it
 // captures, so a local atomic can only ever reach one task; a const is reached
 // by name from anywhere and there is nothing to move.
 
@@ -33,9 +33,9 @@ func bump(times: i64) {
 test "two tasks counting on one atomic agree on the total" {
     using Multitasking {
         COUNTER.store(0, SeqCst)
-        let a = spawn(own || { bump(250) })
+        let a = spawn(|| { bump(250) })
         ensure a.detach()
-        let b = spawn(own || { bump(250) })
+        let b = spawn(|| { bump(250) })
         ensure b.detach()
         a.join()!
         b.join()!
@@ -46,7 +46,7 @@ test "two tasks counting on one atomic agree on the total" {
 test "a shutdown flag set by one task is seen by the next" {
     using Multitasking {
         SHUTDOWN.store(false, SeqCst)
-        let setter = spawn(own || { SHUTDOWN.store(true, Relaxed) })
+        let setter = spawn(|| { SHUTDOWN.store(true, Relaxed) })
         setter.join()!
         assert SHUTDOWN.load(SeqCst)
     }

@@ -438,7 +438,6 @@ mod tests {
             params: Vec::new(),
             ret_ty: None,
             body: Box::new(inner),
-            is_own: false,
         });
         let call = e(ExprKind::Call {
             func: Box::new(ident("f")),

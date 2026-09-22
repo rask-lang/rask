@@ -4140,52 +4140,6 @@ impl Parser {
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) }, span: self.span(start, end) })
             }
 
-            // `own` as prefix: either an owned closure (`own |...| body`) or a
-            // struct-field / call-site mode marker (captured by parse_args()).
-            TokenKind::Own => {
-                self.advance();
-                match self.current().kind {
-                    TokenKind::Pipe => self.parse_closure(true),
-                    TokenKind::PipePipe => {
-                        self.advance();
-                        let body = self.parse_closure_body()?;
-                        let end = body.span.end;
-                        Ok(Expr {
-                            id: self.next_id(),
-                            kind: ExprKind::Closure {
-                                params: vec![],
-                                ret_ty: None,
-                                body: Box::new(body),
-                                is_own: true,
-                            },
-                            span: self.span(start, end),
-                        })
-                    }
-                    // `own expr` used to allocate. It doesn't any more: `own`
-                    // means move, and only move (mem.heap). The two readings
-                    // were indistinguishable at a call site — `f(own x)` moved,
-                    // `Node(own x)` allocated — which is what cost it the job.
-                    //
-                    // A move marker is consumed by `parse_args`, so anything
-                    // reaching here is the old allocation form.
-                    _ => {
-                        let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                        let end = operand.span.end;
-                        Err(ParseError {
-                            span: self.span(start, end),
-                            message: "`own` no longer allocates".to_string(),
-                            hint: Some("write `Heap(...)` to put a value on the heap".to_string()),
-                            why: Some(
-                                "`own` marks a move and nothing else now. It used to mean \
-                                 both, and the two were indistinguishable at a call site: \
-                                 `f(own x)` moved, `Node(own x)` allocated."
-                                    .to_string(),
-                            ),
-                        })
-                    }
-                }
-            }
-
             TokenKind::LParen => self.parse_paren_or_tuple(),
 
             TokenKind::LBracket => self.parse_array_literal(),
@@ -4202,12 +4156,12 @@ impl Parser {
                 let end = body.span.end;
                 Ok(Expr {
                     id: self.next_id(),
-                    kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(body), is_own: false },
+                    kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(body) },
                     span: self.span(start, end),
                 })
             }
 
-            TokenKind::Pipe => self.parse_closure(false),
+            TokenKind::Pipe => self.parse_closure(),
 
             TokenKind::If => self.parse_if_expr(),
 
@@ -4540,7 +4494,7 @@ impl Parser {
         Ok(Expr { id: self.next_id(), kind: ExprKind::Array(elements), span: self.span(start, end) })
     }
 
-    fn parse_closure(&mut self, is_own: bool) -> Result<Expr, ParseError> {
+    fn parse_closure(&mut self) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
         self.expect(&TokenKind::Pipe)?;
 
@@ -4610,7 +4564,7 @@ impl Parser {
 
         Ok(Expr {
             id: self.next_id(),
-            kind: ExprKind::Closure { params, ret_ty, body: Box::new(body), is_own },
+            kind: ExprKind::Closure { params, ret_ty, body: Box::new(body) },
             span: self.span(start, end),
         })
     }
@@ -4933,20 +4887,14 @@ impl Parser {
                 None
             };
 
-            // Capture call-site mode keywords. `own` is overloaded — it also
-            // prefixes an owned-closure literal (`own || body` / `own |x| body`).
-            // When the next token is `|` or `||`, treat `own` as part of the
-            // expression so parse_expr sees an owned closure, not ArgMode::Own.
+            // Call-site mode keywords (PM4). A move needs none: the name is
+            // consumed and every later use of it is an error, which says it
+            // louder than a marker would.
             let mode = if self.check(&TokenKind::MutateKw) {
                 self.advance();
                 ArgMode::Mutate
             } else if self.match_contextual_mode("deleting") {
                 ArgMode::Deleting
-            } else if self.check(&TokenKind::Own)
-                && !matches!(self.peek(1), TokenKind::Pipe | TokenKind::PipePipe)
-            {
-                self.advance();
-                ArgMode::Own
             } else {
                 ArgMode::Default
             };
@@ -6069,7 +6017,6 @@ fn starts_an_expression(kind: &TokenKind) -> bool {
             | TokenKind::Match
             | TokenKind::None
             | TokenKind::Null
-            | TokenKind::Own
             | TokenKind::Select
             | TokenKind::SelectPriority
             | TokenKind::Try
@@ -6114,7 +6061,6 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Public => "public",
         TokenKind::Private => "private",
         TokenKind::Take => "take",
-        TokenKind::Own => "own",
         TokenKind::MutateKw => "mutate",
         TokenKind::Unsafe => "unsafe",
         TokenKind::Comptime => "comptime",

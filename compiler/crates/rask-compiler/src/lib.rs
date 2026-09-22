@@ -431,7 +431,7 @@ fn check_loaded(
     // --- Typecheck (lenient — always returns TypedProgram + errors, so
     //     ownership/effects can still run and show accumulated diagnostics) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-    let (typed, type_errors) =
+    let (mut typed, type_errors) =
         rask_types::typecheck_with_stdlib_lenient(resolved, &parse_result.decls, &stdlib_decls);
     for e in &type_errors {
         diags.push(e.to_diagnostic());
@@ -443,6 +443,9 @@ fn check_loaded(
     for e in &ownership_result.errors {
         diags.push(e.to_diagnostic());
     }
+    // CM1: which closures outlive their frame is ownership's to work out, and
+    // lowering and the interpreter both need the same answer.
+    typed.escaping_closures = ownership_result.escaping_closures.clone();
 
     // --- Effects (non-blocking metadata) ---
     let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
@@ -774,7 +777,7 @@ fn check_package_scoped(
 
     // --- Typecheck (lenient — always returns TypedProgram + errors) ---
     let stdlib_decls = rask_stdlib::StubRegistry::typecheck_decls();
-    let (typed, type_errors) =
+    let (mut typed, type_errors) =
         rask_types::typecheck_with_stdlib_lenient(resolved, &pkg_ctx.all_decls, &stdlib_decls);
     for e in &type_errors {
         diags.push(e.to_diagnostic());
@@ -786,6 +789,7 @@ fn check_package_scoped(
     for e in &ownership_result.errors {
         diags.push(e.to_diagnostic());
     }
+    typed.escaping_closures = ownership_result.escaping_closures.clone();
 
     // --- Effects ---
     let (effects, effect_warnings) = rask_effects::infer_effects(&pkg_ctx.all_decls);

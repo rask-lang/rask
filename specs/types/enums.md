@@ -373,7 +373,7 @@ enum Tree<T> {
     Node(Heap<Tree<T>>, Heap<Tree<T>>)
 }
 
-let tree = Node(own Leaf(1), own Leaf(2))  // `own` = visible allocation
+let tree = Node(Heap(Leaf(1)), Heap(Leaf(2)))  // `Heap` = visible allocation
 ```
 
 | Rule | Description |

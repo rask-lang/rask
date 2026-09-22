@@ -175,18 +175,23 @@ test "mem.closures/MC1 — pushing into a captured Vec is visible outside" {
     assert log[1] == 9
 }
 
-// --- `own` copies, and that is the whole difference ---
-// An `own` closure captures by move and may outlive its creation scope, so it
-// must not read a variable that changed after it was built. Both halves of the
-// split went in together and only the borrow half was wired on the
-// interpreter, so `own` aliased: this printed 42 on interp and 0 on native.
+// --- Outliving the frame is the whole difference ---
+// A closure that outlives the frame that built it carries its captures, so it
+// reads what they held when it was built. One that stays reads the live value.
+// Both halves went in together and only the borrow half was wired on the
+// interpreter, so the carrying kind aliased: `snapshot_of(0)` below answered 42
+// on interp and 0 on native.
 
-test "mem.closures — an own closure reads the value it was built with" {
-    mut n = 0
-    let snapshot = own || { return n }
+func snapshot_of(start: i64) -> func() -> i64 {
+    mut n = start
+    let f = || { return n }
     n = 42
+    return f
+}
+
+test "mem.closures/CM1 — a closure that outlives its frame carries what it captured" {
+    let snapshot = snapshot_of(0)
     assert snapshot() == 0
-    assert n == 42
 }
 
 test "mem.closures/MC1 — a scope-limited closure reads the live value" {

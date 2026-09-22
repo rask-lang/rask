@@ -35,13 +35,14 @@ func use_after_take() {
     print(n)
 }
 
-// T3: a scope-limited (non-`own`) closure captured into a spawned task — the
-// task could outlive the borrowed source, so the borrow may not cross.
-func borrow_capturing_spawn() {
+// T3: a closure handed to `spawn` outlives the frame that built it, so it
+// carries `data` in rather than pointing at it (CM1). Nothing to reject — the
+// task owns the Vec, and the name out here is gone.
+func spawn_carries_its_capture() {
     using Multitasking {
         mut data = Vec.new<i32>()
         data.push(1)
-        let h = spawn(|| { return data.len() })  // ERROR: borrow crosses task [T3/SL2]
+        let h = spawn(|| { return data.len() })
         h.detach()
     }
 }

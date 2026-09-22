@@ -21,9 +21,9 @@ func main() {
 
         mut hits = 0
         let flag = true
-        let g = spawn(own || {
+        let g = spawn(|| {
             if flag {
-                // ERROR: E0892 — `own` copies a Copy type too, so this is the same loss
+                // ERROR: E0892 — the same loss under a branch
                 hits = hits + 1
             }
         })

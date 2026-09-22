@@ -139,6 +139,7 @@ pub struct Monomorphizer<'a> {
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
+    pub instantiated_escaping_closures: HashSet<NodeId>,
     /// Per-call-site type arguments for the copies. A generic calling another
     /// generic (`func outer<T>(x: T) { inner(x) }`) records `[T]` at the inner
     /// call; substituting this instantiation's arguments turns that into the
@@ -623,6 +624,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_call_targets: HashMap::new(),
             instantiated_error_wraps: HashMap::new(),
             instantiated_fallback_keeps_shape: HashSet::new(),
+            instantiated_escaping_closures: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
             trait_methods,
             trait_coercions: HashMap::new(),
@@ -721,6 +723,11 @@ impl<'a> Monomorphizer<'a> {
             // operand types, which substitution preserves.
             if typed.fallback_keeps_shape.contains(&old_id) {
                 self.instantiated_fallback_keeps_shape.insert(new_id);
+            }
+            // CM1: whether a closure outlives its frame is a property of where
+            // it is written, which substitution doesn't move.
+            if typed.escaping_closures.contains(&old_id) {
+                self.instantiated_escaping_closures.insert(new_id);
             }
         }
     }

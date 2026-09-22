@@ -11,12 +11,12 @@ func main() -> void or Error {
         ensure server.close()
         println("listening on 8080")
         let all_routes = routes()
-        spawn(own || { health_checker(backend_pool.backends) }).detach()
+        spawn(|| { health_checker(backend_pool.backends) }).detach()
         loop {
             println("waiting for request")
             let (request, responder) = try server.accept()
             println("got request")
-            spawn(own || {
+            spawn(|| {
                 ensure responder.respond(Response.internal_error("unhandled"))
                 println("forwarding request")
 

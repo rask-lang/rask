@@ -211,6 +211,11 @@ pub struct OwnershipChecker<'a> {
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
     escaping_closures: HashSet<rask_ast::NodeId>,
+    /// Closure literals whose body assigns to something they captured. MC4
+    /// promises the caller sees those writes, which only a borrow capture can
+    /// deliver, so these are never swept up by the call-result rule in
+    /// `closure_ids_of`.
+    closure_writes_a_capture: HashSet<rask_ast::NodeId>,
     /// `RASK_ESCAPE_AUDIT=1` reports where the inferred answer and the written
     /// `own` disagree. Read once — this sits on the walk of every closure.
     escape_audit: bool,
@@ -310,6 +315,7 @@ impl<'a> OwnershipChecker<'a> {
             closure_scope_limits: HashMap::new(),
             closure_literals: HashMap::new(),
             escaping_closures: HashSet::new(),
+            closure_writes_a_capture: HashSet::new(),
             escape_audit: std::env::var("RASK_ESCAPE_AUDIT").is_ok(),
             mutable_captures: Vec::new(),
             fn_take_params: HashMap::new(),
@@ -1333,7 +1339,7 @@ impl<'a> OwnershipChecker<'a> {
                             target_name.clone(),
                             (borrow_block, decl_block),
                         );
-                    } else if matches!(&value.kind, ExprKind::Closure { is_own: false, .. }) {
+                    } else if self.is_borrowing_closure(value) {
                         // Direct closure literal assigned to a field/index — escape
                         self.errors.push(OwnershipError {
                             kind: OwnershipErrorKind::ScopeLimitedClosureEscapes {
@@ -1630,7 +1636,7 @@ impl<'a> OwnershipChecker<'a> {
                         ExprKind::Ident(n) => Some(n.clone()),
                         _ => None,
                     };
-                    if arg.mode == ArgMode::Own || is_take_param {
+                    if is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
                             if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.binding_names.contains(name)) {
@@ -1713,7 +1719,7 @@ impl<'a> OwnershipChecker<'a> {
                     if method == "spawn" {
                         self.check_spawn_lost_writes(&arg.expr);
                     }
-                    if arg.mode == ArgMode::Own || is_take_param {
+                    if is_take_param {
                         // LP16: reject passing for-mutate binding to take parameter
                         if let ExprKind::Ident(name) = &arg.expr.kind {
                             if let Some(fm) = self.active_for_mutates.iter().find(|fm| fm.binding_names.contains(name)) {
@@ -1879,7 +1885,7 @@ impl<'a> OwnershipChecker<'a> {
                             });
                             self.scope_limited_closures.remove(name);
                         }
-                    } else if matches!(&field.value.kind, ExprKind::Closure { is_own: false, .. })
+                    } else if self.is_borrowing_closure(&field.value)
                         && self.closure_scope_limits.contains_key(&field.value.id)
                     {
                         self.errors.push(OwnershipError {
@@ -1922,16 +1928,13 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(end);
                 }
             }
-            ExprKind::Closure { params, body, is_own, .. } => {
-                if self.escape_audit {
-                    let inferred = self.closure_carries_captures(expr.id);
-                    if inferred != *is_own {
-                        eprintln!(
-                            "ESCAPE-AUDIT: closure at {}..{} written own={} inferred={}",
-                            expr.span.start, expr.span.end, is_own, inferred
-                        );
-                    }
-                }
+            ExprKind::Closure { params, body, .. } => {
+                // CM1: a closure that outlives its frame carries its captures;
+                // one that doesn't points at them. Worked out in
+                // `collect_escaping_closures`, not written at the literal —
+                // there was never a second legal answer for the compiler to be
+                // told.
+                let carries = self.closure_carries_captures(expr.id);
                 // Collect names from closure params (these shadow outer bindings)
                 let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
@@ -1946,20 +1949,20 @@ impl<'a> OwnershipChecker<'a> {
                     .cloned()
                     .collect();
 
-                // `own` moves a captured resource in; a plain closure borrows
-                // it. `mem.closures`' edge-case table has always said so —
-                // "Resource consumed by closure" against `own`, "Resource
-                // borrowed; can't escape scope" against the other — and the
-                // pass treated both as a move, which is what let a closure
-                // consume something it had only borrowed.
-                if *is_own {
+                // A carrying closure takes a captured resource in; one that
+                // points at its captures only borrows it. `mem.closures`' edge
+                // case table has always drawn that line — "Resource consumed by
+                // closure" on one side, "Resource borrowed; can't escape scope"
+                // on the other — and the pass treated both as a move, which is
+                // what let a closure consume something it had only borrowed.
+                if carries {
                     for name in &resource_captures {
                         self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                     }
                 }
 
-                // `own` closures move non-resource captures too; non-`own` closures borrow them.
-                if *is_own {
+                // Non-resource captures move in the same way.
+                if carries {
                     for name in &captures {
                         if !resource_captures.contains(name) {
                             if self.bindings.contains_key(name) {
@@ -1969,20 +1972,29 @@ impl<'a> OwnershipChecker<'a> {
                                 // parameter's declared type. `binding_types` alone
                                 // holds only `let`/`mut` bindings, so a captured
                                 // *parameter* looked non-Copy and was marked moved:
-                                // `v.filter(own |c| c != n)` inside a branch then
+                                // `v.filter(|c| c != n)` inside a branch then
                                 // reported `n` maybe-moved at the next use, while
                                 // the identical code with `n` a local was fine
-                                // (#768). Same lookup the non-`own` path below
+                                // (#768). Same lookup the borrowing path below
                                 // already used.
-                                if !self.capture_is_copy(name) {
+                                //
+                                // SL3: a lent parameter is not the frame's to
+                                // give. It is the caller's and is still there
+                                // when the call returns, so an escaping closure
+                                // borrows it and the limit rides the return
+                                // (SL4) — which is the whole sequence protocol:
+                                // `Vec.filter(self, pred) -> Sequence<T>`
+                                // answers a closure over a borrowed receiver.
+                                if !self.capture_is_copy(name) && !self.outlives_this_call(name) {
                                     self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                                 }
                             }
                         }
                     }
                 } else {
-                    // Non-`own` closures borrow their captures. Any closure with
-                    // non-resource captures is scope-limited to its creation block —
+                    // A closure that stays in its frame borrows its captures.
+                    // Any such closure with non-resource captures is
+                    // scope-limited to its creation block —
                     // returning or storing it past that scope would dangle the borrow.
                     // A Copy capture is copied into the closure env (MIR captures
                     // by value), so it can't dangle — only a non-Copy borrow can
@@ -2083,10 +2095,10 @@ impl<'a> OwnershipChecker<'a> {
 
                 // Register resource captures in closure's resource set.
                 //
-                // Only an `own` closure owns one, so only an `own` closure
-                // owes its consumption. A plain closure borrowed it: the body
-                // may read it, the outer scope still owes it, and a consume in
-                // the body is an error.
+                // Only a carrying closure owns one, so only a carrying closure
+                // owes its consumption. A borrowing closure has it on loan: the
+                // body may read it, the outer scope still owes it, and a
+                // consume in the body is an error.
                 //
                 // Nothing bounds how many times a closure runs, which is why
                 // the borrow reading has to be the strict one. `twice(|| {
@@ -2096,7 +2108,7 @@ impl<'a> OwnershipChecker<'a> {
                 let saved_borrowed_captures = std::mem::take(&mut self.borrowed_captures);
                 for name in &resource_captures {
                     self.bindings.insert(name.clone(), BindingState::Owned);
-                    if *is_own {
+                    if carries {
                         self.resource_bindings.insert(name.clone());
                     } else {
                         self.borrowed_captures.insert(name.clone(), expr.span);
@@ -2121,9 +2133,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.ensure_registered = saved_ensure;
                 self.borrowed_captures = saved_borrowed_captures;
 
-                // An `own` closure took the resource, so the outer scope stops
-                // owing it. A plain closure only borrowed it, and still does.
-                if *is_own {
+                // A carrying closure took the resource, so the outer scope
+                // stops owing it. A borrowing one still owes what it lent.
+                if carries {
                     for name in &resource_captures {
                         self.resource_bindings.remove(name);
                     }
@@ -4368,46 +4380,33 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn escapes_in_body(&mut self, body: &[Stmt]) {
-        let mut named: HashMap<String, rask_ast::NodeId> = HashMap::new();
+        let mut named: HashMap<String, Vec<rask_ast::NodeId>> = HashMap::new();
         self.escapes_in_stmts(body, &mut named);
     }
 
-    fn escapes_in_stmts(&mut self, body: &[Stmt], named: &mut HashMap<String, rask_ast::NodeId>) {
+    fn escapes_in_stmts(&mut self, body: &[Stmt], named: &mut HashMap<String, Vec<rask_ast::NodeId>>) {
         for stmt in body {
             self.escapes_in_stmt(stmt, named);
         }
     }
 
-    fn escapes_in_stmt(&mut self, stmt: &Stmt, named: &mut HashMap<String, rask_ast::NodeId>) {
+    fn escapes_in_stmt(&mut self, stmt: &Stmt, named: &mut HashMap<String, Vec<rask_ast::NodeId>>) {
         match &stmt.kind {
             StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => {
                 self.escapes_in_expr(init, named);
-                if matches!(init.kind, ExprKind::Closure { .. }) {
-                    named.insert(name.clone(), init.id);
-                } else {
-                    // A name rebound to something else stops standing for a
-                    // closure, or `let f = g` where `g` held one carries it.
-                    match &init.kind {
-                        ExprKind::Ident(from) => match named.get(from).copied() {
-                            Some(id) => { named.insert(name.clone(), id); }
-                            None => { named.remove(name); }
-                        },
-                        _ => { named.remove(name); }
-                    }
-                }
+                let carried = self.closure_ids_of(init, named);
+                if carried.is_empty() { named.remove(name); }
+                else { named.insert(name.clone(), carried); }
             }
             StmtKind::Assign { target, value, .. } => {
                 self.escapes_in_expr(value, named);
                 self.escapes_in_expr(target, named);
                 // Through a field or an index the closure lands in something
                 // that outlives the assignment; a plain name is just a rebind.
-                if matches!(target.kind, ExprKind::Ident(_)) {
-                    if let ExprKind::Ident(name) = &target.kind {
-                        match self.closure_id_of(value, named) {
-                            Some(id) => { named.insert(name.clone(), id); }
-                            None => { named.remove(name); }
-                        }
-                    }
+                if let ExprKind::Ident(name) = &target.kind {
+                    let carried = self.closure_ids_of(value, named);
+                    if carried.is_empty() { named.remove(name); }
+                    else { named.insert(name.clone(), carried); }
                 } else {
                     self.mark_escaping(value, named);
                 }
@@ -4449,7 +4448,7 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    fn escapes_in_expr(&mut self, expr: &Expr, named: &mut HashMap<String, rask_ast::NodeId>) {
+    fn escapes_in_expr(&mut self, expr: &Expr, named: &mut HashMap<String, Vec<rask_ast::NodeId>>) {
         rask_ast::visit::walk_expr_pruned(expr, &mut |e| {
             match &e.kind {
                 ExprKind::Call { func, args } => {
@@ -4512,7 +4511,12 @@ impl<'a> OwnershipChecker<'a> {
                 // A closure body is its own frame's business. What it stores or
                 // returns escapes *its* frame, and the names out here mean
                 // nothing inside it.
-                ExprKind::Closure { body, .. } => {
+                ExprKind::Closure { params, body, .. } => {
+                    let locals: HashSet<String> =
+                        params.iter().map(|p| p.name.clone()).collect();
+                    if self.body_assigns_a_free_name(body, &locals) {
+                        self.closure_writes_a_capture.insert(e.id);
+                    }
                     let mut inner = HashMap::new();
                     self.escapes_in_expr(body, &mut inner);
                     false
@@ -4522,24 +4526,79 @@ impl<'a> OwnershipChecker<'a> {
         });
     }
 
-    /// The closure literal an expression stands for: written there, or bound to
-    /// a name that holds one.
-    fn closure_id_of(
+    /// The closure literals an expression may be carrying: written there, bound
+    /// to a name that holds one, or handed to a call whose result carries it.
+    ///
+    /// That last one is `return v.filter(|m| m > want)`. `filter` only borrows
+    /// its closure — PM6 says it can't keep it — so the closure reaches the
+    /// caller through the `Sequence` it answers, and `want` has to travel with
+    /// it. Reading only the parameter mode there left the closure pointing at a
+    /// frame that was already gone.
+    ///
+    /// A call that answers something unrelated to the closure it was handed
+    /// gets caught in this net too, and carrying captures it could have pointed
+    /// at is the harmless direction — except for a closure that *writes* one,
+    /// where carrying would drop the write-back MC4 promises. Those are left
+    /// alone: a mutating closure that genuinely rides out on a result is
+    /// throwing the write away whatever it captures by, which is E0892's
+    /// complaint rather than this one's.
+    fn closure_ids_of(
         &self,
         expr: &Expr,
-        named: &HashMap<String, rask_ast::NodeId>,
-    ) -> Option<rask_ast::NodeId> {
+        named: &HashMap<String, Vec<rask_ast::NodeId>>,
+    ) -> Vec<rask_ast::NodeId> {
         match &expr.kind {
-            ExprKind::Closure { .. } => Some(expr.id),
-            ExprKind::Ident(name) => named.get(name).copied(),
-            _ => None,
+            ExprKind::Closure { .. } => vec![expr.id],
+            ExprKind::Ident(name) => named.get(name).cloned().unwrap_or_default(),
+            ExprKind::Call { args, .. } | ExprKind::MethodCall { args, .. } => args
+                .iter()
+                .flat_map(|a| self.closure_ids_of(&a.expr, named))
+                .filter(|id| !self.closure_writes_a_capture.contains(id))
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
-    fn mark_escaping(&mut self, expr: &Expr, named: &HashMap<String, rask_ast::NodeId>) {
-        if let Some(id) = self.closure_id_of(expr, named) {
+    fn mark_escaping(&mut self, expr: &Expr, named: &HashMap<String, Vec<rask_ast::NodeId>>) {
+        for id in self.closure_ids_of(expr, named) {
             self.escaping_closures.insert(id);
         }
+    }
+
+    /// Whether a closure body assigns to a name it did not declare — a write
+    /// the enclosing frame is promised to see (MC4).
+    fn body_assigns_a_free_name(&self, body: &Expr, locals: &HashSet<String>) -> bool {
+        let mut found = false;
+        let mut declared = locals.clone();
+        rask_ast::visit::walk_expr_pruned(body, &mut |e| {
+            if let ExprKind::Block(stmts) = &e.kind {
+                for stmt in stmts {
+                    if let StmtKind::Assign { target, .. } = &stmt.kind {
+                        if let Some(root) = Self::extract_root_and_fields(target).0 {
+                            if !declared.contains(&root) {
+                                found = true;
+                            }
+                        }
+                    }
+                    Self::names_declared_by(stmt, &mut declared);
+                }
+            }
+            true
+        });
+        found
+    }
+
+    /// A closure literal the ownership pass decided points at its captures
+    /// rather than carrying them (CM1).
+    ///
+    /// Every escape site asks this before reporting. A closure already known to
+    /// outlive its frame carries what it captured, so there is nothing left to
+    /// dangle; one that reaches an escape site without being known is a gap in
+    /// `collect_escaping_closures`, and saying so beats lowering it as a borrow
+    /// and handing it a dead frame.
+    fn is_borrowing_closure(&self, expr: &Expr) -> bool {
+        matches!(expr.kind, ExprKind::Closure { .. })
+            && !self.escaping_closures.contains(&expr.id)
     }
 
     /// Whether a closure literal carries its captures rather than pointing at
@@ -5208,17 +5267,14 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// The closure a `let`/`mut` statement binds, if it binds one that borrows
-    /// its captures. An `own` closure moves them instead, and a use of the
+    /// its captures. A carrying closure moved them instead, and a use of the
     /// variable afterwards is already a use after move.
-    fn closure_binding(stmt: &Stmt) -> Option<(&String, &Expr)> {
+    fn closure_binding<'s>(&self, stmt: &'s Stmt) -> Option<(&'s String, &'s Expr)> {
         let (name, init) = match &stmt.kind {
             StmtKind::Let { name, init, .. } | StmtKind::Mut { name, init, .. } => (name, init),
             _ => return None,
         };
-        match &init.kind {
-            ExprKind::Closure { is_own: false, .. } => Some((name, init)),
-            _ => None,
-        }
+        if self.is_borrowing_closure(init) { Some((name, init)) } else { None }
     }
 
     /// MC2: report anything in this statement that reaches a variable a live
@@ -5263,7 +5319,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// The captures a closure bound by this statement writes, if it binds one.
     fn captures_a_statement_writes(&self, stmt: &Stmt) -> Vec<String> {
-        let Some((_, closure)) = Self::closure_binding(stmt) else { return Vec::new() };
+        let Some((_, closure)) = self.closure_binding(stmt) else { return Vec::new() };
         let ExprKind::Closure { params, body, .. } = &closure.kind else { return Vec::new() };
         let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
         let mut captures = Vec::new();
@@ -5280,7 +5336,7 @@ impl<'a> OwnershipChecker<'a> {
         block_id: u32,
         last_mention: &HashMap<String, usize>,
     ) {
-        if let Some((holder, closure)) = Self::closure_binding(stmt) {
+        if let Some((holder, closure)) = self.closure_binding(stmt) {
             let vars = self.captures_a_statement_writes(stmt);
             if !vars.is_empty() {
                 self.mutable_captures.push(MutableCapture {
@@ -5654,7 +5710,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     self.binding_decl_blocks.get(name).map(|&b| (b, name.clone()))
                 }),
-            ExprKind::Closure { is_own: false, .. } => self
+            ExprKind::Closure { .. } if self.is_borrowing_closure(arg) => self
                 .closure_scope_limits
                 .get(&arg.id)
                 .map(|&b| (b, "<closure>".to_string())),
@@ -5674,7 +5730,7 @@ impl<'a> OwnershipChecker<'a> {
         // the caller can't see where it goes (SL2).
         if is_take {
             if matches!(&arg.kind, ExprKind::Ident(n) if self.scope_limited_closures.contains_key(n))
-                || matches!(&arg.kind, ExprKind::Closure { is_own: false, .. })
+                || self.is_borrowing_closure(arg)
             {
                 self.errors.push(OwnershipError {
                     kind: OwnershipErrorKind::ScopeLimitedClosureEscapes { name: name.clone() },

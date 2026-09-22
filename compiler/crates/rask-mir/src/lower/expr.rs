@@ -1854,11 +1854,12 @@ impl<'a> MirLowerer<'a> {
                 let mut spawn_boxes_result = false;
                 for (i, a) in args.iter().enumerate() {
                     let smut = callee_smut.get(i).and_then(|o| o.as_ref());
-                    let (op, mir_ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &a.expr.kind {
+                    let (op, mir_ty) = if let ExprKind::Closure { params, ret_ty, body, .. } = &a.expr.kind {
                         let expected = Self::expected_closure_param_tys(&callee_params, i);
+                        let carries = self.closure_carries(Some(a.expr.id));
                         let lowered = self.lower_closure_expecting(
                             params, ret_ty.as_deref(), body,
-                            *is_own || spawns_closure, &expected, Some(a.expr.id),
+                            carries || spawns_closure, &expected, Some(a.expr.id),
                             spawns_closure,
                         )?;
                         if spawns_closure {
@@ -3853,8 +3854,9 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Closure — synthesize a separate MIR function and emit ClosureCreate
-            ExprKind::Closure { params, ret_ty, body, is_own } => {
-                self.lower_closure(params, ret_ty.as_deref(), body, *is_own, Some(expr.id))
+            ExprKind::Closure { params, ret_ty, body, .. } => {
+                let carries = self.closure_carries(Some(expr.id));
+                self.lower_closure(params, ret_ty.as_deref(), body, carries, Some(expr.id))
             }
 
             // Cast
@@ -5368,11 +5370,12 @@ impl<'a> MirLowerer<'a> {
                                 // from the callee's declared `func(...)` parameter;
                                 // `|req| req.method` on a `func(Request) -> Response`
                                 // otherwise defaulted to i64 (#463).
-                                let (op, _) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
+                                let (op, _) = if let ExprKind::Closure { params, ret_ty, body, .. } = &arg.expr.kind {
                                     let expected = Self::expected_closure_param_tys(&callee_params, i);
+                                    let carries = self.closure_carries(Some(arg.expr.id));
                                     let lowered = self.lower_closure_expecting(
                                         params, ret_ty.as_deref(), body,
-                                        *is_own || spawns_closure, &expected,
+                                        carries || spawns_closure, &expected,
                                         Some(arg.expr.id),
                                         spawns_closure,
                                     )?;
@@ -5670,13 +5673,14 @@ impl<'a> MirLowerer<'a> {
             // all_args[0] is the receiver, so callee param i+1 is this argument.
             let smut = callee_smut.get(i + 1).and_then(|o| o.as_ref());
             let agg_mut = callee_agg_mutate.get(i + 1).copied().unwrap_or(false);
-            let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, is_own } = &arg.expr.kind {
+            let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, .. } = &arg.expr.kind {
                 let mut expected = Self::expected_closure_param_tys(&tentative_params, i);
                 if expected.is_empty() {
                     expected = elem_params.clone();
                 }
+                let carries = self.closure_carries(Some(arg.expr.id));
                 let (op, mir_ty) = self.lower_closure_expecting(
-                    params, ret_ty.as_deref(), body, *is_own, &expected, Some(arg.expr.id), false,
+                    params, ret_ty.as_deref(), body, carries, &expected, Some(arg.expr.id), false,
                 )?;
                 self.wrap_closure_arg(op, mir_ty, callee_params.get(i + 1).and_then(|o| o.as_ref()))
             } else {

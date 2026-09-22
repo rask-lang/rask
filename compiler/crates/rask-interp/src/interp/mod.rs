@@ -188,6 +188,10 @@ pub struct Interpreter {
     /// recover integer widths for overflow checking (type.overflow). Empty
     /// when types weren't supplied (e.g. comptime pre-check paths).
     pub(crate) node_types: HashMap<rask_ast::NodeId, rask_types::Type>,
+    /// CM1: closure literals that outlive the frame that built them, from the
+    /// ownership pass. Those snapshot their captures; the rest share the live
+    /// slots so a write reaches the enclosing variable (MC4).
+    pub(crate) escaping_closures: std::collections::HashSet<rask_ast::NodeId>,
     /// What each generic function's type parameters resolved to for the call
     /// currently on the stack, innermost last.
     ///
@@ -293,6 +297,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            escaping_closures: std::collections::HashSet::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
             call_depth: 0,
@@ -323,6 +328,7 @@ impl Interpreter {
             cli_args: args,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            escaping_closures: std::collections::HashSet::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
             call_depth: 0,
@@ -359,6 +365,7 @@ impl Interpreter {
             source_info: None,
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
+            escaping_closures: std::collections::HashSet::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
             call_depth: 0,
@@ -445,6 +452,13 @@ impl Interpreter {
     /// Supply the checker's static expression types, enabling width-aware
     /// integer overflow checks (type.overflow). Without this the interpreter
     /// falls back to unchecked i64 arithmetic.
+    pub fn set_escaping_closures(
+        &mut self,
+        escaping: std::collections::HashSet<rask_ast::NodeId>,
+    ) {
+        self.escaping_closures = escaping;
+    }
+
     pub fn set_node_types(&mut self, node_types: HashMap<rask_ast::NodeId, rask_types::Type>) {
         self.node_types = node_types;
     }
@@ -561,6 +575,7 @@ impl Interpreter {
         child.struct_decls = self.struct_decls.clone();
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
+        child.escaping_closures = self.escaping_closures.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();

@@ -579,7 +579,7 @@ Static definiteness (C3/C4) is enforced. `ensure` still commits the receiver's l
 - [#293](https://github.com/rask-lang/rask/issues/293) — *done*: static definiteness analysis (C4, `E0821`). A tree-walking interpreter still observes which path ran, so the runtime flag can't be fully removed — but it's no longer load-bearing for correctness, since the accepted set is exactly the definite programs.
 - [#294](https://github.com/rask-lang/rask/issues/294) — *fixed*: the branch merge now treats a value moved/consumed on some paths but not all as maybe-moved, so if-without-else and single-arm consumption are rejected (`mem.ownership/O3`, `mem.linear/L1`)
 - [#295](https://github.com/rask-lang/rask/issues/295) — *mooted by #293*: the double-run repros are now `E0821` compile errors. The definite cases (including nested-block consume-then-exit) run correctly on both backends.
-- [#296](https://github.com/rask-lang/rask/issues/296) — *done*: take-param/send consumption is recognized without call-site `own` (C5 holds)
+- [#296](https://github.com/rask-lang/rask/issues/296) — *done*: take-param/send consumption is recognized at the bare argument (C5 holds)
 
 ### See Also
 

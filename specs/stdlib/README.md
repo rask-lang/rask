@@ -333,7 +333,7 @@ let resp = try client.post("https://api.example.com/submit")
 
 ## TLS
 
-Encrypted connections over TCP. `tls.connect(addr)` to dial, `tls.wrap(own conn, host:)`
+Encrypted connections over TCP. `tls.connect(addr)` to dial, `tls.wrap(conn, host:)`
 to upgrade an existing connection. Verification is on by default and turning it off
 is explicit at the call site. See [tls.md](tls.md).
 

@@ -238,7 +238,7 @@ Both share the `@allow` attribute and diagnostic output format. Different ID nam
 
 - **`unused_field`** — struct field never read outside the defining module
 - **`unnecessary_clone`** — `.clone()` on a type already Copy (16 bytes or less)
-- **`large_move`** — moving a type significantly above 16-byte threshold without explicit `own`
+- **`large_move`** — moving a type significantly above the 16-byte threshold
 
 ### See Also
 

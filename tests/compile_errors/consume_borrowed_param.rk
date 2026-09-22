@@ -39,7 +39,7 @@ func relay(b: Bag) -> u64 {
 
 // ERROR: `own` at the call site doesn't create ownership either [E0835]
 func relay_own(b: Bag) -> u64 {
-    return eat(own b)
+    return eat(b)
 }
 
 // ERROR: storing it into a field gives it away too — this used to be reported as

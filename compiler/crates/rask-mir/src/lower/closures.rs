@@ -163,8 +163,10 @@ impl<'a> MirLowerer<'a> {
     /// Closure lowering: synthesize a separate MIR function for the body,
     /// build the environment, and emit ClosureCreate in the enclosing function.
     ///
-    /// `is_own` mirrors `mem.closures`: owned closures start heap-allocated (may
-    /// escape); scope-limited closures are always stack-allocated.
+    /// `carries` mirrors `mem.closures/CM1`: a closure that outlives its frame
+    /// carries its captures and starts heap-allocated; one that stays puts its
+    /// environment on the stack. `closure_carries` reads the answer off the
+    /// ownership pass.
     /// `closure_id` is the closure expression's own node, which carries the
     /// checker's `Fn` type — the return type an unannotated closure would
     /// otherwise have to guess.
@@ -173,10 +175,16 @@ impl<'a> MirLowerer<'a> {
         params: &[rask_ast::expr::ClosureParam],
         ret_ty: Option<&str>,
         body: &Expr,
-        is_own: bool,
+        carries: bool,
         closure_id: Option<NodeId>,
     ) -> Result<TypedOperand, LoweringError> {
-        self.lower_closure_expecting(params, ret_ty, body, is_own, &[], closure_id, false)
+        self.lower_closure_expecting(params, ret_ty, body, carries, &[], closure_id, false)
+    }
+
+    /// CM1: whether this closure outlives the frame that built it, as the
+    /// ownership pass worked out.
+    pub(super) fn closure_carries(&self, closure_id: Option<NodeId>) -> bool {
+        closure_id.is_some_and(|id| self.ctx.escaping_closures.contains(&id))
     }
 
     /// As `lower_closure`, with the parameter types the callee declares for this
@@ -189,7 +197,7 @@ impl<'a> MirLowerer<'a> {
         params: &[rask_ast::expr::ClosureParam],
         ret_ty: Option<&str>,
         body: &Expr,
-        is_own: bool,
+        carries: bool,
         expected_param_tys: &[String],
         closure_id: Option<NodeId>,
         for_spawn: bool,
@@ -203,26 +211,30 @@ impl<'a> MirLowerer<'a> {
 
         // 3. Build the closure environment layout.
         //
-        // A scope-limited closure borrows what it captures (mem.closures/MC1):
-        // the env holds each variable's address and the body reads and writes
-        // through it, so `let bump = || { n = n + 1 }` bumps the caller's `n`.
-        // Copying instead is what lost every such write on native (#1038).
+        // A closure that stays in its frame borrows what it captures
+        // (mem.closures/MC1): the env holds each variable's address and the
+        // body reads and writes through it, so `let bump = || { n = n + 1 }`
+        // bumps the caller's `n`. Copying instead is what lost every such write
+        // on native (#1038).
         //
-        // `own` copies. It captures by move and outlives its creation scope, so
-        // pointing into a dead frame is exactly what it must not do. Same split
-        // the interpreter draws between `capture_shared` and `capture_snapshot`.
+        // One that outlives its frame carries the values instead — pointing
+        // into a dead frame is exactly what it must not do. Which one a closure
+        // is comes from the ownership pass (`escaping_closures`, CM1), not from
+        // a word at the literal. Same split the interpreter draws between
+        // `capture_shared` and `capture_snapshot`.
         //
-        // Borrowing is safe here because a scope-limited closure is never heap
-        // allocated (`heap: is_own`, step 5) and so cannot outlive the frame it
-        // points into.
-        let by_ref = !is_own && !for_spawn;
+        // Borrowing is safe here because a borrowing closure is never heap
+        // allocated (`heap: carries`, step 5) and so cannot outlive the frame
+        // it points into.
+        let by_ref = !carries && !for_spawn;
         // The environment slot holds a pointer for a borrow, and the value
-        // itself otherwise — but for `own` the value in the slot *is* the
-        // variable, so the body has to write back into it rather than into a
-        // loaded copy.
+        // itself otherwise — but for a carrying closure the value in the slot
+        // *is* the variable, so the body has to write back into it rather than
+        // into a loaded copy. A task's copy is its own and dies with it, so
+        // there is nothing to write back to.
         let capture_access = if for_spawn {
             crate::CaptureAccess::Value
-        } else if is_own {
+        } else if carries {
             crate::CaptureAccess::Owned
         } else {
             crate::CaptureAccess::Borrowed
@@ -445,7 +457,7 @@ impl<'a> MirLowerer<'a> {
             dst: result_local,
             func_name: entry_name,
             captures,
-            heap: is_own,
+            heap: carries,
         }));
 
         Ok((MirOperand::Local(result_local), MirType::Ptr))

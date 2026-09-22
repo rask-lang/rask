@@ -2992,7 +2992,6 @@ impl TypeChecker {
                 }
                 (ArgMode::Default, true, _) => {}
                 // Correct annotations are fine
-                (ArgMode::Own, true, _) => {}
                 (ArgMode::Mutate, _, true) if !is_deleting => {}
                 (ArgMode::Deleting, _, _) if is_deleting => {}
                 // PM5: the marker follows the signature. A `deleting` parameter is
@@ -3021,15 +3020,6 @@ impl TypeChecker {
                 (ArgMode::Mutate, true, false) => {
                     self.errors.push(TypeError::UnexpectedAnnotation {
                         annotation: "mutate".to_string(),
-                        param_name: param_name.clone(),
-                        param_index: i,
-                        span: arg.expr.span,
-                    });
-                }
-                // Unexpected `own` annotation on borrow param
-                (ArgMode::Own, false, _) => {
-                    self.errors.push(TypeError::UnexpectedAnnotation {
-                        annotation: "own".to_string(),
                         param_name: param_name.clone(),
                         param_index: i,
                         span: arg.expr.span,

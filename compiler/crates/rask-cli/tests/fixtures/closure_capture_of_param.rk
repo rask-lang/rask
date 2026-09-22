@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// An `own` closure capturing a Copy *parameter* inside a branch reported the
-// parameter maybe-moved at the next use (#768):
+// A closure capturing a Copy *parameter* inside a branch reported the parameter
+// maybe-moved at the next use (#768):
 //
 //     func doit(n: i32, v: Vec<i32>, flag: bool) {
 //         if flag {
-//             let kept = v.filter(own |c| c != n)
+//             let kept = v.filter(|c| c != n)
 //         }
 //         println("{n}")     // error[E0813]: use of maybe-moved value: `n`
 //     }
@@ -13,18 +13,17 @@
 // out of the caller. The check for that read `binding_types`, which holds only
 // `let`/`mut` bindings — a parameter isn't in it, so it looked non-Copy. The same
 // code with `n` a local was accepted, and so was straight-line code with a
-// parameter; it took parameter *and* branch together. The non-`own` closure path
-// already went through `capture_is_copy`, which also reads a parameter's declared
-// type; the `own` path now does too.
+// parameter; it took parameter *and* branch together. Both capture paths go
+// through `capture_is_copy` now, which also reads a parameter's declared type.
 //
 // A container reference needed one more thing: resolving a parameter's type
 // string gave up on any generic spelling, so `Link<Item>` never reached the Copy
 // rules that answer by base name. It now reduces to its base — the arguments
 // aren't needed, since a link is the only Copy one among the containers.
 //
-// Without `own` the same call is rejected the other way ("closure captures scoped
-// borrow and cannot escape", with the fix hint telling you to add `own`), so this
-// shape had no spelling that compiled.
+// This was written `own |c| c != n` when the keyword existed. The keyword is
+// gone (#1281) and the shape is the same: a closure the frame keeps, over a
+// parameter it may only borrow.
 import memory.Link
 import memory.Rack
 
@@ -43,7 +42,7 @@ struct Big {
 func scalar(n: i32, v: Vec<i32>, flag: bool) -> string {
     mut count: u64 = 0
     if flag {
-        let kept = v.filter(own |c| c != n)
+        let kept = v.filter(|c| c != n)
         count = kept.count()
     }
     return "kept={count} n={n}"
@@ -53,17 +52,17 @@ func scalar(n: i32, v: Vec<i32>, flag: bool) -> string {
 func through_link(n: Link<Item>, v: Vec<Link<Item>>) -> string {
     mut count: u64 = 0
     if n.other? as _o {
-        let kept = v.filter(own |c| c != n)
+        let kept = v.filter(|c| c != n)
         count = kept.count()
     }
     return "kept={count} id={n.id}"
 }
 
-// A non-Copy parameter is still moved by an `own` capture, so this one has to
-// use it only inside the branch.
+// A non-Copy parameter is lent, so the closure borrows it either way (CM3) and
+// never moves it. This one reads it only inside the branch.
 func nocopy(big: Big, v: Vec<i64>, flag: bool) -> u64 {
     if flag {
-        let kept = v.filter(own |c| c != big.a)
+        let kept = v.filter(|c| c != big.a)
         return kept.count()
     }
     return 0

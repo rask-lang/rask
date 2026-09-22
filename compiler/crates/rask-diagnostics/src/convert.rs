@@ -3706,8 +3706,8 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_code("E0862")
                 .with_primary(self.span, "closure would outlive its captured borrow")
-                .with_fix("prefix the closure with `own` to move captures instead of borrowing them")
-                .with_why("closures that capture block-scoped borrows are limited to that block's lifetime — returning or storing them would create a dangling reference (SL2)")
+                .with_fix("give the closure a value it can keep — clone what it reads, or hold the source somewhere that outlives it")
+                .with_why("a closure that outlives its frame carries what it captured (CM1), but a borrow lent by a `with` block or a borrowed parameter isn't the frame's to give, so there is nothing to carry (SL2)")
             }
 
             TaskWriteLost { name, spawn_span } => {

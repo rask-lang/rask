@@ -65,7 +65,7 @@ func resource_one_branch_ifnoelse(cond: bool) {
 func move_in_loop() {
     let v = Vec<i32>.new()
     loop {
-        take_vec(own v)   // ERROR: v already moved on the previous iteration
+        take_vec(v)   // ERROR: v already moved on the previous iteration
     }
 }
 

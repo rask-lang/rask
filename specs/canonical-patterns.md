@@ -686,15 +686,15 @@ Every error message has three parts:
 ```
 error[E0042]: cannot use `data` after ownership transfer
 
-  14 | process(own data)
+  14 | process(data)
      |         ~~~~~~~~ ownership transferred here
   15 | println(data.len())
      |         ^^^^ used after transfer
 
 fix: clone before transfer
-  14 | process(own data.clone())
+  14 | process(data.clone())
 
-why: `own` transfers ownership — the caller can no longer access the value.
+why: a `take` parameter transfers ownership — the caller can no longer access the value.
 ```
 
 **Guidelines:**

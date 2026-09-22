@@ -1553,11 +1553,12 @@ impl<'a> MirLowerer<'a> {
         // built while the closure is lowered, and the `spawn` comes later (#1094).
         let spawned = is_closure && self.spawned_closure_names.contains(name);
         let (init_op, inferred_ty) = if spawned {
-            let ExprKind::Closure { params, ret_ty, body, is_own } = &init.kind else {
+            let ExprKind::Closure { params, ret_ty, body, .. } = &init.kind else {
                 unreachable!("checked by `is_closure` above")
             };
+            let carries = self.closure_carries(Some(init.id));
             let lowered = self.lower_closure_expecting(
-                params, ret_ty.as_deref(), body, *is_own || spawned, &[],
+                params, ret_ty.as_deref(), body, carries || spawned, &[],
                 Some(init.id), true,
             )?;
             self.spawn_boxed_bindings.insert(name.to_string(), self.spawn_result_boxed);

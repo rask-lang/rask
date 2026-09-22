@@ -8,11 +8,10 @@ use crate::value::Value;
 /// A variable's storage, shared by everything bound to that variable.
 ///
 /// A binding is a *slot*, not a value. The distinction is invisible until a
-/// closure captures the name: a scope-limited closure borrows the variable
-/// (`rask_ast::ExprKind::Closure::is_own` — "without this flag the closure
-/// borrows outer variables"), so it has to reach the same storage the definer
-/// writes. Binding names to values instead made a capture a copy, and every
-/// write through it landed on the copy (#1038).
+/// closure captures the name: a closure that stays in its frame borrows the
+/// variable (`mem.closures/CM1`), so it has to reach the same storage the
+/// definer writes. Binding names to values instead made a capture a copy, and
+/// every write through it landed on the copy (#1038).
 pub type Slot = Arc<Mutex<Value>>;
 
 /// Wrap a value in fresh storage.

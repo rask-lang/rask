@@ -24,9 +24,9 @@ test "value moved in both branches" {
     v.push(1)
     mut empty = true
     if true {
-        empty = drain(own v)
+        empty = drain(v)
     } else {
-        empty = drain(own v)
+        empty = drain(v)
     }
     assert empty == false
 }

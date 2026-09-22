@@ -76,7 +76,7 @@ func example_concurrency() -> void or Error {
 // A transatlantic flight generates ~100,000 altitude readings.
 // Splitting work across cores is how you process that fast.
 //
-// Hint: use own to transfer each half into its task.
+// Hint: the compiler moves what a task captures — nothing to write.
 func parallel_max(readings: Vec<f64>) -> f64 {
     todo()
 }

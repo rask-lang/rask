@@ -793,9 +793,8 @@ impl Hasher {
                 }
                 self.hash_stmts(body);
             }
-            ExprKind::Closure { params, ret_ty, body, is_own } => {
+            ExprKind::Closure { params, ret_ty, body } => {
                 self.feed_tag(70);
-                self.feed_bool(*is_own);
                 self.feed_u32(params.len() as u32);
                 for p in params {
                     self.hash_closure_param(p);
@@ -886,7 +885,6 @@ impl Hasher {
             }
             self.feed_u8(match arg.mode {
                 ArgMode::Default => 0,
-                ArgMode::Own => 1,
                 ArgMode::Mutate => 2,
                 ArgMode::Deleting => 3,
             });

@@ -45,7 +45,7 @@ test "a return from inside the block still tears the scope down" {
 test "and with a linear value the task owns" {
     using Multitasking {
         let latch = Latch { id: 5 }
-        let task = spawn(own || {
+        let task = spawn(|| {
             ensure latch.release()
             panic("dies holding it")
         })

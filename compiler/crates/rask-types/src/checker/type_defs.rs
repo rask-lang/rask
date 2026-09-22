@@ -364,6 +364,11 @@ pub struct TypedProgram {
     /// path hands back the left operand unchanged — unwrapping it would throw
     /// away the layer the chain is still carrying.
     pub fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// CM1: closure literals that outlive the frame that built them, so their
+    /// captures travel with them instead of being pointed at. Worked out by the
+    /// ownership pass and written back here, because lowering and the
+    /// interpreter both have to agree with it.
+    pub escaping_closures: std::collections::HashSet<NodeId>,
     /// ER16a: `try` node → the postfix-chain step it attaches to, when that
     /// isn't the operand itself. `try read_file(p).len()` maps the `try` to the
     /// `read_file(p)` call, so lowering branches there and hands `.len()` the

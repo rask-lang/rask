@@ -924,6 +924,8 @@ impl TypeChecker {
             trait_coercions,
             error_wraps,
             fallback_keeps_shape,
+            // Ownership fills this in; the checker has no say in it.
+            escaping_closures: std::collections::HashSet::new(),
             try_chain_placement,
             unsafe_ops,
             span_types,

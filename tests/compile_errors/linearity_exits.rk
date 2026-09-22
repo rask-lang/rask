@@ -175,7 +175,7 @@ func bad_closure_consumes_borrow() {
 // outer binding does not. Still compiles.
 func good_own_closure() {
     let c = Conn { id: 1 }
-    twice(own || {
+    twice(|| {
         c.close()
     })
 }

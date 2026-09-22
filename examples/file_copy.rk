@@ -143,7 +143,7 @@ func format_size(bytes: u64) -> string {
 func main() {
     let args = cli.args()
 
-    let opts = parse_args(own args) catch e => {
+    let opts = parse_args(args) catch e => {
         println("rcopy: {e.message()}")
         std.exit(1)
     }

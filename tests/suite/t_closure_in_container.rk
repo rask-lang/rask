@@ -68,7 +68,7 @@ test "std.collections — a literal of closures" {
 test "std.collections — a closure per turn" {
     mut fns: Vec<func(i64) -> i64> = []
     for i in 1..5 {
-        fns.push(own |x| {
+        fns.push(|x| {
             return x * i
         })
     }
@@ -123,10 +123,10 @@ test "std.collections — an element replaced" {
 test "std.collections — a Map of closures" {
     let base = 4
     mut m: Map<string, func(i64) -> i64> = Map.new()
-    m.insert("add", own |x| {
+    m.insert("add", |x| {
         return x + base
     })
-    m.insert("mul", own |x| {
+    m.insert("mul", |x| {
         return x * base
     })
     assert m.len() == 2
@@ -139,7 +139,7 @@ test "std.collections — a Map of closures" {
 test "std.collections — closures in a struct's Vec field" {
     let base = 6
     mut r = Registry { hooks: [] }
-    r.hooks.push(own |x| {
+    r.hooks.push(|x| {
         return x + base
     })
     assert r.hooks.len() == 1
@@ -152,7 +152,7 @@ test "std.collections — a Vec of Vecs of closures" {
     let base = 6
     mut nested: Vec<Vec<func(i64) -> i64>> = []
     mut inner: Vec<func(i64) -> i64> = []
-    inner.push(own |x| {
+    inner.push(|x| {
         return x - base
     })
     nested.push(inner)

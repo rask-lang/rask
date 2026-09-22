@@ -299,7 +299,7 @@ extend Latch {
 test "a task consumes the resource it was given" {
     using Multitasking {
         let latch = Latch { id: 3 }
-        let task = spawn(own || {
+        let task = spawn(|| {
             return latch.release()
         })
         let got = task.join() catch _ => {
@@ -313,7 +313,7 @@ test "a task consumes the resource it was given" {
 test "and does so while unwinding" {
     using Multitasking {
         let latch = Latch { id: 5 }
-        let task = spawn(own || {
+        let task = spawn(|| {
             ensure latch.release()
             panic("the task dies here")
         })

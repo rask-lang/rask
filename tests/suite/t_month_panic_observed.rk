@@ -43,7 +43,7 @@ test "O1: a panicking task surfaces as JoinError.Panicked at the join" {
     mut outcome = 0
     mut note = ""
     using Multitasking {
-        let h = Thread.spawn(own || {
+        let h = Thread.spawn(|| {
             panic("worker boom")
             return 0
         })
@@ -63,7 +63,7 @@ test "O1: a panicking task surfaces as JoinError.Panicked at the join" {
 test "O1: the message names what went wrong" {
     mut note = ""
     using Multitasking {
-        let h = Thread.spawn(own || {
+        let h = Thread.spawn(|| {
             panic("shelf gave out")
             return 0
         })
@@ -80,7 +80,7 @@ test "P2: the survivor keeps running and joins a healthy task after" {
     mut first = 0
     mut second = 0
     using Multitasking {
-        let dead = Thread.spawn(own || {
+        let dead = Thread.spawn(|| {
             panic("first one dies")
             return 0
         })
@@ -89,7 +89,7 @@ test "P2: the survivor keeps running and joins a healthy task after" {
             JoinError.Panicked(msg) => { first = PANICKED },
             JoinError.Cancelled => { first = CANCELLED },
         }
-        let alive = Thread.spawn(own || {
+        let alive = Thread.spawn(|| {
             return 42
         })
         match alive.join() {
@@ -105,7 +105,7 @@ test "P2: the survivor keeps running and joins a healthy task after" {
 test "O3 + LK1-LK3: the next acquirer gets the lock and the last write" {
     mut outcome = 0
     using Multitasking {
-        let h = Thread.spawn(own || {
+        let h = Thread.spawn(|| {
             with SHELF.write() as t {
                 t.hits = 5
                 panic("died holding the lock")
@@ -130,7 +130,7 @@ test "O3 + LK1-LK3: the next acquirer gets the lock and the last write" {
 test "ST3 across a task boundary: a staged update commits nothing on panic" {
     mut outcome = 0
     using Multitasking {
-        let h = Thread.spawn(own || {
+        let h = Thread.spawn(|| {
             with LATER.staged() as t {
                 t.hits = 99
                 t.misses = 99
@@ -155,7 +155,7 @@ test "O2: a dying sender's buffer drains, then the receiver sees closed" {
     let (tx, rx) = Channel<i64>.buffered(8)
     mut outcome = 0
     using Multitasking {
-        let h = Thread.spawn(own || {
+        let h = Thread.spawn(|| {
             tx.send(1)
             tx.send(2)
             panic("died after sending")

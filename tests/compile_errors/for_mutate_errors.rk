@@ -28,7 +28,7 @@ func test_take_item() {
     rows.push(first)
 
     for mutate row in rows {
-        consume(own row)       // ERROR LP16: take from borrowed element
+        consume(row)       // ERROR LP16: take from borrowed element
     }
 }
 

@@ -85,7 +85,7 @@ enum CompactionMsg {
 }
 
 func spawn_background_compaction(a: SstMeta, b: SstMeta, new_id: i32, target_level: i32, dir: string, tx: Sender<CompactionMsg>) {
-    spawn(own || {
+    spawn(|| {
         tx.send(CompactionMsg.Started(a.id, b.id))
 
         match compact_sstables(a.clone(), b.clone(), new_id, target_level, dir) {

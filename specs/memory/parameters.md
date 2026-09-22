@@ -15,13 +15,13 @@ Four modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow
 | **PM1: Borrow** | Borrow | `param: T` | `f(x)` | Value still valid |
 | **PM2: Mutate** | Mutate | `mutate param: T` | `f(mutate x)` — marker required (PM4) | Value still valid |
 | **PM2b: Deleting** | Mutate + delete | `deleting param: T` | `f(deleting x)` — marker required (PM4) | Value still valid; links into it are not |
-| **PM3: Take** | Take | `take param: T` | `f(x)` or `f(own x)` — marker optional | Value invalid |
+| **PM3: Take** | Take | `take param: T` | `f(x)` — no marker | Value invalid |
 
 | Rule | Description |
 |------|-------------|
 | **PM4: Call-site mutate marker** | An argument passed to a `mutate` parameter is written `mutate arg` at the call site. Omitting it is a compile error with the one-token fix. Method receivers are exempt: `player.take_damage(10)` needs no marker — the receiver is understood to be the thing operated on |
 | **PM5: Marker follows the signature** | PM4 is syntactic: the marker is required exactly when the parameter is declared `mutate` or `deleting`, and it is *that* word at the call site, regardless of the argument's type. A Copy argument to a `mutate` parameter still writes `mutate` — the rule never depends on a type's size |
-| **PM6: A borrow can't be given away** | A `param: T` cannot be consumed inside the body — not by a `take` parameter, not by a `take self` method, not by storing it into a field or another aggregate, and `own` at the inner call site changes nothing. The caller keeps the value and goes on using it, so consuming it would leave them holding something that's gone (`mem.linear/L1`). Compile error at the consumption, pointing at the declaration; `take` on the declaration is the fix |
+| **PM6: A borrow can't be given away** | A `param: T` cannot be consumed inside the body — not by a `take` parameter, not by a `take self` method, not by storing it into a field or another aggregate. The caller keeps the value and goes on using it, so consuming it would leave them holding something that's gone (`mem.linear/L1`). Compile error at the consumption, pointing at the declaration; `take` on the declaration is the fix |
 | **PM6b: A Copy argument is copied, not given** | PM6 is about giving a value away, and a Copy type is never given away — handing one to a `take` parameter copies it and the caller keeps theirs. So `vec.push(n)` on an `i64`, through `push(mutate self, take item: T)`, is fine twice over, and so is pushing a `Link<T>`. The threshold is the ordinary one (`mem.ownership`): sixteen bytes, and never for a linear value. This is a rule about the **argument**; PM6c is what the signature may say |
 | **PM6c: `take` is not written on a type that is always Copy** | `take amount: i64` promises the caller loses the value and the caller doesn't, so it is a compile error at the declaration. The check is on the spelling, and only for types whose Copy-ness can't change: the primitives and `string`. `take p: Point` stays legal — a struct stops being Copy the day it grows past sixteen bytes — and so does `take item: T`, which is how `Vec.push` is declared and where PM6b does its work |
 | **PM7: A consumed `mutate` parameter is replaced** | A `mutate` parameter *may* be consumed — exclusive access is what makes taking the value out and writing a replacement back the mode's whole point. PM2 promises the value is still there when the call returns, so a replacement has to be assigned on every path that reaches the return. Consumed on some paths and replaced on none, or on only some, is a compile error. A function that keeps the value for good declares `take` instead, so the call site shows it going |
@@ -364,13 +364,13 @@ Note the interaction with `let` bindings: `let` is deep — you cannot pass a `l
 
 **PM3 (take):** The rare case. Ownership transfer only when you need to store, send, or consume.
 
-**PM4 (call-site `mutate` markers — this flipped).** Swift (`&x`), C# (`ref x`), and Rue (`&x`) all require markers at call sites for mutable parameters. The first version of this spec chose against, on three arguments: ceremony is per-call not per-definition; `own` marks the destructive case so mutation (the reversible one) can stay quiet; and tooling shows the mode at call sites anyway. That reasoning is preserved in history because knowing why it lost matters.
+**PM4 (call-site `mutate` markers — this flipped).** Swift (`&x`), C# (`ref x`), and Rue (`&x`) all require markers at call sites for mutable parameters. The first version of this spec chose against, on three arguments: ceremony is per-call not per-definition; a move is marked so mutation (the reversible one) can stay quiet; and tooling shows the mode at call sites anyway. That reasoning is preserved in history because knowing why it lost matters.
 
-It lost to one observation: **mark what the compiler can't backstop.** Misread a move and your next use of the value is a compile error — the checker corrects the wrong belief, which is why `own` can stay optional. Misread a mutation and nothing corrects you: `apply_damage(player, 10)` compiles identically whether `player` changes or not, and a reviewer's wrong belief survives all the way to production. The old rationale marked the irreversible action; the irreversible action was the one that never needed marking. Ceremony belongs exactly where a wrong reading is *legal*.
+It lost to one observation: **mark what the compiler can't backstop.** Misread a move and your next use of the value is a compile error — the checker corrects the wrong belief, which is why a move needs no marker at all. Misread a mutation and nothing corrects you: `apply_damage(player, 10)` compiles identically whether `player` changes or not, and a reviewer's wrong belief survives all the way to production. The old rationale marked the irreversible action; the irreversible action was the one that never needed marking. Ceremony belongs exactly where a wrong reading is *legal*.
 
 The cost stayed small for the same reason the old rationale said it would: most mutation flows through receivers (`vec.push(x)`, `player.take_damage(10)`), which are exempt — the receiver is the thing being operated on, the universal convention in Go, Swift, and Rust alike. What PM4 marks is the rarer, easily-missed case: a free function (or a non-receiver argument) that reaches in and changes something you passed. One word, at the exact sites a plain-diff reviewer would otherwise have to look up.
 
-`take` arguments keep the optional `own` marker: write it for emphasis, or let the checker's use-after-move errors do the guarding. Making it required would mark the backstopped case — the mistake the old PM4 rationale made, inverted.
+`take` arguments carry no marker: the checker's use-after-move errors do the guarding. There used to be an optional `own` for emphasis, and optional is the worst setting for a marker — present means something, absent means nothing known. Requiring it would have marked the backstopped case, which is the mistake the old PM4 rationale made, inverted.
 
 The three conditions this decision fell out of — wrong reading is legal, mark is non-viral, marked case is the minority — are now the general rule for all explicitness debates: see "The Ceremony Test" in [CORE_DESIGN.md](../CORE_DESIGN.md).
 
@@ -401,12 +401,12 @@ Builder.new()
 
 **Signatures:** All modes are visible in source — no ghost annotations needed.
 
-**Call sites:** `mutate` is in source (PM4), so the only ghost left is `own` on unmarked take arguments:
+**Call sites:** `mutate` is in source (PM4), so the only ghost left is the move on a `take` argument:
 
 <!-- test: skip -->
 ```rask
 apply_damage(mutate player, 10) // in source — nothing to ghost
-consume(user)                   // IDE shows: consume(own user)  [nothing if own written]
+consume(user)                   // IDE shows: consume(user)  [nothing if own written]
 process(data)                   // IDE shows nothing (borrow is default, no annotation)
 ```
 
@@ -414,9 +414,9 @@ process(data)                   // IDE shows nothing (borrow is default, no anno
 |---------|-----------------|
 | Borrow argument | None (default, no noise) |
 | `mutate` argument | None — PM4 puts it in source |
-| `take` argument | `own` ghost before argument (nothing if `own` already written) |
+| `take` argument | `moves` ghost before the argument |
 
-Mutation is visible on every surface — source, diff, grep — with no tooling required. The `own` ghost (and `rask annotate`'s `own` row) covers the one remaining call-site mode, where the checker already guards against misreading.
+Mutation is visible on every surface — source, diff, grep — with no tooling required. The move ghost (and `rask annotate`'s row for it) covers the one remaining call-site mode, where the checker already guards against misreading.
 
 ### See Also
 

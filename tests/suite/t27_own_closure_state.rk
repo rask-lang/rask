@@ -18,7 +18,7 @@ import sequence.Sequence
 
 func counter() -> func() -> i32 {
     mut n = 0
-    return own || { n += 1; return n }
+    return || { n += 1; return n }
 }
 
 test "mem.closures/MC1 — an own closure's scalar capture survives the call" {
@@ -38,7 +38,7 @@ test "mem.closures/MC3 — two closures from the same function don't share state
 
 func collector() -> func(i32) -> i32 {
     mut v = Vec<i32>.new()
-    return own |x| {
+    return |x| {
         v.push(x)
         return v.len().wrap<i32>()
     }
@@ -56,7 +56,7 @@ test "mem.closures/MC1 — an own closure's aggregate capture accumulates" {
 // An `own` sequence: the producer owns its traversal state, and the loop body
 // still writes the loop's own variables.
 func upto(hi: i32) -> Sequence<i32> {
-    return own |yield| {
+    return |yield| {
         mut i = 1
         while i <= hi {
             if !yield(i) { return }

@@ -109,7 +109,7 @@ func stepper(start: i32) -> func() -> i32 {
     let p23 = 23
     let guard = p0 + p1 + p2 + p3 + p23
     mut n = start
-    return own || {
+    return || {
         if guard < 0 { return -1 }
         n += 1
         return n

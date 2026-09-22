@@ -1995,7 +1995,6 @@ impl<'a> Printer<'a> {
         match arg.mode {
             ArgMode::Mutate => self.emit("mutate "),
             ArgMode::Deleting => self.emit("deleting "),
-            ArgMode::Own => self.emit("own "),
             ArgMode::Default => {}
         }
         self.format_expr(&arg.expr);
@@ -2450,10 +2449,7 @@ impl<'a> Printer<'a> {
                 self.emit_indent();
                 self.emit("}");
             }
-            ExprKind::Closure { params, ret_ty, body, is_own } => {
-                if *is_own {
-                    self.emit("own ");
-                }
+            ExprKind::Closure { params, ret_ty, body } => {
                 self.emit("|");
                 for (i, param) in params.iter().enumerate() {
                     if i > 0 {

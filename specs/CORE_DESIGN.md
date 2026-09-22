@@ -10,7 +10,7 @@ The breakthrough was realizing that most of Rust's complexity comes from trying 
 
 ## Design Principles
 
-The nine principles below are applications of one meta-principle: **safety through visibility.** Wherever other systems-languages trade safety against ceremony, Rask tries to make safety *visible in source* — as explicit calls, scoped blocks, and named keywords — rather than hide it in destructors, lifetime annotations, or effect types. Cleanup you can see (`ensure file.close()`), aliasing control you can scope (`with`, inline access), mutation you can mark (`mutate`), cost you can spot (`.clone()`, `own`, `spawn`). The compiler still guarantees the invariants; the source still shows the mechanism. This is the thread tying the specific choices together.
+The nine principles below are applications of one meta-principle: **safety through visibility.** Wherever other systems-languages trade safety against ceremony, Rask tries to make safety *visible in source* — as explicit calls, scoped blocks, and named keywords — rather than hide it in destructors, lifetime annotations, or effect types. Cleanup you can see (`ensure file.close()`), aliasing control you can scope (`with`, inline access), mutation you can mark (`mutate`), cost you can spot (`.clone()`, `Heap`, `spawn`). The compiler still guarantees the invariants; the source still shows the mechanism. This is the thread tying the specific choices together.
 
 ### 1. Safety Without Annotation
 
@@ -121,7 +121,7 @@ Information the compiler can infer should be displayed by tooling, not required 
 - Trait conformance is declared; inferred private bounds and duck traits match by shape while sketching, and the IDE shows inferred bounds and matching types as ghost text
 - Ownership transfers are tracked; IDE shows move/copy decisions at use sites
 - Closure captures are implicit; IDE shows capture list as ghost annotation
-- Parameter modes are in signatures; `mutate` arguments are marked at call sites too (`mem.parameters/PM4`); the IDE ghosts only `own` on unmarked take arguments
+- Parameter modes are in signatures; `mutate` arguments are marked at call sites too (`mem.parameters/PM4`); the IDE ghosts the move on a `take` argument
 
 **The principle:** Write intent, not mechanics. The compiler knows the mechanics—let tooling reveal them.
 
@@ -133,8 +133,8 @@ Three visibility bands make the claim checkable:
 
 | Band | What lives there | Where you can read it |
 |------|------------------|----------------------|
-| Source | Parameter modes on signatures **and** `mutate` at call sites (`mem.parameters/PM4`), `own`, `take`, `mutate` captures, `try`, `.clone()`, `spawn`, `ensure`, `using` on public functions | Anywhere text renders |
-| Materialized metadata | `own` at take call sites, effects, pause points, capture lists, consuming match arms, inferred private signatures and `using` clauses | IDE ghosts; `rask annotate` everywhere else |
+| Source | Parameter modes on signatures **and** `mutate` at call sites (`mem.parameters/PM4`), `take`, `try`, `.clone()`, `spawn`, `ensure`, `using` on public functions | Anywhere text renders |
+| Materialized metadata | moves at take call sites, closure capture mode, effects, pause points, capture lists, consuming match arms, inferred private signatures and `using` clauses | IDE ghosts; `rask annotate` everywhere else |
 | IDE comfort | Inferred local types, borrow scopes, optimizer decisions | IDE; `rask annotate --all` |
 
 The rule that keeps the bands honest: anything that mutates, consumes, suspends, or performs I/O sits in the top two bands — never IDE-only.
@@ -145,7 +145,7 @@ Code should be analyzable by tools — linters, refactoring engines, IDE plugins
 
 **What this means:**
 - Function signatures are self-describing specifications (parameter modes, error types, context clauses)
-- Keywords carry unambiguous meaning (`try`, `own`, `take`, `read`, `ensure`)
+- Keywords carry unambiguous meaning (`try`, `take`, `mutate`, `ensure`)
 - One idiomatic pattern per operation (one error model, one cleanup model, one concurrency model)
 - Naming conventions encode semantics (`is_*` returns bool, `into_*` takes ownership, `to_*` allocates)
 
@@ -160,7 +160,7 @@ The compiler tracks information the language deliberately keeps out of the type 
 **What this means:**
 - I/O, async, and mutation effects are tracked transitively (`comp.effects`) but don't appear in function signatures and don't color call syntax. A caller of a function that does I/O writes the call the same way as a caller of a pure one.
 - `@pure` is a lint annotation, not a type qualifier. A pure function can call an impure one; the lint warns.
-- IDE ghost annotations show closure captures, inferred types, pause points, and `own` at take call sites — the compiler knows, the source doesn't say. (Mutation is not on this list: `mutate` is written at the call site, `mem.parameters/PM4` — a wrong reading of mutation is legal code, so it isn't left to tooling.) Outside an IDE, `rask annotate` materializes the same layer into diffs and terminals ([tooling/annotate.md](tooling/annotate.md)), so "tooling shows" doesn't quietly mean "only the IDE shows."
+- IDE ghost annotations show closure captures, inferred types, pause points, and moves at take call sites — the compiler knows, the source doesn't say. (Mutation is not on this list: `mutate` is written at the call site, `mem.parameters/PM4` — a wrong reading of mutation is legal code, so it isn't left to tooling.) Outside an IDE, `rask annotate` materializes the same layer into diffs and terminals ([tooling/annotate.md](tooling/annotate.md)), so "tooling shows" doesn't quietly mean "only the IDE shows."
 
 **There is no carve-out any more.** One used to sit here: `using Pool<T>` was declared in signatures and propagated up the call graph, because a pool is a value callees dereference and something had to thread it in. That was scope-level coloring, and it was the only coloring left in the language. Pools are gone (rask-lang/rask#908), and nothing replaced the clause — a `Rack<T>` needs no ambient context, because a `Link<T>` *is* the node rather than a ticket you redeem at a container. Nothing in a Rask signature colors it today.
 
@@ -180,7 +180,7 @@ Every "should X be explicit in source?" debate has the same answer. A mark earns
 2. **The mark is non-viral.** It attaches to one site and never propagates through signatures. The moment a mark is forced on callers because a *callee's implementation* changed, it's function coloring with different spelling.
 3. **The marked case is the minority.** A mark on the common case is noise that trains readers to skip it.
 
-Fail 1 → the checker guards it; a marker may exist for emphasis but stays optional (`own` on take arguments). Fail 2 → it stays metadata, with lints at the dangerous overlaps (suspension points, transitive lock acquisition). Fail 3 → opt-in warning for the teams that care (`@warn(implicit_copy)`).
+Fail 1 → the checker guards it and no marker is written (a move at a `take` argument). Fail 2 → it stays metadata, with lints at the dangerous overlaps (suspension points, transitive lock acquisition). Fail 3 → opt-in warning for the teams that care (`@warn(implicit_copy)`).
 
 The one candidate that passed all three after the fact: `mutate` at call sites — a legal wrong reading, one non-viral word, on the minority case — which is why `mem.parameters/PM4` flipped from the original design. Run future candidates through the same three questions before adding syntax *or* before assuming tooling can carry something it can't.
 
