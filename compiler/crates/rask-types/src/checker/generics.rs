@@ -125,6 +125,22 @@ impl TypeChecker {
 
     pub(super) fn resolve_named(&self, ty: &Type) -> Type {
         match ty {
+            // AT6: read the associated type off the conformance. A lookup —
+            // if the base isn't concrete yet, or nothing answers, the
+            // projection stays as written and the error names it.
+            Type::Assoc { base, name } => {
+                let base_ty = self.resolve_named(base);
+                if let Some(id) = match &base_ty {
+                    Type::Named(id) => Some(*id),
+                    Type::Generic { base, .. } => Some(*base),
+                    _ => None,
+                } {
+                    if let Some(bound) = self.types.assoc_binding_any(id, name) {
+                        return bound.clone();
+                    }
+                }
+                Type::Assoc { base: Box::new(base_ty), name: name.clone() }
+            }
             Type::UnresolvedNamed(name) => {
                 if name == "Self" {
                     if let Some(self_ty) = &self.current_self_type {
@@ -187,6 +203,12 @@ impl TypeChecker {
                 }
                 ty.clone()
             }
+            // AT3/AT6: substituting `T` in `T.Out` gives `Meters.Out`, which
+            // `resolve_named` then reads off Meters' conformance.
+            Type::Assoc { base, name } => Type::Assoc {
+                base: Box::new(Self::substitute_type_params(base, subst)),
+                name: name.clone(),
+            },
             Type::Result { ok, err } if **err == Type::None => {
                 Type::option(Self::substitute_type_params(ok, subst))
             }

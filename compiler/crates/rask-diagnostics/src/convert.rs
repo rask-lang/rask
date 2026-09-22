@@ -1849,6 +1849,72 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
             }
 
+            ConformanceSignatureMismatch { ty, trait_name, method, expected, found, span } => {
+                Diagnostic::error(format!("`{}.{}` doesn't match what `{}` requires", ty, method, trait_name))
+                    .with_code("E0888")
+                    .with_primary(*span, format!("this is `{}`", found))
+                    .with_fix(format!("the trait asks for `{}`", expected))
+                    .with_why("the header is the claim and the block is the evidence — a signature that differs answers a different question than the one the trait asked [type.generics/G1]")
+            }
+
+            OverlappingTraitConformance { ty, first, second, method, span } => {
+                Diagnostic::error(format!(
+                    "`{}` conforms to both `{}` and `{}`, and they want different `{}`s",
+                    ty, first, second, method
+                ))
+                .with_code("E0889")
+                .with_primary(*span, format!("the second `{}` has nowhere to live", method))
+                .with_fix(format!(
+                    "keep one of them — or give this one its own trait, so the two `{}`s have different names to answer to",
+                    method
+                ))
+                .with_why("a type has one method per name (type.generics/MN1), so two conformances asking for different `{method}`s leave `x.{method}(…)` with no answer. Choosing from the argument's type is operator resolution's job, and that isn't built yet [type.generics/MN3]".replace("{method}", method))
+            }
+
+            TraitArity { trait_name, params, expected, found, span } => {
+                let base = trait_name.split('<').next().unwrap_or(trait_name);
+                let written = if *expected == 1 { "argument" } else { "arguments" };
+                let d = Diagnostic::error(format!(
+                    "`{}` takes {} type {}, found {}",
+                    base, expected, written, found
+                ))
+                .with_code("E0885")
+                .with_primary(*span, if found < expected { "not enough here" } else { "too many here" });
+                let shown = format!("{}<{}>", base, params.join(", "));
+                d.with_fix(format!("write it out: `{}` — the conformance decides what each one is", shown))
+                    .with_why("a trait's type parameter is substituted through every signature it requires, so the conformance has to say what it is before anything can be checked against it [type.generics/GT2]")
+            }
+
+            MissingAssocType { ty, trait_name, assoc, span } => {
+                Diagnostic::error(format!(
+                    "`{}`'s `{}` conformance doesn't say what `{}` is",
+                    ty, trait_name, assoc
+                ))
+                .with_code("E0886")
+                .with_primary(*span, format!("`{}` is unanswered here", assoc))
+                .with_fix(format!("name it in the block:\n    type {} = …", assoc))
+                .with_why("an associated type is read off the conformance, not guessed from the methods — that is what keeps it a lookup instead of a search [type.associated-types/AT2]")
+            }
+
+            UnknownAssocType { assoc, trait_name, known, span } => {
+                let d = Diagnostic::error(format!(
+                    "no associated type `{}` on `{}`",
+                    assoc, trait_name
+                ))
+                .with_code("E0887")
+                .with_primary(*span, "this isn't one of the trait's members");
+                let refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
+                match crate::suggestions::did_you_mean(assoc, refs) {
+                    Some(hint) => d.with_fix(hint),
+                    None if known.is_empty() => d.with_fix(format!(
+                        "`{}` declares no associated types — declare one:\n    type {}",
+                        trait_name, assoc
+                    )),
+                    None => d.with_fix(format!("`{}` declares: {}", trait_name, known.join(", "))),
+                }
+                .with_why("a conformance answers exactly what the trait asked for [type.associated-types/AT1]")
+            }
+
             NoSuchTrait { trait_name, known, span } => {
                 let d = Diagnostic::error(format!("no trait named `{}`", trait_name))
                     .with_code("E0833")
