@@ -600,11 +600,6 @@ fn remap_stmt(
         MirStmtKind::ResourceConsume { resource_id } => MirStmtKind::ResourceConsume {
             resource_id: remap_id(*resource_id, map),
         },
-        MirStmtKind::PoolCheckedAccess { dst, pool, handle } => MirStmtKind::PoolCheckedAccess {
-            dst: remap_id(*dst, map),
-            pool: remap_id(*pool, map),
-            handle: remap_id(*handle, map),
-        },
         MirStmtKind::ArrayStore { base, index, elem_size, value } => MirStmtKind::ArrayStore {
             base: remap_id(*base, map),
             index: remap_operand(index, map),

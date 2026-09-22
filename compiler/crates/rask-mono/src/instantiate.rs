@@ -240,7 +240,6 @@ impl TypeSubstitutor {
                 .ret_ty
                 .as_ref()
                 .map(|ty| self.substitute_type_string(ty)),
-            context_clauses: fn_decl.context_clauses.clone(),
             body: fn_decl.body.iter().map(|s| self.clone_stmt(s)).collect(),
             is_pub: fn_decl.is_pub,
             is_private: fn_decl.is_private,

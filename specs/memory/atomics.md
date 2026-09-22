@@ -32,7 +32,7 @@ There is one atomic type and one way to spell it: `Atomic<T>`. It takes any payl
 Rask gives every struct field its own word, so a struct payload is word-sized when it has *one* field: `{ index: i32, gen: i32 }` is 16 bytes however small the fields are written, and E0384 says so. That's a consequence of the layout model rather than of this rule, and it moves if the layout does.
 | **GA3: Ops follow the payload** | Every eligible payload gets `new`, `load`, `store`, `swap`, `compare_exchange`, `compare_exchange_weak`, `into_value`, `get_mut`. Integer payloads add the full fetch family; `bool` adds the logical fetches; floats add `fetch_add`/`fetch_sub`/`fetch_max`/`fetch_min`. Struct payloads get none — `fetch_add` on a struct is meaningless |
 | **GA4: CAS is bitwise** | `compare_exchange` compares raw bytes. This is why GA2 excludes padding: two logically equal values with different padding bytes would spuriously fail CAS. Same rule float CAS already follows (`NaN == NaN` when bit patterns match, `+0.0 != -0.0`) |
-| **GA5: Optional payloads** | `Atomic<T?>` is rejected in general — an arbitrary `T` has no spare bit pattern for `none`. The one exception is `Atomic<Handle<T>?>`, where the compiler owns the layout and reserves a sentinel (AH2) |
+| **GA5: No optional payloads** | `Atomic<T?>` is rejected. An optional payload needs a bit pattern no valid `T` occupies, and nothing here can promise one. Add your own sentinel field, visible in the struct |
 
 Struct payloads are the point of the generality ([#497](https://github.com/rask-lang/rask/issues/497)). An 8-byte two-field struct is exactly as atomic-eligible as a `u64`, and the compiler does the packing that hand-written shift-and-mask code gets wrong silently:
 
@@ -64,7 +64,6 @@ Add a field to `Slot` and it either still fits (nothing to update) or the `Atomi
 | `f32` / `f64` | 4 / 8 bytes | `fetch_add/sub/max/min`; needs `target.has_atomic_float` (AT7) |
 | `i128` / `u128` | 16 bytes | Needs `target.has_atomic128` (AT7) |
 | `*T` (raw pointer) | Pointer-size | Load is safe; deref needs `unsafe` |
-| `Handle<T>?` | 8 or 16 bytes | The one optional payload (GA5, AH1–AH4) |
 | Copy struct, no padding | 1–16 bytes | Bitwise CAS only, no fetches (GA3, GA4) |
 
 **Properties:**
@@ -200,48 +199,6 @@ unsafe {
 }
 ```
 
-### Handle Payloads
-
-`Atomic<Handle<T>?>` is the one optional payload GA5 admits, because the compiler owns `Handle`'s layout and can reserve a bit pattern for `none`. Handle fields (pool_id, index, generation) are packed into a single atomic word; the packing is GA2/GA4 at work on a compiler-defined struct rather than a separate mechanism.
-
-| Rule | Description |
-|------|-------------|
-| **AH1: Packing** | Handle fields packed into an 8-byte atomic word (≤8 byte handles) or a 16-byte one (≤16 byte, requires `target.has_atomic128`) |
-| **AH2: Nullable** | Holds `Handle<T>?` — `none` is a sentinel bit pattern distinct from any valid handle |
-| **AH3: ABA protection** | Generation counter in the handle prevents ABA — a reused slot gets a different generation, so CAS on a recycled handle correctly fails |
-| **AH4: Pool validation** | Atomicity guarantees a consistent load, not that the handle is live. Validate with `pool.get(h)` before access |
-
-| Operation | Signature | Description |
-|-----------|-----------|-------------|
-| `new(h)` | `Handle<T> -> Atomic<Handle<T>?>` | Create with initial handle |
-| `none()` | `() -> Atomic<Handle<T>?>` | Create empty (sentinel) |
-| `load(order)` | `self, Ordering -> Handle<T>?` | Atomically read |
-| `store(h, order)` | `self, Handle<T>?, Ordering` | Atomically write |
-| `swap(h, order)` | `self, Handle<T>?, Ordering -> Handle<T>?` | Replace, return old |
-| `compare_exchange(cur, new, succ, fail)` | `self, Handle<T>?, Handle<T>?, Ordering, Ordering -> Handle<T>? or CasFailed<Handle<T>?>` | CAS |
-| `compare_exchange_weak(cur, new, succ, fail)` | Same | May spuriously fail |
-
-**Handle size:** Default `Handle<T>` is 12 bytes — requires 16-byte atomics (x86-64, ARM64). Compact handles (`Pool<T, PoolId=u16, Index=u16, Gen=u32>`) are 8 bytes — work everywhere. Compile error if handle exceeds the available atomic word size.
-
-<!-- test: skip -->
-```rask
-// Atomic "latest value" slot — multiple writers, readers see most recent
-let latest: Atomic<Handle<Reading>?> = Atomic.none()
-
-func publish(mutate pool: Pool<Reading>, value: Reading) {
-    let h = pool.insert(value)
-    let prev = latest.swap(h, Release)
-    if prev? as old_h {
-        pool.remove(old_h)
-    }
-}
-
-func read_latest(pool: Pool<Reading>) -> Reading? {
-    let h = try latest.load(Acquire)
-    return pool.get(h)   // none if writer just swapped and removed
-}
-```
-
 ### Non-Atomic Access
 
 | Operation | Signature | Description |
@@ -360,24 +317,6 @@ WHY: Lock-based emulation would hide a 10x cost, violating transparency.
 FIX: Use comptime if target.has_atomic128 { ... } to provide both paths.
 ```
 
-**Handle payload size mismatch [AH1]:**
-```
-ERROR [mem.atomics/AH1]: Handle<Entity> is 12 bytes — needs a 16-byte atomic word
-   |
-5  |  let head: Atomic<Handle<Entity>?> = Atomic.none()
-   |              ^^^^^^^^^^^^^^^^^^^^^^^ does not fit an 8-byte atomic word
-
-WHY: Default Handle is 12 bytes (PoolId=u32, Index=u32, Gen=u32).
-     16-byte atomics are not available on this platform.
-
-FIX 1: Use compact pool configuration:
-
-  let pool = Pool<Entity, PoolId=u16, Index=u16, Gen=u32>.new()
-  // Handle is now 8 bytes — fits an 8-byte atomic word
-
-FIX 2: Use comptime if target.has_atomic128 { ... } for platform-specific paths.
-```
-
 **Padding in the payload [GA2]:**
 ```
 ERROR [mem.atomics/GA2]: Tagged has padding — cannot be an atomic payload
@@ -435,12 +374,9 @@ FIX: read-modify-write with a CAS loop; the modify step is ordinary code:
 | Struct payload with padding bytes | GA2 | Compile error — reorder fields or pad explicitly |
 | Struct payload > 8 bytes without `target.has_atomic128` | GA2/AT7 | Compile error — same gate as `Atomic<u128>` |
 | `fetch_add` on a struct payload | GA3 | Compile error — use a CAS loop |
-| `Atomic<T?>` where `T` is not `Handle` | GA5 | Compile error — no spare bit pattern for `none`; add your own sentinel field |
+| `Atomic<T?>` | GA5 | Compile error — no spare bit pattern for `none`; add your own sentinel field |
 | `default()` on a struct payload | GA3 | Compile error — no compiler-known default, use `new` |
-| Handle too large for atomic word | AH1 | Compile error — use compact pool config or platform with `Atomic<u128>` |
-| Atomic handle load then `pool[h]` | AH4 | Handle may be stale — use `pool.get(h)` for safe validation |
-| CAS on handle to recycled slot | AH3 | Correctly fails — generation mismatch in packed word |
-| `Atomic.none()` in CAS expected | AH2 | Works — `none` is a valid bit pattern for comparison |
+| `Atomic<Link<T>?>` | GA5 | Compile error — see the note below on why a link isn't the exception a handle was |
 
 ---
 
@@ -464,13 +400,13 @@ The cost of the generic surface — operation families that vary by payload — 
 
 **GA3 (no fetch ops on structs):** `fetch_add` exists because hardware has it for integers. For a struct, "add" has no single meaning, and inventing one (field-wise? user-defined?) would hide a CAS loop behind an innocent-looking method. The CAS loop is the honest spelling: the modify step is visible code between a `load` and a `compare_exchange`.
 
-**GA5 (why `Atomic<Handle<T>?>` and nothing else optional):** an optional payload needs a bit pattern that no valid `T` occupies. The compiler owns `Handle`'s layout and can promise one; it can't promise anything about an arbitrary user struct. Users who need an "empty" state add their own sentinel field — visible in the struct definition, checked by their own code. The old standalone `AtomicHandle<T>` dissolving into a plain instantiation of the general type (instead of staying its own privileged thing) was the test that the `Atomic<T>` shape is right.
+**GA5 (no optional payloads at all).** There used to be exactly one exception: `Atomic<Handle<T>?>`, with four rules of its own (AH1–AH4) for packing the handle's three fields into a word and reserving all-ones for `none`. It worked because the compiler owned the handle's layout, and because a handle carried a generation — which gave lock-free code ABA protection for free, since a recycled slot got a different generation and a CAS on the stale handle correctly failed. Handles are gone (rask-lang/rask#908) and that section went with them.
+
+`Atomic<Link<T>?>` is *not* the replacement, even though a link is one word and null is a perfectly good `none`. Two things it can't do that a handle could. It carries no generation, so ABA comes back: an address freed and handed out again compares equal to the one you loaded. And `mem.racks/RK3` — delete nulls every edge pointing at the node — works by finding the node's holders in the rack's edge index, which an atomic word another thread is writing is not. A link published through an atomic could outlive its node with nothing to catch it. That's the same gap `mem.racks` already lists as deferred under "structural mutation under concurrency"; until it has an answer, this stays closed.
+
+Users who need an "empty" state add their own sentinel field — visible in the struct definition, checked by their own code.
 
 **C interop:** Atomic types are ABI-compatible with C11 `_Atomic` types and C++ `std::atomic`.
-
-**AH3 (ABA protection):** Traditional lock-free algorithms need separate ABA mitigation — tagged pointers, hazard pointers, or epoch-based reclamation. Handle generation counters provide this structurally: when a pool slot is reused, the generation increments. A stale handle packed into an `Atomic<Handle<T>?>` has a different bit pattern than the new occupant's handle, so CAS correctly rejects it. This doesn't eliminate all concurrency hazards (safe reclamation is still needed), but it removes the most common source of subtle lock-free bugs for free.
-
-**AH4 (pool validation):** `Atomic<Handle<T>?>` guarantees you loaded a consistent handle value. It does NOT guarantee the handle is still live — another thread may have removed it between your load and your pool access. Always use `pool.get(h)` (returns `T?`) rather than `pool[h]` (panics on stale handle) after an atomic handle load.
 
 ### Patterns & Guidance
 
@@ -485,9 +421,9 @@ The cost of the generic surface — operation families that vary by payload — 
 | Reference count increment | `Relaxed` |
 | Reference count decrement (checking for zero) | `AcqRel` |
 | Unknown / unsure | `SeqCst` (safest, may be slower) |
-| Handle publish (writer) | `Release` store/swap |
-| Handle consume (reader) | `Acquire` load |
-| Handle CAS (lock-free op) | Success: `AcqRel`, Failure: `Relaxed` |
+| Publishing a value (writer) | `Release` store/swap |
+| Consuming a published value (reader) | `Acquire` load |
+| CAS in a lock-free op | Success: `AcqRel`, Failure: `Relaxed` |
 
 **Performance hierarchy (fastest to slowest):**
 
@@ -607,43 +543,9 @@ func spin_release<T>(lock: *SpinLockInner<T>) {
 
 These patterns use raw pointers and unsafe blocks. The stdlib provides a safe wrapper (`Shared<T, Mutex>`) that encapsulates the unsafe implementation.
 
-**Lock-free stack (sketch using `Atomic<Handle<T>?>`):**
+**Lock-free containers.** The stdlib is where these live: a correct one needs deferred reclamation and an ABA answer, and neither is something a sketch in a spec can show honestly. `Atomic<*T>` is the primitive they are built on, inside `unsafe`.
 
-<!-- test: skip -->
-```rask
-struct Node<T> {
-    data: T
-    next: Handle<Node<T>>?
-}
-
-struct LockFreeStack<T> {
-    pool: Pool<Node<T>, PoolId=u16, Index=u16, Gen=u32>
-    head: Atomic<Handle<Node<T>>?>
-}
-
-extend LockFreeStack<T> {
-    func new() -> LockFreeStack<T> {
-        LockFreeStack {
-            pool: Pool.new(),
-            head: Atomic.none(),
-        }
-    }
-
-    func push(mutate self, value: T) {
-        let node = self.pool.insert(Node { data: value, next: none })
-        loop {
-            let current = self.head.load(Acquire)
-            self.pool[node].next = current
-            match self.head.compare_exchange_weak(current, node, Release, Relaxed) {
-                Handle as _ => break,
-                CasFailed as _ => continue,
-            }
-        }
-    }
-}
-```
-
-This sketch shows the push path — CAS on handles with generation-based ABA protection. A complete implementation needs thread-safe pool access and deferred reclamation on pop. The stdlib provides `LockFreeStack<T>` and `LockFreeQueue<T>` that handle these concerns internally.
+The sketch that used to sit here built one out of `Atomic<Handle<T>?>` and got its ABA protection from the handle's generation counter. It went with the handles (rask-lang/rask#908); see the GA5 note above for why a link doesn't take the place.
 
 ### See Also
 
@@ -651,5 +553,5 @@ This sketch shows the push path — CAS on handles with generation-based ABA pro
 - [Shared, Rack and Heap](shared-rack-heap.md) — Why atomics sit adjacent to that set (`mem.shared-rack-heap`)
 - [Concurrency](../concurrency/async.md) — Channels and task spawning (`conc.async`)
 - [Unsafe](unsafe.md) — Raw pointer dereferencing for `Atomic<*T>` results (`mem.unsafe`)
-- [Pools](pools.md) — Handle-based storage, validation for atomic handle loads (`mem.pools`)
+- [Racks and Links](racks.md) — nodes with stable identity, and why a link may not be an atomic payload (`mem.racks`)
 - [Ownership](ownership.md) — Atomic values are owned, not reference-typed (`mem.ownership`)

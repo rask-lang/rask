@@ -1,7 +1,7 @@
 <!-- id: comp.codegen -->
 <!-- status: decided -->
 <!-- summary: MIR-based compilation pipeline with Cranelift backend and Rust runtime -->
-<!-- depends: compiler/generation-coalescing.md, compiler/semantic-hash-caching.md, memory/ownership.md, types/generics.md -->
+<!-- depends: compiler/semantic-hash-caching.md, memory/ownership.md, types/generics.md -->
 
 # Code Generation
 
@@ -58,7 +58,7 @@ All MIR types have known sizes. No generics remain.
 | **T1: Concrete only** | All types fully resolved before MIR lowering |
 | **T2: Field ordering** | Struct fields sorted by alignment (largest first) to minimize padding |
 | **T3: C layout override** | `@layout(C)` forces declaration order for C interop |
-| **T4: Niche optimization** | `Ptr?` uses null as `none`; `Handle?` uses sentinel generation `0` |
+| **T4: Niche optimization** | `Ptr?` and `Link?` use null as `none` |
 
 ```
 MirType:
@@ -77,7 +77,6 @@ MirType:
 |------|-------------|
 | **S1: Resource tracking** | MIR has `ResourceRegister`, `ResourceConsume`, `ResourceScopeCheck`, `ResourceTransfer` statements |
 | **S2: Ensure lowering** | `ensure` blocks lower to `EnsurePush`/`EnsurePop` with cleanup block chains |
-| **S3: Pool access** | `PoolCheckedAccess` is the target for generation check coalescing (`comp.gen-coalesce`) |
 | **S4: Source locations** | `SourceLocation` statements carry debug line/column info |
 
 ```
@@ -88,7 +87,6 @@ MirStmt:
     ResourceRegister { dst, type_name, scope_depth }
     ResourceConsume { resource_id } | ResourceScopeCheck { scope_depth }
     EnsurePush { cleanup_block } | EnsurePop
-    PoolCheckedAccess { dst, pool, handle }
     SourceLocation { line, col }
 
 MirTerminator:
@@ -122,7 +120,6 @@ let value = try fallible_call()
 | Rule | Description |
 |------|-------------|
 | **O1: Semantics-preserving** | All MIR passes preserve program semantics |
-| **O2: Generation coalescing** | Merge redundant `PoolCheckedAccess` on same (pool, handle) — see `comp.gen-coalesce` |
 | **O3: Dead code elimination** | Remove unreachable blocks, unused assignments |
 | **O4: Constant folding** | Evaluate constant expressions at compile time |
 | **O5: Copy propagation** | Replace `x = y; use(x)` with `use(y)` |
@@ -170,7 +167,7 @@ only way to append.
 
 | Rule | Description |
 |------|-------------|
-| **RT1: Core always linked** | Allocator, panic, string, Vec, Map, Pool, IO, ensure stack, resource tracker |
+| **RT1: Core always linked** | Allocator, panic, string, Vec, Map, Rack, IO, ensure stack, resource tracker |
 | **RT2: Concurrency conditional** | Thread, thread pool, channels, join — linked only when used |
 | **RT3: C implementation** | Runtime is C, compiled to static library |
 
@@ -183,7 +180,7 @@ only way to append.
 | **String** | `RaskStr` — 16-byte tagged union (SSO/heap), see `comp.memory-layout` and `std.strings/S8` |
 | **Vec** | `RaskVec<T>` — monomorphized growable array |
 | **Map** | `RaskMap<K,V>` — hash map |
-| **Pool** | `RaskPool<T>` — generational sparse storage |
+| **Rack** | `RaskRack<T>` — node chunks plus the incoming-edge index `delete` walks |
 | **IO** | `rask_print(s, len)`, `rask_println(...)` |
 | **Ensure stack** | `rask_ensure_push(handler)`, `rask_ensure_pop()`, `rask_ensure_run_all()` |
 | **Resource tracker** | `rask_resource_register(type_name, scope) -> u64`, `rask_resource_consume(id)`, `rask_resource_check_scope(scope)` |
@@ -271,7 +268,7 @@ FIX: Ensure all call sites provide concrete type arguments.
 | 1. Hello World | `println("text")`, function calls, string literals | `rask-codegen`, `rask-rt` |
 | 2. Primitives | Integer/float arithmetic, booleans, locals, if/else, loops | — |
 | 3. Structs + Enums | Layout, field access, tags, pattern matching, moves | — |
-| 4. Collections | String runtime, Vec, Pool + Handle, generation coalescing | — |
+| 4. Collections | String runtime, Vec, Map, Rack + Link | — |
 | 5. Errors + Resources | Result, `try`, ensure blocks, linear resource tracking | — |
 | 6. Generics + Traits | Monomorphization, semantic hash cache, `any Trait` vtables | — |
 | 7. Concurrency | Thread spawn, channels, thread pools | — |
@@ -286,7 +283,6 @@ FIX: Ensure all call sites provide concrete type arguments.
 
 ### See Also
 
-- `comp.gen-coalesce` — Generation check coalescing MIR pass
 - `comp.semantic-hash` — Semantic hash caching for monomorphization
 - `mem.ownership` — Ownership checking (runs before codegen)
 - `type.generics` — Generic type system and monomorphization

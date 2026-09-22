@@ -1225,12 +1225,10 @@ impl<'a> MirLowerer<'a> {
         // `examples/game_loop.rk` segfaulting in `GameState.spawn_enemy(..).ok()`).
         let niche = self.option_niche(expr, &result_ty);
         if let Some(sentinel) = niche {
-            // A handle and a link are both this shape, and they don't agree on
-            // which word means `none` — take it from the type.
             let payload_ty = match &result_ty {
                 MirType::Option(inner) if inner.is_niche_payload() => (**inner).clone(),
                 t if t.is_niche_payload() => t.clone(),
-                _ => MirType::Handle,
+                _ => crate::fallback::unknown_type("lower/errors:niche_payload"),
             };
             let result_local = self.builder.alloc_temp(payload_ty.clone());
 

@@ -461,53 +461,6 @@ impl Interpreter {
         if float_target { "parse_float".to_string() } else { method.to_string() }
     }
 
-    /// Find the `Pool` backing a handle by its pool id. Handle auto-deref
-    /// (mem.context/CC1) resolves the element through whichever `Pool<T>` is in
-    /// scope; the handle's pool id names it unambiguously, so a match by id
-    /// agrees with the compiler's CC4 resolution without needing the name.
-    /// Searches struct fields too, so a pool held in `self` (CC4 priority 3) is
-    /// reached from a method body.
-    pub(crate) fn pool_for_handle(&self, pool_id: u32) -> Option<Arc<Mutex<crate::value::PoolData>>> {
-        self.env.find_map(|v| Self::search_pool(v, &|p| p.pool_id == pool_id, 0))
-    }
-
-    /// Find the `Pool<T>` matching a named context clause's declared type
-    /// (mem.context/CC1, CC4). There's no handle here to read a pool id off
-    /// of, so this matches by the pool's own type parameter instead — the
-    /// same identity search `pool_for_handle` does, just keyed differently.
-    /// CC8 (ambiguity is a compile error) guarantees at most one candidate is
-    /// in scope, so the first match is the only one.
-    pub(crate) fn pool_for_context(&self, clause_ty: &str) -> Option<Arc<Mutex<crate::value::PoolData>>> {
-        if clause_ty != "Pool" && !clause_ty.starts_with("Pool<") {
-            return None;
-        }
-        let elem = clause_ty.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>'));
-        self.env.find_map(|v| {
-            Self::search_pool(v, &|p| elem.is_none_or(|e| p.type_param.as_deref() == Some(e)), 0)
-        })
-    }
-
-    fn search_pool(
-        v: &Value,
-        matches: &impl Fn(&crate::value::PoolData) -> bool,
-        depth: usize,
-    ) -> Option<Arc<Mutex<crate::value::PoolData>>> {
-        // Bound the walk so a cyclic struct graph can't loop forever.
-        if depth > 8 {
-            return None;
-        }
-        match v {
-            Value::Pool(p) => matches(&p.lock().unwrap()).then(|| p.clone()),
-            Value::Struct(s) => {
-                // Clone field values out before recursing so a self-referential
-                // struct can't deadlock on its own lock.
-                let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
-                fields.iter().find_map(|fv| Self::search_pool(fv, matches, depth + 1))
-            }
-            _ => None,
-        }
-    }
-
     /// Evaluate an expression whose result is transferred into a new owner
     /// (a binding, an assignment target, a struct field, a collection slot).
     /// Reading a place — a variable, field, or index — copies value-type
@@ -804,10 +757,6 @@ impl Interpreter {
                     }),
                     "char" => return Ok(Value::TypeConstructor {
                         kind: TypeConstructorKind::Char,
-                        type_param,
-                    }),
-                    "Pool" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Pool,
                         type_param,
                     }),
                     "Rack" => return Ok(Value::TypeConstructor {
@@ -1750,16 +1699,6 @@ impl Interpreter {
                         ),
                         None => value,
                     };
-                    // A `Pool<T>` field built from a bare `Pool.new()` needs the
-                    // same element-type stamp a `let`/`mut` annotation gives it
-                    // (mem.context/CC4 "fields of self" — #867), or a named
-                    // context resolved through `self.field` can never tell it
-                    // apart from another pool of a different type in scope.
-                    if let Some((_, ty)) = field_types.as_ref()
-                        .and_then(|ts| ts.iter().find(|(n, _)| *n == field.name))
-                    {
-                        super::exec_stmt::backfill_pool_type_param(&value, ty);
-                    }
                     field_values.insert(field.name.clone(), value);
                 }
 
@@ -1825,43 +1764,10 @@ impl Interpreter {
                     Value::Struct(ref s) => {
                         Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
                     }
-                    // Following a link: one deref, nothing to check. No store to
-                    // find, no generation to compare, no `using` context — the
-                    // link holds the node. This is the read path the fourth-option
-                    // model exists for; compare the Handle arm just below.
+                    // Following a link: one deref, nothing to check. No lookup,
+                    // no liveness test — the link holds the node.
                     Value::Link { ref node, .. } => {
                         Ok(node.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
-                    }
-                    // mem.context/CC1: `h.field` auto-resolves through the active
-                    // Pool<T> context — read the element's field. Same generation
-                    // check as `pool[h]` (PF5 note: reads check in any context).
-                    Value::Handle { pool_id, index, generation } => {
-                        let pool = self.pool_for_handle(pool_id).ok_or_else(|| {
-                            RuntimeDiagnostic::new(
-                                RuntimeError::Panic(format!(
-                                    "no Pool in scope to resolve handle field `.{}`",
-                                    field
-                                )),
-                                expr.span,
-                            )
-                        })?;
-                        let pool = pool.lock().unwrap();
-                        let idx = pool
-                            .validate(pool_id, index, generation)
-                            .map_err(|e| RuntimeDiagnostic::new(RuntimeError::Panic(e), expr.span))?;
-                        match pool.slots[idx].1.as_ref() {
-                            Some(Value::Struct(s)) => {
-                                Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
-                            }
-                            other => Err(RuntimeDiagnostic::new(
-                                RuntimeError::TypeError(format!(
-                                    "cannot access field '{}' on pool element {}",
-                                    field,
-                                    other.map(|v| v.type_name()).unwrap_or("empty slot")
-                                )),
-                                expr.span,
-                            )),
-                        }
                     }
                     // Nominal type .value extraction
                     Value::Nominal { ref inner, .. } if field == "value" => {
@@ -2133,20 +2039,6 @@ impl Interpreter {
                             ));
                         };
                         Ok(Value::String(Arc::new(Mutex::new(slice.to_string()))))
-                    }
-                    (
-                        Value::Pool(p),
-                        Value::Handle {
-                            pool_id,
-                            index,
-                            generation,
-                        },
-                    ) => {
-                        let pool = p.lock().unwrap();
-                        let idx = pool
-                            .validate(*pool_id, *index, *generation)
-                            .map_err(|e| RuntimeDiagnostic::new(RuntimeError::Panic(e), expr.span))?;
-                        Ok(pool.slots[idx].1.as_ref().unwrap().clone())
                     }
                     (Value::Map(m), _) => {
                         let map = m.lock().unwrap();

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// The data store. Tasks live in a Pool<Task> (they reference each other by
-// Handle through `deps`), users and projects in plain Maps keyed by their
+// The data store. Tasks live in a Rack<Task> (they reference each other by
+// Link through `deps`), users and projects in plain Maps keyed by their
 // nominal ids.
 //
 // The store returns only StoreError. Wire-string parsing and validation
 // belong to the handler layer, which widens everything into ApiError — so
 // nothing here ever has to mix error vocabularies.
-import memory.Pool
-import memory.Handle
+import memory.Rack
+import memory.Link
 import sync.Mutex
 
 // Parsed patch built by the handler; the store never sees wire strings.
@@ -29,8 +29,8 @@ struct ListFilter {
 }
 
 struct Store {
-    tasks: Pool<Task>
-    by_id: Map<TaskId, Handle<Task>>
+    tasks: Rack<Task>
+    by_id: Map<TaskId, Link<Task>>
     users: Map<UserId, User>
     projects: Map<ProjectId, Project>
     next_task: TaskId
@@ -41,7 +41,7 @@ struct Store {
 extend Store {
     func new() -> Store {
         return Store {
-            tasks: Pool.new(),
+            tasks: Rack.new(),
             by_id: Map.new(),
             users: Map.new(),
             projects: Map.new(),
@@ -82,61 +82,51 @@ extend Store {
     }
 
     func update_task(mutate self, id: TaskId, patch: TaskPatch) -> TaskView or StoreError {
-        let h = self.by_id.get(id) ?? {
+        mut h = self.by_id.get(id) ?? {
             return StoreError.NotFound(id.value)
         }
 
-        with self.tasks[h] as t {
-            if patch.status? as s { t.status = s }
-            if patch.priority? as p { t.priority = p }
-            if patch.clear_assignee {
-                t.assignee = none
-            } else if patch.assignee? as a {
-                t.assignee = a
+        if patch.status? as s { h.status = s }
+        if patch.priority? as p { h.priority = p }
+        if patch.clear_assignee {
+            h.assignee = none
+        } else if patch.assignee? as a {
+            h.assignee = a
+        }
+        for tag in patch.add_tags {
+            // Written out rather than `h.has_tag(tag)`: a method declared on
+            // the node type can't be called through a link yet (#1285).
+            mut seen = false
+            for t in h.tags {
+                if t == tag { seen = true }
             }
-            for tag in patch.add_tags {
-                if !t.has_tag(tag) { t.tags.push(tag) }
-            }
+            if !seen { h.tags.push(tag) }
         }
 
         return to_view(h)
     }
 
-    func delete_task(mutate self, id: TaskId) -> void or StoreError {
+    // `deleting`: the victim is chosen in here from the id, not handed in, so
+    // the caller's links into `tasks` are revoked at the call (mem.parameters/PM8).
+    func delete_task(deleting self, id: TaskId) -> void or StoreError {
         let h = self.by_id.get(id) ?? {
             return StoreError.NotFound(id.value)
         }
-        // Sweep h out of every other task's deps first — otherwise the
-        // dependent tasks are left holding a stale handle that panics the
-        // next time anything (e.g. task_is_blocked) walks it (#740).
-        //
-        // Written as a manual loop rather than `t.deps.filter(...)`: filter
-        // on a Vec field reached through pool[h] projection crashes native
-        // codegen (#866), regardless of element type or closure.
-        for other in self.tasks.handles() {
-            with self.tasks[other] as t {
-                mut kept: Vec<Handle<Task>> = Vec.new()
-                for dep in t.deps {
-                    if dep != h { kept.push(dep) }
-                }
-                t.deps = kept
-            }
-        }
-        self.tasks.remove(h)
-        self.by_id.remove(id)
+        // No sweep. `delete` drops the link out of every other task's `deps`
+        // and out of `by_id` before it returns, so nothing is left holding a
+        // name for a task that's gone.
+        self.tasks.delete(h)
         return
     }
 
     func add_dependency(mutate self, task: TaskId, dep: TaskId) -> void or StoreError {
-        let th = self.by_id.get(task) ?? {
+        mut th = self.by_id.get(task) ?? {
             return StoreError.NotFound(task.value)
         }
         let dh = self.by_id.get(dep) ?? {
             return StoreError.NotFound(dep.value)
         }
-        with self.tasks[th] as t {
-            t.deps.push(dh)
-        }
+        th.deps.push(dh)
         return
     }
 
@@ -144,7 +134,7 @@ extend Store {
         // Rank first (priority desc, then id asc) using the auto-derived
         // Comparable on Priority and TaskId, then page with adapters.
         mut ranked = Vec.new()
-        for h in self.tasks.handles() {
+        for h in self.tasks.nodes() {
             if !matches_filter(h, filter) { continue }
             ranked.push(Ranked { priority: rank_of(h), id: id_of(h), view: to_view(h) })
         }
@@ -232,10 +222,10 @@ extend Store {
     }
 }
 
-// ─── Ranking helpers (context-clause auto-resolution) ────────────────
-// These read task fields straight off the Handle — `h.priority`, `h.deps`,
-// `dep.status` — with the pool threaded in as an ambient `using` context.
-// No `pool[h]` indexing, no explicit pool parameter.
+// ─── Ranking helpers ─────────────────────────────────────────────────
+// These read task fields straight off the link — `h.priority`, `h.deps`,
+// `dep.status`. A link is a reference, so there is nothing to thread in:
+// no container parameter, no ambient context.
 
 struct Ranked {
     priority: Priority
@@ -243,15 +233,15 @@ struct Ranked {
     view: TaskView
 }
 
-func rank_of(h: Handle<Task>) -> Priority using frozen Pool<Task> {
+func rank_of(h: Link<Task>) -> Priority {
     return h.priority
 }
 
-func id_of(h: Handle<Task>) -> TaskId using frozen Pool<Task> {
+func id_of(h: Link<Task>) -> TaskId {
     return h.id
 }
 
-func matches_filter(h: Handle<Task>, filter: ListFilter) -> bool using frozen Pool<Task> {
+func matches_filter(h: Link<Task>, filter: ListFilter) -> bool {
     if filter.status? as want {
         if h.status != want { return false }
     }
@@ -261,14 +251,14 @@ func matches_filter(h: Handle<Task>, filter: ListFilter) -> bool using frozen Po
     return true
 }
 
-func task_is_blocked(h: Handle<Task>) -> bool using frozen Pool<Task> {
+func task_is_blocked(h: Link<Task>) -> bool {
     for dep in h.deps {
         if !dep.status.is_terminal() { return true }
     }
     return false
 }
 
-func to_view(h: Handle<Task>) -> TaskView using frozen Pool<Task> {
+func to_view(h: Link<Task>) -> TaskView {
     return TaskView {
         id: h.id.value,
         title: h.title,
@@ -328,10 +318,10 @@ extend TaskTx {
         self.ops.push(op)
     }
 
-    // Consumes the transaction and writes every staged op through the
-    // ambient task pool. Resolves `using Pool<Task>` against the caller's
-    // self.tasks (CC4 field-of-self resolution).
-    func commit(take self, index: Map<TaskId, Handle<Task>>) -> void or StoreError using Pool<Task> {
+    // Consumes the transaction and writes every staged op through the links
+    // the index hands back. A link is the node, so the rack itself never has
+    // to be passed in.
+    func commit(take self, index: Map<TaskId, Link<Task>>) -> void or StoreError {
         for op in self.ops {
             match op {
                 SetStatus(id, st) => {

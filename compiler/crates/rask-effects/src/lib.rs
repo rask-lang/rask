@@ -14,7 +14,6 @@
 //! Run after type checking. No AST modifications — annotation only.
 
 pub mod comptime_purity;
-pub mod frozen;
 pub mod infer;
 pub mod sources;
 pub mod warnings;
@@ -34,7 +33,7 @@ pub struct Effects {
     pub async_: bool,
     /// Grow effect: pool.insert, pool.alloc (EF1).
     pub grow: bool,
-    /// Shrink effect: pool.remove, pool.clear, pool.drain (EF1).
+    /// Shrink effect: remove, clear, drain (EF1).
     pub shrink: bool,
     /// CC2: this function needs an active `using Multitasking` runtime at the call site.
     /// Set when the function (or something it calls without an internal block) reaches `spawn`.

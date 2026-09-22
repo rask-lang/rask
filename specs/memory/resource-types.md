@@ -37,7 +37,6 @@ struct Connection {
 | **R2** | `mem.linear/L2` | Cannot be consumed twice |
 | **R3** | `mem.linear/L3` | Can borrow for reading without consuming |
 | **R4** | `mem.linear/L4` | Registering with `ensure` counts as consumption commitment |
-| **R5** | — | `Pool<Resource>` panics at runtime if non-empty when dropped |
 | **R6** | `mem.linear/L7` | Nothing may stand between acquiring the resource and committing its cleanup |
 | **EO1** | `mem.linear/L7` | `ensure` bodies run LIFO, so a resource derived from another has its `ensure` registered **second** — the source order reads backwards from the run order. That order is the only one L7 permits: deriving from a resource is a statement in that resource's window, so the dependency's `ensure` has to come first. Registered the other way round, the dependency would be torn down while its dependent is still live |
 
@@ -222,37 +221,29 @@ func read_config(file: File) -> Config or FileError {
 | Rule | Collection | Resource allowed? | Reason |
 |------|------------|-------------------|--------|
 | **RC1** | `Vec<Resource>` | No | Vec drop would need to consume each element |
-| **RC2** | `Pool<Resource>` | Yes | Explicit removal required anyway |
+| **RC2** | `Rack<Resource>` | No | `delete` frees the node rather than handing it back, so nothing can consume one |
 | **RC3** | `Map<K, Resource>` | No | Map drop same problem as Vec |
 | **RC4** | `Resource?` | Yes | Must match and consume |
 
-**Pool pattern for resources:**
-<!-- test: skip -->
-```rask
-let connections: Pool<Connection> = Pool.new()
-let h = connections.insert(try Connection.open(addr))
-
-// Later: explicit consumption required
-let conn = connections.remove(h)!
-try conn.close()
-```
-
-**Pool<Resource> cleanup (R5):** If non-empty at scope exit, runtime panic. All elements must be consumed first.
+So: no container holds a linear value. An optional is what's left, and matching
+it is the consumption.
 
 <!-- test: skip -->
 ```rask
-// Required: consume all before pool drops
-for file in files.take_all() {
-    try file.close()
+mut conn: Connection? = try Connection.open(addr)
+
+// Later: match to consume
+if conn? as c {
+    try c.close()
+    conn = none
 }
-// Pool is now empty, safe to drop
 ```
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `take_all()` | `Pool<T> -> Sequence<T>` | Take all elements for consumption |
-| `take_all_with(f)` | `func(T) -> void` | Take all and apply consuming function |
-| `take_all_with_result(f)` | `func(T) -> void or E -> void or E` | Take all with fallible consumer |
+`Pool<Resource>` used to be the one that worked, because `Pool.remove` answered
+`T?` — there was always a way to get the value back out (rask-lang/rask#908).
+Nothing replaced it: a rack fails RC1's test in different words, so the three
+rejections are one rule with three receivers. If a container for linear values
+comes back, it needs a `take` that hands the value over.
 
 ## Error Messages
 
@@ -283,18 +274,6 @@ ERROR [mem.linear/L2]: resource already consumed
    |      ^^^^ cannot consume again
 ```
 
-**Pool<Resource> cleanup panic [R5]:**
-```
-panic: Pool<File> has 3 unconsumed resource elements at scope exit.
-Resources must be explicitly consumed (use take_all() before scope ends).
-```
-
-One element reads `has 1 unconsumed resource element`. Both backends say this
-now; native used to say nothing at all and leak the elements, and the
-interpreter reported the value through its ordinary ledger — `File '?' not
-consumed before scope exit`, where the `'?'` is there because a pooled value has
-no binding to name (#1219).
-
 ## Edge Cases
 
 | Case | Rule | Handling |
@@ -306,7 +285,7 @@ no binding to name (#1219).
 | Resource + panic | L4 | `ensure` runs during unwind |
 | Conditional consumption | L1 | Both branches must consume |
 | Loop with resource | L1 | Can't create resource in loop without consuming each iteration |
-| `clear()` on Pool<Resource> | RC2 | Compile error (would abandon linear elements) |
+| `Rack<Resource>` anywhere | RC2 | Compile error at the type (E0820) |
 
 **Conditional consumption:**
 <!-- test: parse -->
@@ -355,33 +334,26 @@ func update_user(db: Database, user_id: u64) -> void or Error {
 }
 ```
 
-### Connection Pool
+### Many connections
+
+A resource can't live in a container (RC1–RC3), so "many of them" is a fixed set
+of names, each consumed on its own path.
+
 <!-- test: parse -->
 ```rask
-func handle_connections(pool: Pool<Connection>) -> void or Error {
-    // Check which connections should close
-    let to_close: Vec<Handle<Connection>> = Vec.new()
-    for h in pool.handles().collect<Vec<_>>() {
-        if pool[h].should_close() {
-            to_close.push(h)
-        }
-    }
+func serve_two(a: Connection, b: Connection) -> void or Error {
+    ensure a.close()
+    ensure b.close()
 
-    // Remove and consume outside the access
-    for h in to_close {
-        let conn = pool.remove(h)!
-        try conn.close()
-    }
-
-    // Clean up remaining
-    for h in pool.handles().collect<Vec<_>>() {
-        let conn = pool.remove(h)!
-        try conn.close()
-    }
-
+    try a.handle_request()
+    try b.handle_request()
     return
 }
 ```
+
+Growing that to a real server means the connections stay where they were
+acquired — one per task, consumed by the task that took it — rather than
+gathered into a pool the program then has to remember to drain.
 
 ---
 
@@ -393,9 +365,9 @@ func handle_connections(pool: Pool<Connection>) -> void or Error {
 
 **L4 (ensure):** The bridge between linearity and error handling. Commit to cleanup early, then use `try` freely knowing it'll happen.
 
-**R5 (pool drop panic):** The compiler can't statically track dynamic pool contents — that would require whole-program analysis. Runtime panic is preferable to silent leaks because the program fails loudly rather than leaking resources.
+**RC1–RC3 (no container at all):** a drop can't return errors, so a `Vec` or a `Map` that held linear elements would have to drop them silently. A rack's `delete` is explicit, which is what made a pool's `remove` acceptable — but `delete` answers nothing, so there is no call that consumes a node. Three receivers, one reason, and `T?` is what's left.
 
-**RC1/RC3 (no Vec/Map):** Vec and Map drops would need to consume each element, but drop can't return errors. Pools work because removal is already explicit.
+There used to be an R5 as well: a `Pool<Resource>` dropped non-empty panicked at run time, because the compiler couldn't statically track what a pool held. That was the only runtime rule in this spec, and it went with the pool. Everything here is a compile error now.
 
 ### Patterns & Guidance
 
@@ -467,9 +439,8 @@ func process_files(paths: Vec<string>) -> void or Error {
 
 ### See Also
 
-- [Linearity](linear.md) — Rule set (L1–L7) shared by `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
+- [Linearity](linear.md) — Rule set (L1–L7) shared by `@resource` and `Heap<T>` (`mem.linear`)
 - [Heap Values](heap.md) — `Heap<T>`, the other linear value (`mem.heap`)
 - [Value Semantics](value-semantics.md) — Copy vs move, `@unique` (`mem.value`)
 - [Ownership Rules](ownership.md) — Single-owner model (`mem.ownership`)
 - [Ensure](../control/ensure.md) — Deferred execution (`ctrl.ensure`)
-- [Pools](pools.md) — Handle-based storage for resource types (`mem.pools`)

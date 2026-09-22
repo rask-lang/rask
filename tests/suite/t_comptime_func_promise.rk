@@ -24,8 +24,7 @@
 // — the bodies that keep the promise, and the folding that is the point of
 // making it.
 
-import memory.Pool
-import memory.Handle
+import memory.Rack
 
 comptime func fact(n: i64) -> i64 {
     if n <= 1 {
@@ -62,23 +61,23 @@ test "the same body answers at run time" {
     assert doubled_fact(3) == 12
 }
 
-// Pool structural changes are CT7's third case. This one is a run-time
+// Container structural changes are CT7's third case. This one is a run-time
 // function precisely because it inserts, and nothing marks it comptime.
 struct Node {
     n: i64
 }
 
 func build(count: i64) -> i64 {
-    mut p: Pool<Node> = Pool.new()
+    mut r: Rack<Node> = Rack.new()
     mut i = 0
     while i < count {
-        let h = p.insert(Node { n: i })
+        let n = r.insert(Node { n: i })
         i = i + 1
     }
-    return p.len().wrap<i64>()
+    return r.len().wrap<i64>()
 }
 
-test "a pool insert is a run-time thing" {
+test "a rack insert is a run-time thing" {
     assert build(3) == 3
 }
 

@@ -9,7 +9,6 @@ use std::collections::{HashMap, HashSet};
 use rask_diagnostics::Diagnostic;
 use crate::MirFunction;
 use crate::transform::bounds_elim::BoundsCheckElimPass;
-use crate::transform::typestate::TypestatePass;
 use crate::transform::inline::InlineRegion;
 
 /// Shared context threaded through the pass pipeline.
@@ -135,10 +134,8 @@ impl PassManager {
         pm.add(ContainerDropInsertionPass);
         pm.add(StringRcInsertionPass);
         pm.add(StringRcElisionPass);
-        // Phase G: Advanced analyses before gen coalescing (needs PoolCheckedAccess intact)
-        pm.add(TypestatePass);
+        // Phase G: advanced analyses.
         pm.add(BoundsCheckElimPass);
-        pm.add(GenerationCoalescingPass);
         // Last: it reads what the const init thunks build, and the passes
         // above are what settle that (clone elision in particular).
         pm.add(ConstFreePass);
@@ -287,12 +284,3 @@ impl MirPass for StringRcElisionPass {
     }
 }
 
-/// Merge redundant PoolCheckedAccess on same (pool, handle).
-pub struct GenerationCoalescingPass;
-
-impl MirPass for GenerationCoalescingPass {
-    fn name(&self) -> &str { "generation_coalescing" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::coalesce_generation_checks(fns);
-    }
-}

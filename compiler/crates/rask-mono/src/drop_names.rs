@@ -64,7 +64,6 @@ pub fn container_free_for_rendered(rendered: &str) -> Option<&'static str> {
         // they can't outlive the struct that holds the arena, and this release
         // runs where that struct dies.
         "Rack" => Some("rask_rack_free"),
-        "Pool" => Some("rask_pool_free"),
         // A box in a field. The release is a decrement, so it is right whether
         // or not somebody else still holds one — which is what makes a box safe
         // to hand to a task and still free here.

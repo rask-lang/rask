@@ -1,6 +1,6 @@
 <!-- id: mem.linear -->
 <!-- status: decided -->
-<!-- summary: Values that must be consumed exactly once — one rule set shared by @resource, Heap<T>, and Pool<Linear> -->
+<!-- summary: Values that must be consumed exactly once — one rule set shared by @resource and Heap<T> -->
 <!-- depends: memory/ownership.md -->
 
 # Linearity
@@ -45,7 +45,6 @@ Three ways a value acquires the linear property:
 |-----------|------------|--------------|
 | `@resource` annotation | Struct types (File, Connection, Transaction) | [resource-types.md](resource-types.md) |
 | `Heap<T>` type constructor | Any T, heap-allocated | [heap.md](heap.md) |
-| `Pool<Linear>` | Pool holding any linear element type | [pools.md](pools.md) |
 
 Rules L1–L7 apply identically in all three cases. The individual specs cite them instead of restating.
 
@@ -153,16 +152,16 @@ Ensure the unhappy path, explicitly consume the happy path.
 
 ## Linearity in containers
 
-`Vec` and `Map` cannot hold linear values — their drop would need to consume each element, and drop can't return errors. `Pool` can hold linear values because removal is already explicit; the pool panics at runtime if it goes out of scope with linear elements still inside.
+No container can hold a linear value. A `Vec` or a `Map` drop would need to consume each element, and drop can't return errors; a `Rack.delete` frees the node rather than handing it back, so nothing can consume one. `Pool<T>` used to be the exception — `remove` answered `T?` — and went with the pool (rask-lang/rask#908).
 
 | Container | Linear allowed? | Why |
 |-----------|-----------------|-----|
 | `Vec<T>` | No | Drop would need to consume each element |
 | `Map<K, V>` | No | Same as Vec |
-| `Pool<T>` | Yes | Explicit removal required; runtime panic if dropped non-empty |
+| `Rack<T>` | No | `delete` answers nothing, so a node can't be consumed |
 | `T?` | Yes | Must narrow (`? as v`) and consume the present case |
 
-See `mem.pools/PL9` and `mem.resources/R5` for the Pool<Linear> cleanup semantics.
+See `mem.resource-types/RC1`–RC4 for where a linear value may live.
 
 ## Error messages
 
@@ -219,7 +218,6 @@ WHY: Linear values can be consumed exactly once. A second consumption
 - [Resource Types](resource-types.md) — `@resource` struct annotation (`mem.resources`)
 - [Heap Values](heap.md) — A value on the heap, consumed once (`mem.heap`)
 - [Ensure](../control/ensure.md) — Deferred consumption (`ctrl.ensure`)
-- [Pools](pools.md) — `Pool<Linear>` cleanup rules (`mem.pools`)
 - [Ownership](ownership.md) — Single-owner model that linearity refines (`mem.ownership`)
 - [Value Semantics](value-semantics.md) — Copy/move rules that linear values opt out of (`mem.value`)
 

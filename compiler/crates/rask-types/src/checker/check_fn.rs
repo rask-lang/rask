@@ -169,51 +169,6 @@ impl TypeChecker {
             _ => false,
         };
 
-        // CC1: reject `using Multitasking` / `using ThreadPool` on function signatures
-        for cc in &f.context_clauses {
-            if is_runtime_context(&cc.ty) {
-                self.errors.push(TypeError::SignatureRuntimeContext {
-                    ctx: cc.ty.clone(),
-                    span: f.span,
-                });
-            }
-        }
-
-        // CC11: a `using` clause becomes a hidden parameter every caller fills
-        // in. The entry point has no caller, so the parameter stays whatever
-        // the process started with — a garbage pointer the pool then indexes
-        // through (#732). Reject it here rather than let it compile.
-        if self.is_entry_point(f) {
-            for cc in &f.context_clauses {
-                if is_runtime_context(&cc.ty) {
-                    continue; // already reported above
-                }
-                self.errors.push(TypeError::EntryPointContext {
-                    entry: f.name.clone(),
-                    alias: cc.name.clone(),
-                    ty: cc.ty.clone(),
-                    span: cc.span,
-                });
-            }
-        }
-
-        // mem.pools/PF5: record frozen pool element types so a `h.field = v`
-        // write through a handle backed by a frozen context can be rejected at
-        // the assignment site. Structural ops (insert/remove/clear) are caught
-        // separately by the effects analysis.
-        self.frozen_context_elems.clear();
-        for cc in &f.context_clauses {
-            if !cc.is_frozen || is_runtime_context(&cc.ty) {
-                continue;
-            }
-            if let Some(elem) = crate::parse_type_string(&cc.ty, &self.types)
-                .ok()
-                .and_then(|ty| self.pool_element_type(&self.resolve_named(&ty)))
-            {
-                self.frozen_context_elems.push(elem);
-            }
-        }
-
         // UF1: unsafe func body is implicitly unsafe
         let was_unsafe = self.in_unsafe;
         if f.is_unsafe {
@@ -428,9 +383,7 @@ impl TypeChecker {
                     return;
                 }
                 // Placeholders and specials that legitimately stay unresolved.
-                // `Iterator` is special-cased in resolve.rs. `InsertError` is
-                // spec'd (mem.pools/PL8) but not registered yet — `try_insert`
-                // still returns `Handle<T>?` pending that type (#352). Reader,
+                // `Iterator` is special-cased in resolve.rs. Reader,
                 // Writer, and ParseError are now real registered names (#320)
                 // and no longer need whitelisting. Bare `Error` stays: several
                 // flagship examples write `-> void or Error` expecting the
@@ -445,7 +398,7 @@ impl TypeChecker {
                 // never reached here (#1256).
                 if name == "Self"
                     || name.starts_with('_')
-                    || matches!(name, "Iterator" | "InsertError" | "Error" | "Heap")
+                    || matches!(name, "Iterator" | "Error" | "Heap")
                 {
                     return;
                 }
@@ -554,7 +507,7 @@ impl TypeChecker {
             // Vec.new(), Map.new(), string.new() — heap allocation
             ExprKind::MethodCall { object, method, args, .. } => {
                 if let ExprKind::Ident(name) = &object.kind {
-                    if matches!(name.as_str(), "Vec" | "Map" | "Pool" | "string")
+                    if matches!(name.as_str(), "Vec" | "Map" | "string")
                         && method == "new"
                     {
                         self.errors.push(TypeError::NoAllocViolation {

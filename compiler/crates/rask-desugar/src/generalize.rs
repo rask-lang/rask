@@ -368,9 +368,6 @@ fn letters_already_in(f: &FnDecl) -> HashSet<String> {
     if let Some(r) = &f.ret_ty {
         scan(r);
     }
-    for c in &f.context_clauses {
-        scan(&c.ty);
-    }
     taken
 }
 

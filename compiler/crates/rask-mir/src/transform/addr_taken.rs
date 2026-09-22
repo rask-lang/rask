@@ -452,7 +452,6 @@ fn redirect_def(stmt: &mut MirStmt, to: LocalId) {
     match &mut stmt.kind {
         MirStmtKind::Assign { dst, .. }
         | MirStmtKind::Phi { dst, .. }
-        | MirStmtKind::PoolCheckedAccess { dst, .. }
         | MirStmtKind::ClosureCreate { dst, .. }
         | MirStmtKind::LoadCapture { dst, .. }
         | MirStmtKind::ResourceRegister { dst, .. }

@@ -30,19 +30,13 @@ use std::collections::HashMap;
 /// Typed expression result from lowering
 type TypedOperand = (MirOperand, MirType);
 
-/// Sentinel value representing None for niche-optimized Option<Handle<T>>.
-/// All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
-pub(crate) const HANDLE_NONE_SENTINEL: i64 = rask_mono::abi::HANDLE_NONE_SENTINEL;
-
 /// `none` for `Link<T>?` — the null address. See `rask_mono::abi`.
 pub(crate) const LINK_NONE_SENTINEL: i64 = rask_mono::abi::LINK_NONE_SENTINEL;
 
 /// The `none` word for a lowered type that is a niche *option*.
 ///
-/// Not the same question as `MirType::niche_none`: a bare `MirType::Handle` is
-/// a handle, not a `Handle?`, and reading it as an option would test it against
-/// the sentinel. `Link` is the exception — `Link<T>?` collapses to `Link`, so
-/// there the value and the option really are one type.
+/// `Link<T>?` collapses to `Link`, so for a link the value and the option are
+/// one type and the word itself carries the answer.
 pub(crate) fn mir_niche_none(ty: &MirType) -> Option<i64> {
     match ty {
         MirType::Option(inner) if inner.is_niche_payload() => inner.niche_none(),
@@ -56,18 +50,15 @@ pub(crate) fn mir_niche_none(ty: &MirType) -> Option<i64> {
 /// tagged-union shape codegen then reads a tag byte out of. That read goes
 /// through the sentinel itself, which is not an address you may load from.
 ///
-/// `Handle<T>?` has the same shape but keeps both spellings: `type_to_mir`
-/// collapses it and `resolve_type_str` doesn't, and the checks downstream accept
-/// either. Not worth churning while fixing something else.
 pub(crate) fn option_of(inner: MirType) -> MirType {
     MirType::Option(Box::new(inner))
 }
 
 
-/// Check if a raw Type is a niche-optimized option — `Handle<T>?` or `Link<T>?`.
+/// Check if a raw Type is a niche-optimized option — `Link<T>?`.
 ///
-/// Both are one word where the value *is* the option, so neither carries a tag.
-/// They do *not* share a `none`: ask for the sentinel, not just the fact.
+/// One word where the value *is* the option, so it carries no tag. Ask for the
+/// sentinel, not just the fact.
 ///
 /// By-name only. A generic the checker resolved names its base by `TypeId`, and
 /// a free function can't see the table — prefer
@@ -88,7 +79,6 @@ pub(crate) fn niche_option_sentinel_named(ty: &Type) -> Option<i64> {
 /// declaration's own spelling, `"Handle<T>"` and all.
 pub(crate) fn niche_sentinel_for_head(head: &str) -> Option<i64> {
     match head.split('<').next().unwrap_or(head).trim() {
-        "Handle" => Some(HANDLE_NONE_SENTINEL),
         "Link" => Some(LINK_NONE_SENTINEL),
         _ => None,
     }
@@ -1037,12 +1027,6 @@ impl<'a> MirContext<'a> {
                 if name.starts_with("Map<") || name == "Map" {
                     return MirType::Ptr; // Map handle (opaque pointer)
                 }
-                if name.starts_with("Pool<") || name == "Pool" {
-                    return MirType::Ptr;
-                }
-                if name.starts_with("Handle<") {
-                    return MirType::Handle;
-                }
                 if let Some(node) = name.strip_prefix("Link<").and_then(|s| s.strip_suffix('>')) {
                     return match self.resolve_type_str(node.trim()) {
                         MirType::Struct(sid) => MirType::Link(sid),
@@ -1260,7 +1244,6 @@ impl<'a> MirContext<'a> {
             _ => return None,
         };
         let payload = match name.split('<').next().unwrap_or(&name).trim() {
-            "Handle" => MirType::Handle,
             "Link" => self.link_mir_type(args.first()),
             _ => return None,
         };
@@ -1320,7 +1303,6 @@ impl<'a> MirContext<'a> {
             // Named types — look up in struct/enum layouts by name
             Type::UnresolvedNamed(name) => self.resolve_type_str(name),
             // Handle<T> → packed i64 handle
-            Type::UnresolvedGeneric { name, .. } if name == "Handle" => MirType::Handle,
             // Link<T> → the node's address; Rack<T> → the rack's. The checker
             // hands these over as `Generic` once the name resolves and as
             // `UnresolvedGeneric` before that, so both spellings land here.
@@ -1389,11 +1371,7 @@ impl<'a> MirContext<'a> {
             // niche by `MirType::is_niche_payload`, which is what the checks
             // ask, so the spelling costs nothing.
             Type::Result { ok: inner, err } if **err == Type::None => {
-                if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
-                    MirType::Handle
-                } else {
-                    MirType::Option(Box::new(self.payload_to_mir(inner)))
-                }
+                MirType::Option(Box::new(self.payload_to_mir(inner)))
             }
             // Result<T, E> → tagged union (tag + max(T, E) payload)
             Type::Result { ok, err } => MirType::Result {
@@ -1462,7 +1440,7 @@ impl<'a> MirContext<'a> {
     /// Returns the type prefix (e.g. "Vec", "Map", "string") used to build
     /// qualified method names like "Vec_push", "Map_get", "string_len".
     /// Without qualification, bare names like "get" or "len" are ambiguous
-    /// across Vec, Map, String, and Pool.
+    /// across Vec, Map and String.
     ///
     /// Type/module names are derived from stdlib stub files via
     /// `rask_stdlib::mir_metadata`. Structural types (Result, Option, Ptr)
@@ -1729,7 +1707,6 @@ pub struct MirLowerer<'a> {
     ensure_read_names: std::collections::HashSet<String>,
     /// W2a/W2b: Active `with` pool bindings for re-resolution after pool mutators.
     /// Maps pool variable name → Vec of (handle_local, binding_local, pool_local).
-    with_pool_bindings: HashMap<String, Vec<(LocalId, LocalId, LocalId)>>,
     /// When set, `return expr` inside an inlined closure body assigns to the
     /// target local and jumps to the continuation block instead of emitting
     /// MirTerminator::Return.  Used by fold/reduce/etc.
@@ -2072,7 +2049,7 @@ impl<'a> MirLowerer<'a> {
         Some((bare, args))
     }
 
-    /// What a collection holds: the element of a `Vec`/`Pool`, the *value* of a
+    /// What a collection holds: the element of a `Vec`, the *value* of a
     /// `Map`. Indexing any of them yields this type.
     pub(crate) fn collection_elem_of_checker_type(&self, ty: &Type) -> Option<MirType> {
         // A fixed array holds its element type outright. Without this arm every
@@ -2096,7 +2073,7 @@ impl<'a> MirLowerer<'a> {
             // it was simply never added, which is why `for (k, v) in self`
             // inside `Sequence.to_map` had no element type and fell back to a
             // word (#1046).
-            "Vec" | "Pool" | "Iterator" | "Sequence" | "SequenceMut" => args.first()?,
+            "Vec" | "Iterator" | "Sequence" | "SequenceMut" => args.first()?,
             // `m[k]` and `m.get(k)` yield V, not K.
             "Map" => args.get(1)?,
             _ => return None,
@@ -2185,8 +2162,8 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Base type name of an indexed object — `"Pool"` for both `tasks[h]` and
-    /// `self.tasks[h]`. Generics are stripped: `Pool<Task>` → `Pool`.
+    /// Base type name of an indexed object — `"Vec"` for both `rows[i]` and
+    /// `self.rows[i]`. Generics are stripped: `Vec<Row>` → `Vec`.
     ///
     /// A variable's tracked prefix first (it survives cases the checker leaves as
     /// an inference variable), then the checker's type, which is the only source
@@ -2423,41 +2400,6 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// The generation-checked address of `pool[handle]`'s data.
-    ///
-    /// `PoolCheckedAccess` means one thing: the destination holds the slot's
-    /// address. Reading a scalar element out of it is a separate, visible load.
-    /// It used to mean "address or value, work out which from the destination's
-    /// declared type", and codegen picked address every time — which for a scalar
-    /// read is a Cranelift panic, not a wrong answer (#719).
-    ///
-    /// `as_ty` is how the destination local is declared. An aggregate is declared
-    /// with its own type — that representation already *is* an address, and
-    /// declaring it `Ptr` instead loses the type for everything downstream, which
-    /// printed a `Pool<string>` element as its address. Anything that only stores
-    /// through the local, or loads a scalar out of it, uses `Ptr`.
-    pub(crate) fn pool_slot_addr(
-        &mut self,
-        pool: LocalId,
-        handle: LocalId,
-        as_ty: MirType,
-    ) -> LocalId {
-        let slot_addr = self.builder.alloc_temp(as_ty);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
-            dst: slot_addr,
-            pool,
-            handle,
-        }));
-        slot_addr
-    }
-
-    /// True when `object[..]` indexes a `Pool`. Decides both the
-    /// `PoolCheckedAccess` lowering and whether a `with` binding aliases the slot
-    /// — they have to agree, so they read the same answer.
-    pub(crate) fn index_object_is_pool(&self, object: &Expr) -> bool {
-        self.index_object_base(object).as_deref() == Some("Pool")
-    }
-
     /// Element type of an expression that evaluates to a `Vec<T>`, or None when
     /// it isn't one (or the type can't be recovered).
     ///
@@ -2467,7 +2409,7 @@ impl<'a> MirLowerer<'a> {
     /// variable, and a call returning `Vec<T>` doesn't always carry a type on the
     /// argument node.
     /// What the collection this expression evaluates to holds — element for a
-    /// `Vec`/`Pool`, value for a `Map`.
+    /// `Vec`, value for a `Map`.
     ///
     /// Tries the checker's type for the expression, then the declared type of a
     /// struct field, then `Vec`-specific tracking. The field case is the one that
@@ -3560,7 +3502,6 @@ impl<'a> MirLowerer<'a> {
                 | MirType::Tuple(_)
                 | MirType::Ptr
                 | MirType::String
-                | MirType::Handle
         )
     }
 
@@ -3876,7 +3817,6 @@ impl<'a> MirLowerer<'a> {
                 type_params: Vec::new(),
                 params: Vec::new(),
                 ret_ty: None,
-                context_clauses: Vec::new(),
                 body: Vec::new(),
                 is_pub: false,
                 is_private: true,
@@ -4183,7 +4123,6 @@ impl<'a> MirLowerer<'a> {
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
             ensure_read_names: std::collections::HashSet::new(),
-            with_pool_bindings: HashMap::new(),
             inline_return_target: None,
             inline_return_taken: None,
             ensure_stack: Vec::new(),
@@ -4235,9 +4174,8 @@ impl<'a> MirLowerer<'a> {
             } else {
                 &param.ty
             };
-            // Hidden context params carry `&Pool<T>` (comp.hidden-params/SIG1).
-            // Rask has no reference types at the backend — a pool is an opaque
-            // handle passed by value — so strip the `&` and lower the pointee.
+            // Rask has no reference types at the backend, so a `&T` annotation
+            // lowers as its pointee.
             let param_ty_str = param_ty_str.trim_start_matches('&');
             let param_ty = ctx.resolve_type_str(param_ty_str);
             // #270: a scalar `mutate` param is passed by pointer so the callee can
@@ -4270,10 +4208,6 @@ impl<'a> MirLowerer<'a> {
                     // Track collection element types so for-loop iteration resolves correctly.
                     // e.g., Vec<Inline> → collection_elem_types["children"] = Struct(Inline)
                     if let Some(elem_str) = param_ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
-                        let elem_mir = ctx.resolve_type_str(elem_str);
-                        meta.elem_type = Some(elem_mir);
-                    }
-                    if let Some(elem_str) = param_ty_str.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
                         let elem_mir = ctx.resolve_type_str(elem_str);
                         meta.elem_type = Some(elem_mir);
                     }
@@ -4559,9 +4493,6 @@ impl<'a> MirLowerer<'a> {
                     })
                 }
                 Type::Array { elem, .. } => return Some(self.ctx.type_to_mir(elem)),
-                // Pool iteration yields handles (packed i64)
-                Type::UnresolvedNamed(n) if n == "Pool" => return Some(MirType::I64),
-                Type::UnresolvedGeneric { name, .. } if name == "Pool" => return Some(MirType::I64),
                 // Vec<any Trait> yields fat-pointer elements. Only the trait-object
                 // case is taken from the checker here: concrete element types are
                 // already covered by the tracked elem_type below, but a trait object
@@ -4681,7 +4612,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Extract the Ok/Some payload type from the raw type of an expression.
     /// For Option<T>, returns T. For Result<T, E>, returns T.
-    /// MirType::Ptr is a legitimate result for Vec/Map/Pool/Channel/etc.,
+    /// MirType::Ptr is a legitimate result for Vec/Map/Channel/etc.,
     /// so the caller must not treat Ptr as "unresolved".
     fn extract_payload_type(&self, expr: &Expr) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
@@ -6698,7 +6629,6 @@ mod tests {
                     })
                     .collect(),
                 ret_ty: ret_ty.map(|s| s.to_string()),
-                context_clauses: vec![],
                 body,
                 is_pub: false,
                 is_private: false,

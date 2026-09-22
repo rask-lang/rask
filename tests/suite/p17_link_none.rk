@@ -1,24 +1,17 @@
-// `Link<T>?` and `Handle<T>?` are the same shape and not the same `none`.
+// `Link<T>?` is one word with no tag, and its `none` is the null address.
 //
-// Both are one word with no tag. A handle is index+generation, so all-ones is
-// the value it can't produce; a link is an address, so null is. The first native
-// pass gave links the handle's all-ones, and every absent edge in a fresh node
-// was the address -1 — which `rack.insert` then walked, looking for edges to
+// The first native pass gave links all-ones instead — the sentinel the pool's
+// handles used, back when there were handles — so every absent edge in a fresh
+// node was the address -1, which `rack.insert` then walked looking for edges to
 // record. It only stayed upright because the runtime also accepted -1 as
-// absent, i.e. two wrongs.
+// absent, i.e. two wrongs. Null is the right sentinel for the same reason: a
+// rack chunk arrives zeroed, so every link in it already reads as `none`.
 import memory.Link
-import memory.Handle
 import memory.Rack
-import memory.Pool
-
-struct Item {
-    hp: i32
-}
 
 struct Node {
     id: i32
     peer: Link<Node>?
-    owner: Handle<Item>?
 }
 
 struct Cursor {
@@ -29,50 +22,35 @@ func main() {}
 
 test "a fresh node's absent edge is absent, not an address" {
     mut rack: Rack<Node> = Rack.new()
-    let n = rack.insert(Node { id: 1, peer: none, owner: none })
+    let n = rack.insert(Node { id: 1, peer: none })
 
     if n.peer? as _p {
-        assert false
-    }
-    if n.owner? as _h {
         assert false
     }
     assert n.id == 1
 }
 
-// The two niches sitting in one struct is what catches a shared sentinel: give
-// links the handle's word and the link field reads as present, or the pool reads
-// a null handle as a live slot.
-test "the two niches keep their own none side by side" {
-    mut pool: Pool<Item> = Pool.new()
+// A present edge and an absent one side by side, so a sentinel that collided
+// with a real address would show as one reading like the other.
+test "present and absent edges don't read as each other" {
     mut rack: Rack<Node> = Rack.new()
-
-    let it = pool.insert(Item { hp: 9 })
-    let a = rack.insert(Node { id: 1, peer: none, owner: it })
-    let b = rack.insert(Node { id: 2, peer: a, owner: none })
+    let a = rack.insert(Node { id: 1, peer: none })
+    let b = rack.insert(Node { id: 2, peer: a })
 
     if b.peer? as p {
         assert p.id == 1
     } else {
         assert false
     }
-    if a.owner? as h {
-        assert pool[h].hp == 9
-    } else {
-        assert false
-    }
     if a.peer? as _p {
-        assert false
-    }
-    if b.owner? as _h {
         assert false
     }
 }
 
 test "clearing an edge to none leaves the node reachable" {
     mut rack: Rack<Node> = Rack.new()
-    let a = rack.insert(Node { id: 1, peer: none, owner: none })
-    mut b = rack.insert(Node { id: 2, peer: a, owner: none })
+    let a = rack.insert(Node { id: 1, peer: none })
+    mut b = rack.insert(Node { id: 2, peer: a })
 
     b.peer = none
 
@@ -91,7 +69,7 @@ test "clearing an edge to none leaves the node reachable" {
 // A container of *nodes carrying* edges, which is the shape programs write.
 test "a none inside a struct in a container stays none" {
     mut rack: Rack<Node> = Rack.new()
-    let a = rack.insert(Node { id: 1, peer: none, owner: none })
+    let a = rack.insert(Node { id: 1, peer: none })
     mut v: Vec<Cursor> = Vec.new()
     v.push(Cursor { at: none })
     v.push(Cursor { at: a })
@@ -120,7 +98,7 @@ test "a none inside a struct in a container stays none" {
 // are different answers and both have to survive.
 test "a Vec of optional links keeps its slots apart" {
     mut rack: Rack<Node> = Rack.new()
-    let a = rack.insert(Node { id: 1, peer: none, owner: none })
+    let a = rack.insert(Node { id: 1, peer: none })
     mut v: Vec<Link<Node>?> = Vec.new()
     v.push(a)
     v.push(none)

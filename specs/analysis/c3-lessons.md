@@ -1,7 +1,7 @@
 <!-- id: analysis.c3-lessons -->
 <!-- status: proposed -->
 <!-- summary: C3 checked against Rask — nothing transfers; contracts stay out, the arena is already specced, interop ceremony measures at zero. Five bugs found in the measuring -->
-<!-- depends: memory/allocators.md, memory/pools.md, memory/relocatable.md, types/integer-overflow.md, structure/c-interop.md, tooling/annotate.md -->
+<!-- depends: memory/allocators.md, memory/relocatable.md, types/integer-overflow.md, structure/c-interop.md, tooling/annotate.md -->
 
 # C3, Checked Against Rask
 

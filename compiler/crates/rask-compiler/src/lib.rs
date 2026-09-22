@@ -45,7 +45,6 @@ mod comptime_eval;
 // Re-export key types so callers don't need direct deps on pipeline crates.
 pub use rask_comptime::CfgConfig;
 pub use rask_effects::{EffectMap, EffectWarning};
-pub use rask_effects::frozen::FrozenDiagnostic;
 pub use rask_mir::ComptimeGlobalMeta;
 pub use rask_mono::MonoProgram;
 pub use rask_resolve::{PackageId, PackageRegistry};
@@ -127,7 +126,6 @@ pub struct CheckResult {
     pub source_files: Vec<(PathBuf, String)>,
     pub effects: EffectMap,
     pub effect_warnings: Vec<EffectWarning>,
-    pub frozen_diagnostics: Vec<FrozenDiagnostic>,
 }
 
 /// Result of the full compilation pipeline (through monomorphization).
@@ -449,12 +447,6 @@ fn check_loaded(
         diags.push(effect_warning_to_diagnostic(w));
     }
 
-    // --- Frozen context enforcement ---
-    let frozen_diagnostics = rask_effects::frozen::check(&parse_result.decls, &effects);
-    for d in &frozen_diagnostics {
-        diags.push(frozen_to_diagnostic(d));
-    }
-
     // --- CT60: a `comptime func` keeps its promise where it is written ---
     for e in rask_effects::comptime_purity::check(&parse_result.decls, &effects) {
         diags.push(comptime_purity_to_diagnostic(&e));
@@ -481,7 +473,6 @@ fn check_loaded(
             source_files: source_files.clone(),
             effects,
             effect_warnings,
-            frozen_diagnostics,
         },
         diags,
         source_files,
@@ -795,11 +786,6 @@ fn check_package_scoped(
         diags.push(effect_warning_to_diagnostic(w));
     }
 
-    let frozen_diagnostics = rask_effects::frozen::check(&pkg_ctx.all_decls, &effects);
-    for d in &frozen_diagnostics {
-        diags.push(frozen_to_diagnostic(d));
-    }
-
     // --- CT60: a `comptime func` keeps its promise where it is written ---
     for e in rask_effects::comptime_purity::check(&pkg_ctx.all_decls, &effects) {
         diags.push(comptime_purity_to_diagnostic(&e));
@@ -824,7 +810,6 @@ fn check_package_scoped(
             source_files: source_files.clone(),
             effects,
             effect_warnings,
-            frozen_diagnostics,
         },
         diags,
         source_files,
@@ -835,7 +820,7 @@ fn check_package_scoped(
 // compile — full pipeline through monomorphization
 // ============================================================================
 
-/// Compile a .rk file: check + hidden_params + derive + stdlib + monomorphize.
+/// Compile a .rk file: check + derive + stdlib + monomorphize.
 ///
 /// Returns everything codegen needs. Does NOT emit object files.
 pub fn compile_file(
@@ -976,18 +961,6 @@ fn finalize_compile_inner(
     // string, and an omitted one is empty, which reads as `void`. The checker
     // solved it; put the answer where the rest of the pipeline looks (#905).
     write_back_inferred_params(&mut check.decls, &check.typed);
-
-    // --- Hidden parameter desugaring ---
-    // CC8 ambiguity surfaces here as a pipeline diagnostic; a hard error stops
-    // the build before monomorphization, like any other pass.
-    let hp_diags = rask_mir::hidden_params::desugar_hidden_params_with_types(
-        &mut check.decls,
-        Some(&check.typed),
-    );
-    if !hp_diags.is_empty() {
-        diags.extend(hp_diags);
-        return PipelineOutput::fail_with_sources(diags, pkg_source_files);
-    }
 
     // --- Derive synthetic method bodies (compare, etc.) ---
     derive::generate_derived_methods(&mut check.decls, &check.typed);
@@ -1298,11 +1271,3 @@ fn comptime_purity_to_diagnostic(e: &rask_effects::comptime_purity::ComptimePuri
     }
 }
 
-fn frozen_to_diagnostic(d: &FrozenDiagnostic) -> Diagnostic {
-    let diag = if d.is_error {
-        Diagnostic::error(&d.message)
-    } else {
-        Diagnostic::warning(&d.message)
-    };
-    diag.with_code(d.code).with_primary(d.span, "")
-}

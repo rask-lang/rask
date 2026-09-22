@@ -19,13 +19,6 @@ Run one:
 rask run examples/grep_clone.rk -- -n pattern file.txt
 ```
 
-Two of these store their entities in a `Pool` with `Handle`s, which racks and links have
-replaced. That's sequencing rather than neglect: migrating the examples is step 5 of
-[#908](https://github.com/rask-lang/rask/issues/908), and it waits on an answer for
-serialization: a handle is an integer that survives a round trip, and a link is an address,
-so there's no link analogue yet. Copy the loop and the undo stack from these; take the
-storage pattern from [racks.md](https://github.com/rask-lang/rask/blob/main/specs/memory/racks.md).
-
 There were walkthrough chapters here. They quoted code by hand, were checked only for
 parsing, and drifted: the game-loop page taught `Pool<T>`, which the design replaced with
 racks and links. Guide chapters now pull their code out of these programs

@@ -9,10 +9,15 @@ Each Rask mechanism is well-motivated in isolation. The question is whether a de
 ## Scenario
 
 A game with:
-- **Pool\<Entity>** — position, velocity, health, plus handles into other pools
-- **Pool\<Mesh>** — vertex buffer (VkBuffer), index count
-- **Pool\<PhysicsBody>** — `@resource` wrapping a C raw pointer (must be consumed)
+- **Rack\<Entity>** — position, velocity, health, plus links to other nodes
+- **Rack\<Mesh>** — vertex buffer (VkBuffer), index count
+- **PhysicsBody** — a `@resource` wrapping a C raw pointer (must be consumed)
 - **VulkanDevice** / **PhysicsWorld** — safe wrappers around C FFI
+
+The physics bodies are the interesting part: a `@resource` can't live in *any*
+container (`mem.resources/RC1`–RC3), so the C side keeps them and an entity node
+stores the raw id. That constraint is not a workaround, it's the finding — see
+Phase 3.
 
 ## Type Definitions
 
@@ -33,8 +38,8 @@ struct Entity {
     position: Vec3
     velocity: Vec3
     health: i32
-    mesh: Handle<Mesh>
-    body: Handle<PhysicsBody>
+    mesh: Link<Mesh>?
+    body: i64            // the physics library's id for this entity's body
     active: bool
 }
 
@@ -43,36 +48,35 @@ struct Mesh {
     index_count: u32
 }
 
-@resource
-struct PhysicsBody {
-    rigid_body: i64
-}
-
 struct GameWorld {
-    entities: Pool<Entity>
-    meshes: Pool<Mesh>
-    bodies: Pool<PhysicsBody>
+    entities: Rack<Entity>
+    meshes: Rack<Mesh>
     physics: i64
     vulkan: i64
 }
 ```
 
-**Concept count: 5** — Pool+Handle, @resource, Pool\<@resource>, value semantics, safe wrappers.
+**Concept count: 4** — Rack+Link, `Link<T>?` edges, value semantics, safe wrappers.
 
 ## Scorecard
 
 | Phase | Concepts | Budget (7±2) | Verdict |
 |-------|----------|-------------|---------|
-| Type definitions | 5 | PASS | |
+| Type definitions | 4 | PASS | |
 | 1: Physics step | 3 | PASS | |
-| 2: Sync physics | 8 | MARGINAL | |
-| 3: Game logic/destroy | **10** | **FAIL** | |
-| 4: Render | 6 | PASS | |
-| 5: Parallel | **12** | **FAIL** | |
+| 2: Sync physics | 5 | PASS | |
+| 3: Game logic/destroy | 6 | PASS | |
+| 4: Render | 4 | PASS | |
+| 5: Parallel | 8 | MARGINAL | |
 
-**Root cause:** Not any single mechanism. ECS-with-FFI sits at the intersection of ALL mechanisms simultaneously. The 4-step destruction dance (Phase 3) and thread+snapshot pile-up (Phase 5) break the budget.
-
-**Metrics impact:** Game engines carry only 5% weight in UCC, so failing here doesn't sink the language. But ED target (≤ 1.2 vs simplest alternative) is at risk — Odin or Jai would handle Phase 3 in 2 lines.
+**What changed.** This page used to fail two phases and blame "ECS-with-FFI sits
+at the intersection of all mechanisms". The intersection was smaller than it
+looked: three of the five phases were over budget because of the pool, not
+because of the domain. Cross-pool handle chaining, the four-step destruction
+dance, frozen contexts and `using` clauses are all gone with it
+(rask-lang/rask#908), and Phases 2–4 come in under budget with no new mechanism
+added. Phase 5 is the one that stayed hard, and it stayed hard for a reason that
+has nothing to do with storage: a graph can't cross a task boundary by reference.
 
 ## Phase 1: Physics Step
 
@@ -81,152 +85,145 @@ struct GameWorld {
 world.physics.step(dt)
 ```
 
-**Concepts: 3** — borrowing, safe wrapper, @resource borrow. **PASS.**
+**Concepts: 3** — borrowing, safe wrapper, FFI. **PASS.**
 
 ## Phase 2: Sync Physics → Entities
 
 <!-- test: skip -->
 ```rask
 func sync_physics(mutate world: GameWorld) {
-    for h in world.entities.cursor() {
-        let body_handle = world.entities[h].body
-        let body_ptr = world.bodies[body_handle].rigid_body
-        let transform = world.physics.get_transform(body_ptr)
-        world.entities[h].position = transform.position
+    for e in world.entities.nodes() {
+        let transform = world.physics.get_transform(e.body)
+        e.position = transform.position
     }
 }
 ```
 
-**Concepts: 8** — cursor iteration, inline access, cross-pool handles, two pools active, @resource in pool, raw value extraction, safe FFI wrapper, borrowing modes.
+**Concepts: 5** — rack walk, writing through a link, safe FFI wrapper, borrowing
+modes, raw value extraction.
 
-**Friction:** Cross-pool handle chaining — three mechanism boundaries in four lines. **MARGINAL.**
+The handle version needed two lookups per entity and a second pool in scope. A
+link is the node, so `e.position = …` is a field write. **PASS.**
 
 ## Phase 3: Game Logic / Entity Destruction
 
 <!-- test: skip -->
 ```rask
 func update_entities(mutate world: GameWorld) -> void or Error {
-    mut doomed: Vec<Handle<Entity>> = Vec.new()
-
-    for h in world.entities.cursor() {
-        world.entities[h].health -= 1
-        if world.entities[h].health <= 0 {
-            world.entities[h].active = false
-            doomed.push(h)
+    for e in world.entities.nodes() {
+        e.health -= 1
+        if e.health <= 0 {
+            world.physics.destroy_body(e.body)
+            world.entities.delete(e)
         }
     }
-
-    for h in doomed {
-        let entity = world.entities.remove(h)!
-        let body_handle = entity.body
-        let body = world.bodies.remove(body_handle)!
-        body.close(world.physics)
-    }
-
     return
 }
 ```
 
-**Concepts: 10** — cursor iteration, inline access, move semantics, cross-pool handles, pool removal, @resource consumption, error handling, handle collection pattern, Pool\<@resource> rules, ownership transfer.
+**Concepts: 6** — rack walk, writing through a link, delete, FFI cleanup, error
+handling, `nodes()` hands back its own Vec so deleting mid-walk is fine.
 
-**The 4-step destruction dance is unavoidable:** remove entity → extract handle → remove body → consume body. Miss any step → compile error or runtime panic. **FAIL.**
+**The four-step dance is gone**, and so is the collect-then-remove pass: `nodes()`
+answers a `Vec<Link<Entity>>` the loop owns, so a delete inside the walk touches
+nothing the walk is reading. Anything else pointing at the dead entity —
+another entity's `target`, an index `Map` — is nulled by `delete` before it
+returns (`mem.racks/RK3`), which is the sweep that used to be written by hand.
+
+The `@resource` didn't survive the move into a container, and that is the
+honest cost: `Rack<PhysicsBody>` is rejected (RC2), because `delete` frees a
+node rather than handing it back, so nothing could consume it. The body's
+lifetime therefore lives on the C side and the Rask side carries an id. That's
+one concept the type system isn't checking for you — the thing the old
+`Pool<@resource>` rules were buying, at the price of four extra rules and a
+runtime guard. **PASS**, with that caveat recorded.
 
 ## Phase 4: Render
 
 <!-- test: skip -->
 ```rask
 func render_frame(world: GameWorld) {
-    render_entities(world)
-}
-
-func render_entities(world: GameWorld) using frozen Pool<Entity>, frozen Pool<Mesh> {
-    for (h, entity) in world.entities.entries() {
-        if world.meshes.get(entity.mesh)? as mesh {
-            draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
+    for e in world.entities.nodes() {
+        if e.mesh? as mesh {
+            draw_mesh(mesh.vertex_buffer, mesh.index_count, e.position)
         }
     }
 }
 ```
 
-**Concepts: 5** — frozen context, cross-pool handles, checked random access, value iteration, context clauses. **PASS.**
+**Concepts: 4** — rack walk, optional edge test, following a link, FFI call.
+
+No `frozen`, no context clause, no checked random access: the edge is a
+`Link<Mesh>?`, so "is there a mesh" and "here it is" are the same test. **PASS.**
 
 ## Phase 5: Parallel Variant
 
 <!-- test: skip -->
 ```rask
-func game_loop_parallel(mutate world: GameWorld, dt: f32) -> void or Error
-    using ThreadPool
-{
-    let (entity_snap, _) = world.entities.snapshot()
-    let (mesh_snap, _) = world.meshes.snapshot()
+func game_loop_parallel(mutate world: GameWorld, dt: f32) -> void or Error {
+    let frame = world.entities.snapshot()
 
-    let render_handle = ThreadPool.spawn(|| {
-        for (h, entity) in entity_snap.entries() {
-            if mesh_snap.get(entity.mesh)? as mesh {
-                draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
+    let render = ThreadPool.spawn(own || {
+        for e in frame.nodes() {
+            if e.mesh? as mesh {
+                draw_mesh(mesh.vertex_buffer, mesh.index_count, e.position)
             }
         }
     })
 
-    let physics_handle = ThreadPool.spawn(|| {
+    let physics = ThreadPool.spawn(|| {
         world.physics.step(dt)
     })
 
-    try render_handle.join()
-    try physics_handle.join()
-    sync_physics(world)
-    try update_entities(world)
+    try render.join()
+    try physics.join()
+    sync_physics(mutate world)
+    try update_entities(mutate world)
 
     return
 }
 ```
 
-**Concepts: 9** — ThreadPool, spawn thread, must-use handles, snapshot (clone), cross-pool handles, Send/Sync constraints, error handling, checked random access, join semantics. **Marginal PASS** (down from 12 — no FrozenPool type, no freeze_ref, no CoW).
+**Concepts: 8** — ThreadPool, spawn, must-use handles, `own` capture, snapshot
+(a deep copy), disjoint field capture, join semantics, error handling.
+**MARGINAL.**
+
+This is the phase that didn't get easier. A link is an address, so it means
+nothing in another task, and `snapshot()` is a full copy of the graph — O(nodes
++ edges) per frame. The pool's handles were plain integers and crossed for free;
+that was a real advantage and it's gone. Whether the copy is acceptable depends
+on how big the graph is, and nothing in the language will tell you.
 
 ## Friction Points
 
 | # | Friction | Severity |
 |---|----------|----------|
-| 1 | Cross-pool handle chaining is verbose | LOW-MEDIUM |
-| 2 | @resource consumption during iteration: 4-step dance | HIGH |
-| 3 | `ensure` ordering for multi-resource cleanup can hide UB | HIGH |
-| 4 | Context clause explosion in deep call chains | MEDIUM |
+| 1 | A `@resource` can't live in a rack, so FFI handles are raw ids the compiler doesn't track | MEDIUM |
+| 2 | `ensure` ordering for multi-resource cleanup can hide UB | HIGH |
+| 3 | Sharing a graph across tasks means copying it | MEDIUM |
 
 ## Recommendations
 
-### 1. `pool.remove_with()` for cascading cleanup ([#582](https://github.com/rask-lang/rask/issues/582))
-
-<!-- test: skip -->
-```rask
-// Today: 4-step dance
-let entity = world.entities.remove(h)!
-let body = world.bodies.remove(entity.body)!
-body.close(world.physics)
-
-// Proposed: callback collocates cleanup
-world.entities.remove_with(h, |entity| {
-    let body = world.bodies.remove(entity.body)!
-    body.close(world.physics)
-})
-```
-
-### 2. Disjoint field borrows in thread closures ([#583](https://github.com/rask-lang/rask/issues/583))
-
-<!-- test: skip -->
-```rask
-// Compiler tracks that the closure only captures world.physics
-let physics_handle = spawn thread(|| {
-    world.physics.step(dt)
-})
-```
-
-### 3. `ensure` ordering lint for @resource cleanup ([#584](https://github.com/rask-lang/rask/issues/584))
+### 1. `ensure` ordering lint for @resource cleanup ([#584](https://github.com/rask-lang/rask/issues/584))
 
 Warn when LIFO ordering might close a dependency before its dependent is drained.
 
-### 4. Style guideline: max 3 context clauses ([#585](https://github.com/rask-lang/rask/issues/585))
+### 2. Measure the snapshot
 
-If a function needs >3, restructure (pass struct, pass individual fields, split function). Lint, not language rule.
+Phase 5 copies the whole graph per frame. Before designing anything around it,
+measure: a few thousand nodes is nothing, a few hundred thousand is a frame
+budget. `RASK_RACK_STATS=1` reports what the copy walked.
+
+**Retired with pools:** `pool.remove_with()` for cascading cleanup
+([#582](https://github.com/rask-lang/rask/issues/582)) and the max-3-context-clauses
+style rule ([#585](https://github.com/rask-lang/rask/issues/585)). The first
+existed to shorten the four-step destruction dance, which `delete` does in one
+step; the second counted a clause that no longer exists.
+
+Disjoint field borrows in thread closures
+([#583](https://github.com/rask-lang/rask/issues/583)) is unaffected — Phase 5
+still wants the compiler to see that the physics closure captures only
+`world.physics`.
 
 ---
 
@@ -234,8 +231,7 @@ If a function needs >3, restructure (pass struct, pass individual fields, split 
 
 ### See Also
 
-- `mem.pools` — Pool\<T>, Handle\<T>, frozen contexts, snapshots
-- `mem.resources` — @resource types, ensure cleanup
-- `mem.context` — context clauses
+- `mem.racks` — Rack\<T>, Link\<T>, delete-time edge fixup, snapshots
+- `mem.resources` — @resource types, ensure cleanup, the no-container rules
 - `conc.async` — spawn, must-use handles
 - `mem.borrowing` — inline access, `with` blocks, disjoint field borrowing

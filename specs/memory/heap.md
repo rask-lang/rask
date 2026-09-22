@@ -298,7 +298,7 @@ The name a binary heap would want is a casualty I'll take: a priority queue shou
 
 **Why `Heap(expr)` instead of `own expr`.** `own` was doing two unrelated jobs — heap-allocate here, move-capture there — and you couldn't tell which from the syntax: `f(own x)` moves, `Node(own x)` allocated. An ordinary call removes the ambiguity and drops a keyword. `own` now means move, everywhere.
 
-**Why linear heap pointers?** I wanted heap allocation without runtime overhead. `Handle<T>` uses generation checks — safe but costs 4+ bytes and a branch on every access. `Heap<T>` has exactly one owner, so the compiler can track it statically via the linearity rules (`mem.linear`). Use-after-free, double-free, and leaks are all prevented without any runtime cost.
+**Why linear heap pointers?** I wanted heap allocation with no runtime overhead at all. `Heap<T>` has exactly one owner, so the compiler tracks it statically via the linearity rules (`mem.linear`). Use-after-free, double-free and leaks are all prevented with nothing left to check at run time.
 
 **Why the same rules as `@resource`?** Both `Heap<T>` and `@resource` structs are linear values — the compiler uses one rule set (`mem.linear/L1–L7`) for both. A reader who understands `@resource` already understands `Heap<T>`; only the use cases differ.
 
@@ -310,18 +310,18 @@ The name a binary heap would want is a casualty I'll take: a priority queue shou
 
 ### Patterns & Guidance
 
-**When to use `Heap<T>` vs `Handle<T>`:**
+**When to use `Heap<T>` vs `Link<T>`:**
 
-| Aspect | `Heap<T>` | `Handle<T>` |
-|--------|------------|-------------|
-| Safety mechanism | Linearity (compile-time) | Generation check (runtime) |
-| Aliasing | Single owner only | Multiple handles allowed |
-| Overhead | None | 4+ bytes for generation, check on access |
-| Size | 8 bytes | 12 bytes (default) |
-| Use case | Recursive types, single ownership | Collections, graphs, shared references |
+| Aspect | `Heap<T>` | `Link<T>` |
+|--------|------------|-----------|
+| Safety mechanism | Linearity (compile-time) | Delete-time edge fixup (`mem.racks/RK3`) |
+| Aliasing | Single owner only | Many links to one node |
+| Overhead | None | One extra cache access per edge *write*; reads are a plain deref |
+| Size | 8 bytes | 8 bytes |
+| Use case | Recursive types, single ownership | Graphs whose nodes get deleted individually |
 
 - `Heap<T>`: Tree nodes, AST nodes, single-owner heap values
-- `Handle<T>`: Entity systems, graphs with cycles, observer patterns
+- `Link<T>`: Entity systems, graphs with cycles, observer patterns
 
 **AST pattern:**
 
@@ -350,10 +350,10 @@ enum Expr {
 
 ### See Also
 
-- [Linearity](linear.md) — Rule set (L1–L7) shared by `@resource`, `Heap<T>`, `Pool<Linear>` (`mem.linear`)
+- [Linearity](linear.md) — Rule set (L1–L7) shared by `@resource` and `Heap<T>` (`mem.linear`)
 - [Shared, Rack and Heap](shared-rack-heap.md) — `Heap<T>` beside the other two (`mem.shared-rack-heap`)
 - [Ownership](ownership.md) — Single-owner model (`mem.ownership`)
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value`)
 - [Borrowing](borrowing.md) — Scoped borrowing rules (`mem.borrowing`)
 - [Resource Types](resource-types.md) — `@resource` struct annotation (`mem.resources`)
-- [Pools](pools.md) — Handle-based indirection (`mem.pools`)
+- [Racks and Links](racks.md) — many nodes, individually deleted (`mem.racks`)

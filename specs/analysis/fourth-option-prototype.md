@@ -1,7 +1,7 @@
 <!-- id: analysis.fourth-option-prototype -->
 <!-- status: exploration -->
 <!-- summary: Rack + Link built for real in the interpreter and run against Pool + Handle on the three litmus programs. The model works; the checkless read is bought with a borrow rule nobody has priced -->
-<!-- depends: analysis/fourth-option.md, analysis/fourth-option-litmus.md, memory/pools.md -->
+<!-- depends: analysis/fourth-option.md, analysis/fourth-option-litmus.md -->
 
 # Fourth Option: What the Prototype Found
 

@@ -793,52 +793,7 @@ impl<'a> MirLowerer<'a> {
                         // aggregate as a value copy and stores into the copy.
                         let (index_base, path) = Self::peel_field_path(target);
                         if let ExprKind::Index { object: coll, index: idx } = &index_base.kind {
-                            // A pool index is an address into the arena, so the
-                            // whole path projects to one store. The generation
-                            // check comes along, which is what a write through a
-                            // stale handle should hit.
-                            if self.index_object_is_pool(coll) {
-                                // Ask for the slot's address rather than lowering
-                                // `pool[h]` as an expression: for a scalar element
-                                // that reads the *value*, and storing through 42
-                                // is a segfault. Reading and writing want
-                                // different things from the same syntax, so the
-                                // write says which.
-                                let elem_ty = self
-                                    .ctx
-                                    .lookup_raw_type(index_base.id)
-                                    .map(|t| self.ctx.type_to_mir(t))
-                                    .or_else(|| self.collection_elem_of_expr(coll));
-                                let (coll_op, _) = self.lower_expr(coll)?;
-                                let (idx_op, _) = self.lower_expr(idx)?;
-                                let pool_local = self.as_local(coll_op);
-                                let handle_local = self.as_local(idx_op);
-                                let slot_addr = self.pool_slot_addr(pool_local, handle_local, MirType::Ptr);
-                                // An empty path is the whole element — offset 0,
-                                // its own width. `field_path_offset_ty` answers
-                                // for a field path and had nothing to say here, so
-                                // a scalar `pool[h] = v` fell out of this branch
-                                // entirely and landed on `Vec_set(pool, handle, v)`
-                                // — a handle used as an index, which is
-                                // `index:32 | generation:32` and lands far out of
-                                // range.
-                                let store = elem_ty.as_ref().and_then(|ty| {
-                                    if path.is_empty() {
-                                        Some((0u32, ty.size() as u32))
-                                    } else {
-                                        self.field_path_offset_ty(ty, &path)
-                                    }
-                                });
-                                if let Some((offset, fsize)) = store {
-                                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                        addr: slot_addr,
-                                        offset,
-                                        value: val_op,
-                                        store_size: Some(fsize),
-                                    }));
-                                    return Ok(());
-                                }
-                            } else if self.is_vec_expr(coll) {
+                            if self.is_vec_expr(coll) {
                                 // Reading `v[i]` copies the element (value
                                 // semantics for `let p = v[i]`), so a store into
                                 // that copy is lost. Read-modify-writeback, the
@@ -918,29 +873,6 @@ impl<'a> MirLowerer<'a> {
                         // element type with no field to write (#719). The field-path
                         // case above already routed pools correctly; a bare element
                         // never reached it.
-                        if self.index_object_is_pool(object) {
-                            let elem_ty = self
-                                .ctx
-                                .lookup_raw_type(target.id)
-                                .map(|t| self.ctx.type_to_mir(t))
-                                .or_else(|| self.collection_elem_of_expr(object));
-                            if let Some(elem_ty) = elem_ty {
-                                let (pool_op, _) = self.lower_expr(object)?;
-                                let (handle_op, _) = self.lower_expr(index)?;
-                                let pool_local = self.as_local(pool_op);
-                                let handle_local = self.as_local(handle_op);
-                                let slot_addr =
-                                    self.pool_slot_addr(pool_local, handle_local, MirType::Ptr);
-                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
-                                    addr: slot_addr,
-                                    offset: 0,
-                                    value: val_op,
-                                    store_size: Some(elem_ty.size() as u32),
-                                }));
-                                return Ok(());
-                            }
-                        }
-
                         let (obj_op, obj_ty) = self.lower_expr(object)?;
                         let (idx_op, _) = self.lower_expr(index)?;
 
@@ -1831,21 +1763,6 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        // Track element type for Pool<T>.new() constructors:
-        // let pool = Pool<Node>.new() → collection_elem_types["pool"] = Struct(Node)
-        if let ExprKind::MethodCall { object, method, .. } = &init.kind {
-            if let ExprKind::Ident(obj_name) = &object.kind {
-                let base_name = obj_name.split('<').next().unwrap_or(obj_name);
-                if base_name == "Pool" && method == "new" {
-                    if let Some(inner) = obj_name.split('<').nth(1).and_then(|s| s.strip_suffix('>')) {
-                        let elem_mir = self.ctx.resolve_type_str(inner);
-                        if !matches!(elem_mir, MirType::Ptr | MirType::I64) {
-                            self.meta_mut(name).elem_type = Some(elem_mir);
-                        }
-                    }
-                }
-            }
-        }
         // Iterator terminal .collect() returns a Vec
         if let ExprKind::MethodCall { method, .. } = &init.kind {
             if method == "to_vec" {
@@ -1904,13 +1821,10 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        // Track collection element types from type annotations (Vec<u8>, Pool<T>)
+        // Track collection element types from type annotations (Vec<u8>, …)
         if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
             if let Some(ty_str) = ty {
                 if let Some(elem_str) = ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
-                    let elem_mir = self.ctx.resolve_type_str(elem_str);
-                    self.meta_mut(name).elem_type = Some(elem_mir);
-                } else if let Some(elem_str) = ty_str.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
                     let elem_mir = self.ctx.resolve_type_str(elem_str);
                     self.meta_mut(name).elem_type = Some(elem_mir);
                 }
@@ -2378,35 +2292,6 @@ impl<'a> MirLowerer<'a> {
             return self.lower_for_sequence(label, binding, iter_expr, body, elem);
         }
 
-        // pool.entries(): for (h, val) in pool.entries() { ... }
-        // Desugars to: handles = Pool_handles(pool); for i in 0..len { h = handles[i]; val = Pool_get(pool, h); body }
-        if let ForBinding::Tuple(names) = binding {
-            if let ExprKind::MethodCall { object, method, .. } = &iter_expr.kind {
-                if method == "entries" {
-                    let obj_is_pool = self.ctx.lookup_raw_type(object.id).map_or(false, |ty| {
-                        matches!(ty, rask_types::Type::UnresolvedNamed(n) if n == "Pool")
-                            || matches!(ty, rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool")
-                    });
-                    if obj_is_pool {
-                        return self.lower_for_pool_entries(label, names, object, body, mutate);
-                    }
-                }
-            }
-        }
-
-        // Pool iteration: `for h in pool` desugars to snapshot handle iteration.
-        // Calls Pool_handles(pool) → Vec<Handle>, then iterates the Vec.
-        let is_pool = self.ctx.lookup_raw_type(iter_expr.id).map_or(false, |ty| {
-            matches!(
-                ty,
-                rask_types::Type::UnresolvedNamed(n) if n == "Pool"
-            ) || matches!(
-                ty,
-                rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool"
-            ) || super::MirContext::type_prefix(ty, self.ctx.type_names)
-                .is_some_and(|p| p.split('<').next() == Some("Pool"))
-        });
-
         // LP13: Detect Map iteration for correct writeback target.
         // The name has to come from `type_prefix`, not a match on the
         // Unresolved shapes alone: once the checker resolves the receiver it's
@@ -2426,21 +2311,7 @@ impl<'a> MirLowerer<'a> {
         // into the snapshot, so `Map_set` needs this one and not `collection`.
         let mut map_local = None;
 
-        // For pools: convert pool → Vec<Handle> via Pool_handles snapshot
-        let (iter_op, iter_ty) = if is_pool {
-            let pool_tmp = self.builder.alloc_temp(iter_ty.clone());
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: pool_tmp,
-                rvalue: MirRValue::Use(iter_op),
-            }));
-            let handles_vec = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(handles_vec),
-                func: FunctionRef::internal("Pool_handles".to_string()),
-                args: vec![MirOperand::Local(pool_tmp)],
-            }));
-            (MirOperand::Local(handles_vec), MirType::I64)
-        } else if is_map {
+        let (iter_op, iter_ty) = if is_map {
             // LP13: a map iterates over its entries. Without this the loop ran
             // `Vec_len`/`Vec_get` straight on the map pointer, and reading a
             // field off whatever came back segfaulted. `Map_entries` snapshots
@@ -2544,13 +2415,6 @@ impl<'a> MirLowerer<'a> {
             // as a bare i64 the element load came back as just the key, and
             // reading field 1 off it dereferenced that value as a pointer.
             MirType::Tuple(self.map_entry_pair_types(iter_expr))
-        } else if is_pool {
-            // mem.pools/PF1-PF4: `for h in pool` iterates the handle snapshot,
-            // so the binding is a `Handle`, not the pool's value type. Asking
-            // `iter_expr` — still the pool — gave the value type, so the loop
-            // read each 8-byte handle as if it were an element struct and
-            // `pool[h]` then panicked with "invalid handle".
-            MirType::Handle
         } else {
             self.extract_iterator_elem_type(iter_expr)
                 // `m.keys()` / `m.values()` hand back a Vec of the map's own key
@@ -2579,10 +2443,6 @@ impl<'a> MirLowerer<'a> {
         self.note_closure_binding(single_name, iter_expr);
         if let Some(prefix) = self.mir_type_name(&elem_ty) {
             self.meta_mut(single_name).type_prefix = Some(prefix);
-        } else if is_pool {
-            // Same prefix `for h in pool.handles()` gets, so indexing on the
-            // binding resolves the same way.
-            self.meta_mut(single_name).type_prefix = Some("Handle".to_string());
         } else {
             // MirType is Ptr — try to derive element prefix from iterable context.
             // Method calls like .chunks() return Vec elements, .handles() returns Handle elements.
@@ -2590,9 +2450,6 @@ impl<'a> MirLowerer<'a> {
                 match method.as_str() {
                     "chunks" => {
                         self.meta_mut(single_name).type_prefix = Some("Vec".to_string());
-                    }
-                    "handles" | "cursor" => {
-                        self.meta_mut(single_name).type_prefix = Some("Handle".to_string());
                     }
                     _ => {}
                 }
@@ -2726,8 +2583,6 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Pool entries iteration: `for (h, val) in pool.entries()`
-    /// Desugars to snapshot handle iteration with Pool_get for each handle.
     /// Work out where a `for` loop's element and its destructured pieces live.
     ///
     /// Destructuring reads the whole element, then splits it. The binding named
@@ -2806,170 +2661,6 @@ impl<'a> MirLowerer<'a> {
         second
     }
 
-    /// LP11-LP13: `for mutate` adds Pool_set writeback.
-    fn lower_for_pool_entries(
-        &mut self,
-        label: Option<&str>,
-        names: &[String],
-        pool_expr: &Expr,
-        body: &[Stmt],
-        mutate: bool,
-    ) -> Result<(), LoweringError> {
-        let (pool_op, _) = self.lower_expr(pool_expr)?;
-        let pool_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: pool_local,
-            rvalue: MirRValue::Use(pool_op),
-        }));
-
-        // handles_vec = Pool_handles(pool)
-        let handles_vec = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(handles_vec),
-            func: FunctionRef::internal("Pool_handles".to_string()),
-            args: vec![MirOperand::Local(pool_local)],
-        }));
-
-        // _len = Vec_len(handles_vec)
-        let len_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(len_local),
-            func: FunctionRef::internal("Vec_len".to_string()),
-            args: vec![MirOperand::Local(handles_vec)],
-        }));
-
-        // _i = 0
-        let idx = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: idx,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-        }));
-
-        let check_block = self.builder.create_block();
-        let body_block = self.builder.create_block();
-        let inc_block = self.builder.create_block();
-        let exit_block = self.builder.create_block();
-
-        // LP11-LP13: for mutate writeback blocks for Pool_set
-        let (wb_block, break_wb_block) = if mutate && names.len() > 1 {
-            let wb = self.builder.create_block();
-            let break_wb = self.builder.create_block();
-            (Some(wb), Some(break_wb))
-        } else {
-            (None, None)
-        };
-        let continue_target = wb_block.unwrap_or(inc_block);
-        let break_target = break_wb_block.unwrap_or(exit_block);
-
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
-
-        // check: _i < _len
-        self.builder.switch_to_block(check_block);
-        let cond = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: cond,
-            rvalue: MirRValue::BinaryOp {
-                op: BinOp::Lt,
-                left: MirOperand::Local(idx),
-                right: MirOperand::Local(len_local),
-            },
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-            cond: MirOperand::Local(cond),
-            then_block: body_block,
-            else_block: exit_block,
-        }));
-
-        // body: h = handles_vec[_i]; val = Pool_get(pool, h)
-        self.builder.switch_to_block(body_block);
-
-        // Bind handle (first name)
-        let handle_name = names.first().map_or("_h", |n| n.as_str());
-        let handle_local = self.builder.alloc_local(handle_name.to_string(), MirType::I64);
-        self.locals.insert(handle_name.to_string(), (handle_local, MirType::I64));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-            dst: Some(handle_local),
-            func: FunctionRef::internal("Vec_get".to_string()),
-            args: vec![MirOperand::Local(handles_vec), MirOperand::Local(idx)],
-        }));
-
-        // Bind value (second name) via Pool_get
-        let val_local = if names.len() > 1 {
-            let val_name = &names[1];
-            let val_local = self.builder.alloc_local(val_name.clone(), MirType::I64);
-            self.locals.insert(val_name.clone(), (val_local, MirType::I64));
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(val_local),
-                func: FunctionRef::internal("Pool_get".to_string()),
-                args: vec![MirOperand::Local(pool_local), MirOperand::Local(handle_local)],
-            }));
-            Some(val_local)
-        } else {
-            None
-        };
-
-        let ensure_depth = self.ensure_stack.len();
-        self.loop_stack.push(LoopContext {
-            label: label.map(|s| s.to_string()),
-            continue_block: continue_target,
-            exit_block: break_target,
-            result_local: None,
-            ensure_depth,
-        });
-
-        self.lower_body_scoped(body)?;
-        self.close_loop_body(ensure_depth, continue_target);
-
-        // LP13: Pool_set writeback blocks for `for mutate`
-        if let (Some(wb), Some(vl)) = (wb_block, val_local) {
-            self.builder.switch_to_block(wb);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Pool_set".to_string()),
-                args: vec![
-                    MirOperand::Local(pool_local),
-                    MirOperand::Local(handle_local),
-                    MirOperand::Local(vl),
-                ],
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
-        }
-        if let (Some(break_wb), Some(vl)) = (break_wb_block, val_local) {
-            self.builder.switch_to_block(break_wb);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Pool_set".to_string()),
-                args: vec![
-                    MirOperand::Local(pool_local),
-                    MirOperand::Local(handle_local),
-                    MirOperand::Local(vl),
-                ],
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
-        }
-
-        // inc: _i = _i + 1
-        self.builder.switch_to_block(inc_block);
-        let incremented = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: incremented,
-            rvalue: MirRValue::BinaryOp {
-                op: BinOp::Add,
-                left: MirOperand::Local(idx),
-                right: MirOperand::Constant(MirConst::Int(1)),
-            },
-        }));
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: idx,
-            rvalue: MirRValue::Use(MirOperand::Local(incremented)),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
-
-        self.loop_stack.pop();
-        self.ensure_stack.truncate(ensure_depth);
-        self.builder.switch_to_block(exit_block);
-        Ok(())
-    }
 
     /// Range for-loop: `for i in start..end` desugars to a counter-based while.
     fn lower_for_range(
@@ -3651,7 +3342,6 @@ pub(crate) fn mutate_param_by_pointer(ty: &MirType) -> bool {
             | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
             | MirType::F32 | MirType::F64
             | MirType::Char
-            | MirType::Handle
             | MirType::FuncPtr(_)
     )
 }

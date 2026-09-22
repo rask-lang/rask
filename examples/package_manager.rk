@@ -5,7 +5,7 @@
 // dependency graph construction, lock file generation, and parallel package
 // fetching from a local or HTTP registry.
 //
-// Demonstrates: Pool<T>/Handle<T> for dependency graphs, trait-based registry
+// Demonstrates: Rack<T>/Link<T> for dependency graphs, trait-based registry
 // dispatch with implicit `any Trait` coercion, concurrent fetching with
 // spawn/channels/Shared, ensure cleanup, closures in sort/join,
 // enum-based CLI dispatch, try/else error context, pattern matching at scale.
@@ -16,8 +16,8 @@ import std
 import http
 import json
 import async.Channel
-import memory.Handle
-import memory.Pool
+import memory.Link
+import memory.Rack
 import sync.Shared
 import string.StringBuilder
 import json.JsonValue
@@ -252,13 +252,26 @@ struct PackageMeta {
 
 struct ResolvedPkg {
     meta: PackageMeta
-    deps: Vec<Handle<ResolvedPkg>>
+    deps: Vec<Link<ResolvedPkg>>
 }
 
+// The graph is built into a value the *caller* owns. A link may not outlive
+// the rack its own body declared (mem.racks/RK6), so a resolver that made the
+// rack locally could never hand a link back — the rack is a parameter instead.
 struct DepGraph {
-    packages: Pool<ResolvedPkg>
-    root: Handle<ResolvedPkg>
-    by_name: Map<string, Handle<ResolvedPkg>>
+    packages: Rack<ResolvedPkg>
+    root: Link<ResolvedPkg>?
+    by_name: Map<string, Link<ResolvedPkg>>
+}
+
+extend DepGraph {
+    func new() -> DepGraph {
+        return DepGraph {
+            packages: Rack.new(),
+            root: none,
+            by_name: Map.new(),
+        }
+    }
 }
 
 // ─── Lock File Types ────────────────────────────────────────────────
@@ -592,19 +605,8 @@ func http_fetch(base_url: string, name: string, version: Version) -> string or R
 // satisfies the constraint. Detect conflicts when two constraints
 // for the same package are incompatible. Detect cycles via a visited set.
 
-// Bundle resolver working state: pool, name→handle map, and cycle-detection stack.
-struct ResolveState {
-    packages: Pool<ResolvedPkg>
-    by_name: Map<string, Handle<ResolvedPkg>>
-    visiting: Vec<string>
-}
-
-func resolve(manifest: Manifest, registry: any Registry) -> DepGraph or FetchError {
-    mut state = ResolveState {
-        packages: Pool.new(),
-        by_name: Map.new(),
-        visiting: Vec.new(),
-    }
+func resolve(manifest: Manifest, registry: any Registry, mutate graph: DepGraph) -> void or FetchError {
+    mut visiting: Vec<string> = Vec.new()
 
     // Insert root package
     let root_meta = PackageMeta {
@@ -613,50 +615,41 @@ func resolve(manifest: Manifest, registry: any Registry) -> DepGraph or FetchErr
         checksum: "",
         deps: Vec.new(),
     }
-    let root = state.packages.insert(ResolvedPkg {
+    mut root = graph.packages.insert(ResolvedPkg {
         meta: root_meta,
         deps: Vec.new(),
     })
+    graph.root = root
 
     // Resolve each dependency
     for dep in manifest.deps {
-        let handle = try resolve_one(dep.name, dep.constraint, registry, mutate state)
-        with state.packages[root] as root_pkg {
-            root_pkg.deps.push(handle)
-        }
+        let link = try resolve_one(dep.name, dep.constraint, registry, mutate graph, mutate visiting)
+        root.deps.push(link)
     }
-
-    return DepGraph {
-        packages: state.packages,
-        root,
-        by_name: state.by_name,
-    }
+    return
 }
 
-func resolve_one(name: string, constraint: Constraint, registry: any Registry, mutate state: ResolveState) -> Handle<ResolvedPkg> or FetchError {
+func resolve_one(name: string, constraint: Constraint, registry: any Registry, mutate graph: DepGraph, mutate visiting: Vec<string>) -> Link<ResolvedPkg> or FetchError {
     // Check for circular dependency
-    for v in state.visiting {
+    for v in visiting {
         if v == name {
-            let chain = format_cycle(state.visiting, name)
+            let chain = format_cycle(visiting, name)
             return FetchError.Resolve(ResolveError.Cycle(chain))
         }
     }
 
     // Already resolved? Check compatibility.
-    if state.by_name.contains(name) {
-        let existing_handle = state.by_name.get(name) ?? {
+    if graph.by_name.contains(name) {
+        let existing = graph.by_name.get(name) ?? {
             return FetchError.Io(IoErrorMsg.Msg("impossible: key exists but get failed"))
         }
-        let existing_handle = existing_handle.clone()
 
-        with state.packages[existing_handle] as existing {
-            if constraint.satisfies(existing.meta.version) {
-                return existing_handle
-            }
-            let con_str = constraint.to_string()
-            let ver_str = existing.meta.version.to_string()
-            return FetchError.Resolve(ResolveError.Conflict(name, ver_str, con_str))
+        if constraint.satisfies(existing.meta.version) {
+            return existing
         }
+        let con_str = constraint.to_string()
+        let ver_str = existing.meta.version.to_string()
+        return FetchError.Resolve(ResolveError.Conflict(name, ver_str, con_str))
     }
 
     // Query registry for available versions
@@ -673,7 +666,7 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
         return FetchError.Resolve(ResolveError.NoMatch(name, constraint.to_string()))
     }
 
-    let handle = state.packages.insert(ResolvedPkg {
+    mut link = graph.packages.insert(ResolvedPkg {
         meta: PackageMeta {
             name: meta.name,
             version: meta.version,
@@ -683,19 +676,17 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
         deps: Vec.new(),
     })
 
-    state.by_name.insert(name, handle)
+    graph.by_name.insert(name, link)
 
     // Recursively resolve transitive deps
-    state.visiting.push(name)
+    visiting.push(name)
     for dep in meta.deps {
-        let dep_handle = try resolve_one(dep.name, dep.constraint, registry, mutate state)
-        with state.packages[handle] as pkg {
-            pkg.deps.push(dep_handle)
-        }
+        let dep_link = try resolve_one(dep.name, dep.constraint, registry, mutate graph, mutate visiting)
+        link.deps.push(dep_link)
     }
-    state.visiting.pop()
+    visiting.pop()
 
-    return handle
+    return link
 }
 
 func format_cycle(chain: Vec<string>, name: string) -> string {
@@ -718,26 +709,23 @@ struct FetchItem {
 
 func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
     mut items = Vec.new()
-    let handles = graph.packages.handles()
-    for handle in handles {
-        with graph.packages[handle] as pkg {
-            if pkg.meta.checksum.is_empty() { continue }
-            let name = pkg.meta.name
-            let ver_str = pkg.meta.version.to_string()
-            let cache_path = "{cache_dir}/{name}-{ver_str}"
+    for pkg in graph.packages.nodes() {
+        if pkg.meta.checksum.is_empty() { continue }
+        let name = pkg.meta.name
+        let ver_str = pkg.meta.version.to_string()
+        let cache_path = "{cache_dir}/{name}-{ver_str}"
 
-            if fs.exists(cache_path) {
-                println("  cached  {name}@{ver_str}")
-                continue
-            }
-
-            items.push(FetchItem {
-                name,
-                version: pkg.meta.version,
-                checksum: pkg.meta.checksum,
-                cache_path,
-            })
+        if fs.exists(cache_path) {
+            println("  cached  {name}@{ver_str}")
+            continue
         }
+
+        items.push(FetchItem {
+            name,
+            version: pkg.meta.version,
+            checksum: pkg.meta.checksum,
+            cache_path,
+        })
     }
     return items
 }
@@ -866,30 +854,26 @@ func write_lockfile(graph: DepGraph, path: string) -> void or FetchError {
 
     let order = topo_sort(graph)
 
-    for handle in order {
-        with graph.packages[handle] as pkg {
-            if pkg.meta.checksum.is_empty() { continue }
+    for pkg in order {
+        if pkg.meta.checksum.is_empty() { continue }
 
-            out.push("[[package]]\n")
-            out.push("name = \"{pkg.meta.name}\"\n")
-            let ver_str = pkg.meta.version.to_string()
-            out.push("version = \"{ver_str}\"\n")
-            out.push("checksum = \"{pkg.meta.checksum}\"\n")
+        out.push("[[package]]\n")
+        out.push("name = \"{pkg.meta.name}\"\n")
+        let ver_str = pkg.meta.version.to_string()
+        out.push("version = \"{ver_str}\"\n")
+        out.push("checksum = \"{pkg.meta.checksum}\"\n")
 
-            if !pkg.deps.is_empty() {
-                mut dep_names = Vec.new()
-                for dep_handle in pkg.deps {
-                    with graph.packages[dep_handle] as dep_pkg {
-                        dep_names.push("\"{dep_pkg.meta.name}\"")
-                    }
-                }
-                out.push("deps = [")
-                out.push(dep_names.join(", "))
-                out.push("]\n")
+        if !pkg.deps.is_empty() {
+            mut dep_names = Vec.new()
+            for dep in pkg.deps {
+                dep_names.push("\"{dep.meta.name}\"")
             }
-
-            out.push("\n")
+            out.push("deps = [")
+            out.push(dep_names.join(", "))
+            out.push("]\n")
         }
+
+        out.push("\n")
     }
 
     tmp_file.write(out.build()) catch e => {
@@ -975,81 +959,75 @@ func extract_quoted_value(line: string) -> string {
 // ─── Topological Sort ───────────────────────────────────────────────
 //
 // Post-order DFS: deps appear before their dependents.
-// Uses name→bool map instead of handle casting — package names are
-// unique in the dependency graph.
+// Uses a name→bool map — package names are unique in the dependency graph.
 
-func topo_sort(graph: DepGraph) -> Vec<Handle<ResolvedPkg>> {
+func topo_sort(graph: DepGraph) -> Vec<Link<ResolvedPkg>> {
     mut visited = Map.new()
     mut order = Vec.new()
 
-    topo_visit(graph, graph.root, mutate visited, mutate order)
+    if graph.root? as root {
+        topo_visit(root, mutate visited, mutate order)
+    }
 
     return order
 }
 
-func topo_visit(graph: DepGraph, handle: Handle<ResolvedPkg>, mutate visited: Map<string, bool>, mutate order: Vec<Handle<ResolvedPkg>>) {
-    let name = graph.packages[handle].meta.name
-    if visited.contains(name) { return }
-    visited.insert(name, true)
+func topo_visit(pkg: Link<ResolvedPkg>, mutate visited: Map<string, bool>, mutate order: Vec<Link<ResolvedPkg>>) {
+    if visited.contains(pkg.meta.name) { return }
+    visited.insert(pkg.meta.name, true)
 
-    with graph.packages[handle] as pkg {
-        for dep_handle in pkg.deps {
-            topo_visit(graph, dep_handle, mutate visited, mutate order)
-        }
+    for dep in pkg.deps {
+        topo_visit(dep, mutate visited, mutate order)
     }
 
-    order.push(handle)
+    order.push(pkg)
 }
 
 // ─── Display ────────────────────────────────────────────────────────
 
 func print_dep_graph(graph: DepGraph) {
     println("Dependency graph:")
-    print_node(graph, graph.root, 0)
+    if graph.root? as root {
+        print_node(root, 0)
+    }
 }
 
-func print_node(graph: DepGraph, handle: Handle<ResolvedPkg>, depth: usize) {
+func print_node(pkg: Link<ResolvedPkg>, depth: usize) {
     let indent = "  ".repeat(depth)
+    let ver = pkg.meta.version.to_string()
+    if depth == 0 {
+        println("{indent}{pkg.meta.name}@{ver} (root)")
+    } else {
+        println("{indent}{pkg.meta.name}@{ver}")
+    }
 
-    with graph.packages[handle] as pkg {
-        let ver = pkg.meta.version.to_string()
-        if depth == 0 {
-            println("{indent}{pkg.meta.name}@{ver} (root)")
-        } else {
-            println("{indent}{pkg.meta.name}@{ver}")
-        }
-
-        for child in pkg.deps {
-            print_node(graph, child, depth + 1)
-        }
+    for child in pkg.deps {
+        print_node(child, depth + 1)
     }
 }
 
 func print_lock_diff(old_lock: Map<string, LockedPackage>, graph: DepGraph) {
-    let handles = graph.packages.handles()
     mut added = 0
     mut updated = 0
     mut unchanged = 0
 
-    for handle in handles {
-        with graph.packages[handle] as pkg {
-            if pkg.meta.checksum.is_empty() { continue }
-            let ver = pkg.meta.version.to_string()
+    for pkg in graph.packages.nodes() {
+        if pkg.meta.checksum.is_empty() { continue }
+        let ver = pkg.meta.version.to_string()
 
-            if old_lock.contains(pkg.meta.name) {
-                let locked = old_lock.get(pkg.meta.name) ?? {
-                    continue
-                }
-                if locked.version == ver {
-                    unchanged += 1
-                } else {
-                    println("  updated {pkg.meta.name}: {locked.version} -> {ver}")
-                    updated += 1
-                }
-            } else {
-                println("  added   {pkg.meta.name}@{ver}")
-                added += 1
+        if old_lock.contains(pkg.meta.name) {
+            let locked = old_lock.get(pkg.meta.name) ?? {
+                continue
             }
+            if locked.version == ver {
+                unchanged += 1
+            } else {
+                println("  updated {pkg.meta.name}: {locked.version} -> {ver}")
+                updated += 1
+            }
+        } else {
+            println("  added   {pkg.meta.name}@{ver}")
+            added += 1
         }
     }
 
@@ -1194,12 +1172,14 @@ func run(args: CliArgs) -> void or FetchError {
     match args.command {
         "resolve" => {
             println("Resolving dependencies...")
-            let graph = try resolve(manifest, registry)
+            mut graph = DepGraph.new()
+            try resolve(manifest, registry, mutate graph)
             print_dep_graph(graph)
         }
         "fetch" => {
             println("Resolving dependencies...")
-            let graph = try resolve(manifest, registry)
+            mut graph = DepGraph.new()
+            try resolve(manifest, registry, mutate graph)
             print_dep_graph(graph)
             println("")
             println("Fetching packages to {args.cache_dir}...")
@@ -1207,7 +1187,8 @@ func run(args: CliArgs) -> void or FetchError {
         }
         "lock" => {
             println("Resolving dependencies...")
-            let graph = try resolve(manifest, registry)
+            mut graph = DepGraph.new()
+            try resolve(manifest, registry, mutate graph)
 
             // Check against existing lock
             let old_lock = try read_lockfile(args.lock_path)
@@ -1225,27 +1206,25 @@ func run(args: CliArgs) -> void or FetchError {
             }
 
             println("Resolving dependencies...")
-            let graph = try resolve(manifest, registry)
+            mut graph = DepGraph.new()
+            try resolve(manifest, registry, mutate graph)
 
             mut drift = false
-            let handles = graph.packages.handles()
-            for handle in handles {
-                with graph.packages[handle] as pkg {
-                    if pkg.meta.checksum.is_empty() { continue }
-                    let ver = pkg.meta.version.to_string()
+            for pkg in graph.packages.nodes() {
+                if pkg.meta.checksum.is_empty() { continue }
+                let ver = pkg.meta.version.to_string()
 
-                    if old_lock.contains(pkg.meta.name) {
-                        let locked = old_lock.get(pkg.meta.name) ?? {
-                            continue
-                        }
-                        if locked.version != ver {
-                            println("  DRIFT {pkg.meta.name}: locked={locked.version}, resolved={ver}")
-                            drift = true
-                        }
-                    } else {
-                        println("  NEW   {pkg.meta.name}@{ver} (not in lock file)")
+                if old_lock.contains(pkg.meta.name) {
+                    let locked = old_lock.get(pkg.meta.name) ?? {
+                        continue
+                    }
+                    if locked.version != ver {
+                        println("  DRIFT {pkg.meta.name}: locked={locked.version}, resolved={ver}")
                         drift = true
                     }
+                } else {
+                    println("  NEW   {pkg.meta.name}@{ver} (not in lock file)")
+                    drift = true
                 }
             }
 

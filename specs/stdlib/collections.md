@@ -1,11 +1,11 @@
 <!-- id: std.collections -->
 <!-- status: decided -->
 <!-- summary: Vec and Map with inline access + `with`, optional capacity bounds, fallible try_ variants -->
-<!-- depends: memory/borrowing.md, memory/pools.md, memory/value-semantics.md -->
+<!-- depends: memory/borrowing.md, memory/value-semantics.md -->
 
 # Collections (Vec, Map and Set)
 
-Vec, Map and Set with optional capacity constraints, inline element access, fallible allocation. For handle-based sparse storage, see `mem.pools`.
+Vec, Map and Set with optional capacity constraints, inline element access, fallible allocation. For nodes that reference each other, see `mem.racks`.
 
 ## Collection Types
 
@@ -14,7 +14,7 @@ Vec, Map and Set with optional capacity constraints, inline element access, fall
 | **C1: Value ownership** | Collections own their data. No lifetime parameters |
 | **C2: Panic on alloc failure** | Growth operations (`push`, `insert`, `push_all`) panic on OOM. Fallible variants (`try_push`, `try_insert`, `try_push_all`) return `T or E` with the rejected value |
 | **C3: Inline access** | Element access via `[]` is inline (expression-scoped). Multi-statement access via `with` |
-| **C4: No linear resources** | `Vec<Linear>` and `Map<K, Linear>` are compile errors. Use `Pool<Linear>` |
+| **C4: No linear resources** | `Vec<Linear>`, `Map<K, Linear>` and `Rack<Linear>` are compile errors. Hold it in a `T?` and match to consume it (`mem.resources/RC4`) |
 
 | Type | Purpose | Creation |
 |------|---------|----------|
@@ -402,9 +402,10 @@ ERROR [std.collections/C4]: linear resource type in Vec
 WHY: Collection drop calls T.drop() for each element, but linear resource
      drop can fail (returns an error type), and collection drop can't propagate errors.
 
-FIX: Use Pool<File> with explicit consumption:
+FIX: hold it in an optional and match to consume it:
 
-  let pool: Pool<File> = Pool.new()
+  mut slot: File? = open("log.txt")
+  if slot? as f { try f.close() }
 ```
 
 ```
@@ -449,14 +450,14 @@ FIX: Use try_push to handle capacity limits:
 
 **C3 (inline access):** Collections can grow/shrink, invalidating any held views. Inline expression access kills this bug class. Multi-statement access uses `with`. See `mem.borrowing/B2`.
 
-**C4 (no linear resources):** Collection drop can't propagate errors from linear resource cleanup. `Pool<T>` with explicit consumption is the right pattern.
+**C4 (no linear resources):** collection drop can't propagate errors from linear resource cleanup, and no container can hand an element back to be consumed — a `Rack.delete` frees the node rather than returning it. `Pool<T>` was the one exception, because `remove` answered `T?`, and it went with the pool (rask-lang/rask#908). What's left is the optional itself: `T?`, matched to consume.
 
 ### Patterns & Guidance
 
 **When to use which collection:**
 - `Vec<T>` — Ordered data, access by position, elements don't need stable identity
 - `Map<K,V>` — Lookup by arbitrary key, no ordering guarantees
-- `Rack<T>` + `Link<T>` — Elements reference each other (graphs, trees), need stable identity. (`Pool<T>` + `Handle<T>` did this and is deprecated — rask-lang/rask#908)
+- `Rack<T>` + `Link<T>` — Elements reference each other (graphs, trees), need stable identity
 
 **Pattern selection for element access:**
 - 1 statement: `vec[i].field = x`
@@ -471,7 +472,7 @@ they are. For text, `StringView` is the storable form (`std.strings/V1`).
 
 ### See Also
 
-- `mem.pools` — Handle-based sparse storage for graphs, entity systems
+- `mem.racks` — Nodes with stable identity that reference each other
 - `mem.borrowing` — View duration rules
 - `std.iteration` — Collection iteration modes
 - `type.sequence` — Sequence protocol, adapters, terminals

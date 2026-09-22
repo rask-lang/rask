@@ -89,7 +89,7 @@ myapp.net.http  → 5myapp3net4http
 |------|-------------|
 | **H1: When needed** | Only when signature hash prevents collision |
 | **H2: Short hash** | 4 hex chars from FNV-1a of full signature |
-| **H3: Signature** | Hash includes all param types, return type, context clauses |
+| **H3: Signature** | Hash includes all param types and the return type |
 
 Hash needed when:
 - Multiple monomorphizations would create identical symbols
@@ -165,22 +165,6 @@ test "parse URL correctly"                    → _R5myapp_Test17parse_URL_corre
 test "测试"                                    → _R5myapp_Test7test_N6D4B_N8BD5
 test "this is a very long test name..."       → _R5myapp_Test80this_is_a_very_long_test_name_that_goes_on_and_on_and_on_and_on_and_o_H4a3f
 ```
-
-### Context Clauses
-
-Context clauses separated by colons after type parameters:
-
-```rask
-func write(h: Handle<T>) using Pool<T>
-```
-→ `_R4core_F5write_GHandle[T]:Pool[T]`
-
-```rask
-func sort(arr: Vec<T>) using Comparable using Cloneable
-```
-→ `_R4core_F4sort_GVec[T]:Comparable:Cloneable`
-
-**Rule:** Type parameters, then colon-separated context clauses.
 
 ### Main Entry Point
 
@@ -273,7 +257,7 @@ Built-in runtime functions use reserved prefix `_Rrt`:
 | Allocator | `_Rrt_alloc`, `_Rrt_dealloc` |
 | Panic | `_Rrt_panic` |
 | Vec ops | `_Rrt_vec_push`, `_Rrt_vec_grow` |
-| Pool ops | `_Rrt_pool_alloc`, `_Rrt_pool_free` |
+| Rack ops | `_Rrt_rack_insert`, `_Rrt_rack_delete` |
 | Spawn | `_Rrt_spawn`, `_Rrt_spawn_detach` |
 
 ## Symbol Length Limits

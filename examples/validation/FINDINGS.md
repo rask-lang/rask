@@ -180,8 +180,9 @@ Still valid against `main`:
 - **#336** `json.encode` return type — json.md (`-> string`, infallible) vs
   encoding.md (`-> string or JsonError`). The infallible signature is the real
   one (used it directly); encoding.md remains wrong.
-- **#337** `using` clause vs return-type ordering — pools.md and
-  canonical-patterns still disagree; program uses `-> Ret using Pool<T>`.
+- ~~**#337** `using` clause vs return-type ordering~~ — dead. The signature
+  `using` clause only ever named a pool, and both went out together
+  (rask-lang/rask#908), so there is no ordering left to disagree about.
 - **#338** LANGUAGE_CARD omits `with (...)` on nominal newtypes — a doc gap.
   Now that nominal `extend` works (B1) and the ids use it, the card is the one
   place a reader wouldn't learn the form the program relies on.
@@ -234,9 +235,10 @@ remain each write down a discard the old `else |e|` form hid (§F).
 
 - **Nominal conformance enforcement + comma-lists + `duck trait`** — the trait
   surface is solid, and nominal newtype ids now carry traits + methods (B1).
-- **Pools**: `Pool<T>` + `Handle<T>`, `with pool[h] as e`, `using [frozen] Pool<T>`
-  context clauses, and handle-field auto-deref (`h.priority`, `dep.status`) run
-  natively. The store reads beautifully.
+- **Pools**: `Pool<T>` + `Handle<T>` and their context clauses ran natively and
+  the store read beautifully. Written before the migration — the store is a
+  `Rack<Task>` now, and the sweep that nulled every other task's `deps` on delete
+  is gone entirely, because `delete` does it (rask-lang/rask#908).
 - **`@resource` + `ensure`** with the commit/rollback batch transaction runs
   (C3–C5 shape), and after #577 it's stable under load.
 - **`spawn(own || …)` + channel `send`/`receive` + `join`** run (startup seed

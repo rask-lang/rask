@@ -6,7 +6,7 @@
 //! type-qualified names (e.g., "Vec_push", "Map_get", "string_len").
 //! Qualification happens in MIR lowering using type info from the checker.
 //! This module maps those names to C runtime functions in the typed
-//! implementations (vec.c, map.c, pool.c, string.c).
+//! implementations (vec.c, map.c, rack.c, string.c).
 //!
 //! ## Calling convention
 //!
@@ -15,7 +15,6 @@
 //! - Constructors: codegen injects hardcoded elem_size (8) args
 //! - Value params (push, set, insert): codegen stores to stack slot, passes address
 //! - Value returns (get, pop): codegen loads from returned/out pointer
-//! - Pool handles: packed as i64 (index:32 | gen:32) via _packed functions
 
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
@@ -896,66 +895,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_values", "rask_map_values", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Map_iter", "rask_map_entries", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Map_entries", "rask_map_entries", &[types::I64], Some(types::I64), false),
-
-        // ── Pool operations ────────────────────────────────────
-        StdlibEntry::simple("Pool_free", "rask_pool_free", &[types::I64], None, false),
-        StdlibEntry::simple("Pool_new", "rask_pool_new", &[types::I64], Some(types::I64), false),
-        // PL2: bounded pool. Args (elem_size, cap) — elem_size injected at lowering
-        // like Pool_new. Enforcement (panic on full / try_insert sentinel) lives in
-        // the runtime.
-        StdlibEntry::simple("Pool_with_capacity", "rask_pool_with_capacity", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_alloc", "rask_pool_alloc_packed", &[types::I64], Some(types::I64), false),
-        // `remove` answers `T?` — DerefOption turns the returned slot pointer
-        // into some(elem), and NULL (stale handle) into none.
-        StdlibEntry {
-            mir_name: "Pool_remove", c_name: "rask_pool_remove_out",
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::OptionOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "Pool_get", c_name: "rask_pool_get_packed",
-            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
-        },
-        StdlibEntry::simple("Pool_index", "rask_pool_get_packed", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_handles", "rask_pool_handles_packed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_values", "rask_pool_values", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_entries", "rask_pool_entries", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_len", "rask_pool_len", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_is_empty", "rask_pool_is_empty", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_cursor", "rask_pool_handles_packed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_contains", "rask_pool_is_valid_packed", &[types::I64, types::I64], Some(types::I64), false),
-        // LP13: for mutate writeback — write value to existing pool slot
-        StdlibEntry {
-            mir_name: "Pool_set", c_name: "rask_pool_set_packed",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::WrapArg2, ret_adapt: RetAdapt::None,
-        },
-        StdlibEntry {
-            mir_name: "Pool_insert", c_name: "rask_pool_insert_packed_sized",
-            params: &[
-                types::I64, types::I64, types::I64, types::I64, types::I64,
-                // R5: is the element a `@resource`, and its name and length.
-                types::I64, types::I64, types::I64,
-            ],
-            ret_ty: Some(types::I64), can_panic: true,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
-        },
-        // try_insert on a bounded pool: the handle, or `none` when it's full
-        // (PL8). The runtime signals "full" with -1, which is what NegNone
-        // expects; MIR types the result as a plain tagged `i64?` rather than a
-        // niche `Option<Handle>`, so the tag has to be written out.
-        StdlibEntry {
-            mir_name: "Pool_try_insert", c_name: "rask_pool_try_insert_packed_sized",
-            params: &[
-                types::I64, types::I64, types::I64, types::I64, types::I64,
-                types::I64, types::I64, types::I64,
-            ],
-            ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::NegNone,
-        },
-        StdlibEntry::simple("Pool_drain", "rask_pool_drain", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Pool_checked_access", "rask_pool_get_packed", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Rack + Link operations (mem.racks) ─────────────────
         // `Rack.new()` has nothing to read `T` off, so the node type's size and
@@ -1978,15 +1917,6 @@ mod tests {
     ("Map.modify",                Ok_("t_native_reach_map_math_json")),
     ("Map.modify_with_default",   Ok_("t_native_reach_map_math_json")),
     ("Map.read",                  Ok_("t_native_reach_map_math_json")),
-    ("Pool.capacity",             Gap("#1286")),
-    ("Pool.clear",                Gap("#1286")),
-    ("Pool.get_mut_unchecked",    Gap("#1286")),
-    ("Pool.get_unchecked",        Gap("#1286")),
-    ("Pool.modify",               Gap("#1286")),
-    ("Pool.read",                 Gap("#1286")),
-    ("Pool.remaining",            Gap("#1286")),
-    ("Pool.snapshot",             Gap("#1286")),
-    ("Pool.weak",                 Gap("#1286")),
     ("TaskGroup.join_all",        Gap("#1288")),
     ("TaskGroup.new",             Gap("#1288")),
     ("Vec.all",                   Ok_("t_native_reach_vec")),
@@ -2002,8 +1932,6 @@ mod tests {
     ("Vec.sort_by_key",           Ok_("t_native_reach_vec")),
     ("Vec.sum",                   Ok_("t_native_reach_vec")),
     ("Vec.zip",                   Ok_("t_native_reach_vec")),
-    ("WeakHandle.upgrade",        Gap("#1286")),
-    ("WeakHandle.valid",          Gap("#1286")),
     ("Wide.map",                  Gap("#1287")),
     ("Wide.max",                  Gap("#1287")),
     ("Wide.min",                  Gap("#1287")),

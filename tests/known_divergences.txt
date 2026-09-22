@@ -151,16 +151,19 @@ t_raw_pointer_width.rk  # extern "C" is native-only — no issue, see above (int
 
 # --- `@native` declarations with no native entry point ---
 #
-# These three files came out of one sweep: every entry in
+# These files came out of one sweep: every entry in
 # NATIVE_WITHOUT_A_DISPATCH_ROW (rask-codegen/src/dispatch.rs) tried on both
-# backends, because that list mixes "lowered somewhere bespoke" with "no entry
-# point at all" and its own comment says only trying one tells them apart. Of
+# backends, because that list mixed "lowered somewhere bespoke" with "no entry
+# point at all" and its own comment said only trying one tells them apart. Of
 # 65 entries, 19 turned out to be the second kind. The families that work are
 # pinned green in the t_native_reach_* siblings; these are the ones that
 # type-check, run on the interpreter, and die at codegen with "Function not
 # found".
 #
+# Pool and WeakHandle were the third such family, eleven methods of it. #1306
+# deleted Pool and Handle from the language, so the gap went with them — the
+# probe and #1286 are gone rather than fixed.
+#
 # Each file is a whole family, so the line goes when the family lands.
-t_native_reach_pool.rk       # Pool + WeakHandle have no native entry point — #1286 (native compile)
 t_native_reach_wide.rk       # Wide<T> lowers nothing but `sum` — #1287 (native compile)
 t_native_reach_taskgroup.rk  # TaskGroup can't even be constructed natively — #1288 (native compile)

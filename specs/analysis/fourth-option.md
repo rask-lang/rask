@@ -1,7 +1,7 @@
 <!-- id: analysis.fourth-option -->
 <!-- status: exploration -->
 <!-- summary: Is there a fourth memory model beyond GC/RC, lifetimes, and handles? Yes: fix references at delete time instead of checking them at use time — the database answer, unclaimed at language level -->
-<!-- depends: memory/pools.md, memory/borrowing.md, memory/shared-rack-heap.md, memory/allocators.md -->
+<!-- depends: memory/borrowing.md, memory/shared-rack-heap.md, memory/allocators.md -->
 
 # The Fourth Option
 

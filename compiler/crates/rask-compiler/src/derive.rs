@@ -186,7 +186,6 @@ fn gen_struct_compare(
             },
         ],
         ret_ty: Some("Ordering".to_string()),
-        context_clauses: vec![],
         body,
         is_pub: false,
         is_private: false,

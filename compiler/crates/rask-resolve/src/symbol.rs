@@ -2,7 +2,6 @@
 //! Symbol definitions and symbol table.
 
 use rask_ast::Span;
-use rask_ast::decl::ContextClause;
 use crate::package::PackageId;
 
 /// Unique identifier for a symbol.
@@ -31,8 +30,6 @@ pub enum SymbolKind {
         params: Vec<SymbolId>,
         /// Return type as a string (for now).
         ret_ty: Option<String>,
-        /// `using` context clauses.
-        context_clauses: Vec<ContextClause>,
         /// Whether this is an `unsafe func`.
         is_unsafe: bool,
     },
@@ -129,12 +126,8 @@ pub enum BuiltinTypeKind {
     Error,
     /// Channel<T> - message channel
     Channel,
-    /// Pool<T> - arena allocator for graph structures
-    Pool,
     /// Cell<T> - single heap-allocated mutable value (CE1-CE6)
     Cell,
-    /// Handle<T> - typed reference into a Pool<T>
-    Handle,
     /// Rack<T> - arena whose incoming edges are fixed at delete
     Rack,
     /// Link<T> - one edge to a node in a Rack<T>
@@ -225,11 +218,11 @@ const fn from(module: &'static str, name: &'static str, kind: BuiltinTypeKind) -
 ///
 /// Everything else needs its module. The box family is compiler-provided and
 /// closed (mem.shared-rack-heap/BX1–BX4), but that's about who may *define* one, not about
-/// who can see the name without asking: `Pool`, `Handle`, `Rack`, `Link` and
-/// `Heap` live in `memory`, `Shared`, `Mutex` and the atomics in `sync`, and
-/// they're imported like anything else. All of them used to be in the always
-/// half, so a program couldn't declare a `struct Handle` of its own and
-/// `Pool.new()` worked with no import at all (#977).
+/// who can see the name without asking: `Rack`, `Link` and `Heap` live in
+/// `memory`, `Shared`, `Mutex` and the atomics in `sync`, and they're imported
+/// like anything else. All of them used to be in the always half, so a program
+/// couldn't declare a `struct Link` of its own and `Rack.new()` worked with no
+/// import at all (#977).
 pub const BUILTIN_TYPES: &[BuiltinTypeEntry] = &[
     always("Vec", BuiltinTypeKind::Vec),
     always("Map", BuiltinTypeKind::Map),
@@ -238,8 +231,6 @@ pub const BUILTIN_TYPES: &[BuiltinTypeEntry] = &[
     always("Error", BuiltinTypeKind::Error),
     always("Channel", BuiltinTypeKind::Channel),
 
-    from("memory", "Pool", BuiltinTypeKind::Pool),
-    from("memory", "Handle", BuiltinTypeKind::Handle),
     from("memory", "Rack", BuiltinTypeKind::Rack),
     from("memory", "Link", BuiltinTypeKind::Link),
     from("memory", "Heap", BuiltinTypeKind::Heap),

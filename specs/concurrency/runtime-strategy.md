@@ -178,5 +178,4 @@ If Phase A handles most real programs, there's temptation to never build Phase B
 - `conc.async` — Programmer-facing concurrency semantics
 - `conc.runtime` — Full M:N runtime specification (Phase B target)
 - `conc.io-context` — I/O context detection and async/sync dispatch
-- `conc.hidden-params` — Hidden parameter compiler pass
 - `comp.codegen/RT1-RT3` — Runtime library requirements

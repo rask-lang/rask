@@ -58,8 +58,8 @@ pub const ELEM_ENUM_BASE: i64 = -1;
 /// `tag_of` can't tell `Map<string, Vec<i32>>`'s values from a raw address and
 /// answered "owns nothing". The checker's type knows, so this takes the
 /// rendered name. `Vec<i64>?` and `Vec<i64> or E` are wrappers around the
-/// handle rather than the handle, and a `Pool` or `Rack` is an arena whose
-/// contents outlive any one element (mem.pools, mem.racks).
+/// handle rather than the handle, and a `Rack` is an arena whose nodes outlive
+/// any one element (mem.racks).
 pub fn container_tag(rendered: &str) -> Option<i64> {
     if rendered.ends_with('?') || rendered.contains(" or ") {
         return None;
@@ -183,20 +183,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Atomic_default", 0, 0, "Atomic_free"),
     ("Rack_new", 0, 0, "Rack_free"),
     ("Rack_snapshot", 1, 0, "Rack_free"),
-    ("Pool_new", 1, 0, "Pool_free"),
-    ("Pool_with_capacity", 2, 0, "Pool_free"),
-    // `handles`, `drain` and `values` walk the pool and hand back a fresh Vec —
-    // another family whose name and result type disagree. `values` is declared
-    // `Iterator<T>` in the stdlib but `rask_pool_values` builds a plain
-    // `RaskVec`, the same as its two neighbours, so it frees the same way.
-    ("Pool_handles", 0, 0, "Vec_free"),
-    ("Pool_drain", 0, 0, "Vec_free"),
-    ("Pool_values", 0, 0, "Vec_free"),
-    // `entries` is the fourth of that family and was the one left out. Its
-    // elements are (handle, value) pairs copied out of the slots with no
-    // element map, so freeing it gives back the byte store and leaves the
-    // strings to the pool — which is what the other three do too.
-    ("Pool_entries", 0, 0, "Vec_free"),
     // `rack.nodes()` walks the directory and pushes each node's address into a
     // fresh Vec. The elements are links, which own nothing — freeing the
     // vector doesn't touch a node. `for n in s.nodes()` leaked one vector per

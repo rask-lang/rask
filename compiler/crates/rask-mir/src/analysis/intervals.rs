@@ -483,7 +483,7 @@ fn transfer_stmt(
                 return;
             }
             // Vec_len returns a non-negative value
-            if func.name == "Vec_len" || func.name == "Array_len" || func.name == "Pool_len" {
+            if func.name == "Vec_len" || func.name == "Array_len" {
                 state.set(*dst, Interval::new(0, i64::MAX));
             } else {
                 // Unknown call — result is TOP

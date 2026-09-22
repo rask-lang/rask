@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: index expression types (#310, std.collections/V1, mem.pools/PL4).
-// Vec/array/string are position-indexed by an integer; `Map<K,V>` by `K`;
-// `Pool<T>` by `Handle<T>`. A range index slices a string and nothing else —
-// see `range_slice_rejected.rk` for the Vec and array halves of that.
-import memory.Pool
-
-struct Entity { health: i32 }
-struct Item { weight: i32 }
+// Compile Error: index expression types (#310, std.collections/V1).
+// Vec/array/string are position-indexed by an integer; `Map<K,V>` by `K`.
+// A range index slices a string and nothing else — see
+// `range_slice_rejected.rk` for the Vec and array halves of that.
 
 // --- Vec indexed by a string ---
 // ERROR: cannot index `Vec` with `string` [E0819]
@@ -43,26 +39,6 @@ func map_wrong_key() {
     m.insert("a", 1)
     let bad = m[5]
     println("{bad}")
-}
-
-// --- Pool<Entity> indexed by a Handle<Item> (wrong pool, statically known) ---
-// ERROR: cannot index `Pool` with `Handle` [E0819]
-func pool_cross_handle() {
-    let ents: Pool<Entity> = Pool.new()
-    mut items: Pool<Item> = Pool.new()
-    let ih = items.try_insert(Item { weight: 5 })
-    if ih? {
-        let bad = ents[ih]
-        println("{bad.health}")
-    }
-}
-
-// --- Pool<Entity> indexed by an integer ---
-// ERROR: cannot index `Pool` with `i32` [E0819]
-func pool_int_index() {
-    let ents: Pool<Entity> = Pool.new()
-    let bad = ents[0]
-    println("{bad.health}")
 }
 
 // --- range slice on a Map (keyed, so it has no positions at all) ---

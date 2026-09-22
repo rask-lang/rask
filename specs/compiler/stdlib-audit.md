@@ -109,35 +109,26 @@ These are compile-target features, not needed for interpreter MVP:
 | `get_clone(k)` | `std.collections` | MEDIUM | Clone out (non-Copy) |
 | `take_all()` | `std.iteration` | **HIGH** | Consume and yield (k,v) |
 
-## Pool Implementation Status
+## Rack Implementation Status
 
 ### Core Methods (Implemented)
 
 | Method | Status | Notes |
 |--------|--------|-------|
-| `insert(item)` | ✓ Implemented | Returns `Handle<T>` |
-| `get(h)` | ✓ Implemented | Borrows element |
-| `get_mut(h)` | ✓ Implemented | Mutable borrow |
-| `remove(h)` | ✓ Implemented | Takes ownership |
-| `len()` | ✓ Implemented | Returns count |
+| `insert(node)` | ✓ Implemented | Returns `Link<T>` |
+| `delete(link)` | ✓ Implemented | Frees the node, nulls every incoming edge first |
+| `len()` | ✓ Implemented | Live node count |
 | `is_empty()` | ✓ Implemented | Returns bool |
-| `contains(h)` | ✓ Implemented | Check handle valid |
-| `clear()` | ✓ Implemented | Empties pool |
-| `clone()` | ✓ Implemented | Deep copy (handles stay valid) |
-| `eq(other)` | ✓ Implemented | Value equality |
+| `contains(link)` | ✓ Implemented | Is this node in this rack |
+| `nodes()` | ✓ Implemented | `Vec<Link<T>>` over live nodes |
+| `clear()` | ✓ Implemented | Empties the rack |
+| `snapshot()` | ✓ Implemented | Independent copy, internal edges re-pointed |
+| `corresponding(link)` | ✓ Implemented | Translate a link into a snapshot |
 
-### Missing from Spec
-
-| Method | Spec Reference | Priority | Notes |
-|--------|----------------|----------|-------|
-| `take_all()` | `std.iteration/T1` | **HIGH** | Consume pool, yield owned values |
-| `iter()` (handle+ref mode) | `std.iteration/I2` | **HIGH** | Yield `(Handle<T>, borrowed T)` |
-
-### Handle Methods (Implemented)
-
-| Method | Status | Notes |
-|--------|--------|-------|
-| Index access `pool[h]` | ✓ Implemented | Expression-scoped borrow |
+There is no `get`, no `get_mut` and no index: a link is the node's address, so
+`n.field` reads and writes it directly. There is no `take_all` either — `delete`
+frees the node rather than handing it back, which is why no container holds a
+linear value (`mem.resources/RC2`).
 
 ## String Implementation
 
@@ -169,7 +160,7 @@ The spec describes three iteration modes:
 The interpreter now implements value-first iteration:
 - `for item in vec` iterates over **borrowed elements** (value mode)
 - `for i in 0..vec.len()` yields **indices** (index mode)
-- `pool.handles()` and `map.keys()` provide handle/key iteration
+- `rack.nodes()` and `map.keys()` provide link/key iteration
 - `vec.take_all()` **does not exist yet** (planned)
 
 ### Required Changes
@@ -177,7 +168,7 @@ The interpreter now implements value-first iteration:
 To complete value-first iteration:
 1. ✅ **Default iteration yields borrowed elements** (implemented)
 2. ⏳ Implement `take_all()` for all collections (planned)
-3. ⏳ Add `.handles()` for Pool and `.keys()` for Map (needed for index mode)
+3. ⏳ Add `.keys()` for Map (needed for index mode)
 4. ⏳ Track borrows for value mode to prevent structural mutation
 
 ## Error Handling
@@ -204,7 +195,7 @@ Current interpreter matches: panics on allocation failure (Rust default), `try_p
 
 These are needed before the compiler can emit correct code:
 
-1. **`take_all()` for Vec, Map, Pool** — Required for linear type handling
+1. **`take_all()` for Vec and Map** — Required for linear type handling
 2. **`modify()` and `read()` closures** — Required for safe non-Copy element access
 3. **`insert_if_missing()` and `modify_with_default()`** — Common patterns in spec examples
 
@@ -235,7 +226,7 @@ Nice to have but not blocking:
 
 ## Next Steps
 
-1. Implement `take_all()` for Vec, Map, Pool (high priority)
+1. Implement `take_all()` for Vec and Map (high priority)
 2. Fix default iteration to yield indices (breaking change!)
 3. Add `modify()` and `read()` closure methods
 4. Implement `insert_if_missing()` and `modify_with_default()` for Map

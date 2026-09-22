@@ -213,8 +213,8 @@ FIX:
 <!-- test: skip -->
 ```rask
 // OK: multiple elements from same collection (not a lock)
-with pool[h1] as e1, pool[h2] as e2 {
-    // runtime panic if h1 == h2
+with items[i] as a, items[j] as b {
+    // runtime panic if i == j
 }
 ```
 
@@ -406,5 +406,5 @@ func record_request(latency: Duration, success: bool) {
 
 - `mem.atomics` — lock-free primitives for single values
 - `conc.async` — channels and task spawning
-- `mem.pools` — single-task dynamic data structures
+- `mem.racks` — single-task graphs with stable node identity
 - `mem.borrowing` — `with` semantics and rules

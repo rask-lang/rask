@@ -13,9 +13,6 @@ After type checking and ownership verification, the compilation path is:
 Typed AST
     │
     ▼
-Hidden parameter desugaring    rask-hidden-params
-    │
-    ▼
 Monomorphization               rask-mono
     │  - Eliminate generics
     │  - Compute memory layouts
@@ -287,7 +284,7 @@ The runtime is found via:
 The C runtime (`runtime/runtime.c`) provides:
 - Memory allocation (malloc/free wrappers)
 - String operations
-- Vec, Map, Pool implementations
+- Vec, Map, Rack implementations
 - CLI argument handling
 - I/O functions
 
