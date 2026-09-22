@@ -33,11 +33,22 @@ if [ -z "$FILES" ]; then
   exit 1
 fi
 
+# macOS has no `timeout` — it's GNU coreutils, and this gate runs on Darwin too
+# (it's the configuration Darwin gets). Use it where it exists, and where it
+# doesn't rely on the job's own timeout: a hang is what this gate is for, so it
+# has to fail rather than be skipped.
+TIMEOUT=""
+if command -v timeout > /dev/null 2>&1; then
+  TIMEOUT="timeout 180"
+elif command -v gtimeout > /dev/null 2>&1; then
+  TIMEOUT="gtimeout 180"
+fi
+
 ok=0
 failed=0
 for f in $FILES; do
   name="$(basename "$f")"
-  if out=$(timeout 180 "$RASK" test "$f" 2>&1); then
+  if out=$($TIMEOUT "$RASK" test "$f" 2>&1); then
     ok=$((ok + 1))
   else
     failed=$((failed + 1))
