@@ -1685,14 +1685,20 @@ impl<'a> Monomorphizer<'a> {
                 }
 
                 if let Some((type_id, type_name, method_name, conformance_pkg)) = dispatched {
-                    // XC5: the body was emitted with the declaring package in
-                    // its symbol, because another package puts the same method
-                    // on the same type. Ask for the one this call resolved to.
+                    // XC5: ask for the calling package's own version of this
+                    // method, and take the plain one when there isn't a
+                    // separate body under that package. A block on someone
+                    // else's type is emitted with its package in the symbol, so
+                    // "does `{Type}_{method}~{pkg}` exist" is the whole
+                    // question — and it is answerable here whether or not the
+                    // receiver was generic in the source, which asking the
+                    // checker to resolve the block was not.
                     let plain = format!("{}_{}", type_name, method_name);
-                    let mut qualified = match &conformance_pkg {
-                        Some(pkg) => rask_types::conformance_symbol(&plain, pkg),
-                        None => plain,
-                    };
+                    let mut qualified = conformance_pkg
+                        .as_ref()
+                        .map(|pkg| rask_types::conformance_symbol(&plain, pkg))
+                        .filter(|q| self.method_table.contains_key(q))
+                        .unwrap_or(plain);
                     // A `{x}` and a `{x:>10}` both need the receiver's own
                     // rendering — `to_string`, or `message` for an error type
                     // that gets Displayable from it (std.fmt/D5). Neither name

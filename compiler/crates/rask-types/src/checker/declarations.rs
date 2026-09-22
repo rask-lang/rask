@@ -756,42 +756,34 @@ impl TypeChecker {
         }
     }
 
-    /// XC4/XC5: which package's `extend` block a call at `span` reaches, when
-    /// more than one declares the method.
+    /// XC4/XC5: the package whose conformance a call at `span` should use.
     ///
-    /// Visibility is the calling package's, not the build's: `liba` keeps using
-    /// its own `label` for `Doc` while the program linking it also pulls in
-    /// `libb`'s, because `libb` isn't in `liba`'s dependency graph. Code that
-    /// can see both has already been reported (XC3, E0410) — this only has to
-    /// answer for code that can see one.
+    /// It is simply the package the call is written in. Visibility is the
+    /// calling package's, not the build's (XC4), so `liba` asks for `liba`'s
+    /// `label` and gets it whatever else the program linking it pulls in.
     ///
-    /// `None` whenever there is nothing to choose: one block, no package build,
-    /// or a receiver that isn't a user type.
+    /// Deliberately not "which block does this resolve to" — the receiver may
+    /// be a type parameter, and then there is no answer here at all. A generic
+    /// `func shown<T: Labeled>(x: T) { x.label() }` in `liba` is the case XC5
+    /// names, and asking about `T` gave up and emitted the unsuffixed name, so
+    /// `liba`'s and `libb`'s instantiations both ran whichever body was read
+    /// last. The package the *source* is in is known either way, and whether a
+    /// body exists under it is a question for where the bodies are: the name
+    /// builders try `{Type}_{method}~{pkg}` and fall back to the plain one,
+    /// which is what the interpreter was already doing.
+    ///
+    /// `None` outside a package build, and in any program with no foreign
+    /// conformance in it at all.
     pub(super) fn conformance_package_for_call(
         &self,
-        ty: &Type,
-        method: &str,
+        _ty: &Type,
+        _method: &str,
         span: rask_ast::Span,
     ) -> Option<String> {
-        if self.types.impl_method_packages.is_empty() {
+        if self.conformance_disambiguation.is_empty() {
             return None;
         }
-        let type_id = self.named_type_id(ty)?;
-        let base = super::type_defs::method_base(method);
-        let sites = self.types.impl_method_packages(type_id, base);
-        if sites.len() < 2 {
-            return None;
-        }
-        let here = self.package_of(span)?;
-        let seen = self.resolved.package_deps.get(here)?;
-        let mut visible = sites.iter().filter(|(pkg, _)| seen.contains(pkg));
-        let first = visible.next()?;
-        // Two visible is XC3's error, already reported at this same call. Don't
-        // pick one behind it.
-        if visible.next().is_some() {
-            return None;
-        }
-        Some(first.0.clone())
+        self.package_of(span).map(str::to_string)
     }
 
     /// XC1 for a type with no entry in the table — a primitive. It is the
@@ -818,6 +810,24 @@ impl TypeChecker {
                 declared_at: None,
             });
         }
+    }
+
+    /// XC5: the package whose `extend` block this is, when the block is on a
+    /// type that package doesn't own.
+    ///
+    /// `None` when the block is on its own package's type, on the stdlib's own
+    /// types from inside the stdlib, or anywhere in a build with no packages —
+    /// all cases where `{Type}_{method}` already names one body and nothing
+    /// else can claim it.
+    fn foreign_block_owner(
+        &self,
+        type_id: crate::types::TypeId,
+        span: rask_ast::Span,
+    ) -> Option<String> {
+        use super::type_table::TypeOwner;
+        let here = self.type_owner(span);
+        let TypeOwner::Package(pkg) = &here else { return None };
+        (self.types.declared_by(type_id) != here).then(|| pkg.clone())
     }
 
     /// XC1: who a declaration at `span` belongs to.
@@ -1030,11 +1040,18 @@ impl TypeChecker {
                 });
             }
         }
-        // XC4/XC5: which package this block belongs to, per method. Two
-        // packages can put a `label` on one `Doc`, and nothing in the signature
-        // tells them apart — this does, so a call from `liba` can reach `liba`'s
-        // body and monomorphization can emit both.
-        if let Some(pkg) = self.package_of(span).map(str::to_string) {
+        // XC5: a block on someone else's type carries the package that wrote it,
+        // in the symbol its methods get.
+        //
+        // Decided from this block alone — its owner against the type's — rather
+        // than by asking whether anyone *else* also declared the method. Two
+        // packages conforming one type then get two names without either
+        // knowing about the other, and a package added or removed later never
+        // renames a symbol that was already there. It is also the same question
+        // XC1 asks about legality one screen up, so the two can't disagree
+        // about what "foreign" means.
+        if let Some(pkg) = self.foreign_block_owner(type_id, span) {
+            self.conformance_disambiguation.insert(decl_id, pkg.clone());
             for m in &new_methods {
                 self.types
                     .record_impl_method_package(type_id, &m.name, &pkg, decl_id);

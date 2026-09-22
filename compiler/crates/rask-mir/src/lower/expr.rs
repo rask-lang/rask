@@ -5564,10 +5564,19 @@ impl<'a> MirLowerer<'a> {
     /// emitted `liba`'s body under. Without it both blocks mangle to one symbol
     /// and whichever the pass read last wins, so `liba`'s own call ran `libb`'s
     /// body.
-    fn dispatch_method_name(&self, node: rask_ast::NodeId, method: &str) -> String {
-        match self.ctx.recorded_conformance_package(node) {
-            Some(pkg) => rask_types::conformance_symbol(method, &pkg),
-            None => method.to_string(),
+    fn dispatch_method_name(&self, node: rask_ast::NodeId, prefix: &str, method: &str) -> String {
+        let Some(pkg) = self.ctx.recorded_conformance_package(node) else {
+            return method.to_string();
+        };
+        let suffixed = rask_types::conformance_symbol(method, &pkg);
+        // Only where that package has a body of its own. A block on someone
+        // else's type is emitted under its package; everything else keeps the
+        // plain name, and the calling package asking for a version nobody
+        // emitted just means it wanted the only one there is.
+        if self.func_sigs.contains_key(&format!("{}_{}", prefix, suffixed)) {
+            suffixed
+        } else {
+            method.to_string()
         }
     }
 
@@ -5642,7 +5651,19 @@ impl<'a> MirLowerer<'a> {
         // The qualified name isn't resolved until after the arguments are
         // lowered, so rebuild the candidate keys in the same priority order the
         // resolution below uses and take the first one with a signature.
-        let dispatch_method = self.dispatch_method_name(expr.id, &method);
+        // The receiver's name, for asking whether the calling package has a
+        // body of its own for this method.
+        let dispatch_prefix = self
+            .ctx
+            .recorded_prefix(expr.id)
+            .or_else(|| {
+                self.ctx
+                    .lookup_raw_type(object.id)
+                    .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            })
+            .map(|p| p.split('<').next().unwrap_or(&p).trim().to_string())
+            .unwrap_or_default();
+        let dispatch_method = self.dispatch_method_name(expr.id, &dispatch_prefix, &method);
         let callee_sig = {
             let mut keys: Vec<String> = Vec::new();
             if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
@@ -7408,7 +7429,10 @@ impl<'a> MirLowerer<'a> {
         }
         // XC5: an operator method is a conformance method like any other —
         // `extend Doc with Equal` in two packages puts two `eq`s on one type.
-        let method = &self.dispatch_method_name(call_node, method);
+        let method = &overload_names
+            .first()
+            .map(|p| self.dispatch_method_name(call_node, p, method))
+            .unwrap_or_else(|| method.clone());
         // A nominal newtype has no layout of its own (type.aliases/T3), so it
         // isn't an aggregate by `obj_ty` even when it wraps a struct — and an
         // `extend Counted with Equal` block is exactly the overload this gate

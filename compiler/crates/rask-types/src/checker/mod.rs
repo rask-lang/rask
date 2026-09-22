@@ -153,6 +153,10 @@ pub struct TypeChecker {
     /// XC3: (type, applied trait, using package) triples already reported. The
     /// same collision turns up at every bound and every call that needs it, and
     /// one error is the news.
+    /// XC5: `extend` blocks whose methods carry the package that wrote them,
+    /// because the block is on a type that package doesn't own. Filled as each
+    /// block registers — the answer is a property of that block alone.
+    pub(super) conformance_disambiguation: HashMap<NodeId, String>,
     pub(super) reported_ambiguous_conformances:
         std::collections::HashSet<(crate::types::TypeId, String, String)>,
     /// Current function's return type (for checking return statements).
@@ -480,6 +484,7 @@ impl TypeChecker {
     pub fn new(resolved: ResolvedProgram) -> Self {
         Self {
             resolved,
+            conformance_disambiguation: HashMap::new(),
             reported_ambiguous_conformances: std::collections::HashSet::new(),
             types: TypeTable::new(),
             ctx: InferenceContext::new(),
@@ -920,23 +925,6 @@ impl TypeChecker {
                 .collect()
         };
 
-        // XC5: the blocks whose methods need the declaring package in their
-        // symbol. A method more than one package puts on the same type — two
-        // `label`s on one `Doc` — mangles to one name otherwise, and the pass
-        // that read it last wins.
-        let mut conformance_disambiguation: HashMap<NodeId, String> = HashMap::new();
-        for sites in self.types.impl_method_packages.values() {
-            let mut packages: Vec<&str> = sites.iter().map(|(p, _)| p.as_str()).collect();
-            packages.sort_unstable();
-            packages.dedup();
-            if packages.len() < 2 {
-                continue;
-            }
-            for (pkg, decl) in sites {
-                conformance_disambiguation.insert(*decl, pkg.clone());
-            }
-        }
-
         let program = TypedProgram {
             symbols: self.resolved.symbols,
             c_type_decls: self.c_type_decls,
@@ -947,7 +935,7 @@ impl TypeChecker {
             call_targets,
             trait_coercions,
             file_packages: self.resolved.file_packages.clone(),
-            conformance_disambiguation,
+            conformance_disambiguation: self.conformance_disambiguation,
             error_wraps,
             fallback_keeps_shape,
             try_chain_placement,

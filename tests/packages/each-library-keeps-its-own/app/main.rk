@@ -25,6 +25,11 @@ func main() {
     let d = traitpkg.make_doc(7)
     println(liba.describe(d))
     println(libb.describe(d))
+    // And through a generic, where the receiver is a type parameter and the
+    // block can't be resolved when the body is checked. This printed `b:7`
+    // twice after the direct calls were already right.
+    println(liba.describe_generic(d))
+    println(libb.describe_generic(d))
     return
 }
 
@@ -32,4 +37,6 @@ test "each library keeps its own conformance" {
     let d = traitpkg.make_doc(7)
     assert liba.describe(d) == "a:7"
     assert libb.describe(d) == "b:7"
+    assert liba.describe_generic(d) == "a:7"
+    assert libb.describe_generic(d) == "b:7"
 }

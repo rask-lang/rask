@@ -14,3 +14,15 @@ public extend traitpkg.Doc with Labeled {
 public func describe(d: traitpkg.Doc) -> string {
     return d.label()
 }
+
+// The same conformance reached from inside a generic body, which is the case
+// `type.generics/XC5` names in so many words. Here the receiver is `T`, so
+// there is no concrete type to resolve the block against when the body is
+// checked — only the package the source is in, which is what decides.
+func shown_a<T: Labeled>(x: T) -> string {
+    return x.label()
+}
+
+public func describe_generic(d: traitpkg.Doc) -> string {
+    return shown_a(d)
+}
