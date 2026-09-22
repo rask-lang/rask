@@ -144,20 +144,20 @@ fn compile_with_c_and_run(fixture_name: &str, c_driver: &str) -> (String, String
     )
 }
 
-/// A nested `join` with one worker deadlocks — and says so (#1130).
+/// A nested `join` runs on one worker (#1130).
 ///
 /// A worker that joins blocks on the target's condvar and stops taking work,
-/// so once every worker is blocked in a join there is nothing left to run the
+/// so once every worker is blocked in a join there was nothing left to run the
 /// tasks they wait for. `using Multitasking(workers: 1)` plus one nested
-/// spawn+join reaches that on every run, and the program used to hang with no
-/// output and no exit — the worst way for a scheduling bug to present.
+/// spawn+join reached that on every run, and the program hung with no output
+/// and no exit — the worst way for a scheduling bug to present.
 ///
-/// Suspending the joining task and letting its worker take other work is the
-/// actual fix and needs the fiber switch that isn't built. Reporting the state
-/// is what this pins: a timed wait, and a worker that finds every other worker
-/// blocked with nothing completed since its last look.
+/// A blocked worker isn't running anything, so the scope starts a replacement
+/// for as long as the join lasts: the worker count is a count of runnable
+/// workers, not a cap on threads. Suspending the joining task and reusing its
+/// thread is still the real fix and needs the fiber switch that isn't built.
 #[test]
-fn nested_join_with_one_worker_reports_the_deadlock() {
+fn a_nested_join_runs_with_one_worker() {
     let rask = rask_binary();
     let tmp = std::env::temp_dir();
     let bin_path = tmp.join(format!("rask_test_nested_join_{}", std::process::id()));
@@ -176,24 +176,30 @@ fn nested_join_with_one_worker_reports_the_deadlock() {
         String::from_utf8_lossy(&compile_out.stderr),
     );
 
-    let run_out = Command::new(&bin_path).output().expect("failed to run binary");
+    // Ten runs: the old failure was deterministic, and the fix is a race
+    // between a blocking worker and the replacement it starts. One green run
+    // proves less than it looks.
+    for run in 0..10 {
+        let out = Command::new(&bin_path).output().expect("failed to run binary");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stdout.contains("got 7"),
+            "run {}: the inner task has to run and its value reach the outer join\n\
+             stdout: {:?}\nstderr: {:?}",
+            run,
+            stdout,
+            stderr,
+        );
+        assert!(
+            out.status.success(),
+            "run {}: exited {:?}: {:?}",
+            run,
+            out.status.code(),
+            stderr,
+        );
+    }
     let _ = std::fs::remove_file(&bin_path);
-
-    let stderr = String::from_utf8_lossy(&run_out.stderr);
-    assert!(
-        stderr.contains("deadlock") && stderr.contains("blocked in join"),
-        "the abort names what is stuck: {:?}",
-        stderr,
-    );
-    assert!(
-        stderr.contains("raise the worker count"),
-        "and what to do about it: {:?}",
-        stderr,
-    );
-    assert!(
-        !run_out.status.success(),
-        "a deadlock is not a successful run",
-    );
 }
 
 #[test]
