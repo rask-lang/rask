@@ -229,7 +229,7 @@ The core-trait family carries cross-trait contracts (`a == b` implies `hash(a) =
 
 ## Cross-Package Conformance
 
-There is no orphan rule. Any package may declare `extend T with Trait` for a type and a trait it doesn't own — except for the four auto-derived core traits, which belong to the type's owner and nobody else.
+There is no orphan rule. Any package may declare `extend T with Trait` for a type and a trait it doesn't own — except for six auto-derived traits that decide what happens to the type's data, which belong to its owner and nobody else.
 
 | Rule | Description |
 |------|-------------|
