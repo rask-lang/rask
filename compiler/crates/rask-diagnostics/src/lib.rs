@@ -97,12 +97,68 @@ pub struct CodeSuggestion {
 // Builder API
 // ============================================================================
 
+// ============================================================================
+// Prose check
+// ============================================================================
+
+/// Mid-line run of 8+ spaces, or `None`.
+///
+/// A long message written as a multi-line Rust literal keeps every space of
+/// the source indentation unless each line ends in `\`. The terminal formatter
+/// re-wraps, so the gap is invisible there — but `--format json` hands the
+/// string over verbatim and the editor shows it as written. Six messages
+/// shipped with runs of ~30 spaces in the middle of a sentence before anyone
+/// looked at the JSON (#1298).
+///
+/// Runs that are deliberate don't count. A `fix` is often a code sample, and a
+/// sample indents after a newline, lines its trailing `//` comments up, and
+/// sometimes lays two columns out — `Float    → f32 f64`. None of that goes
+/// past six spaces in the messages we have; the accidents start at eighteen.
+/// So: eight, ignoring a leading indent and a gap before a comment.
+fn stray_gap(text: &str) -> Option<&str> {
+    for line in text.lines() {
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b' ' {
+                let start = i;
+                while i < bytes.len() && bytes[i] == b' ' {
+                    i += 1;
+                }
+                let aligns_a_comment = line[i..].starts_with("//");
+                if start > 0 && i - start >= 8 && i < bytes.len() && !aligns_a_comment {
+                    return Some(line);
+                }
+            } else {
+                i += 1;
+            }
+        }
+    }
+    None
+}
+
+/// Panics in debug builds on a message carrying a stray gap.
+#[track_caller]
+fn check_prose(field: &str, text: &str) {
+    if cfg!(debug_assertions) {
+        if let Some(line) = stray_gap(text) {
+            panic!(
+                "diagnostic {field} has a run of spaces in the middle of a line, which \
+                 `--format json` shows verbatim. A multi-line Rust literal needs `\\` at \
+                 the end of each line to swallow the indentation.\n  {line}"
+            );
+        }
+    }
+}
+
 impl Diagnostic {
     pub fn error(message: impl Into<String>) -> Self {
+        let message = message.into();
+        check_prose("message", &message);
         Self {
             severity: Severity::Error,
             code: None,
-            message: message.into(),
+            message,
             labels: Vec::new(),
             notes: Vec::new(),
             help: None,
@@ -112,10 +168,12 @@ impl Diagnostic {
     }
 
     pub fn warning(message: impl Into<String>) -> Self {
+        let message = message.into();
+        check_prose("message", &message);
         Self {
             severity: Severity::Warning,
             code: None,
-            message: message.into(),
+            message,
             labels: Vec::new(),
             notes: Vec::new(),
             help: None,
@@ -130,10 +188,12 @@ impl Diagnostic {
     }
 
     pub fn with_label(mut self, span: Span, style: LabelStyle, msg: impl Into<String>) -> Self {
+        let msg = msg.into();
+        check_prose("label", &msg);
         self.labels.push(Label {
             span,
             style,
-            message: Some(msg.into()),
+            message: Some(msg),
         });
         self
     }
@@ -147,13 +207,17 @@ impl Diagnostic {
     }
 
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
-        self.notes.push(note.into());
+        let note = note.into();
+        check_prose("note", &note);
+        self.notes.push(note);
         self
     }
 
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
+        let help = help.into();
+        check_prose("help", &help);
         self.help = Some(Help {
-            message: help.into(),
+            message: help,
             suggestion: None,
         });
         self
@@ -170,12 +234,16 @@ impl Diagnostic {
     }
 
     pub fn with_fix(mut self, fix: impl Into<String>) -> Self {
-        self.fix = Some(fix.into());
+        let fix = fix.into();
+        check_prose("fix", &fix);
+        self.fix = Some(fix);
         self
     }
 
     pub fn with_why(mut self, why: impl Into<String>) -> Self {
-        self.why = Some(why.into());
+        let why = why.into();
+        check_prose("why", &why);
+        self.why = Some(why);
         self
     }
 
@@ -196,4 +264,38 @@ impl Diagnostic {
 /// Convert a compiler error into a rich diagnostic.
 pub trait ToDiagnostic {
     fn to_diagnostic(&self) -> Diagnostic;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_gap_in_the_middle_of_a_sentence_is_caught() {
+        // What a Rust literal continued without `\` produces.
+        assert!(stray_gap("take `any Shape` and use a sentinel, or wrap it in            a struct field").is_some());
+        assert!(stray_gap("one\ntwo            three").is_some());
+    }
+
+    #[test]
+    fn ordinary_prose_and_indented_code_samples_pass() {
+        assert!(stray_gap("nothing in scope pins this down, so annotate it").is_none());
+        // Two spaces after a full stop, and a trailing one, are not gaps.
+        assert!(stray_gap("done.  next").is_none());
+        // A two-column table in a `fix`.
+        assert!(stray_gap("      Float    → f32 f64").is_none());
+        // A code sample lining up its trailing comments.
+        assert!(stray_gap("x.to<i8>()!   // asserts it fits").is_none());
+        assert!(stray_gap("x!                // assert it's there").is_none());
+        assert!(stray_gap("trailing   ").is_none());
+        // A code sample indents after the newline, which is the point of it.
+        assert!(stray_gap("if pool.get(0) is Some {\n      pool[0].field\n  }").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "run of spaces")]
+    #[cfg(debug_assertions)]
+    fn the_builders_refuse_a_gap() {
+        Diagnostic::error("x").with_help("a help that got            wrapped wrong");
+    }
 }

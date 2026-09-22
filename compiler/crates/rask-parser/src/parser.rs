@@ -1417,11 +1417,15 @@ impl Parser {
                         span: self.current().span,
                         message: "an optional trait object isn't built yet".to_string(),
                         hint: Some(format!(
-                            "take `any {}` and use a sentinel, or wrap it in a struct field                              you can leave unset",
+                            "take `any {}` and use a sentinel, or wrap it in a struct field \
+                             you can leave unset",
                             trait_name
                         )),
                         why: Some(
-                            "`any Trait?` checks, and the interpreter runs it — native never                              boxes the value into the option's payload, so it reads an                              uninitialised slot and crashes. Rejected here rather than at                              run time [#1308]"
+                            "`any Trait?` checks, and the interpreter runs it — native never \
+                             boxes the value into the option's payload, so it reads an \
+                             uninitialised slot and crashes. Rejected here rather than \
+                             at run time [#1308]"
                                 .to_string(),
                         ),
                     });
@@ -2607,7 +2611,9 @@ impl Parser {
                                     scope_name,
                                 ),
                                 hint: Some(
-                                    "\"dev\" deps are linked by `rask test`, \"build\" deps by the                                      build script; a dep outside any scope is linked by every build"
+                                    "\"dev\" deps are linked by `rask test`, \"build\" deps by the \
+                                     build script; a dep outside any scope is linked by \
+                                     every build"
                                         .to_string(),
                                 ),
                                 why: None,
@@ -3635,7 +3641,12 @@ impl Parser {
                             .to_string(),
                     ),
                     why: Some(
-                        "a fallback is the one form here that can destroy information. `??`                          discards a `none`, which carried nothing; `catch` discards or                          transforms an error, which carried a payload someone should look at.                          So the binder is what makes the second one legible — `catch _ =>` is                          the spelling for \"an error dies here\", and it greps                          [type.errors/ER14]"
+                        "a fallback is the one form here that can destroy information. `??` \
+                         discards a `none`, which carried nothing; `catch` discards or \
+                         transforms an error, which carried a payload someone should \
+                         look at. So the binder is what makes the second one legible — \
+                         `catch _ =>` is the spelling for \"an error dies here\", and it \
+                         greps [type.errors/ER14]"
                             .to_string(),
                     ),
                 });
