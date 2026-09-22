@@ -3861,6 +3861,11 @@ impl<'a> OwnershipChecker<'a> {
             // Type variables: conservative
             Type::Var(_) => false,
 
+            // AT6: a projection is read off a conformance during type
+            // checking, so one reaching here never resolved. Conservative,
+            // same as a type variable.
+            Type::Assoc { .. } => false,
+
             // Raw pointers are always Copy (just an address)
             Type::RawPtr(_) => true,
 

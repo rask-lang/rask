@@ -3,13 +3,14 @@
 <!-- summary: Operators resolve on the ordered pair of operand types against declared operator traits, instead of as a method lookup on the left operand -->
 <!-- depends: types/operators.md, types/traits.md, types/generics.md -->
 
-> **Blocked twice over.** `Out` is an associated type here, and `type.generics` still
-> defers associated types out of the MVP — the call is to promote them properly rather
-> than work around them for one feature ([#1165](https://github.com/rask-lang/rask/issues/1165)).
-> `trait Mul<Rhs>` needs the second thing: generic traits parse today but the parameter is
-> thrown away, so every conformance to one fails claiming a missing method
-> ([#1164](https://github.com/rask-lang/rask/issues/1164)). This proposal waits for both;
-> nothing here should be built first.
+> **Both blockers are gone.** `trait Mul<Rhs> { type Out … }` compiles: trait type
+> parameters are `type.generics/GT1`–`GT5` ([#1164](https://github.com/rask-lang/rask/issues/1164))
+> and associated types are [`type.associated-types`](associated-types.md)
+> ([#1165](https://github.com/rask-lang/rask/issues/1165)). Two of the rules below stopped
+> being this proposal's: OR3's `Rhs` default is GT4 and its `Out` default is AT4, both
+> declared on the trait rather than special-cased for operators, and OR5 is AT6.
+> What's left here is the actual operator work — resolving `a OP b` on the ordered pair
+> instead of as a method call on `a`, and giving primitives a conformance surface.
 
 # Operator Resolution
 
@@ -56,9 +57,9 @@ trait Mul<Rhs> {
 |------|-------------|
 | **OR1: Resolution on the ordered pair** | `a OP b` selects the operator-trait conformance registered for `(typeof a, typeof b)`, in that order. It is not a method lookup on `a` |
 | **OR2: Declared operator traits** | `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` are declared traits taking `<Rhs>` and carrying an associated `Out`. `Neg` and `BitNot` are unary — no `Rhs`, `Out` only |
-| **OR3: Both default to `Self`** | `Rhs` defaults to `Self`; a conformance that does not state `Out` gets `Self`. `extend Point with Add` is `Add<Point>` answering in `Point`; `extend Meters with Mul<f64>` answers in `Meters` |
+| **OR3: Both default to `Self`** | The operator traits are declared `trait Mul<Rhs = Self> { type Out = Self … }`, so this is `type.generics/GT4` and `type.associated-types/AT4` rather than an operator rule. `extend Point with Add` is `Add<Point>` answering in `Point`; `extend Meters with Mul<f64>` answers in `Meters` |
 | **OR4: One conformance per pair** | At most one conformance of a given operator trait for a given `(Self, Rhs)` in a build. A second is a use-site error naming both packages — the same collision rule retroactive conformance already carries (#312) |
-| **OR5: `Out` is read, not inferred** | OR4 makes the conformance unique, so `Out` is read off it. No inference search and no ambiguity — this is what makes the associated type well-defined rather than a search |
+| **OR5: `Out` is read, not inferred** | OR4 makes the conformance unique, so `Out` is read off it — `type.associated-types/AT6`, which holds for every associated type for the same reason. No inference search and no ambiguity |
 | **OR6: Primitives take conformances only** | `extend f64 with Mul<Meters>` is legal. `extend f64 { … }` — an inherent method on a primitive — remains illegal |
 | **OR7: No implicit symmetry, pending `@commutative`** | Defining `Meters * f64` does not by itself generate `f64 * Meters`. Whether `@commutative` may generate the flip is open — see below |
 | **OR8: A missing pair is a compile error** | Naming both operand types and the operator as it was written, at check time. This is [#978](https://github.com/rask-lang/rask/issues/978) stated normatively |
@@ -177,7 +178,7 @@ The Julia comparison also produced a caution worth recording: part of why Julia 
 
 ### What was considered and rejected
 
-**`Out` as a third type parameter, to dodge associated types.** An earlier draft did this, on the grounds that OR4's uniqueness makes `Out` a lookup anyway and promoting associated types for one feature is expensive. Rejected: it puts the result type in the caller's hands syntactically when it is never the caller's to choose, and it means a wrong guess reports "no conformance" instead of the real answer. Associated types get promoted properly and this waits for them.
+**`Out` as a third type parameter, to dodge associated types.** An earlier draft did this, on the grounds that OR4's uniqueness makes `Out` a lookup anyway and promoting associated types for one feature is expensive. Rejected: it puts the result type in the caller's hands syntactically when it is never the caller's to choose, and it means a wrong guess reports "no conformance" instead of the real answer. Holding out was right and cheaper than it looked — the promotion came in narrow (`type.associated-types`), and it took two of this proposal's rules off its hands rather than adding to them.
 
 **Julia's model wholesale.** Runtime pair selection over an open set. Rejected — it is exactly the third item above, and it costs a compiler in the process, unpredictable pauses mid-run, and any hope of a small static binary.
 

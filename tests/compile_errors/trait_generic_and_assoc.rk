@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: the ways a generic trait or an associated type can be got wrong
+//
+// Both features used to be refused outright (#1164, #1165). What replaced the
+// refusal has four ways to be wrong, and each one used to come out as "this
+// type is missing methods the trait requires" pointing at a block that had
+// them — because a parameter nothing bound, or an `Out` nothing answered, makes
+// every required signature unmatchable at once.
+
+struct Meters { v: f64 }
+struct SquareMeters { v: f64 }
+
+trait Scale<Rhs> {
+    func scale(self, k: Rhs) -> Self
+}
+
+trait Mul<Rhs> {
+    type Out
+    func mul(self, rhs: Rhs) -> Self.Out
+}
+
+// ERROR: the header leaves `Rhs` unbound, and `Scale` declares no default for it
+extend Meters with Scale {
+    func scale(self, k: f64) -> Meters {
+        return Meters { v: self.v * k }
+    }
+}
+
+struct Feet { v: f64 }
+
+// ERROR: `k: i64` isn't what `Scale<f64>` asks for — the method is there, the
+// ERROR: signature answers a different question
+extend Feet with Scale<f64> {
+    func scale(self, k: i64) -> Feet {
+        return Feet { v: self.v }
+    }
+}
+
+struct Yards { v: f64 }
+
+// ERROR: nothing says what `Out` is, and `Mul` gives it no default
+extend Yards with Mul<f64> {
+    func mul(self, k: f64) -> Yards {
+        return Yards { v: self.v * k }
+    }
+}
+
+struct Chains { v: f64 }
+
+extend Chains with Mul<f64> {
+    // ERROR: `Ouput` is not a member `Mul` declares
+    type Ouput = Chains
+    func mul(self, k: f64) -> Chains {
+        return Chains { v: self.v * k }
+    }
+}
+
+// ERROR: `Self.Oot` names an associated type the trait never declared
+trait Div<Rhs> {
+    type Out
+    func div(self, rhs: Rhs) -> Self.Oot
+}
+
+trait Ordered<Rhs> {
+    type Out: Comparable
+    func pick(self, rhs: Rhs) -> Self.Out
+}
+
+extend Meters with Mul<f64> {
+    type Out = Meters
+    func mul(self, k: f64) -> Meters {
+        return Meters { v: self.v * k }
+    }
+}
+
+// ERROR: `Meters` would carry two `mul`s, and MN1 gives a type one. Rejected
+// ERROR: here rather than miscompiled — MIR resolves the call by name, so the
+// ERROR: wrong body ran on the other's argument and the binary segfaulted
+extend Meters with Mul<Meters> {
+    type Out = SquareMeters
+    func mul(self, other: Meters) -> SquareMeters {
+        return SquareMeters { v: self.v * other.v }
+    }
+}
+
+struct Blob { bytes: Vec<u8> }
+
+extend Meters with Ordered<f64> {
+    // ERROR: `Blob` isn't Comparable, and `Ordered` requires its `Out` to be
+    type Out = Blob
+    func pick(self, k: f64) -> Blob {
+        return Blob { bytes: Vec.new() }
+    }
+}

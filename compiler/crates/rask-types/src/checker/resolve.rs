@@ -219,6 +219,19 @@ impl TypeChecker {
         match &ty {
             // Source error already reported — suppress cascading field errors
             Type::Error => Ok(false),
+            // AT6: a projection whose base is still open. The conformance to
+            // read `Out` off isn't known until the base settles, so put the
+            // access back and come round again — same as an open variable.
+            Type::Assoc { ref base, .. } if matches!(**base, Type::Var(_)) => {
+                self.ctx.add_constraint(TypeConstraint::HasField {
+                    ty,
+                    field,
+                    expected,
+                    span,
+                    self_type,
+                });
+                Ok(false)
+            }
             Type::Var(_) => {
                 self.ctx.add_constraint(TypeConstraint::HasField {
                     ty,
@@ -1647,6 +1660,13 @@ impl TypeChecker {
         match ty {
             Type::UnresolvedNamed(n) if n == "Self" => receiver.clone(),
             Type::Var(crate::types::TypeVarId(0)) => receiver.clone(),
+            // AT3: `Self.Out` on a trait method called through a bound becomes
+            // `T.Out` — the same projection the caller's signature writes, so
+            // the two match without either being resolved yet.
+            Type::Assoc { base, name } => Type::Assoc {
+                base: Box::new(Self::substitute_self_placeholder(base, receiver)),
+                name: name.clone(),
+            },
             Type::Result { ok, err } => Type::Result {
                 ok: Box::new(Self::substitute_self_placeholder(ok, receiver)),
                 err: Box::new(Self::substitute_self_placeholder(err, receiver)),

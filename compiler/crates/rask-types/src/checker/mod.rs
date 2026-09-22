@@ -11,7 +11,7 @@ use crate::types::Type;
 
 mod type_defs;
 mod builtins;
-mod type_table;
+pub(crate) mod type_table;
 mod inference;
 mod errors;
 mod parse_type;
@@ -28,7 +28,7 @@ mod resolve;
 mod validate;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TypeBinding, TypedProgram, receiver_name};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TraitTypeParam, TraitAssocType, TypeBinding, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext};

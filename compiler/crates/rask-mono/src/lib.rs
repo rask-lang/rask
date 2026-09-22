@@ -1048,6 +1048,7 @@ mod tests {
                         is_comptime: false,
                         comptime_type: None,
                         bounds: vec![],
+                        default: None,
                     })
                     .collect(),
                 params: params
@@ -1600,6 +1601,7 @@ mod tests {
                     is_unsafe: false,
                     is_scoped: false,
                     where_bounds: vec![],
+                    assoc_bindings: Vec::new(),
                 }),
                 span: sp(),
             },
@@ -1641,6 +1643,7 @@ mod tests {
                     is_unsafe: false,
                     is_scoped: false,
                     where_bounds: vec![],
+                    assoc_bindings: Vec::new(),
                 }),
                 span: sp(),
             },

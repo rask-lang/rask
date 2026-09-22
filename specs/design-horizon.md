@@ -27,7 +27,7 @@ Type theory is where Rask is fine. Hardware parallelism is where it might fall b
 
 ## The insurance
 
-Restraint only ages well if a "no" leaves a door. For each frontier feature Rask declines, the healthy pattern is a *stated* smaller-version or escape hatch, so a real future need can be met without a breaking redesign. Associated types (deferred, not rejected — see [types/generics.md](types/generics.md)) is the model: "not yet, here's the `*`-level version." A flat "never" with no path back is how a language locks itself into its birth year. Keep the deferred doors real and championed.
+Restraint only ages well if a "no" leaves a door. For each frontier feature Rask declines, the healthy pattern is a *stated* smaller-version or escape hatch, so a real future need can be met without a breaking redesign. Associated types are the model, and the one that ran its course: deferred rather than rejected, then championed and promoted ([types/associated-types.md](types/associated-types.md)) when operator resolution needed them. "Not yet, here's the `*`-level version" turned out to be a door someone could actually walk through. A flat "never" with no path back is how a language locks itself into its birth year. Keep the deferred doors real and championed.
 
 ## The failure mode
 
