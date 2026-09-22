@@ -181,6 +181,14 @@ test "std.collections/SO3 — sort() uses the type's own compare" {
 // `Pair_compare` had a signature and no function. Native codegen failed
 // outright once `sort()` started asking for it; before that, both backends
 // quietly fell back to comparing bytes.
+//
+// Both of these also catch how the comparator becomes *reachable*. MIR
+// lowering picks `{Elem}_compare` for a `sort()` on a Vec of aggregates, which
+// is after reachability has decided what to generate — so for a while the body
+// arrived only by accident, through a widening that enqueued every `compare` in
+// the program. Narrowing that (#1062) made these two fail with the elements
+// ordered by `name`, which is the first eight bytes of the struct. Reachability
+// queues the comparator on purpose now.
 struct Pair {
     public a: i64
     public b: i64
