@@ -1296,12 +1296,21 @@ impl Interpreter {
                 // apart, and the right operand is what decides.
                 if let Some(target) = self.operator_targets.get(&expr.id).cloned() {
                     let outer = self.failed_call_span.take();
-                    let result =
-                        self.call_rask_method(&target.recv, &target.method, receiver, arg_vals);
+                    let result = self.call_rask_method(
+                        &target.recv,
+                        &target.method,
+                        receiver.clone(),
+                        arg_vals.clone(),
+                    );
                     let inner = self.failed_call_span.take();
                     self.failed_call_span = outer;
-                    return result
-                        .map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)));
+                    // A conformance with no body — `instant - instant` — says
+                    // what the pair answers with and leaves the arithmetic to
+                    // the layer below, which has it already.
+                    if !matches!(result, Err(RuntimeError::NoSuchMethod { .. })) {
+                        return result
+                            .map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)));
+                    }
                 }
 
                 // Blame the line the callee failed on, not this call. Taken

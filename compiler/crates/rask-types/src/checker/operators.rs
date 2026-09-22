@@ -103,8 +103,36 @@ impl TypeChecker {
                 // one pair the receiver takes part in, and typing the call
                 // against it is what settles the literal. Two and the argument
                 // is the only thing that could tell them apart, so wait for it.
+                // On a primitive receiver the language's own pair is always
+                // there too, so an unsettled right operand means the ordinary
+                // `i64 * i64` reading — `seconds * 1000000000` is that, and
+                // taking the one declared conformance would have made the
+                // literal a `Duration`.
+                if super::type_table::primitive_spelling(recv).is_some() {
+                    return PairOutcome::NotAnOperator;
+                }
+                // An unsuffixed literal still says something: `2` can only be
+                // an integer and `2.0` only a float. One conformance of the
+                // right kind is the only answer — which is what `duration / 2`
+                // needs, against `Div<i64>` and `Div<Duration>`.
+                let kind_match: Vec<&String> = declared
+                    .iter()
+                    .filter(|applied| {
+                        self.applied_rhs_type(applied)
+                            .is_some_and(|rhs| self.literal_could_be(arg, &rhs))
+                    })
+                    .collect();
+                if let [only] = kind_match.as_slice() {
+                    return self.matched(self_id, only, method, args);
+                }
+                // Not a literal at all — a binding whose type hasn't landed
+                // yet. One conformance is the only pair the receiver takes
+                // part in, so type the call against it and let that settle the
+                // argument.
                 return match declared.as_slice() {
-                    [only] => self.matched(self_id, only, method, args),
+                    [only] if kind_match.is_empty() && !self.is_literal_var(arg) => {
+                        self.matched(self_id, only, method, args)
+                    }
                     _ => PairOutcome::Defer,
                 };
             }
@@ -130,6 +158,84 @@ impl TypeChecker {
             return PairOutcome::NoPair;
         }
         self.matched(self_id, &applied, method, args)
+    }
+
+    /// OR6/OR1: the primitive an unsuffixed literal on the *left* of an
+    /// operator must be, when exactly one primitive forms a pair with the type
+    /// on the right.
+    ///
+    /// `3 * duration` is the case. Nothing ties the literal to anything — the
+    /// right operand isn't a number — so it defaulted to `i32` and the pair
+    /// `(i32, Duration)` names no conformance, for a line whose only reading is
+    /// the `i64` one the stdlib wrote. The candidate set is the fifteen
+    /// primitives, so this is a lookup over a fixed list, not a search.
+    pub(super) fn literal_receiver_pair(
+        &self,
+        recv: &Type,
+        method: &str,
+        args: &[Type],
+    ) -> Option<Type> {
+        let trait_base = operator_trait(method)?;
+        let [arg] = args else { return None };
+        let rhs = self.resolve_named(&self.ctx.apply(arg));
+        if matches!(rhs, Type::Var(_) | Type::Error)
+            || super::type_table::primitive_spelling(&rhs).is_some()
+        {
+            return None;
+        }
+        let applied = format!("{}<{}>", trait_base, conformance_spelling(&rhs, &self.types)?);
+        let mut found = None;
+        for name in super::type_table::PRIMITIVE_CONFORMANCE_TARGETS {
+            let Some(id) = self.types.primitive_id(name) else { continue };
+            if !self.types.declares_conformance(id, &applied) {
+                continue;
+            }
+            let candidate = super::parse_type_string(name, &self.types).ok()?;
+            if !self.literal_could_be(recv, &candidate) {
+                continue;
+            }
+            if found.is_some() {
+                return None;
+            }
+            found = Some(candidate);
+        }
+        found
+    }
+
+    /// The type an applied conformance's `Rhs` names: `Mul<f64>` → `f64`.
+    fn applied_rhs_type(&self, applied: &str) -> Option<Type> {
+        let rhs = rask_ast::operators::method_rhs(&format!(
+            "{}${}",
+            rask_ast::operators::operator_trait_method(
+                applied.split('<').next().unwrap_or(applied)
+            )?,
+            applied.split_once('<')?.1.trim_end_matches('>').trim(),
+        ))?
+        .to_string();
+        super::parse_type_string(&rhs, &self.types).ok()
+    }
+
+    /// Is this operand an unsuffixed literal still waiting for a type?
+    fn is_literal_var(&self, ty: &Type) -> bool {
+        matches!(self.ctx.apply(ty), Type::Var(id) if self.ctx.literal_vars.contains_key(&id))
+    }
+
+    /// Could an unsuffixed literal be this type? An integer literal is any
+    /// integer primitive, a float literal any float one, and neither is ever a
+    /// struct.
+    fn literal_could_be(&self, literal: &Type, candidate: &Type) -> bool {
+        let Type::Var(id) = self.ctx.apply(literal) else { return false };
+        match self.ctx.literal_vars.get(&id) {
+            Some(super::inference::LiteralKind::Integer) => matches!(
+                candidate,
+                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            ),
+            Some(super::inference::LiteralKind::Float) => {
+                matches!(candidate, Type::F32 | Type::F64)
+            }
+            _ => false,
+        }
     }
 
     /// The conformance's method, once the applied trait is known.
@@ -168,9 +274,13 @@ impl TypeChecker {
         })
     }
 
-    /// The method a conformance supplies, chosen by the argument's type when
-    /// the receiver carries more than one conformance of the same operator.
-    fn conformance_method(&self, self_id: TypeId, method: &str, args: &[Type]) -> Option<MethodSig> {
+    /// The method the conformance supplies.
+    ///
+    /// The filed name already carries the applied argument, so this is a
+    /// lookup. A stdlib type's methods are registered twice — once off the stub
+    /// and once off the body — and the two are the same method, so the first
+    /// match is the answer.
+    fn conformance_method(&self, self_id: TypeId, filed: &str, args: &[Type]) -> Option<MethodSig> {
         let methods = match self.types.get(self_id)? {
             TypeDef::Struct { methods, .. }
             | TypeDef::Enum { methods, .. }
@@ -178,24 +288,9 @@ impl TypeChecker {
             | TypeDef::Primitive { methods, .. } => methods,
             _ => return None,
         };
-        let candidates: Vec<&MethodSig> = methods
+        methods
             .iter()
-            .filter(|m| m.name == method && m.params.len() == args.len())
-            .collect();
-        if candidates.len() <= 1 {
-            return candidates.first().map(|m| (*m).clone());
-        }
-        // Two conformances of one operator on one type (`Mul<f64>` and
-        // `Mul<Meters>`): the parameter is what tells them apart.
-        let rhs = self.resolve_named(&self.ctx.apply(args.first()?));
-        let want = conformance_spelling(&rhs, &self.types)?;
-        candidates
-            .into_iter()
-            .find(|m| {
-                let (param, _) = &m.params[0];
-                conformance_spelling(&self.resolve_named(param), &self.types).as_deref()
-                    == Some(want.as_str())
-            })
+            .find(|m| m.name == filed && m.params.len() == args.len())
             .cloned()
     }
 

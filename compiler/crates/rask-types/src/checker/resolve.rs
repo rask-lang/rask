@@ -820,6 +820,16 @@ impl TypeChecker {
                         }
                     }
                 }
+                // OR1: `3 * duration` — an unsuffixed literal on the left of
+                // an operator whose right operand isn't a number. Nothing else
+                // ties the literal to anything, so it would default to `i32`
+                // and miss the `i64` conformance the pair was written for.
+                if self.ctx.literal_vars.contains_key(id) {
+                    if let Some(settled) = self.literal_receiver_pair(&ty, &method, &args) {
+                        self.unify(&ty, &settled, span)?;
+                        return self.resolve_method(settled, method, args, ret, span, call_node);
+                    }
+                }
                 if self.ctx.literal_vars.contains_key(id)
                     && Self::is_homogeneous_operator(&method)
                 {
@@ -2250,53 +2260,6 @@ impl TypeChecker {
                 self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
             }
 
-            // Instant arithmetic: instant + duration -> Instant
-            ("Instant", "add") if args.len() == 1 => {
-                let duration_ty = Type::UnresolvedNamed("Duration".to_string());
-                self.unify(&args[0], &duration_ty, span)?;
-                self.unify(ret, &Type::UnresolvedNamed("Instant".to_string()), span)
-            }
-            // Instant subtraction: overloaded on argument type
-            //   instant - instant -> Duration
-            //   instant - duration -> Instant
-            ("Instant", "sub") if args.len() == 1 => {
-                let arg = self.ctx.apply(&args[0]);
-                // The RHS can show up three ways depending on where it came
-                // from: `UnresolvedNamed("Instant")` fresh off a call chain,
-                // `UnresolvedNamed("time.Instant")` off a module-qualified
-                // parameter annotation, or `Named(id)` once an ordinary
-                // variable gets fully resolved. Only the first matched below,
-                // so `end - start` reported "expected Instant, found Instant"
-                // (or "found time.Instant") for the other two. `resolve_named`
-                // strips the module qualifier to a real type; `nameable` turns
-                // that back into the plain name string this match wants.
-                let arg = self.nameable(&self.resolve_named(&arg));
-                match &arg {
-                    Type::UnresolvedNamed(n) if n == "Instant" => {
-                        self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
-                    }
-                    Type::UnresolvedNamed(n) if n == "Duration" => {
-                        self.unify(ret, &Type::UnresolvedNamed("Instant".to_string()), span)
-                    }
-                    Type::Var(_) => {
-                        // Argument type not yet resolved — defer
-                        self.ctx.add_constraint(TypeConstraint::HasMethod {
-                            ty: Type::UnresolvedNamed(type_name.to_string()),
-                            method: method.to_string(),
-                            args: args.to_vec(),
-                            ret: ret.clone(),
-                            span,
-                            call_node: None,
-                        });
-                        Ok(false)
-                    }
-                    _ => Err(TypeError::Mismatch {
-                        expected: Type::UnresolvedNamed("Instant".to_string()),
-                        found: arg.clone(),
-                        span,
-                    }),
-                }
-            }
             // Instant comparisons
             ("Instant", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {
                 let instant_ty = Type::UnresolvedNamed("Instant".to_string());
@@ -2304,12 +2267,6 @@ impl TypeChecker {
                 self.unify(ret, &Type::Bool, span)
             }
 
-            // Duration arithmetic: duration +/- duration -> Duration
-            ("Duration", "add" | "sub") if args.len() == 1 => {
-                let duration_ty = Type::UnresolvedNamed("Duration".to_string());
-                self.unify(&args[0], &duration_ty, span)?;
-                self.unify(ret, &duration_ty, span)
-            }
             // Duration comparisons
             ("Duration", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {
                 let duration_ty = Type::UnresolvedNamed("Duration".to_string());

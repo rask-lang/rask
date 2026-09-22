@@ -132,18 +132,6 @@ extend SystemTime {
         return SystemTime.now().duration_since(self)
     }
 
-    /// A7: shift forward by a duration.
-    public func add(self, span: Duration) -> SystemTime {
-        return SystemTime { nanos: self.nanos + span.as_nanos().wrap<i64>() }
-    }
-
-    /// A7/A8: `time - duration` shifts back, `time - time` is the span between.
-    /// The unchecked form — it wraps when `other` is later. `duration_since`
-    /// is the one that reports the clock going backward.
-    public func sub(self, span: Duration) -> SystemTime {
-        return SystemTime { nanos: self.nanos - span.as_nanos().wrap<i64>() }
-    }
-
     /// A6: two wall-clock points name the same moment.
     public func eq(self, other: SystemTime) -> bool {
         return self.nanos == other.nanos
@@ -202,4 +190,106 @@ extend Timer {
     /// Returns a Receiver that receives () on each tick.
     @unimplemented
     public func interval(duration: Duration) -> Receiver<void> {}
+}
+
+// ─── Operators (A1–A8) ──────────────────────────────────────────
+//
+// type.operator-resolution/OR1: each of these is a pair, and the pair is what
+// the operator resolves on. They used to live in the type checker as a
+// hand-written `match ("Instant", "sub")` — the one place that could say
+// "instant minus instant is a Duration" — because the language had no way to
+// write a conformance whose result type depends on the right operand.
+
+/// A1: shift an instant forward.
+extend Instant with Add<Duration> {
+    type Out = Instant
+
+    @builtin
+    public func add(self, span: Duration) -> Instant {}
+}
+
+/// A1: shift an instant back.
+extend Instant with Sub<Duration> {
+    type Out = Instant
+
+    @builtin
+    public func sub(self, span: Duration) -> Instant {}
+}
+
+/// A2: the span between two instants.
+extend Instant with Sub<Instant> {
+    type Out = Duration
+
+    @builtin
+    public func sub(self, earlier: Instant) -> Duration {}
+}
+
+/// A3: durations add and subtract.
+extend Duration with Add {
+    @builtin
+    public func add(self, other: Duration) -> Duration {}
+}
+
+extend Duration with Sub {
+    @builtin
+    public func sub(self, other: Duration) -> Duration {}
+}
+
+/// A4: scale a duration. Both directions — `d * 3` and `3 * d`.
+extend Duration with Mul<i64> {
+    public func mul(self, n: i64) -> Duration {
+        return Duration.nanos(self.as_nanos().wrap<i64>() * n)
+    }
+}
+
+
+extend i64 with Mul<Duration> {
+    type Out = Duration
+
+    public func mul(self, span: Duration) -> Duration {
+        return Duration.nanos(span.as_nanos().wrap<i64>() * self)
+    }
+}
+
+extend Duration with Div<i64> {
+    public func div(self, n: i64) -> Duration {
+        return Duration.nanos(self.as_nanos().wrap<i64>() / n)
+    }
+}
+
+/// A5: how many of the second fit in the first, truncated.
+extend Duration with Div<Duration> {
+    type Out = u64
+
+    public func div(self, other: Duration) -> u64 {
+        return self.as_nanos() / other.as_nanos()
+    }
+}
+
+/// A7: shift a wall-clock point.
+extend SystemTime with Add<Duration> {
+    type Out = SystemTime
+
+    public func add(self, span: Duration) -> SystemTime {
+        return SystemTime { nanos: self.nanos + span.as_nanos().wrap<i64>() }
+    }
+}
+
+extend SystemTime with Sub<Duration> {
+    type Out = SystemTime
+
+    public func sub(self, span: Duration) -> SystemTime {
+        return SystemTime { nanos: self.nanos - span.as_nanos().wrap<i64>() }
+    }
+}
+
+/// A8: the span between two wall-clock points, unchecked — it wraps when
+/// `other` is later. `duration_since` is the one that reports the clock going
+/// backward.
+extend SystemTime with Sub<SystemTime> {
+    type Out = Duration
+
+    public func sub(self, other: SystemTime) -> Duration {
+        return Duration.nanos(self.nanos - other.nanos)
+    }
 }

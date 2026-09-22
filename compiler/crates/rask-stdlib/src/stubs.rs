@@ -157,6 +157,11 @@ pub struct MethodStub {
     /// sees at their call site rather than `Function not found: Vec_reserve`
     /// out of codegen.
     pub unimplemented: bool,
+    /// Declared `@builtin` — the pair's *types* are written here and the
+    /// arithmetic is the compiler's. `instant - instant` is a machine
+    /// subtraction on two nanosecond counts; the conformance exists so the
+    /// result type is a declaration instead of a `match` in the type checker.
+    pub builtin: bool,
     /// Declared `@native` — the body isn't here, it's in the backends.
     ///
     /// This is the boundary of the language's blessed core, written down. An
@@ -519,6 +524,23 @@ impl StubRegistry {
             }
             DeclKind::Impl(i) => {
                 let base_name = strip_type_params(&i.target_ty);
+                // OR6: `extend i64 with Mul<Duration>` is a conformance, not a
+                // declaration that `i64` is a stdlib type. Filing it as one made
+                // `i64.MAX` a member of a type rather than a numeric constant,
+                // and the assert compiled to a call to `MAX_eq`.
+                //
+                // Only the conformance blocks. `char` and `string` really are
+                // stdlib-implemented — `extend char { … }` in char.rk is where
+                // their methods come from — so an inherent block on a primitive
+                // still files the type it's written on.
+                if !i.trait_names.is_empty() && rask_ast::primitives::is_scalar(&base_name) {
+                    if let Some(entry) = self.types.get_mut(&base_name) {
+                        for m in &i.methods {
+                            entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
+                        }
+                    }
+                    return;
+                }
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name.clone(),
                     doc: None,
@@ -678,6 +700,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         source_file: format!("stdlib/{}", filename),
         span,
         unimplemented: f.attrs.iter().any(|a| a == "unimplemented"),
+        builtin: f.attrs.iter().any(|a| a == "builtin"),
         has_body: !f.body.is_empty(),
         is_comptime: f.is_comptime,
         native: f.attrs.iter().find_map(|a| {
@@ -1187,7 +1210,7 @@ mod boundary_tests {
         for type_name in reg.type_names() {
             let Some(t) = reg.get_type(&type_name) else { continue };
             for m in &t.methods {
-                if m.unimplemented || m.native.is_some() {
+                if m.unimplemented || m.native.is_some() || m.builtin {
                     continue;
                 }
                 // A method with a Rask body is its own answer. The registry

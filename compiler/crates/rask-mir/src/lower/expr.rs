@@ -7309,8 +7309,19 @@ impl<'a> MirLowerer<'a> {
         // the operands look like here. `2.0 * meters` has an `f64` receiver and
         // is not a float multiply; only the right operand says so, and only the
         // checker looked at it.
-        if self.ctx.operator_targets.contains_key(&call) {
-            return Ok(None);
+        //
+        // Unless the conformance has no body: `instant - instant` is a
+        // conformance the stdlib *declares* — it's where the pair's result type
+        // is written down — and a machine subtraction on two nanosecond counts
+        // is what it means. There's no function to call, so the lowering below
+        // is the answer.
+        if let Some(target) = self.ctx.operator_targets.get(&call) {
+            let symbol = target.symbol();
+            let emitted = self.func_sigs.contains_key(&symbol)
+                || self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", symbol)));
+            if emitted {
+                return Ok(None);
+            }
         }
         // Skip native binop for types that need C runtime calls (strings,
         // SIMD vectors) or special method dispatch (raw pointers:
