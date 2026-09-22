@@ -1100,6 +1100,20 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// std.encoding/E16: `Encode`/`Decode` asked of a type whose declaration
+    /// says no. Separate from NotSerializable: the fields are usually fine,
+    /// which is why "mark the offending field" was the wrong advice.
+    #[error("`{ty}` is marked `@{attr}`")]
+    SerializationOptedOut {
+        /// The type that refused.
+        ty: String,
+        /// `Encode` or `Decode`.
+        trait_name: String,
+        /// The annotation as written: `no_encode` or `no_decode`.
+        attr: String,
+        span: Span,
+    },
+
     /// type.generics/XC3: a second `extend T with Trait` for a pair that
     /// already has one. The set this used to be filed in absorbed the second
     /// declaration, so the last block parsed silently supplied the methods.
@@ -1329,6 +1343,7 @@ impl TypeError {
             Undefined(..)
             | DynamicFieldNameNotComptime { .. }
             | DuplicateConformance { .. }
+            | SerializationOptedOut { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }
             | UnimplementedStdlibMethod { .. }

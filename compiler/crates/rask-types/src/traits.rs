@@ -223,6 +223,17 @@ impl<'a> TraitChecker<'a> {
         }
 
         if matches!(base_trait, "Encode" | "Decode") {
+            // E16: the owner's opt-out comes first. Its fields may all be
+            // perfectly serializable — that's usually why the annotation is
+            // there, on a credential or a raw handle whose bytes would go
+            // somewhere they shouldn't.
+            if self.opts_out_of(ty, base_trait) {
+                return Err(TraitError::NotSatisfied {
+                    ty: self.type_name(ty),
+                    trait_name: trait_name.to_string(),
+                    span,
+                });
+            }
             let structurally_ok = self.type_is_encodable(ty, &mut Vec::new());
             // E13a: decoding has one requirement encoding doesn't. Encoding never
             // needs a value for a field it leaves out; decoding has to build the
@@ -368,6 +379,27 @@ impl<'a> TraitChecker<'a> {
     /// tuples/arrays, the `Vec`/`Map`/`Set` containers, and structs/enums whose
     /// public fields (variant payloads) all encode. `visited` breaks cycles in
     /// recursive types — a self-referential field is treated coinductively.
+    /// E16: does this type's declaration refuse `Encode`/`Decode` outright?
+    ///
+    /// Only the named type itself. A `Vec<Secret>` is already not encodable
+    /// because `Secret` isn't, and reporting the container would name the
+    /// wrong declaration.
+    pub fn opts_out_of(&self, ty: &Type, base_trait: &str) -> bool {
+        let (Type::Named(id) | Type::Generic { base: id, .. }) = ty else {
+            return false;
+        };
+        let (no_encode, no_decode) = match self.types.get(*id) {
+            Some(TypeDef::Struct { no_encode, no_decode, .. })
+            | Some(TypeDef::Enum { no_encode, no_decode, .. }) => (*no_encode, *no_decode),
+            _ => return false,
+        };
+        match base_trait {
+            "Encode" => no_encode,
+            "Decode" => no_decode,
+            _ => false,
+        }
+    }
+
     fn type_is_encodable(&self, ty: &Type, visited: &mut Vec<TypeId>) -> bool {
         use crate::types::GenericArg;
         match ty {
@@ -1575,6 +1607,8 @@ mod tests {
             skipped_fields: vec![],
             undecodable_fields: vec![],
             is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
         });
         let coin = types.register_type(TypeDef::Struct {
             name: "Coin".to_string(),
@@ -1588,6 +1622,8 @@ mod tests {
             skipped_fields: vec![],
             undecodable_fields: vec![],
             is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
         });
         let blob = types.register_type(TypeDef::Struct {
             name: "Blob".to_string(),
@@ -1601,6 +1637,8 @@ mod tests {
             skipped_fields: vec![],
             undecodable_fields: vec![],
             is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
         });
 
         // extend Ring<T> with Show where T: Show

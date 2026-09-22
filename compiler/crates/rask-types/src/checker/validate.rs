@@ -478,6 +478,19 @@ impl TypeChecker {
         }
         let verb = if trait_name == "Encode" { "encoded" } else { "decoded" };
         let checker = crate::traits::TraitChecker::new(&self.types);
+        // E16: the declaration refused. Reported before the field hunt, because
+        // the fields are usually fine — `@no_encode` goes on a credential whose
+        // `string` would serialize perfectly well, and that's the problem. The
+        // old message named an "offending field" there was none of.
+        if checker.opts_out_of(ty, &trait_name) {
+            let attr = if trait_name == "Encode" { "no_encode" } else { "no_decode" };
+            return TypeError::SerializationOptedOut {
+                ty: ty_name,
+                trait_name,
+                attr: attr.to_string(),
+                span,
+            };
+        }
         // E13a: a decode blocked by an excluded field with no default is a
         // different problem with a different fix — the field's type is fine, it
         // just has nothing to be built from. Report that first, since when both

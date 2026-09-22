@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: serializing a type whose declaration says not to
+//
+// `@no_encode` is how a type's owner records that its data doesn't belong in a
+// wire format — a credential, a raw handle. It parsed and did nothing: nothing
+// in the compiler had ever heard of the name, so `json.encode` on a
+// `@no_encode` struct printed the fields.
+//
+// Two things had to be true for the natural spelling to catch it. The
+// annotation has to reach the Encode/Decode bound, and the bound has to be
+// checked when the type argument was inferred rather than written — it wasn't,
+// because the stub parser erases a single-letter type parameter into an `_Any`
+// wildcard and nothing remembered which parameter that had been. So
+// `json.encode<Secret>(s)` reported and `json.encode(s)` compiled clean, with
+// the spelling deciding whether the rule applied.
+//
+// The message names the annotation, not a field. There is no offending field:
+// a `string` token serializes perfectly well, which is the whole reason the
+// declaration has to be the thing that says no.
+
+import json
+
+@no_encode
+struct Secret {
+    public token: string
+}
+
+@no_decode
+struct OneWay {
+    public n: i64
+}
+
+// A struct with nothing serializable about one field. Different error, so a
+// diagnostic that confused the two shows up here as a failure.
+struct Session {
+    public id: i64
+    public act: func(i64) -> i64
+}
+
+func ship<T: Encode>(v: T) -> i64 {
+    return 1
+}
+
+func main() {
+    let s = Secret { token: "hunter2" }
+    // ERROR: `Secret` is marked `@no_encode` (E0408)
+    println(json.encode(s))
+
+    // ERROR: the same through a bound the program declared itself (E0408)
+    println("{ship(s)}")
+
+    // ERROR: the decode direction (E0408)
+    let w = json.decode<OneWay>("{}")
+
+    let sess = Session { id: 1, act: |x| x + 1 }
+    // ERROR: a field with no wire representation is E0388, not E0408
+    println(json.encode(sess))
+    return
+}

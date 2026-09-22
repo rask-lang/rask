@@ -182,6 +182,8 @@ impl TypeTable {
             ],
             methods: vec![],
             is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
         });
         self.option_type_id = Some(option_id);
 
@@ -194,6 +196,8 @@ impl TypeTable {
             ],
             methods: vec![],
             is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
         });
         self.result_type_id = Some(result_id);
 
@@ -210,6 +214,8 @@ impl TypeTable {
                 .collect(),
             methods: vec![],
             is_transitive_resource: false,
+            no_encode: false,
+            no_decode: false,
         });
     }
 

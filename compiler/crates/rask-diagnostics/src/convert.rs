@@ -503,6 +503,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_help(format!("change this to type `{}`", expected))
             }
 
+            SerializationOptedOut { ty, trait_name, attr, span } => {
+                let verb = if trait_name == "Encode" { "serialized" } else { "decoded" };
+                Diagnostic::error(format!("`{}` is marked `@{}`", ty, attr))
+                    .with_code("E0408")
+                    .with_primary(*span, format!("`{}` can't be {} here", ty, verb))
+                    .with_why(format!(
+                        "`@{}` is how `{}` says its data doesn't belong in a wire \
+                         format. Its fields would serialize fine — that's usually \
+                         the reason the annotation is there [std.encoding/E16].",
+                        attr, ty
+                    ))
+                    .with_fix(format!(
+                        "declare a type holding the fields you did mean to send, and \
+                         encode that one. Or drop `@{}` from `{}` if it no longer applies.",
+                        attr, ty
+                    ))
+            }
+
             DuplicateConformance { ty, trait_name, first, span } => {
                 Diagnostic::error(format!(
                     "`{}` already declares conformance to `{}`",

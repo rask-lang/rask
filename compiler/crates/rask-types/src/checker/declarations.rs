@@ -856,6 +856,10 @@ impl TypeChecker {
         let is_resource = s.attrs.iter().any(|a| a == "resource");
         let is_unique = s.attrs.iter().any(|a| a == "unique");
         let is_binary = s.attrs.iter().any(|a| a == "binary");
+        // E16: the owner's refusal, recorded on the type. The field-level
+        // `@no_serialize` narrows the wire form; this says there isn't one.
+        let no_encode = s.attrs.iter().any(|a| a == "no_encode");
+        let no_decode = s.attrs.iter().any(|a| a == "no_decode");
 
         // For @binary structs, convert binary field specifiers to runtime types
         let (fields, binary_info) = if is_binary {
@@ -890,6 +894,8 @@ impl TypeChecker {
             // declarations are collected. @resource is the seed; transitive
             // linearity propagates from there.
             is_transitive_resource: is_resource,
+            no_encode,
+            no_decode,
         });
 
         if let Some(info) = binary_info {
@@ -1029,6 +1035,9 @@ impl TypeChecker {
             // ER42/L1: refined by `propagate_resource_linearity` once all
             // declarations are visible.
             is_transitive_resource: false,
+            // E16, as on a struct.
+            no_encode: e.attrs.iter().any(|a| a == "no_encode"),
+            no_decode: e.attrs.iter().any(|a| a == "no_decode"),
         });
         for (variant, field_names) in variant_names {
             self.types

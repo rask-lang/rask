@@ -124,6 +124,10 @@ pub enum TypeDef {
         /// field type is itself transitively linear. Computed by a fixed-point
         /// pass after declaration collection.
         is_transitive_resource: bool,
+        /// E16: marked `@no_encode` / `@no_decode`. The owner saying this
+        /// type's data doesn't go on a wire, whatever its fields would allow.
+        no_encode: bool,
+        no_decode: bool,
     },
     Enum {
         name: String,
@@ -134,6 +138,11 @@ pub enum TypeDef {
         /// a transitively-linear type. Computed by a fixed-point pass after
         /// declaration collection.
         is_transitive_resource: bool,
+        /// E16: as on a struct. The spec writes the rule for structs, but an
+        /// enum auto-derives the same way (E17) and a payload can be just as
+        /// wrong to serialize, so the opt-out has to reach both.
+        no_encode: bool,
+        no_decode: bool,
     },
     Trait {
         name: String,
@@ -263,6 +272,14 @@ pub struct ModuleMethodSig {
     /// (`decode<T: Decode>` → `[("T", "Decode")]`). Checked against the written
     /// type argument at the call site.
     pub type_param_bounds: Vec<(String, String)>,
+    /// Which bounded type parameter each parameter *is*, when its declared type
+    /// is exactly one — `encode<T: Encode>(value: T)` gives `[Some("T")]`.
+    ///
+    /// `params` can't answer this: `parse_stub_type` turns a single-letter type
+    /// parameter into the `_Any` wildcard, which is what the return-type
+    /// freshening runs on, so by then the name is gone. Without it a call that
+    /// didn't write the type argument had nothing to check the bound against.
+    pub param_type_params: Vec<Option<String>>,
 }
 
 /// Endianness for multi-byte binary fields.
