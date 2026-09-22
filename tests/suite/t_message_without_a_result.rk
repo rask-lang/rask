@@ -55,6 +55,31 @@ test "a hand-written message still wins" {
     assert Mood.Sour.message() == "not happy"
 }
 
+// Making the derive unconditional also reached a struct nobody had ordered.
+//
+// `examples/validation` stopped building: a derived `message()` on one of its
+// enums drags the formatting machinery into reachability, and a
+// `BatchOp_compare` came with it — for a struct with a `string?` field, which
+// codegen refused because there is no order for a wrapper. The checker had
+// claimed there was, by delegating `compare` through the optional to its
+// payload, and nothing reached the contradiction until the derive did.
+//
+// `T?` is operator-only and has no methods (std.api/SD4), so it isn't
+// Comparable and neither is a struct holding one. eq, hash, clone and default
+// still delegate — those are generated over the whole slot.
+struct HasAnOptional {
+    name: string
+    tag: string?
+}
+
+test "a struct with an optional field is not orderable" {
+    let a = HasAnOptional { name: "a", tag: none }
+    let b = HasAnOptional { name: "a", tag: "x" }
+    // The ones that do delegate still work.
+    assert a.clone().name == "a"
+    assert !(a == b)
+}
+
 enum Mood {
     Sour
 }

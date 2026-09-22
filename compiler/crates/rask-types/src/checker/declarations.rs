@@ -1349,6 +1349,12 @@ impl TypeChecker {
     }
 
     /// Check if a type has a given method (for auto-derive field checking).
+    /// The Comparable family — `compare` and the four operators ORD1 derives
+    /// from it.
+    fn is_ordering_method(method: &str) -> bool {
+        matches!(method, "compare" | "lt" | "le" | "gt" | "ge")
+    }
+
     fn type_has_method(&self, ty: &Type, method: &str) -> bool {
         match ty {
             // Primitives
@@ -1383,16 +1389,27 @@ impl TypeChecker {
                     false
                 }
             }
-            // Option/Result: delegate to inner types
+            // Option/Result: delegate to the inner types, except for order.
+            //
+            // `T?` and `T or E` are operator-only — the wrapper shapes have no
+            // methods (std.api/SD4) — but eq, hash, clone and default are
+            // generated over the whole slot, so a struct with an optional field
+            // still gets them. Ordering has no such implementation: claiming a
+            // wrapper is Comparable made the checker derive a `compare` that
+            // codegen then refused, "ordering comparison on a field of type
+            // Result { ok: String, err: None } — there is no order defined for
+            // it", when the derive was finally reached (#1249). So a wrapper is
+            // not Comparable, and neither is a struct holding one.
             t if t.is_option() => {
-                if let Some(inner) = t.as_option() {
-                    self.type_has_method(inner, method)
-                } else {
-                    false
-                }
+                !Self::is_ordering_method(method)
+                    && t.as_option()
+                        .map(|inner| self.type_has_method(inner, method))
+                        .unwrap_or(false)
             }
             Type::Result { ok, err } => {
-                self.type_has_method(ok, method) && self.type_has_method(err, method)
+                !Self::is_ordering_method(method)
+                    && self.type_has_method(ok, method)
+                    && self.type_has_method(err, method)
             }
             // Tuples: all elements must have the method
             Type::Tuple(elems) => elems.iter().all(|e| self.type_has_method(e, method)),
