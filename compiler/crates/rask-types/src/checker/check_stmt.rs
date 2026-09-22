@@ -776,16 +776,12 @@ impl TypeChecker {
     fn collect_sync_accesses(&mut self, expr: &Expr) -> Vec<SyncAccess> {
         let mut accesses = Vec::new();
         self.walk_sync_accesses(expr, &mut accesses);
-        let staged = std::mem::take(&mut self.staged_outside_with);
-        for (name, span) in staged {
-            self.errors.push(TypeError::StagedOutsideWith { name, span });
-        }
         accesses
     }
 
     /// How to spell a sync receiver back to the author, for the suggestion.
     /// `None` for anything that isn't a name or a field path.
-    fn sync_source_text(e: &Expr) -> Option<String> {
+    pub(super) fn sync_source_text(e: &Expr) -> Option<String> {
         match &e.kind {
             ExprKind::Ident(name) => Some(name.clone()),
             ExprKind::Field { object, field } => {
@@ -808,15 +804,6 @@ impl TypeChecker {
                             span: expr.span,
                         });
                     }
-                }
-                // ST1: `staged()` has no expression-scoped form, so reaching one
-                // here at all means it is outside a `with` source — this walk
-                // never descends into a `with` binding.
-                if args.is_empty() && method == "staged" && self.sync_type_of(object).is_some() {
-                    self.staged_outside_with.push((
-                        Self::sync_source_text(object).unwrap_or_else(|| "shared".to_string()),
-                        expr.span,
-                    ));
                 }
                 // Recurse into object and args
                 self.walk_sync_accesses(object, out);
@@ -869,7 +856,7 @@ impl TypeChecker {
     }
 
     /// Check if an expression's inferred type is Shared<T> or Mutex<T>.
-    fn sync_type_of(&self, expr: &Expr) -> Option<String> {
+    pub(super) fn sync_type_of(&self, expr: &Expr) -> Option<String> {
         let ty = self.node_types.get(&expr.id)?;
         let resolved = self.ctx.apply(ty);
         match &resolved {

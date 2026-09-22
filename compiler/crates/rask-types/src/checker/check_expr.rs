@@ -701,7 +701,30 @@ impl TypeChecker {
                 type_args,
             } => {
                 self.in_stmt_expr = false;
-                self.check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span)
+                let ty = self
+                    .check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span);
+                // ST1: `staged()` hands back a working copy and commits it when
+                // a scope exits, so it only means anything as the source of
+                // one. `let v = s.staged()` type-checked as an ordinary method
+                // call and then neither backend had anything to run: native
+                // stopped at "Function not found: Shared_staged", the
+                // interpreter knows the name only as a `with` source (#1156).
+                // The statement form was rejected already; every other position
+                // reached codegen.
+                if method == "staged"
+                    && args.is_empty()
+                    && !self.with_source_ids.contains(&expr.id)
+                    && self.staged_reported.insert(expr.id)
+                {
+                    if self.sync_type_of(object).is_some() {
+                        self.errors.push(TypeError::StagedOutsideWith {
+                            name: Self::sync_source_text(object)
+                                .unwrap_or_else(|| "shared".to_string()),
+                            span: expr.span,
+                        });
+                    }
+                }
+                ty
             }
 
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
@@ -1917,6 +1940,10 @@ impl TypeChecker {
                 let mut guard_elem_types: std::collections::HashMap<String, Type> =
                     std::collections::HashMap::new();
                 for binding in bindings {
+                    // Before inferring it: the `staged()` check runs while the
+                    // source is inferred and asks this set whether the call has
+                    // a block to commit at.
+                    self.with_source_ids.insert(binding.source.id);
                     let raw_ty = self.infer_expr(&binding.source);
                     // Deciding whether to unwrap needs the source's concrete type.
                     // A module-level const initialized with `Mutex.new(...)` is still

@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `staged()` called where there is no block to commit at
+// Rejects: a bare `s.staged()`, in any position but a `with` source
+//
+// `staged()` hands back a working copy and commits it as one move when a scope
+// exits (ST1). A call with no scope has nowhere to put the commit, so there is
+// nothing for it to mean.
+//
+// The checker used to accept it as an ordinary method call returning `T`, and
+// then neither backend had anything to run: native stopped with "Function not
+// found: Shared_staged", and the interpreter, which knows the name only as a
+// `with` source, failed at run time. A program `rask check` passed and neither
+// backend could execute (#1156). Only the statement form `s.staged()` was
+// caught; a binding, an argument or an interpolation went straight through.
+
+import sync.Shared
+
+func passthrough(v: i64) -> i64 {
+    return v
+}
+
+func main() {
+    mut s = Shared<i64>.mutex(5)
+
+    // The form that works, and the one the fix suggests.
+    with s.staged() as v {
+        println("{v}")
+    }
+
+    // ERROR: nothing to commit at — the copy would be dropped on the spot.
+    let a = s.staged()
+
+    // ERROR: an argument is no different.
+    println("{passthrough(s.staged())}")
+
+    // ERROR: nor is an operand.
+    let b = s.staged() + 1
+
+    // ERROR: the statement form, which was the one case already rejected.
+    s.staged()
+}
