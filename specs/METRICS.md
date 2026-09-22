@@ -161,7 +161,7 @@ SN measures noise per line; RS measures how much language lives in your head. Th
 
 What counts is the *reading* set — concepts a reader must already know to not misread the code. Opt-in machinery (`comptime`, `unsafe`) and rules that arrive as a self-explaining compile error (linearity, a stale link) don't count against RS. Concepts that appear in ordinary code do.
 
-**Appearing in a type is not an exemption.** This paragraph used to grant one — "concepts that announce themselves in types (`Pool<T>`, `Shared<T>`) don't count" — and that made RS unfailable, because a container is exactly the thing that appears in a type. It also contradicts the sentence above it: a type name tells a *writer* what they chose, and tells a reader who has never met `Link<T>` nothing. Someone reading `game_loop` without item 13 will assume a deleted node leaves a dangling reference, which is the misreading RS exists to count.
+**Appearing in a type is not an exemption.** This paragraph used to grant one — "concepts that announce themselves in types (`Rack<T>`, `Shared<T>`) don't count" — and that made RS unfailable, because a container is exactly the thing that appears in a type. It also contradicts the sentence above it: a type name tells a *writer* what they chose, and tells a reader who has never met `Link<T>` nothing. Someone reading `game_loop` without item 13 will assume a deleted node leaves a dangling reference, which is the misreading RS exists to count.
 
 **Measurement:** audit the five validation programs against [DAY_ONE.md](DAY_ONE.md). Every construct in them must be on the page.
 

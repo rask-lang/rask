@@ -67,10 +67,6 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
             f(*closure);
             args.iter().for_each(|a| visit_operand_uses(a, f));
         }
-        MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
-            f(*pool);
-            f(*handle);
-        }
         MirStmtKind::ClosureCreate { captures, .. }
         | MirStmtKind::EnsureHookRegister { captures, .. } => {
             captures.iter().for_each(|c| f(c.local_id));
@@ -162,10 +158,6 @@ pub fn visit_stmt_use_locals_mut(
         MirStmtKind::ClosureCall { closure, args, .. } => {
             f(closure, UseKind::Value);
             args.iter_mut().for_each(|a| visit_operand_local_mut(a, f));
-        }
-        MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
-            f(pool, UseKind::Value);
-            f(handle, UseKind::Value);
         }
         MirStmtKind::ClosureCreate { captures, .. }
         | MirStmtKind::EnsureHookRegister { captures, .. } => {
@@ -276,7 +268,6 @@ pub fn stmt_def(stmt: &MirStmt) -> Option<LocalId> {
     match &stmt.kind {
         MirStmtKind::Assign { dst, .. }
         | MirStmtKind::Phi { dst, .. }
-        | MirStmtKind::PoolCheckedAccess { dst, .. }
         | MirStmtKind::ClosureCreate { dst, .. }
         | MirStmtKind::LoadCapture { dst, .. }
         | MirStmtKind::ResourceRegister { dst, .. }

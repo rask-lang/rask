@@ -753,7 +753,7 @@ impl TypeChecker {
     }
 
     /// Settle `object[index]` once the container's shape is known. Defers while
-    /// the container is still a variable — a Pool behind a struct field only
+    /// the container is still a variable — a container behind a struct field only
     /// gets its type when that field's own constraint resolves.
     /// `a?.b` — the chain's result once `b`'s type is known.
     ///

@@ -61,7 +61,7 @@ wrong thing. Weigh whether the result is better.
 ### Don't re-litigate
 
 - **Clone cost is intentional.** Types >16 bytes require explicit `.clone()` even when all fields are Copy. This is the transparency principle — the cost is visible. Don't suggest raising the Copy threshold, making clones implicit, or treating this as a problem to solve. It's a deliberate tradeoff.
-- **The set of compiler-provided types is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Pool` (deprecated), `Atomic*`, `string` — users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/shared-rack-heap.md` (BX1–BX4). Don't propose one.
+- **The set of compiler-provided types is closed.** `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack`+`Link`, `Heap`, `Atomic*`, `string` — users can't build equivalents, and there's no unsafe hatch for it. Argued in `specs/memory/shared-rack-heap.md` (BX1–BX4). Don't propose one.
 
 # Working relationship
 
@@ -321,7 +321,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 |------|----------|------|
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
 | Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](specs/memory/borrowing.md) |
-| Linearity | Consume exactly once (L1–L6) — shared by `@resource`, `Heap<T>`, `Pool<Linear>` | [linear.md](specs/memory/linear.md) |
+| Linearity | Consume exactly once (L1–L6) — shared by `@resource` and `Heap<T>` | [linear.md](specs/memory/linear.md) |
 | Scoped access | A value held elsewhere, reached through `with` — `Shared<T, S>`, Rack+Link, Heap. `Cell` and `Mutex<T>` are gone; `Local`/`Readers`/`Mutex` are strategies on `Shared` | [shared-rack-heap.md](specs/memory/shared-rack-heap.md) |
 | Collections | Vec, Map, Rack+Link for graphs | [collections.md](specs/stdlib/collections.md), [racks.md](specs/memory/racks.md) |
 | Resource types | `@resource` annotation for I/O handles, transactions; `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |

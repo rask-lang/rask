@@ -153,9 +153,6 @@ fn rewrite_fn(f: &mut FnDecl, r: &mut impl Rewrite) {
     if let Some(t) = &mut f.ret_ty {
         r.ty(t);
     }
-    for c in &mut f.context_clauses {
-        r.ty(&mut c.ty);
-    }
     rewrite_body(&mut f.body, r);
 }
 

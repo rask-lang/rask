@@ -14,7 +14,7 @@
 // and so do `.enumerate()` and `.sum()`. That's what the last three tests
 // here pin.
 
-import memory.Pool
+import memory.Rack
 
 struct Task {
     deps: Vec<i64>
@@ -40,14 +40,14 @@ test "std.collections — map on a plain struct field" {
     assert mapped[2] == 30
 }
 
-test "std.collections — filter on a Vec field reached through a pool element" {
-    mut tasks: Pool<Task> = Pool.new()
+test "std.collections — filter on a Vec field reached through a link" {
+    mut tasks: Rack<Task> = Rack.new()
     let a = tasks.insert(Task { deps: [] })
-    tasks[a].deps.push(1)
-    tasks[a].deps.push(2)
-    tasks[a].deps.push(3)
+    a.deps.push(1)
+    a.deps.push(2)
+    a.deps.push(3)
 
-    let filtered = tasks[a].deps.filter(|x| {
+    let filtered = a.deps.filter(|x| {
         return x != 2
     }).to_vec()
     assert filtered.len() == 2
@@ -55,18 +55,16 @@ test "std.collections — filter on a Vec field reached through a pool element" 
     assert filtered[1] == 3
 }
 
-test "std.collections — map on a Vec field reached through a with-block binding" {
-    mut tasks: Pool<Task> = Pool.new()
+test "std.collections — map on a Vec field reached through a link" {
+    mut tasks: Rack<Task> = Rack.new()
     let a = tasks.insert(Task { deps: [1, 2, 3] })
 
-    with tasks[a] as t {
-        let mapped = t.deps.map(|x| {
-            return x + 1
-        }).to_vec()
-        assert mapped.len() == 3
-        assert mapped[0] == 2
-        assert mapped[2] == 4
-    }
+    let mapped = a.deps.map(|x| {
+        return x + 1
+    }).to_vec()
+    assert mapped.len() == 3
+    assert mapped[0] == 2
+    assert mapped[2] == 4
 }
 
 // The three below have no runtime builtin to fall back on, so before this

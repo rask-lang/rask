@@ -372,7 +372,6 @@ impl Interpreter {
             Value::String(_) => "string".to_string(),
             Value::Vec(_) => "Vec".to_string(),
             Value::Map(_) => "Map".to_string(),
-            Value::Pool(_) => "Pool".to_string(),
             Value::Rack(_) => "Rack".to_string(),
             Value::Duration(_) => "Duration".to_string(),
             Value::Instant(_) => "Instant".to_string(),

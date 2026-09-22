@@ -53,7 +53,6 @@ Common mistakes the canonical patterns address.
 | **I3: duck-trait** | Any `duck trait` declaration (`type.generics/DT3`) — names the harden step and the types that already match | warning |
 | **I4: inferred-signature** | Non-public function omitting a parameter type, return type, or bound, in a package that declares publish metadata (`type.gradual/GC11`) | warning |
 | **I5: equality-absent-check** | `x == none` / `x != none` on an optional — the branch test is `x is none`, presence is `x?` (`type.optionals/OPT15`) | warning |
-| **I6: too-many-contexts** | A function with more than 3 `using` clauses (`mem.context`) — names the three restructurings | warning |
 
 I6 is a style limit, not a language one. Context clauses bubble: every callee's
 contexts appear on its callers, so a deep call chain accumulates them until the
@@ -108,16 +107,6 @@ func bad_pure(path: string) -> Config or Error {
 | **ST1: snake-case-func** | Function names are `snake_case` | warning |
 | **ST2: pascal-case-type** | Type/enum/trait names are `PascalCase`. An empty struct is exempt — it declares no data, so it's a namespace (`struct net { }`, which `extend net { … }` hangs off) or a compiler-provided type spelled to match a builtin (`cstring`) | warning |
 | **ST3: public-return-type** | Public functions have explicit return type annotations | error |
-| **ST4: context-clause-count** | Function has >3 `using` clauses | warning |
-
-```
-WARNING [tool.lint/ST4]: function has 4 context clauses (recommend ≤3)
-   |
-1  |  func render(h: Handle<Entity>) using Pool<Entity>, Pool<Mesh>, Pool<Texture>, Allocator {
-   |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-   |
-FIX: Pass a struct containing the dependencies, or split the function.
-```
 
 ## Suppression
 
@@ -238,8 +227,7 @@ FIX: delete `duck`. 3 types already match by shape; the "harden duck trait"
 | `@pure` on `comptime func` | P1 | Redundant — comptime is already pure. No warning (harmless) |
 | `@pure` on function with `unsafe` block | P1 | Warning: unsafe is conservatively IO (`comp.effects/IO3`). Suppress with `@allow(purity/io)` if known-pure |
 | `@pure` on public vs private function | P1-P3 | Same check — purity annotation applies regardless of visibility |
-| `@pure` with `using frozen Pool<T>` | P3 | OK — frozen context has Access effect only, no Mutation |
-| `@pure` with `using Pool<T>` (non-frozen) | P3 | Warning only if function actually performs Grow/Shrink. Access-only usage is fine |
+| `@pure` with a `mutate` rack parameter | P3 | Warning only if the function actually performs Grow/Shrink. Reading through links is fine |
 
 ---
 

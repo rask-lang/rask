@@ -29,11 +29,10 @@ compiler/crates/
 ├── rask-resolve/        Stage 4: Connect names to definitions
 ├── rask-types/          Stage 5: Figure out every expression's type
 ├── rask-ownership/      Stage 6: Verify memory safety
-├── rask-hidden-params/  Stage 7: Desugar `using` into regular params
-├── rask-mono/           Stage 8: Eliminate generics
-├── rask-mir/            Stage 9: Flatten into basic blocks (MIR)
-├── rask-codegen/        Stage 10: Generate machine code (Cranelift)
-├── rask-interp/         Alternative to 8-10: interpret the AST directly
+├── rask-mono/           Stage 7: Eliminate generics
+├── rask-mir/            Stage 8: Flatten into basic blocks (MIR)
+├── rask-codegen/        Stage 9: Generate machine code (Cranelift)
+├── rask-interp/         Alternative to 7-9: interpret the AST directly
 ├── rask-cli/            The `rask` command—dispatches to everything
 ├── rask-diagnostics/    Error formatting (shared by all stages)
 ├── rask-stdlib/         Built-in type methods (print, Vec, etc.)

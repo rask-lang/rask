@@ -7,5 +7,7 @@ error[E0808]: cannot push `items` inside `with` block
  14 |         items.push(Item { count: 9 })
     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ push not allowed inside with block
     = fix: move the structural mutation outside the with block
-    = why: items can reallocate, invalidating the borrowed element. Pool handles
-          survive reallocation — use Pool if you need insert/remove inside with
+    = why: items can reallocate, invalidating the borrowed element. If the
+          elements reference each other and get deleted individually, that is
+          what a `Rack` is for — a node never moves, so nothing invalidates
+          [mem.borrowing/W2]

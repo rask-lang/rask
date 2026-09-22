@@ -6,14 +6,14 @@
 
 # Loops
 
-Loops yield borrowed values by default (read-only). `for mutate` provides in-place element mutation. Index/handle mode for structural mutation.
+Loops yield borrowed values by default (read-only). `for mutate` provides in-place element mutation. Index mode for structural mutation.
 
 ## Loop Syntax
 
 | Rule | Description |
 |------|-------------|
 | **LP1: Value iteration** | `for binding in collection` yields borrowed elements (read-only) |
-| **LP2: Index mode explicit** | Use `for i in 0..vec.len()` or `for h in pool.handles()` for structural mutation |
+| **LP2: Index mode explicit** | Use `for i in 0..vec.len()` for structural mutation on a Vec. A rack walk (`for n in rack.nodes()`) allows it outright — `nodes()` hands back its own Vec of links |
 | **LP3: Collection accessible** | Loop does not prevent collection access (inline expression access) |
 | **LP11: Mutable iteration** | `for mutate binding in collection` yields mutable access to each element |
 | **LP12: Mutable binding** | The `mutate` keyword applies to the loop binding. Each use of the binding desugars to mutable inline access on the current element |
@@ -26,7 +26,7 @@ for mutate <binding> in <collection> { ... }
 | Collection Type | Value Mode (Default) | Mutable Mode | Index Mode (Explicit) |
 |----------------|---------------------|--------------|----------------------|
 | `Vec<T>` | Borrowed `T` | Mutable `T` | `0..vec.len()` yields `usize` |
-| `Pool<T>` | Borrowed `T` | Mutable `T` | `.handles()` yields `Handle<T>` |
+| `Rack<T>` | `Link<T>` | — a link already writes through | `.nodes()` yields `Vec<Link<T>>` |
 | `Map<K,V>` | `(K, borrowed V)` | `(K, mutable V)` | `.keys()` yields `K` |
 | `Range` (`0..n`) | Integer | N/A | (direct iteration) |
 
@@ -50,16 +50,12 @@ for i in 0..items.len() {
     items.push(new_item)      // OK: structural mutation allowed in index mode
 }
 
-let entities = Pool.new()
-for mutate entity in entities {
-    entity.health -= 10       // Mutate via mutable iteration
-    entity.velocity *= 0.9
-}
-
-// Handle mode for structural mutation (removal)
-for h in entities.handles() {
-    entities[h].health -= 10  // Mutate via handle
-    entities.remove(h)        // OK if no further access
+mut entities: Rack<Entity> = Rack.new()
+for e in entities.nodes() {
+    e.health -= 10            // A link writes through; no mode needed
+    if e.health <= 0 {
+        entities.delete(e)    // OK: the walk owns its own Vec of links
+    }
 }
 ```
 
@@ -125,7 +121,7 @@ for mutate (key, value) in config {
 |------|-------------|
 | **LP8: Value mode read-only** | Value iteration prevents all mutation (element and structural) |
 | **LP8a: Mutable mode in-place only** | Mutable iteration allows element mutation, prevents structural mutation |
-| **LP9: Index mode allows mutation** | Index/handle mode allows all mutation (programmer responsibility) |
+| **LP9: Index mode allows mutation** | Index mode allows all mutation (programmer responsibility) |
 | **LP10: Length captured** | Index and mutable loops capture length at start — new items not visited |
 
 <!-- test: skip -->
@@ -148,9 +144,9 @@ for i in 0..vec.len() {
     vec.push(new_item)        // OK: not visited (length captured at start)
 }
 
-for h in pool.handles() {
-    if pool[h].should_remove {
-        pool.remove(h)        // OK: handle becomes invalid, no future access
+for n in world.nodes() {
+    if n.should_remove {
+        world.delete(n)       // OK: every edge pointing at it is nulled first
     }
 }
 ```
@@ -208,16 +204,15 @@ for mutate item in vec { body }
 
 <!-- test: skip -->
 ```rask
-// Mutable iteration (Pool):
-for mutate item in pool { body }
+// Rack walk:
+for item in rack.nodes() { body }
 
 // Equivalent to:
 {
-    let _handles = pool._snapshot_handles()  // Handle snapshot
+    let _links = rack.nodes()
     mut _idx = 0
-    while _idx < _handles.len() {
-        let _h = _handles[_idx]
-        // `item` is a mutable alias for pool[_h]
+    while _idx < _links.len() {
+        let item = _links[_idx]
         body
         _idx += 1
     }
@@ -311,7 +306,7 @@ tree.in_order_mut()(|mutate node: Node<T>| {
 | Structural mutation in mutable loop | LP8a/LP14 | Compile error |
 | Grow during index iteration | LP10 | New items not visited (length captured at start) |
 | Shrink during index iteration | LP10 | Stale index may panic — programmer responsibility |
-| Remove current handle (Pool) | LP9 | OK in handle mode if no further access |
+| Delete the current node (Rack) | LP9 | OK — `nodes()` handed back its own Vec, and `delete` nulls the stored edges |
 | Nested loops same collection | LP3 | Allowed (inline access) |
 | Nested mutable + value loops | LP3/LP15 | Allowed — mutable loop allows inline reads of collection |
 | `for mutate` on Range | — | Compile error (ranges are not collections) |
@@ -326,7 +321,7 @@ tree.in_order_mut()(|mutate node: Node<T>| {
 
 **LP1 (value iteration default):** I chose borrowed values as the default because it matches Python, Rust, Go, JavaScript expectations. Most iteration is read-only (80%+ of real code), so optimizing for the common case reduces ceremony. This decision was validated against METRICS.md targets — natural iteration should not require index manipulation.
 
-**LP2 (index mode explicit):** Structural mutation requires explicit syntax (`0..vec.len()` or `.handles()`). This makes the structural mutation intent clear and matches the "transparency of cost" principle — you see you're doing index-based access, not value iteration.
+**LP2 (index mode explicit):** Structural mutation requires explicit syntax (`0..vec.len()`). This makes the structural mutation intent clear and matches the "transparency of cost" principle — you see you're doing index-based access, not value iteration.
 
 **LP11 (mutable iteration):** In-place element mutation is the second most common iteration pattern after read-only. Index mode works but forces you to repeat `collection[i]` for every access — noisy and error-prone. `for mutate` provides a named binding that desugars to mutable inline access, keeping the code clean while making mutation intent visible via the `mutate` keyword. The keyword is consistent with function parameter annotations (`func f(mutate x: T)`). Structural mutation (insert/remove) still requires index mode because it can invalidate iteration state.
 
@@ -347,7 +342,7 @@ tree.in_order_mut()(|mutate node: Node<T>| {
 | Structural mutation (insert/remove) | Index iteration | `for i in 0..vec.len() { vec.remove_unordered(i) }` |
 | Clone values | Value iteration + clone | `for item in vec { let v = item.clone(); use(v) }` |
 | Take ownership (consume) | `take_all()` | `for item in vec.take_all() { own(item) }` |
-| Iterate Pool by handle | `.handles()` | `for h in pool.handles() { pool[h].update() }` |
+| Walk a graph | `.nodes()` | `for n in world.nodes() { n.update() }` |
 
 **Value iteration (read-only):**
 
@@ -374,7 +369,7 @@ for mutate item in vec {
     item.last_hit = now()
 }
 
-for mutate entity in pool {
+for entity in world.nodes() {
     entity.velocity += entity.acceleration * dt
     entity.position += entity.velocity * dt
 }
@@ -385,34 +380,16 @@ for mutate (key, value) in scores {
 }
 ```
 
-**Index mode for structural mutation:**
+**Deleting during a rack walk:**
 
 <!-- test: parse -->
 ```rask
-for h in pool.handles() {
-    pool[h].health -= damage
-    if pool[h].health <= 0 {
-        pool.remove(h)
+// `nodes()` hands back its own Vec, so deleting while walking it is fine
+for n in world.nodes() {
+    n.health -= damage
+    if n.health <= 0 {
+        world.delete(n)
     }
-}
-```
-
-**Removing during iteration (Pool):**
-
-<!-- test: parse -->
-```rask
-// Safe: collect handles first
-let to_remove = Vec.new()
-for entity in pool {
-    if entity.dead {
-        to_remove.push(/* need handle */)  // Note: value mode doesn't provide handle
-    }
-}
-
-// Better: use handle mode
-let to_remove = pool.handles().filter(|h| pool[h].dead).to_vec()
-for h in to_remove {
-    pool.remove(h)
 }
 ```
 
@@ -439,7 +416,7 @@ The IDE annotates loop bindings with their type and source semantics.
 | `item: borrowed T` | Loop variable is a borrowed value (read-only) |
 | `item: mutable T` | Loop variable has mutable access to element |
 | `i: usize [index into vec]` | Loop variable is an index |
-| `h: Handle<Entity> [handle into pool]` | Loop variable is a handle |
+| `n: Link<Entity> [node of world]` | Loop variable is a link |
 
 <!-- test: skip -->
 ```rask
@@ -478,5 +455,5 @@ Hover on `for i in 0..collection.len()` shows:
 
 - [Borrowing](../memory/borrowing.md) — Value-based access, `with` blocks (`mem.borrowing`)
 - [Value Semantics](../memory/value-semantics.md) — Copy threshold (`mem.value-semantics`)
-- [Collections](../stdlib/collections.md) — Vec, Pool, Map APIs (`std.collections`)
+- [Collections](../stdlib/collections.md) — Vec, Map, Set APIs (`std.collections`)
 - [Sequence Protocol](../types/sequence-protocol.md) — Function-valued iteration, adapters, terminals (`type.sequence`)

@@ -36,7 +36,6 @@ impl fmt::Display for MirType {
             MirType::Enum(id) => write!(f, "enum#{}", id.id),
             MirType::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             MirType::FuncPtr(id) => write!(f, "fn#{}", id.0),
-            MirType::Handle => write!(f, "handle"),
             MirType::Link(sid) => write!(f, "link<#{}>", sid.id),
             MirType::Tuple(fields) => {
                 write!(f, "(")?;
@@ -215,9 +214,6 @@ impl fmt::Display for MirStmt {
                 write!(f, "ensure_push(bb{})", cleanup_block.0)
             }
             MirStmtKind::EnsurePop => write!(f, "ensure_pop"),
-            MirStmtKind::PoolCheckedAccess { dst, pool, handle } => {
-                write!(f, "_{} = pool_access(_{}[_{}])", dst.0, pool.0, handle.0)
-            }
             MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => {
                 let alloc = if *heap { "heap" } else { "stack" };
                 write!(f, "_{} = closure[{}]({}, [", dst.0, alloc, func_name)?;

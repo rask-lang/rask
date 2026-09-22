@@ -865,8 +865,8 @@ impl TypeTable {
     }
 
     /// Container wrappers that hold values without becoming linear themselves.
-    /// `Pool` is the sanctioned resource container (RC2); `Handle`/`WeakHandle`
-    /// are copyable references; `Vec`/`Map` are handled by the outer walk.
+    /// A `Link` is a copyable reference; `Vec`/`Map`/`Rack` are handled by the
+    /// outer walk.
     ///
     /// The channel ends are here because `conc.async/CH1` says so outright:
     /// they can go out of scope without an explicit close. Without them,
@@ -877,10 +877,7 @@ impl TypeTable {
     fn is_nonlinear_wrapper(name: &str) -> bool {
         matches!(
             name,
-            "Handle"
-                | "WeakHandle"
-                | "Pool"
-                | "Vec"
+            "Vec"
                 | "Map"
                 | "Link"
                 | "Rack"
@@ -890,9 +887,9 @@ impl TypeTable {
         )
     }
 
-    /// RC1/RC3: find the first `Vec<T>` or `Map<K, V>` anywhere in `ty` whose
-    /// element (or key) is a linear value. `Vec` and `Map` can't consume their
-    /// elements on drop, so linear elements are rejected at the type. Returns the
+    /// RC1-RC3: find the first `Vec<T>`, `Map<K, V>` or `Rack<T>` anywhere in
+    /// `ty` whose element, key or node is a linear value. None of the three can
+    /// consume what it holds, so a linear one is rejected at the type. Returns the
     /// container spelling ("Vec"/"Map") and the offending element type.
     ///
     /// Walks the whole type tree so nested forms (`Vec<Vec<File>>`,
@@ -1027,8 +1024,9 @@ impl TypeTable {
         })
     }
 
-    /// If `name`/`args` describe a `Vec<T>` or `Map<K, V>` with a linear element
-    /// or key, return the violation. The check is head-only; the caller recurses.
+    /// If `name`/`args` describe a `Vec<T>`, `Map<K, V>` or `Rack<T>` with a
+    /// linear element, key or node, return the violation. The check is
+    /// head-only; the caller recurses.
     fn container_violation(&self, name: &str, args: &[GenericArg]) -> Option<(String, Type)> {
         let elem = |i: usize| match args.get(i) {
             Some(GenericArg::Type(t)) => Some(t.as_ref()),
@@ -1053,6 +1051,17 @@ impl TypeTable {
                     if self.holds_linear_value(v) {
                         return Some(("Map".to_string(), v.clone()));
                     }
+                }
+                None
+            }
+            // Same reason as `Vec`: `delete` frees the node, it doesn't hand it
+            // back, so there is no way to consume one. `Pool.remove` answered
+            // `T?`, which is what made a pool the one container a linear value
+            // could live in — and that went with the pool (rask-lang/rask#908).
+            "Rack" => {
+                let e = elem(0)?;
+                if self.holds_linear_value(e) {
+                    return Some(("Rack".to_string(), e.clone()));
                 }
                 None
             }

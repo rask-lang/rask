@@ -1073,48 +1073,6 @@ mod tests {
     // ═══════════════════════════════════════════════════════════
 
     // ═══════════════════════════════════════════════════════════
-    // Pool checked access
-    // ═══════════════════════════════════════════════════════════
-
-    #[test]
-    fn codegen_pool_checked_access() {
-        // func f(pool: i64, handle: i64) -> i64 {
-        //   _2 = PoolCheckedAccess { pool: _0, handle: _1 }
-        //   return _2
-        // }
-        let mir = MirFunction {
-            name: "f".to_string(),
-            params: vec![
-                local(0, "pool", MirType::I64, true),
-                local(1, "handle", MirType::I64, true),
-            ],
-            ret_ty: MirType::I64,
-            locals: vec![
-                local(0, "pool", MirType::I64, true),
-                local(1, "handle", MirType::I64, true),
-                temp(2, MirType::I64),
-            ],
-            blocks: vec![
-                block(0, vec![
-                    MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
-                        dst: LocalId(2),
-                        pool: LocalId(0),
-                        handle: LocalId(1),
-                    }),
-                ], ret(Some(local_op(2)))),
-            ],
-            entry_block: BlockId(0),
-            is_extern_c: false,
-            source_file: None,
-        };
-
-        let mut gen = gen_with_stdlib();
-        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
-        gen.gen_function(&mir).unwrap();
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // Ensure push/pop (no-ops)
     // ═══════════════════════════════════════════════════════════
 
     #[test]

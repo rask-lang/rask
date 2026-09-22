@@ -1,127 +1,40 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Writes inside `with collection[key] as elem { ... }` have to survive the block
 // when the collection is reached through a struct field. Native decided "is this
-// a pool/vec access" from the syntax of the indexed expression, so `self.tasks[h]`
-// missed and the element was copied instead of aliased — scalar writes landed in
-// the copy and vanished. Heap-backed writes (a Vec push) persisted through the
-// shared buffer, which made it look like it half-worked.
-import memory.Pool
-import memory.Handle
+// a collection access" from the syntax of the indexed expression, so
+// `self.items[0]` missed and the element was copied instead of aliased — scalar
+// writes landed in the copy and vanished. Heap-backed writes (a Vec push)
+// persisted through the shared buffer, which made it look like it half-worked.
 
-enum Status { Open, Done }
-enum Priority { Low, High }
-
-struct Task {
-    public id: u64
-    public status: Status
-    public priority: Priority
-    public weight: i64
-    public tags: Vec<string>
-}
-
-struct Store { public tasks: Pool<Task> }
-
-extend Store {
-    func new() -> Store { return Store { tasks: Pool.new() } }
-
-    func add(mutate self) -> Handle<Task> {
-        return self.tasks.insert(Task {
-            id: 1,
-            status: Status.Open,
-            priority: Priority.Low,
-            weight: 10,
-            tags: Vec.new(),
-        })
-    }
-
-    // A scalar write and a heap write in the same block — both must stick.
-    func finish(mutate self, h: Handle<Task>) {
-        with self.tasks[h] as t {
-            t.tags.push("urgent")
-            t.status = Status.Done
-            t.priority = Priority.High
-            t.weight = 42
-        }
-    }
-
-    func is_done(self, h: Handle<Task>) -> bool {
-        return with self.tasks[h] as t { t.status == Status.Done }
-    }
-
-    func weight_of(self, h: Handle<Task>) -> i64 {
-        return with self.tasks[h] as t { t.weight }
-    }
-
-    // `len()` answers `usize`, so this returns u64 — it read `i64` until the
-    // deferred index constraint gave the `with` block a real type and the
-    // mismatch became visible (#632).
-    func tag_count(self, h: Handle<Task>) -> u64 {
-        return with self.tasks[h] as t { t.tags.len() }
-    }
-
-    func is_high(self, h: Handle<Task>) -> bool {
-        return with self.tasks[h] as t { t.priority == Priority.High }
-    }
-}
-
-struct Item { public n: i64 }
+struct Item { public n: i64, public tags: Vec<string> }
 
 struct Bag { public items: Vec<Item> }
 
 extend Bag {
     func new() -> Bag {
         mut v = Vec<Item>.new()
-        v.push(Item { n: 1 })
+        v.push(Item { n: 1, tags: Vec.new() })
         return Bag { items: v }
     }
+
+    // A scalar write and a heap write in the same block — both must stick.
     func bump(mutate self) {
-        with self.items[0] as it { it.n = 99 }
+        with self.items[0] as it {
+            it.tags.push("urgent")
+            it.n = 99
+        }
     }
+
     func first(self) -> i64 {
         return with self.items[0] as it { it.n }
     }
-}
 
-test "a pool write through a struct field persists past the block" {
-    mut s = Store.new()
-    let h = s.add()
-    s.finish(h)
-    assert s.is_done(h)
-}
-
-test "every field written in one block persists" {
-    mut s = Store.new()
-    let h = s.add()
-    s.finish(h)
-    assert s.is_done(h)
-    assert s.is_high(h)
-    assert s.weight_of(h) == 42
-    // the heap-backed write always worked — check it didn't regress
-    assert s.tag_count(h) == 1
-}
-
-test "the write is visible inside the block too" {
-    mut s = Store.new()
-    let h = s.add()
-    with s.tasks[h] as t {
-        t.weight = 7
-        assert t.weight == 7
+    // `len()` answers `usize`, so this returns u64 — it read `i64` until the
+    // deferred index constraint gave the `with` block a real type and the
+    // mismatch became visible (#632).
+    func tag_count(self) -> u64 {
+        return with self.items[0] as it { it.tags.len() }
     }
-    assert s.weight_of(h) == 7
-}
-
-test "a pool reached by a plain name still works" {
-    mut pool = Pool<Task>.new()
-    let h = pool.insert(Task {
-        id: 2,
-        status: Status.Open,
-        priority: Priority.Low,
-        weight: 1,
-        tags: Vec.new(),
-    })
-    with pool[h] as t { t.weight = 5 }
-    let w = with pool[h] as t { t.weight }
-    assert w == 5
 }
 
 test "a vec write through a struct field persists past the block" {
@@ -130,9 +43,26 @@ test "a vec write through a struct field persists past the block" {
     assert b.first() == 99
 }
 
+test "every field written in one block persists" {
+    mut b = Bag.new()
+    b.bump()
+    assert b.first() == 99
+    // the heap-backed write always worked — check it didn't regress
+    assert b.tag_count() == 1
+}
+
+test "the write is visible inside the block too" {
+    mut b = Bag.new()
+    with b.items[0] as it {
+        it.n = 7
+        assert it.n == 7
+    }
+    assert b.first() == 7
+}
+
 test "a vec reached by a plain name still works" {
     mut v = Vec<Item>.new()
-    v.push(Item { n: 1 })
+    v.push(Item { n: 1, tags: Vec.new() })
     with v[0] as it { it.n = 77 }
     let got = with v[0] as it { it.n }
     assert got == 77

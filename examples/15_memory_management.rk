@@ -1,16 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Learn: Memory management using Pool and Handle
-//
-// NOTE: This is a SPEC EXAMPLE showing intended syntax.
-// Generic Pool and Handle types not fully implemented yet.
-// See examples/README.md for status.
-import memory.Handle
-import memory.Pool
+// Learn: Memory management with Rack and Link
+import memory.Link
+import memory.Rack
 
-// Node in a linked list - uses Handle instead of references
+// Node in a linked list — the `next` edge is a link, not a reference
 struct Node {
     value: i32
-    next: Handle<Node>?  // Optional handle to next node
+    next: Link<Node>?
 }
 
 // Entity in a game or simulation
@@ -18,48 +14,31 @@ struct Entity {
     id: i32
     name: string
     health: i32
-    target: Handle<Entity>?  // Optional handle to target entity
+    target: Link<Entity>?
 }
 
 func main() {
-    print("=== Pool/Handle Pattern ===\n\n")
+    print("=== Rack/Link Pattern ===\n\n")
 
-    // Problem: References can dangle
-    // Solution: Pool<T> allocates, Handle<T> refers
-    // Handles remain valid even if pool reorganizes memory
+    // A reference can't be stored in a field. A link can: it names a node in a
+    // rack, and the rack owns the node's lifetime.
+    mut nodes = Rack<Node>.new()
 
-    // Create a pool for nodes
-    mut node_pool = Pool<Node>.new()
+    print("Creating linked list with links:\n")
 
-    print("Creating linked list with handles:\n")
+    let first = nodes.insert(Node { value: 1, next: none })
+    let second = nodes.insert(Node { value: 2, next: none })
+    let third = nodes.insert(Node { value: 3, next: none })
 
-    // Insert nodes into the pool — insert returns a Handle (panics on failure)
-    let first = node_pool.insert(Node {
-        value: 1,
-        next: none,
-    })
+    first.next = second
+    second.next = third
 
-    let second = node_pool.insert(Node {
-        value: 2,
-        next: none,
-    })
-
-    let third = node_pool.insert(Node {
-        value: 3,
-        next: none,
-    })
-
-    // Link nodes using handles (pool indexing with handle)
-    node_pool[first].next = second
-    node_pool[second].next = third
-
-    // Traverse the list using handles
+    // Traverse — following a link is a dereference, no lookup and no check
     print("List values: ")
-    mut current: Handle<Node>? = first
+    mut current: Link<Node>? = first
 
     loop {
-        if current? as handle {
-            let node = node_pool.get(handle)!
+        if current? as node {
             print(node.value)
             print(" -> ")
             current = node.next
@@ -69,8 +48,7 @@ func main() {
         }
     }
 
-    // Create entity pool for game-like scenario
-    mut entities = Pool<Entity>.new()
+    mut entities = Rack<Entity>.new()
 
     print("Creating game entities:\n")
 
@@ -81,97 +59,66 @@ func main() {
         target: none,
     })
 
-    let enemy1 = entities.insert(Entity {
+    let goblin = entities.insert(Entity {
         id: 2,
         name: "Goblin",
         health: 50,
-        target: player,  // Enemy targets player
+        target: player,
     })
 
-    let enemy2 = entities.insert(Entity {
+    let orc = entities.insert(Entity {
         id: 3,
         name: "Orc",
         health: 80,
         target: player,
     })
 
-    // Player targets first enemy
-    entities[player].target = enemy1
+    player.target = goblin
 
-    // Display entity relationships
     print("\nEntity relationships:\n")
 
-    let player_ent = entities.get(player)!
-    print(player_ent.name)
-    print(" (HP: ")
-    print(player_ent.health)
-    print(")")
-
-    if player_ent.target? as target_handle {
-        let target = entities.get(target_handle)!
-        print(" -> targets ")
-        print(target.name)
+    for e in entities.nodes() {
+        print(e.name)
+        print(" (HP: ")
+        print(e.health)
+        print(")")
+        if e.target? as t {
+            print(" -> targets ")
+            print(t.name)
+        }
+        print("\n")
     }
     print("\n")
 
-    let e1 = entities.get(enemy1)!
-    print(e1.name)
-    print(" (HP: ")
-    print(e1.health)
-    print(")")
-
-    if e1.target? as target_handle {
-        let target = entities.get(target_handle)!
-        print(" -> targets ")
-        print(target.name)
-    }
-    print("\n")
-
-    let e2 = entities.get(enemy2)!
-    print(e2.name)
-    print(" (HP: ")
-    print(e2.health)
-    print(")")
-
-    if e2.target? as target_handle {
-        let target = entities.get(target_handle)!
-        print(" -> targets ")
-        print(target.name)
-    }
-    print("\n\n")
-
-    // Modify entities through handles
     print("Applying damage:\n")
 
-    entities[enemy1].health = entities.get(enemy1)!.health - 20
+    goblin.health -= 20
     print("Goblin health: ")
-    print(entities.get(enemy1)!.health)
+    print(goblin.health)
     print("\n")
 
-    entities[player].health = entities.get(player)!.health - 10
+    player.health -= 10
     print("Player health: ")
-    print(entities.get(player)!.health)
+    print(player.health)
     print("\n\n")
 
-    // Handle invalidation - removing entities
+    // Delete nulls every edge pointing at the node before it returns, so the
+    // player's `target` clears itself. Nothing is left to remember.
     print("Removing defeated enemy:\n")
+    entities.delete(goblin)
+    print("Goblin deleted\n")
 
-    entities.remove(enemy1)  // Free the goblin
-
-    // Player's target handle is now invalid
-    // In a real system, you'd clear dangling handles
-    print("Enemy1 removed from pool\n\n")
-
-    // Why Pool/Handle instead of references?
-    // 1. No lifetime annotations needed
-    // 2. Handles stay valid across pool reorganization
-    // 3. Can have cycles (node.next can refer back)
-    // 4. Clear ownership (pool owns all data)
-    // 5. Easy to invalidate handles when removing items
+    if player.target? as t {
+        print("Player still targets ")
+        print(t.name)
+        print("\n\n")
+    } else {
+        print("Player's target cleared by the delete\n\n")
+    }
 
     print("=== Key Benefits ===\n")
     print("- No lifetime parameters\n")
-    print("- Handles never dangle (invalidation explicit)\n")
-    print("- Perfect for graphs, entity systems, UI trees\n")
-    print("- Pool owns memory, handles are lightweight IDs\n")
+    print("- A link can live in a field; a reference can't\n")
+    print("- A dead link never exists, so reads need no check\n")
+    print("- The rack owns the nodes; links are one machine word\n")
 }

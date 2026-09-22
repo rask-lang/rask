@@ -17,20 +17,20 @@
 // already went through `capture_is_copy`, which also reads a parameter's declared
 // type; the `own` path now does too.
 //
-// `Handle<T>` needed one more thing: resolving a parameter's type string gave up
-// on any generic spelling, so `Handle<Item>` never reached the Copy rules that
-// answer by base name. It now reduces to its base — the arguments aren't needed,
-// since only Handle and WeakHandle are Copy among the containers.
+// A container reference needed one more thing: resolving a parameter's type
+// string gave up on any generic spelling, so `Link<Item>` never reached the Copy
+// rules that answer by base name. It now reduces to its base — the arguments
+// aren't needed, since a link is the only Copy one among the containers.
 //
 // Without `own` the same call is rejected the other way ("closure captures scoped
 // borrow and cannot escape", with the fix hint telling you to add `own`), so this
 // shape had no spelling that compiled.
-import memory.Handle
-import memory.Pool
+import memory.Link
+import memory.Rack
 
 struct Item {
     id: i32
-    other: Handle<Item>?
+    other: Link<Item>?
 }
 
 struct Big {
@@ -49,14 +49,14 @@ func scalar(n: i32, v: Vec<i32>, flag: bool) -> string {
     return "kept={count} n={n}"
 }
 
-// A Copy handle parameter — the reported case.
-func handle(mutate p: Pool<Item>, n: Handle<Item>, v: Vec<Handle<Item>>) -> string {
+// A Copy link parameter — the reported case.
+func through_link(n: Link<Item>, v: Vec<Link<Item>>) -> string {
     mut count: u64 = 0
-    if p[n].other? as _o {
+    if n.other? as _o {
         let kept = v.filter(own |c| c != n)
         count = kept.count()
     }
-    return "kept={count} id={p[n].id}"
+    return "kept={count} id={n.id}"
 }
 
 // A non-Copy parameter is still moved by an `own` capture, so this one has to
@@ -77,14 +77,14 @@ func main() {
     println("scalar={scalar(2, v, true)}")
     println("scalar no branch={scalar(2, v, false)}")
 
-    mut p: Pool<Item> = Pool.new()
-    let a = p.insert(Item { id: 10, other: none })
-    let b = p.insert(Item { id: 20, other: a })
-    mut hs: Vec<Handle<Item>> = Vec.new()
-    hs.push(a)
-    hs.push(b)
-    println("{handle(mutate p, b, hs)}")
-    println("{handle(mutate p, a, hs)}")
+    mut r: Rack<Item> = Rack.new()
+    let a = r.insert(Item { id: 10, other: none })
+    let b = r.insert(Item { id: 20, other: a })
+    mut ls: Vec<Link<Item>> = Vec.new()
+    ls.push(a)
+    ls.push(b)
+    println("{through_link(b, ls)}")
+    println("{through_link(a, ls)}")
 
     mut ns: Vec<i64> = Vec.new()
     ns.push(1)

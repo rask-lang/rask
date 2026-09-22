@@ -28,14 +28,14 @@ Every spec file should have these HTML comment headers at the top:
 
 | Prefix | Directory | Examples |
 |--------|-----------|----------|
-| `mem` | memory/ | `mem.ownership`, `mem.borrowing`, `mem.pools` |
+| `mem` | memory/ | `mem.ownership`, `mem.borrowing`, `mem.racks` |
 | `type` | types/ | `type.structs`, `type.enums`, `type.traits` |
 | `ctrl` | control/ | `ctrl.flow`, `ctrl.loops`, `ctrl.comptime` |
 | `conc` | concurrency/ | `conc.async`, `conc.sync`, `conc.channels` |
 | `std` | stdlib/ | `std.collections`, `std.strings`, `std.json` |
 | `struct` | structure/ | `struct.modules`, `struct.build`, `struct.c-interop` |
 | `tool` | tooling/ | `tool.lint`, `tool.warnings` |
-| `comp` | compiler/ | `comp.codegen`, `comp.gen-coalesce` |
+| `comp` | compiler/ | `comp.codegen`, `comp.advanced` |
 | `raido` | raido/ | `raido.overview`, `raido.types`, `raido.syntax`, `raido.vm`, `raido.interop` |
 
 ### Status Values
@@ -75,7 +75,7 @@ Rule IDs are **local to their spec file**. The spec ID provides global uniquenes
 ```
 mem.ownership/O1    — "single owner" rule in the ownership spec
 type.structs/M3     — "same module" method rule in the structs spec
-comp.gen-coalesce/GC1  — distinguishes from type.gradual/GC1
+mem.racks/RK3       — distinguishes from comp.advanced/IV3
 ```
 
 Use full citations when referencing rules from another spec or from compiler error messages. Within the same spec, just use the rule ID (`O1`).

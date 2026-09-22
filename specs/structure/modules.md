@@ -276,13 +276,13 @@ extend Printer with ast.Visitor {
 }
 ```
 
-**Self-referential types with handles (not trait objects):**
+**Self-referential types with links (not trait objects):**
 <!-- test: parse -->
 ```rask
 struct Node {
     value: i32
-    parent: Handle<Node>?
-    children: Vec<Handle<Node>>
+    parent: Link<Node>?
+    children: Vec<Link<Node>>
 }
 ```
 

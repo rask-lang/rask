@@ -16,7 +16,7 @@ pub struct OwnershipError {
 pub enum MoveReason {
     /// Type exceeds the 16-byte copy threshold.
     SizeExceedsThreshold { type_name: String, size: usize },
-    /// Type owns heap memory (String, Vec, Map, Pool).
+    /// Type owns heap memory (String, Vec, Map).
     OwnsHeapMemory { type_name: String },
     /// Type is marked @unique.
     Unique { type_name: String },
@@ -229,7 +229,7 @@ pub enum OwnershipErrorKind {
         borrow_span: Span,
     },
 
-    /// Trying to store a reference from a collection (Vec, Map, Pool).
+    /// Trying to store a reference from a collection (Vec, Map).
     #[error("cannot store reference from {source_type} - use inline or copy out the value")]
     InstantBorrowEscapes {
         source_type: String,
@@ -387,33 +387,12 @@ pub enum OwnershipErrorKind {
         consumed_at: Span,
     },
 
-    /// Mutation in a frozen context (CC3/PF5).
-    #[error("cannot mutate in frozen context — `{context_ty}` is frozen")]
-    FrozenContextMutation {
-        context_ty: String,
-        operation: String,
-    },
 
     /// Structural mutation inside `with` block on non-pool collection (W2).
     #[error("cannot {operation} `{collection}` inside `with` block — {collection} can reallocate")]
     WithBlockStructuralMutation {
         collection: String,
         operation: String,
-        binding_span: Span,
-    },
-
-    /// Removing the bound handle inside `with` block (W2c).
-    #[error("cannot remove `{handle}` inside `with` block — it's the bound element")]
-    WithBlockBoundHandleRemoved {
-        handle: String,
-        collection: String,
-        binding_span: Span,
-    },
-
-    /// Clearing pool inside `with` block (W2d).
-    #[error("cannot clear `{collection}` inside `with` block — invalidates all elements")]
-    WithBlockClear {
-        collection: String,
         binding_span: Span,
     },
 

@@ -290,9 +290,8 @@ pub fn solve<A: DataflowAnalysis>(func: &MirFunction, analysis: &A) -> DataflowR
 |----------|-----------|--------|---------|
 | **Liveness** | Backward | `BitSet<LocalId>` (set of live locals) | RC drop placement, clone elision, DCE, register hints |
 | **Reaching definitions** | Forward | `Map<LocalId, Set<DefPoint>>` | Constant propagation, copy propagation |
-| **Handle typestate** | Forward | `Map<HandleLocal, {Fresh,Valid,Unknown,Invalid}>` | `comp.advanced/TS1-TS8` |
 | **Escape analysis** | Forward | `Map<LocalId, {Local,MayEscape,Escaped}>` | String refcount elision (`comp.string-refcount-elision/RE2`) |
-| **Interval analysis** | Forward (demand-driven) | `Map<LocalId, [lo, hi]>` | Bounds check elimination (`comp.advanced/BE1-BE4`) |
+| **Interval analysis** | Forward (demand-driven) | `Map<LocalId, [lo, hi]>` | Bounds check elimination (`comp.advanced/BE1`, BE2, BE4) |
 
 All five share the same solver. Adding a new analysis means implementing the trait — the iteration, caching, and invalidation are free.
 
@@ -408,17 +407,17 @@ Comptime uses `MiriEngine` with a `PureStdlib` provider (no I/O, errors on sysca
 
 | Rule | Description |
 |------|-------------|
-| **EF1: Frozen is enforced** | `using frozen Pool<T>` violations are compile errors, not lint warnings. This enables guaranteed optimization (skip generation checks in frozen iteration) |
+| **EF1: Structural effects are enforced** | A `Grow`/`Shrink` call where a borrow is live is a compile error, not a lint warning (`ctrl.loops/LP14`, `mem.borrowing/W2`) |
 | **EF2: Computed during typechecking** | Effect signatures computed alongside types. `rask-effects` becomes a library called by the type checker, not a separate pipeline stage |
 | **EF3: Attached to function signatures** | `EffectSignature` stored in `TypedProgram` per function. MIR passes can query effects |
-| **EF4: Pool effects in MIR** | MIR operations carry effect annotations. `PoolInsert` has `Grow` effect, `PoolRemove` has `Shrink` effect. Frozen context checking happens at MIR level |
-| **EF5: IO/Async stay metadata** | IO and Async effects remain non-enforcing (`comp.effects/FX3`). Only pool mutation effects (`comp.advanced/EF1-EF6`) are enforced |
+| **EF4: Structural effects in MIR** | MIR operations carry effect annotations. `VecPush` has `Grow`, `RackDelete` has `Shrink`. The check happens at MIR level |
+| **EF5: IO/Async stay metadata** | IO and Async effects remain non-enforcing (`comp.effects/FX3`). Only structural effects (`comp.advanced/EF1`, EF3, EF4) are enforced |
 
-### Why Enforce Frozen
+### Why Enforce Structural Effects
 
-Frozen context violation is a correctness issue, not a style issue. If a function promises frozen (no structural mutation) and then mutates, handles that callers assumed were stable might be stale. This is the same category as type errors — the type system should catch it.
+A growable collection can move its buffer, and anything borrowing into that buffer is left pointing at freed memory. So "does this call grow or shrink?" decides whether a `with` block or a `for mutate` loop is sound — a correctness question, not a style one, and the same category as a type error.
 
-Making frozen enforced also unlocks optimization: in a frozen context, the compiler can skip all generation checks during iteration, not just coalesce them. That's a meaningful performance win for hot read paths.
+This used to be phrased around `using frozen Pool<T>`: a signature promised not to restructure the pool, and the compiler cashed that in by skipping generation checks during iteration. Pools are gone (rask-lang/rask#908) and so is the clause. What survived is the half that was never about pools — three unrelated rules need the same answer, and this is where they get it.
 
 ---
 
@@ -514,12 +513,12 @@ Source → Lexer → Parser → AST
   → Desugar (default args, syntax sugar, match desugaring)
   → Resolve (names → symbols)
   → Typecheck + Effects + Exhaustiveness → TypedProgram
-      (type inference, pattern exhaustiveness, frozen enforcement,
-       unsafe block validation, effect signatures, suggested fixes)
+      (type inference, pattern exhaustiveness, structural-effect
+       enforcement, unsafe block validation, effect signatures,
+       suggested fixes)
   → [Type cache — skip unchanged files + non-dependents (IX2, IX3)]
   → Ownership check (AST-level: moves, borrows, resource consumption)
   ← LSP check path stops here: diagnostics + completions + hover (IX1) →
-  → Hidden params desugaring (using clauses → explicit params, allocator contexts)
   → Monomorphize + Reflection metadata → MonoProgram
   → MIR Lowering (with Spans) → MirProgram (non-SSA)
       (ensure → EnsurePush/EnsurePop/CleanupReturn,
@@ -536,9 +535,7 @@ Source → Lexer → Parser → AST
       - Clone elision
       - Constant propagation
       - Copy propagation
-      - Handle typestate checking (compile errors for TS8)
       - Interval analysis + bounds check elimination
-      - Generation coalescing
       - Dead code elimination
   → De-SSA (phi → copies)
   → [Cache store — serialized MIR + object code]
@@ -562,7 +559,7 @@ The LSP path runs the frontend (lex → typecheck → ownership) and stops — i
 | **D: MIR CTFE** | MIR interpreter crate | Comptime correctness, reflection | ✅ Done — `rask-miri` crate (`lib.rs`, `memory.rs`, `eval.rs`, `intrinsics.rs`, `stdlib.rs`) |
 | **E: Debug info** | Spans on MIR, DWARF emission | Debugger support | ✅ Done — `rask-codegen/src/debug_info.rs` |
 | **F: Inlining** | Cross-function inliner with span preservation | Wider optimization window for per-function passes | ✅ Done — `transform/inline.rs`, `analysis/call_graph.rs` |
-| **G: Advanced analyses** | Handle typestate (TS1-TS8, MA1-MA5), frozen enforcement (EF1-EF6, FL1), interval analysis (IV1-IV7), bounds check elimination (BE1-BE4) | `comp.advanced` spec | ✅ Done — `transform/typestate.rs`, `transform/bounds_elim.rs`, `transform/gen_coalesce.rs`, `analysis/typestate.rs`, `analysis/intervals.rs` |
+| **G: Advanced analyses** | Interval analysis (IV1-IV7), bounds check elimination (BE1, BE2, BE4) | `comp.advanced` spec | ✅ Done — `transform/bounds_elim.rs`, `analysis/intervals.rs`. Handle typestate and frozen enforcement lived here too and went out with pools (rask-lang/rask#908) |
 | **H: Interactive compilation** | Frontend caching, LSP mode, suggested fixes, error restructuring | Modern dev experience | Partial — LSP server works (`rask-lsp`), frontend caching and suggested fixes not yet implemented |
 | **I: Parallel + Incremental** | Rayon, MIR serialization, MIR cache layer | Build performance | Partial — semantic hashing done (`rask-semantic-hash`), MIR serialization and parallel codegen not yet implemented |
 
@@ -575,7 +572,7 @@ Phase A is prerequisite for B, C, G. Phases D, E, F are independent of each othe
 | Spec | Change |
 |------|--------|
 | `comp.codegen/P2` | Superseded by IR3 (hybrid SSA). MIR is SSA during optimization |
-| `comp.effects/FX3` | Partially superseded by EF1. Pool effects enforced; IO/Async stay metadata |
+| `comp.effects/FX3` | Partially superseded by EF1. Structural effects enforced; IO/Async stay metadata |
 | `comp.clone-elision` | Unchanged, but implementation benefits from SSA form and liveness analysis |
 | `comp.string-refcount-elision` | Unchanged, but implemented via RC insertion pass using dataflow framework |
 | `comp.advanced` | Unchanged — dataflow framework provides the infrastructure it assumes |
@@ -592,7 +589,7 @@ Phase A is prerequisite for B, C, G. Phases D, E, F are independent of each othe
 
 **CT1 (MIR CTFE):** The AST interpreter already has 40+ files and its own stdlib implementation. It will inevitably diverge from compiled behavior as the language evolves. Every language that's done both (Zig, Rust) converged on "interpret the IR" because semantic fidelity matters more than implementation convenience.
 
-**EF1 (frozen enforced):** I went back and forth on this. Lint is less disruptive. But frozen is a semantic guarantee — callers depend on it for correctness (handles stay valid). Making it a lint means the guarantee is advisory, which means the optimizer can't rely on it. If frozen is enforced, the compiler can unconditionally skip generation checks in frozen contexts. That's a real performance win for the 80% of code that's read-heavy.
+**EF1 (structural effects enforced):** I went back and forth on this. Lint is less disruptive. But "can this call move the buffer?" is a soundness question — a `with` block holding a reference into a Vec that then reallocates is a use-after-free. Advisory isn't good enough for that. (The original argument here was about `using frozen Pool<T>` and generation checks; the clause went with the pool, the soundness half didn't.)
 
 **PC1 (per-function parallelism):** Rask's monomorphized functions are independent after cross-function analysis. This is the easiest parallelism win in a compiler — no shared mutable state, just map over functions. Rayon makes it trivial. The bottleneck will be the sequential frontend (lex → typecheck), but that's fast enough for now.
 
@@ -616,4 +613,3 @@ Phase A is prerequisite for B, C, G. Phases D, E, F are independent of each othe
 - [Ensure](../control/ensure.md) — deferred cleanup (`ctrl.ensure`)
 - [Resource Types](../memory/resource-types.md) — must-consume types (`mem.resources`)
 - [Closures](../memory/closures.md) — capture inference (`mem.closures`)
-- [Hidden Parameters](hidden-params.md) — using clause desugaring (`comp.hidden-params`)

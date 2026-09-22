@@ -1215,12 +1215,10 @@ mod tests {
     /// `Ordering` are registered by the checker rather than by a stub;
     /// `Reader`/`Writer` are stdlib traits in io.rk, and the stub registry only
     /// collects structs and enums; `Iterator` is special-cased in the resolver;
-    /// `Self` isn't a type name at all. Genuinely still missing: `InsertError`
-    /// belongs to the pool API (`mem.pools/PL8`), and `Error` is the `any Error`
-    /// catch-all that ER32 auto-boxing will register (#708).
+    /// `Self` isn't a type name at all. Genuinely still missing: `Error` is the
+    /// `any Error` catch-all that ER32 auto-boxing will register (#708).
     const PENDING_STUB_TYPES: &[&str] = &[
-        "Never", "Ordering", "Reader", "Writer", "Iterator", "Self",
-        "InsertError", "Error",
+        "Never", "Ordering", "Reader", "Writer", "Iterator", "Self", "Error",
     ];
 
     /// PascalCase type names a signature string mentions, with generic

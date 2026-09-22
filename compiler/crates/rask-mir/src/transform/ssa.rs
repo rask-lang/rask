@@ -375,18 +375,6 @@ fn rename_stmt(
                 }
             }
         }
-        MirStmtKind::PoolCheckedAccess { dst, pool, handle } => {
-            *pool = current_version(*pool, version_stack, num_orig_locals);
-            *handle = current_version(*handle, version_stack, num_orig_locals);
-            let orig = dst.0 as usize;
-            if orig < num_orig_locals {
-                *dst = new_version(
-                    LocalId(orig as u32), func, version_counter, version_stack,
-                    orig_local_info, num_orig_locals,
-                );
-                return Some(orig);
-            }
-        }
         MirStmtKind::ClosureCreate { dst, captures, .. } => {
             for cap in captures.iter_mut() {
                 cap.local_id = current_version(cap.local_id, version_stack, num_orig_locals);

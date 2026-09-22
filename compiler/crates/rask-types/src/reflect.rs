@@ -163,11 +163,10 @@ fn flatness(name: &str, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> Fla
     if is_flat_primitive(base) {
         return Flatness::Flat;
     }
-    // FL3: a reference into a container is never flat. `Link` is an address;
-    // `Handle` is index+generation and used to answer flat, which credited the
-    // tier with graphs it can't carry. Answering here also terminates the walk —
-    // these are generic, and the generic arm below would return Unknown.
-    if base == "Link" || base == "Handle" || base == "WeakHandle" {
+    // FL3: a reference into a container is never flat — a `Link` is an
+    // address. Answering here also terminates the walk: it is generic, and the
+    // generic arm below would return Unknown.
+    if base == "Link" {
         return Flatness::NotFlat;
     }
     if is_heap_backed(base) || name.starts_with("any ") || name.starts_with("func(") {
@@ -237,8 +236,6 @@ fn is_heap_backed(name: &str) -> bool {
                 | "Wide"
                 | "Map"
                 | "Set"
-                | "Pool"
-                | "Cell"
                 | "Shared"
                 | "Mutex"
                 | "Heap"

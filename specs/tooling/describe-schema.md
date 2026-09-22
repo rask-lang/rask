@@ -63,7 +63,7 @@
 |------|-------------|
 | **F1: Self mode** | `self_mode` is `"self"`, `"mutate"`, or `"take"`; absent for standalone functions |
 | **F2: Result split** | Return type split into `ok`/`err` for `T or E` types |
-| **F3: Optional fields** | `type_params`, `context`, `attrs`, `unsafe`, `comptime` omitted when absent/false |
+| **F3: Optional fields** | `type_params`, `attrs`, `unsafe`, `comptime` omitted when absent/false |
 
 ```json
 {
@@ -75,7 +75,6 @@
   "returns": { "ok": "()", "err": "ServerError" },
   "self_mode": "take",
   "type_params": ["T"],
-  "context": ["Pool<Connection>"],
   "attrs": ["inline"],
   "unsafe": false,
   "comptime": false
@@ -90,7 +89,6 @@
 | `returns` | `Returns` | Return type |
 | `self_mode` | `string?` | `"self"`, `"mutate"`, or `"take"` |
 | `type_params` | `string[]?` | Generic type parameter names |
-| `context` | `string[]?` | Context clause requirements (`with` clauses) |
 | `attrs` | `string[]?` | Attributes (`@inline`, `@entry`, etc.) |
 | `unsafe` | `bool?` | True if `unsafe func` |
 | `comptime` | `bool?` | True if `comptime func` |
@@ -264,9 +262,7 @@ public enum ServerError {
 }
 
 extend Server {
-    public func start(take self, config: Config) -> void or ServerError
-        using Pool<Connection>
-    {
+    public func start(take self, config: Config) -> void or ServerError {
         // ...
     }
 
@@ -301,8 +297,7 @@ extend Server {
           "public": true,
           "self_mode": "take",
           "params": [{ "name": "config", "type": "Config", "mode": "borrow" }],
-          "returns": { "ok": "()", "err": "ServerError" },
-          "context": ["Pool<Connection>"]
+          "returns": { "ok": "()", "err": "ServerError" }
         },
         {
           "name": "stop",
@@ -341,7 +336,7 @@ server (src/server.rk)
     public port: u16
     connections: Vec<Connection>
 
-    public func start(take self, config: Config) -> void or ServerError  using Pool<Connection>
+    public func start(take self, config: Config) -> void or ServerError
     public func stop(take self)
 
   public enum ServerError

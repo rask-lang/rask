@@ -78,11 +78,6 @@ func f15() {
     println("15")
 }
 
-@allow(idiom/too-many-contexts)
-func f16() {
-    println("16")
-}
-
 @allow(style/snake-case-func)
 func f17() {
     println("17")
@@ -114,7 +109,6 @@ func main() {
     f13()
     f14()
     f15()
-    f16()
     f17()
     f18()
     f19()

@@ -47,15 +47,6 @@ pub fn cmd_typecheck(path: &str, format: Format, verbose: bool) {
 fn typecheck_single(path: &str, format: Format, multi: bool, verbose: bool) {
     let mut result = crate::run_check_or_exit(path, format);
 
-    // CC8: run the hidden-params pass's context resolution so `rask check`
-    // reports ambiguity the same as `rask compile`. Only diagnostics matter
-    // here — the rewritten decls are discarded after the type dump.
-    let hp_diags = rask_mir::hidden_params::desugar_hidden_params_with_types(
-        &mut result.decls,
-        Some(&result.typed),
-    );
-    super::codegen::exit_on_context_errors(&hp_diags, &result.source_files);
-
     if format == Format::Human {
         if multi {
             println!("{} {} {}", "===".dimmed(), output::file_path(path), "===".dimmed());
