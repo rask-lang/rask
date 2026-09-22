@@ -1289,6 +1289,21 @@ impl Interpreter {
                 // "3.5" came back as an error (#480).
                 let method = self.parse_target_method(method, type_args, expr.id);
 
+                // OR1: a pair the checker resolved to a conformance goes
+                // straight to that body. Going through `call_method` would hand
+                // `2.0 * meters` to the float layer, which answers "expected
+                // float, got struct" — the receiver alone can't tell the two
+                // apart, and the right operand is what decides.
+                if let Some(target) = self.operator_targets.get(&expr.id).cloned() {
+                    let outer = self.failed_call_span.take();
+                    let result =
+                        self.call_rask_method(&target.recv, &target.method, receiver, arg_vals);
+                    let inner = self.failed_call_span.take();
+                    self.failed_call_span = outer;
+                    return result
+                        .map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)));
+                }
+
                 // Blame the line the callee failed on, not this call. Taken
                 // and restored around the call so an error swallowed inside it
                 // can't leave a stale span for something later (#1110).

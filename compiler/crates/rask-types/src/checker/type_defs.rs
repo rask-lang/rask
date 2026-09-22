@@ -370,6 +370,14 @@ pub struct TypedProgram {
     /// expression's NodeId. The single source of truth for dispatch — lowering
     /// and the hidden-param pass read this instead of mangling type names.
     pub call_targets: HashMap<NodeId, Callee>,
+    /// OR1: operator calls the pair resolved to a conformance, keyed by the
+    /// MethodCall's NodeId.
+    ///
+    /// `a * b` is a machine instruction on some pairs and a call on others, and
+    /// on a primitive receiver the right operand is what decides — so the
+    /// backends read the answer here rather than each deciding again from the
+    /// receiver alone.
+    pub operator_targets: HashMap<NodeId, super::operators::OperatorTarget>,
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     pub trait_coercions: HashMap<NodeId, String>,
     /// ER31a: `try` sites whose error is wrapped in a variant of the enclosing

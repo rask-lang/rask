@@ -25,11 +25,13 @@ mod check_expr;
 mod unify;
 mod generics;
 mod resolve;
+pub mod operators;
 mod validate;
 pub(crate) mod resolved_types;
 
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TraitTypeParam, TraitAssocType, TypeBinding, TypedProgram, receiver_name};
 pub use type_table::TypeTable;
+pub use operators::{operator_trait, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext};
 pub use parse_type::parse_type_string;
@@ -236,6 +238,8 @@ pub struct TypeChecker {
     /// Free calls record here immediately; method calls record when their
     /// `HasMethod` constraint resolves.
     pub(super) call_targets: HashMap<NodeId, type_defs::Callee>,
+    /// OR1: operator calls a conformance answered, keyed by the call's NodeId.
+    pub(super) operator_targets: HashMap<NodeId, operators::OperatorTarget>,
     /// SymbolId → type param names for generic functions.
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
@@ -500,6 +504,7 @@ impl TypeChecker {
             try_block_errors: Vec::new(),
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
+            operator_targets: HashMap::new(),
             fn_type_params: HashMap::new(),
             fn_type_param_bounds: HashMap::new(),
             annotation_types: std::collections::HashSet::new(),
@@ -921,6 +926,7 @@ impl TypeChecker {
             node_types,
             call_type_args,
             call_targets,
+            operator_targets: std::mem::take(&mut self.operator_targets),
             trait_coercions,
             error_wraps,
             fallback_keeps_shape,

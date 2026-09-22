@@ -4839,7 +4839,9 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        if let Some(r) = self.try_lower_operator_method(object, method, args, &obj_op, &obj_ty)? {
+        if let Some(r) =
+            self.try_lower_operator_method(expr.id, object, method, args, &obj_op, &obj_ty)?
+        {
             return Ok(r);
         }
 
@@ -7289,12 +7291,20 @@ impl<'a> MirLowerer<'a> {
     /// call (strings, SIMD) or has a user operator overload.
     fn try_lower_operator_method(
         &mut self,
+        call: rask_ast::NodeId,
         object: &Expr,
         method: &String,
         args: &[CallArg],
         obj_op: &MirOperand,
         obj_ty: &MirType,
     ) -> Result<Option<TypedOperand>, LoweringError> {
+        // OR1: a pair the checker resolved to a conformance is a call, whatever
+        // the operands look like here. `2.0 * meters` has an `f64` receiver and
+        // is not a float multiply; only the right operand says so, and only the
+        // checker looked at it.
+        if self.ctx.operator_targets.contains_key(&call) {
+            return Ok(None);
+        }
         // Skip native binop for types that need C runtime calls (strings,
         // SIMD vectors) or special method dispatch (raw pointers:
         // ptr.add != arithmetic add).

@@ -328,6 +328,7 @@ impl<'a> MirContext<'a> {
             error_wraps: &typed.error_wraps,
             fallback_keeps_shape: &typed.fallback_keeps_shape,
             try_chain_placement: &typed.try_chain_placement,
+            operator_targets: &typed.operator_targets,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
             comptime_globals: empty::comptime_globals(),
@@ -478,6 +479,14 @@ pub struct MirContext<'a> {
     /// dispatched on, so lowering reads it instead of guessing a prefix from
     /// the receiver's syntactic shape.
     pub call_targets: &'a HashMap<NodeId, rask_types::Callee>,
+    /// OR1: operator calls the checker resolved to a conformance.
+    ///
+    /// `a * b` is a machine instruction on some pairs and a call on others, and
+    /// on a primitive receiver it's the *right* operand that decides. Lowering
+    /// can't re-derive that from the receiver's MIR type — an `f64` receiver
+    /// looks like plain arithmetic either way — so it reads what the checker
+    /// settled on.
+    pub operator_targets: &'a HashMap<NodeId, rask_types::OperatorTarget>,
     /// Type names marked with `@resource` — used for resource tracking ops (C1/C2).
     pub resource_types: &'a std::collections::HashSet<String>,
     /// Nominal newtype name → the type it wraps, as a type string.
@@ -546,6 +555,9 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_TARGETS: std::sync::LazyLock<HashMap<NodeId, rask_types::Callee>> =
             std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_OPERATOR_TARGETS:
+            std::sync::LazyLock<HashMap<NodeId, rask_types::OperatorTarget>> =
+            std::sync::LazyLock::new(HashMap::new);
         static EMPTY_RESOURCE_TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, String>> =
@@ -574,6 +586,7 @@ impl<'a> MirContext<'a> {
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
+            operator_targets: &EMPTY_OPERATOR_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
             nominal_underlying: &EMPTY_NOMINAL,
             const_slot_types: std::cell::RefCell::new(HashMap::new()),
@@ -1557,6 +1570,12 @@ impl<'a> MirContext<'a> {
     }
 
     pub fn recorded_prefix(&self, node: NodeId) -> Option<String> {
+        // OR1: an operator the pair resolved names its own receiver. Reading it
+        // off the MIR type instead would collapse `f32` onto `f64` — the width
+        // collapse the builtin prefixes want and a conformance symbol doesn't.
+        if let Some(target) = self.operator_targets.get(&node) {
+            return Some(target.recv.clone());
+        }
         match self.call_targets.get(&node)? {
             rask_types::Callee::Method { recv, .. } => Self::type_prefix(recv, self.type_names)
                 .or_else(|| builtin_method_prefix(recv).map(str::to_string)),

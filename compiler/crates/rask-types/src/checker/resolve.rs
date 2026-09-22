@@ -736,6 +736,16 @@ impl TypeChecker {
             }
         }
 
+        // OR1: the ordered pair gets first refusal. A conformance registered
+        // for `(receiver, argument)` decides what runs and what the result type
+        // is; anything else falls through to the primitive and stdlib paths
+        // below, which is where `i64 + i64` is answered.
+        if let Some(resolved) =
+            self.resolve_operator_pair(&ty, &method, &args, &ret, span, call_node)
+        {
+            return resolved;
+        }
+
         match &ty {
             // Source error already reported — suppress cascading method errors
             Type::Error => Ok(false),

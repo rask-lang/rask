@@ -465,15 +465,22 @@ impl TypeChecker {
     /// Resolving the call from the argument's type is operator resolution's
     /// job (`type.operator-resolution/OR1`), not a method lookup's. Until that
     /// exists this pair is rejected where it is written.
+    /// OR6: the table entry an `extend` block's methods and conformances go
+    /// under. A struct or enum answers with its own id, a primitive with its
+    /// stand-in — `extend f64 with Mul<Meters>` has to land somewhere.
+    pub(super) fn impl_target_id(&self, target_ty: &str) -> Option<crate::types::TypeId> {
+        let base = target_ty.split('<').next().unwrap_or(target_ty).trim();
+        self.types
+            .get_type_id(base)
+            .or_else(|| self.types.primitive_id(base))
+    }
+
     fn check_overlapping_conformances(&mut self, i: &ImplDecl, span: rask_ast::Span) {
         // `scoped extend` is MN4's answer to exactly this and would be the
         // escape hatch, but nothing outside the parser reads the flag yet — a
         // scoped block's methods still land in the inherent namespace and
         // segfault the same way. Don't offer a door that isn't there.
-        let Some(type_id) = self
-            .types
-            .get_type_id(i.target_ty.split('<').next().unwrap_or(&i.target_ty))
-        else {
+        let Some(type_id) = self.impl_target_id(&i.target_ty) else {
             return;
         };
         let self_ty = match self.resolve_impl_self_type(&i.target_ty) {
@@ -634,7 +641,7 @@ impl TypeChecker {
 
     pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId, span: rask_ast::Span) {
         let base_name = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
-        let type_id = match self.types.get_type_id(base_name) {
+        let type_id = match self.impl_target_id(&i.target_ty) {
             Some(id) => id,
             None => return,
         };
@@ -773,7 +780,8 @@ impl TypeChecker {
             match def {
                 TypeDef::Struct { methods, .. }
                 | TypeDef::Enum { methods, .. }
-                | TypeDef::NominalAlias { methods, .. } => {
+                | TypeDef::NominalAlias { methods, .. }
+                | TypeDef::Primitive { methods, .. } => {
                     methods.extend(new_methods);
                 }
                 _ => {}
