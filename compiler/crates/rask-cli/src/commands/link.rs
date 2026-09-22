@@ -6,6 +6,8 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process;
 
+use crate::output;
+
 /// Sources that require pthreads (Linux, macOS — not Windows/bare-metal).
 const PTHREAD_SOURCES: &[&str] = &[
     "thread.c",
@@ -67,6 +69,12 @@ pub struct LinkOptions {
     pub objects: Vec<String>,
     /// Library search paths (-L flags)
     pub search_paths: Vec<String>,
+    /// Whether the binary outlives the command that asked for it.
+    ///
+    /// `rask compile` and `rask build` hand one over; `rask run` and `rask
+    /// test` run it and delete it. Only the first kind is worth collecting
+    /// debug symbols for — see the `dsymutil` call in `link_executable_with`.
+    pub keeps_binary: bool,
 }
 
 /// Platform-specific linking configuration derived from a target triple.
@@ -75,6 +83,8 @@ struct TargetConfig {
     cc_args: Vec<String>,
     sources: Vec<String>,
     link_flags: Vec<String>,
+    /// Mach-O output, which keeps its debug info differently from ELF.
+    macho: bool,
 }
 
 impl TargetConfig {
@@ -150,7 +160,7 @@ impl TargetConfig {
             _ => vec![],
         };
 
-        Ok(TargetConfig { cc, cc_args, sources, link_flags })
+        Ok(TargetConfig { cc, cc_args, sources, link_flags, macho: target_os == "macos" })
     }
 }
 
@@ -490,6 +500,17 @@ pub fn link_executable_with(
         .output()
         .map_err(|e| format!("failed to run {}: {}", config.cc, e))?;
 
+    // A Mach-O link doesn't copy DWARF into the executable the way ELF does.
+    // ld64 writes a debug map instead — one stab per object file, naming where
+    // that object's debug info lives — and lldb goes back to the objects at
+    // debug time. The `.o` is deleted just below, so the map points at
+    // nothing: #1184 got the sections named the Mach-O way and the info still
+    // wasn't reachable from a debugger. `dsymutil` is the step that copies it
+    // out of the objects into a `.dSYM` bundle while they're still there.
+    if out.status.success() && config.macho && !release && opts.keeps_binary {
+        write_dsym(bin_path);
+    }
+
     // Always clean up the intermediate .o file
     let _ = std::fs::remove_file(obj_path);
 
@@ -515,6 +536,31 @@ pub fn link_executable_with(
     }
 
     Ok(())
+}
+
+/// Collect a Mach-O binary's debug info into `<bin>.dSYM`.
+///
+/// A warning, not an error. `dsymutil` comes with the LLVM or Xcode tools
+/// rather than with Rask, and a binary that runs but can't be stepped through
+/// is worth keeping — failing the link over it would turn a missing debugger
+/// feature into a build that produces nothing at all.
+fn write_dsym(bin_path: &str) {
+    let note = "the program links and runs, but a debugger will show no source lines";
+    match process::Command::new("dsymutil").arg(bin_path).output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => eprintln!(
+            "{}: dsymutil failed: {}\n       {}",
+            output::warning_label(),
+            String::from_utf8_lossy(&out.stderr).trim(),
+            note,
+        ),
+        Err(e) => eprintln!(
+            "{}: could not run dsymutil ({})\n       {}\n       It comes with the LLVM or Xcode command-line tools.",
+            output::warning_label(),
+            e,
+            note,
+        ),
+    }
 }
 
 /// Explain an undefined `rask_*` symbol, which almost always means the binary

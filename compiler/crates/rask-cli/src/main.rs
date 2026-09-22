@@ -335,7 +335,7 @@ fn main() {
             let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
-            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![] };
+            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![], keeps_binary: false };
             let file = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj", "--profile", "--target"])
                 .unwrap_or(".");
 
@@ -384,7 +384,7 @@ fn main() {
             let target = extract_flag_value(&cmd_args, "--target");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
-            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![] };
+            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![], keeps_binary: true };
             let dump_mir = cmd_args.contains(&"--dump-mir");
             let file_arg = find_positional_arg(&cmd_args, 2, &["-o", "--link-lib", "--link-obj", "--target"]);
             let file = match file_arg {

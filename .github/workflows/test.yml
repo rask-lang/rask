@@ -8,8 +8,9 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Seven jobs that all start at once. Five of them run the gates that need a rask
-# binary, one runs cargo test, one builds and runs on Darwin.
+# Eight jobs that all start at once, on nine runners — gates-memcheck is a
+# two-way matrix. Six of them run the gates that need a rask binary, one runs
+# cargo test, one builds and runs on Darwin.
 #
 # The shape is "everything in parallel, nothing waits". No job needs another, so
 # the run takes as long as its slowest job and no longer. Each gate job builds
@@ -18,11 +19,17 @@ on:
 # one build to the others as an artifact would be tidier and about 45s slower,
 # because then every gate waits for that build to finish before it starts.
 #
-# How the gates are split: the differential harness is the long pole at ~1m35
-# and can't be cut, so it gets a job to itself and the other three are packed to
-# match it. The matrix is the other one that can't be packed — it compiles 267
-# generated programs natively — so it has a job too. If one grows past ~2m, move
-# something out of it rather than letting the whole run stretch.
+# How the gates are split: the differential harness can't be cut, so it gets a
+# job to itself and the cheap gates are packed to match it. The matrix is the
+# other one that can't be packed — it compiles 267 generated programs natively
+# — so it has a job too. If one grows past ~2m, move something out of it rather
+# than letting the whole run stretch.
+#
+# That last rule went unenforced and gates-memory reached 4m24 while every other
+# job finished inside 3m15 — one job setting the pace for the whole run. It was
+# valgrind: 159s of those 261s, against 48s for the leak gate and 7s for the
+# tutorials. So memcheck moved to gates-memcheck, in two shards, and the three
+# cheap gates stayed behind. Read the rule as load-bearing, not advisory.
 #
 # Split them further whenever it helps — but leave the `gates` job alone. It is
 # the name branch protection requires, and the only one here that has to stay
@@ -154,7 +161,7 @@ jobs:
 
   # ── What the runtime hands back, and what a learner reads.
   gates-memory:
-    name: gates-memory (leaks, memory errors, tutorials)
+    name: gates-memory (leaks, tutorials)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -193,21 +200,6 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/leak_gate.sh
 
-    - name: Install valgrind
-      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: sudo apt-get update && sudo apt-get install -y valgrind
-
-    # The leak gate above measures one direction of "who frees this": memory
-    # nobody gave back. The other direction — giving it back too early, reading
-    # a field nobody wrote — had no instrument at all, in any gate or here, and
-    # everything found in it so far was found by a crash. Within a minute of
-    # first being pointed at the suite this found a pool built field by field
-    # that had grown two fields nobody initialised, which the leak gate, twelve
-    # other gates, this workflow and a 30x poisoned-stack run all called green.
-    - name: Memory error gate (valgrind)
-      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: tests/memcheck_gate.sh
-
     # The tutorial answer key. `tutorials/learn-rask/solutions/` was referenced
     # by nothing at all, and seven of nineteen solutions didn't compile (#1030)
     # — they'd been broken for a while, since the same seven fail on the commit
@@ -216,6 +208,70 @@ jobs:
     - name: Tutorial solutions
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/tutorials_gate.sh
+
+  # ── valgrind, on its own runners.
+  #
+  # The leak gate measures one direction of "who frees this": memory nobody gave
+  # back. The other direction — giving it back too early, reading a field nobody
+  # wrote — had no instrument at all, and everything found in it so far was
+  # found by a crash. Within a minute of first being pointed at the suite this
+  # found a struct built field by field that had grown two fields nobody
+  # initialised, which the leak gate, twelve other gates and a 30x
+  # poisoned-stack run all called green.
+  #
+  # Why it is a job of its own, in two shards: it was 159s of the 261s
+  # gates-memory job, which made that job the long pole of the whole workflow at
+  # 4m24 — everything else finishes inside 3m15. valgrind is a ~30x slowdown and
+  # the gate already fans out across every core, so the only lever left is more
+  # machines. Two shards of ~273 files each, and gates-memory drops to the pack.
+  #
+  # Raise `shard` to three if the suite grows enough to push a leg past ~2m30;
+  # the gate reads the count from the matrix, so that is the only edit needed.
+  gates-memcheck:
+    name: gates-memcheck (valgrind, shard ${{ matrix.shard }}/${{ strategy.job-total }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-gates-
+    - name: Build compiler (release)
+      id: compiler
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
+    - name: Install valgrind
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: sudo apt-get update && sudo apt-get install -y valgrind
+
+    - name: Memory error gate (valgrind)
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      env:
+        MEMCHECK_SHARDS: ${{ strategy.job-total }}
+        MEMCHECK_SHARD: ${{ matrix.shard }}
+      run: tests/memcheck_gate.sh
 
   # ── Who owns what crosses a call, and whether the programs we show people
   # still produce the output we claim.
@@ -465,7 +521,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: ${{ always() }}
-    needs: [gates-suite, gates-matrix, gates-memory, gates-names, gates-surface]
+    needs: [gates-suite, gates-matrix, gates-memory, gates-memcheck, gates-names, gates-surface]
     steps:
     - name: Every gate passed
       env:
@@ -473,6 +529,7 @@ jobs:
           gates-suite=${{ needs.gates-suite.result }}
           gates-matrix=${{ needs.gates-matrix.result }}
           gates-memory=${{ needs.gates-memory.result }}
+          gates-memcheck=${{ needs.gates-memcheck.result }}
           gates-names=${{ needs.gates-names.result }}
           gates-surface=${{ needs.gates-surface.result }}
       run: |
@@ -632,6 +689,26 @@ jobs:
         printf 'func main() {\n    println("hello from darwin")\n}\n' > /tmp/hello.rk
         out=$(compiler/target/release/rask run /tmp/hello.rk)
         test "$out" = "hello from darwin" || { echo "got: $out"; exit 1; }
+
+    # Linking was never the finish line for #1184. ld64 doesn't copy DWARF into
+    # the executable — it writes a debug map pointing back at the object files,
+    # and `rask` deletes its object as soon as the link returns, so a binary
+    # that links can still show a debugger nothing. `dsymutil` runs at the end
+    # of a Mach-O link now, and this checks the bundle it produces actually
+    # carries the program's source file and its line table.
+    - name: Debug info survives the link
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: |
+        set -eu
+        printf 'func main() {\n    println("dwarf")\n}\n' > /tmp/dwarf.rk
+        compiler/target/release/rask compile /tmp/dwarf.rk -o /tmp/dwarfbin
+        test -d /tmp/dwarfbin.dSYM || { echo "no .dSYM next to the binary"; exit 1; }
+        dwarfdump --debug-info /tmp/dwarfbin.dSYM > /tmp/dwarf-info.txt
+        grep -q 'dwarf\.rk' /tmp/dwarf-info.txt || {
+          echo "the .dSYM names no source file:"; cat /tmp/dwarf-info.txt; exit 1; }
+        dwarfdump --debug-line /tmp/dwarfbin.dSYM > /tmp/dwarf-line.txt
+        grep -q 'dwarf\.rk' /tmp/dwarf-line.txt || {
+          echo "the .dSYM has no line table:"; cat /tmp/dwarf-line.txt; exit 1; }
 
     - name: Run suite files natively
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}

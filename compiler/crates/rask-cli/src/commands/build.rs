@@ -438,7 +438,9 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
 
     let host_triple = format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS);
     let gen_dir = root.join(".rk-gen");
-    let mut link_opts = super::link::LinkOptions::default();
+    // A build leaves its binary in `build/<profile>/`, so it's worth the debug
+    // symbols that a `rask run` on a single file isn't.
+    let mut link_opts = super::link::LinkOptions { keeps_binary: true, ..Default::default() };
 
     if has_build_fn {
         let build_cache_dir = root.join("build").join(".build-cache");

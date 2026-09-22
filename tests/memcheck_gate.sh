@@ -84,6 +84,41 @@ WORK="$(mktemp -d)"
 BIN="$(mktemp -d)"
 trap 'rm -rf "$WORK" "$BIN"' EXIT
 
+# Splitting the suite across runners.
+#
+# This is the slowest thing in CI — 159s of the 261s gates-memory job, which
+# made that job the long pole of the whole workflow at 4m24. valgrind is
+# already fanned out across every core below, so the only lever left is more
+# machines. `MEMCHECK_SHARDS=2 MEMCHECK_SHARD=1|2` runs half each.
+#
+# Stride, not contiguous blocks. The expensive files cluster — anything that
+# spawns runs real threads under memcheck — so cutting the list in two down the
+# middle would hand one shard most of them and leave the split doing nothing.
+#
+# Each shard reads the whole of known_memcheck.txt but only judges its own
+# files, so a known-bad file that lives in the other shard is simply not this
+# shard's business. Both have to pass; the workflow's `needs:` waits on the
+# matrix as a whole.
+SHARDS="${MEMCHECK_SHARDS:-1}"
+SHARD="${MEMCHECK_SHARD:-1}"
+if [ "$SHARDS" -lt 1 ] || [ "$SHARD" -lt 1 ] || [ "$SHARD" -gt "$SHARDS" ]; then
+  echo "error: shard $SHARD of $SHARDS is not a shard that exists" >&2
+  exit 1
+fi
+
+ALL=("$SUITE"/*.rk)
+FILES=()
+for i in "${!ALL[@]}"; do
+  [ "$(( i % SHARDS ))" -eq "$(( SHARD - 1 ))" ] && FILES+=("${ALL[i]}")
+done
+
+# A shard that selected nothing would print a clean summary and exit 0, which
+# is the one failure a gate must never have.
+if [ "${#FILES[@]}" -eq 0 ]; then
+  echo "error: shard $SHARD of $SHARDS matched no suite files — this gate would pass by checking nothing" >&2
+  exit 1
+fi
+
 # Build the test binary, then run *that* under memcheck.
 #
 # Not `rask compile`: most suite files are `test` blocks with no `main`, so
@@ -130,9 +165,9 @@ check_one() {
 }
 export RASK WORK BIN
 
-fan_out check_one "$SUITE"/*.rk
+fan_out check_one "${FILES[@]}"
 
-for file in "$SUITE"/*.rk; do
+for file in "${FILES[@]}"; do
   name="$(basename "$file" .rk)"
   if [ ! -f "$WORK/$name.result" ]; then
     broken=$((broken + 1))
@@ -184,7 +219,9 @@ for f in "${fixed[@]}"; do echo "NO LONGER TRIPS MEMCHECK (delete its line from 
 for f in "${crashed[@]}"; do echo "DIED WITH NOTHING FROM MEMCHECK: $f"; done
 for f in "${unran[@]}"; do echo "NOT MEASURED: $f"; done
 echo "──────────────────────────────────────────────────"
-echo "memcheck gate: $green clean, $expected known-bad, $bad new," \
+what="memcheck gate"
+[ "$SHARDS" -gt 1 ] && what="memcheck gate (shard $SHARD of $SHARDS)"
+echo "$what: $green clean, $expected known-bad, $bad new," \
      "$died died with memcheck silent, $broken not measured"
 
 [ "$bad" -eq 0 ] && [ "${#fixed[@]}" -eq 0 ] || exit 1

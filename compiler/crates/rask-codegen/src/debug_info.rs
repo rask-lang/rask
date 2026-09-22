@@ -467,7 +467,12 @@ pub fn emit_dwarf(
     let root_id = dwarf.unit.root();
     {
         let root = dwarf.unit.get_mut(root_id);
-        root.set(DW_AT_producer, AttributeValue::StringRef(dwarf.strings.add("rask 0.1.0")));
+        // From Cargo, not a literal. A hand-written copy of the version drifts:
+        // this said "rask 0.1.0" in a 0.3.0 compiler, so every debug binary
+        // told a debugger it came out of something two minor versions old
+        // (#1322).
+        let producer = format!("rask {}", env!("CARGO_PKG_VERSION"));
+        root.set(DW_AT_producer, AttributeValue::StringRef(dwarf.strings.add(producer.as_bytes())));
         root.set(DW_AT_language, AttributeValue::Language(DW_LANG_C99));
         root.set(DW_AT_name, AttributeValue::StringRef(dwarf.strings.add(source_file)));
         root.set(DW_AT_comp_dir, AttributeValue::StringRef(dwarf.strings.add(comp_dir.as_bytes())));
