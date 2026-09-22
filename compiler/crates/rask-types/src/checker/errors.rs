@@ -1167,6 +1167,19 @@ pub enum TypeError {
         declared_at: Span,
     },
 
+    /// type.generics/XC3, cross-package half: the code here can see two
+    /// packages' declarations of the same conformance, and needs one of them.
+    /// Reported at the use rather than at either declaration — neither is wrong
+    /// on its own, and a collision nobody uses costs nothing (XC4).
+    #[error("two conformances of `{ty}` to `{trait_name}` are in scope")]
+    AmbiguousConformance {
+        ty: String,
+        trait_name: String,
+        /// Each declaring package and where its block is, in declaration order.
+        sites: Vec<(String, Span)>,
+        span: Span,
+    },
+
     /// ctrl.comptime/CT53: `value.(expr)` is rewritten to a direct field access
     /// while compiling, so the name has to be one the compiler knows. A runtime
     /// string has nothing to rewrite to.
@@ -1382,6 +1395,7 @@ impl TypeError {
             | DynamicFieldNameNotComptime { .. }
             | DuplicateConformance { .. }
             | ForeignCoreConformance { .. }
+            | AmbiguousConformance { .. }
             | SerializationOptedOut { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }

@@ -586,6 +586,12 @@ impl TypeChecker {
             }
         }
 
+        // XC3: a call to a method two visible conformances both supply picks a
+        // body just as silently as a bound does, so the call is a use site too.
+        if !matches!(ty, Type::Var(_) | Type::Error) {
+            self.check_method_conformance_ambiguity(&ty, &method, span);
+        }
+
         // A stdlib signature with nothing behind it. Caught here, where every
         // receiver passes, so the user sees it at their call rather than as
         // `Function not found: Vec_reserve` out of codegen or a runtime error

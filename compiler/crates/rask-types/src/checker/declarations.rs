@@ -647,6 +647,109 @@ impl TypeChecker {
         self.resolved.file_packages.get(&span.file_id).map(|s| s.as_str())
     }
 
+    /// XC3: report a conformance that two packages declare, at a place that
+    /// needs it.
+    ///
+    /// Every declaration counts, not just the ones this package can see, which
+    /// is not what XC4 says. XC4 wants `liba` to keep using its own `Labeled`
+    /// for `Doc` while the program linking it also pulls in `libb`'s — and
+    /// nothing below the checker can tell those two apart yet. Both blocks'
+    /// `label` land in one method table and lower to one `Doc_label`, so
+    /// `liba`'s own call gets whichever block was read last: measured, `liba`
+    /// printed `b:7`. Until a conformance's methods carry the package that
+    /// declared them (#1326), filtering by visibility would trade a loud error
+    /// for a silently wrong answer, which is the thing this whole section
+    /// exists to prevent.
+    ///
+    /// Reported once per (type, trait, using package): the same pair turns up at
+    /// every bound and every call that needs it, and one error is the news.
+    pub(super) fn check_conformance_ambiguity(
+        &mut self,
+        type_id: crate::types::TypeId,
+        trait_key: &str,
+        span: rask_ast::Span,
+    ) {
+        let here = self.package_of(span).map(str::to_string);
+        let visible: Vec<(String, rask_ast::Span)> = self
+            .types
+            .conformance_sites(type_id, trait_key)
+            .iter()
+            .filter(|s| !s.from_stdlib)
+            .map(|s| (s.package.clone().unwrap_or_default(), s.span))
+            .collect();
+        if visible.len() < 2 {
+            return;
+        }
+        let once = (type_id, trait_key.to_string(), here.unwrap_or_default());
+        if !self.reported_ambiguous_conformances.insert(once) {
+            return;
+        }
+        self.errors.push(TypeError::AmbiguousConformance {
+            ty: self.types.type_name(type_id),
+            trait_name: TypeTable::conformance_display(trait_key),
+            sites: visible,
+            span,
+        });
+    }
+
+    /// XC3: the conformance this bound needs, when the code here can see two of
+    /// them. Cheap to call — the set it reads is empty unless some conformance
+    /// really was declared twice.
+    pub(super) fn check_bound_conformance_ambiguity(
+        &mut self,
+        ty: &Type,
+        bound: &str,
+        span: rask_ast::Span,
+    ) {
+        if self.types.ambiguous_conformances.is_empty() {
+            return;
+        }
+        let Some(type_id) = self.named_type_id(ty) else { return };
+        for key in self.types.ambiguous_conformance_keys(type_id) {
+            if TypeTable::conformance_key(bound) == TypeTable::conformance_key(&key) {
+                self.check_conformance_ambiguity(type_id, &key, span);
+            }
+        }
+    }
+
+    /// XC3: the same, for a method call that a colliding conformance supplies.
+    /// `d.label()` picks a body just as silently as a bound does.
+    pub(super) fn check_method_conformance_ambiguity(
+        &mut self,
+        ty: &Type,
+        method: &str,
+        span: rask_ast::Span,
+    ) {
+        if self.types.ambiguous_conformances.is_empty() {
+            return;
+        }
+        let Some(type_id) = self.named_type_id(ty) else { return };
+        if !self.types.has_ambiguous_conformance(type_id) {
+            return;
+        }
+        for key in self.types.ambiguous_conformance_keys(type_id) {
+            let base = key.split('<').next().unwrap_or(&key).to_string();
+            let declares = matches!(
+                self.types.get_type_id(&base).and_then(|id| self.types.get(id)),
+                Some(TypeDef::Trait { methods, .. })
+                    if methods.iter().any(|m| super::type_defs::method_base(&m.name) == method)
+            );
+            if declares {
+                self.check_conformance_ambiguity(type_id, &key, span);
+            }
+        }
+    }
+
+    /// The TypeId a named type stands for, if it is one.
+    fn named_type_id(&self, ty: &Type) -> Option<crate::types::TypeId> {
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => Some(*id),
+            Type::UnresolvedNamed(name) => self.types.get_type_id(name),
+            Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
+            _ => None,
+        }
+    }
+
     /// XC1: the traits a type's owner alone may declare, and whether this one
     /// is an encoding marker.
     ///
@@ -703,18 +806,20 @@ impl TypeChecker {
                     }
                 }
             }
-            // XC3: two blocks claiming the same pair. Reported here rather than
-            // where the conformance is used, because both are in this package —
-            // the cross-package half needs the use site and the declaring
-            // package's name, neither of which the checker has yet (#1299).
+            // XC3: two blocks in *one* package claiming the same pair, reported
+            // here because one author owns both. Two packages is the other
+            // half: both declarations are recorded and the clash is reported
+            // where the conformance is needed, so a collision nobody uses
+            // costs nothing.
             //
             // Keyed on the applied trait (GT/AT), so two different applied
             // forms are two conformances rather than one declared twice. They
             // can still collide on a method name — that's MN3's E0889, and
             // keying this way is what keeps it from being reported twice.
+            let here = self.package_of(span).map(str::to_string);
             let first =
                 self.types
-                    .record_conformance_span(type_id, trait_name, decl_id, span);
+                    .record_conformance_span(type_id, trait_name, decl_id, span, here);
             if let Some(first) = first {
                 self.errors.push(TypeError::DuplicateConformance {
                     ty: base_name.to_string(),

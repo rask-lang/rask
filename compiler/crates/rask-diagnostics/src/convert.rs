@@ -587,6 +587,45 @@ impl ToDiagnostic for rask_types::TypeError {
                 base.with_code("E0409")
             }
 
+            AmbiguousConformance { ty, trait_name, sites, span } => {
+                let mut d = Diagnostic::error(format!(
+                    "two conformances of `{}` to `{}` are in scope", ty, trait_name
+                ))
+                .with_code("E0410")
+                .with_primary(*span, format!(
+                    "this needs `{}: {}`, and {} packages declare it",
+                    ty, trait_name, sites.len()
+                ));
+                for (pkg, at) in sites {
+                    d = d.with_secondary(*at, if pkg.is_empty() {
+                        "declared here".to_string()
+                    } else {
+                        format!("declared by `{}`", pkg)
+                    });
+                }
+                let names: Vec<String> =
+                    sites.iter().map(|(p, _)| format!("`{}`", p)).collect();
+                d.with_fix(format!(
+                    "give the collision a type of its own, and say what it does:\n\
+                     type My{0} = {1}\n\
+                     extend My{0} with {2} {{ … }}\n\
+                     To keep one of the two implementations instead, move the code that \
+                     needs it into a package that depends on {3}, not both.",
+                    ty.rsplit('.').next().unwrap_or(ty),
+                    ty,
+                    trait_name,
+                    names.join(" or on ")
+                ))
+                .with_why(format!(
+                    "Picking one would come down to link order. Which `{}` methods `{}` \
+                     gets has to be something the source says (type.generics/XC3). Neither \
+                     declaration is wrong on its own — only code that can see both has a \
+                     problem, which is why this is reported here and not at either block \
+                     (XC4).",
+                    trait_name, ty
+                ))
+            }
+
             Undefined(name) => Diagnostic::error(format!("undefined type: `{}`", name))
                 .with_code("E0309")
                 .with_primary(Span::new(0, 0), "type not found")

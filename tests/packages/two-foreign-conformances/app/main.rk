@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
 // Two dependencies each conform `traitpkg.Doc` to `traitpkg.Labeled`. Neither
-// is wrong on its own; the program that pulls in both is where the collision
-// exists, so that's where type.generics/XC3 reports it. Which `label` this
-// printed would otherwise come down to which block the compiler read last.
+// is wrong on its own — neither can see the other — so the error belongs where
+// the two meet: the call below, which needs the conformance and can reach both
+// declarations (type.generics/XC3). Which `label` this printed would otherwise
+// come down to which block the compiler read last.
+//
+// `newtype-carries-conformance` is the way out, and `unused-conformance-clash`
+// is the other half of the rule: pull both in, never ask for the conformance,
+// and it costs nothing.
 
 import traitpkg
 import liba

@@ -4201,6 +4201,9 @@ impl TypeChecker {
             Type::UnresolvedNamed(_) => return,
             _ => {}
         }
+        // XC3: the bound is a place that needs the conformance, so it's a place
+        // two of them collide.
+        self.check_bound_conformance_ambiguity(&resolved, bound, span);
         let trait_bound = crate::traits::TraitBound::new("_", vec![bound.to_string()]);
         if let Err(errs) = crate::traits::verify_instantiation(
             &self.types,

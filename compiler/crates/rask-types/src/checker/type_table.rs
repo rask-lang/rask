@@ -18,11 +18,15 @@ use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 /// not the pass currently running: a program overriding a stdlib type's
 /// `Displayable` was reported as a same-package duplicate when the guard read
 /// the current pass's mode instead.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct ConformanceSite {
     pub span: Span,
     pub decl: NodeId,
     pub from_stdlib: bool,
+    /// XC4: the package whose source this block is in. `None` for the stdlib,
+    /// for a single-file program, and for anything the compiler generated —
+    /// all cases where there is no package to compare.
+    pub package: Option<String>,
 }
 
 /// Central registry of all types in the program.
@@ -101,11 +105,16 @@ pub struct TypeTable {
     pub(super) assoc_bindings: HashMap<(TypeId, String), HashMap<String, Type>>,
     /// MN3/XC3: where each conformance was written, so a collision between two
     /// of them is reported once, on the later one.
-    pub(super) conformance_spans: HashMap<(TypeId, String), ConformanceSite>,
+    pub(super) conformance_spans: HashMap<(TypeId, String), Vec<ConformanceSite>>,
     /// CC1/CC2: conditional-conformance conditions. (TypeId, trait base) → the
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
     pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<String>)>>,
+    /// XC3: `(type, applied trait)` pairs with more than one written
+    /// declaration. Empty in every program that doesn't have a collision, which
+    /// is nearly all of them — the use-site check reads this first and does
+    /// nothing when it's empty.
+    pub(super) ambiguous_conformances: std::collections::HashSet<(TypeId, String)>,
     /// XC1: where each type was declared. The span's file id says which package
     /// wrote it, which is how a conformance block knows whether it owns the
     /// type it's extending.
@@ -134,6 +143,7 @@ impl TypeTable {
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
             declared_at: HashMap::new(),
+            ambiguous_conformances: std::collections::HashSet::new(),
         };
         table.register_builtins();
         table
@@ -416,7 +426,7 @@ impl TypeTable {
     }
 
     /// The base name of a trait reference: `Mul<f64>` → `Mul`.
-    fn conformance_key(trait_name: &str) -> String {
+    pub(super) fn conformance_key(trait_name: &str) -> String {
         trait_name.split('<').next().unwrap_or(trait_name).trim().to_string()
     }
 
@@ -532,26 +542,71 @@ impl TypeTable {
         trait_name: &str,
         decl: NodeId,
         span: Span,
+        package: Option<String>,
     ) -> Option<Span> {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
         let key = self.applied_conformance_key(trait_name, &self_base);
         let from_stdlib = self.stdlib_mode;
-        let mine = ConformanceSite { span, decl, from_stdlib };
-        match self.conformance_spans.get(&(type_id, key.clone())) {
-            Some(first) if first.decl == decl => None,
-            Some(first) if !first.from_stdlib && !from_stdlib => Some(first.span),
-            Some(first) => {
-                if first.from_stdlib && !from_stdlib {
-                    self.conformance_spans.insert((type_id, key), mine);
-                }
-                None
-            }
-            None => {
-                self.conformance_spans.insert((type_id, key), mine);
-                None
-            }
+        let mine = ConformanceSite { span, decl, from_stdlib, package: package.clone() };
+        let sites = self.conformance_spans.entry((type_id, key.clone())).or_default();
+        if sites.iter().any(|s| s.decl == decl) {
+            return None;
         }
+        if !from_stdlib {
+            // The same package saying it twice. Reported here, at the second
+            // block, because one author owns both. Two *packages* is XC3's
+            // other half and belongs at the use site, so it just gets recorded.
+            if let Some(first) = sites
+                .iter()
+                .find(|s| !s.from_stdlib && s.package == package)
+            {
+                return Some(first.span);
+            }
+            // A program block landing on the stdlib's is an override across a
+            // package boundary, legal for every non-core trait by XC2, and it
+            // takes the slot — so a second program block is blamed on the
+            // program's first rather than on the stdlib's.
+            sites.retain(|s| !s.from_stdlib);
+        }
+        let already = sites.iter().any(|s| !s.from_stdlib);
+        sites.push(mine);
+        if already && !from_stdlib {
+            self.ambiguous_conformances.insert((type_id, key));
+        }
+        None
+    }
+
+    /// XC3: is any conformance on this type declared more than once?
+    pub(super) fn has_ambiguous_conformance(&self, type_id: TypeId) -> bool {
+        self.ambiguous_conformances
+            .iter()
+            .any(|(id, _)| *id == type_id)
+    }
+
+    /// XC3: the applied trait keys this type has more than one declaration of.
+    pub(super) fn ambiguous_conformance_keys(&self, type_id: TypeId) -> Vec<String> {
+        self.ambiguous_conformances
+            .iter()
+            .filter(|(id, _)| *id == type_id)
+            .map(|(_, key)| key.clone())
+            .collect()
+    }
+
+    /// XC3/XC4: every written declaration of this conformance, in the order the
+    /// checker read them.
+    pub(super) fn conformance_sites(
+        &self,
+        type_id: TypeId,
+        trait_name: &str,
+    ) -> &[ConformanceSite] {
+        let self_name = self.type_name(type_id);
+        let self_base = self_name.split('<').next().unwrap_or(&self_name);
+        let key = self.applied_conformance_key(trait_name, self_base);
+        self.conformance_spans
+            .get(&(type_id, key))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// MN3: where a conformance was declared, if it was written in source.
@@ -569,7 +624,10 @@ impl TypeTable {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name);
         let key = self.applied_conformance_key(trait_name, self_base);
-        self.conformance_spans.get(&(type_id, key)).map(|s| s.span)
+        self.conformance_spans
+            .get(&(type_id, key))
+            .and_then(|v| v.first())
+            .map(|s| s.span)
     }
 
     /// AT6: the associated type `assoc` on this type, when exactly one of its

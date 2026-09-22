@@ -150,6 +150,11 @@ pub struct TypeChecker {
     pub(super) symbol_types: HashMap<SymbolId, Type>,
     /// Collected errors.
     pub(super) errors: Vec<TypeError>,
+    /// XC3: (type, applied trait, using package) triples already reported. The
+    /// same collision turns up at every bound and every call that needs it, and
+    /// one error is the news.
+    pub(super) reported_ambiguous_conformances:
+        std::collections::HashSet<(crate::types::TypeId, String, String)>,
     /// Current function's return type (for checking return statements).
     pub(super) current_return_type: Option<Type>,
     /// Result type of each enclosing loop-as-expression, innermost last. A
@@ -475,6 +480,7 @@ impl TypeChecker {
     pub fn new(resolved: ResolvedProgram) -> Self {
         Self {
             resolved,
+            reported_ambiguous_conformances: std::collections::HashSet::new(),
             types: TypeTable::new(),
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),

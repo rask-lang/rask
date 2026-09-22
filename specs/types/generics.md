@@ -340,13 +340,18 @@ FIX: Give the collision a type of its own, and say what it does:
      needs it into a package that depends on `liba` or on `libb`, not both.
 ```
 
-That's the message XC3 asks for. What ships today reports the same collision
-at the *second declaration* whether the two blocks are in one package or two,
-and names neither package — the checker sees one merged program and hasn't
-been given the use site. So a cross-package collision nobody uses is rejected
-where the rule says it should cost nothing. Suppressing it instead would put
-back the silent pick this whole section exists to stop, so it stays until the
-use-site report lands (#1299).
+That's E0410, and it is what ships: two blocks in one package are reported at
+the second declaration, two packages at the place that needs the conformance,
+and a collision nobody asks for costs nothing.
+
+XC4 is the part that doesn't hold yet. A use *inside* `liba` is reported too,
+and by the rule it shouldn't be — `libb` isn't in `liba`'s dependency graph.
+The reason isn't the visibility rule, which is a short lookup; it's that
+filtering by it would make `liba` see one conformance while still calling the
+other. Both blocks' `label` land in one method table and lower to one
+`Doc_label`, so `liba` printing `b:7` is what a filtered build actually does.
+A conformance's methods have to carry the package that declared them before
+XC4 means anything, which is XC5's work seen from the other end (#1326).
 
 ## Conditional Conformance
 
@@ -581,9 +586,9 @@ func increment<T: Numeric>(val: T) -> T {
 | Same method required by two traits | MN2/MN3 | Same signature: shared implementation. Different: `scoped` or error |
 | Third party declares `Hashable` or `Encode` for a foreign type | XC1 | Compile error (E0409) at the `extend`, whatever the body. Wrap in a nominal type instead |
 | Third party declares any other trait for a foreign type | XC2 | Legal, no wrapper needed |
-| Two packages declare the same (type, trait), nobody uses it | XC3 | Not an error — the check is where the conformance is required. Today's compiler still reports it at the second declaration (#1299) |
+| Two packages declare the same (type, trait), nobody uses it | XC3 | Not an error — the check is where the conformance is required |
 | One package declares the same (type, trait) twice | XC3 | Compile error at the second declaration |
-| A library and the program linking it see different conformances | XC4/XC5 | Each uses the one its own dependencies give it; the two instantiations are distinct |
+| A library and the program linking it see different conformances | XC4/XC5 | Each uses the one its own dependencies give it; the two instantiations are distinct. Not implemented: today the library's own use is E0410 as well (#1326) |
 | Trait evolution | TD2 | Adding a required method with a default body is non-breaking; without one it breaks every conformer (major version) |
 | Generic struct fields | G1 | `struct Foo<T: Comparable>` requires T: Comparable at every usage |
 | Negative constraints | — | Not in MVP; workaround via naming convention or separate functions. `T or E` disjointness is the one exception and needs no syntax (GF4) |
