@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Where E0896 must stay quiet. Every case here compiled to an error at some
+// point, and each one is a different way of asking "is this really a task
+// writing a capture nobody reads?"
+//
+// The error side is tests/compile_errors/task_lost_write.rk.
+
+struct Runner {
+    id: i64
+}
+
+extend Runner {
+    // A `spawn` that starts no task. It calls what it was handed, right here,
+    // and the closure writes the caller's `count` through a borrow like any
+    // other. Matching on the method name alone reported a lost write.
+    public func spawn(self, cb: func()) {
+        cb()
+    }
+}
+
+func run_through_a_parameter(f: func()) {
+    using Multitasking {
+        // Its own `leak`, untouched by the task. The closure arrived as a
+        // parameter, so there is no body here to read — and reading some other
+        // function's body for it reported that function's write, at that
+        // function's line, twice.
+        mut leak = 0
+        leak = 1
+        println("second leak={leak}")
+        let h = spawn(f)
+        h.join() catch _ => { return }
+    }
+}
+
+test "a user method named spawn is not a task" {
+    mut count = 0
+    let r = Runner { id: 1 }
+    r.spawn(|| { count += 1 })
+    assert count == 1
+}
+
+// The third case belongs here and can't run yet: a closure rebound before it
+// is spawned hangs on native (#1335), because the spawn lookahead lowers the
+// binding's initializer and not what a later assignment put there. The
+// compile-time half — reading the closure the name holds *now*, rather than
+// the body the program threw away — is fixed, and `rask check` on the repro in
+// that issue is what says so.
+
+test "a closure that arrives as a parameter carries no body to blame" {
+    run_through_a_parameter(|| { println("ran") })
+}

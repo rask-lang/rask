@@ -58,6 +58,20 @@ func main() {
         })
         a.join()
         println("{total}")
+
+        // The loop's `i` is its own, not the capture. The write below is dead
+        // the moment the loop shadows the name, and reading the loop variable
+        // is not reading what the write produced.
+        mut i = 0
+        let s = spawn(|| {
+            // ERROR: E0896 — shadowed by the loop binding on the next line
+            i = 5
+            for i in 0..3 {
+                println("{i}")
+            }
+        })
+        s.join()
+        println("{i}")
     }
 }
 

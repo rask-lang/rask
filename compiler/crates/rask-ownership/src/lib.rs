@@ -620,6 +620,11 @@ impl<'a> OwnershipChecker<'a> {
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
         self.closure_scope_limits.clear();
+        // Keyed by name too, so an `f` in one body would otherwise answer for
+        // the next body's `f`: a `spawn(f)` in a function that borrowed its
+        // closure got checked against a body from somewhere else, and reported
+        // that body's write at that body's line.
+        self.closure_literals.clear();
         self.mutable_captures.clear();
         self.param_type_strings.clear();
         self.identified_links.clear();
@@ -1308,6 +1313,17 @@ impl<'a> OwnershipChecker<'a> {
                 // If the target is a plain binding, propagate the scope limit so
                 // later uses of that binding are still caught. If the target is a
                 // field/index (can't be tracked), treat it as an escape.
+                // A name rebound stands for what it holds now. Without this a
+                // `mut f` reassigned to a second closure still answered with
+                // the first one's body, so `spawn(f)` was checked against a
+                // closure the program had thrown away.
+                if let ExprKind::Ident(target_name) = &target.kind {
+                    if matches!(value.kind, ExprKind::Closure { .. }) {
+                        self.closure_literals.insert(target_name.clone(), value.clone());
+                    } else {
+                        self.closure_literals.remove(target_name);
+                    }
+                }
                 if let ExprKind::Ident(value_name) = &value.kind {
                     if let Some(&(borrow_block, _)) = self.scope_limited_closures.get(value_name) {
                         if let ExprKind::Ident(target_name) = &target.kind {
@@ -1714,9 +1730,7 @@ impl<'a> OwnershipChecker<'a> {
                         .and_then(|t| t.get(i))
                         .map(|m| matches!(m, ParamMode::Take) || (channel_send && i == 0));
                     self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
-                    // `Thread.spawn`, `ThreadPool.spawn`, `group.spawn` — every
-                    // one hands the closure to a task that runs it once.
-                    if method == "spawn" {
+                    if self.is_task_spawn(object, method) {
                         self.check_spawn_lost_writes(&arg.expr);
                     }
                     if is_take_param {
@@ -4594,6 +4608,30 @@ impl<'a> OwnershipChecker<'a> {
         found
     }
 
+    /// Whether this method call starts a task: `Thread.spawn`,
+    /// `ThreadPool.spawn`, or `spawn` on a `TaskGroup`.
+    ///
+    /// The receiver decides, not the name. A program may have a `Runner` with a
+    /// synchronous `spawn(cb)` that just calls what it was handed, and matching
+    /// the bare name reported a lost write in a closure nothing ran on a task.
+    ///
+    /// Reading this the other way — escape — stays conservative on purpose. A
+    /// capture carried into something that turns out not to be a task costs a
+    /// copy; a capture pointed at from something that *is* one reads a dead
+    /// frame, so `collect_escaping_closures` treats an unplaceable `spawn` as
+    /// escaping and this one says nothing.
+    fn is_task_spawn(&self, object: &Expr, method: &str) -> bool {
+        if method != "spawn" {
+            return false;
+        }
+        match &object.kind {
+            ExprKind::Ident(name) if name == "Thread" || name == "ThreadPool" => true,
+            _ => self
+                .receiver_type_name(object)
+                .is_some_and(|t| t == "Thread" || t == "ThreadPool" || t == "TaskGroup"),
+        }
+    }
+
     /// A closure literal the ownership pass decided points at its captures
     /// rather than carrying them (CM1).
     ///
@@ -4823,13 +4861,18 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Loop { body, .. } => {
                 self.task_used_loop(body, locals, used_out, all_reads, lost)
             }
-            StmtKind::For { iter, body, .. } => {
-                let mut used = self.task_used_loop(body, locals, used_out, all_reads, lost);
-                used.extend(self.task_reads(iter, locals));
-                used
-            }
-            StmtKind::ComptimeFor { iter, body, .. } => {
-                let mut used = self.task_used_loop(body, locals, used_out, all_reads, lost);
+            StmtKind::For { binding, iter, body, .. }
+            | StmtKind::ComptimeFor { binding, iter, body, .. } => {
+                // The loop's own binding shadows a capture of the same name
+                // inside the body, so the body's reads of it are not reads of
+                // the capture. Without this `spawn(|| { i = 5  for i in 0..3 {
+                // println("{i}") } })` looked like the write was put to use, by
+                // the loop variable that replaced it.
+                let mut inner = locals.clone();
+                for name in binding.names() {
+                    inner.insert(name.to_string());
+                }
+                let mut used = self.task_used_loop(body, &inner, used_out, all_reads, lost);
                 used.extend(self.task_reads(iter, locals));
                 used
             }
