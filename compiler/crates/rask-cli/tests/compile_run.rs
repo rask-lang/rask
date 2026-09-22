@@ -1267,6 +1267,49 @@ fn an_optional_trait_object_is_rejected_with_its_own_reason() {
 }
 
 #[test]
+fn a_failing_benchmark_body_is_reported_not_timed() {
+    // #1182: every pass discarded its result, so a body that panicked still
+    // produced min/max/mean/median — timings for how long it took to fail,
+    // printed beside the benchmarks that worked. Worse, native *did* notice the
+    // non-zero exit and then fell back to the interpreter, which re-ran the
+    // body and timed it: a divide-by-zero benchmark came out at 1.7M ops/sec
+    // and `rask benchmark` exited 0.
+    let rask = rask_binary();
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("benchmark_body_fails.rk");
+    let out = Command::new(&rask)
+        .arg("benchmark")
+        .arg(&fixture)
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask benchmark");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(
+        !out.status.success(),
+        "a benchmark whose body fails must not exit 0: {}", combined,
+    );
+    assert!(
+        combined.contains("division by zero"),
+        "should say what went wrong: {}", combined,
+    );
+    // The tell for the old behaviour: a timings line for the failing benchmark.
+    assert!(
+        !combined.contains("ops/sec"),
+        "no timings once a body failed — they measure the failure: {}", combined,
+    );
+    assert!(
+        !combined.contains("falling back to interpreter"),
+        "a failed body is not a reason to re-run it on the interpreter: {}", combined,
+    );
+}
+
+#[test]
 fn error_catch_void_body_blames_itself_not_a_later_use() {
     // #876: `catch e => { println(...) }` supplies a void fallback, which is
     // only legal when the value's success type is actually void. When that

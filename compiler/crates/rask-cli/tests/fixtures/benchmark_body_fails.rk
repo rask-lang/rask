@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A benchmark whose body fails (#1182). Every pass used to discard its result,
+// so this produced a row of min/max/mean/median measuring how long it took to
+// fail — printed beside the one that worked, and the command exited 0.
+benchmark "works" {
+    mut n = 0
+    for i in 0..10 {
+        n = n + i
+    }
+}
+
+benchmark "divides by zero" {
+    let d = 0
+    let x = 10 / d
+}

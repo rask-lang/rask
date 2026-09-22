@@ -672,10 +672,27 @@ impl Interpreter {
     /// calibrating against a stopped clock would spin to the 10,000-iteration
     /// ceiling to measure nothing.
     pub(super) fn run_single_benchmark(&mut self, name: &str, body: &[Stmt]) -> BenchmarkResult {
+        // Timings for a body that didn't finish measure how long it took to
+        // fail, so a failure ends the run and carries the reason instead. Every
+        // pass used to discard its result (#1182).
+        let failed = |name: &str, e: crate::RuntimeDiagnostic| BenchmarkResult {
+            name: name.to_string(),
+            iterations: 0,
+            total: std::time::Duration::ZERO,
+            min: std::time::Duration::ZERO,
+            max: std::time::Duration::ZERO,
+            mean: std::time::Duration::ZERO,
+            median: std::time::Duration::ZERO,
+            error: Some(e.error.to_string()),
+        };
+
         if !crate::has_clock() {
             self.env.push_scope();
-            let _ = self.exec_stmts(body);
+            let outcome = self.exec_stmts(body);
             self.env.pop_scope();
+            if let Err(e) = outcome {
+                return failed(name, e);
+            }
             return BenchmarkResult {
                 name: name.to_string(),
                 iterations: 1,
@@ -684,14 +701,19 @@ impl Interpreter {
                 max: std::time::Duration::ZERO,
                 mean: std::time::Duration::ZERO,
                 median: std::time::Duration::ZERO,
+                error: None,
             };
         }
 
-        // Warmup: 3 iterations
+        // Warmup: 3 iterations. A body that fails fails here, before any clock
+        // has started — which is the cheapest place to find out.
         for _ in 0..3 {
             self.env.push_scope();
-            let _ = self.exec_stmts(body);
+            let outcome = self.exec_stmts(body);
             self.env.pop_scope();
+            if let Err(e) = outcome {
+                return failed(name, e);
+            }
         }
 
         // Calibrate: find iteration count that takes >100ms total
@@ -700,8 +722,11 @@ impl Interpreter {
             let start = crate::Stopwatch::start();
             for _ in 0..iterations {
                 self.env.push_scope();
-                let _ = self.exec_stmts(body);
+                let outcome = self.exec_stmts(body);
                 self.env.pop_scope();
+                if let Err(e) = outcome {
+                    return failed(name, e);
+                }
             }
             let elapsed = start.elapsed();
             if elapsed.as_millis() >= 100 || iterations >= 10_000 {
@@ -715,9 +740,12 @@ impl Interpreter {
         for _ in 0..iterations {
             self.env.push_scope();
             let start = crate::Stopwatch::start();
-            let _ = self.exec_stmts(body);
+            let outcome = self.exec_stmts(body);
             let elapsed = start.elapsed();
             self.env.pop_scope();
+            if let Err(e) = outcome {
+                return failed(name, e);
+            }
             timings.push(elapsed);
         }
 
@@ -736,6 +764,7 @@ impl Interpreter {
             max,
             mean,
             median,
+            error: None,
         }
     }
 }
@@ -750,5 +779,72 @@ fn prefix_origin(origin: &str, msg: String) -> String {
         msg
     } else {
         format!("{}: {}", origin, msg)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rask_ast::expr::{BinOp, Expr, ExprKind};
+    use rask_ast::stmt::{Stmt, StmtKind};
+    use rask_ast::{NodeId, Span};
+
+    fn sp() -> Span {
+        Span::new(0, 0)
+    }
+
+    fn int(n: i128) -> Expr {
+        Expr { id: NodeId(0), kind: ExprKind::Int(n, None), span: sp() }
+    }
+
+    /// `10 / 0`, as a statement.
+    fn divide_by_zero() -> Stmt {
+        Stmt {
+            id: NodeId(0),
+            kind: StmtKind::Expr(Expr {
+                id: NodeId(0),
+                kind: ExprKind::Binary {
+                    op: BinOp::Div,
+                    left: Box::new(int(10)),
+                    right: Box::new(int(0)),
+                },
+                span: sp(),
+            }),
+            span: sp(),
+        }
+    }
+
+    /// #1182: every pass discarded its result, so a body that failed still
+    /// produced min/max/mean/median — timings for how long it took to fail.
+    /// The CLI can't reach this path (it only falls back to the interpreter
+    /// when native won't *build*), so it's pinned here.
+    #[test]
+    fn a_failing_body_carries_its_error_and_no_timings() {
+        let mut interp = super::super::Interpreter::new();
+        let result = interp.run_single_benchmark("boom", &[divide_by_zero()]);
+
+        let err = result.error.expect("a body that fails has to say so");
+        assert!(
+            err.contains("division by zero"),
+            "should carry the reason, got {:?}",
+            err,
+        );
+        assert_eq!(result.iterations, 0, "nothing completed, so nothing was measured");
+        assert_eq!(result.total, std::time::Duration::ZERO);
+        assert_eq!(result.median, std::time::Duration::ZERO);
+    }
+
+    /// The other half: a body that works still reports, and reports nothing
+    /// wrong. Without this the fix could be "always report an error".
+    #[test]
+    fn a_working_body_reports_no_error() {
+        let mut interp = super::super::Interpreter::new();
+        let body = vec![Stmt {
+            id: NodeId(0),
+            kind: StmtKind::Expr(int(1)),
+            span: sp(),
+        }];
+        let result = interp.run_single_benchmark("fine", &body);
+        assert!(result.error.is_none(), "a body that works reports nothing wrong");
+        assert!(result.iterations > 0, "and it measured something");
     }
 }

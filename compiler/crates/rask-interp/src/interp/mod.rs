@@ -118,6 +118,12 @@ pub struct BenchmarkResult {
     pub max: std::time::Duration,
     pub mean: std::time::Duration,
     pub median: std::time::Duration,
+    /// Why the body stopped, when it did. Every pass used to discard its
+    /// result, so a body that panicked or divided by zero still produced a row
+    /// of min/max/mean/median measuring how long it took to fail — printed next
+    /// to the ones that worked (#1182). There was nowhere to put the reason
+    /// either, which is what this is.
+    pub error: Option<String>,
 }
 
 /// The tree-walk interpreter.

@@ -1043,6 +1043,14 @@ fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
         println!("{} Benchmarking {} {} (interpreter)\n", "===".dimmed(), output::file_path(path), "===".dimmed());
 
         for r in &results {
+            // A body that didn't finish has no timings worth printing — the
+            // numbers would measure how long it took to fail (#1182).
+            if let Some(err) = &r.error {
+                println!("  {} {}", r.name, "failed".red());
+                println!("      {}", err);
+                println!();
+                continue;
+            }
             let ops_per_sec = if r.mean.as_nanos() > 0 {
                 1_000_000_000 / r.mean.as_nanos()
             } else {
@@ -1068,9 +1076,18 @@ fn cmd_benchmark_interp(path: &str, filter: Option<String>, format: Format) {
 
 /// Try compiling and running benchmarks natively. Returns true on success.
 fn try_benchmark_native(path: &str, filter: Option<&str>, format: Format) -> bool {
-    let rask_results = run_benchmark_file(path, filter, format);
+    // A benchmark body that failed is not a reason to try the interpreter: it
+    // will fail there too, and before this it did so silently — the fallback
+    // re-ran the body, timed the failure and printed it beside the ones that
+    // worked, and the command exited 0 (#1182). The message from
+    // `collect_bench_results` has already said what happened.
+    let rask_results = match run_benchmark_file(path, filter, format) {
+        BenchRun::Ran(v) => v,
+        BenchRun::Died => process::exit(1),
+        BenchRun::NoResults => Vec::new(),
+    };
     if rask_results.is_empty() {
-        // run_benchmark_file returns empty on compile failure or no benchmarks
+        // Nothing ran: a compile failure, or no benchmarks in the file.
         // Check if the file has benchmarks at all (for the "no benchmarks found" message)
         let result = crate::run_check_or_exit(path, format);
         let has_benchmarks = result.decls.iter().any(|d|
@@ -1243,7 +1260,12 @@ pub fn cmd_benchmark_dir(
             println!("  {} {}", "▸".dimmed(), output::file_path(&path_str));
         }
 
-        let rask_results = run_benchmark_file(&path_str, filter.as_deref(), format);
+        let rask_results = match run_benchmark_file(&path_str, filter.as_deref(), format) {
+            BenchRun::Ran(v) => v,
+            // One file's failure shouldn't stop the suite, but it must not be
+            // read as "this file had nothing to run" either.
+            BenchRun::Died | BenchRun::NoResults => Vec::new(),
+        };
         let c_path = rk_path.with_extension("c");
         // Only run C baseline if the .rk file produced results (respects filter)
         let c_results = if c_path.exists() && !rask_results.is_empty() {
@@ -1409,7 +1431,7 @@ fn parse_bench_json_i64(s: &str, key: &str) -> Option<i64> {
 }
 
 /// Run a single .rk benchmark file natively, return parsed results.
-fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<BenchResult> {
+fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> BenchRun {
     // Same one frontend as the test runner — the benchmark runner is the decl
     // rewrite handed to it (#330).
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
@@ -1433,7 +1455,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
             if format == Format::Human {
                 eprintln!("    {}: frontend panic for {}", output::error_label(), path);
             }
-            return Vec::new();
+            return BenchRun::NoResults;
         }
     };
 
@@ -1442,10 +1464,10 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         for diag in &output.diagnostics {
             crate::show_diagnostic_multi(diag, &source_files);
         }
-        return Vec::new();
+        return BenchRun::NoResults;
     }
     if benchmarks.is_empty() {
-        return Vec::new();
+        return BenchRun::NoResults;
     }
     let result = output.result.unwrap();
     let mono = result.mono;
@@ -1466,7 +1488,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
             }
         }
         let _ = std::fs::remove_file(&obj_path);
-        return Vec::new();
+        return BenchRun::NoResults;
     }
 
     let link_opts = super::link::LinkOptions::default();
@@ -1474,7 +1496,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         if format == Format::Human {
             eprintln!("    {}: link: {}", output::error_label(), e);
         }
-        return Vec::new();
+        return BenchRun::NoResults;
     }
 
     let output = process::Command::new(&bin_str).output();
@@ -1494,14 +1516,14 @@ fn collect_bench_results(
     output: std::io::Result<process::Output>,
     what: &str,
     format: Format,
-) -> Vec<BenchResult> {
+) -> BenchRun {
     let out = match output {
         Ok(out) => out,
         Err(e) => {
             if format == Format::Human {
                 eprintln!("    {}: running the {}: {}", output::error_label(), what, e);
             }
-            return Vec::new();
+            return BenchRun::NoResults;
         }
     };
     if !out.stderr.is_empty() && format == Format::Human {
@@ -1516,10 +1538,28 @@ fn collect_bench_results(
                 out.status.code().map_or_else(|| "on a signal".to_string(), |c| c.to_string()),
             );
         }
-        return Vec::new();
+        return BenchRun::Died;
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout.lines().filter_map(parse_bench_json).collect()
+    BenchRun::Ran(stdout.lines().filter_map(parse_bench_json).collect())
+}
+
+/// What came back from running a benchmark binary.
+///
+/// The three used to collapse into an empty `Vec`, so a benchmark that died
+/// read exactly like a file with no benchmarks in it — and the caller fell back
+/// to the interpreter, which happily re-ran the failing body and printed
+/// timings for it. A divide-by-zero benchmark came out at 1.7M ops/sec beside
+/// the ones that worked, and the command exited 0 (#1182).
+enum BenchRun {
+    /// The binary ran and these are its results.
+    Ran(Vec<BenchResult>),
+    /// The binary ran and exited non-zero — a benchmark body failed. Falling
+    /// back to the interpreter would only fail again, more quietly.
+    Died,
+    /// Nothing ran: it couldn't be built or spawned. The interpreter is the
+    /// fallback this was written for.
+    NoResults,
 }
 
 /// Compile and run a C baseline file, return parsed results.
@@ -1573,7 +1613,10 @@ fn run_c_baseline(c_path: &std::path::Path, opt_level: &str, format: Format) -> 
     let output = process::Command::new(&bin_str).output();
     let _ = std::fs::remove_file(&bin_path);
 
-    collect_bench_results(output, "C baseline", format)
+    match collect_bench_results(output, "C baseline", format) {
+        BenchRun::Ran(v) => v,
+        _ => Vec::new(),
+    }
 }
 
 /// Match a diagnostic to a source file by span validity.
