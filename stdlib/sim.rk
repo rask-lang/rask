@@ -11,8 +11,8 @@ public enum Fault {
     /// A resource the seed picked as sick fails some of its operations with
     /// an I/O error (sim/F4). A failed operation has no effect (sim/F5).
     IoError
-    /// A sick connection is cut: the next operation fails and the peer reads
-    /// the end of the stream.
+    /// A sick connection is reset: the operation fails, and so does the
+    /// peer's next read — a reset, not an end of stream.
     Disconnect
     /// `SystemTime` jumps forward. `Instant` never does (std.time/I1).
     ClockJump
@@ -41,8 +41,14 @@ extend sim {
 
 func fault_bit(f: Fault) -> i64 {
     match f {
-        Fault.IoError => { return 1 }
-        Fault.Disconnect => { return 2 }
-        Fault.ClockJump => { return 4 }
+        Fault.IoError => {
+            return 1
+        }
+        Fault.Disconnect => {
+            return 2
+        }
+        Fault.ClockJump => {
+            return 4
+        }
     }
 }
