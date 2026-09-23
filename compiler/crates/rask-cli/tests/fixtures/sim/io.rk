@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Sim reads the real tree and keeps every change in memory (sim/B5).
 import fs
-import net
 
 test "reading a real file works" {
     let text = try fs.read_text("io.rk")
@@ -71,9 +70,4 @@ test "a listing shows the overlay, sorted" {
     assert !saw_removed
     let joined = names.join(",")
     println(joined)
-}
-
-test "a socket is refused" {
-    let listener = try net.tcp_listen("127.0.0.1:0")
-    ensure listener.close()
 }

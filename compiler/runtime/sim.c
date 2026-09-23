@@ -47,6 +47,7 @@ static uint64_t stream_seed(uint64_t seed, uint64_t tag) {
 #define STREAM_SCHED 1
 #define STREAM_HASH  2
 #define STREAM_TASK  3
+#define STREAM_FAULT 4
 
 // ─── Tasks ──────────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ static struct {
     SimTask         *current;
     uint64_t         seed;
     uint64_t         sched;
+    uint64_t         fault;
     int64_t          step;
     int64_t          now_ns;
 } g = { .lock = PTHREAD_MUTEX_INITIALIZER };
@@ -269,6 +271,12 @@ int64_t rask_sim_now_ns(void) {
     return g.now_ns;
 }
 
+// Short reads, latencies and (later) injected errors all draw here, so none of
+// them can shift the schedule (sim/SD2).
+uint64_t rask_sim_fault_draw(void) {
+    return splitmix64(&g.fault);
+}
+
 uint64_t rask_sim_random_seed(void) {
     SimTask *self = self_or_die("random");
     return splitmix64(&self->random);
@@ -348,6 +356,7 @@ void rask_sim_begin(uint64_t seed) {
     pthread_mutex_lock(&g.lock);
     g.seed = seed;
     g.sched = stream_seed(seed, STREAM_SCHED);
+    g.fault = stream_seed(seed, STREAM_FAULT);
     g.step = 0;
     g.now_ns = 0;
     g.count = 0;

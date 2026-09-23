@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
+#include <strings.h>
 #include <signal.h>
 #include <errno.h>
 
@@ -486,31 +487,67 @@ void rask_check_fail_cmp_f32(float left, float right,
 // Thin wrappers around POSIX syscalls. Return values match POSIX
 // conventions: bytes transferred on success, -1 on error.
 
+#include <sys/socket.h>
+
+// Every fd read, write and close goes through these rather than the syscall:
+// under sim an fd may be one of sim's in-memory sockets (sim_net.c), which the
+// kernel has never heard of.
+static ssize_t sock_read(int64_t fd, void *buf, size_t n) {
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) return (ssize_t)rask_sim_net_read(fd, buf, n);
+#endif
+    return read((int)fd, buf, n);
+}
+
+static ssize_t sock_write(int64_t fd, const void *buf, size_t n) {
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) return (ssize_t)rask_sim_net_write(fd, buf, n);
+#endif
+    return write((int)fd, buf, n);
+}
+
+static int sock_close(int64_t fd) {
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) return rask_sim_net_close(fd);
+#endif
+    return close((int)fd);
+}
+
+static int64_t sock_dup(int64_t fd) {
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) return rask_sim_net_dup(fd);
+#endif
+    return (int64_t)dup((int)fd);
+}
+
+static int sock_accept(int64_t listen_fd) {
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(listen_fd)) return (int)rask_sim_net_accept(listen_fd);
+#endif
+    return accept((int)listen_fd, NULL, NULL);
+}
+
 int64_t rask_io_open(const char *path, int64_t flags, int64_t mode) {
+    // A raw fd has no overlay behind it, so under sim only a read-only open
+    // is allowed through (sim/B3, B5).
+    if (((int)flags & O_ACCMODE) != O_RDONLY || ((int)flags & (O_CREAT | O_TRUNC))) {
+        RASK_SIM_UNSIMULATED("opening `%s` to write through a raw fd", path);
+    }
     return (int64_t)open(path, (int)flags, (mode_t)mode);
 }
 
 int64_t rask_io_close(int64_t fd) {
-    return (int64_t)close((int)fd);
+    return (int64_t)sock_close(fd);
 }
 
 int64_t rask_io_read(int64_t fd, void *buf, int64_t len) {
-    return (int64_t)read((int)fd, buf, (size_t)len);
+    return (int64_t)sock_read(fd, buf, (size_t)len);
 }
 
 int64_t rask_io_write(int64_t fd, const void *buf, int64_t len) {
-    return (int64_t)write((int)fd, buf, (size_t)len);
+    return (int64_t)sock_write(fd, buf, (size_t)len);
 }
 
-// Single read into a string (up to max_len bytes).
-void rask_io_read_string(RaskStr *out, int64_t fd, int64_t max_len) {
-    if (max_len <= 0 || max_len > 4 * 1024 * 1024) max_len = 65536;
-    char *buf = (char *)rask_alloc(max_len);
-    ssize_t n = read((int)fd, buf, (size_t)max_len);
-    if (n < 0) n = 0;
-    rask_string_from_bytes(out, buf, n);
-    rask_free(buf);
-}
 
 // ─── Clone (shallow copy for i64-sized values) ───────────────────
 // Strings and collection handles are pointer-sized; clone is identity.
@@ -939,6 +976,7 @@ RaskVec *rask_file_lines(int64_t file) {
 #include <arpa/inet.h>
 #include <netdb.h>
 
+
 // Split "host:port" on the last colon. Returns 0 when there is no colon or
 // either half is unusable — an address is host *and* port, and guessing a
 // missing half is how "not-an-address" came to bind 0.0.0.0:0 and report
@@ -965,9 +1003,7 @@ int64_t rask_net_tcp_listen(const RaskStr *addr) {
         return -2;
     }
 #ifdef RASK_SIM
-    char target[300];
-    snprintf(target, sizeof(target), "%s:%s", host, port_str);
-    RASK_SIM_UNSIMULATED("`net.tcp_listen(\"%s\")`", target);
+    if (rask_sim_active()) return rask_sim_net_listen(host, port_str);
 #endif
 
     // getaddrinfo rather than inet_pton, so "localhost:0" resolves the way it
@@ -1021,22 +1057,16 @@ int8_t rask_net_is_unresolved(int64_t handle) {
 }
 
 int64_t rask_net_tcp_accept(int64_t listen_fd) {
-    int client = accept((int)listen_fd, NULL, NULL);
+    int client = sock_accept(listen_fd);
     return (int64_t)client;
 }
 
-int64_t rask_net_tcp_connect(const RaskStr *addr) {
-    char host[256];
-    char port_str[16];
-    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
-        return -2;
-    }
+// Connect to host:port. The fd, -1 with errno set, or -2 when the name
+// doesn't resolve.
+static int64_t net_connect_fd(const char *host, const char *port_str) {
 #ifdef RASK_SIM
-    char target[300];
-    snprintf(target, sizeof(target), "%s:%s", host, port_str);
-    RASK_SIM_UNSIMULATED("`net.tcp_connect(\"%s\")`", target);
+    if (rask_sim_active()) return rask_sim_net_connect(host, port_str);
 #endif
-
     // Resolve hostname via getaddrinfo (handles both IPs and DNS names)
     struct addrinfo hints, *result;
     memset(&hints, 0, sizeof(hints));
@@ -1062,30 +1092,60 @@ int64_t rask_net_tcp_connect(const RaskStr *addr) {
     return (int64_t)fd;
 }
 
+int64_t rask_net_tcp_connect(const RaskStr *addr) {
+    char host[256];
+    char port_str[16];
+    if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
+        return -2;
+    }
+    return net_connect_fd(host, port_str);
+}
+
 // ─── String-based socket I/O (used by Rask stdlib HTTP parser) ────
 
 // Read up to max_len bytes from fd, return as RaskStr.
-static void io_read_string(RaskStr *out, int64_t fd, int64_t max_len) {
-    if (max_len <= 0 || max_len > 1024 * 1024) max_len = 65536;
+// The Content-Length a header block announces, or 0 when it names none.
+static int64_t http_content_length(const char *head, int64_t head_len) {
+    static const char key[] = "content-length:";
+    const int64_t key_len = (int64_t)sizeof(key) - 1;
+    for (int64_t i = 0; i + key_len <= head_len; i++) {
+        if (i > 0 && head[i - 1] != '\n') continue;
+        if (strncasecmp(head + i, key, (size_t)key_len) != 0) continue;
+        int64_t j = i + key_len, n = 0;
+        while (j < head_len && head[j] == ' ') j++;
+        while (j < head_len && head[j] >= '0' && head[j] <= '9') {
+            n = n * 10 + (head[j] - '0');
+            j++;
+        }
+        return n;
+    }
+    return 0;
+}
+
+// One HTTP message: through the blank line that ends the headers, then as many
+// body bytes as Content-Length announces. A read returns whatever the network
+// had, which can be a fraction of the request line; the server used to parse
+// one read as the whole request and answer for a path the client never sent.
+// Sim's short reads found it (sim/F1).
+void rask_io_read_http_message(RaskStr *out, int64_t fd, int64_t max_len) {
+    if (max_len <= 0 || max_len > 4 * 1024 * 1024) max_len = 65536;
     char *buf = (char *)rask_alloc(max_len);
     int64_t total = 0;
+    int64_t want = -1;   // total bytes once the headers are in
 
-    // Read until we have a complete HTTP request (double CRLF) or buffer full
-    while (total < max_len) {
-        ssize_t n = read((int)fd, buf + total, (size_t)(max_len - total));
+    while (total < max_len && (want < 0 || total < want)) {
+        ssize_t n = sock_read(fd, buf + total, (size_t)(max_len - total));
         if (n <= 0) break;
+        int64_t from = total >= 3 ? total - 3 : 0;
         total += n;
-        // Check for end of HTTP headers (\r\n\r\n)
-        if (total >= 4) {
-            for (int64_t i = total - 4; i >= 0 && i >= total - n - 3; i--) {
-                if (buf[i] == '\r' && buf[i+1] == '\n' &&
-                    buf[i+2] == '\r' && buf[i+3] == '\n') {
-                    goto done;
-                }
+        if (want >= 0) continue;
+        for (int64_t i = from; i + 3 < total; i++) {
+            if (buf[i] == '\r' && buf[i+1] == '\n' && buf[i+2] == '\r' && buf[i+3] == '\n') {
+                want = i + 4 + http_content_length(buf, i);
+                break;
             }
         }
     }
-done:;
     rask_string_from_bytes(out, buf, total);
     rask_free(buf);
 }
@@ -1097,7 +1157,7 @@ void rask_io_read_until_close(RaskStr *out, int64_t fd, int64_t max_len) {
     char *buf = (char *)rask_alloc(max_len);
     int64_t total = 0;
     while (total < max_len) {
-        ssize_t n = read((int)fd, buf + total, (size_t)(max_len - total));
+        ssize_t n = sock_read(fd, buf + total, (size_t)(max_len - total));
         if (n <= 0) break;
         total += n;
     }
@@ -1113,7 +1173,7 @@ int64_t rask_io_write_string(int64_t fd, int64_t str_ptr) {
     int64_t len = rask_string_len(s);
     int64_t written = 0;
     while (written < len) {
-        ssize_t n = write((int)fd, data + written, (size_t)(len - written));
+        ssize_t n = sock_write(fd, data + written, (size_t)(len - written));
         if (n < 0) return -1;
         written += n;
     }
@@ -1182,7 +1242,7 @@ int64_t rask_io_std_read_bytes(int64_t max) {
 
 // Close a file descriptor.
 void rask_io_close_fd(int64_t fd) {
-    close((int)fd);
+    sock_close(fd);
 }
 
 // ─── HTTP helpers (called from Rask stdlib via extern "C") ──────
@@ -1192,7 +1252,7 @@ void rask_io_close_fd(int64_t fd) {
 // Layout: [RaskStr method (16B)][RaskStr path (16B)][RaskStr body (16B)][Map* headers (8B)]
 int64_t rask_http_parse_request(int64_t conn_fd) {
     RaskStr raw;
-    io_read_string(&raw, conn_fd, 65536);
+    rask_io_read_http_message(&raw, conn_fd, 65536);
     if (rask_string_len(&raw) == 0) {
         // Empty request — return minimal struct
         // Allocate: 3 * 16 bytes (strings) + 8 bytes (map ptr) = 56 bytes
@@ -1361,7 +1421,7 @@ int64_t rask_http_write_response(int64_t conn_fd, int64_t response_ptr) {
 
 // Close a network socket (listening or connected).
 void rask_net_close(int64_t fd) {
-    if (fd >= 0) close((int)fd);
+    if (fd >= 0) sock_close(fd);
 }
 
 // Close an HttpServer — extracts the listener fd from the struct
@@ -1369,13 +1429,13 @@ void rask_net_close(int64_t fd) {
 void rask_http_server_close(int64_t server_ptr) {
     if (server_ptr == 0) return;
     int64_t fd = *(int64_t *)(uintptr_t)server_ptr;
-    if (fd >= 0) close((int)fd);
+    if (fd >= 0) sock_close(fd);
 }
 
 // Clone a socket fd via dup().
 int64_t rask_net_clone(int64_t fd) {
     if (fd < 0) return -1;
-    return (int64_t)dup((int)fd);
+    return (int64_t)sock_dup(fd);
 }
 
 // Read all available data from a TCP connection into a string.
@@ -1387,7 +1447,7 @@ int64_t rask_net_read_all(int64_t fd, int64_t out_ptr) {
     int64_t total = 0;
     int64_t cap = 65536;
     for (;;) {
-        ssize_t n = read((int)fd, buf + total, (size_t)(cap - total));
+        ssize_t n = sock_read(fd, buf + total, (size_t)(cap - total));
         if (n <= 0) break;
         total += n;
         if (total >= cap) {
@@ -1407,7 +1467,7 @@ int64_t rask_net_write_all(int64_t fd, int64_t str_ptr) {
     int64_t len = rask_string_len(s);
     int64_t written = 0;
     while (written < len) {
-        ssize_t n = write((int)fd, data + written, (size_t)(len - written));
+        ssize_t n = sock_write(fd, data + written, (size_t)(len - written));
         if (n < 0) return -1;
         written += n;
     }
@@ -1421,7 +1481,7 @@ int64_t rask_net_read_bytes(int64_t fd) {
     int64_t total = 0;
     int64_t cap = 65536;
     for (;;) {
-        ssize_t n = read((int)fd, buf + total, (size_t)(cap - total));
+        ssize_t n = sock_read(fd, buf + total, (size_t)(cap - total));
         if (n <= 0) break;
         total += n;
         if (total >= cap) {
@@ -1454,7 +1514,7 @@ int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
     }
     int64_t written = 0;
     while (written < len) {
-        ssize_t n = write((int)fd, bytes + written, (size_t)(len - written));
+        ssize_t n = sock_write(fd, bytes + written, (size_t)(len - written));
         if (n < 0) {
             rask_free(bytes);
             return -1;
@@ -1467,6 +1527,14 @@ int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
 
 // Get the remote address of a TCP connection as "ip:port" string.
 void rask_net_remote_addr(RaskStr *out, int64_t fd) {
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) {
+        char buf[64];
+        rask_sim_net_addr(fd, 1, buf, sizeof(buf));
+        rask_string_from(out, buf);
+        return;
+    }
+#endif
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
     if (getpeername((int)fd, (struct sockaddr *)&addr, &addrlen) < 0) {
@@ -1482,6 +1550,14 @@ void rask_net_remote_addr(RaskStr *out, int64_t fd) {
 
 // Local address a listener/connection is bound to (TcpListener.local_addr).
 void rask_net_local_addr(RaskStr *out, int64_t fd) {
+#ifdef RASK_SIM
+    if (rask_sim_net_owns(fd)) {
+        char buf[64];
+        rask_sim_net_addr(fd, 0, buf, sizeof(buf));
+        rask_string_from(out, buf);
+        return;
+    }
+#endif
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
     if (getsockname((int)fd, (struct sockaddr *)&addr, &addrlen) < 0) {
@@ -1645,7 +1721,7 @@ int64_t rask_args_program(int64_t args_ptr) {
 // request_ptr points to the 56-byte Request struct from rask_http_parse_request.
 // On error (accept fails), returns -1.
 int64_t rask_http_server_accept(int64_t listen_fd) {
-    int client = accept((int)listen_fd, NULL, NULL);
+    int client = sock_accept(listen_fd);
     if (client < 0) return -1;
     int64_t req_ptr = rask_http_parse_request((int64_t)client);
     int64_t *result = (int64_t *)rask_alloc(16);
@@ -1658,7 +1734,7 @@ int64_t rask_http_server_accept(int64_t listen_fd) {
 // responder_fd is the conn_fd from server_accept, response_ptr is the Response struct.
 int64_t rask_http_respond(int64_t responder_fd, int64_t response_ptr) {
     int64_t rc = rask_http_write_response(responder_fd, response_ptr);
-    close((int)responder_fd);
+    sock_close(responder_fd);
     return rc;
 }
 
@@ -1697,18 +1773,8 @@ int64_t rask_http_send_request(int64_t method_ptr, int64_t url_ptr,
         if (host_part_len < sizeof(host)) { memcpy(host, host_start, host_part_len); host[host_part_len] = '\0'; }
     }
 
-    RASK_SIM_UNSIMULATED("an HTTP request to `%s`", host);
-
-    // Connect
-    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
-    struct addrinfo *res = NULL;
-    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) return -1;
-    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-    if (fd < 0) { freeaddrinfo(res); return -1; }
-    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
-        close(fd); freeaddrinfo(res); return -1;
-    }
-    freeaddrinfo(res);
+    int64_t fd = net_connect_fd(host, port_str);
+    if (fd < 0) return -1;
 
     // Build request
     const char *method_str = rask_string_ptr(method);
@@ -1736,7 +1802,7 @@ int64_t rask_http_send_request(int64_t method_ptr, int64_t url_ptr,
     // Read response
     RaskStr resp_raw;
     rask_io_read_until_close(&resp_raw, fd, 1048576);
-    close(fd);
+    sock_close(fd);
 
     const char *rdata = rask_string_ptr(&resp_raw);
     int64_t rlen = rask_string_len(&resp_raw);

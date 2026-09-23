@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A loopback network inside the test: a listener bound here accepts
+// connections from tasks in the same test (sim/B3's v1 surface).
+import net
+import async.spawn
+
+test "a server greets a client" {
+    using Multitasking {
+        let listener = try net.tcp_listen("127.0.0.1:0")
+        let addr = listener.local_addr()
+        let server = spawn(|| {
+            let conn = listener.accept() catch e => { return }
+            let _ = conn.write_text("hello from the server")
+            let _ = conn.close()
+            let _ = listener.close()
+        })
+        ensure server.detach()
+        let conn = try net.tcp_connect(addr)
+        let text = try conn.read_text()
+        try conn.close()
+        server.join()!
+        assert text == "hello from the server"
+    }
+}
+
+test "two clients, arrival order from the seed" {
+    using Multitasking {
+        let listener = try net.tcp_listen("localhost:7000")
+        let (tx, rx) = Channel<string>.buffered(2)
+        let server = spawn(|| {
+            for i in 0..2 {
+                let conn = listener.accept() catch e => { return }
+                let text = conn.read_text() catch e => { return }
+                let _ = tx.send(text)
+                let _ = conn.close()
+            }
+            let _ = listener.close()
+        })
+        ensure server.detach()
+        let a = spawn(|| {
+            let conn = net.tcp_connect("127.0.0.1:7000") catch e => { return }
+            let _ = conn.write_text("a")
+            let _ = conn.close()
+        })
+        ensure a.detach()
+        let b = spawn(|| {
+            let conn = net.tcp_connect("127.0.0.1:7000") catch e => { return }
+            let _ = conn.write_text("b")
+            let _ = conn.close()
+        })
+        ensure b.detach()
+        mut order = ""
+        for i in 0..2 {
+            if rx.receive() is string as s {
+                order = "{order}{s}"
+            }
+        }
+        a.join()!
+        b.join()!
+        server.join()!
+        println("order {order}")
+        assert order == "ab" || order == "ba"
+    }
+}
+
+test "nobody listening is a refused connection" {
+    mut refused = false
+    let r = net.tcp_connect("127.0.0.1:9")
+    if r is IoError as e {
+        refused = true
+    }
+    assert refused
+}
+
+test "the outside world is still refused" {
+    let conn = try net.tcp_connect("example.com:80")
+    ensure conn.close()
+}

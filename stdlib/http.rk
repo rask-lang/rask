@@ -430,7 +430,7 @@ extern "C" {
     // `string`. Declared `-> i64` the result stayed an integer and `as string`
     // didn't reinterpret it, so every request body read back as the pointer's
     // decimal value and request parsing failed.
-    func rask_io_read_string(fd: i64, max: i64) -> string
+    func rask_io_read_http_message(fd: i64, max: i64) -> string
     func rask_io_read_until_close(fd: i64, max: i64) -> string
 
     func rask_io_write_string(fd: i64, s: i64) -> i64
@@ -438,10 +438,11 @@ extern "C" {
     func rask_io_close_fd(fd: i64) -> void
 }
 
-// Read raw bytes from a TCP connection (up to max_bytes).
-func read_raw(conn_fd: i64, max_bytes: i64) -> string {
+// Read one request from a TCP connection: the headers, then the body their
+// Content-Length announces (up to max_bytes). One read is not a request.
+func read_request_raw(conn_fd: i64, max_bytes: i64) -> string {
     return unsafe {
-        rask_io_read_string(conn_fd, max_bytes)
+        rask_io_read_http_message(conn_fd, max_bytes)
     }
 }
 
@@ -669,7 +670,7 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
 // is not available here.
 @allow(style/snake-case-func)
 func TcpConnection_read_http_request(conn_fd: i64) -> i64 or HttpError {
-    let raw = read_raw(conn_fd, 65536)
+    let raw = read_request_raw(conn_fd, 65536)
     let request = try parse_http_request(raw)
 
     // Build the legacy struct layout: [method_str, path, body, headers_map]
@@ -713,7 +714,7 @@ extend HttpServer {
         let conn = self.listener.accept() catch _ => {
             return HttpError.Io("accept failed")
         }
-        let raw = read_raw(conn as i64, 65536)
+        let raw = read_request_raw(conn as i64, 65536)
         let request = parse_http_request(raw) catch _ => {
             // No responder is handed out on this path, so nothing downstream
             // will ever close this connection. Close it here or the descriptor

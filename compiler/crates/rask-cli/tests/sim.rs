@@ -104,10 +104,7 @@ fn thread_spawn_is_refused() {
 fn file_changes_stay_in_memory() {
     let before = std::fs::read_to_string(fixtures().join("io.rk")).unwrap();
     let (out, code) = sim(&["--seed", "1", "io.rk"]);
-    // Only the socket test fails: networking isn't simulated yet.
-    assert_eq!(code, 1, "{out}");
-    assert!(out.contains("8 passed, 1 failed"), "{out}");
-    assert!(out.contains("no simulated implementation for `net.tcp_listen(\"127.0.0.1:0\")`"), "{out}");
+    assert_eq!(code, 0, "{out}");
     // The tests append to io.rk, remove race.rk and write sim_* files. None
     // of it reaches the disk.
     assert_eq!(std::fs::read_to_string(fixtures().join("io.rk")).unwrap(), before);
@@ -116,6 +113,24 @@ fn file_changes_stay_in_memory() {
         let name = entry.unwrap().file_name();
         assert!(!name.to_string_lossy().starts_with("sim_"), "{name:?} reached the disk");
     }
+}
+
+#[test]
+fn loopback_sockets_work_and_the_outside_world_is_refused() {
+    let (out, code) = sim(&["--seed", "1", "--seeds", "20", "net.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("✓ a server greets a client"), "{out}");
+    assert!(out.contains("✓ two clients, arrival order from the seed"), "{out}");
+    assert!(out.contains("✓ nobody listening is a refused connection"), "{out}");
+    assert!(out.contains("`net.tcp_connect(\"example.com:80\")` — sim's network is loopback only"), "{out}");
+}
+
+#[test]
+fn an_http_request_survives_short_reads() {
+    // The server used to take one read as the whole request, so under sim's
+    // short reads it answered for `/ite` instead of `/items/7`.
+    let (out, code) = sim(&["--seed", "1", "--seeds", "50", "http.rk"]);
+    assert_eq!(code, 0, "{out}");
 }
 
 #[test]

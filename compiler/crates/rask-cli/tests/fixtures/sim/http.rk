@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An HTTP server and client in one test, over sim's loopback network.
+import http
+import http.HttpError
+import http.Response
+import async.spawn
+
+func serve_one() -> void or HttpError {
+    let server = try http.listen("127.0.0.1:8080")
+    ensure server.close()
+    let (req, responder) = try server.accept()
+    try responder.respond(Response.ok("you asked for {req.path()}"))
+    return
+}
+
+test "a request round trip" {
+    using Multitasking {
+        let handler = spawn(|| {
+            let _ = serve_one()
+        })
+        ensure handler.detach()
+        let resp = try http.get("http://127.0.0.1:8080/items/7")
+        handler.join()!
+        assert resp.body == "you asked for /items/7"
+    }
+}
+
+func echo_body_once() -> void or HttpError {
+    let server = try http.listen("127.0.0.1:8081")
+    ensure server.close()
+    let (req, responder) = try server.accept()
+    try responder.respond(Response.ok("got {req.body}"))
+    return
+}
+
+test "a POST body arrives whole" {
+    using Multitasking {
+        let handler = spawn(|| {
+            let _ = echo_body_once()
+        })
+        ensure handler.detach()
+        let body = "a body long enough that a short read splits it somewhere in the middle"
+        let resp = try http.post("http://127.0.0.1:8081/echo", body)
+        handler.join()!
+        assert resp.body == "got {body}"
+    }
+}

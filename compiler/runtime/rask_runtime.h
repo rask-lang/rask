@@ -882,6 +882,7 @@ int64_t rask_args_program(int64_t args_ptr);
 
 // Response reading (reads until EOF for Connection: close pattern).
 void    rask_io_read_until_close(RaskStr *out, int64_t fd, int64_t max_len);
+void    rask_io_read_http_message(RaskStr *out, int64_t fd, int64_t max_len);
 
 // ─── JSON module ────────────────────────────────────────────
 // Encode helpers — used by codegen-generated struct serialization.

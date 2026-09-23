@@ -30,6 +30,7 @@ void rask_sim_notify(const void *key);
 void rask_sim_sleep(int64_t ns);
 int64_t rask_sim_now_ns(void);
 uint64_t rask_sim_random_seed(void);
+uint64_t rask_sim_fault_draw(void);
 
 // Task lifecycle, called from thread.c.
 void *rask_sim_task_new(int64_t task_id);
@@ -59,6 +60,18 @@ int   rask_sim_fs_remove(const char *path);
 int   rask_sim_fs_mkdir(const char *path);
 int   rask_sim_fs_stat(const char *path, struct stat *st);
 char **rask_sim_fs_list(const char *path, size_t *count);
+
+// Loopback network (sim_net.c). Sim sockets are fd numbers the real OS never
+// hands out; `owns` says whether an fd is one.
+int     rask_sim_net_owns(int64_t fd);
+int64_t rask_sim_net_listen(const char *host, const char *port);
+int64_t rask_sim_net_connect(const char *host, const char *port);
+int64_t rask_sim_net_accept(int64_t fd);
+int64_t rask_sim_net_read(int64_t fd, void *buf, size_t n);
+int64_t rask_sim_net_write(int64_t fd, const void *buf, size_t n);
+int     rask_sim_net_close(int64_t fd);
+int64_t rask_sim_net_dup(int64_t fd);
+void    rask_sim_net_addr(int64_t fd, int remote, char *out, size_t cap);
 
 #define RASK_SIM_POINT() rask_sim_point()
 #define RASK_SIM_UNSIMULATED(...) rask_sim_unsimulated(__VA_ARGS__)
