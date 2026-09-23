@@ -4,6 +4,7 @@
 // Instance type (Rng) and thread-local module convenience functions.
 
 #include "rask_runtime.h"
+#include "sim.h"
 #include <stdint.h>
 #include <time.h>
 
@@ -49,6 +50,14 @@ static uint64_t rng_next_u64(RaskRng *rng) {
 RaskRng *rask_rng_new(void) {
     RaskRng *rng = (RaskRng *)rask_alloc(sizeof(RaskRng));
     *rng = (RaskRng){0};
+#ifdef RASK_SIM
+    // Under sim every generator draws its seed from the task's own stream
+    // (sim/SD3), so how often one task uses randomness can't move another's.
+    if (rask_sim_active()) {
+        rng_seed(rng, rask_sim_random_seed());
+        return rng;
+    }
+#endif
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t seed = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;

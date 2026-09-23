@@ -1325,7 +1325,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── ThreadPool ─────────────────────────────────────────────
         StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Thread_spawn", "rask_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::join_outcome("ThreadHandle_join", "rask_task_join_outcome"),
         StdlibEntry::join_outcome("Thread_join", "rask_task_join_outcome"),
         StdlibEntry::simple("ThreadHandle_detach", "rask_task_detach", &[types::I64], None, false),

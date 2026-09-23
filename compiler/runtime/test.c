@@ -4,11 +4,13 @@
 // Called from generated test runner entry points.
 
 #include "rask_runtime.h"
+#include "sim.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
 #include <time.h>
+#include <unistd.h>
 
 typedef void (*test_fn)(void);
 
@@ -107,9 +109,55 @@ static void json_print_escaped(const char *s) {
     }
 }
 
-// Run a single test: catch panics, print JSON result line.
-// Returns 0 on pass, 1 on fail.
-int rask_test_run(test_fn fn, const char *name) {
+// ─── Sim mode ──────────────────────────────────────────────
+//
+// A sim test runs alone in its process (sim/I6): the runner starts the binary
+// once per test, naming it in RASK_SIM_TEST and handing over its seed in
+// RASK_SIM_SEED. Every other test is skipped without a word, and the process
+// exits as soon as the chosen one is reported, so no task, environment
+// variable or allocation outlives the test that made it.
+
+#ifdef RASK_SIM
+static const char *sim_current_name;
+
+static void sim_print_position(void) {
+    printf(",\"sim_step\":%lld,\"sim_time_ns\":%lld",
+           (long long)rask_sim_step(), (long long)rask_sim_time_ns());
+}
+
+// A failure that can't unwind to the test's setjmp — a deadlock is noticed on
+// whichever thread tried to schedule, not on the test's own.
+_Noreturn void rask_test_sim_fail(const char *msg) {
+    printf("{\"name\":\"");
+    json_print_escaped(sim_current_name ? sim_current_name : "");
+    printf("\",\"passed\":false,\"duration_ns\":0,\"error\":\"");
+    json_print_escaped(msg);
+    printf("\"");
+    sim_print_position();
+    printf("}\n");
+    fflush(NULL);
+    _exit(1);
+}
+
+// Returns 1 when `name` is the test this process was started for, after
+// starting the scheduler for it.
+static int sim_select(const char *name) {
+    const char *want = getenv("RASK_SIM_TEST");
+    const char *seed = getenv("RASK_SIM_SEED");
+    if (!want || !seed) {
+        fprintf(stderr, "sim: RASK_SIM_TEST and RASK_SIM_SEED must both be set — "
+                        "run sim binaries through `rask test --sim`\n");
+        _exit(2);
+    }
+    if (strcmp(name, want) != 0) return 0;
+    sim_current_name = name;
+    rask_sim_begin(strtoull(seed, NULL, 10));
+    return 1;
+}
+#endif
+
+// Catch panics, print the JSON result line. Returns 0 on pass, 1 on fail.
+static int test_run_one(test_fn fn, const char *name) {
     // Reset per-test state
     rask_test_skipped = 0;
     rask_test_skip_reason = NULL;
@@ -204,7 +252,11 @@ int rask_test_run(test_fn fn, const char *name) {
         } else {
             printf("(unknown)");
         }
-        printf("\"}\n");
+        printf("\"");
+#ifdef RASK_SIM
+        sim_print_position();
+#endif
+        printf("}\n");
     } else {
         printf("{\"name\":\"");
            json_print_escaped(name);
@@ -214,4 +266,16 @@ int rask_test_run(test_fn fn, const char *name) {
     fflush(stdout);
 
     return failed;
+}
+
+// Run a single test. Returns 0 on pass, 1 on fail.
+int rask_test_run(test_fn fn, const char *name) {
+#ifdef RASK_SIM
+    if (!sim_select(name)) return 0;
+    int failed = test_run_one(fn, name);
+    fflush(NULL);
+    _exit(failed);
+#else
+    return test_run_one(fn, name);
+#endif
 }

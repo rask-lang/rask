@@ -51,7 +51,7 @@ all: $(LIB)
 $(LIB): $(OBJS)
 	$(AR) rcs $@ $^
 
-%.o: %.c rask_runtime.h
+%.o: %.c $(wildcard *.h)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:

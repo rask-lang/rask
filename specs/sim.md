@@ -19,6 +19,7 @@ Sim is a **link choice, not a dialect** (`determinism/D2`, `D3`). `rask test --s
 | **I4: Replay line** | Every failure prints the exact command that reproduces it. The printed line is the repro — that's the whole point |
 | **I5: Seed search** | `--seeds N` runs each selected test on N seeds derived from the run seed. Stops at the first failure per test; `--keep-going` runs all N. The sweep itself replays from `--seed` |
 | **I6: Sequential** | `--sim` implies `--sequential`. One sim runtime per test, installed and torn down around it (`conc.async/C1`). Parallelism belongs in seed search, across processes, not inside one |
+| **I7: Fresh state** | Every test starts from the program's initial state: module-level values hold their initializers, whatever earlier tests did to them. `std.testing/T6`'s carry-over between tests does not hold under sim |
 
 ```
 rask test --sim                          # whole suite, fresh seed
@@ -122,7 +123,7 @@ sim: seed 8419230744151203, 47 tests
 
 FAIL: replica catches up after the leader drops
   panic at raft.rk:214:9: index 3 out of bounds (len 3)
-  step 4127, virtual time 00:00:12.400
+  step 4127, virtual time 00:00:12.400000
   sick this seed: peer c, fd 3 (data/wal.log)
   faults: latency 210ms on peer c (step 3980), write failed on fd 3 (step 4102)
   replay: rask test --sim --seed 8419230744151203 -f "replica catches up after the leader drops"
@@ -136,7 +137,7 @@ ERROR [sim/B1]: test reaches Thread.spawn, which sim mode cannot schedule
 12 |  test "worker pool drains" {
    |       ^^^^^^^^^^^^^^^^^^^ reaches Thread.spawn via pool.rk:31 -> worker.rk:8
 
-WHY: Sim runs every task on one thread so ordering comes from the seed. A raw OS
+WHY: Sim runs one task at a time and picks the next from the seed. A raw OS
      thread runs outside that, so its interleaving would not replay.
 
 FIX: Use `using ThreadPool { }` — sim schedules pool jobs like tasks.
@@ -145,7 +146,7 @@ FIX: Use `using ThreadPool { }` — sim schedules pool jobs like tasks.
 ```
 ERROR [sim/S5]: deadlock — no task can make progress
    |
-   |  step 812, virtual time 00:00:00.812
+   |  step 812, virtual time 00:00:00.000812
 
   task 0 (main)      waiting on join(task 2)
   task 2 (fetch)     waiting on channel receive, 0 senders live
@@ -180,6 +181,9 @@ WHY: Falling through to the real call would make the run unreplayable without
 | Long CPU work between two channel ops | Runs uninterrupted. No other task could have seen the difference | S3 |
 | Test spawns and never joins | `TaskHandle` drop panic (`conc.async/H1`), replayed like any panic | ctrl.panic/PD1 |
 | Detached task still running at block exit | Drain runs it to completion in virtual time | conc.async/C4 |
+| `using Multitasking` with no worker count | No bound. The production default is one worker per CPU, and a replay can't depend on the machine | determinism/D1 |
+| `using Multitasking(workers: 2)` | At most two task bodies in flight, as in production. Waiting for a slot is a scheduling point | S3 |
+| A test reads a module-level value an earlier test wrote | Sees the initializer, not the write | I7 |
 | `sim.require` test under plain `rask test` | Skipped at that line, reported as sim-only | F3 |
 | Test reaches sealed C (a hash, a decompress) | Runs, no mark — already deterministic | B6 |
 | Test reaches `pthread_create` through C | Refused, symbol named | B2 |
@@ -203,6 +207,8 @@ WHY: Falling through to the real call would make the run unreplayable without
 **I4 (the printed line is the repro):** The failure output could print a seed and trust the reader to assemble a command. Every tool that does this makes you look up the flag spelling at the exact moment you are annoyed. Printing the whole command costs one line and removes the step.
 
 **I6 (sequential):** In-process parallelism buys nothing here. Sim time is virtual, so a suite that sleeps for hours finishes in milliseconds; the wall-clock cost is real CPU work, and that parallelizes across processes during seed search where it actually matters.
+
+**I7 (fresh state):** Carrying module state from one test into the next is what an ordinary run does, because the tests share a process. Under sim it would break I3 outright: `-f` replays one test alone, the tests that set the state never run, and the replay line reproduces nothing. So the runner starts every test in a process of its own, which also gives B4 and B5 their per-test reset for free.
 
 **S3 (no preemption):** An earlier draft preempted CPU-bound code after a seeded number of function calls, like Go. It buys nothing observable. Rask tasks share no memory except through the operations S3 lists: closures move what they capture into a task (`mem.closures`), a link can't cross tasks at all (`mem.ownership/T2`), and there are no data races to interleave. Whatever a task does between two scheduling points, no other task can see it until the next one, so cutting it in half produces no ordering a program can tell apart from not cutting it.
 

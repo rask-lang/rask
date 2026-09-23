@@ -92,6 +92,12 @@ static void *pool_worker(void *arg) {
 
 void rask_threadpool_init(int64_t worker_count) {
     if (g_pool.started) return;
+#ifdef RASK_SIM
+    // No pool under sim: every job falls back to its own task thread, and
+    // sim schedules those like any other task (sim/S6).
+    (void)worker_count;
+    return;
+#endif
 
     if (worker_count <= 0) {
         worker_count = sysconf(_SC_NPROCESSORS_ONLN);

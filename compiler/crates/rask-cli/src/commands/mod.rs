@@ -6,6 +6,7 @@ pub mod analysis;
 pub mod codegen;
 pub mod compile;
 pub mod run;
+pub mod sim;
 pub mod build;
 pub mod link;
 pub mod tools;

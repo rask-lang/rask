@@ -12,6 +12,7 @@
 // the running thread. Last one to drop frees it.
 
 #include "rask_runtime.h"
+#include "sim.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -20,6 +21,7 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <setjmp.h>
+#include <unistd.h>
 
 // ─── Internal declarations from panic.c ────────────────────
 
@@ -67,6 +69,9 @@ typedef struct RaskTaskState {
     int              counted_detached;  // in detached_outstanding
 
     int64_t      task_id;        // ctrl.panic/F1
+
+    // The task's place in the sim scheduler (sim.c), or NULL outside sim.
+    void        *sim;
 } RaskTaskState;
 
 struct RaskTaskHandle {
@@ -147,9 +152,21 @@ static int64_t         slots_total;   // 0 = no bound installed
 static int64_t         slots_free;
 static __thread int    slot_held;
 
+// `n <= 0` is `using Multitasking` with no count, which the green scheduler
+// reads as one worker per CPU. It used to install a single slot here, so a
+// default scope on this path ran one task body at a time.
 void rask_task_slots_install(int64_t n) {
+    if (n <= 0) {
+#ifdef RASK_SIM
+        // The machine's CPU count can't be an input to a replay (determinism/D1),
+        // so a default scope under sim has no bound at all.
+        if (rask_sim_active()) return;
+#endif
+        n = (int64_t)sysconf(_SC_NPROCESSORS_ONLN);
+        if (n <= 0) n = 1;
+    }
     pthread_mutex_lock(&slot_lock);
-    slots_total = n > 0 ? n : 1;
+    slots_total = n;
     slots_free = slots_total;
     pthread_mutex_unlock(&slot_lock);
 }
@@ -166,8 +183,10 @@ static void slot_take(void) {
         pthread_mutex_unlock(&slot_lock);
         return;
     }
+    // The bound is observable — at most n bodies in flight — so sim keeps it
+    // too, and waiting for a slot is a scheduling point like any other wait.
     while (slots_free == 0) {
-        pthread_cond_wait(&slot_freed, &slot_lock);
+        rask_task_cond_wait(&slot_freed, &slot_lock, "a free worker slot");
     }
     slots_free--;
     pthread_mutex_unlock(&slot_lock);
@@ -179,7 +198,7 @@ static void slot_give(void) {
     slot_held = 0;
     pthread_mutex_lock(&slot_lock);
     slots_free++;
-    pthread_cond_signal(&slot_freed);
+    rask_task_cond_signal(&slot_freed);
     pthread_mutex_unlock(&slot_lock);
 }
 
@@ -234,6 +253,9 @@ void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
     if (state->counted_detached) {
         state->counted_detached = 0;
         atomic_fetch_sub_explicit(&detached_outstanding, 1, memory_order_release);
+#ifdef RASK_SIM
+        rask_sim_notify(&detached_outstanding);
+#endif
     }
     pthread_mutex_unlock(&state->report_lock);
 
@@ -257,6 +279,11 @@ void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
 static void *task_thread_entry(void *arg) {
     TaskEntry *entry = (TaskEntry *)arg;
     RaskTaskState *state = entry->state;
+#ifdef RASK_SIM
+    // Before anything else: under sim this thread may not run until picked.
+    void *sim = state->sim;
+    if (sim) rask_sim_task_enter(sim);
+#endif
     RaskTaskFn func = entry->func;
     void *env = entry->env;
     rask_free(entry);
@@ -264,6 +291,9 @@ static void *task_thread_entry(void *arg) {
     rask_task_run_body(state, func, env);
 
     state_release(state);
+#ifdef RASK_SIM
+    if (sim) rask_sim_task_exit();
+#endif
     return NULL;
 }
 
@@ -275,6 +305,9 @@ RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
     TaskEntry *entry = (TaskEntry *)rask_alloc(sizeof(TaskEntry));
     *entry = (TaskEntry){ .func = func, .env = env, .state = state };
 
+#ifdef RASK_SIM
+    if (rask_sim_active()) state->sim = rask_sim_task_new(state->task_id);
+#endif
     int err = pthread_create(&state->thread, NULL, task_thread_entry, entry);
     if (err != 0) {
         rask_free(entry);
@@ -285,6 +318,7 @@ RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
 
     RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
     *h = (RaskTaskHandle){ .state = state };
+    RASK_SIM_POINT();
     return h;
 }
 
@@ -306,6 +340,11 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
         }
         pthread_mutex_unlock(&state->report_lock);
     } else {
+#ifdef RASK_SIM
+        // The thread is about to exit once its task is done, and holds no lock
+        // on the way out, so the real join after this doesn't wait on anyone.
+        if (state->sim) rask_sim_task_join(state->sim);
+#endif
         pthread_join(state->thread, NULL);
     }
     rask_task_slot_retake();
@@ -370,6 +409,7 @@ void rask_task_detach(RaskTaskHandle *h) {
 
     RaskTaskState *state = h->state;
 
+    RASK_SIM_POINT();
     pthread_mutex_lock(&state->report_lock);
     state->detached = 1;
     if (atomic_load_explicit(&state->status, memory_order_acquire) == RASK_TASK_RUNNING) {
@@ -402,6 +442,7 @@ int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out) {
     }
 
     // Set cancel flag — task checks via rask_task_cancelled()
+    RASK_SIM_POINT();
     atomic_store_explicit(&h->state->cancel_flag, 1, memory_order_release);
 
     // Wait for completion
@@ -413,15 +454,23 @@ void rask_task_request_cancel(void *handle) {
     if (!h || !h->state) {
         rask_panic("cancel on consumed TaskHandle");
     }
+    RASK_SIM_POINT();
     atomic_store_explicit(&h->state->cancel_flag, 1, memory_order_release);
 }
 
 int8_t rask_task_cancelled(void) {
+    RASK_SIM_POINT();
     if (!current_cancel_flag) return 0;
     return atomic_load_explicit(current_cancel_flag, memory_order_acquire) ? 1 : 0;
 }
 
 int64_t rask_sleep_ns(int64_t ns) {
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        rask_sim_sleep(ns);
+        return 0;
+    }
+#endif
     if (ns <= 0) return 0;
     struct timespec ts;
     ts.tv_sec  = ns / 1000000000LL;
@@ -479,6 +528,21 @@ RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned) {
     return h;
 }
 
+// `Thread.spawn` — a raw OS thread, which sim can't schedule (sim/B1). Task
+// spawns reach `rask_closure_spawn` directly, so this is the only entry that
+// refuses.
+RaskTaskHandle *rask_thread_spawn(void *closure_ptr, int64_t result_owned) {
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        rask_panic("Thread.spawn is not simulated: sim picks which task runs "
+                   "next from the seed, and a raw OS thread would run outside "
+                   "that (sim/B1). Use `spawn` in `using Multitasking { }`, or "
+                   "`using ThreadPool { }`, which sim schedules like tasks");
+    }
+#endif
+    return rask_closure_spawn(closure_ptr, result_owned);
+}
+
 // ─── Hooks for the worker pool (threadpool.c) ──────────────
 // A pooled job needs a task state and a handle without a thread behind them.
 // These keep RaskTaskState private to this file while letting the pool build
@@ -515,6 +579,14 @@ int64_t rask_task_join_simple(void *h) {
 // waits for tasks that were still running when they were detached, so a program
 // with none pays nothing.
 void rask_await_detached_tasks(void) {
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        while (atomic_load_explicit(&detached_outstanding, memory_order_acquire) > 0) {
+            rask_sim_park(&detached_outstanding, "detached tasks to finish");
+        }
+        return;
+    }
+#endif
     // A detached task can't be joined, so poll. The wait is bounded by the
     // task's own runtime, not by this interval.
     while (atomic_load_explicit(&detached_outstanding, memory_order_acquire) > 0) {

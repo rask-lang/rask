@@ -19,6 +19,7 @@
 // This whole file is empty on a build that has the real scheduler.
 
 #include "rask_runtime.h"
+#include "sim.h"
 
 #if !RASK_HAS_GREEN
 
@@ -158,6 +159,12 @@ int rask_green_task_is_cancelled(void) {
 // the engine and nothing generated ever reads it.
 
 void rask_yield(void) {
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        rask_sim_point();
+        return;
+    }
+#endif
     sched_yield();
 }
 
@@ -184,9 +191,7 @@ void rask_yield_accept(int listen_fd) {
 }
 
 void rask_green_sleep_ns(int64_t ns) {
-    if (ns > 0) {
-        rask_yield_timeout((uint64_t)ns);
-    }
+    rask_sleep_ns(ns);
 }
 
 // The blocking I/O wrappers `green.c` also carries. Channel retry loops and

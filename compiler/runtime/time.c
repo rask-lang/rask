@@ -3,9 +3,19 @@
 // Rask time module — Instant and Duration backed by CLOCK_MONOTONIC nanoseconds.
 
 #include "rask_runtime.h"
+#include "sim.h"
 #include <time.h>
 
+// Under sim both clocks are virtual (sim/C1): `Instant` starts at 0 and
+// `SystemTime` at 2020-01-01T00:00:00Z, and every read is a scheduling step.
+#ifdef RASK_SIM
+#define SIM_WALL_CLOCK_START_NS (1577836800LL * 1000000000LL)
+#endif
+
 static int64_t clock_monotonic_ns(void) {
+#ifdef RASK_SIM
+    if (rask_sim_active()) return rask_sim_now_ns();
+#endif
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
@@ -21,6 +31,9 @@ int64_t rask_time_Instant_now(void) {
 // and the checked difference are all arithmetic, so they live in stdlib/time.rk
 // where both backends run the same source.
 int64_t rask_time_wall_clock_nanos(void) {
+#ifdef RASK_SIM
+    if (rask_sim_active()) return SIM_WALL_CLOCK_START_NS + rask_sim_now_ns();
+#endif
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;

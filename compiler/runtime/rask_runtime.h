@@ -1134,8 +1134,9 @@ void    rask_panic_set_task_id(int64_t id);
 // two are epoll and io_uring — so off Linux there is no green scheduler and
 // nothing below this line is defined. `LINUX_SOURCES` in
 // rask-cli/src/commands/link.rs and `LINUX_ONLY` in runtime/Makefile decide the
-// same thing for the build; this is how a portable source asks.
-#if defined(__linux__) && !defined(RASK_NO_GREEN)
+// same thing for the build; this is how a portable source asks. Sim mode
+// (sim.c) builds on the one-thread-per-task path, so it leaves green.c out too.
+#if defined(__linux__) && !defined(RASK_NO_GREEN) && !defined(RASK_SIM)
 #define RASK_HAS_GREEN 1
 #else
 #define RASK_HAS_GREEN 0
@@ -1243,6 +1244,7 @@ int64_t rask_sleep_ns(int64_t ns);
 // Codegen wrapper: spawn a task from a closure pointer [func_ptr | captures...].
 // Extracts func/env, runs the task, and frees the closure allocation on completion.
 RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned);
+RaskTaskHandle *rask_thread_spawn(void *closure_ptr, int64_t result_owned);
 
 // ─── Worker pool (threadpool.c) ────────────────────────────
 // `using ThreadPool(workers: n)` brackets its block with these. Workers are

@@ -323,6 +323,10 @@ pub fn print_test_help() {
     println!("  {}     Run on the interpreter instead of compiling (single file only)", output::arg("--interp"));
     println!("  {}       Output as structured JSON", output::arg("--json"));
     println!("  {} {} Filter tests by name pattern", output::arg("-f"), output::arg("<pattern>"));
+    println!("  {}        Deterministic sim runtime: seeded task order, virtual clock (single file)", output::arg("--sim"));
+    println!("  {} {}     Sim seed to run or replay", output::arg("--seed"), output::arg("<n>"));
+    println!("  {} {}    Run each test under n seeds", output::arg("--seeds"), output::arg("<n>"));
+    println!("  {} Keep searching after a test fails", output::arg("--keep-going"));
     println!();
     println!("{}", output::section_header("Examples:"));
     println!("  {} {} {}        Run all tests in file",
