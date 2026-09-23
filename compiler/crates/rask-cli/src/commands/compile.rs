@@ -530,21 +530,20 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
     // entry point — which the caller used to be spared because it checked for
     // tests before monomorphizing, and no longer does (#330).
     let has_runner = !tests.is_empty();
-    let has_comptime_test =
-        decls.iter().any(|d| matches!(&d.kind, DeclKind::Test(t) if t.is_comptime));
     let has_main = decls.iter().any(|d| matches!(&d.kind, DeclKind::Fn(f) if f.name == "main"));
     decls.retain(|d| {
         !matches!(&d.kind, DeclKind::Test(_))
             && !(has_runner && matches!(&d.kind, DeclKind::Fn(f) if f.name == "main"))
     });
 
-    // A file whose only tests are comptime ones has nothing to run, but
-    // monomorphization still needs an entry point to start from — without one it
-    // stops at "no `main` function to compile from", and the comptime results,
-    // which are already in by then, never reach the report. An empty main gets
-    // the pipeline to the end; the runner sees no runtime tests and never builds
-    // a binary from it.
-    if !has_runner && has_comptime_test && !has_main {
+    // No runtime test to run, and no `main` to fall back on: monomorphization
+    // still needs an entry point, or it stops at "no `main` function to compile
+    // from". That happens to a file whose only tests are comptime ones — whose
+    // results, already in by then, never reached the report — and to every
+    // file in a directory with no test matching `-f`, which failed each such
+    // file outright. An empty main gets the pipeline to the end; the runner
+    // sees no runtime tests and never builds a binary from it.
+    if !has_runner && !has_main {
         decls.push(empty_main());
     }
 
