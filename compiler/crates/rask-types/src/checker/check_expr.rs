@@ -1468,8 +1468,20 @@ impl TypeChecker {
                                 }
                             }
                         } else {
-                            self.errors.push(TypeError::TryOutsideFunction { span: expr.span });
-                            Type::Error
+                            // No return type: a `test` or `benchmark` body,
+                            // where the error ends the test — the same answer
+                            // the resolved case above gives (`error_can_leave`).
+                            // A method call's result is often still a variable
+                            // here, and treating that as "outside a function"
+                            // rejected `try conn.read_text()` in a test while
+                            // accepting `try fs.read_text(p)` beside it.
+                            let ok_ty = self.ctx.fresh_var();
+                            let result_ty = Type::Result {
+                                ok: Box::new(ok_ty.clone()),
+                                err: Box::new(self.ctx.fresh_var()),
+                            };
+                            let _ = self.unify(&inner_ty, &result_ty, expr.span);
+                            ok_ty
                         }
                     }
                     // The operand's own error was already reported — saying
@@ -5152,8 +5164,10 @@ impl TypeChecker {
 
     /// ER47: bare `try` on an optional needs a return with an absent branch.
     fn check_absence_can_leave(&mut self, span: rask_ast::Span) {
+        // No return type is a `test` or `benchmark` body, which takes either
+        // shape: a `none` ends the test the way an error does (ER47,
+        // `std.testing/T20`).
         let Some(return_ty) = &self.current_return_type else {
-            self.errors.push(TypeError::TryOutsideFunction { span });
             return;
         };
         let resolved = self.ctx.apply(return_ty);
