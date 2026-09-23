@@ -5244,8 +5244,6 @@ impl TypeChecker {
         }
     }
 
-    /// ER47: bare `try` on a result needs a return with an error branch. False
-    /// when it reported, so the caller stops rather than piling on.
     /// A stdlib static method's parameter types, one per parameter, `None`
     /// where the declared type mentions a type parameter — that needs the
     /// instantiation, which isn't bound yet. Type parameters are the
@@ -5296,6 +5294,8 @@ impl TypeChecker {
         Some(sig.params.iter().map(|(t, _)| t.clone()).collect())
     }
 
+    /// ER47: bare `try` on a result needs a return with an error branch. False
+    /// when it reported, so the caller stops rather than piling on.
     fn error_can_leave(&mut self, span: rask_ast::Span) -> bool {
         // No return type at all is a `test` (or `benchmark`) block, which has no
         // caller to propagate to: the error ends the test instead, which is what
