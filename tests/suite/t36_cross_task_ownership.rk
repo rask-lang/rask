@@ -44,7 +44,7 @@ test "own closure moves its captures into the task" {
         mut data = Vec.new<i64>()
         data.push(7)
         data.push(8)
-        spawn(own || {
+        spawn(|| {
             mut acc = 0
             for v in data {
                 acc += v

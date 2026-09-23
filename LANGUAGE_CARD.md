@@ -46,7 +46,7 @@ let backup = other.clone()   // explicit copy; allocation is visible
 func show(v: Vec<i32>) { }         // borrow (default): read-only, caller keeps it
 func grow(mutate v: Vec<i32>) { }  // exclusive mutable access, caller keeps it
 func eat(take v: Vec<i32>) { }     // ownership transfer
-eat(own v)                         // caller marks the transfer with `own`
+eat(v)                             // `v` is gone after this — the next use is an error
 ```
 
 - `string` is Copy (16 bytes, immutable, refcounted) — pass it freely, never `.clone()` it.
@@ -352,14 +352,14 @@ func main() -> void or Error {
         let listener = try net.tcp_listen("0.0.0.0:8080")
         loop {
             let conn = try listener.accept()
-            spawn(own || { handle(conn) }).detach()  // handles MUST be joined or detached
+            spawn(|| { handle(conn) }).detach()  // handles MUST be joined or detached
         }
     }
 }
 ```
 
 - `spawn(|| {})` → green task (needs `using Multitasking`); `ThreadPool.spawn` → CPU work (needs `using ThreadPool`; combine: `using Multitasking, ThreadPool`); `Thread.spawn` → raw OS thread.
-- A spawned closure that captures anything needs `own`: `spawn(own || { … })`. The task outlives the block that made it, so captures move in rather than borrow. Two tasks that both need the same `Shared` each get a `.clone()` of it.
+- A spawned closure carries what it captured: the task outlives the block that made it, so captures move in rather than borrow, and the outer name is gone. Nothing to write — the compiler works it out. Two tasks that both need the same `Shared` each get a `.clone()` of it.
 - `h.join()` → `T or JoinError`; `h.cancel()` requests cooperative cancellation (tasks poll `cancelled()`; I/O returns `Cancelled`); dropping a handle unconsumed is a compile error.
 - Channels transfer ownership: `mut (tx, rx) = Channel<Msg>.buffered(100)`; `try tx.send(m)`, `rx.receive()` (not `recv`), non-blocking `try_send`/`try_receive`.
 - `select { rx1 -> v: handle(v), tx <- msg: sent(), _: fallback() }` — random among ready arms; `select_priority` for ordered; `Timer.after(d)` for timeouts.

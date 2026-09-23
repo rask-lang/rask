@@ -96,7 +96,7 @@ test "mem.closures/MC3 — one closure per turn of a loop" {
     mut i = 0
     while i < 3 {
         let tag = "tag-{i}, long enough to allocate a buffer"
-        fns.push(own |x| {
+        fns.push(|x| {
             return "{tag}:{x}"
         })
         i = i + 1

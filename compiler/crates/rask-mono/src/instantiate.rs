@@ -584,7 +584,6 @@ impl TypeSubstitutor {
                     params,
                     ret_ty,
                     body,
-                    is_own,
                 } => ExprKind::Closure {
                     params: params
                         .iter()
@@ -597,7 +596,6 @@ impl TypeSubstitutor {
                         .collect(),
                     ret_ty: ret_ty.as_ref().map(|t| self.substitute_type_string(t)),
                     body: Box::new(self.clone_expr(body)),
-                    is_own: *is_own,
                 },
 
                 // Type cast

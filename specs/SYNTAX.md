@@ -314,7 +314,7 @@ func consume(take data: Data)        // Takes ownership
 
 validate(data)                       // borrow: bare
 update(mutate data)                  // mutate: marked at the call site too
-consume(data)                        // take: bare (own data optional for emphasis)
+consume(data)                        // take: bare (data optional for emphasis)
 ```
 
 **Named arguments (optional, order-fixed):**

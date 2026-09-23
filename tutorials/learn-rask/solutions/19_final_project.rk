@@ -230,7 +230,7 @@ test "simulation runs" {
         mass: 1000.0, thrust_n: 30000.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 1.2,
     }
-    let final_alt = simulate(own ac, 0.1, 100)
+    let final_alt = simulate(ac, 0.1, 100)
     assert final_alt > 0.0
 }
 

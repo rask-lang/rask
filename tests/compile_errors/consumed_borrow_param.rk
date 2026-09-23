@@ -35,7 +35,7 @@ func relay(b: Bag) -> usize {
 
 // A call-site `own` doesn't buy the permission either — the caller still owns it.
 func relay_own(b: Bag) -> usize {
-    return eat(own b)           // ERROR: E0806
+    return eat(b)           // ERROR: E0806
 }
 
 // `mutate` is an exclusive borrow, so consuming IS allowed — but something has to

@@ -201,7 +201,7 @@ All paid in credits:
 2. **Crafting.** Use public facilities to upgrade ship components. Better engine = cheaper jumps. Bigger cargo bay = more profit per courier run. Each upgrade compounds.
 3. **Trade.** Buy low, sell high between systems. Better ship = more cargo = more profit. You're competing with AI haulers now, and you can win because you're smarter about route selection.
 4. **Expansion.** Accumulated enough to deploy an outpost in an unclaimed system. Now you're a domain operator. You mint your own resources, set your own prices.
-5. **Independence.** Own facilities, own specialization, alliances with other operators. The founding cluster becomes one trading partner among many.
+5. **Independence.** Own facilities, specialization, alliances with other operators. The founding cluster becomes one trading partner among many.
 
 Nothing enforces these stages. A new player can fly into unclaimed space on day one. They'll run out of fuel and be stranded, but they can try. The progression is emergent from the economics, not from gates.
 

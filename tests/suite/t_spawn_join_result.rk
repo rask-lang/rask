@@ -45,7 +45,7 @@ func joined_pair() -> i64 or JoinError {
 
 func joined_own() -> i64 or JoinError {
     using Multitasking {
-        let h = spawn(own || { return 7 })
+        let h = spawn(|| { return 7 })
         return try h.join()
     }
 }

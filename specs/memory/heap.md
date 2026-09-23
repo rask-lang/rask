@@ -77,7 +77,7 @@ func process(take ptr: Heap<Data>) {
 }
 
 let ptr = Heap(Data { value: 42 })
-process(own ptr)                  // Consumed by move
+process(ptr)                  // Consumed by move
 // ptr no longer valid here
 ```
 
@@ -194,7 +194,7 @@ enum Expr {
 func eval(take expr: Heap<Expr>) -> i32 {
     match *expr {
         Expr.Num(n) => return n,
-        Expr.Add(left, right) => return eval(own left) + eval(own right),
+        Expr.Add(left, right) => return eval(left) + eval(right),
     }
 }
 ```
@@ -296,7 +296,7 @@ FIX: Use the new binding instead:
 
 The name a binary heap would want is a casualty I'll take: a priority queue should be called `PriorityQueue<T>` anyway — "heap" there is an implementation detail, exactly the lifted-from-`std` naming `std.stdlib/SD*` warns against. Full argument in `analysis.fourth-option-naming`.
 
-**Why `Heap(expr)` instead of `own expr`.** `own` was doing two unrelated jobs — heap-allocate here, move-capture there — and you couldn't tell which from the syntax: `f(own x)` moves, `Node(own x)` allocated. An ordinary call removes the ambiguity and drops a keyword. `own` now means move, everywhere.
+**Why `Heap(expr)` instead of `own expr`.** `own` was doing two unrelated jobs — heap-allocate here, move-capture there — and you couldn't tell which from the syntax: `f(x)` moves, `Node(x)` allocated. An ordinary call removes the ambiguity and drops a keyword. `own` now means move, everywhere.
 
 **Why linear heap pointers?** I wanted heap allocation with no runtime overhead at all. `Heap<T>` has exactly one owner, so the compiler tracks it statically via the linearity rules (`mem.linear`). Use-after-free, double-free and leaks are all prevented with nothing left to check at run time.
 

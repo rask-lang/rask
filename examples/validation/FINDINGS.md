@@ -241,7 +241,7 @@ remain each write down a discard the old `else |e|` form hid (§F).
   is gone entirely, because `delete` does it (rask-lang/rask#908).
 - **`@resource` + `ensure`** with the commit/rollback batch transaction runs
   (C3–C5 shape), and after #577 it's stable under load.
-- **`spawn(own || …)` + channel `send`/`receive` + `join`** run (startup seed
+- **`spawn(|| …)` + channel `send`/`receive` + `join`** run (startup seed
   pipeline).
 - **Inline sync access** (`store.lock().op()`, `config.read().field`) is terse.
 - **`T or E` + `try` + `catch e =>` + `??` + guards** cover the whole error

@@ -250,6 +250,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     let all_operator_targets = mono.all_operator_targets(&typed);
     let all_error_wraps = mono.all_error_wraps(&typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
+    let all_escaping_closures = mono.all_escaping_closures(&typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
         &typed,
         &mono.struct_layouts,
@@ -269,6 +270,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     mir_ctx.comptime_interp = Some(std::cell::RefCell::new(mir_interp));
     mir_ctx.error_wraps = &all_error_wraps;
     mir_ctx.fallback_keeps_shape = &all_fallback_keeps_shape;
+    mir_ctx.escaping_closures = &all_escaping_closures;
     let mir_ctx = mir_ctx;
 
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
@@ -333,6 +335,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let all_operator_targets = mono.all_operator_targets(&typed);
     let all_error_wraps = mono.all_error_wraps(&typed);
     let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
+    let all_escaping_closures = mono.all_escaping_closures(&typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
         &typed,
         &mono.struct_layouts,
@@ -352,6 +355,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     mir_ctx.source_file = Some(path);
     mir_ctx.error_wraps = &all_error_wraps;
     mir_ctx.fallback_keeps_shape = &all_fallback_keeps_shape;
+    mir_ctx.escaping_closures = &all_escaping_closures;
     let mir_ctx = mir_ctx;
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);

@@ -788,7 +788,7 @@ extend http {
             // leaves the task reading this iteration's frame, which the
             // next accept() reuses while the task is still running — the
             // request's method came out as garbage (#474).
-            spawn(own || {
+            spawn(|| {
                 responder.respond(handler(req))
             }).detach()
         }

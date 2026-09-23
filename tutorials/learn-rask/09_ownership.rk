@@ -44,7 +44,7 @@
 //
 // To permanently give a value to a function, use `take`/`own`:
 //   func consume(take list: Vec<i32>) { ... }
-//   consume(own my_vec)    // my_vec is gone — the function owns it now
+//   consume(my_vec)    // my_vec is gone — the function owns it now
 //
 // Why? Because the compiler can guarantee no data races, no dangling
 // references, no use-after-free — without a garbage collector. The

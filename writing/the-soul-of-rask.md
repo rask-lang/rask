@@ -47,7 +47,7 @@ func main() {
     let account = Account { name: "ada", inventory: Inventory { items: Vec.new() } }
     let items = account.inventory.clone()   // explicit: this copies
     println("{items.items.len()}")
-    process(own account)                    // explicit: ownership transferred
+    process(account)                        // the name is consumed here
 }
 ```
 

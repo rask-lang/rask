@@ -8,7 +8,7 @@ func main() {
     using ThreadPool(workers: 4) {
         mut handles = Vec.new()
         for i in 0..800 {
-            let h = ThreadPool.spawn(own || {
+            let h = ThreadPool.spawn(|| {
                 return i
             })
             handles.push(h)

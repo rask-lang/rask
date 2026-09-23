@@ -53,7 +53,7 @@ func apply(f: func(i64) -> i64, x: i64) -> i64 {
 // nothing. Recording a limit from it made `return f` below an escape — over a
 // vector the closure owns, with no borrow left to outlive. Found in review.
 func make_counter(take tags: Vec<string>) -> func() -> u64 {
-    return own || tags.len()
+    return || tags.len()
 }
 
 test "a closure with a Copy local of its own, over a non-Copy capture" {
@@ -94,4 +94,49 @@ test "a call that answers something other than a closure carries no limit" {
     let inner = |x| x + base.len().wrap<i64>()
     let n = apply(inner, 10)
     assert n == 12
+}
+
+// --- What a returned closure now takes with it (CM1) ---
+// Each of these was an E0862 escape error while `own` existed, and writing
+// `own` was the fix. The compiler works the same thing out now, so the plain
+// spelling compiles and the capture travels.
+
+// The struct-field case belongs here too, and is held back by #1334: native
+// reads garbage once a closure carrying a non-Copy capture goes through a
+// field. The interpreter gets it right, so it is a codegen bug rather than a
+// rule question.
+
+func consume(take f: func(i64) -> i64) -> i64 {
+    return f(1)
+}
+
+func returns_over_a_local() -> func(i64) -> i64 {
+    let tags: Vec<i64> = [1, 2, 3]
+    let f = |x| x + tags.len().wrap<i64>()
+    return f
+}
+
+func returns_over_a_take(take tags: Vec<i64>) -> func(i64) -> i64 {
+    return |x| x + tags.len().wrap<i64>()
+}
+
+func hands_it_to_a_take() -> i64 {
+    let tags: Vec<i64> = [1, 2, 3]
+    let f = |x| x + tags.len().wrap<i64>()
+    return consume(f)
+}
+
+test "mem.closures/CM1 — a returned closure carries the local it captured" {
+    let f = returns_over_a_local()
+    assert f(1) == 4
+}
+
+test "mem.closures/CM1 — a take parameter is the frame's, so it travels too" {
+    let tags: Vec<i64> = [1, 2]
+    let f = returns_over_a_take(tags)
+    assert f(1) == 3
+}
+
+test "mem.closures/CM1 — handed to a take parameter, the capture came along" {
+    assert hands_it_to_a_take() == 4
 }

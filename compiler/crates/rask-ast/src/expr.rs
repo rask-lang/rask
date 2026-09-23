@@ -183,14 +183,16 @@ pub enum ExprKind {
         bindings: Vec<WithBinding>,
         body: Vec<super::stmt::Stmt>,
     },
-    /// Closure (|x, y| x + y or own |x, y| x + y)
+    /// Closure (`|x, y| x + y`)
+    ///
+    /// How it captures isn't written here: a closure that outlives the frame
+    /// that built it carries its captures, one that stays points at them, and
+    /// which it is has exactly one legal answer per literal. The ownership pass
+    /// works it out (`mem.closures/CM1`).
     Closure {
         params: Vec<ClosureParam>,
         ret_ty: Option<String>,
         body: Box<Expr>,
-        /// Captures non-Copy values by move; can escape its creation scope.
-        /// Without this flag the closure borrows outer variables (scope-limited).
-        is_own: bool,
     },
     /// Type cast (x as i32) — lossless widening only (type.primitives CV1).
     Cast {
@@ -255,8 +257,6 @@ pub enum StringSegment {
 pub enum ArgMode {
     /// Default (borrow / read-only)
     Default,
-    /// `own expr` — transfers ownership (matches `take` param)
-    Own,
     /// `mutate expr` — mutable borrow (matches `mutate` param)
     Mutate,
     /// `deleting expr` — may have nodes deleted from it (matches `deleting`

@@ -265,7 +265,7 @@ func main() {
 
     // Start interrupt handler on separate thread. `own` moves the Sender
     // (and Copy captures start_time / SAMPLE_RATE_HZ) into the closure.
-    mut isr_handle = Thread.spawn(own || {
+    mut isr_handle = Thread.spawn(|| {
         interrupt_handler(tx, start_time, SAMPLE_RATE_HZ)
     })
 

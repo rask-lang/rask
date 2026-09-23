@@ -18,7 +18,7 @@
 //     it a second time on the way out. It is `take self` now, which is what it
 //     always did.
 //   - a capture the closure body consumes is not the environment glue's to
-//     free. `spawn(own || { … tx.close() })` was a double free.
+//     free. `spawn(|| { … tx.close() })` was a double free.
 //
 // `tests/leak_gate.sh` counts the allocations. What this file pins is that
 // values still make it across, and that a closed end reads as closed rather
@@ -118,7 +118,7 @@ test "concurrency.channels — channels in a loop" {
 func spawned_sum(n: i64) -> i64 {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(4)
-        let producer = spawn(own || {
+        let producer = spawn(|| {
             mut i = 0
             while i < n {
                 tx.send(i + 1)
@@ -151,7 +151,7 @@ func fan_in(tasks: i64) -> i64 {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(8)
         for id in 0..tasks {
-            spawn(own || {
+            spawn(|| {
                 tx.send(id + 1)
             }).detach()
         }

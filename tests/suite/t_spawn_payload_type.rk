@@ -35,7 +35,7 @@ test "two tasks keep their own i64 results" {
 
 test "Thread.spawn binds its payload the same way" {
     let (tx, rx) = Channel<i64>.buffered(1)
-    Thread.spawn(own || {
+    Thread.spawn(|| {
         let _ = tx.send(7i64)
         return
     }).join()

@@ -566,7 +566,6 @@ mod tests {
                             params: vec![],
                             ret_ty: None,
                             body: Box::new(Expr { id: NodeId(0), kind: ExprKind::Block(inner), span: sp() }),
-                            is_own: false,
                         },
                         span: sp(),
                     },

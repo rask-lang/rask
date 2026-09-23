@@ -2390,19 +2390,19 @@ impl Interpreter {
                 }
             }
 
-            ExprKind::Closure { params, body, is_own, .. } => {
-                // mem.closures/MC1: a scope-limited closure borrows what it
-                // captures, so a write inside it reaches the enclosing
-                // variable. An `own` closure copies — it captures by move and
-                // outlives its creation scope, so sharing live storage would
-                // let it read a variable that changed after it was built.
+            ExprKind::Closure { params, body, .. } => {
+                // mem.closures/MC1: a closure that stays in its frame borrows
+                // what it captures, so a write inside it reaches the enclosing
+                // variable. One that outlives its frame copies instead —
+                // sharing live storage would let it read a variable that
+                // changed after it was built, or one that is gone.
                 //
-                // Both halves of that split were added together and only one
-                // was wired here, so `own` aliased: `mut n = 0; let f = own ||
-                // { print(n) }; n = 42; f()` printed 42 on the interpreter and
-                // 0 on native, which is a divergence as well as the wrong
-                // answer.
-                let captured = if *is_own {
+                // CM1: which it is comes from the ownership pass, the same set
+                // lowering reads, so the two backends can't drift. Both halves
+                // of the split were once added together with only one wired
+                // here, and `own` aliased: `mut n = 0; let f = own || { print(n)
+                // }; n = 42; f()` printed 42 on the interpreter and 0 on native.
+                let captured = if self.escaping_closures.contains(&expr.id) {
                     self.env.capture_snapshot()
                 } else {
                     self.env.capture_shared()

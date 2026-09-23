@@ -182,17 +182,6 @@ def commit(t, name):
     return "    ensure drop(%s)\n" % name if TYPES[t].get("linear") else ""
 
 
-def owning(t):
-    """`own ` on a closure that gives its capture away, nothing for the rest.
-
-    A plain closure borrows what it captures, and a borrow is not the
-    closure's to hand out (mem.closures, mem.linear/L3, E0885). Nothing says
-    how many times a closure runs, so a borrowing closure that returns its
-    captured `Heap` would hand the same box to two callers. `own` moves the
-    box in, which is the correct Rask for this cell — the carrier emits it and
-    moves on, the same way `commit` emits the `ensure`."""
-    return "own " if TYPES[t].get("linear") else ""
-
 
 def take(t):
     """`take ` for a linear payload's parameter, nothing for the rest.
@@ -329,12 +318,12 @@ def c_tuple(t, ty):
 def c_closure_capture(t, ty):
     return "", """\
     let x: {decl} = {val}
-    let f = {own}|| {{
+    let f = || {{
         return x
     }}
     let y = f()
 {commit}    println("got={show}")
-""".format(decl=ty["decl"], val=ty["val"], own=owning(t), commit=commit(t, "y"),
+""".format(decl=ty["decl"], val=ty["val"], commit=commit(t, "y"),
            show=read_expr(t, "y"))
 
 
@@ -352,13 +341,14 @@ def c_closure_param(t, ty):
            show=read_expr(t, "y"))
 
 
-def c_own_closure(t, ty):
-    """An escaping closure: `own` copies its captures into a heap environment
-    (mem.closures/SL1), which is a different lowering from the borrowing one."""
+def c_escaping_closure(t, ty):
+    """A closure that outlives its frame: it carries its captures into a heap
+    environment (mem.closures/CM1), a different lowering from the borrowing
+    one."""
     decls = """\
 func escaping() -> func() -> {decl} {{
     let x: {decl} = {val}
-    return own || {{
+    return || {{
         return x
     }}
 }}
@@ -431,7 +421,7 @@ CARRIERS = {
     "tuple":          c_tuple,
     "closure":        c_closure_capture,
     "closure_param":  c_closure_param,
-    "own_closure":    c_own_closure,
+    "escaping_closure": c_escaping_closure,
     "shared_box":     c_shared_box,
     "heap_box":       c_heap_box,
     "seq_yield":      c_seq_yield,
@@ -477,6 +467,13 @@ def skips():
         # is no spelling of "a Heap handed into a closure and back out".
         ("closure_param", "heap"):
             "mem.closures/CP4 — a closure can't take ownership through a parameter",
+        # A closure that stays in its frame borrows what it captured, and a
+        # borrow is not its to hand out. Nothing bounds how many times a
+        # closure runs, so returning a captured `Heap` would give the same box
+        # to two callers. The shape that works is the one that outlives its
+        # frame and carries the box in, which is the `escaping_closure` row.
+        ("closure", "heap"):
+            "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed",
     }
 
 

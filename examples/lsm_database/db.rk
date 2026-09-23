@@ -56,7 +56,7 @@ extend Db {
 
         for kv in recovered {
             if kv.seq > max_seq { max_seq = kv.seq }
-            memtable.put(own kv)
+            memtable.put(kv)
         }
 
         // Discover existing SSTables
@@ -98,7 +98,7 @@ extend Db {
             return DbError.Wal(e)
         }
 
-        self.memtable.put(own kv)
+        self.memtable.put(kv)
 
         if self.memtable.should_flush() {
             try self.flush()
@@ -154,7 +154,7 @@ extend Db {
             return DbError.Wal(e)
         }
 
-        self.memtable.put(own kv)
+        self.memtable.put(kv)
 
         if self.memtable.should_flush() {
             try self.flush()

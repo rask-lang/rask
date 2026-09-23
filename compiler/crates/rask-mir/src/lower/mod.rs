@@ -329,6 +329,7 @@ impl<'a> MirContext<'a> {
             trait_coercions: &typed.trait_coercions,
             error_wraps: &typed.error_wraps,
             fallback_keeps_shape: &typed.fallback_keeps_shape,
+            escaping_closures: &typed.escaping_closures,
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
@@ -467,6 +468,9 @@ pub struct MirContext<'a> {
     /// ER14a: `??` sites whose right side is still wrapped, so the present
     /// path hands back the left operand instead of its payload.
     pub fallback_keeps_shape: &'a std::collections::HashSet<NodeId>,
+    /// CM1: closure literals that outlive the frame that built them. Those
+    /// carry their captures; the rest hold the address and write through it.
+    pub escaping_closures: &'a std::collections::HashSet<NodeId>,
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
     /// goes there, and the rest of the chain works on the payload.
     pub try_chain_placement: &'a HashMap<NodeId, NodeId>,
@@ -550,6 +554,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_COALESCE_SHAPE: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
+        static EMPTY_ESCAPING: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
+            std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_TRY_PLACEMENT: std::sync::LazyLock<HashMap<NodeId, NodeId>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
@@ -584,6 +590,7 @@ impl<'a> MirContext<'a> {
             trait_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
+            escaping_closures: &EMPTY_ESCAPING,
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
@@ -7376,6 +7383,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
+        let empty_escaping = std::collections::HashSet::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
@@ -7404,6 +7412,7 @@ mod tests {
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            escaping_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
@@ -7453,6 +7462,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
+        let empty_escaping = std::collections::HashSet::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
@@ -7481,6 +7491,7 @@ mod tests {
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            escaping_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
@@ -7539,6 +7550,7 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
+        let empty_escaping = std::collections::HashSet::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
         let empty_targets = HashMap::new();
@@ -7567,6 +7579,7 @@ mod tests {
             trait_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
+            escaping_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,

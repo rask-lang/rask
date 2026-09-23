@@ -68,7 +68,7 @@ closure, that sat under the whole protocol.
 
 Three things were wrong, and none of them turned out to need a decision.
 
-*Allocation.* Lowering picked heap-vs-stack from `own`, and the escape pass only
+*Allocation.* Lowering picked heap-vs-stack from a keyword, and the escape pass only
 ever downgraded, so a scope-limited closure that escaped anyway kept its stack
 environment. It's heap exactly when it escapes now, in both directions. The pass
 also read only the `ClosureCreate` destination, and lowering copies that on

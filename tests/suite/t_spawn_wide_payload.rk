@@ -50,14 +50,14 @@ func a_counted_task() -> i64 or JoinError {
 
 func a_pooled_string() -> string or JoinError {
     using ThreadPool(workers: 2) {
-        let h = ThreadPool.spawn(own || { return "from the pool" })
+        let h = ThreadPool.spawn(|| { return "from the pool" })
         return try h.join()
     }
 }
 
 func a_pooled_float() -> f64 or JoinError {
     using ThreadPool(workers: 2) {
-        let h = ThreadPool.spawn(own || { return 0.25f64 })
+        let h = ThreadPool.spawn(|| { return 0.25f64 })
         return try h.join()
     }
 }

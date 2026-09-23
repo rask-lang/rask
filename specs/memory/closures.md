@@ -1,84 +1,113 @@
-<!-- id: mem.closures -->
-<!-- status: decided -->
-<!-- summary: Two modes — |x| expr borrows outer scope (scope-limited), own |x| expr moves/copies (self-contained) -->
+<!-- summary: A closure that outlives its frame carries what it captured; one that stays points at it, and the compiler decides which -->
 <!-- depends: memory/borrowing.md, memory/value-semantics.md -->
 <!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-ownership/ -->
 
 # Closures
 
-Two modes, one keyword:
+A closure either points at what it captured or carries it:
 
 ```rask
-|x| expr        // scope-limited: borrows outer variables, can't outlive their scope
-own |x| expr    // owned: moves/copies outer variables, self-contained
+mut total = 0
+let add = |x| { total = total + x }      // points at `total` — the write lands outside
+
+func make_filter(tags: Vec<string>) -> func(Entry) -> bool {
+    return |entry| { return tags.contains(entry.tag) }   // carries `tags`
+}
 ```
 
-The `own` prefix is the explicit opt-in to move-capture. Without it, closures borrow.
+There is no word for this, because there is never a choice. A closure that
+outlives the frame that built it *must* carry — pointing at a frame that is gone
+is the bug the rule exists to prevent — and one that stays *should* point, or
+MC4's write-back has nowhere to land. One legal answer per literal, so the
+compiler works it out.
+
+| Rule | Description |
+|------|-------------|
+| **CM1: Outliving decides** | A closure carries its captures exactly when it outlives its frame: handed to a `take` parameter (which is where `spawn` lives), returned, or stored into a field. Everything else points |
+| **CM2: Carrying consumes** | A carried non-Copy capture is moved, so the outer name is gone and a later use is the ordinary use-after-move error. A Copy capture is copied and the outer name is fine (VS1/VS2) |
+| **CM3: Lent parameters are still borrowed** | A carrying closure can't move what the frame doesn't own. A `param: T`, `mutate param: T` or `self` belongs to the caller and is still there when the call returns, so it stays borrowed and SL4's limit rides the return |
 
 ## Capture rules
 
-| Mode | Non-Copy captures | Copy captures | Can escape scope? |
-|------|-------------------|---------------|-------------------|
-| `\|x\| expr` | Borrowed (source stays valid) | Borrowed | Only as far as its borrow lives (MC3) |
-| `own \|x\| expr` | Moved (source consumed) | Copied | Yes |
+| Where the closure goes | Non-Copy captures | Copy captures |
+|------|-------------------|---------------|
+| Stays in its frame | Borrowed (source stays valid) | Borrowed — the write comes back (MC4) |
+| Outlives it | Moved (source consumed) | Copied |
 
 ```rask
 let tags = get_tags()  // Vec<string>
 
-// Borrows tags — tags still valid after the call
+// Stays — borrows tags, tags still valid after the call
 filter_vec(items, |item| tags.contains(item.tag))
 print(tags.len())  // OK
 
-// Moves tags — tags consumed
-let f = own |entry: Entry| -> bool { return tags.contains(entry.tag) }
-print(tags.len())  // ERROR: tags moved into closure
+// Outlives — carries tags, so tags is consumed
+store_callback(|entry: Entry| -> bool { return tags.contains(entry.tag) })
+print(tags.len())  // ERROR: tags moved into the closure
 ```
 
-A scope-limited closure borrows a Copy capture rather than copying it. That's
-what makes MC1's inference mean anything: `mut total = 0; let add = |x| { total
-= total + x }` has to reach the caller's `total`, and an `i32` is Copy. Copy
-decides what happens when a value *escapes* — which is why `own` copies it —
-not whether a borrow is a borrow.
+A closure that stays borrows a Copy capture rather than copying it. That's what
+makes MC1's inference mean anything: `mut total = 0; let add = |x| { total =
+total + x }` has to reach the caller's `total`, and an `i32` is Copy. Copy
+decides what happens when a value *escapes* — which is why a carried one is
+copied — not whether a borrow is a borrow.
 
-What isn't inferred is the mode. The `own` prefix is visible at the use site,
-and it's the only thing that changes which of these two rows applies.
+### Why no keyword
 
-## When to use own
+An earlier design wrote `own` at the literal. The argument for it was
+visibility: the reader should see where a move happens. Two things sank it.
 
-Use `own` when the closure needs to outlive its creation scope — returned from a function,
-stored in a struct, sent to another task:
+It restated what the compiler already knew. Omitting it where it was needed was
+a compile error whose fix was *"prefix the closure with `own`"* — the compiler
+printing the word back at you is the sign that the word is not carrying
+information (commitment 5).
+
+And it was a footgun in the other direction. Adding `own` to a closure that
+didn't need it silently changed the answer:
 
 ```rask
-func make_filter(tags: Vec<string>) -> |Entry| -> bool {
-    return own |entry: Entry| -> bool { return tags.contains(entry.tag) }
-}
+mut n = 0
+let f = || { n += 1 }
+f()
+print(n)                // 1
+
+mut m = 0
+let g = || { m += 1 }
+g()
+print(m)                // 0 — the write landed on the closure's copy
 ```
 
-Without `own`, a closure can still escape — it just can't outlive what it borrowed (MC3).
+Same shape, one keyword, different result, no diagnostic. A marker whose only
+power is to select the wrong thing is not visibility.
+
+What is left of the visibility argument is served better by the move itself: a
+capture that got carried is consumed, so the next use of that name is an error
+pointing at both places.
 
 ## What a returned closure may capture
 
 | Rule | Description |
 |------|-------------|
-| **SL3: Parameters, not locals** | A non-`own` closure that leaves the function may capture the function's *lent* parameters — `param: T`, `mutate param: T`, `self` — and not its locals or its `take` parameters. A lent parameter is the caller's and is still there when the call returns; a local and a `take` are the frame's, and the frame is going away |
-| **SL4: The limit rides the return** | A call that answers a closure hands back whatever limits its borrowed arguments had. `make_filter(tags)` gives a closure that lives as long as `tags` does. A `take` argument contributes no limit — it was given away, and handing a scope-limited closure to a `take` parameter is the MC3 error instead |
+| **SL3: A local travels, a lent parameter is borrowed** | A closure leaving the function takes its locals and `take` parameters with it — they are the frame's to give, and the frame is going away. A *lent* parameter — `param: T`, `mutate param: T`, `self` — is the caller's, so the closure borrows it and SL4 decides how long that lasts |
+| **SL4: The limit rides the return** | A call that answers a closure hands back whatever limits its borrowed arguments had. `make_filter(tags)` gives a closure that lives as long as `tags` does. A `take` argument contributes no limit — it was given away |
 
 SL3 is the difference between these two:
 
 ```rask
-func logging(next: |Request| -> Response) -> |Request| -> Response {
-    return |request| { … next(request) … }   // fine — `next` is the caller's
+func logging(next: func(Request) -> Response) -> func(Request) -> Response {
+    return |request| { … next(request) … }   // borrows `next` — the caller's
 }
 
-func broken() -> |i64| -> i64 {
-    let tags = get_tags()
-    return |x| x + tags.len()                // error: `tags` dies here
+func counter() -> func() -> i64 {
+    mut n = 0
+    return || { n += 1  return n }           // carries `n` — the frame's
 }
 ```
 
-and it is what the whole sequence protocol rests on — `vec.filter(|u| u.active)` is
-`Vec.filter(self, pred) -> Sequence<T>` returning a closure over a borrowed receiver. Requiring
-`own` there would cost every adapter chain a `take self`.
+and the borrow half is what the whole sequence protocol rests on —
+`vec.filter(|u| u.active)` is `Vec.filter(self, pred) -> Sequence<T>` returning a
+closure over a borrowed receiver. Moving the receiver in would cost every adapter
+chain a `take self`.
 
 SL4 is why nobody writes a lifetime. The signature already says it: the return type is a
 closure and the parameters say `take` or not, so the caller works out what the result is
@@ -199,9 +228,9 @@ enforces it whether or not you wrote a word. Principle 5 says where that kind of
 instead of type-system constraints". An annotation the compiler doesn't need is an experience of
 safety, and the goal is for safety to be a property instead.
 
-The split that matters is already in this spec, one section up: read captures are inferred, and
-`own` — the one that moves or clones — is a visible prefix. Requiring `mutate` on a capture was
-the odd rule out, not the pattern.
+The split that matters is already in this spec, one section up: whether a capture is pointed at
+or carried is worked out, not written. Requiring `mutate` on a capture was the odd rule out, not
+the pattern.
 
 **The desugar needs nothing special.** `for x in seq { total = total + x }` lowers to
 `seq(|x| { total = total + x; return true })`. `total` is captured mutably by inference, like any
@@ -211,50 +240,78 @@ and it is not needed once captures are inferred.
 
 ## spawn
 
-`spawn` requires owned closures. The existing syntax works:
+`spawn` declares `take f: func() -> T`, so a closure handed to it outlives the frame and
+CM1 makes it carry. A task gets its own copy of everything its closure captured, and that
+copy lives in the task's environment, which dies when the task does.
 
 ```rask
-spawn(own || {
-    vec.push(1)  // OK: task owns vec
+spawn(|| {
+    vec.push(1)  // the task's vec — carried in, the outer name is gone
 })
 ```
 
-A scope-limited closure passed to `spawn` is a compile error — the task could outlive the
-spawning scope.
+Carrying keeps the task memory-safe; it doesn't make the program right.
+
+| Rule | Description |
+|------|-------------|
+| **SP1: A write the task never uses is an error** | Inside a spawned closure, a write to a capture that nothing downstream puts to use is a compile error (E0896). The task is writing its own copy and the copy is about to die, so the write goes nowhere |
+
+SP1 exists because carrying is silent for the sizes that matter least. A `Vec` capture is
+moved and the outer name dies with it, which a reader can't miss; an `i64` is copied and
+the outer name reads fine, so `mut count = 0` followed by `spawn(|| { count += 1 })` used
+to type-check, run, and print `0`. Memory-safe and wrong, which is the worst quadrant.
+
+```rask
+mut count = 0
+spawn(|| { count += 1 })          // error E0896 — lands on the task's copy
+
+let total = Shared.new(0)         // the fix: one value, two holders
+let t = total.clone()
+spawn(|| { with t.write() as c { c += 1 } })
+```
+
+A write the task puts to use is doing work, so it stays legal — a task that sums into a
+local and returns it, or counts something for its own output, is unaffected. `join()` hands
+back the closure's return value; it is not a write-back for captures.
+
+"Puts to use" is stricter than "reads again", and the loop is why:
+
+```rask
+spawn(|| {
+    for i in 0..10 { total += i }     // error E0896
+})
+```
+
+Every write here is read — by the next iteration. The accumulation is still thrown away,
+because the only thing those reads feed is another write that goes nowhere. So a read only
+counts when it reaches a use, which lets the whole chain collapse at once.
+
+Deadness here is decidable from the closure body alone, which is why it's an error and not
+a lint: no program wants the write it rejects.
 
 ## Error messages
 
 **Scope-limited closure escapes [SL3]:**
 ```
-ERROR [mem.closures/SL3]: closure cannot escape scope
+ERROR [E0800]: use of moved value: `tags`
    |
-3  |  let tags = get_tags()
-   |               ^^^^^^^^^^^ borrowed from outer scope (line 3)
-4  |  let f = || process(tags)
-   |            ^^^^^^^^^^^^^^^^^ closure captures scoped variable
-5  |  return f
-   |  ^^^^^^^^ cannot escape scope where 'tags' lives
+3  |  let f = || process(tags)
+   |            ^^^^^^^^^^^^^^ `tags` carried into a closure that outlives this frame
+4  |  return f
+5  |  print(tags.len())
+   |        ^^^^ value used here after move
 
-FIX: capture by value with own:
+WHY: the closure is returned, so it outlives the frame `tags` lives in (CM1).
+     It takes `tags` with it, and there is nothing left here to read.
 
-  let f = own || process(tags)
-  return f                          // OK: tags moved into closure
+FIX: give the closure its own copy, and keep yours:
+
+  let f = || process(tags.clone())
 ```
 
-**Owned closure used where scope-limited expected — rarely an error. The reverse:**
-
-```
-ERROR [mem.closures/MC3]: scope-limited closure passed to function that stores it
-   |
-5  |  store_callback(greet)
-   |  ^^^^^^^^^^^^^^^^^^^^^ 'greet' is scope-limited (borrows 'tags')
-   |                        but 'store_callback' stores its argument
-
-FIX: use own closure:
-
-  let greet = own || print(tags.clone())
-  store_callback(greet)
-```
+There is no "closure cannot escape" error any more. A closure that escapes takes
+what it captured; the only thing left to report is the outer name being gone,
+which is the move error every other consumption prints.
 
 **Mutable capture conflict [MC2]:**
 ```
@@ -276,26 +333,28 @@ FIX: Use Shared<T> for shared mutable state:
 
 | Case | Handling |
 |------|----------|
-| `own` closure captures Copy type | Value copied (same as non-own) |
-| `own` closure captures move-only type | Type moved into closure, source invalid |
-| `own` closure captures resource type | Resource consumed by closure; must be used within or returned |
-| Non-`own` closure captures resource type | Resource borrowed; consuming it in the body is an error (E0891) |
-| Nested closures | Each level borrows/moves from its immediate outer scope |
-| Pure closure (no captures) | Self-contained either way; `own` is redundant but allowed |
+| Carrying closure captures Copy type | Value copied; the outer name is untouched |
+| Carrying closure captures move-only type | Type moved in, source invalid |
+| Carrying closure captures resource type | Resource consumed by the closure; must be used within or returned |
+| Pointing closure captures resource type | Resource borrowed; consuming it in the body is an error (E0891) |
+| Nested closures | Each level borrows or carries from its immediate outer scope |
+| Pure closure (no captures) | Self-contained either way; nothing to decide |
 | Mutable capture of a Copy type | Borrows mutably (not copied), mutations visible to caller |
 
 The resource rows are the same rule as `mem.linear/L3` — a borrow isn't a
 consumption — and there is a second reason for them here: nothing says how many
-times a closure runs. A `close()` in the body of a plain closure is one
-consumption to read and any number at runtime, so it has to be `own`, which
-moves the resource in and leaves the outer binding with nothing to owe.
+times a closure runs. A `close()` in the body of a pointing closure is one
+consumption to read and any number at runtime, so it has to be the carrying
+kind, which takes the resource in and leaves the outer binding with nothing to
+owe.
 
 ```rask
 func twice(f: func()) { f() f() }
+func store(take f: func()) { … }
 
 let c = Conn.open(1)
-twice(|| { c.close() })         // error[E0891] — the closure borrowed `c`
-twice(own || { c.close() })     // fine: `c` is the closure's now
+twice(|| { c.close() })         // error[E0891] — `twice` borrows, so the closure does
+store(|| { c.close() })         // fine: `store` takes it, so `c` is the closure's now
 ```
 
 ---
@@ -304,28 +363,33 @@ twice(own || { c.close() })     // fine: `c` is the closure's now
 
 ### Capture semantics
 
-`own` closures move non-Copy values into the closure environment block. The source variable is
-marked consumed by the ownership checker.
+The ownership pass answers CM1 for every closure literal and publishes the set
+(`escaping_closures`). Lowering and the interpreter both read it, so the two
+backends cannot disagree about what a capture is — they did once, when each got
+its own half of the rule.
 
-Non-`own` closures borrow. The ownership checker records a shared borrow on each captured
-variable; the source stays valid.
+A carrying closure moves non-Copy values into its environment block, and the
+ownership checker marks the source consumed. A pointing closure records a shared
+borrow on each captured variable; the source stays valid.
 
-The environment slot is what makes the difference concrete, and there are three shapes of it:
+The environment slot is what makes the difference concrete, and there are three
+shapes of it:
 
 | Capture | Slot holds | A write inside the body lands on |
 |---|---|---|
-| Non-`own` | The variable's address (8 bytes) | The creating frame's variable |
-| `own` | The variable itself | The environment — so it survives to the next call |
+| Points | The variable's address (8 bytes) | The creating frame's variable |
+| Carries | The variable itself | The environment — so it survives to the next call |
 | `spawn` | A copy | The task's own state, by construction |
 
-The `own` row is the one that's easy to get wrong. Loading the value out at the top of the call
-and working on the loaded copy reads correctly and throws every write away, so a counter closure
-answers 1 however many times you call it. The environment *is* the variable's home once `own`
-moved it there, so the body works through the slot's address for its whole life.
+The carrying row is the one that's easy to get wrong. Loading the value out at
+the top of the call and working on the loaded copy reads correctly and throws
+every write away, so a counter closure answers 1 however many times you call it.
+The environment *is* the variable's home once the closure carried it there, so
+the body works through the slot's address for its whole life.
 
 The block itself is owned like any other value: whoever is holding it when their
 frame ends frees it. What that free doesn't yet do is release the captures inside
-— an `own` closure holding a `Vec` frees the block and leaks the Vec (#1045).
+— a carrying closure holding a `Vec` frees the block and leaks the Vec (#1045).
 
 ### Closure block layout
 
@@ -341,9 +405,10 @@ implicit first argument to the closure function.
 Heap exactly when the closure outlives the frame that built it — returned, stored through a
 pointer, or handed to something that keeps it. Everything else is a stack slot.
 
-`own` is not the question, and treating it as one is what made a returned scope-limited closure
-read a popped frame. A scope-limited closure *can* escape, by being returned; the escape analysis
-decides, not the keyword.
+This is the same question CM1 answers, and it is answered once: the closure that
+outlives its frame is exactly the one that carries its captures and exactly the
+one that needs a heap block. Treating a keyword as the question instead is what
+made a returned closure read a popped frame.
 
 | Escapes its frame? | Allocation | Freed by |
 |---|---|---|
@@ -359,36 +424,42 @@ it: `let tick = counter()` hands the caller a block whose capture layout only `c
 
 ### Rationale
 
-**Why explicit own rather than inference?** An earlier design inferred capture mode from context
-— inline closures borrow, stored closures move. The same `|x| ...` syntax had different
-semantics depending on how the closure was used, which the developer couldn't see at the closure
-site. Extracting a closure to name it would silently change ownership. `own` makes the intent
-visible where it matters — at the closure literal — and the rule is unconditional: `own` moves,
-no `own` borrows.
+**Why inference rather than a keyword.** This went the other way first. The
+objection to inferring was that the same `|x| …` would mean different things
+depending on how it was used, which the reader can't see at the literal — so
+`own` was introduced to say it out loud.
 
-**Consistency with spawn.** `spawn(own || {...})` already required `own` to communicate that the
-task takes ownership of its captures. Extending `own` to all closures unifies the rule.
+That objection doesn't survive contact. Inference picks between *legal* and
+*rejected*, not between two meanings: when a closure escapes, pointing at its
+captures is a dangling read, and when it doesn't, carrying them drops the
+write-back MC4 promises. There was never a second answer for the keyword to
+select, which is why omitting it printed a fix that just said to write it.
+
+The case where two answers really did exist was a closure kept in a frame with
+private state across calls — `own` there bought you a counter the caller
+couldn't see. That went with the keyword. A callable with state of its own is a
+struct with a method, which is how it reads anyway.
 
 ### Patterns & guidance
 
 | Scenario | Pattern |
 |----------|---------|
-| Iterator adapter | `items.filter(\|i\| condition)` (borrows, scope-limited) |
+| Iterator adapter | `items.filter(\|i\| condition)` — points at the source, dies with the chain |
 | Simple callback | `\|x\| x * 2` (pure, no captures) |
-| Callback with context | `own \|event\| process(context, event)` (moves context) |
+| Callback with context | `\|event\| process(context, event)` handed to a `take` parameter — carries `context` |
 | Mutating a local | `\|x\| count += x` — the mutable capture is inferred (MC1) |
 | Shared mutable state (multiple closures) | `Shared<T>` |
-| Callback stored for later | `own \|...\|` — capture owned values |
+| Callback stored for later | Whatever stores it declares `take`, and the closure carries |
 
 **`Shared<T>` for shared mutable state:**
 
 ```rask
 let counter = Shared.new(0)
 
-button1.on_click(own |event| {
+button1.on_click(|event| {
     with counter.write() as c { c += 1 }
 })
-button2.on_click(own |event| {
+button2.on_click(|event| {
     with counter.write() as c { c += 10 }
 })
 ```

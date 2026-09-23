@@ -6,16 +6,16 @@ func apply(f: |i32| -> i32, x: i32) -> i32 {
 }
 
 func make_adder(n: i32) -> |i32| -> i32 {
-    return own |x: i32| -> i32 { return x + n }
+    return |x: i32| -> i32 { return x + n }
 }
 
 func make_multiplier(factor: i32) -> |i32| -> i32 {
-    return own |x: i32| -> i32 { return x * factor }
+    return |x: i32| -> i32 { return x * factor }
 }
 
 test "own closure captures Copy value" {
     let offset = 10
-    let add = own |x: i32| -> i32 { return x + offset }
+    let add = |x: i32| -> i32 { return x + offset }
     assert add(5) == 15
     assert add(0) == 10
 }
@@ -32,19 +32,19 @@ test "own closure returned from function" {
 
 test "own closure passed to function" {
     let offset = 7
-    let f = own |x: i32| -> i32 { return x + offset }
+    let f = |x: i32| -> i32 { return x + offset }
     assert apply(f, 3) == 10
 }
 
 test "own closure no params" {
     let val = 42
-    let get = own || val
+    let get = || val
     assert get() == 42
 }
 
 test "own and non-own closures same function type" {
     let factor = 3
-    let owned_scale = own |x: i32| -> i32 { return x * factor }
+    let owned_scale = |x: i32| -> i32 { return x * factor }
     let scoped_scale = |x: i32| -> i32 { return x * factor }
     assert owned_scale(4) == 12
     assert scoped_scale(4) == 12

@@ -32,11 +32,11 @@ let response = try conn.read_text()
 let raw = try net.tcp_connect("proxy.internal:8080")
 try negotiate_tunnel(raw)                       // CONNECT, STARTTLS, whatever
 
-let conn = try tls.wrap(own raw, host: "example.com")
+let conn = try tls.wrap(raw, host: "example.com")
 ensure conn.close()
 ```
 
-`wrap` takes the TCP connection (`own`, so the raw one is gone) and the hostname to
+`wrap` takes the TCP connection (a `take`, so the raw one is gone) and the hostname to
 verify against — which is the origin server's name, not the proxy's. Every protocol
 that upgrades mid-stream needs this, and so does every test that wants a socket
 pair without a listener.
@@ -97,7 +97,7 @@ conn.tls_version() -> string     // "TLSv1.3"
 
 | Rule | Description |
 |------|-------------|
-| **L1: Dial or upgrade** | `tls.connect(addr)` for the common case; `tls.wrap(own conn, host:)` when the TCP connection already exists. Not two spellings of one operation — one opens a socket, the other takes one over — and without `wrap` proxies, STARTTLS and testing are impossible |
+| **L1: Dial or upgrade** | `tls.connect(addr)` for the common case; `tls.wrap(conn, host:)` when the TCP connection already exists. Not two spellings of one operation — one opens a socket, the other takes one over — and without `wrap` proxies, STARTTLS and testing are impossible |
 | **L2: Verified by default** | Certificate chain and hostname are checked unless the config says otherwise. There is no "convenience" constructor that skips it |
 | **L3: Weakening is named and visible** | Turning verification off is `with_verification(.None)` at the call site. It is not a boolean, not an environment variable, and it produces a compile-time warning naming the line |
 | **L4: Same shape as `net`** | `TlsConnection` mirrors `net.TcpConnection`, `tls.listen` mirrors `net.tcp_listen`. TLS is a layer, not a parallel networking API to learn |

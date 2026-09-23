@@ -2906,7 +2906,7 @@ fn ok_task_handle_joined_or_detached_or_cancelled() {
 #[test]
 fn error_move_in_loop_body() {
     let output = check_output(
-        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    loop {\n        take_vec(own v)\n    }\n}"
+        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    loop {\n        take_vec(v)\n    }\n}"
     );
     assert!(output.contains("E0813"),
         "moving a value inside a loop body is a next-iteration use-after-move (O3): {}", output);
@@ -2915,7 +2915,7 @@ fn error_move_in_loop_body() {
 #[test]
 fn ok_move_in_both_branches() {
     assert!(check_succeeds(
-        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    if true {\n        take_vec(own v)\n    } else {\n        take_vec(own v)\n    }\n}"
+        "func take_vec(take v: Vec<i32>) {}\nfunc main() {\n    let v = Vec<i32>.new()\n    if true {\n        take_vec(v)\n    } else {\n        take_vec(v)\n    }\n}"
     ), "moving on both branches is a definite move — should type-check");
 }
 
@@ -6439,7 +6439,7 @@ e = shape
 // gave up on any generic spelling, so it never reached the rule that makes a
 // link Copy.
 #[test]
-fn an_own_closure_capturing_a_copy_param_on_both_backends() {
+fn a_closure_capturing_a_copy_param_on_both_backends() {
     let expected = "\
 scalar=kept=2 n=2
 scalar no branch=kept=0 n=2
@@ -6448,7 +6448,7 @@ kept=0 id=10
 nocopy=1
 ";
     for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "own_capture_of_param.rk");
+        let (stdout, stderr, code) = run_capture(mode, "closure_capture_of_param.rk");
         assert_eq!(code, 0, "{}: {}", mode, stderr);
         assert_eq!(stdout, expected, "{}", mode);
     }
@@ -6489,17 +6489,6 @@ fn runaway_recursion_is_reported_not_aborted() {
         out.contains("`down`"),
         "should name the innermost function: {}", out,
     );
-}
-
-// The other half: a non-Copy parameter really is moved by an `own` capture, so a
-// use after the branch stays an error. The #768 fix was to let a parameter's type
-// reach the Copy check, not to stop marking captures moved.
-#[test]
-fn error_own_capture_moves_a_noncopy_param() {
-    let (failed, out) = compile_error_output("own_capture_moves_noncopy.rk");
-    assert!(failed, "a moved 24-byte struct must still be rejected: {}", out);
-    assert!(out.contains("E0813"), "should be maybe-moved (E0813): {}", out);
-    assert!(out.contains("`big`"), "should name the moved binding: {}", out);
 }
 
 // `r is MyErr.Worse as w` was rejected as "not a branch of `i64 or MyErr` — this

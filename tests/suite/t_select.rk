@@ -78,7 +78,7 @@ test "select drains one value per evaluation" {
 test "select blocks until a spawned producer sends" {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(1)
-        let h = spawn(own || {
+        let h = spawn(|| {
             let _ = tx.send(5)
             return 0
         })

@@ -21,7 +21,7 @@ func doomed(tx: Sender<i64>) {
 func main() {
     using Multitasking {
         let (tx, rx) = Channel<i64>.buffered(1)
-        let h: TaskHandle<void> = spawn(own || { doomed(tx) })
+        let h: TaskHandle<void> = spawn(|| { doomed(tx) })
         h.detach()
         let _ = rx.receive()
         time.sleep(Duration.millis(50))

@@ -236,7 +236,7 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
 //         mut tasks = Vec.new()
 //         for chunk in nodes.chunks(chunk_size) {
 //             let work = chunk.to_vec()
-//             tasks.push(spawn(own || {
+//             tasks.push(spawn(|| {
 //                 for e in work {
 //                     if !e.active: continue
 //                     e.position.x += e.velocity.dx * dt

@@ -50,7 +50,7 @@ func example_shared() -> void or Error {
         let c1 = counter.clone()
         let c2 = counter.clone()
 
-        let h1 = spawn(own || {
+        let h1 = spawn(|| {
             for i in 0..1000 {
                 with c1.write() as c {
                     c = c + 1
@@ -58,7 +58,7 @@ func example_shared() -> void or Error {
             }
         })
         ensure h1.detach()
-        let h2 = spawn(own || {
+        let h2 = spawn(|| {
             for i in 0..1000 {
                 with c2.write() as c {
                     c = c + 1
@@ -107,7 +107,7 @@ func flight_tracker() -> i32 {
 // CPU instruction. The tradeoff: they only work for simple values
 // (integers, booleans), not complex data structures.
 //
-// One thing to work out: `spawn` needs `own ||`, which moves what the closure
+// One thing to work out: `spawn` needs `||`, which moves what the closure
 // captures, so a counter declared inside the function can only reach one task.
 // Where does it have to live instead?
 func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {

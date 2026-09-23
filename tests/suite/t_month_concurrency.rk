@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Month one: threads and channels.
 //
-// `Thread.spawn(own || { … })` starts an OS thread and hands back a handle whose
+// `Thread.spawn(|| { … })` starts an OS thread and hands back a handle whose
 // `join()` waits for it. `own` moves the captures in, so the thread owns what it
 // touches. Channels carry values between threads: `send` and `receive` are both
 // fallible, and a cloned sender gives each thread its own handle to one channel.
@@ -35,7 +35,7 @@ func sum_to(n: i64) -> i64 {
 
 test "conc.async — a thread runs and join waits for it" {
     let (tx, rx) = Channel<i64>.buffered(1)
-    Thread.spawn(own || {
+    Thread.spawn(|| {
         let _ = tx.send(42)
         return
     }).join()
@@ -48,7 +48,7 @@ test "conc.async — a thread runs and join waits for it" {
 
 test "conc.async — a thread computing through a function" {
     let (tx, rx) = Channel<i64>.buffered(1)
-    Thread.spawn(own || {
+    Thread.spawn(|| {
         let _ = tx.send(sum_to(10))
         return
     }).join()
@@ -62,7 +62,7 @@ test "conc.async — a thread computing through a function" {
 test "conc.async — a thread capturing a surrounding binding" {
     let k = 7
     let (tx, rx) = Channel<i64>.buffered(1)
-    Thread.spawn(own || {
+    Thread.spawn(|| {
         let _ = tx.send(k * 6)
         return
     }).join()
@@ -78,9 +78,9 @@ test "conc.async — three threads, each joined, results drained" {
     let ta = tx.clone()
     let tb = tx.clone()
     let tc = tx.clone()
-    let h1 = Thread.spawn(own || { let _ = ta.send(100); return })
-    let h2 = Thread.spawn(own || { let _ = tb.send(200); return })
-    let h3 = Thread.spawn(own || { let _ = tc.send(300); return })
+    let h1 = Thread.spawn(|| { let _ = ta.send(100); return })
+    let h2 = Thread.spawn(|| { let _ = tb.send(200); return })
+    let h3 = Thread.spawn(|| { let _ = tc.send(300); return })
     h1.join()
     h2.join()
     h3.join()
@@ -101,7 +101,7 @@ test "conc.async — three threads, each joined, results drained" {
 
 test "conc.async — a handle joined after other work" {
     let (tx, rx) = Channel<i64>.buffered(1)
-    let h = Thread.spawn(own || {
+    let h = Thread.spawn(|| {
         let _ = tx.send(9)
         return
     })
@@ -116,14 +116,14 @@ test "conc.async — a handle joined after other work" {
     assert local == 10
 }
 
-// `own ||` moves the captures in, so a Mutex handed to a thread is gone from the
+// `||` moves the captures in, so a Mutex handed to a thread is gone from the
 // caller — sharing one across two threads needs a `Shared`, not a move. Here the
 // thread owns its Mutex outright and reports through a channel, which is the
 // deterministic shape. `t_month_scoped_access.rk` covers Mutex on its own.
 test "conc.sync — a thread owning a Mutex reports its result" {
     let (tx, rx) = Channel<i64>.buffered(1)
     mut m = Shared.mutex(0)
-    Thread.spawn(own || {
+    Thread.spawn(|| {
         with m.write() as v {
             v = v + 1
         }
@@ -177,7 +177,7 @@ test "conc.channels — try_receive on an empty channel is absent" {
 
 test "conc.channels — a producer thread and a counted drain" {
     let (tx, rx) = Channel<i64>.buffered(16)
-    Thread.spawn(own || {
+    Thread.spawn(|| {
         mut i = 1
         while i <= 5 {
             let _ = tx.send(i)
@@ -205,7 +205,7 @@ test "conc.async — a thread moving a Vec in with own" {
     data.push(1)
     data.push(2)
     data.push(3)
-    Thread.spawn(own || {
+    Thread.spawn(|| {
         mut acc = 0
         for x in data {
             acc = acc + x

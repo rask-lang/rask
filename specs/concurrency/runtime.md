@@ -1758,7 +1758,7 @@ spawn(|| {
 
 // Legal: capture value (move semantics)
 let vec = Vec.new()
-spawn(own || {  // 'own' captures by move
+spawn(|| {  // captures move in — the task outlives this frame
     vec.push(1)  // OK: task owns vec
 })
 
@@ -1805,7 +1805,7 @@ so it names nothing in another task's address space. A graph crosses by copy:
 using Multitasking {
     let frame = world.snapshot()   // deep copy; internal edges re-pointed
 
-    spawn(own || {
+    spawn(|| {
         for e in frame.nodes() { tally(e.hp) }
     }).detach()
 }
@@ -1814,7 +1814,7 @@ using Multitasking {
 **Why this works:**
 1. `snapshot()` copies the nodes and re-points every edge inside the copy, so the
    receiving side has a complete, independent graph (`mem.racks/RK13`)
-2. `own` moves the copy into the task — one owner, as usual
+2. the capture moves into the task — one owner, as usual
 3. Nothing is shared, so nothing is locked
 
 **Constraint:** a link sent back the other way means nothing. If a node needs a

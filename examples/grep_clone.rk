@@ -126,7 +126,7 @@ func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
 
 func main() {
     let args = cli.args()
-    mut opts = parse_args(own args) catch e => {
+    mut opts = parse_args(args) catch e => {
         let msg = e.message()
         println("rgrep: {msg}")
         print_usage()

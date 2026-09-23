@@ -146,7 +146,7 @@ test "an enum with a payload survives" {
 // Calling through a `func()` parameter goes down the same path.
 test "a closure called through a parameter returns an aggregate" {
     let b = Big { a: 4, b: 5, c: 6 }
-    let f = own || { return b }
+    let f = || { return b }
     assert sum_pair(f) == 15
 }
 
