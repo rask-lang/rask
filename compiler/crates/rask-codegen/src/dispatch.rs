@@ -1110,8 +1110,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // read_bytes/write_bytes hand back/take a Vec<u8> pointer directly —
         // a plain heap pointer is never negative, so the same convention used
         // for handles (TcpListener.accept, etc.) applies with no out-param.
-        StdlibEntry::simple("TcpConnection_read_bytes_raw", "rask_net_read_bytes", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("TcpConnection_read_failed", "rask_net_read_failed", &[types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("TcpConnection_read_bytes_raw", "rask_net_read_bytes", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpConnection_write_bytes_raw", "rask_net_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "TcpConnection_remote_addr", c_name: "rask_net_remote_addr",

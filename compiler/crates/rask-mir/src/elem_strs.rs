@@ -340,12 +340,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // worst implementation behind it, it also stopped `reader.read_bytes()`
     // from being anyone's (#1199).
     ("io_read_std_bytes", 0, 0, "Vec_free"),
-    // Bytes off a socket, into a Vec the runtime made for this call (empty
-    // when the read failed). Same reason as the line above:
-    // `TcpConnection.read_bytes` is one of the bodies behind
-    // `reader.read_bytes()`, and one body whose answer is nobody's makes every
-    // reader's bytes nobody's, a `Buffer`'s included.
-    ("TcpConnection_read_bytes_raw", 0, 0, "Vec_free"),
     //
     // The string splitters — `string_split`, `string_lines` and friends — are
     // absent for a nearer reason: each does hand back a fresh Vec, and
@@ -365,6 +359,31 @@ pub fn ctor_shape(name: &str) -> Option<(usize, usize)> {
 /// What frees the container this call handed back, or `None` if it isn't one.
 pub fn free_fn(name: &str) -> Option<&'static str> {
     entry(name).map(|(_, _, _, free)| *free)
+}
+
+/// Natives that hand back a fresh container *inside* a wrapper — `Vec<u8>?`,
+/// `T or E` — with the free that matches it. The caller owns what it
+/// unwraps; the wrapper itself is a value.
+///
+/// `CTORS` can't say this: its entries mean the call's result *is* the
+/// container, and registering one of these there freed the wrapper as if it
+/// were the vector. A Rask function returning a wrapped container gets the
+/// same answer from the hand-back analysis in container_drop; this is that
+/// answer for a native, which has no body to analyse.
+pub const WRAPPED_CTORS: &[(&str, &str)] = &[
+    // Bytes off a socket, in a Vec the runtime made for this call; `none`
+    // when the read failed. `TcpConnection.read_bytes` is one of the bodies
+    // behind `reader.read_bytes()`, and a trait call's result is only owned
+    // when every body hands back a fresh container — so leaving this out
+    // made every reader's bytes nobody's, a `Buffer`'s included.
+    ("TcpConnection_read_bytes_raw", "Vec_free"),
+];
+
+/// What frees the container inside the wrapper this native call handed back.
+pub fn wrapped_free_fn(name: &str) -> Option<&'static str> {
+    let head = name.rsplit("::").next().unwrap_or(name);
+    let base = head.split('$').next().unwrap_or(head);
+    WRAPPED_CTORS.iter().find(|(n, _)| *n == base).map(|(_, free)| *free)
 }
 
 fn entry(name: &str) -> Option<&'static (&'static str, u8, u8, &'static str)> {

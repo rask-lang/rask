@@ -1474,20 +1474,8 @@ int64_t rask_net_write_all(int64_t fd, int64_t str_ptr) {
     return 0;
 }
 
-// Did this thread's last `rask_net_read_bytes` fail? errno says why. A flag
-// rather than a -1 return so the Vec comes back either way and the caller owns
-// it on both paths (container_drop's hand-back analysis needs one shape).
-static __thread int net_read_failed;
-
-int64_t rask_net_read_failed(int64_t fd) {
-    (void)fd;
-    return net_read_failed;
-}
-
-// Read until the peer closes into a fresh Vec<u8>. Empty on failure, with
-// `rask_net_read_failed` true.
+// Read until the peer closes into a fresh Vec<u8>, or -1 with errno set.
 int64_t rask_net_read_bytes(int64_t fd) {
-    net_read_failed = 0;
     char *buf = (char *)rask_alloc(65536);
     int64_t total = 0;
     int64_t cap = 65536;
@@ -1498,12 +1486,9 @@ int64_t rask_net_read_bytes(int64_t fd) {
         // not the message, and handing it back as one hid a reset connection.
         if (n < 0) {
             int err = errno;
-            net_read_failed = 1;
-            total = 0;
-            RaskVec *empty = rask_vec_from_static(buf, 0, 1, NULL, 0);
             rask_free(buf);
             errno = err;
-            return (int64_t)(uintptr_t)empty;
+            return -1;
         }
         total += n;
         if (total >= cap) {
