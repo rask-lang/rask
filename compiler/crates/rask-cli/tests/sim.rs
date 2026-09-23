@@ -161,6 +161,15 @@ fn a_fault_test_is_skipped_outside_sim() {
 }
 
 #[test]
+fn a_directory_runs_every_file_in_it() {
+    let (out, code) = sim(&["--seed", "1", "--seeds", "8", "-f", "month", "."]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("sleep.rk"), "{out}");
+    assert!(out.contains("✓ a month passes instantly"), "{out}");
+    assert!(out.contains("1 tests, 1 passed, 0 failed (8 runs)"), "{out}");
+}
+
+#[test]
 fn seed_search_flags_need_sim() {
     let out = Command::new(rask_binary())
         .args(["test", "--seeds", "5", "race.rk"])

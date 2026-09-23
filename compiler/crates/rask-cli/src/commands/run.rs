@@ -732,7 +732,7 @@ pub fn build_test_binary(
 /// The companion file compiles the two together (std.testing/T3), so running
 /// `foo.rk` on its own as well would run any inline tests it has twice — once
 /// alone and once as part of the pair.
-fn without_companion_modules(files: Vec<String>) -> Vec<String> {
+pub(super) fn without_companion_modules(files: Vec<String>) -> Vec<String> {
     let paired: std::collections::HashSet<String> = files
         .iter()
         .filter_map(|f| {

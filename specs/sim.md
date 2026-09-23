@@ -13,7 +13,7 @@ Sim is a **link choice, not a dialect** (`determinism/D2`, `D3`). `rask test --s
 
 | Rule | Description |
 |------|-------------|
-| **I1: Test mode** | `rask test --sim` runs the selected tests on the sim runtime. v1 is test-only — `rask run --sim` is not part of it |
+| **I1: Test mode** | `rask test --sim` runs the selected tests on the sim runtime — one file, or every file in a directory of loose files. v1 is test-only — `rask run --sim` is not part of it, and neither is a package directory |
 | **I2: Run seed** | `--seed N` fixes the run seed (u64, decimal). Without it the runner draws from system entropy and prints it in the header |
 | **I3: Per-test seed** | Each test's seed derives from (run seed, test's full name). A test replays identically no matter which other tests ran, in what order, or whether they ran at all |
 | **I4: Replay line** | Every failure prints the exact command that reproduces it. The printed line is the repro — that's the whole point |
@@ -121,7 +121,7 @@ What has a simulated implementation at v1. Everything else is B3: it panics nami
 | **R3: Search summary** | Seed search prints how many seeds ran and one replay line per distinct failure |
 
 ```
-sim: seed 8419230744151203, 47 tests
+sim: seed 8419230744151203
 
 FAIL: replica catches up after the leader drops
   panic at raft.rk:214:9: index 3 out of bounds (len 3)

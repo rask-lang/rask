@@ -211,85 +211,54 @@ fn print_failure(name: &str, run: &Run, seed: u64, path: &str) {
     println!("  replay: {}", replay_line(seed, name, path));
 }
 
+#[derive(Default)]
+struct Tally {
+    passed: usize,
+    failed: usize,
+    skipped: usize,
+    runs: u64,
+}
+
 pub fn cmd_test_sim(path: &str, filter: Option<String>, format: Format, opts: SimOptions) {
-    if Path::new(path).is_dir() {
-        eprintln!(
-            "{}: `rask test --sim` takes one file for now — pass a `.rk` file, not the directory {}",
-            output::error_label(),
-            path,
-        );
-        process::exit(1);
-    }
     if format != Format::Human {
         eprintln!("{}: `rask test --sim` has no JSON output yet", output::error_label());
         process::exit(1);
     }
-
-    let bin = match build_test_binary(path, filter.as_deref(), format, true, true) {
-        Ok(bin) => bin,
-        Err(TestOutcome::Failed) => process::exit(1),
-        Err(_) => return,
+    let p = Path::new(path);
+    let (files, single) = if p.is_dir() {
+        if p.join("build.rk").is_file() {
+            eprintln!(
+                "{}: `rask test --sim` doesn't take a package directory yet — pass one of its test files",
+                output::error_label(),
+            );
+            process::exit(1);
+        }
+        (super::run::without_companion_modules(crate::collect_rk_files(p)), false)
+    } else {
+        (vec![path.to_string()], true)
     };
 
     let run_seed = opts.seed.unwrap_or_else(entropy_seed);
-    let stem = Path::new(path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let names: Vec<String> = bin.tests.iter().map(|(name, _)| name.clone()).collect();
-
     if opts.seeds == 1 {
-        println!("sim: seed {run_seed}, {} tests\n", names.len());
+        println!("sim: seed {run_seed}\n");
     } else {
-        println!(
-            "sim: seed {run_seed}, {} tests × {} seeds\n",
-            names.len(),
-            opts.seeds
-        );
+        println!("sim: seed {run_seed}, {} seeds per test\n", opts.seeds);
     }
 
-    let mut passed = 0usize;
-    let mut failed = 0usize;
-    let mut skipped = 0usize;
-    let mut runs = 0u64;
-
-    for name in &names {
-        let full_name = format!("{stem}::{name}");
-        // Distinct failures by message, each with the first seed that hit it
-        // (sim/R3).
-        let mut distinct: BTreeMap<String, (u64, Run)> = BTreeMap::new();
-        let mut test_skipped = None;
-
-        for i in 0..opts.seeds {
-            let sweep = sweep_seed(run_seed, i, opts.seeds);
-            let run = run_one(&bin.path, name, test_seed(sweep, &full_name));
-            runs += 1;
-            if let Some(reason) = run.skipped.clone() {
-                test_skipped = Some(reason);
-                break;
-            }
-            if !run.passed {
-                let key = run.error.clone().unwrap_or_default();
-                distinct.entry(key).or_insert((sweep, run));
-                if !opts.keep_going {
-                    break;
+    let mut tally = Tally::default();
+    let mut broken = false;
+    for file in &files {
+        // A file named on its own must have tests; in a directory, a module
+        // with none is ordinary.
+        match build_test_binary(file, filter.as_deref(), format, single, true) {
+            Ok(bin) => {
+                if !single {
+                    println!("{} {} {}", "===".dimmed(), output::file_path(file), "===".dimmed());
                 }
+                run_file(&bin, file, run_seed, &opts, &mut tally);
             }
-        }
-
-        if let Some(reason) = test_skipped {
-            skipped += 1;
-            println!("  {} {} {}", "SKIP".yellow(), name, format!("({reason})").dimmed());
-        } else if distinct.is_empty() {
-            passed += 1;
-            println!("  {} {}", output::status_pass(), name);
-        } else {
-            failed += 1;
-            println!();
-            for (sweep, run) in distinct.values() {
-                print_failure(name, run, *sweep, path);
-                println!();
-            }
+            Err(TestOutcome::Failed) => broken = true,
+            Err(_) => {}
         }
     }
 
@@ -297,21 +266,88 @@ pub fn cmd_test_sim(path: &str, filter: Option<String>, format: Format, opts: Si
     println!("{}", output::separator(50));
     let mut summary = format!(
         "{} tests, {}, {}",
-        passed + failed + skipped,
-        output::passed_count(passed),
-        output::failed_count(failed),
+        tally.passed + tally.failed + tally.skipped,
+        output::passed_count(tally.passed),
+        output::failed_count(tally.failed),
     );
-    if skipped > 0 {
-        summary.push_str(&format!(", {skipped} skipped"));
+    if tally.skipped > 0 {
+        summary.push_str(&format!(", {} skipped", tally.skipped));
     }
     if opts.seeds > 1 {
-        summary.push_str(&format!(" ({runs} runs)"));
+        summary.push_str(&format!(" ({} runs)", tally.runs));
     }
     println!("{summary}");
 
-    drop(bin);
-    if failed > 0 {
+    if tally.failed > 0 || broken {
         process::exit(1);
+    }
+}
+
+/// Every test in one binary, each under the requested seeds.
+///
+/// Seeds for one test run in parallel, one process each, in batches the size
+/// of the machine (sim/I6: parallelism belongs across processes). Results are
+/// read back in seed order, so what gets printed doesn't depend on which
+/// process finished first.
+fn run_file(bin: &super::run::TestBinary, path: &str, run_seed: u64, opts: &SimOptions, tally: &mut Tally) {
+    let stem = Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let batch = std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(4);
+
+    for (name, _) in &bin.tests {
+        let full_name = format!("{stem}::{name}");
+        // Distinct failures by message, each with the first seed that hit it
+        // (sim/R3).
+        let mut distinct: BTreeMap<String, (u64, Run)> = BTreeMap::new();
+        let mut skipped = None;
+        let mut next = 0u64;
+
+        'seeds: while next < opts.seeds {
+            let end = (next + batch).min(opts.seeds);
+            let runs: Vec<(u64, Run)> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (next..end)
+                    .map(|i| {
+                        let sweep = sweep_seed(run_seed, i, opts.seeds);
+                        let seed = test_seed(sweep, &full_name);
+                        let bin_path = &bin.path;
+                        scope.spawn(move || (sweep, run_one(bin_path, name, seed)))
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().expect("sim run thread")).collect()
+            });
+            next = end;
+            for (sweep, run) in runs {
+                tally.runs += 1;
+                if let Some(reason) = run.skipped.clone() {
+                    skipped = Some(reason);
+                    break 'seeds;
+                }
+                if !run.passed {
+                    let key = run.error.clone().unwrap_or_default();
+                    distinct.entry(key).or_insert((sweep, run));
+                    if !opts.keep_going {
+                        break 'seeds;
+                    }
+                }
+            }
+        }
+
+        if let Some(reason) = skipped {
+            tally.skipped += 1;
+            println!("  {} {} {}", "SKIP".yellow(), name, format!("({reason})").dimmed());
+        } else if distinct.is_empty() {
+            tally.passed += 1;
+            println!("  {} {}", output::status_pass(), name);
+        } else {
+            tally.failed += 1;
+            println!();
+            for (sweep, run) in distinct.values() {
+                print_failure(name, run, *sweep, path);
+                println!();
+            }
+        }
     }
 }
 
