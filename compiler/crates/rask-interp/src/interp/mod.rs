@@ -192,6 +192,17 @@ pub struct Interpreter {
     /// ownership pass. Those snapshot their captures; the rest share the live
     /// slots so a write reaches the enclosing variable (MC4).
     pub(crate) escaping_closures: std::collections::HashSet<rask_ast::NodeId>,
+    /// XC4/XC5: which package each source file belongs to, and which `extend`
+    /// blocks carry their package in the method name because the block is on a
+    /// type that package doesn't own.
+    ///
+    /// Native puts the package in the symbol; a tree-walker has no symbols, so
+    /// it keys the method the same way and answers a call from whichever
+    /// package is currently executing. Both empty outside a package build.
+    pub(crate) file_packages: HashMap<u16, String>,
+    pub(crate) conformance_disambiguation: HashMap<rask_ast::NodeId, String>,
+    /// The package whose function is running, innermost last.
+    pub(crate) package_stack: Vec<Option<String>>,
     /// OR1: operator calls the checker resolved to a conformance, so `2.0 * m`
     /// runs the `extend f64 with Mul<Meters>` body instead of asking the float
     /// layer to multiply a struct.
@@ -302,6 +313,9 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            file_packages: HashMap::new(),
+            conformance_disambiguation: HashMap::new(),
+            package_stack: Vec::new(),
             operator_targets: HashMap::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
@@ -334,6 +348,9 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            file_packages: HashMap::new(),
+            conformance_disambiguation: HashMap::new(),
+            package_stack: Vec::new(),
             operator_targets: HashMap::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
@@ -372,6 +389,9 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            file_packages: HashMap::new(),
+            conformance_disambiguation: HashMap::new(),
+            package_stack: Vec::new(),
             operator_targets: HashMap::new(),
             type_bindings: Vec::new(),
             pending_type_args: None,
@@ -482,6 +502,27 @@ impl Interpreter {
         self.fallback_keeps_shape = typed.fallback_keeps_shape.clone();
         self.operator_targets = typed.operator_targets.clone();
         self.escaping_closures = typed.escaping_closures.clone();
+        // XC4/XC5: which package wrote each file, and which `extend` blocks
+        // carry their package in the method name.
+        self.file_packages = typed.file_packages.clone();
+        self.conformance_disambiguation = typed.conformance_disambiguation.clone();
+    }
+
+    /// The package whose code is running. `None` outside a package build, and
+    /// for anything the compiler generated.
+    pub(crate) fn current_package(&self) -> Option<&str> {
+        self.package_stack.last()?.as_deref()
+    }
+
+    /// XC4/XC5: the name a method is registered under for the package that is
+    /// running — `label` becomes `label~liba` where that package's block is on
+    /// someone else's type.
+    pub(crate) fn conformance_method_name(&self, method: &str) -> Option<String> {
+        if self.conformance_disambiguation.is_empty() {
+            return None;
+        }
+        let pkg = self.current_package()?;
+        Some(rask_types::conformance_symbol(method, pkg))
     }
 
     /// The nominal type name of a runtime value, for matching against a generic

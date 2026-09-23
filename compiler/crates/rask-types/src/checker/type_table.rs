@@ -18,11 +18,33 @@ use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 /// not the pass currently running: a program overriding a stdlib type's
 /// `Displayable` was reported as a same-package duplicate when the guard read
 /// the current pass's mode instead.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct ConformanceSite {
     pub span: Span,
     pub decl: NodeId,
     pub from_stdlib: bool,
+    /// XC4: the package whose source this block is in. `None` for the stdlib,
+    /// for a single-file program, and for anything the compiler generated —
+    /// all cases where there is no package to compare.
+    pub package: Option<String>,
+}
+
+/// XC1: who a type belongs to.
+///
+/// The rule is "only the package that declares `T` may declare these six
+/// conformances for it", and a builtin has a declarer too — the standard
+/// library. Treating "no package" as "nothing to check" is what let a plain
+/// program give `Vec<i64>` its own `Hashable` and have every `Map` and `Set`
+/// keyed on it start missing entries, which is the exact hazard the rule
+/// exists to stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TypeOwner {
+    /// The standard library, including every builtin.
+    Stdlib,
+    /// A package in this build.
+    Package(String),
+    /// The program itself, where there is no package to name — a single file.
+    Program,
 }
 
 /// Central registry of all types in the program.
@@ -101,11 +123,32 @@ pub struct TypeTable {
     pub(super) assoc_bindings: HashMap<(TypeId, String), HashMap<String, Type>>,
     /// MN3/XC3: where each conformance was written, so a collision between two
     /// of them is reported once, on the later one.
-    pub(super) conformance_spans: HashMap<(TypeId, String), ConformanceSite>,
+    pub(super) conformance_spans: HashMap<(TypeId, String), Vec<ConformanceSite>>,
     /// CC1/CC2: conditional-conformance conditions. (TypeId, trait base) → the
     /// `where` bounds (type-param name → required trait names) that must hold
     /// for the conformance, checked per instantiation.
     pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<String>)>>,
+    /// XC4/XC5: which package's `extend` block each method on a type came from,
+    /// and which block that was. `(TypeId, method name) → [(package, impl decl)]`.
+    ///
+    /// One type can end up holding two `label`s, from two packages, and they are
+    /// indistinguishable by signature — that is the whole point of the
+    /// collision. This says which is which, so a call from `liba` reaches
+    /// `liba`'s body and monomorphization emits both instead of one winning.
+    pub(super) impl_method_packages:
+        HashMap<(TypeId, String), Vec<(String, NodeId)>>,
+    /// XC3: `(type, applied trait)` pairs with more than one written
+    /// declaration. Empty in every program that doesn't have a collision, which
+    /// is nearly all of them — the use-site check reads this first and does
+    /// nothing when it's empty.
+    pub(super) ambiguous_conformances: std::collections::HashSet<(TypeId, String)>,
+    /// XC1: who declares each type. Anything unrecorded is a builtin, and
+    /// builtins are the stdlib's.
+    pub(super) declared_by: HashMap<TypeId, TypeOwner>,
+    /// XC1: where each type was declared. The span's file id says which package
+    /// wrote it, which is how a conformance block knows whether it owns the
+    /// type it's extending.
+    pub(super) declared_at: HashMap<TypeId, Span>,
     /// OR1: the conformances, read the other way round — applied trait
     /// (`Mul<Duration>`) → the types that answer it.
     ///
@@ -146,6 +189,10 @@ impl TypeTable {
             assoc_bindings: HashMap::new(),
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
+            declared_at: HashMap::new(),
+            declared_by: HashMap::new(),
+            ambiguous_conformances: std::collections::HashSet::new(),
+            impl_method_packages: HashMap::new(),
             primitive_ids: HashMap::new(),
             builtin_methods: std::collections::HashSet::new(),
             conformers_by_pair: HashMap::new(),
@@ -448,7 +495,7 @@ impl TypeTable {
     }
 
     /// The base name of a trait reference: `Mul<f64>` → `Mul`.
-    fn conformance_key(trait_name: &str) -> String {
+    pub(super) fn conformance_key(trait_name: &str) -> String {
         trait_name.split('<').next().unwrap_or(trait_name).trim().to_string()
     }
 
@@ -574,34 +621,132 @@ impl TypeTable {
         trait_name: &str,
         decl: NodeId,
         span: Span,
+        package: Option<String>,
     ) -> Option<Span> {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
         let key = self.applied_conformance_key(trait_name, &self_base);
         let from_stdlib = self.stdlib_mode;
-        let mine = ConformanceSite { span, decl, from_stdlib };
-        match self.conformance_spans.get(&(type_id, key.clone())) {
-            Some(first) if first.decl == decl => None,
-            Some(first) if !first.from_stdlib && !from_stdlib => Some(first.span),
-            Some(first) => {
-                if first.from_stdlib && !from_stdlib {
-                    self.conformance_spans.insert((type_id, key), mine);
-                }
-                None
+        let mine = ConformanceSite { span, decl, from_stdlib, package: package.clone() };
+        let sites = self.conformance_spans.entry((type_id, key.clone())).or_default();
+        if sites.iter().any(|s| s.decl == decl) {
+            return None;
+        }
+        if !from_stdlib {
+            // The same package saying it twice. Reported here, at the second
+            // block, because one author owns both. Two *packages* is XC3's
+            // other half and belongs at the use site, so it just gets recorded.
+            if let Some(first) = sites
+                .iter()
+                .find(|s| !s.from_stdlib && s.package == package)
+            {
+                return Some(first.span);
             }
-            None => {
-                self.conformance_spans.insert((type_id, key), mine);
-                None
-            }
+            // A program block landing on the stdlib's is an override across a
+            // package boundary, legal for every non-core trait by XC2, and it
+            // takes the slot — so a second program block is blamed on the
+            // program's first rather than on the stdlib's.
+            sites.retain(|s| !s.from_stdlib);
+        }
+        let already = sites.iter().any(|s| !s.from_stdlib);
+        sites.push(mine);
+        if already && !from_stdlib {
+            self.ambiguous_conformances.insert((type_id, key));
+        }
+        None
+    }
+
+    /// XC4/XC5: remember which package's block a method came from.
+    pub(super) fn record_impl_method_package(
+        &mut self,
+        type_id: TypeId,
+        method: &str,
+        package: &str,
+        decl: NodeId,
+    ) {
+        let sites = self
+            .impl_method_packages
+            .entry((type_id, method.to_string()))
+            .or_default();
+        if !sites.iter().any(|(_, d)| *d == decl) {
+            sites.push((package.to_string(), decl));
         }
     }
 
+    /// XC4/XC5: the packages whose blocks declare this method on this type.
+    /// One entry is the ordinary case and needs no disambiguation.
+    pub(super) fn impl_method_packages(
+        &self,
+        type_id: TypeId,
+        method: &str,
+    ) -> &[(String, NodeId)] {
+        self.impl_method_packages
+            .get(&(type_id, method.to_string()))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// XC3: is any conformance on this type declared more than once?
+    pub(super) fn has_ambiguous_conformance(&self, type_id: TypeId) -> bool {
+        self.ambiguous_conformances
+            .iter()
+            .any(|(id, _)| *id == type_id)
+    }
+
+    /// XC3: the applied trait keys this type has more than one declaration of.
+    pub(super) fn ambiguous_conformance_keys(&self, type_id: TypeId) -> Vec<String> {
+        self.ambiguous_conformances
+            .iter()
+            .filter(|(id, _)| *id == type_id)
+            .map(|(_, key)| key.clone())
+            .collect()
+    }
+
+    /// XC3/XC4: every written declaration of this conformance, in the order the
+    /// checker read them.
+    pub(super) fn conformance_sites(
+        &self,
+        type_id: TypeId,
+        trait_name: &str,
+    ) -> &[ConformanceSite] {
+        let self_name = self.type_name(type_id);
+        let self_base = self_name.split('<').next().unwrap_or(&self_name);
+        let key = self.applied_conformance_key(trait_name, self_base);
+        self.conformance_spans
+            .get(&(type_id, key))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
     /// MN3: where a conformance was declared, if it was written in source.
+    /// XC1: remember where a type was declared, and who declared it.
+    pub(super) fn record_declared_at(&mut self, type_id: TypeId, span: Span, owner: TypeOwner) {
+        self.declared_at.entry(type_id).or_insert(span);
+        self.declared_by.entry(type_id).or_insert(owner);
+    }
+
+    /// XC1: who declares this type. A type with no recorded declaration is a
+    /// builtin, and builtins are the stdlib's.
+    pub(super) fn declared_by(&self, type_id: TypeId) -> TypeOwner {
+        self.declared_by
+            .get(&type_id)
+            .cloned()
+            .unwrap_or(TypeOwner::Stdlib)
+    }
+
+    /// The span of a type's declaration, if one was recorded.
+    pub fn declared_at(&self, type_id: TypeId) -> Option<Span> {
+        self.declared_at.get(&type_id).copied()
+    }
+
     pub fn conformance_span(&self, type_id: TypeId, trait_name: &str) -> Option<Span> {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name);
         let key = self.applied_conformance_key(trait_name, self_base);
-        self.conformance_spans.get(&(type_id, key)).map(|s| s.span)
+        self.conformance_spans
+            .get(&(type_id, key))
+            .and_then(|v| v.first())
+            .map(|s| s.span)
     }
 
     /// AT6: the associated type `assoc` on this type, when exactly one of its

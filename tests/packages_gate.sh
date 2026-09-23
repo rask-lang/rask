@@ -120,6 +120,21 @@ for app in "$PKG_DIR"/*/app; do
         continue
     fi
 
+    # A fixture with `test` blocks runs on the interpreter too, and the two
+    # backends have to agree. Multi-package programs reached only native until
+    # `--interp` learned directory mode, which is how XC5's interpreter half sat
+    # unexercised while native was already right: two packages conforming one
+    # type to one trait, and the interpreter ran whichever block it read last.
+    if grep -qs '^test "' "$app"/*.rk; then
+        interp_out="$(cd "$app" && "$RASK" test --interp . 2>&1)"
+        interp_rc=$?
+        if [ $interp_rc -ne 0 ] && ! known_fail "$name"; then
+            failed=$((failed + 1))
+            failures+=("$name — its tests fail on the interpreter: $(echo "$interp_out" | grep -m1 '✗\|error' || echo "exit $interp_rc")")
+            continue
+        fi
+    fi
+
     if [ "$got" = "$(cat "$expected_out")" ]; then
         ok=$((ok + 1))
         if known_fail "$name"; then

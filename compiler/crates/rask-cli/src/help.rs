@@ -203,7 +203,6 @@ pub fn print_build_help() {
     println!("  {} {}  Build with custom profile", output::arg("--profile"), output::arg("<name>"));
     println!("  {} {} Cross-compile for target", output::arg("--target"), output::arg("<triple>"));
     println!("  {}           Bypass all caching (build script + compilation)", output::arg("--force"));
-    println!("  {} {}    Max parallel jobs (default: CPU count)", output::arg("--jobs"), output::arg("<N>"));
     println!("  {} {}       Verbose output", output::arg("-v"), output::arg("--verbose"));
     println!();
     println!("If no directory is specified, builds the current directory.");

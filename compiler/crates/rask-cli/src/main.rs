@@ -336,7 +336,7 @@ fn main() {
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
             let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![], keeps_binary: false };
-            let file = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj", "--profile", "--target", "--jobs", "-j"])
+            let file = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj", "--profile", "--target"])
                 .unwrap_or(".");
 
             if Path::new(file).is_dir() {
@@ -348,16 +348,12 @@ fn main() {
                     "debug".to_string()
                 };
                 let target = extract_flag_value(&cmd_args, "--target");
-                let jobs = extract_flag_value(&cmd_args, "--jobs")
-                    .or_else(|| extract_flag_value(&cmd_args, "-j"))
-                    .and_then(|s| s.parse::<usize>().ok());
                 let opts = commands::build::BuildOptions {
                     profile,
                     verbose,
                     target,
                     no_cache: false,
                     force: false,
-                    jobs,
                 };
                 let run_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
                 commands::run::cmd_run_project(file, run_args, opts);
@@ -459,11 +455,16 @@ fn main() {
             }
             let p = Path::new(file);
             if interp {
-                if p.is_dir() {
-                    eprintln!("{}: --interp does not yet support directory mode", output::error_label());
-                    process::exit(1);
+                // A package directory checks as one program — `check_file`
+                // finds the `build.rk` and merges every package's declarations
+                // — so the interpreter takes the same decl list a single file
+                // gives it. A directory of loose files has no build.rk and no
+                // shared namespace, so each one still runs on its own.
+                if p.is_dir() && !p.join("build.rk").is_file() {
+                    commands::run::cmd_test_files_interp(file, filter, format);
+                } else {
+                    commands::run::cmd_test_interp(file, filter, format);
                 }
-                commands::run::cmd_test_interp(file, filter, format);
             } else if p.is_dir() {
                 // Directory with build.rk → single project (all files share types).
                 // Directory without build.rk → folder of standalone files; run each
@@ -559,11 +560,8 @@ fn main() {
             let target = extract_flag_value(&cmd_args, "--target");
             let no_cache = cmd_args.contains(&"--no-cache");
             let force = cmd_args.contains(&"--force");
-            let jobs = extract_flag_value(&cmd_args, "--jobs")
-                .or_else(|| extract_flag_value(&cmd_args, "-j"))
-                .and_then(|s| s.parse::<usize>().ok());
-            let path = find_positional_arg(&cmd_args, 2, &["--profile", "--target", "--jobs", "-j"]).unwrap_or(".");
-            let opts = commands::build::BuildOptions { profile, verbose, target, no_cache, force, jobs };
+            let path = find_positional_arg(&cmd_args, 2, &["--profile", "--target"]).unwrap_or(".");
+            let opts = commands::build::BuildOptions { profile, verbose, target, no_cache, force };
             commands::build::cmd_build(path, opts);
         }
         "clean" => {

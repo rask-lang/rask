@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import traitpkg
+import liba
+
+func main() {
+    let d = traitpkg.make_doc(7)
+    println("{d.hash()}")
+    return
+}

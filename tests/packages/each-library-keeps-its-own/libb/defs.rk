@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import traitpkg
+import traitpkg.Labeled
+
+public extend traitpkg.Doc with traitpkg.Labeled {
+    public func label(self) -> string {
+        return "b:{self.n}"
+    }
+}
+
+public func describe(d: traitpkg.Doc) -> string {
+    return d.label()
+}
+
+// The same conformance reached from inside a generic body, which is the case
+// `type.generics/XC5` names in so many words. Here the receiver is `T`, so
+// there is no concrete type to resolve the block against when the body is
+// checked — only the package the source is in, which is what decides.
+func shown_b<T: Labeled>(x: T) -> string {
+    return x.label()
+}
+
+public func describe_generic(d: traitpkg.Doc) -> string {
+    return shown_b(d)
+}

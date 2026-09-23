@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A nominal newtype can carry a conformance of its own.
+//
+// `extend Tagged with Labeled { … }` put its methods on the newtype, which is
+// where `register_impl_methods` writes them, and the check that reads them back
+// looked at structs, enums and traits only. So the block came back methodless
+// and G1 reported every trait method missing on a block that had them all —
+// including `Hashable` and friends, where the methods are the whole point.
+//
+// It matters beyond the newtype: `type MyDoc = Doc` plus a conformance is the
+// remedy both type.generics/XC1 and XC3 name, so two diagnostics were telling
+// people to write something that didn't compile.
+//
+// `with (…)` is the other half of T11 and was never broken — a listed trait
+// delegates to the wrapped value. Both are here, because the two paths meet in
+// the same check.
+
+trait Labeled {
+    func label(self) -> string
+}
+
+struct Doc {
+    public n: i64
+}
+
+type Tagged = Doc
+
+extend Tagged with Labeled {
+    public func label(self) -> string {
+        return "tagged {self.value.n}"
+    }
+}
+
+type Counted = Doc
+
+extend Counted with Hashable {
+    public func hash(self) -> u64 {
+        return 7
+    }
+    public func eq(self, other: Counted) -> bool {
+        return self.value.n == other.value.n
+    }
+}
+
+// T11: listed in the clause, so it delegates to the `i64` underneath instead of
+// needing a block.
+type Ticket = i64 with (Equal, Hashable)
+
+func describe<T: Labeled>(x: T) -> string {
+    return x.label()
+}
+
+test "a declared conformance on a newtype" {
+    let t = Tagged(Doc { n: 3 })
+    assert t.label() == "tagged 3"
+    assert describe(t) == "tagged 3"
+}
+
+test "and one whose methods the compiler would otherwise derive" {
+    let a = Counted(Doc { n: 1 })
+    let b = Counted(Doc { n: 1 })
+    assert a.hash() == 7
+    assert a.eq(b)
+
+    mut seen = Map<Counted, string>.new()
+    seen.insert(a, "first")
+    assert seen.len() == 1
+}
+
+test "an inherited conformance still comes from the clause" {
+    mut keys = Map<Ticket, string>.new()
+    keys.insert(Ticket(4), "four")
+    assert keys.get(Ticket(4)) == "four"
+}

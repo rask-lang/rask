@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Both dependencies conform `traitpkg.Doc` to `traitpkg.Labeled`, and this
+// program never asks for that conformance. type.generics/XC3 says a collision
+// nobody uses costs nothing, so it builds — add `d.label()` and it's E0410,
+// which is what `two-foreign-conformances` covers.
+//
+// The other half, XC4 — a library keeping its own conformance while the
+// program linking it pulls in someone else's — is `each-library-keeps-its-own`.
+
+import traitpkg
+import liba
+import libb
+
+func main() {
+    let d = traitpkg.make_doc(7)
+    println("{d.n}")
+    return
+}

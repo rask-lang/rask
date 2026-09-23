@@ -169,6 +169,11 @@ impl Interpreter {
                 }
                 DeclKind::Impl(impl_decl) => {
                     let base_name = strip_generics(&impl_decl.target_ty).to_string();
+                    // XC5: where another package declares the same method on
+                    // this type, the package goes in the key — otherwise the
+                    // second block read overwrites the first and one library
+                    // runs the other's body.
+                    let suffix = self.conformance_disambiguation.get(&decl.id).cloned();
                     let type_methods = self.methods.entry(base_name).or_default();
                     for method in &impl_decl.methods {
                         // OR4: `Mul<f64>` and `Mul<Meters>` on one type both
@@ -181,7 +186,14 @@ impl Interpreter {
                             &method.name,
                         )
                         .unwrap_or_else(|| method.name.clone());
-                        type_methods.insert(name, method.clone());
+                        // XC5 on top of that: two packages can put the same
+                        // method on one type, and the applied argument doesn't
+                        // tell those apart either.
+                        let key = match &suffix {
+                            Some(pkg) => rask_types::conformance_symbol(&name, pkg),
+                            None => name,
+                        };
+                        type_methods.insert(key, method.clone());
                     }
                 }
                 DeclKind::Import(import) => {

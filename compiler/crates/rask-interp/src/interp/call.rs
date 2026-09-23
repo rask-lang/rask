@@ -54,7 +54,19 @@ impl Interpreter {
 
     fn call_counted(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
         self.call_depth += 1;
+        // XC4: the package whose code is now running. A conformance another
+        // package also declares is looked up against this, the same way native
+        // puts the declaring package in the symbol — so `liba`'s own `label`
+        // call reaches `liba`'s body whoever linked it.
+        let pushed = !self.file_packages.is_empty();
+        if pushed {
+            let pkg = self.file_packages.get(&func.span.file_id).cloned();
+            self.package_stack.push(pkg);
+        }
         let result = self.call_function_at_depth(func, args);
+        if pushed {
+            self.package_stack.pop();
+        }
         self.call_depth -= 1;
         // Where it actually happened, for the callers that lose it. Everything
         // between a method call and this point hands back a bare

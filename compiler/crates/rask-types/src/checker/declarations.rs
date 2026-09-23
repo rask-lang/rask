@@ -179,11 +179,13 @@ impl TypeChecker {
                     self.check_declared_type_name(&s.name, "struct", decl.span);
                     let id = self.register_struct(s);
                     self.types.record_method_decl(id, decl.id);
+                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
                 }
                 DeclKind::Enum(e) => {
                     self.check_declared_type_name(&e.name, "enum", decl.span);
                     let id = self.register_enum(e, decl.span);
                     self.types.record_method_decl(id, decl.id);
+                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
                 }
                 DeclKind::Trait(t) => {
                     self.check_declared_type_name(&t.name, "trait", decl.span);
@@ -221,6 +223,11 @@ impl TypeChecker {
                 DeclKind::TypeAlias(a) => {
                     self.check_declared_type_name(&a.name, "type alias", decl.span);
                     self.register_type_alias(a, decl.span);
+                    // A nominal type (`type MyDoc = traitpkg.Doc`) belongs to
+                    // whoever wrote it, which is what makes it XC1's way out.
+                    if let Some(id) = self.types.get_type_id(&a.name) {
+                        self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+                    }
                 }
                 // `const W = 4` then `[i32; W]`. The length has to be known
                 // before any declared type is parsed, so it's recorded in this
@@ -634,6 +641,7 @@ impl TypeChecker {
                         ty: bound_str.clone(),
                         trait_name: want,
                         context: super::TraitBoundContext::ConformanceHeader,
+                        missing: None,
                         span: bound_span,
                     });
                 }
@@ -643,6 +651,230 @@ impl TypeChecker {
         // unmatchable, so checking them would report a pile of missing methods
         // on top of the one real problem.
         self.errors.len() == before
+    }
+
+    /// Which package wrote the file a span points into, if this is a package
+    /// build. `None` for a single file, for the stdlib, and for anything the
+    /// compiler generated — all cases where there is no package to compare.
+    pub(super) fn package_of(&self, span: rask_ast::Span) -> Option<&str> {
+        self.resolved.file_packages.get(&span.file_id).map(|s| s.as_str())
+    }
+
+    /// XC3/XC4: report a conformance the code at `span` can reach two
+    /// declarations of.
+    ///
+    /// Visibility is the using package's, not the build's: `liba` keeps using
+    /// its own `Labeled` for `Doc` even when the program linking it also pulls
+    /// in `libb`'s, because `libb` isn't in `liba`'s dependency graph. So the
+    /// same two declarations are a collision in the program and not in either
+    /// library — and the two bodies stay apart all the way down, because XC5
+    /// puts the declaring package in the symbol.
+    ///
+    /// Reported once per (type, trait, using package): the same pair turns up at
+    /// every bound and every call that needs it, and one error is the news.
+    pub(super) fn check_conformance_ambiguity(
+        &mut self,
+        type_id: crate::types::TypeId,
+        trait_key: &str,
+        span: rask_ast::Span,
+    ) {
+        let here = self.package_of(span).map(str::to_string);
+        let visible: Vec<(String, rask_ast::Span)> = self
+            .types
+            .conformance_sites(type_id, trait_key)
+            .iter()
+            .filter(|s| !s.from_stdlib)
+            .filter(|s| match (&here, &s.package) {
+                (Some(here), Some(theirs)) => self
+                    .resolved
+                    .package_deps
+                    .get(here)
+                    .is_some_and(|seen| seen.contains(theirs)),
+                // No package build, or a declaration the compiler generated:
+                // nothing to filter by, so it counts.
+                _ => true,
+            })
+            .map(|s| (s.package.clone().unwrap_or_default(), s.span))
+            .collect();
+        if visible.len() < 2 {
+            return;
+        }
+        let once = (type_id, trait_key.to_string(), here.unwrap_or_default());
+        if !self.reported_ambiguous_conformances.insert(once) {
+            return;
+        }
+        self.errors.push(TypeError::AmbiguousConformance {
+            ty: self.types.type_name(type_id),
+            trait_name: TypeTable::conformance_display(trait_key),
+            sites: visible,
+            span,
+        });
+    }
+
+    /// XC3: the conformance this bound needs, when the code here can see two of
+    /// them. Cheap to call — the set it reads is empty unless some conformance
+    /// really was declared twice.
+    pub(super) fn check_bound_conformance_ambiguity(
+        &mut self,
+        ty: &Type,
+        bound: &str,
+        span: rask_ast::Span,
+    ) {
+        if self.types.ambiguous_conformances.is_empty() {
+            return;
+        }
+        let Some(type_id) = self.named_type_id(ty) else { return };
+        for key in self.types.ambiguous_conformance_keys(type_id) {
+            if TypeTable::conformance_key(bound) == TypeTable::conformance_key(&key) {
+                self.check_conformance_ambiguity(type_id, &key, span);
+            }
+        }
+    }
+
+    /// XC3: the same, for a method call that a colliding conformance supplies.
+    /// `d.label()` picks a body just as silently as a bound does.
+    pub(super) fn check_method_conformance_ambiguity(
+        &mut self,
+        ty: &Type,
+        method: &str,
+        span: rask_ast::Span,
+    ) {
+        if self.types.ambiguous_conformances.is_empty() {
+            return;
+        }
+        let Some(type_id) = self.named_type_id(ty) else { return };
+        if !self.types.has_ambiguous_conformance(type_id) {
+            return;
+        }
+        for key in self.types.ambiguous_conformance_keys(type_id) {
+            let base = key.split('<').next().unwrap_or(&key).to_string();
+            let declares = matches!(
+                self.types.get_type_id(&base).and_then(|id| self.types.get(id)),
+                Some(TypeDef::Trait { methods, .. })
+                    if methods.iter().any(|m| super::type_defs::method_base(&m.name) == method)
+            );
+            if declares {
+                self.check_conformance_ambiguity(type_id, &key, span);
+            }
+        }
+    }
+
+    /// The TypeId a named type stands for, if it is one.
+    fn named_type_id(&self, ty: &Type) -> Option<crate::types::TypeId> {
+        match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => Some(*id),
+            Type::UnresolvedNamed(name) => self.types.get_type_id(name),
+            Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
+            _ => None,
+        }
+    }
+
+    /// XC4/XC5: the package whose conformance a call at `span` should use.
+    ///
+    /// It is simply the package the call is written in. Visibility is the
+    /// calling package's, not the build's (XC4), so `liba` asks for `liba`'s
+    /// `label` and gets it whatever else the program linking it pulls in.
+    ///
+    /// Deliberately not "which block does this resolve to" — the receiver may
+    /// be a type parameter, and then there is no answer here at all. A generic
+    /// `func shown<T: Labeled>(x: T) { x.label() }` in `liba` is the case XC5
+    /// names, and asking about `T` gave up and emitted the unsuffixed name, so
+    /// `liba`'s and `libb`'s instantiations both ran whichever body was read
+    /// last. The package the *source* is in is known either way, and whether a
+    /// body exists under it is a question for where the bodies are: the name
+    /// builders try `{Type}_{method}~{pkg}` and fall back to the plain one,
+    /// which is what the interpreter was already doing.
+    ///
+    /// `None` outside a package build, and in any program with no foreign
+    /// conformance in it at all.
+    pub(super) fn conformance_package_for_call(
+        &self,
+        _ty: &Type,
+        _method: &str,
+        span: rask_ast::Span,
+    ) -> Option<String> {
+        if self.conformance_disambiguation.is_empty() {
+            return None;
+        }
+        self.package_of(span).map(str::to_string)
+    }
+
+    /// XC1 for a type with no entry in the table — a primitive. It is the
+    /// stdlib's like every other builtin, so any block outside the stdlib is
+    /// foreign.
+    fn check_builtin_core_conformance(&mut self, i: &ImplDecl, span: rask_ast::Span) {
+        use super::type_table::TypeOwner;
+        let here = self.type_owner(span);
+        if here == TypeOwner::Stdlib {
+            return;
+        }
+        for trait_name in &i.trait_names {
+            let Some(encoding) = Self::core_trait(trait_name) else { continue };
+            self.errors.push(TypeError::ForeignCoreConformance {
+                ty: i.target_ty.clone(),
+                trait_name: TypeTable::conformance_display(trait_name),
+                owner: None,
+                here: match &here {
+                    TypeOwner::Package(p) => Some(p.clone()),
+                    _ => None,
+                },
+                encoding,
+                span,
+                declared_at: None,
+            });
+        }
+    }
+
+    /// XC5: the package whose `extend` block this is, when the block is on a
+    /// type that package doesn't own.
+    ///
+    /// `None` when the block is on its own package's type, on the stdlib's own
+    /// types from inside the stdlib, or anywhere in a build with no packages —
+    /// all cases where `{Type}_{method}` already names one body and nothing
+    /// else can claim it.
+    fn foreign_block_owner(
+        &self,
+        type_id: crate::types::TypeId,
+        span: rask_ast::Span,
+    ) -> Option<String> {
+        use super::type_table::TypeOwner;
+        let here = self.type_owner(span);
+        let TypeOwner::Package(pkg) = &here else { return None };
+        (self.types.declared_by(type_id) != here).then(|| pkg.clone())
+    }
+
+    /// XC1: who a declaration at `span` belongs to.
+    ///
+    /// The stdlib first, because its files are in no package and "no package"
+    /// has to mean "the stdlib's" rather than "nobody's" — otherwise a program
+    /// could hand `Vec` its own `Hashable` and the check would shrug.
+    pub(super) fn type_owner(&self, span: rask_ast::Span) -> super::type_table::TypeOwner {
+        use super::type_table::TypeOwner;
+        if self.types.stdlib_mode {
+            return TypeOwner::Stdlib;
+        }
+        match self.package_of(span) {
+            Some(p) => TypeOwner::Package(p.to_string()),
+            None => TypeOwner::Program,
+        }
+    }
+
+    /// XC1: the traits a type's owner alone may declare, and whether this one
+    /// is an encoding marker.
+    ///
+    /// Four of them are one answer per type — two hashes for one type doesn't
+    /// conflict loudly, it makes a `Map` miss entries it holds. The other two
+    /// have no methods at all (std.encoding/E11): declaring one doesn't change
+    /// how the type serializes, it changes whether it does, which is the same
+    /// thing `@no_encode` says no to.
+    fn core_trait(name: &str) -> Option<bool> {
+        match name.split('<').next().unwrap_or(name) {
+            "Equal" | "Eq" | "Hashable" | "Comparable" | "Ord" | "Cloneable" | "Clone" => {
+                Some(false)
+            }
+            "Encode" | "Decode" => Some(true),
+            _ => None,
+        }
     }
 
     pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId, span: rask_ast::Span) {
@@ -669,7 +901,18 @@ impl TypeChecker {
         }
         let type_id = match self.impl_target_id(&i.target_ty) {
             Some(id) => id,
-            None => return,
+            None => {
+                // XC1 still applies to a primitive. `string` and the integer
+                // types aren't `Named`, so they have no entry in the table and
+                // the lookup above misses — the block registered unchecked, and
+                // a program's `extend string with Hashable` made `"abc".hash()`
+                // answer 4242 while every `Map` went on using the real one. One
+                // answer per type is exactly what that isn't.
+                if rask_resolve::is_builtin_type(base_name) {
+                    self.check_builtin_core_conformance(i, span);
+                }
+                return;
+            }
         };
         self.types.record_method_decl(type_id, decl_id);
         // G1: record each declared conformance. `scoped` methods stay out of the
@@ -681,18 +924,46 @@ impl TypeChecker {
             .collect();
         for trait_name in &i.trait_names {
             self.types.record_conformance(type_id, trait_name);
-            // XC3: two blocks claiming the same pair. Reported here rather than
-            // where the conformance is used, because both are in this package —
-            // the cross-package half needs the use site and the declaring
-            // package's name, neither of which the checker has yet (#1299).
+            // XC1: six traits belong to the package that declares the type.
+            // Checked before the duplicate rule below, because a foreign block
+            // claiming one of them is wrong whether or not the owner wrote one.
+            if let Some(encoding) = Self::core_trait(trait_name) {
+                use super::type_table::TypeOwner;
+                let here = self.type_owner(span);
+                let owner = self.types.declared_by(type_id);
+                if owner != here {
+                    let name_of = |o: &TypeOwner| match o {
+                        TypeOwner::Package(p) => Some(p.clone()),
+                        _ => None,
+                    };
+                    self.errors.push(TypeError::ForeignCoreConformance {
+                        // The target as the block writes it, so the suggested
+                        // `type MyVec = Vec<i64>` names the same thing the
+                        // rejected header did.
+                        ty: i.target_ty.clone(),
+                        trait_name: TypeTable::conformance_display(trait_name),
+                        owner: name_of(&owner),
+                        here: name_of(&here),
+                        encoding,
+                        span,
+                        declared_at: self.types.declared_at(type_id),
+                    });
+                }
+            }
+            // XC3: two blocks in *one* package claiming the same pair, reported
+            // here because one author owns both. Two packages is the other
+            // half: both declarations are recorded and the clash is reported
+            // where the conformance is needed, so a collision nobody uses
+            // costs nothing.
             //
             // Keyed on the applied trait (GT/AT), so two different applied
             // forms are two conformances rather than one declared twice. They
             // can still collide on a method name — that's MN3's E0889, and
             // keying this way is what keeps it from being reported twice.
+            let here = self.package_of(span).map(str::to_string);
             let first =
                 self.types
-                    .record_conformance_span(type_id, trait_name, decl_id, span);
+                    .record_conformance_span(type_id, trait_name, decl_id, span, here);
             if let Some(first) = first {
                 self.errors.push(TypeError::DuplicateConformance {
                     ty: base_name.to_string(),
@@ -823,6 +1094,23 @@ impl TypeChecker {
                     name,
                     span,
                 });
+            }
+        }
+        // XC5: a block on someone else's type carries the package that wrote it,
+        // in the symbol its methods get.
+        //
+        // Decided from this block alone — its owner against the type's — rather
+        // than by asking whether anyone *else* also declared the method. Two
+        // packages conforming one type then get two names without either
+        // knowing about the other, and a package added or removed later never
+        // renames a symbol that was already there. It is also the same question
+        // XC1 asks about legality one screen up, so the two can't disagree
+        // about what "foreign" means.
+        if let Some(pkg) = self.foreign_block_owner(type_id, span) {
+            self.conformance_disambiguation.insert(decl_id, pkg.clone());
+            for m in &new_methods {
+                self.types
+                    .record_impl_method_package(type_id, &m.name, &pkg, decl_id);
             }
         }
         if let Some(def) = self.types.get_mut(type_id) {
@@ -2079,10 +2367,17 @@ impl TypeChecker {
                                 });
                                 continue;
                             }
+                            let missing = match &e {
+                                crate::traits::TraitError::MissingMethod { method, signature, .. } => {
+                                    Some((method.clone(), signature.clone()))
+                                }
+                                _ => None,
+                            };
                             self.errors.push(TypeError::TraitNotSatisfied {
                                 ty: i.target_ty.clone(),
                                 trait_name,
                                 context: super::TraitBoundContext::ConformanceHeader,
+                                missing,
                                 span: decl.span,
                             });
                         }

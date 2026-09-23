@@ -5627,6 +5627,29 @@ impl<'a> MirLowerer<'a> {
     /// the resolved receiver type, then emit the call. Also carries the inline
     /// Result/Option handling, struct/enum clone, and collection element
     /// tracking the plain call path needs.
+    /// XC5: the method name a symbol is built from, carrying the declaring
+    /// package where more than one supplies it on this type.
+    ///
+    /// `Doc_label` becomes `Doc_label_liba`, which is the name monomorphization
+    /// emitted `liba`'s body under. Without it both blocks mangle to one symbol
+    /// and whichever the pass read last wins, so `liba`'s own call ran `libb`'s
+    /// body.
+    fn dispatch_method_name(&self, node: rask_ast::NodeId, prefix: &str, method: &str) -> String {
+        let Some(pkg) = self.ctx.recorded_conformance_package(node) else {
+            return method.to_string();
+        };
+        let suffixed = rask_types::conformance_symbol(method, &pkg);
+        // Only where that package has a body of its own. A block on someone
+        // else's type is emitted under its package; everything else keeps the
+        // plain name, and the calling package asking for a version nobody
+        // emitted just means it wanted the only one there is.
+        if self.func_sigs.contains_key(&format!("{}_{}", prefix, suffixed)) {
+            suffixed
+        } else {
+            method.to_string()
+        }
+    }
+
     fn lower_regular_method_call(
         &mut self,
         expr: &Expr,
@@ -5705,10 +5728,23 @@ impl<'a> MirLowerer<'a> {
         // The qualified name isn't resolved until after the arguments are
         // lowered, so rebuild the candidate keys in the same priority order the
         // resolution below uses and take the first one with a signature.
+        // The receiver's name, for asking whether the calling package has a
+        // body of its own for this method.
+        let dispatch_prefix = self
+            .ctx
+            .recorded_prefix(expr.id)
+            .or_else(|| {
+                self.ctx
+                    .lookup_raw_type(object.id)
+                    .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            })
+            .map(|p| p.split('<').next().unwrap_or(&p).trim().to_string())
+            .unwrap_or_default();
+        let dispatch_method = self.dispatch_method_name(expr.id, &dispatch_prefix, &method);
         let callee_sig = {
             let mut keys: Vec<String> = Vec::new();
             if let Some(prefix) = self.ctx.recorded_prefix(expr.id) {
-                keys.push(format!("{}_{}", prefix, method));
+                keys.push(format!("{}_{}", prefix, dispatch_method));
             }
             if let Some(prefix) = self
                 .ctx
@@ -5716,10 +5752,10 @@ impl<'a> MirLowerer<'a> {
                 .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
                 .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
             {
-                keys.push(format!("{}_{}", prefix, method));
+                keys.push(format!("{}_{}", prefix, dispatch_method));
             }
             if let ExprKind::Ident(recv) = &object.kind {
-                keys.push(format!("{}_{}", recv, method));
+                keys.push(format!("{}_{}", recv, dispatch_method));
             }
             keys.iter().find_map(|k| self.func_sigs.get(k)).cloned()
         };
@@ -5897,7 +5933,7 @@ impl<'a> MirLowerer<'a> {
                 // "Vec<T>" → "Vec", "Map<K, V>" → "Map". Otherwise the
                 // call name is `Vec<T>_len` which has no codegen entry.
                 let base = prefix.split('<').next().unwrap_or(&prefix).trim();
-                format!("{}_{}", base, method)
+                format!("{}_{}", base, dispatch_method)
             });
         let qualified_name = match qualified_name {
             Some(name) => name,
@@ -7468,14 +7504,45 @@ impl<'a> MirLowerer<'a> {
             self.ctx.lookup_raw_type(object.id),
             Some(rask_types::Type::Generic { .. } | rask_types::Type::UnresolvedGeneric { .. })
         );
-        let has_operator_overload = aggregate_receiver
-            && self.mir_type_name(obj_ty)
-                .map(|ty_name| format!("{}_{}", ty_name, method))
-                .is_some_and(|qualified| {
-                    self.func_sigs.contains_key(&qualified)
-                        || (receiver_is_generic
-                            && self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", qualified))))
-                });
+        // Both names the receiver goes by. `mir_type_name` reads the layout,
+        // and a nominal newtype shares its underlying type's layout (T3) — so
+        // for `type Counted = Doc` it answers "Doc" and the lookup built
+        // `Doc_eq`, a function nobody declared. The block's methods are
+        // registered under the newtype's own name, the way #445 keyed them, so
+        // `a.eq(b)` on a `Counted` fell through to a raw struct-address compare
+        // while `a.same(b)` — not an operator method, so it takes the dispatch
+        // chain below — called the right body. The checker's type is what knows
+        // the difference.
+        let mut overload_names: Vec<String> = Vec::new();
+        if let Some(prefix) = self
+            .ctx
+            .lookup_raw_type(object.id)
+            .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
+            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+        {
+            overload_names.push(prefix);
+        }
+        if let Some(name) = self.mir_type_name(obj_ty) {
+            overload_names.push(name);
+        }
+        // XC5: an operator method is a conformance method like any other —
+        // `extend Doc with Equal` in two packages puts two `eq`s on one type.
+        let method = &overload_names
+            .first()
+            .map(|p| self.dispatch_method_name(call, p, method))
+            .unwrap_or_else(|| method.clone());
+        // A nominal newtype has no layout of its own (type.aliases/T3), so it
+        // isn't an aggregate by `obj_ty` even when it wraps a struct — and an
+        // `extend Counted with Equal` block is exactly the overload this gate
+        // is here to find.
+        let has_operator_overload = (aggregate_receiver
+            || self.expr_is_transparent_newtype(object))
+            && overload_names.iter().any(|ty_name| {
+                let qualified = format!("{}_{}", ty_name, method);
+                self.func_sigs.contains_key(&qualified)
+                    || (receiver_is_generic
+                        && self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", qualified))))
+            });
         let skip_binop = skip_binop || has_operator_overload;
 
         // std.bits B1 on an integer receiver. These aren't operator methods —
