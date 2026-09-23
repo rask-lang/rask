@@ -152,16 +152,56 @@ static int import_real(Ent *e, const char *np) {
     return 0;
 }
 
+// ─── Sickness per file (sim/F4) ─────────────────────────────
+//
+// The resource is the file, not the stream: the first open of a path draws
+// whether it is sick for this run, and every later open of it agrees.
+
+typedef struct Sickness {
+    char            *path;
+    int              sick;
+    struct Sickness *next;
+} Sickness;
+
+static Sickness *sickness;
+
+static int path_is_sick(const char *np) {
+    for (Sickness *s = sickness; s; s = s->next) {
+        if (strcmp(s->path, np) == 0) return s->sick;
+    }
+    char what[600];
+    snprintf(what, sizeof(what), "file `%s`", np);
+    Sickness *s = (Sickness *)xalloc(sizeof(Sickness));
+    s->path = norm(np);
+    s->sick = rask_sim_draw_sick(SIM_FAULT_IO_ERROR, what);
+    s->next = sickness;
+    sickness = s;
+    return s->sick;
+}
+
 // ─── Streams over an entry ──────────────────────────────────
 
 typedef struct {
     Ent   *e;
     size_t pos;
     int    append;
+    int    sick;       // sim/F4: this stream's operations may fail
+    int    owns_ent;   // a private copy of a real file, freed at close
 } Cookie;
+
+// sim/F5: an injected error means the operation had no effect.
+static int injected(Cookie *k, const char *op) {
+    if (!k->sick) return 0;
+    char what[600];
+    snprintf(what, sizeof(what), "%s failed on `%s`", op, k->e->path);
+    if (!rask_sim_draw_failure(what)) return 0;
+    errno = EIO;
+    return 1;
+}
 
 static ssize_t cookie_read(void *c, char *buf, size_t size) {
     Cookie *k = (Cookie *)c;
+    if (injected(k, "read")) return -1;
     if (k->pos >= k->e->len) return 0;
     size_t n = k->e->len - k->pos;
     if (n > size) n = size;
@@ -172,6 +212,7 @@ static ssize_t cookie_read(void *c, char *buf, size_t size) {
 
 static ssize_t cookie_write(void *c, const char *buf, size_t size) {
     Cookie *k = (Cookie *)c;
+    if (injected(k, "write")) return -1;
     Ent *e = k->e;
     if (k->append) k->pos = e->len;
     reserve(e, k->pos + size);
@@ -198,7 +239,13 @@ static int cookie_seek_to(Cookie *k, int64_t off, int whence, int64_t *out) {
 }
 
 static int cookie_close(void *c) {
-    free(c);
+    Cookie *k = (Cookie *)c;
+    if (k->owns_ent) {
+        free(k->e->path);
+        free(k->e->data);
+        free(k->e);
+    }
+    free(k);
     return 0;
 }
 
@@ -219,10 +266,12 @@ static int linux_seek(void *c, off64_t *off, int whence) {
 }
 #endif
 
-static FILE *open_stream(Ent *e, const char *mode, int append) {
+static FILE *open_stream(Ent *e, const char *mode, int append, int owns_ent) {
     Cookie *k = (Cookie *)xalloc(sizeof(Cookie));
     k->e = e;
     k->append = append;
+    k->owns_ent = owns_ent;
+    k->sick = rask_sim_fault_enabled(SIM_FAULT_IO_ERROR) && path_is_sick(e->path);
 #ifdef __APPLE__
     FILE *f = funopen(k, apple_read, apple_write, apple_seek, cookie_close);
     (void)mode;
@@ -235,7 +284,10 @@ static FILE *open_stream(Ent *e, const char *mode, int append) {
     };
     FILE *f = fopencookie(k, mode, io);
 #endif
-    if (!f) free(k);
+    if (!f) {
+        if (owns_ent) cookie_close(k);
+        else free(k);
+    }
     return f;
 }
 
@@ -251,15 +303,27 @@ FILE *rask_sim_fs_fopen(const char *path, const char *mode, int *handled) {
     switch (mode[0]) {
     case 'r':
         if (e && e->kind == ENT_FILE) {
-            f = open_stream(e, mode, 0);
+            f = open_stream(e, mode, 0, 0);
         } else if (e || ancestor_gone(np)) {
             errno = e && e->kind == ENT_DIR ? EISDIR : ENOENT;
+        } else if (!plus && rask_sim_fault_enabled(SIM_FAULT_IO_ERROR)) {
+            // With I/O errors on, a read of a real file goes through a private
+            // copy so the fault has somewhere to land. The overlay doesn't
+            // gain an entry: the file is still untouched.
+            if (kind_of(np) != 1) {
+                errno = ENOENT;
+                break;
+            }
+            Ent *copy = (Ent *)xalloc(sizeof(Ent));
+            copy->path = norm(np);
+            import_real(copy, np);
+            f = open_stream(copy, mode, 0, 1);
         } else if (!plus) {
             *handled = 0;   // untouched: the real tree answers a plain read
         } else if (kind_of(np) == 1) {
             e = put(np, ENT_FILE);
             import_real(e, np);
-            f = open_stream(e, mode, 0);
+            f = open_stream(e, mode, 0, 0);
         } else {
             errno = ENOENT;
         }
@@ -272,7 +336,7 @@ FILE *rask_sim_fs_fopen(const char *path, const char *mode, int *handled) {
         } else {
             e = put(np, ENT_FILE);
             e->len = 0;
-            f = open_stream(e, mode, 0);
+            f = open_stream(e, mode, 0, 0);
         }
         break;
     case 'a': {
@@ -285,7 +349,7 @@ FILE *rask_sim_fs_fopen(const char *path, const char *mode, int *handled) {
             int fresh = !(e && e->kind == ENT_FILE);
             e = put(np, ENT_FILE);
             if (fresh && kind == 1) import_real(e, np);
-            f = open_stream(e, mode, 1);
+            f = open_stream(e, mode, 1, 0);
         }
         break;
     }

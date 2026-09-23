@@ -14,6 +14,8 @@ extern "C" func fseek(stream: *u8, offset: i64, whence: i32) -> i32
 
 extern "C" func ftell(stream: *u8) -> i64
 
+extern "C" func ferror(stream: *u8) -> i32
+
 extern "C" func rask_alloc(size: i64) -> *u8
 
 extern "C" func rask_free(ptr: *u8)
@@ -112,6 +114,14 @@ extend fs {
         }
         let buf = unsafe rask_alloc(size + 1)
         let n = unsafe fread(buf, 1, size.wrap<u64>(), f)
+        // Fewer bytes than the file holds is a failed read, not a shorter
+        // file. The errno has to be read before fclose can touch it.
+        if n < size.wrap<u64>() {
+            let err = IoError.last_os_error()
+            unsafe fclose(f)
+            unsafe rask_free(buf)
+            return err
+        }
         unsafe fclose(f)
         let result = unsafe string.from_raw(buf, n as usize)
         unsafe rask_free(buf)
@@ -132,6 +142,12 @@ extend fs {
         if size > 0 {
             let buf = unsafe rask_alloc(size)
             let n = unsafe fread(buf, 1, size.wrap<u64>(), f)
+            if n < size.wrap<u64>() {
+                let err = IoError.last_os_error()
+                unsafe fclose(f)
+                unsafe rask_free(buf)
+                return err
+            }
             mut i: u64 = 0
             loop {
                 if i >= n { break }
@@ -152,11 +168,7 @@ extend fs {
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        let ptr = unsafe content.as_ptr()
-        let len = content.len().wrap<u64>()
-        unsafe fwrite(ptr, 1, len, f)
-        unsafe fclose(f)
-        return
+        return write_all_then_close(f, content)
     }
 
     /// Write bytes to a file, replacing its contents.
@@ -209,12 +221,26 @@ extend fs {
         let buf = unsafe rask_alloc(8192)
         loop {
             let n = unsafe fread(buf, 1, 8192, src)
+            let failed = if n == 0 {
+                (unsafe ferror(src)) != 0
+            } else {
+                (unsafe fwrite(buf, 1, n, dst)) < n
+            }
+            // errno is read before either close can touch it.
+            if failed {
+                let err = IoError.last_os_error()
+                unsafe rask_free(buf)
+                unsafe fclose(src)
+                unsafe fclose(dst)
+                return err
+            }
             if n == 0 { break }
-            unsafe fwrite(buf, 1, n, dst)
         }
         unsafe rask_free(buf)
         unsafe fclose(src)
-        unsafe fclose(dst)
+        if (unsafe fclose(dst)) != 0 {
+            return IoError.last_os_error()
+        }
         return
     }
 
@@ -256,11 +282,7 @@ extend fs {
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        let ptr = unsafe content.as_ptr()
-        let len = content.len().wrap<u64>()
-        unsafe fwrite(ptr, 1, len, f)
-        unsafe fclose(f)
-        return
+        return write_all_then_close(f, content)
     }
 
     /// List entries in a directory.
@@ -338,6 +360,25 @@ extend fs {
 /// `size()`/`accessed()`/`modified()` accessors reading out of a C-allocated
 /// array, which is what forced `metadata` to be `@native` and left it with no
 /// way to report a failure.
+/// Write `content` and close `f`, reporting either step failing. The write is
+/// buffered, so a disk that refuses the bytes usually says so at the close; a
+/// caller that only checked `fwrite` would report success for data that never
+/// arrived.
+func write_all_then_close(f: *u8, content: string) -> void or IoError {
+    let ptr = unsafe content.as_ptr()
+    let len = content.len().wrap<u64>()
+    let wrote = unsafe fwrite(ptr, 1, len, f)
+    if wrote < len {
+        let err = IoError.last_os_error()
+        unsafe fclose(f)
+        return err
+    }
+    if (unsafe fclose(f)) != 0 {
+        return IoError.last_os_error()
+    }
+    return
+}
+
 public struct Metadata {
     /// File size in bytes.
     public size: u64

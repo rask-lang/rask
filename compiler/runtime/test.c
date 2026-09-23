@@ -123,6 +123,16 @@ static const char *sim_current_name;
 static void sim_print_position(void) {
     printf(",\"sim_step\":%lld,\"sim_time_ns\":%lld",
            (long long)rask_sim_step(), (long long)rask_sim_time_ns());
+    if (rask_sim_sick_log()[0]) {
+        printf(",\"sim_sick\":\"");
+        json_print_escaped(rask_sim_sick_log());
+        printf("\"");
+    }
+    if (rask_sim_fault_log()[0]) {
+        printf(",\"sim_faults\":\"");
+        json_print_escaped(rask_sim_fault_log());
+        printf("\"");
+    }
 }
 
 // A failure that can't unwind to the test's setjmp — a deadlock is noticed on

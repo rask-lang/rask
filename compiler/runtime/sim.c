@@ -80,6 +80,10 @@ static struct {
     uint64_t         seed;
     uint64_t         sched;
     uint64_t         fault;
+    int64_t          faults;      // SIM_FAULT_* bits the test asked for (F2)
+    int64_t          wall_jump_ns; // accumulated ClockJump, SystemTime only
+    char             sick_log[2048];
+    char             fault_log[4096];
     int64_t          step;
     int64_t          now_ns;
 } g = { .lock = PTHREAD_MUTEX_INITIALIZER };
@@ -271,8 +275,69 @@ int64_t rask_sim_now_ns(void) {
     return g.now_ns;
 }
 
-// Short reads, latencies and (later) injected errors all draw here, so none of
-// them can shift the schedule (sim/SD2).
+// `sim.require(faults: [...])` (sim/F2).
+int64_t rask_sim_enable_faults(int64_t mask) {
+    if (!g.active) return 0;
+    g.faults |= mask;
+    return 1;
+}
+
+int rask_sim_fault_enabled(int64_t bit) {
+    return g.active && (g.faults & bit) != 0;
+}
+
+// ─── Sickness (sim/F4) ──────────────────────────────────────
+//
+// Faults land on resources, not on everything: at open, the seed decides
+// whether that file or connection is sick for this run, and only a sick one
+// ever fails. The two rates are the spec's open question; these are the v1
+// answers, and the report names the resource rather than a percentage.
+
+#define SICK_ONE_IN      4   // resources opened while a fault is enabled
+#define FAIL_ONE_IN      3   // operations on a sick resource
+#define CLOCK_JUMP_ONE_IN 8  // SystemTime reads with ClockJump enabled
+
+static void log_append(char *log, size_t cap, const char *text) {
+    size_t used = strlen(log);
+    if (used + 3 >= cap) return;
+    snprintf(log + used, cap - used, "%s%s", used ? "; " : "", text);
+}
+
+int rask_sim_draw_sick(int64_t fault_bits, const char *what) {
+    if (!g.active || !(g.faults & fault_bits)) return 0;
+    if (splitmix64(&g.fault) % SICK_ONE_IN != 0) return 0;
+    log_append(g.sick_log, sizeof(g.sick_log), what);
+    return 1;
+}
+
+int rask_sim_draw_failure(const char *what) {
+    if (splitmix64(&g.fault) % FAIL_ONE_IN != 0) return 0;
+    char line[512];
+    snprintf(line, sizeof(line), "%s (step %lld)", what, (long long)g.step);
+    log_append(g.fault_log, sizeof(g.fault_log), line);
+    return 1;
+}
+
+// SystemTime under ClockJump: sometimes the wall clock leaps forward, the way
+// an NTP correction or a suspended VM makes it. `Instant` never does.
+int64_t rask_sim_wall_jump_ns(void) {
+    if (g.active && (g.faults & SIM_FAULT_CLOCK_JUMP) &&
+        splitmix64(&g.fault) % CLOCK_JUMP_ONE_IN == 0) {
+        int64_t jump = (int64_t)(1 + splitmix64(&g.fault) % 3600) * 1000000000LL;
+        g.wall_jump_ns += jump;
+        char line[128];
+        snprintf(line, sizeof(line), "SystemTime jumped %llds (step %lld)",
+                 (long long)(jump / 1000000000LL), (long long)g.step);
+        log_append(g.fault_log, sizeof(g.fault_log), line);
+    }
+    return g.wall_jump_ns;
+}
+
+const char *rask_sim_sick_log(void) { return g.sick_log; }
+const char *rask_sim_fault_log(void) { return g.fault_log; }
+
+// Short reads, latencies and injected errors all draw here, so none of them
+// can shift the schedule (sim/SD2).
 uint64_t rask_sim_fault_draw(void) {
     return splitmix64(&g.fault);
 }
@@ -382,3 +447,12 @@ int64_t rask_sim_time_ns(void) {
 }
 
 #endif // RASK_SIM
+
+#ifndef RASK_SIM
+// `sim.require` outside sim: no faults to turn on, so the test is skipped as
+// sim-only (sim/F3).
+int64_t rask_sim_enable_faults(int64_t mask) {
+    (void)mask;
+    return 0;
+}
+#endif

@@ -340,6 +340,12 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // worst implementation behind it, it also stopped `reader.read_bytes()`
     // from being anyone's (#1199).
     ("io_read_std_bytes", 0, 0, "Vec_free"),
+    // Bytes off a socket, into a Vec the runtime made for this call (empty
+    // when the read failed). Same reason as the line above:
+    // `TcpConnection.read_bytes` is one of the bodies behind
+    // `reader.read_bytes()`, and one body whose answer is nobody's makes every
+    // reader's bytes nobody's, a `Buffer`'s included.
+    ("TcpConnection_read_bytes_raw", 0, 0, "Vec_free"),
     //
     // The string splitters — `string_split`, `string_lines` and friends — are
     // absent for a nearer reason: each does hand back a fresh Vec, and

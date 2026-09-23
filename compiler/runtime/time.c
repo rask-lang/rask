@@ -32,7 +32,10 @@ int64_t rask_time_Instant_now(void) {
 // where both backends run the same source.
 int64_t rask_time_wall_clock_nanos(void) {
 #ifdef RASK_SIM
-    if (rask_sim_active()) return SIM_WALL_CLOCK_START_NS + rask_sim_now_ns();
+    if (rask_sim_active()) {
+        int64_t now = rask_sim_now_ns();
+        return SIM_WALL_CLOCK_START_NS + now + rask_sim_wall_jump_ns();
+    }
 #endif
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);

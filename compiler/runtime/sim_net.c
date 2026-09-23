@@ -46,6 +46,10 @@ typedef struct SimSock {
     char           *in;
     size_t          in_head, in_len, in_cap;
     int             peer_closed;
+    int             sick;       // sim/F4: this end's operations may fail
+    int             reset;      // cut by an injected Disconnect
+    int             peer_reset; // the other end was cut: reads fail, not EOF
+    char            label[64];  // how the fault log names this end
 } SimSock;
 
 static SimSock **fd_table;
@@ -100,6 +104,43 @@ static size_t short_len(size_t n) {
     return 1 + (size_t)((r >> 1) % n);
 }
 
+// sim/F4, F5: an injected fault on a sick end. Either the operation fails
+// with no effect, or (Disconnect) the connection is cut: this call fails, and
+// so does the peer's next read — a reset, not an end of stream, so a reader
+// can't mistake the bytes it got so far for the whole message.
+static int injected(SimSock *s, const char *op) {
+    if (s->reset) {
+        errno = ECONNRESET;
+        return 1;
+    }
+    if (!s->sick) return 0;
+    int io = rask_sim_fault_enabled(SIM_FAULT_IO_ERROR);
+    int cut = rask_sim_fault_enabled(SIM_FAULT_DISCONNECT);
+    if (io && cut) {
+        if (rask_sim_fault_draw() & 1) io = 0;
+        else cut = 0;
+    }
+    char what[160];
+    snprintf(what, sizeof(what), cut ? "%s reset during %s" : "%s failed on %s",
+             cut ? s->label : op, cut ? op : s->label);
+    if (!rask_sim_draw_failure(what)) return 0;
+    if (cut) {
+        s->reset = 1;
+        if (s->peer) {
+            s->peer->peer_reset = 1;
+            rask_sim_notify(s->peer);
+        }
+        errno = ECONNRESET;
+    } else {
+        errno = EIO;
+    }
+    return 1;
+}
+
+static void draw_sickness(SimSock *s) {
+    s->sick = rask_sim_draw_sick(SIM_FAULT_IO_ERROR | SIM_FAULT_DISCONNECT, s->label);
+}
+
 static void latency(void) {
     rask_sim_sleep((int64_t)(rask_sim_fault_draw() % MAX_LATENCY_NS));
 }
@@ -147,6 +188,10 @@ int64_t rask_sim_net_connect(const char *host, const char *port_str) {
     client->remote_port = l->port;
     server->port = l->port;
     server->remote_port = client->port;
+    snprintf(client->label, sizeof(client->label), "connection to :%d", l->port);
+    snprintf(server->label, sizeof(server->label), "connection from :%d", client->port);
+    draw_sickness(client);
+    draw_sickness(server);
 
     if (l->q_len == l->q_cap) {
         size_t cap = l->q_cap ? l->q_cap * 2 : 8;
@@ -189,8 +234,13 @@ int64_t rask_sim_net_read(int64_t fd, void *buf, size_t n) {
         errno = EBADF;
         return -1;
     }
-    while (s->in_len == 0 && !s->peer_closed) {
+    if (injected(s, "read")) return -1;
+    while (s->in_len == 0 && !s->peer_closed && !s->peer_reset) {
         rask_sim_park(s, "socket read");
+    }
+    if (s->peer_reset) {
+        errno = ECONNRESET;
+        return -1;
     }
     if (s->in_len == 0) return 0;   // the peer closed and everything is read
     latency();
@@ -209,8 +259,9 @@ int64_t rask_sim_net_write(int64_t fd, const void *buf, size_t n) {
         errno = EBADF;
         return -1;
     }
+    if (injected(s, "write")) return -1;
     SimSock *p = s->peer;
-    if (!p || p->closed) {
+    if (!p || p->closed || p->reset) {
         errno = EPIPE;
         return -1;
     }

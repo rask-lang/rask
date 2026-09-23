@@ -63,9 +63,11 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 | Rule | Description |
 |------|-------------|
 | **F1: Always on** | Adversarial scheduling (S2), short reads/writes, and I/O latency (C4). These are legal behavior, not faults — code that breaks on them was already broken |
-| **F2: Opt-in** | `Fault.IoError`, `Fault.Disconnect`, `Fault.ClockJump`. A test enables them by calling `sim.require(faults: [...])` as its first statement. `Instant` never jumps — `std.time/I1` is monotonic and stays monotonic |
+| **F2: Opt-in** | `Fault.IoError`, `Fault.Disconnect`, `Fault.ClockJump`, from `import sim`. A test enables them by calling `sim.require(faults: [...])` as its first statement. `Instant` never jumps — `std.time/I1` is monotonic and stays monotonic |
 | **F3: Sim-only tests** | Outside sim, `sim.require` skips the rest of the test and says why, reusing `std.testing/T12`. A fault test never passes vacuously under a plain `rask test` |
-| **F4: Faults land on resources, not on everything** | At each open — a file, a socket, a peer — the seed decides whether *that* resource is sick for this run. A sick resource then fails at a fixed documented rate; a healthy one never fails. The report names what was sick |
+| **F4: Faults land on resources, not on everything** | At each open — a file, a socket, a peer — the seed decides whether *that* resource is sick for this run. A sick resource then fails at a fixed documented rate; a healthy one never fails. The report names what was sick. A file is one resource however many times it is opened; each end of a connection is its own |
+| **F4a: v1 rates** | A resource is sick 1 time in 4. A sick one fails 1 operation in 3. With `ClockJump`, 1 `SystemTime` read in 8 jumps forward by 1 s to 1 h |
+| **F4b: What a fault is** | `IoError`: the operation fails with `EIO`. `Disconnect`: the connection is reset — this call fails, the peer's next read fails with `ECONNRESET` rather than reading an end of stream, and every later call on it fails |
 | **F5: All-or-nothing** | An injected error means the operation had no effect. Partial effects come only from the short-read/short-write class, where partial *is* the behavior |
 | **F6: Rendered, not recorded** | The fault log in a failure report is regenerated from the seed. Nothing is stored between runs |
 
@@ -185,6 +187,9 @@ WHY: Falling through to the real call would make the run unreplayable without
 | `using Multitasking(workers: 2)` | At most two task bodies in flight, as in production. Waiting for a slot is a scheduling point | S3 |
 | A test reads a module-level value an earlier test wrote | Sees the initializer, not the write | I7 |
 | `sim.require` test under plain `rask test` | Skipped at that line, reported as sim-only | F3 |
+| `sim.require` test under the interpreter | Skipped the same way — the interpreter has no sim mode | F3 |
+| Writer's write fails halfway under `IoError`, then it closes normally | The reader sees a short message and a clean end, as over real TCP. Only the protocol's framing can catch it | F4b |
+| Code discards a write's error, then reads the file back | Reads what the failed write didn't write. The test fails where the bug is | F5 |
 | Test reaches sealed C (a hash, a decompress) | Runs, no mark — already deterministic | B6 |
 | Test reaches `pthread_create` through C | Refused, symbol named | B2 |
 | Test writes a file, later test reads it | Second test does not see it — the overlay is per-test | B5 |
@@ -294,7 +299,7 @@ The interpreter was the other option: stepping evaluation makes "pick a random r
 
 ### Open questions
 
-- **Sickness probability and per-class failure rates (F4).** The shape is settled; the two numbers behind it — how often a resource is picked sick, how often a sick one fails — want real tests behind them, not taste.
+- **Sickness probability and per-class failure rates (F4).** F4a picks numbers so the thing runs. They want real test suites behind them, not taste, and may change once there are some.
 - **Developer-placed fault sites.** FoundationDB's `buggify` lets the author of a subsystem mark a legal-but-rare path so the simulator can take it on purpose — the knowledge that flushing early *here* is legal lives with whoever wrote it, and no outside-in injector can guess it. A Rask `sim.rarely()` would fit the existing model exactly: false in production (`determinism/D2`), seed-driven under sim. The cost is test-only branches in shipping source, which is a visibility question worth its own discussion rather than a footnote here.
 - **Sealed-set membership (B6).** Which libc symbols count as pure is a list, and lists are where this kind of design rots. `memcpy` is obvious, `qsort` takes a comparator, `strerror` reads a locale. Needs writing down properly, once, with a rule for adding to it.
 

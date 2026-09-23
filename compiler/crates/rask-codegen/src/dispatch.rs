@@ -1094,6 +1094,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("net_listen_handle", "rask_net_tcp_listen", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("net_connect_handle", "rask_net_tcp_connect", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_accept_handle", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
+        // stdlib/sim.rk: turn on the faults a test asks for; false outside sim.
+        StdlibEntry::simple("sim_enable_faults", "rask_sim_enable_faults", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpConnection_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I64), false),
@@ -1108,8 +1110,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // read_bytes/write_bytes hand back/take a Vec<u8> pointer directly —
         // a plain heap pointer is never negative, so the same convention used
         // for handles (TcpListener.accept, etc.) applies with no out-param.
-        StdlibEntry::neg_err("TcpConnection_read_bytes", "rask_net_read_bytes", &[types::I64], Some(types::I64), false),
-        StdlibEntry::neg_err("TcpConnection_write_bytes", "rask_net_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpConnection_read_bytes_raw", "rask_net_read_bytes", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpConnection_read_failed", "rask_net_read_failed", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpConnection_write_bytes_raw", "rask_net_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "TcpConnection_remote_addr", c_name: "rask_net_remote_addr",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,

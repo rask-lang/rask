@@ -1266,6 +1266,12 @@ impl Interpreter {
                     if let Some(func) = self.functions.get(&prefixed).cloned() {
                         return self.call_function(&func, arg_vals);
                     }
+                    // stdlib/sim.rk's one native: is this run under sim? The
+                    // interpreter never is, so `sim.require` skips the test
+                    // as sim-only (sim/F3).
+                    if pkg_name == "sim" && method == "enable_faults" {
+                        return Ok(Value::Bool(false));
+                    }
                     return Err(RuntimeDiagnostic::new(
                         RuntimeError::UndefinedVariable(method.clone()),
                         expr.span,

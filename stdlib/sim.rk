@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Sim mode's one piece of surface: asking for faults (sim/F2, F3).
+//
+// Adversarial scheduling, short reads and I/O latency are always on under sim
+// and need no asking (sim/F1). The faults below would fail tests that never
+// meant to handle them, so a test opts in on its first line.
+
+/// Faults a sim test can ask for.
+public enum Fault {
+    /// A resource the seed picked as sick fails some of its operations with
+    /// an I/O error (sim/F4). A failed operation has no effect (sim/F5).
+    IoError
+    /// A sick connection is cut: the next operation fails and the peer reads
+    /// the end of the stream.
+    Disconnect
+    /// `SystemTime` jumps forward. `Instant` never does (std.time/I1).
+    ClockJump
+}
+
+public struct sim { }
+
+extend sim {
+    /// Turn on `faults` for this test. Outside sim the rest of the test is
+    /// skipped and reported as sim-only, so a fault test never passes by not
+    /// running its faults.
+    public func require(faults: Vec<Fault>) -> void {
+        mut mask: i64 = 0
+        for f in faults {
+            mask = mask | fault_bit(f)
+        }
+        if !sim.enable_faults(mask) {
+            skip("sim-only: needs `rask test --sim` for fault injection")
+        }
+    }
+
+    /// True when this run is under sim and the faults are now on.
+    @native("rask_sim_enable_faults")
+    func enable_faults(mask: i64) -> bool {}
+}
+
+func fault_bit(f: Fault) -> i64 {
+    match f {
+        Fault.IoError => { return 1 }
+        Fault.Disconnect => { return 2 }
+        Fault.ClockJump => { return 4 }
+    }
+}

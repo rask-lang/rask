@@ -82,6 +82,9 @@ struct Run {
     error: Option<String>,
     step: Option<i64>,
     time_ns: Option<i64>,
+    /// Resources the seed made sick, and the faults injected into them (F4).
+    sick: Option<String>,
+    faults: Option<String>,
     output: Vec<String>,
     stderr: String,
 }
@@ -100,6 +103,8 @@ fn run_one(bin: &Path, name: &str, seed: u64) -> Run {
                 error: Some(format!("could not start the test binary: {e}")),
                 step: None,
                 time_ns: None,
+                sick: None,
+                faults: None,
                 output: vec![],
                 stderr: String::new(),
             }
@@ -125,6 +130,8 @@ fn run_one(bin: &Path, name: &str, seed: u64) -> Run {
             error: Some(format!("the test binary {}", death_description(&out.status))),
             step: None,
             time_ns: None,
+            sick: None,
+            faults: None,
             output,
             stderr,
         };
@@ -135,6 +142,8 @@ fn run_one(bin: &Path, name: &str, seed: u64) -> Run {
         error: parse_json_str(&rec, "error").map(unescape_json_str),
         step: parse_json_i64(&rec, "sim_step"),
         time_ns: parse_json_i64(&rec, "sim_time_ns"),
+        sick: parse_json_str(&rec, "sim_sick").map(unescape_json_str),
+        faults: parse_json_str(&rec, "sim_faults").map(unescape_json_str),
         output,
         stderr,
     }
@@ -179,6 +188,12 @@ fn print_failure(name: &str, run: &Run, seed: u64, path: &str) {
     }
     if let (Some(step), Some(t)) = (run.step, run.time_ns) {
         println!("  step {step}, virtual time {}", format_virtual_time(t));
+    }
+    if let Some(sick) = &run.sick {
+        println!("  sick this seed: {sick}");
+    }
+    if let Some(faults) = &run.faults {
+        println!("  faults: {faults}");
     }
     if !run.output.is_empty() {
         println!("  {}", "output:".dimmed());

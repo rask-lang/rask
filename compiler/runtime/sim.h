@@ -32,6 +32,19 @@ int64_t rask_sim_now_ns(void);
 uint64_t rask_sim_random_seed(void);
 uint64_t rask_sim_fault_draw(void);
 
+// Opt-in faults (sim/F2). The bits match `fault_bit` in stdlib/sim.rk.
+#define SIM_FAULT_IO_ERROR   1
+#define SIM_FAULT_DISCONNECT 2
+#define SIM_FAULT_CLOCK_JUMP 4
+int rask_sim_fault_enabled(int64_t bit);
+// At open: is this resource sick for the run? Logs it when it is.
+int rask_sim_draw_sick(int64_t fault_bits, const char *what);
+// On a sick resource: does this operation fail? Logs it with the step.
+int rask_sim_draw_failure(const char *what);
+int64_t rask_sim_wall_jump_ns(void);
+const char *rask_sim_sick_log(void);
+const char *rask_sim_fault_log(void);
+
 // Task lifecycle, called from thread.c.
 void *rask_sim_task_new(int64_t task_id);
 void rask_sim_task_enter(void *task);

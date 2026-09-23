@@ -47,19 +47,9 @@ extend IoError {
     /// thing being matched, not a caller (#674).
     public func last_os_error() -> IoError {
         let code = unsafe rask_io_errno()
-        let ptr = unsafe rask_io_error_text(code)
-        let len = unsafe rask_io_cstr_len(ptr)
-        let msg = unsafe string.from_raw(ptr, len as usize)
         let kind = unsafe rask_io_error_kind(code)
-        if kind == 0 {
-            return IoError.NotFound(msg)
-        }
-        if kind == 1 {
-            return IoError.PermissionDenied(msg)
-        }
-        if kind == 2 {
-            return IoError.AlreadyExists(msg)
-        }
+        // The variants without a message first, so the message is only built
+        // where it's kept (building it up front leaked it on these paths, #1341).
         if kind == 3 {
             return IoError.BrokenPipe
         }
@@ -69,8 +59,24 @@ extend IoError {
         if kind == 5 {
             return IoError.TimedOut
         }
+        let msg = os_error_text(code)
+        if kind == 0 {
+            return IoError.NotFound(msg)
+        }
+        if kind == 1 {
+            return IoError.PermissionDenied(msg)
+        }
+        if kind == 2 {
+            return IoError.AlreadyExists(msg)
+        }
         return IoError.Other(msg)
     }
+}
+
+func os_error_text(code: i32) -> string {
+    let ptr = unsafe rask_io_error_text(code)
+    let len = unsafe rask_io_cstr_len(ptr)
+    return unsafe string.from_raw(ptr, len as usize)
 }
 
 /// Readable stream: bytes in, `IoError` out. `read`/`read_bytes`/`read_text`

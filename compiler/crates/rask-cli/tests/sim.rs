@@ -134,6 +134,33 @@ fn an_http_request_survives_short_reads() {
 }
 
 #[test]
+fn faults_land_on_sick_resources_and_the_report_names_them() {
+    let (out, code) = sim(&["--seed", "2", "--seeds", "40", "faults.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("✓ a write either lands or says it didn't"), "{out}");
+    assert!(out.contains("✓ a cut connection is an error, never a short message"), "{out}");
+    assert!(out.contains("✓ SystemTime may leap forward; Instant never does"), "{out}");
+    // Code that throws the write's error away is the bug the faults are for.
+    assert!(out.contains("FAIL: code that ignores the error is caught"), "{out}");
+    assert!(out.contains("sick this seed: file `sim_ignored_"), "{out}");
+    assert!(out.contains("faults: write failed on `sim_ignored_"), "{out}");
+}
+
+#[test]
+fn a_fault_test_is_skipped_outside_sim() {
+    let out = Command::new(rask_binary())
+        .args(["test", "faults.rk"])
+        .current_dir(fixtures())
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{stdout}");
+    assert!(stdout.contains("4 skipped"), "{stdout}");
+    assert!(stdout.contains("sim-only"), "{stdout}");
+}
+
+#[test]
 fn seed_search_flags_need_sim() {
     let out = Command::new(rask_binary())
         .args(["test", "--seeds", "5", "race.rk"])

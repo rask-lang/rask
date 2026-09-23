@@ -123,13 +123,35 @@ extend TcpListener {
 public struct TcpConnection { }
 
 extend TcpConnection {
-    /// Read all available data as bytes.
-    @native("rask_net_read_bytes")
-    public func read_bytes(self) -> Vec<u8> or IoError {}
+    /// Read until the peer closes the connection.
+    public func read_bytes(self) -> Vec<u8> or IoError {
+        let bytes = self.read_bytes_raw()
+        if self.read_failed() {
+            return IoError.last_os_error()
+        }
+        return bytes
+    }
 
-    /// Write bytes to the connection.
+    /// Write every byte of `data`.
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {
+        if self.write_bytes_raw(data) < 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
+
+    /// The raw reads and writes. A failed read hands back an empty Vec and
+    /// leaves `read_failed` true with errno set; a failed write returns -1. The `IoError` is built above because only Rask can build
+    /// one. The adapter that put a negative return straight on the error side
+    /// left the raw -1 as the payload, and matching that as an `IoError` trapped
+    /// (SIGILL) on the first write to a peer that had hung up. Same fix as
+    /// `accept` (#863).
+    @native("rask_net_read_bytes")
+    func read_bytes_raw(self) -> Vec<u8> {}
+    @native("rask_net_read_failed")
+    func read_failed(self) -> bool {}
     @native("rask_net_write_bytes")
-    public func write_bytes(self, data: Vec<u8>) -> void or IoError {}
+    func write_bytes_raw(self, data: Vec<u8>) -> i64 {}
 
     /// Read all available data, decoding as UTF-8 text.
     ///
