@@ -29,7 +29,7 @@ pub mod operators;
 mod validate;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TraitTypeParam, TraitAssocType, TypeBinding, TypedProgram, receiver_name};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TraitTypeParam, TraitAssocType, TypeBinding, TypedProgram, receiver_name, conformance_symbol};
 pub use type_table::{primitive_spelling, TypeTable};
 pub use operators::{operator_trait, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
@@ -152,6 +152,15 @@ pub struct TypeChecker {
     pub(super) symbol_types: HashMap<SymbolId, Type>,
     /// Collected errors.
     pub(super) errors: Vec<TypeError>,
+    /// XC3: (type, applied trait, using package) triples already reported. The
+    /// same collision turns up at every bound and every call that needs it, and
+    /// one error is the news.
+    /// XC5: `extend` blocks whose methods carry the package that wrote them,
+    /// because the block is on a type that package doesn't own. Filled as each
+    /// block registers — the answer is a property of that block alone.
+    pub(super) conformance_disambiguation: HashMap<NodeId, String>,
+    pub(super) reported_ambiguous_conformances:
+        std::collections::HashSet<(crate::types::TypeId, String, String)>,
     /// Current function's return type (for checking return statements).
     pub(super) current_return_type: Option<Type>,
     /// Result type of each enclosing loop-as-expression, innermost last. A
@@ -485,6 +494,8 @@ impl TypeChecker {
     pub fn new(resolved: ResolvedProgram) -> Self {
         Self {
             resolved,
+            conformance_disambiguation: HashMap::new(),
+            reported_ambiguous_conformances: std::collections::HashSet::new(),
             types: TypeTable::new(),
             ctx: InferenceContext::new(),
             node_types: HashMap::new(),
@@ -866,10 +877,11 @@ impl TypeChecker {
                     type_defs::Callee::Free(sym) => type_defs::Callee::Free(*sym),
                     // Left as interned ids, not normalized to names: the
                     // receiver's `TypeId` is what dispatch keys on.
-                    type_defs::Callee::Method { recv, method } => {
+                    type_defs::Callee::Method { recv, method, package } => {
                         type_defs::Callee::Method {
                             recv: self.ctx.apply(recv),
                             method: method.clone(),
+                            package: package.clone(),
                         }
                     }
                 };
@@ -935,6 +947,8 @@ impl TypeChecker {
             call_targets,
             operator_targets: std::mem::take(&mut self.operator_targets),
             trait_coercions,
+            file_packages: self.resolved.file_packages.clone(),
+            conformance_disambiguation: self.conformance_disambiguation,
             error_wraps,
             fallback_keeps_shape,
             try_chain_placement,

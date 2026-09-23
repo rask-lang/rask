@@ -54,6 +54,9 @@ pub enum TraitError {
         ty: String,
         trait_name: String,
         method: String,
+        /// The signature the trait asks for, so the message can show the line
+        /// to write rather than only the name that's absent.
+        signature: String,
         span: Span,
     },
 
@@ -370,6 +373,7 @@ impl<'a> TraitChecker<'a> {
                         ty: self.type_name(ty),
                         trait_name: trait_name.to_string(),
                         method: required.name.clone(),
+                        signature: self.format_signature(required),
                         span,
                     });
                 }
@@ -1091,7 +1095,14 @@ impl<'a> TraitChecker<'a> {
             Some(TypeDef::Struct { methods, .. }) => methods.clone(),
             Some(TypeDef::Enum { methods, .. }) => methods.clone(),
             Some(TypeDef::Trait { methods, .. }) => methods.clone(),
-            // Primitives / unions / aliases have builtin methods checked separately.
+            // T13: an `extend` block on a nominal type puts its methods on the
+            // nominal type, which is where `register_impl_methods` writes them.
+            // Left out here, `extend MyDoc with Labeled { func label … }` came
+            // back methodless and G1 reported every trait method missing on a
+            // block that had them all — so the newtype, which is the way out of
+            // both XC1 and XC3, couldn't carry a conformance at all.
+            Some(TypeDef::NominalAlias { methods, .. }) => methods.clone(),
+            // Primitives and unions have builtin methods checked separately.
             _ => Vec::new(),
         }
     }
@@ -1229,11 +1240,15 @@ impl<'a> TraitChecker<'a> {
     /// Named(TypeId(104))` — which names a type by its slot in a table nobody
     /// outside the compiler can see.
     fn format_signature(&self, sig: &MethodSig) -> String {
+        // The separator belongs between the receiver and the first parameter,
+        // not after the receiver — `func hash(self, ) -> u64` is what it read
+        // for a method that takes nothing else.
+        let sep = if sig.params.is_empty() { "" } else { ", " };
         let self_str = match sig.self_param {
-            SelfParam::None => "",
-            SelfParam::Value => "self, ",
-            SelfParam::Mutate => "mutate self, ",
-            SelfParam::Take => "take self, ",
+            SelfParam::None => String::new(),
+            SelfParam::Value => format!("self{}", sep),
+            SelfParam::Mutate => format!("mutate self{}", sep),
+            SelfParam::Take => format!("take self{}", sep),
         };
         let params_str: Vec<String> = sig.params.iter().map(|(t, mode)| {
             match mode {

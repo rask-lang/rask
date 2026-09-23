@@ -581,9 +581,19 @@ impl TypeChecker {
             if !matches!(ty, Type::Var(_) | Type::Error) {
                 self.call_targets.insert(
                     node,
-                    Callee::Method { recv: ty.clone(), method: method.clone() },
+                    Callee::Method {
+                        recv: ty.clone(),
+                        method: method.clone(),
+                        package: self.conformance_package_for_call(&ty, &method, span),
+                    },
                 );
             }
+        }
+
+        // XC3: a call to a method two visible conformances both supply picks a
+        // body just as silently as a bound does, so the call is a use site too.
+        if !matches!(ty, Type::Var(_) | Type::Error) {
+            self.check_method_conformance_ambiguity(&ty, &method, span);
         }
 
         // A stdlib signature with nothing behind it. Caught here, where every
@@ -638,7 +648,11 @@ impl TypeChecker {
                 } else if let Some(node) = call_node {
                     self.call_targets.insert(
                         node,
-                        Callee::Method { recv: settled, method: method.clone() },
+                        Callee::Method {
+                            recv: settled.clone(),
+                            method: method.clone(),
+                            package: self.conformance_package_for_call(&settled, &method, span),
+                        },
                     );
                 }
             }
@@ -1630,7 +1644,11 @@ impl TypeChecker {
                     // makes `Meters_mul$f64` reachable from a generic body.
                     self.call_targets.insert(
                         node,
-                        Callee::Method { recv: receiver.clone(), method: filed.clone() },
+                        Callee::Method {
+                            recv: receiver.clone(),
+                            method: filed.clone(),
+                            package: self.conformance_package_for_call(&receiver, "", span),
+                        },
                     );
                     self.operator_targets.insert(
                         node,

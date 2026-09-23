@@ -12,7 +12,10 @@ mod shared;
 mod iterators;
 mod wide;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+use rask_ast::decl::FnDecl;
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
@@ -57,12 +60,19 @@ impl Interpreter {
             Value::Nominal { type_name, .. } => type_name.clone(),
             _ => return None,
         };
+        let conformance_key = self.conformance_method_name(method);
+        let lookup = |ms: &HashMap<String, FnDecl>| -> Option<FnDecl> {
+            conformance_key
+                .as_ref()
+                .and_then(|k| ms.get(k).cloned())
+                .or_else(|| ms.get(method).cloned())
+        };
         self.methods
             .get(&type_name)
-            .and_then(|m| m.get(method).cloned())
+            .and_then(&lookup)
             .or_else(|| {
                 let base = type_name.split('.').next()?;
-                self.methods.get(base).and_then(|m| m.get(method).cloned())
+                self.methods.get(base).and_then(&lookup)
             })
             .filter(|f| !f.body.is_empty())
     }
@@ -405,13 +415,22 @@ impl Interpreter {
             _ => receiver.type_name().to_string(),
         };
 
+        // XC4/XC5: where two packages put the same method on this type, each
+        // block is keyed with the package that wrote it. The running package
+        // decides which one this call means.
+        let conformance_key = self.conformance_method_name(method);
+        let lookup = |ms: &HashMap<String, FnDecl>| -> Option<FnDecl> {
+            conformance_key
+                .as_ref()
+                .and_then(|k| ms.get(k).cloned())
+                .or_else(|| ms.get(method).cloned())
+        };
         // Enum struct variants store name as "Shape.Circle" — strip variant to find methods under "Shape"
         let resolved_method = self.methods.get(&type_name)
-            .and_then(|m| m.get(method).cloned())
+            .and_then(&lookup)
             .or_else(|| {
                 type_name.find('.').and_then(|pos| {
-                    self.methods.get(&type_name[..pos])
-                        .and_then(|m| m.get(method).cloned())
+                    self.methods.get(&type_name[..pos]).and_then(&lookup)
                 })
             });
 

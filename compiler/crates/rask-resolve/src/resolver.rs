@@ -490,6 +490,8 @@ impl Resolver {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 external_decls: HashMap::new(),
+                file_packages: HashMap::new(),
+                package_deps: HashMap::new(),
             })
         } else {
             Err(resolver.errors)
@@ -516,6 +518,8 @@ impl Resolver {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 external_decls: HashMap::new(),
+                file_packages: HashMap::new(),
+                package_deps: HashMap::new(),
             })
         } else {
             Err(resolver.errors)
@@ -580,6 +584,8 @@ impl Resolver {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 external_decls: HashMap::new(),
+                file_packages: HashMap::new(),
+                package_deps: HashMap::new(),
             })
         } else {
             Err(resolver.errors)
@@ -650,6 +656,60 @@ impl Resolver {
             resolver.package_bindings.insert(pkg.name.clone(), pkg.id);
         }
 
+        // Which package owns each file, for the checks that need to know who
+        // declared something (type.generics/XC1). The registry is the only
+        // place that knows, and it isn't around after the merge.
+        let mut file_packages: HashMap<u16, String> = HashMap::new();
+        for pkg in registry.packages() {
+            for file in &pkg.files {
+                file_packages.insert(file.file_id, pkg.name.clone());
+            }
+        }
+
+        // XC4: what each package can see. `imports` is the direct edges; the
+        // closure is what the rule asks for, since a dependency's dependency is
+        // still in the graph. Small graphs, so repeat-until-stable is plenty.
+        let mut package_deps: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+        {
+            let mut by_id: HashMap<crate::PackageId, String> = HashMap::new();
+            for pkg in registry.packages() {
+                by_id.insert(pkg.id, pkg.name.clone());
+            }
+            for pkg in registry.packages() {
+                let seen = package_deps.entry(pkg.name.clone()).or_default();
+                seen.insert(pkg.name.clone());
+                for dep in &pkg.imports {
+                    if let Some(name) = by_id.get(dep) {
+                        seen.insert(name.clone());
+                    }
+                }
+            }
+            loop {
+                let mut grew = false;
+                let names: Vec<String> = package_deps.keys().cloned().collect();
+                for name in names {
+                    let reachable: Vec<String> = package_deps[&name].iter().cloned().collect();
+                    let mut added = Vec::new();
+                    for step in &reachable {
+                        if let Some(theirs) = package_deps.get(step) {
+                            for t in theirs {
+                                if !package_deps[&name].contains(t) {
+                                    added.push(t.clone());
+                                }
+                            }
+                        }
+                    }
+                    if !added.is_empty() {
+                        grew = true;
+                        package_deps.get_mut(&name).unwrap().extend(added);
+                    }
+                }
+                if !grew {
+                    break;
+                }
+            }
+        }
+
         // Collect public symbols and type declarations from external packages
         let mut external_decls: HashMap<String, Vec<Decl>> = HashMap::new();
         for pkg in registry.packages() {
@@ -702,6 +762,8 @@ impl Resolver {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
                 external_decls,
+                file_packages,
+                package_deps,
             })
         } else {
             resolver.name_unlinked_scopes();

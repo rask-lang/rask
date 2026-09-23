@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Until #1295, `mid` failed to build at all: every dependency was checked on
+// its own, with only its own declarations, so `base.Doc` in `mid`'s signature
+// was `unknown type Doc` and the real check — the one that merges every
+// package — never ran. No fixture had a dependency with a dependency of its
+// own, which is why it went unnoticed.
+
+import base
+import mid
+
+func main() {
+    let d = base.make_doc(7)
+    println("{mid.n_of(d)}")
+    return
+}

@@ -722,9 +722,13 @@ impl<'a> Monomorphizer<'a> {
             if let Some(callee) = typed.call_targets.get(&old_id) {
                 let carried = match callee {
                     rask_types::Callee::Free(sym) => Some(rask_types::Callee::Free(*sym)),
-                    rask_types::Callee::Method { recv, method } => {
+                    rask_types::Callee::Method { recv, method, package } => {
                         Self::concretize(recv, type_args, &bindings).map(|recv| {
-                            rask_types::Callee::Method { recv, method: method.clone() }
+                            rask_types::Callee::Method {
+                                recv,
+                                method: method.clone(),
+                                package: package.clone(),
+                            }
                         })
                     }
                 };
@@ -933,18 +937,38 @@ impl<'a> Monomorphizer<'a> {
 
             for decl_id in decl_ids {
                 let Some(decl) = by_id.get(&decl_id) else { continue };
+                // XC5: a block whose methods another package also declares on
+                // this type gets the package in its symbol, so both bodies are
+                // emitted instead of the later block's overwriting the earlier.
+                // The checker decides which blocks those are and the call site
+                // asks for the same name.
+                let suffix = typed.conformance_disambiguation.get(&decl_id);
                 for method in methods_of(decl) {
-                    let qualified = format!("{}_{}", type_name, method.name);
+                    let plain = format!("{}_{}", type_name, method.name);
+                    let qualified = match suffix {
+                        Some(pkg) => rask_types::conformance_symbol(&plain, pkg),
+                        None => plain,
+                    };
                     let owners = self.symbol_owners.entry(qualified.clone()).or_default();
                     if !owners.contains(&type_id) {
                         owners.push(type_id);
                     }
                     if owns_name {
-                        self.method_table.insert(qualified, Decl {
+                        let body = Decl {
                             id: decl.id,
                             kind: DeclKind::Fn(with_self_type(method, &type_name)),
                             span: decl.span,
-                        });
+                        };
+                        if suffix.is_some() {
+                            // Boxing as `any Trait` enqueues by bare method
+                            // name, and the disambiguated symbol is the only
+                            // one either body now answers to.
+                            self.method_by_bare_name
+                                .entry(method.name.clone())
+                                .or_default()
+                                .push(qualified.clone());
+                        }
+                        self.method_table.insert(qualified, body);
                     }
                 }
             }
@@ -1702,7 +1726,7 @@ impl<'a> Monomorphizer<'a> {
                         // id, so resolve that too — otherwise the call falls back
                         // to widening by bare name, and a conformance method
                         // filed as `mul$f64` has no bare name to be found under.
-                        Callee::Method { method, recv } => callee
+                        Callee::Method { method, recv, package } => callee
                             .recv_type_id()
                             .or_else(|| match recv {
                                 Type::UnresolvedNamed(name)
@@ -1711,7 +1735,9 @@ impl<'a> Monomorphizer<'a> {
                                 }
                                 _ => None,
                             })
-                            .map(|id| (id, typed.types.type_name(id), method.clone())),
+                            .map(|id| {
+                                (id, typed.types.type_name(id), method.clone(), package.clone())
+                            }),
                         _ => None,
                     }
                 });
@@ -1727,8 +1753,21 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
 
-                if let Some((type_id, type_name, method_name)) = dispatched {
-                    let mut qualified = format!("{}_{}", type_name, method_name);
+                if let Some((type_id, type_name, method_name, conformance_pkg)) = dispatched {
+                    // XC5: ask for the calling package's own version of this
+                    // method, and take the plain one when there isn't a
+                    // separate body under that package. A block on someone
+                    // else's type is emitted with its package in the symbol, so
+                    // "does `{Type}_{method}~{pkg}` exist" is the whole
+                    // question — and it is answerable here whether or not the
+                    // receiver was generic in the source, which asking the
+                    // checker to resolve the block was not.
+                    let plain = format!("{}_{}", type_name, method_name);
+                    let mut qualified = conformance_pkg
+                        .as_ref()
+                        .map(|pkg| rask_types::conformance_symbol(&plain, pkg))
+                        .filter(|q| self.method_table.contains_key(q))
+                        .unwrap_or(plain);
                     // A `{x}` and a `{x:>10}` both need the receiver's own
                     // rendering — `to_string`, or `message` for an error type
                     // that gets Displayable from it (std.fmt/D5). Neither name
@@ -1843,7 +1882,7 @@ impl<'a> Monomorphizer<'a> {
                         .typed
                         .and_then(|typed| typed.call_targets.get(&expr.id).map(|c| (c, typed)))
                     {
-                        Some((Callee::Method { recv, method: m }, typed)) => {
+                        Some((Callee::Method { recv, method: m, package }, typed)) => {
                             match rask_types::receiver_name(recv, &typed.types) {
                                 Some(name) => {
                                     // `{x}` reaches `to_string` or, for an error
@@ -1855,7 +1894,14 @@ impl<'a> Monomorphizer<'a> {
                                             format!("{name}_message"),
                                         ]
                                     } else {
-                                        vec![format!("{name}_{m}")]
+                                        // XC5: the checker said which package's
+                                        // block this call reaches, and that is
+                                        // the symbol its body was emitted under.
+                                        let plain = format!("{name}_{m}");
+                                        vec![match package {
+                                            Some(pkg) => rask_types::conformance_symbol(&plain, pkg),
+                                            None => plain,
+                                        }]
                                     };
                                     match candidates
                                         .into_iter()

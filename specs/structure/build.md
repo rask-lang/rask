@@ -342,6 +342,13 @@ package "my-app" "1.0.0" {
 | **PP2: Pipeline parallelism** | Package B's parsing can start while package A is still in codegen |
 | **PP3: Jobs flag** | `--jobs N` or `-j N` controls parallelism. Default: CPU count |
 
+PP1-PP3 aren't built. A pass that checked each package on its own thread was,
+and it was wrong: it handed the checker one package's declarations and nothing
+else, so a library that named a type from its own dependency failed with
+`unknown type` before the real check ran (#1295). The real check merges every
+package into one program and checks that, which is also what monomorphization
+needs. Parallelism has to come back inside that, not as a second pass beside it.
+
 ```
 rask build
   ├─ 1. Find build.rk (or use defaults)
@@ -350,7 +357,7 @@ rask build
   ├─ 4. Check rask.lock + verify capabilities (PM4) + verify signatures (SG4)
   ├─ 5. Download missing deps
   ├─ 6. Run build steps (if build() exists) — sandboxed for deps (SB1)
-  ├─ 7. Compile packages (dependency order, parallel)
+  ├─ 7. Compile (every package's declarations merged into one program)
   │     ├─ Parse → Resolve → Type-check → Ownership-check
   │     ├─ Monomorphize → MIR → Cranelift/LLVM
   │     └─ Emit object file
@@ -784,7 +791,7 @@ func build(ctx: BuildContext) -> void or Error {
 | Build scripts via interpreter (BL1-BL3) | Implemented |
 | Build script caching (LC1-LC2) | Implemented |
 | Compilation caching (XC1-XC5) | Implemented |
-| Parallel dependency checking (PP1-PP3) | Implemented |
+| Parallel dependency checking (PP1-PP3) | Not implemented |
 | Capability inference (PM1-PM8) | Implemented |
 | Lock file system (LK1-LK7) | Implemented |
 | Feature resolution (F1-F6, FG1-FG6) | Implemented |

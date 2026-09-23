@@ -466,7 +466,14 @@ impl TypeChecker {
             // operator desugared to.
             self.call_targets.insert(
                 node,
-                crate::Callee::Method { recv: recv.clone(), method: found.filed },
+                // XC5: an operator method is a conformance method, so it takes
+                // the calling package like any other — `extend Doc with Equal`
+                // in two packages puts two `eq`s on one type.
+                crate::Callee::Method {
+                    recv: recv.clone(),
+                    method: found.filed,
+                    package: self.conformance_package_for_call(recv, "", span),
+                },
             );
         }
         Ok(progress)

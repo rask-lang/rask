@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Two libraries conform `traitpkg.Doc` to `traitpkg.Labeled`, both use their
+// own, and the program uses both. It printed `b:7` twice: there was one `Doc`,
+// both blocks' `label` landed in its method table, and both mangled to one
+// `Doc_label` — so `liba` called its own function and ran `libb`'s body.
+//
+// XC5 is what fixes it. A conformance more than one package declares carries
+// the declaring package in its symbol, the checker says which one each call
+// resolved to, and monomorphization emits both. XC4 is the rule that decides:
+// visibility is the calling package's, not the build's.
+//
+// `two-foreign-conformances` is the other side — the program asking for the
+// conformance itself, where both are visible, which is E0410.
+//
+// The test block runs on both backends — the packages gate runs one through
+// `rask test --interp` too. Measured against an interpreter without the fix:
+// `assertion failed: "b:7" == "a:7"`.
+
+import traitpkg
+import liba
+import libb
+
+func main() {
+    let d = traitpkg.make_doc(7)
+    println(liba.describe(d))
+    println(libb.describe(d))
+    // And through a generic, where the receiver is a type parameter and the
+    // block can't be resolved when the body is checked. This printed `b:7`
+    // twice after the direct calls were already right.
+    println(liba.describe_generic(d))
+    println(libb.describe_generic(d))
+    return
+}
+
+test "each library keeps its own conformance" {
+    let d = traitpkg.make_doc(7)
+    assert liba.describe(d) == "a:7"
+    assert libb.describe(d) == "b:7"
+    assert liba.describe_generic(d) == "a:7"
+    assert libb.describe_generic(d) == "b:7"
+}

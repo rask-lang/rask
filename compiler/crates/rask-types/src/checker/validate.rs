@@ -91,6 +91,13 @@ impl TypeChecker {
                 Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => continue,
                 _ => {}
             }
+            // XC3: a bound is a place that needs the conformance, so it's a
+            // place two of them collide. Checked before satisfaction — with two
+            // declarations in scope the type does satisfy the bound, it just
+            // isn't said which way.
+            for t in &traits {
+                self.check_bound_conformance_ambiguity(&ty, t, span);
+            }
             let bound = crate::traits::TraitBound::new("_", traits);
             if let Err(errs) = crate::traits::verify_instantiation(&self.types, &ty, std::slice::from_ref(&bound), span) {
                 for e in errs {
@@ -474,7 +481,9 @@ impl TypeChecker {
             } else {
                 super::TraitBoundContext::GenericBound
             };
-            return TypeError::TraitNotSatisfied { ty: ty_name, trait_name, context, span };
+            return TypeError::TraitNotSatisfied {
+                ty: ty_name, trait_name, context, missing: None, span,
+            };
         }
         let verb = if trait_name == "Encode" { "encoded" } else { "decoded" };
         let checker = crate::traits::TraitChecker::new(&self.types);

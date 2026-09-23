@@ -27,7 +27,14 @@ use crate::types::{Type, TypeId};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Callee {
     Free(SymbolId),
-    Method { recv: Type, method: String },
+    Method {
+        recv: Type,
+        method: String,
+        /// XC4/XC5: the package whose `extend` block supplies this method, when
+        /// more than one declares it. `None` is the ordinary case — one block,
+        /// one body, nothing to choose between.
+        package: Option<String>,
+    },
 }
 
 impl Callee {
@@ -190,6 +197,26 @@ pub enum TypeDef {
 }
 
 /// Method name without its type-parameter suffix: `convert<T>` → `convert`.
+/// XC5: the symbol a conformance method gets where more than one package
+/// declares it on the same type — `Doc_label` becomes `Doc_label~liba`.
+///
+/// One function so monomorphization, MIR and the checker can't drift: the name
+/// the call emits has to be the name the body is emitted under.
+///
+/// `~` because nothing else in a generated name uses it. `_` is how a
+/// dependency's declarations are qualified (`Doc` in `traitpkg` is
+/// `Doc_traitpkg`), so `Doc_label_liba` is also what a method named `label_liba`
+/// would produce; `$` is monomorphization's type-argument separator, so
+/// `Doc_label$liba` reads as an instantiation; `<`, `>`, `.`, `?` and `,` all
+/// appear in type spellings, and `@` means a symbol version to an ELF linker.
+/// A Rask identifier can't contain `~`, so nothing a program declares collides
+/// with it.
+pub const CONFORMANCE_SEP: char = '~';
+
+pub fn conformance_symbol(base: &str, package: &str) -> String {
+    format!("{}{}{}", base, CONFORMANCE_SEP, package)
+}
+
 pub(crate) fn method_base(name: &str) -> &str {
     name.split('<').next().unwrap_or(name)
 }
@@ -380,6 +407,18 @@ pub struct TypedProgram {
     pub operator_targets: HashMap<NodeId, super::operators::OperatorTarget>,
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     pub trait_coercions: HashMap<NodeId, String>,
+    /// XC4: which package wrote each source file, by file id. A span carries
+    /// its file id, so this answers "whose code is this?" for anything after
+    /// the checker — the merged decl list has no packages left in it.
+    pub file_packages: HashMap<u16, String>,
+    /// XC5: `extend` blocks whose methods need the declaring package in their
+    /// symbol, because another package declares the same method on the same
+    /// type. Impl decl id → package name. Empty in every program without a
+    /// collision, which is nearly all of them.
+    ///
+    /// Without it both blocks' `label` mangle to one `Doc_label` and whichever
+    /// the pass read last wins, so `liba`'s own call ran `libb`'s body.
+    pub conformance_disambiguation: HashMap<NodeId, String>,
     /// ER31a: `try` sites whose error is wrapped in a variant of the enclosing
     /// function's error enum. NodeId of the `try` expression → the variant.
     pub error_wraps: HashMap<NodeId, ErrorWrap>,

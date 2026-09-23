@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+package "app" "0.1.0" {
+    description: "Depends on a library that depends on another library"
+    license: "MIT OR Apache-2.0"
+    dep "base" { path: "../base" }
+    dep "mid" { path: "../mid" }
+}

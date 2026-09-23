@@ -542,6 +542,102 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
             }
 
+            ForeignCoreConformance {
+                ty, trait_name, owner, here, encoding, span, declared_at,
+            } => {
+                // A builtin belongs to the standard library, and the program
+                // that extends it belongs to nobody in particular when the
+                // build has no packages. Both need a name a reader recognises.
+                let owner_name = match owner {
+                    Some(p) => format!("`{}`", p),
+                    None => "the standard library".to_string(),
+                };
+                let here_name = match here {
+                    Some(p) => format!("`{}`", p),
+                    None => "this program".to_string(),
+                };
+                let bare = ty.rsplit('.').next().unwrap_or(ty);
+                let bare = bare.split('<').next().unwrap_or(bare);
+                let mut d = if *encoding {
+                    Diagnostic::error(format!("only {} can make `{}` {}", owner_name, ty,
+                        if trait_name.starts_with("Decode") { "decodable" } else { "encodable" }))
+                        .with_primary(*span, format!("this block is in {}", here_name))
+                        .with_why(format!(
+                            "`{}` has no methods — declaring it doesn\'t change how `{}` \
+                             serializes, it changes whether it does. That is the declaring \
+                             package\'s call, and a type its owner marked `@no_encode` would \
+                             be overruled from outside (type.generics/XC1).",
+                            trait_name, ty
+                        ))
+                        .with_fix(format!(
+                            "if you need these fields on a wire, carry them in a type {} owns:\n\
+                             struct {}Wire {{ … }}",
+                            here_name, bare
+                        ))
+                } else {
+                    Diagnostic::error(format!(
+                        "only {} can declare `{}` for `{}`", owner_name, trait_name, ty))
+                        .with_primary(*span, format!("this block is in {}", here_name))
+                        .with_why(format!(
+                            "`{}` is one answer per type — `Map`, `Set` and every sort built \
+                             on them assume `{}` answers the same way everywhere. A second \
+                             answer from elsewhere doesn\'t conflict loudly; it makes lookups \
+                             miss entries the container holds. Only {} can change the one \
+                             `{}` already has (type.generics/XC1).",
+                            trait_name, ty, owner_name, ty
+                        ))
+                        .with_fix(format!(
+                            "put the behaviour you want on a type of your own:\n\
+                             type My{} = {}\n\
+                             extend My{} with {} {{ … }}",
+                            bare, ty, bare, trait_name
+                        ))
+                };
+                if let Some(at) = declared_at {
+                    d = d.with_secondary(*at, format!("`{}` belongs to {}", ty, owner_name));
+                }
+                d.with_code("E0409")
+            }
+
+            AmbiguousConformance { ty, trait_name, sites, span } => {
+                let mut d = Diagnostic::error(format!(
+                    "two conformances of `{}` to `{}` are in scope", ty, trait_name
+                ))
+                .with_code("E0410")
+                .with_primary(*span, format!(
+                    "this needs `{}: {}`, and {} packages declare it",
+                    ty, trait_name, sites.len()
+                ));
+                for (pkg, at) in sites {
+                    d = d.with_secondary(*at, if pkg.is_empty() {
+                        "declared here".to_string()
+                    } else {
+                        format!("declared by `{}`", pkg)
+                    });
+                }
+                let names: Vec<String> =
+                    sites.iter().map(|(p, _)| format!("`{}`", p)).collect();
+                d.with_fix(format!(
+                    "give the collision a type of its own, and say what it does:\n\
+                     type My{0} = {1}\n\
+                     extend My{0} with {2} {{ … }}\n\
+                     To keep one of the two implementations instead, move the code that \
+                     needs it into a package that depends on {3}, not both.",
+                    ty.rsplit('.').next().unwrap_or(ty),
+                    ty,
+                    trait_name,
+                    names.join(" or on ")
+                ))
+                .with_why(format!(
+                    "Picking one would come down to link order. Which `{}` methods `{}` \
+                     gets has to be something the source says (type.generics/XC3). Neither \
+                     declaration is wrong on its own — only code that can see both has a \
+                     problem, which is why this is reported here and not at either block \
+                     (XC4).",
+                    trait_name, ty
+                ))
+            }
+
             Undefined(name) => Diagnostic::error(format!("undefined type: `{}`", name))
                 .with_code("E0309")
                 .with_primary(Span::new(0, 0), "type not found")
@@ -1848,12 +1944,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", trait_name))
             }
 
-            TraitNotSatisfied { ty, trait_name, context, span } => {
+            TraitNotSatisfied { ty, trait_name, context, missing, span } => {
                 use rask_types::TraitBoundContext as Ctx;
                 let d = Diagnostic::error(format!("`{}` does not implement `{}`", ty, trait_name))
                     .with_code("E0333")
-                    .with_primary(*span, match context {
-                        Ctx::NumericBound => format!("`{}` is not one of the types `{}` covers", ty, trait_name),
+                    .with_primary(*span, match (context, missing) {
+                        (Ctx::NumericBound, _) => format!("`{}` is not one of the types `{}` covers", ty, trait_name),
+                        // Name it. A trait can require more than the one method
+                        // its name suggests — `Hashable` needs `eq` too — and
+                        // "missing methods" sent the author back through a block
+                        // that was one method short.
+                        (_, Some((m, _))) => format!("`{}` has no `{}`, which `{}` requires", ty, m, trait_name),
                         _ => format!("`{}` is missing methods `{}` requires", ty, trait_name),
                     });
                 match context {
@@ -1872,10 +1973,17 @@ impl ToDiagnostic for rask_types::TypeError {
                         ))
                         .with_why("a type parameter's bound is a promise the body relies on, so it's checked against the type argument at the call [type.generics/G1]"),
                     Ctx::ConformanceHeader => d
-                        .with_fix(format!(
-                            "add the missing methods to the block, or drop `{}` from its header:\n    extend {} with {} {{ … }}",
-                            trait_name, ty, trait_name
-                        ))
+                        .with_fix(match missing {
+                            Some((m, sig)) => format!(
+                                "add it to the block, or drop `{}` from its header:\n    {}",
+                                trait_name,
+                                if sig.is_empty() { format!("func {}(…) {{ … }}", m) } else { sig.clone() }
+                            ),
+                            None => format!(
+                                "add the missing methods to the block, or drop `{}` from its header:\n    extend {} with {} {{ … }}",
+                                trait_name, ty, trait_name
+                            ),
+                        })
                         .with_why("the header is the claim and the block is the evidence — a conformance is only declared once the methods are there [type.generics/G1]"),
                     Ctx::TraitObjectCast => d
                         .with_fix(format!(
@@ -2848,19 +2956,21 @@ impl ToDiagnostic for rask_types::TraitError {
                 ty,
                 trait_name,
                 method,
+                signature,
                 span,
             } => Diagnostic::error(format!(
-                "missing method `{}` required by trait `{}`",
-                method, trait_name
+                "`{}` has no `{}`, which `{}` requires",
+                ty, method, trait_name
             ))
             .with_code("E0701")
-            .with_primary(*span, format!("method `{}` missing", method))
-            .with_help(format!(
-                "add `func {}(...)` in `extend {} : {}`",
-                method, ty, trait_name
+            .with_primary(*span, format!("`{}` is not in the block", method))
+            .with_fix(format!(
+                "add it:\n    extend {} with {} {{\n        {}\n    }}",
+                ty,
+                trait_name,
+                if signature.is_empty() { format!("func {}(…) {{ … }}", method) } else { signature.clone() }
             ))
-            .with_fix(format!("add `func {}(...)` in `extend {} : {}`", method, ty, trait_name))
-            .with_why("trait implementations must provide all required methods"),
+            .with_why("the header is the claim and the block is the evidence — a conformance is only declared once every method the trait names is there [type.generics/G1]"),
 
             SignatureMismatch {
                 method,

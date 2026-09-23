@@ -233,7 +233,7 @@ There is no orphan rule. Any package may declare `extend T with Trait` for a typ
 
 | Rule | Description |
 |------|-------------|
-| **XC1: Contract traits belong to the owner** | `extend T with Equal`, `Hashable`, `Comparable`, `Cloneable`, `Encode` or `Decode` is legal only in the package that declares `T`. From any other package it's a compile error, the empty-body form included. All six are auto-derived for every eligible type (EQ1/HA1/CO1/CL1, `std.encoding/E12`), so a third party never needs one |
+| **XC1: Contract traits belong to the owner** | `extend T with Equal`, `Hashable`, `Comparable`, `Cloneable`, `Encode` or `Decode` is legal only where `T` is declared. From anywhere else it's a compile error, the empty-body form included. A builtin's declarer is the standard library, so `extend Vec<i64> with Hashable` in a program is the same error as extending a sibling package's type. All six are auto-derived for every eligible type (EQ1/HA1/CO1/CL1, `std.encoding/E12`), so nobody else ever needs one |
 | **XC2: Everything else is open** | For every other trait, `extend T with Trait` is legal wherever both names are visible. No newtype wrapper, no forwarding methods, no ceremony for the case that has no conflict |
 | **XC3: Two conformances never resolve silently** | Two declared conformances for the same (type, trait) pair are a compile error, never a pick. The pair is the *applied* trait, so two different applied forms of one generic trait are two conformances, not one declared twice — that they can still collide on a method name is MN3's, reported once and not twice. Both in one package: the error is at the second declaration. In two packages: at the place that needs the conformance, so a collision nobody uses costs nothing |
 | **XC4: Visibility is the user's, not the build's** | A conformance is visible to a package iff the declaring package is in *that* package's dependency graph. A library keeps using its own conformance even when the program linking it also pulls in someone else's |
@@ -271,41 +271,55 @@ Step 3 gives you a type that compiles; it does not give you liba's behavior. Not
 ### Error Messages
 
 **Third-party contract-trait conformance [XC1]:**
+
+The owner is a package here. Against a builtin it is the standard library,
+which reads the same way — `only the standard library can declare `Hashable`
+for `Vec<i64>`` — and matters more, because `Vec`, `Map` and `string` are the
+types a program actually puts in containers.
+
 ```
-ERROR [type.generics/XC1]: `Hashable` for `Doc` can only be declared in `traitpkg`
+error[E0409]: only `traitpkg` can declare `Hashable` for `traitpkg.Doc`
    |
-4  |  extend traitpkg.Doc with Hashable {
-   |                           ^^^^^^^^ `Doc` belongs to `traitpkg`, this is `liba`
+4  |  public extend Doc with Hashable {
+   |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this block is in `liba`
+   |
+7  |  public struct Doc {
+   |  ----------------- `traitpkg.Doc` belongs to `traitpkg`
 
-WHY: Maps and Sets are built on one hash per type. A second one from
-     another package makes entries unfindable instead of erroring.
-     `Doc` already has the compiler's, and only `traitpkg` can replace it.
+FIX: put the behaviour you want on a type of your own:
+       type MyDoc = traitpkg.Doc
+       extend MyDoc with Hashable { … }
 
-FIX: Put the hash you want on a type of your own:
-
-  type MyDoc = traitpkg.Doc
-  extend MyDoc with Hashable { ... }
+WHY: `Hashable` is one answer per type — `Map`, `Set` and every sort built
+     on them assume `traitpkg.Doc` answers the same way everywhere. A second
+     answer from another package doesn't conflict loudly; it makes lookups
+     miss entries the container holds. Only `traitpkg` can change the one
+     `traitpkg.Doc` already has (type.generics/XC1).
 ```
 
 `Encode`/`Decode` are the same rule and a different sentence — there is no
 second encoding to conflict with, only someone else's `@no_encode` being
-overruled, so the message says that instead:
+overruled, so the message says that instead. It doesn't wait for the
+annotation: the rule is who decides, and a type with no annotation is one
+whose owner hasn't decided yet.
 
 ```
-ERROR [type.generics/XC1]: only `traitpkg` can make `Doc` encodable
+error[E0409]: only `traitpkg` can make `traitpkg.Secret` encodable
    |
-4  |  extend traitpkg.Doc with Encode {
-   |                           ^^^^^^ `traitpkg` marked `Doc` `@no_encode`
+4  |  public extend Secret with Encode {
+   |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this block is in `liba`
+   |
+5  |  public struct Secret {
+   |  -------------------- `traitpkg.Secret` belongs to `traitpkg`, which
+   |                       decides whether its data goes on a wire
 
-WHY: `Encode` has no methods — declaring it doesn't change how `Doc`
-     serializes, it changes *whether* it does. `traitpkg` said no about
-     its own type's data, and this would be `liba` saying yes for them.
+FIX: if you need these fields on a wire, carry them in a type `liba` owns:
+       struct SecretWire { … }
 
-FIX: If you need these fields on a wire, carry them in a type you own:
-
-  struct DocWire {
-      public n: i64
-  }
+WHY: `Encode` has no methods — declaring it doesn't change how
+     `traitpkg.Secret` serializes, it changes whether it does. That is the
+     declaring package's call, and a type its owner marked `@no_encode`
+     would be overruled from outside (type.generics/XC1).
 ```
 
 **Two conformances in scope [XC3]:**
@@ -331,6 +345,20 @@ FIX: Give the collision a type of its own, and say what it does:
      To keep one of the two implementations instead, move the code that
      needs it into a package that depends on `liba` or on `libb`, not both.
 ```
+
+That's E0410, and it is what ships: two blocks in one package are reported at
+the second declaration, two packages at the place that needs the conformance,
+and a collision nobody asks for costs nothing.
+
+XC4 decides who counts as seeing both. `liba` sees one and compiles; the
+program that depends on `liba` and `libb` sees two and gets the error above.
+
+That only means anything because XC5 keeps the two bodies apart underneath. A
+conformance more than one package declares carries the declaring package in its
+symbol — `Doc_label` becomes `Doc_label_liba` — the checker records which one
+each call resolved to, and monomorphization emits both. Without it there is one
+`Doc_label` and the block read last wins, so `liba` calling its own function
+ran `libb`'s body and printed `b:7`.
 
 ## Conditional Conformance
 
@@ -563,11 +591,11 @@ func increment<T: Numeric>(val: T) -> T {
 | Recursive generics | G6 | `Vec<Vec<T>>` allowed; compiler prevents infinite expansion |
 | Trait visibility | TD1 | Package-visible by default, `public trait` exports — same rule as structs and functions (`struct.modules/V1`) |
 | Same method required by two traits | MN2/MN3 | Same signature: shared implementation. Different: `scoped` or error |
-| Third party declares `Hashable` or `Encode` for a foreign type | XC1 | Compile error at the `extend`, whatever the body. Wrap in a nominal type instead |
+| Third party declares `Hashable` or `Encode` for a foreign type | XC1 | Compile error (E0409) at the `extend`, whatever the body. Wrap in a nominal type instead |
 | Third party declares any other trait for a foreign type | XC2 | Legal, no wrapper needed |
 | Two packages declare the same (type, trait), nobody uses it | XC3 | Not an error — the check is where the conformance is required |
 | One package declares the same (type, trait) twice | XC3 | Compile error at the second declaration |
-| A library and the program linking it see different conformances | XC4/XC5 | Each uses the one its own dependencies give it; the two instantiations are distinct |
+| A library and the program linking it see different conformances | XC4/XC5 | Each uses the one its own dependencies give it; the two bodies are separate symbols |
 | Trait evolution | TD2 | Adding a required method with a default body is non-breaking; without one it breaks every conformer (major version) |
 | Generic struct fields | G1 | `struct Foo<T: Comparable>` requires T: Comparable at every usage |
 | Negative constraints | — | Not in MVP; workaround via naming convention or separate functions. `T or E` disjointness is the one exception and needs no syntax (GF4) |
@@ -611,6 +639,14 @@ The carve-out started at four — the traits the stdlib's containers key on — 
 Which makes the rule less "these traits get baked into data structures" and more "these traits decide what happens to data whose owner is someone else". `Debug` decides what a line of a log looks like and stays out.
 
 XC5 is the part that makes XC3 more than a slogan. Two conformances in one build, resolved per instantiation (XC4), means the same generic at the same type argument can need two bodies. If the monomorphization key were just the type arguments, one of them would silently win and which one would depend on link order — the exact regression this design exists to prevent, reintroduced at the back.
+
+That turned out to be true of plain methods as well, not just generic instances. Two `extend Doc with Labeled` blocks in two packages both put a `label` on one `Doc`, and both mangled to `Doc_label`: `liba` called its own function, which called `d.label()`, and ran `libb`'s body.
+
+So a block on a type its package doesn't own carries that package in the symbol its methods get — `Doc_label~liba` — and a call asks for its own package's version, falling back to the plain name when that package has no block of its own. Two rules, each about one thing at a time, and the collision case falls out: `liba` and `libb` get separate symbols without either being told the other exists.
+
+Deciding it per block rather than per collision is what makes the rest work. A rule that fires only when *someone else* also declared the method has to be computed over the whole program, renames symbols when a dependency is added or removed, and — the reason it was wrong rather than merely awkward — has no answer inside a generic body, where the receiver is a type parameter and there is no concrete type to look a collision up against. `func shown<T: Labeled>(x: T) { x.label() }` in `liba` is exactly the case this rule is named for, and it emitted the unsuffixed name, so `liba`'s and `libb`'s instantiations both ran whichever body was read last. Asking "which package is this source in" instead has an answer everywhere.
+
+The separator is `~` because nothing else in a generated name uses it. `_` already means "qualified by a package" (`Doc` in `traitpkg` is `Doc_traitpkg`), so `Doc_label_liba` is also what a method *named* `label_liba` would produce; `$` is the type-argument separator, so `Doc_label$liba` reads as an instantiation. A Rask identifier can't contain `~`, so nothing a program declares can collide with it.
 
 XC6 admits what it can't do: there is no syntax for "use liba's". Adding one would mean naming conformances, which means a second identity for something that already has a type and a trait. The cases that need it are served by structure — put the use in a package that sees one conformance — and the case that doesn't want either writes its own. I'd rather ship the gap than the naming scheme.
 

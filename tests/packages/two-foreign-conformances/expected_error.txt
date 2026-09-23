@@ -1,0 +1,1 @@
+two conformances of `traitpkg.Doc` to `traitpkg.Labeled` are in scope

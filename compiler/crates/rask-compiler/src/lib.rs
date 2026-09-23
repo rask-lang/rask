@@ -189,11 +189,19 @@ impl<T> PipelineOutput<T> {
 /// declarations if found.
 pub fn detect_package(file_path: &str) -> Option<PackageContext> {
     let path = Path::new(file_path);
-    let file_dir = path.parent()?;
-    let file_dir = if file_dir.as_os_str().is_empty() {
-        std::env::current_dir().ok()?
+    // A directory is the package itself, not a file inside one. Taking
+    // `parent()` of `app/` looked one level too far up and found whatever
+    // `build.rk` happened to be above it — usually none, so a command handed a
+    // package directory fell through to reading it as a single file.
+    let file_dir = if path.is_dir() {
+        path.to_path_buf()
     } else {
-        file_dir.to_path_buf()
+        let dir = path.parent()?;
+        if dir.as_os_str().is_empty() {
+            std::env::current_dir().ok()?
+        } else {
+            dir.to_path_buf()
+        }
     };
 
     let project_root = find_project_root(&file_dir)?;
@@ -230,6 +238,13 @@ fn find_project_root(start_dir: &Path) -> Option<PathBuf> {
 
 fn discover_package(root: &Path) -> Option<PackageContext> {
     let mut registry = PackageRegistry::new();
+    // The check path keeps every `test` block — it never strips them, the way a
+    // release build does — so it needs the same dev dependencies compiling them
+    // requires (struct.build/D4). Without this, `rask check` and
+    // `rask test --interp` on a package with a `scope "dev"` dep reported
+    // `E0216: this build doesn't link it` for an import the tests legitimately
+    // make, while `rask build` on the same package was fine.
+    registry.include_scope("dev");
     let root_id = registry.discover(root).ok()?;
     let all_decls: Vec<Decl> = registry.get(root_id)?.all_decls().cloned().collect();
     if all_decls.is_empty() {
