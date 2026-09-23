@@ -101,13 +101,21 @@ fn thread_spawn_is_refused() {
 }
 
 #[test]
-fn reads_reach_the_real_tree_and_changes_are_refused() {
+fn file_changes_stay_in_memory() {
+    let before = std::fs::read_to_string(fixtures().join("io.rk")).unwrap();
     let (out, code) = sim(&["--seed", "1", "io.rk"]);
+    // Only the socket test fails: networking isn't simulated yet.
     assert_eq!(code, 1, "{out}");
-    assert!(out.contains("✓ reading a file works"), "{out}");
-    assert!(out.contains("no simulated implementation for opening `sim_should_not_exist.txt` to write"), "{out}");
+    assert!(out.contains("8 passed, 1 failed"), "{out}");
     assert!(out.contains("no simulated implementation for `net.tcp_listen(\"127.0.0.1:0\")`"), "{out}");
-    assert!(!fixtures().join("sim_should_not_exist.txt").exists());
+    // The tests append to io.rk, remove race.rk and write sim_* files. None
+    // of it reaches the disk.
+    assert_eq!(std::fs::read_to_string(fixtures().join("io.rk")).unwrap(), before);
+    assert!(fixtures().join("race.rk").exists());
+    for entry in std::fs::read_dir(fixtures()).unwrap() {
+        let name = entry.unwrap().file_name();
+        assert!(!name.to_string_lossy().starts_with("sim_"), "{name:?} reached the disk");
+    }
 }
 
 #[test]

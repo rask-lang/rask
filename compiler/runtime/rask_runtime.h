@@ -765,7 +765,6 @@ int64_t  rask_random_range(int64_t lo, int64_t hi);
 // ─── FS module ──────────────────────────────────────────────
 // Higher-level file operations. Return FILE* as i64.
 
-int8_t      rask_fs_exists(const RaskStr *path);
 
 void        rask_fwrite_vec(int64_t fptr, const RaskVec *v);
 
@@ -774,25 +773,18 @@ void        rask_fwrite_vec(int64_t fptr, const RaskVec *v);
 int32_t     rask_libc_rename(const char *from, const char *to);
 int32_t     rask_libc_remove(const char *path);
 int32_t     rask_libc_mkdir(const char *path, uint32_t mode);
-const char *rask_dirent_name(void *entry);
+int32_t     rask_libc_access(const char *path, int32_t mode);
+void       *rask_libc_fopen(const char *path, const char *mode);
+void       *rask_libc_opendir(const char *path);
+const char *rask_libc_readdir(void *dir);
+int32_t     rask_libc_closedir(void *dir);
 int64_t     rask_stat_size(const char *path);
 int64_t     rask_stat_mtime(const char *path);
 int64_t     rask_stat_atime(const char *path);
-void        rask_fs_read_file(RaskStr *out, const RaskStr *path);
-RaskVec    *rask_fs_read_bytes(const RaskStr *path);
-void        rask_fs_write_file(const RaskStr *path, const RaskStr *content);
 void        rask_fs_write_bytes(const RaskStr *path, RaskVec *data);
-RaskVec    *rask_fs_read_lines(const RaskStr *path);
-RaskVec    *rask_fs_list_dir(const RaskStr *path);
 int64_t     rask_fs_open(const RaskStr *path);
 int64_t     rask_fs_create(const RaskStr *path);
-void        rask_fs_canonicalize(RaskStr *out, const RaskStr *path);
-int64_t     rask_fs_copy(const RaskStr *from, const RaskStr *to);
-void        rask_fs_rename(const RaskStr *from, const RaskStr *to);
-void        rask_fs_remove(const RaskStr *path);
-void        rask_fs_create_dir(const RaskStr *path);
 void        rask_fs_create_dir_all(const RaskStr *path);
-void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 
 // ─── File instance methods ──────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
@@ -875,7 +867,6 @@ int8_t  rask_net_is_invalid(int64_t handle);
 int8_t  rask_net_is_unresolved(int64_t handle);
 
 // ─── Filesystem metadata ────────────────────────────────────
-int64_t rask_fs_metadata(int64_t path_ptr);
 int64_t rask_metadata_size(int64_t meta_ptr);
 int64_t rask_metadata_accessed(int64_t meta_ptr);
 int64_t rask_metadata_modified(int64_t meta_ptr);

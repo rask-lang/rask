@@ -1,15 +1,76 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Sim reads the real tree and refuses to change it.
+// Sim reads the real tree and keeps every change in memory (sim/B5).
 import fs
 import net
 
-test "reading a file works" {
+test "reading a real file works" {
     let text = try fs.read_text("io.rk")
-    assert text.contains("refuses to change it")
+    assert text.contains("keeps every change in memory")
 }
 
-test "writing a file is refused" {
-    try fs.write_text("sim_should_not_exist.txt", "no")
+test "a write reads back and never reaches the disk" {
+    try fs.write_text("sim_scratch.txt", "hello")
+    try fs.append_text("sim_scratch.txt", " world")
+    assert try fs.read_text("sim_scratch.txt") == "hello world"
+    assert fs.exists("sim_scratch.txt")
+    let meta = try fs.metadata("sim_scratch.txt")
+    assert meta.size == 11
+}
+
+test "a real file changes only in the overlay" {
+    try fs.append_text("io.rk", "// appended under sim\n")
+    let text = try fs.read_text("io.rk")
+    assert text.ends_with("// appended under sim\n")
+}
+
+test "rename and remove" {
+    try fs.write_text("sim_a.txt", "a")
+    try fs.rename("sim_a.txt", "sim_b.txt")
+    assert !fs.exists("sim_a.txt")
+    assert try fs.read_text("sim_b.txt") == "a"
+    try fs.remove_file("sim_b.txt")
+    assert !fs.exists("sim_b.txt")
+    try fs.remove_file("io.rk")
+    assert !fs.exists("io.rk")
+}
+
+test "directories" {
+    try fs.create_dir("sim_dir")
+    try fs.write_text("sim_dir/inner.txt", "x")
+    assert try fs.read_text("sim_dir/inner.txt") == "x"
+    try fs.create_dir_all("sim_deep/a/b")
+    try fs.write_text("sim_deep/a/b/c.txt", "y")
+    assert fs.exists("sim_deep/a/b/c.txt")
+}
+
+test "writing into a missing directory fails like it would for real" {
+    let r = fs.write_text("sim_missing_dir/x.txt", "x")
+    mut failed = false
+    if r is IoError as e {
+        failed = true
+    }
+    assert failed
+}
+
+test "state does not leak into the next test" {
+    assert !fs.exists("sim_scratch.txt")
+    assert fs.exists("io.rk")
+}
+
+test "a listing shows the overlay, sorted" {
+    try fs.write_text("sim_listed.txt", "x")
+    try fs.remove_file("race.rk")
+    let names = try fs.list_dir(".")
+    mut saw_new = false
+    mut saw_removed = false
+    for n in names {
+        if n == "sim_listed.txt" { saw_new = true }
+        if n == "race.rk" { saw_removed = true }
+    }
+    assert saw_new
+    assert !saw_removed
+    let joined = names.join(",")
+    println(joined)
 }
 
 test "a socket is refused" {

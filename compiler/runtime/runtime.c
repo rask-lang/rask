@@ -531,30 +531,6 @@ RaskVec *rask_cli_args(void) {
     return v;
 }
 
-// ─── FS module ────────────────────────────────────────────────────
-
-RaskVec *rask_fs_read_lines(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
-    const char *p = rask_string_ptr(path);
-
-    FILE *f = fopen(p, "r");
-    if (!f) return v;
-
-    char buf[4096];
-    while (fgets(buf, sizeof(buf), f)) {
-        size_t len = strlen(buf);
-        if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
-        if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
-
-        RaskStr line;
-        rask_string_from_bytes(&line, buf, (int64_t)len);
-        rask_vec_push(v, &line);
-    }
-
-    fclose(f);
-    return v;
-}
-
 // ─── IO module ────────────────────────────────────────────────────
 
 // Writes the line, or says why there isn't one. Distinguishing EOF from a
@@ -579,59 +555,11 @@ int64_t rask_io_read_line(RaskStr *out, RaskStr *err_out) {
     return RASK_STROUT_OK;
 }
 
-// ─── More FS module ───────────────────────────────────────────────
-
-void rask_fs_read_file(RaskStr *out, const RaskStr *path) {
-    const char *p = rask_string_ptr(path);
-    FILE *f = fopen(p, "rb");
-    if (!f) { rask_string_new(out); return; }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char *buf = (char *)rask_alloc((int64_t)size + 1);
-    size_t n = fread(buf, 1, (size_t)size, f);
-    buf[n] = '\0';
-    fclose(f);
-    rask_string_from_bytes(out, buf, (int64_t)n);
-    rask_free(buf);
-}
-
-void rask_fs_write_file(const RaskStr *path, const RaskStr *content) {
-    const char *p = rask_string_ptr(path);
-    RASK_SIM_UNSIMULATED("`fs.write_text(\"%s\")`", p);
-    const char *c = rask_string_ptr(content);
-    int64_t clen = rask_string_len(content);
-    FILE *f = fopen(p, "wb");
-    if (!f) return;
-    fwrite(c, 1, (size_t)clen, f);
-    fclose(f);
-}
-
-RaskVec *rask_fs_read_bytes(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(1, NULL, 0);
-    const char *p = rask_string_ptr(path);
-    FILE *f = fopen(p, "rb");
-    if (!f) return v;
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size > 0) {
-        char *buf = (char *)rask_alloc((int64_t)size);
-        size_t n = fread(buf, 1, (size_t)size, f);
-        for (size_t i = 0; i < n; i++) {
-            uint8_t byte = (uint8_t)buf[i];
-            rask_vec_push(v, &byte);
-        }
-        rask_free(buf);
-    }
-    fclose(f);
-    return v;
-}
+// ─── FS module ────────────────────────────────────────────────────
 
 void rask_fs_write_bytes(const RaskStr *path, RaskVec *data) {
     const char *p = rask_string_ptr(path);
-    RASK_SIM_UNSIMULATED("`fs.write_bytes(\"%s\")`", p);
-    FILE *f = fopen(p, "wb");
+    FILE *f = rask_libc_fopen(p, "wb");
     if (!f) return;
     int64_t len = rask_vec_len(data);
     for (int64_t i = 0; i < len; i++) {
@@ -640,15 +568,6 @@ void rask_fs_write_bytes(const RaskStr *path, RaskVec *data) {
     }
     fclose(f);
 }
-
-int8_t rask_fs_exists(const RaskStr *path) {
-    const char *p = rask_string_ptr(path);
-    FILE *f = fopen(p, "r");
-    if (f) { fclose(f); return 1; }
-    return 0;
-}
-
-// ─── More FS module ───────────────────────────────────────────────
 
 // Did `fopen` fail? The handle *is* the value a `File` carries, and a failed
 // open is NULL — so `fs.open` can check it and build the IoError in Rask,
@@ -681,82 +600,128 @@ int64_t rask_file_position(int64_t file) {
 
 int64_t rask_fs_open(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
-    FILE *f = fopen(p, "r");
+    FILE *f = rask_libc_fopen(p, "r");
     return (int64_t)(uintptr_t)f;
 }
 
 int64_t rask_fs_create(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
-    RASK_SIM_UNSIMULATED("`fs.create_file(\"%s\")`", p);
-    FILE *f = fopen(p, "w");
+    FILE *f = rask_libc_fopen(p, "w");
     return (int64_t)(uintptr_t)f;
 }
 
-void rask_fs_canonicalize(RaskStr *out, const RaskStr *path) {
-    const char *p = rask_string_ptr(path);
-    char resolved[4096];
-    char *r = realpath(p, resolved);
-    if (!r) { rask_string_new(out); return; }
-    rask_string_from(out, resolved);
-}
-
-int64_t rask_fs_copy(const RaskStr *from, const RaskStr *to) {
-    const char *src = rask_string_ptr(from);
-    const char *dst = rask_string_ptr(to);
-    RASK_SIM_UNSIMULATED("`fs.copy` onto `%s`", dst);
-    FILE *in = fopen(src, "rb");
-    if (!in) return -1;
-    FILE *out = fopen(dst, "wb");
-    if (!out) { fclose(in); return -1; }
-    char buf[4096];
-    int64_t total = 0;
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
-        fwrite(buf, 1, n, out);
-        total += (int64_t)n;
-    }
-    fclose(in);
-    fclose(out);
-    return total;
-}
-
-void rask_fs_rename(const RaskStr *from, const RaskStr *to) {
-    const char *s = rask_string_ptr(from);
-    const char *d = rask_string_ptr(to);
-    RASK_SIM_UNSIMULATED("`fs.rename(\"%s\", \"%s\")`", s, d);
-    rename(s, d);
-}
-
-void rask_fs_remove(const RaskStr *path) {
-    const char *p = rask_string_ptr(path);
-    RASK_SIM_UNSIMULATED("`fs.remove(\"%s\")`", p);
-    remove(p);
-}
-
 #include <sys/stat.h>
+#include <dirent.h>
 
 // Thin wrappers for libc functions whose names clash with Rask methods
 // or that access C structs. Self-hosted stdlib calls these via extern "C".
-// fs.rk reaches these rather than libc directly, so sim can stop a change to
-// the real filesystem at the one place every caller passes (sim/B3).
+// Every file operation in the stdlib reaches the filesystem through these,
+// fs.rk and the natives here alike. Under sim that makes them the one place the
+// overlay has to stand (sim/B5): reads the overlay has nothing for go to the
+// real tree, and every change lands in memory.
 int32_t rask_libc_rename(const char *from, const char *to) {
-    RASK_SIM_UNSIMULATED("`fs.rename(\"%s\", \"%s\")`", from, to);
+#ifdef RASK_SIM
+    if (rask_sim_active()) return rask_sim_fs_rename(from, to);
+#endif
     return rename(from, to);
 }
+
 int32_t rask_libc_remove(const char *path) {
-    RASK_SIM_UNSIMULATED("`fs.remove(\"%s\")`", path);
+#ifdef RASK_SIM
+    if (rask_sim_active()) return rask_sim_fs_remove(path);
+#endif
     return remove(path);
 }
+
 int32_t rask_libc_mkdir(const char *path, uint32_t mode) {
-    RASK_SIM_UNSIMULATED("`fs.create_dir(\"%s\")`", path);
+#ifdef RASK_SIM
+    if (rask_sim_active()) return rask_sim_fs_mkdir(path);
+#endif
     return mkdir(path, mode);
 }
 
-// Opening for reading stays real under sim: the tree is a recorded input
-// (sim/B5). Writing has no overlay yet, so it is refused.
 void *rask_libc_fopen(const char *path, const char *mode) {
-    if (strpbrk(mode, "wa+")) RASK_SIM_UNSIMULATED("opening `%s` to write", path);
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        int handled;
+        FILE *f = rask_sim_fs_fopen(path, mode, &handled);
+        if (handled) return f;
+    }
+#endif
     return fopen(path, mode);
+}
+
+static int path_stat(const char *path, struct stat *st) {
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        int rc = rask_sim_fs_stat(path, st);
+        if (rc != SIM_FS_PASS) return rc;
+    }
+#endif
+    return stat(path, st);
+}
+
+int32_t rask_libc_access(const char *path, int32_t mode) {
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        struct stat st;
+        int rc = rask_sim_fs_stat(path, &st);
+        if (rc != SIM_FS_PASS) return rc;
+    }
+#endif
+    return access(path, mode);
+}
+
+// A directory being listed. `fs.list_dir` walks this rather than libc's DIR so
+// that sim can hand it the overlay's view instead (sim/B5): `names` is set and
+// `dir` isn't.
+typedef struct {
+    DIR    *dir;
+    char  **names;
+    size_t  count;
+    size_t  next;
+} RaskDir;
+
+void *rask_libc_opendir(const char *path) {
+    RaskDir *d = (RaskDir *)calloc(1, sizeof(RaskDir));
+    if (!d) return NULL;
+#ifdef RASK_SIM
+    if (rask_sim_active()) {
+        d->names = rask_sim_fs_list(path, &d->count);
+        if (!d->names) {
+            free(d);
+            return NULL;
+        }
+        return d;
+    }
+#endif
+    d->dir = opendir(path);
+    if (!d->dir) {
+        free(d);
+        return NULL;
+    }
+    return d;
+}
+
+// The next entry's name, or NULL at the end. Includes "." and "..", as
+// readdir does.
+const char *rask_libc_readdir(void *handle) {
+    RaskDir *d = (RaskDir *)handle;
+    if (d->dir) {
+        struct dirent *e = readdir(d->dir);
+        return e ? e->d_name : NULL;
+    }
+    return d->next < d->count ? d->names[d->next++] : NULL;
+}
+
+int32_t rask_libc_closedir(void *handle) {
+    RaskDir *d = (RaskDir *)handle;
+    int32_t rc = 0;
+    if (d->dir) rc = closedir(d->dir);
+    for (size_t i = 0; i < d->count; i++) free(d->names[i]);
+    free(d->names);
+    free(d);
+    return rc;
 }
 
 // ─── errno → IoError ──────────────────────────────────────────────
@@ -799,9 +764,6 @@ const char *rask_io_error_text(int32_t err) {
 // `strlen` extern — one C symbol may only be declared once across stdlib.
 uint64_t rask_io_cstr_len(const char *s) { return s ? (uint64_t)strlen(s) : 0; }
 
-#include <dirent.h>
-// Extract name from dirent (Rask can't access C struct fields)
-const char *rask_dirent_name(void *entry) { return ((struct dirent *)entry)->d_name; }
 
 // Stat helpers — return individual fields so Rask doesn't need struct access
 // One stat, then read the fields off it. Rask can't hold a `struct stat`, and
@@ -811,7 +773,7 @@ const char *rask_dirent_name(void *entry) { return ((struct dirent *)entry)->d_n
 static __thread struct stat rask_stat_buf;
 
 int32_t rask_stat_load(const char *path) {
-    return stat(path, &rask_stat_buf) == 0 ? 0 : -1;
+    return path_stat(path, &rask_stat_buf) == 0 ? 0 : -1;
 }
 // Unsigned: st_size is non-negative after a successful stat, and `Metadata.size`
 // is a u64 — `i64 as u64` is a sign reinterpret the cast rules reject (CV3).
@@ -821,50 +783,32 @@ int64_t rask_stat_loaded_atime(void) { return (int64_t)rask_stat_buf.st_atime; }
 
 int64_t rask_stat_size(const char *path) {
     struct stat st;
-    if (stat(path, &st) != 0) return -1;
+    if (path_stat(path, &st) != 0) return -1;
     return (int64_t)st.st_size;
 }
 int64_t rask_stat_mtime(const char *path) {
     struct stat st;
-    if (stat(path, &st) != 0) return -1;
+    if (path_stat(path, &st) != 0) return -1;
     return (int64_t)st.st_mtime;
 }
 int64_t rask_stat_atime(const char *path) {
     struct stat st;
-    if (stat(path, &st) != 0) return -1;
+    if (path_stat(path, &st) != 0) return -1;
     return (int64_t)st.st_atime;
-}
-
-void rask_fs_create_dir(const RaskStr *path) {
-    const char *p = rask_string_ptr(path);
-    RASK_SIM_UNSIMULATED("`fs.create_dir(\"%s\")`", p);
-    mkdir(p, 0755);
 }
 
 void rask_fs_create_dir_all(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
-    RASK_SIM_UNSIMULATED("`fs.create_dir_all(\"%s\")`", p);
     char tmp[4096];
     snprintf(tmp, sizeof(tmp), "%s", p);
     for (char *c = tmp + 1; *c; c++) {
         if (*c == '/') {
             *c = '\0';
-            mkdir(tmp, 0755);
+            rask_libc_mkdir(tmp, 0755);
             *c = '/';
         }
     }
-    mkdir(tmp, 0755);
-}
-
-void rask_fs_append_file(const RaskStr *path, const RaskStr *content) {
-    const char *p = rask_string_ptr(path);
-    RASK_SIM_UNSIMULATED("`fs.append_text(\"%s\")`", p);
-    const char *c = rask_string_ptr(content);
-    int64_t clen = rask_string_len(content);
-    FILE *f = fopen(p, "ab");
-    if (!f) return;
-    fwrite(c, 1, (size_t)clen, f);
-    fclose(f);
+    rask_libc_mkdir(tmp, 0755);
 }
 
 // ─── File instance methods ────────────────────────────────────────

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// Through the runtime rather than libc: sim refuses a write here (sim/B3).
+// fopen, access and opendir go through the runtime rather than libc, which is
+// where sim puts its filesystem overlay (sim/B5).
 extern "C" func rask_libc_fopen(path: *u8, mode: *u8) -> *u8
 
 extern "C" func fclose(f: *u8) -> i32
@@ -21,7 +22,7 @@ extern "C" func rask_string_from_bytes(out: *u8, data: *u8, len: i64)
 
 extern "C" func rask_fwrite_vec(f: *u8, data: *u8)
 
-extern "C" func access(path: *u8, mode: i32) -> i32
+extern "C" func rask_libc_access(path: *u8, mode: i32) -> i32
 
 extern "C" func rask_libc_rename(from: *u8, to: *u8) -> i32
 
@@ -33,13 +34,11 @@ extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
 
 extern "C" func strlen(s: *u8) -> u64
 
-extern "C" func opendir(path: *u8) -> *u8
+extern "C" func rask_libc_opendir(path: *u8) -> *u8
 
-extern "C" func readdir(dir: *u8) -> *u8
+extern "C" func rask_libc_readdir(dir: *u8) -> *u8
 
-extern "C" func closedir(dir: *u8) -> i32
-
-extern "C" func rask_dirent_name(entry: *u8) -> *u8
+extern "C" func rask_libc_closedir(dir: *u8) -> i32
 
 extern "C" func rask_stat_load(path: *u8) -> i32
 
@@ -168,7 +167,7 @@ extend fs {
     public func exists(path: string) -> bool {
         let p = unsafe path.as_ptr()
         return (unsafe {
-            access(p, 0)
+            rask_libc_access(p, 0)
         }) == 0
     }
 
@@ -266,15 +265,14 @@ extend fs {
 
     /// List entries in a directory.
     public func list_dir(path: string) -> Vec<string> or IoError {
-        let dir = unsafe opendir(path.as_ptr())
+        let dir = unsafe rask_libc_opendir(path.as_ptr())
         if unsafe dir.is_null() {
             return IoError.last_os_error()
         }
         mut entries: Vec<string> = Vec.new()
         loop {
-            let entry = unsafe readdir(dir)
-            if unsafe entry.is_null() { break }
-            let name_ptr = unsafe rask_dirent_name(entry)
+            let name_ptr = unsafe rask_libc_readdir(dir)
+            if unsafe name_ptr.is_null() { break }
             let name_len: u64 = unsafe strlen(name_ptr)
             let name = unsafe string.from_raw(name_ptr, name_len as usize)
             // Skip . and ..
@@ -284,7 +282,7 @@ extend fs {
                 }
             }
         }
-        unsafe closedir(dir)
+        unsafe rask_libc_closedir(dir)
         return entries
     }
 

@@ -90,7 +90,7 @@ No declarative scenario layer at v1. "Partition {a,b} from {c} at step 3980" is 
 | **B2: Escaping C is refused** | C that reaches the real world through something sim cannot replace — `pthread_create`, raw sockets and file descriptors, `fork`, a `syscall` instruction written by hand — is outside the contract, so the test does not run under sim. The refusal names the symbol. `--sim-permissive` runs it anyway, marked `unsimulated: ffi` (`determinism/D14`) |
 | **B3: Unsimulated calls panic** | A stdlib call with no simulated implementation panics naming the call. It never falls through to the real thing |
 | **B4: Environment** | Sim owns the environment. It starts empty at every test, and a test that needs a variable sets it with `os.set_env` (`std.os/E3`) in its body. The real process env is never visible, and never leaks from one test to the next. `os.args()` is `["<test>"]` |
-| **B5: Filesystem** | Reads fall through to the real filesystem (a recorded input under `determinism/D10`); writes land in an in-memory overlay and are discarded at test end. The real tree is never modified |
+| **B5: Filesystem** | Reads fall through to the real filesystem (a recorded input under `determinism/D10`); writes land in an in-memory overlay and are discarded at test end. The real tree is never modified. A listing is the merged view, sorted by name: `readdir` order belongs to the filesystem, not the program |
 | **B6: Sealed C is inside the contract** | C that only computes is already deterministic — same bytes in, same bytes out. Sim classifies each linked object by its undefined symbols: if they all fall in the pure set (`memcpy`, `strlen`, libm, …), the code is sealed. No mark, full contract, nothing to simulate |
 | **B7: Reaching C is interposed** | Between sealed and escaping sits C that asks the world one question at a time: `clock_gettime`, `gettimeofday`, `getrandom`, `getpid`, `sysconf`, and `malloc`. Sim resolves those at link time to a virtual clock, seeded random, fixed answers, and a fixed-base allocator that poison-fills what it hands back. Interposed is still inside the contract |
 | **B8: Addresses are the C-side hole** | `determinism/D11` says addresses can't leak into logic — true of Rask, not of C, which can hash or sort by a pointer freely. The fixed-base allocator (B7) is what closes it, and it is the reason `malloc` is interposed rather than treated as pure |
@@ -188,6 +188,10 @@ WHY: Falling through to the real call would make the run unreplayable without
 | Test reaches sealed C (a hash, a decompress) | Runs, no mark — already deterministic | B6 |
 | Test reaches `pthread_create` through C | Refused, symbol named | B2 |
 | Test writes a file, later test reads it | Second test does not see it — the overlay is per-test | B5 |
+| Test appends to a real file, then reads it | Sees the real bytes plus the append; the disk copy is untouched | B5 |
+| Test removes a real file | `exists` is false and listings leave it out for the rest of the test | B5 |
+| Test renames or removes a directory | Refused at v1 — merging a real subtree with the overlay isn't built | B3 |
+| Overlay file's `metadata().modified` | The virtual time of its last write | C1 |
 | `--seeds 1000` with a test that fails on all of them | One replay line per distinct failure signature, not 1000 | R3 |
 
 ## Non-goals
