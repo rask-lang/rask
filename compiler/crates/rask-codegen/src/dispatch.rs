@@ -818,7 +818,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I32], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::InPlaceStringMut, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::simple("fs_list_dir", "rask_fs_list_dir", &[types::I64], Some(types::I64), false),
 
         // ── Map operations ─────────────────────────────────────
         StdlibEntry::simple("Map_free", "rask_map_free", &[types::I64], None, false),
@@ -1023,7 +1022,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Args_positional", "rask_args_positional", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Args_program", "rask_args_program", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("std_exit", "rask_exit", &[types::I64], None, false),
-        StdlibEntry::simple("fs_read_lines", "rask_fs_read_lines", &[types::I64], Some(types::I64), false),
 
         // ── IO module ───────────────────────────────────────────
         StdlibEntry {
