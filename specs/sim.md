@@ -159,10 +159,10 @@ replay: rask test --sim --seed 4471 -f "fetch pipeline"
 ```
 
 ```
-ERROR [sim/B3]: no simulated implementation for `os.exec`
+ERROR [sim/B3]: no simulated implementation for `Command.run`
    |
-30 |      let out = try os.exec("git", ["rev-parse"])
-   |                    ^^^^^^^ sim has no model for subprocesses
+30 |      let out = try Command.new("git").arg("rev-parse").run()
+   |                                                        ^^^ sim has no model for subprocesses
 
 WHY: Falling through to the real call would make the run unreplayable without
      saying so. Sim fails loudly instead of quietly leaving the contract.

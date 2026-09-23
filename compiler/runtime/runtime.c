@@ -4,6 +4,7 @@
 // Collection and string implementations live in vec.c, map.c, pool.c, string.c.
 
 #include "rask_runtime.h"
+#include "sim.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -597,6 +598,7 @@ void rask_fs_read_file(RaskStr *out, const RaskStr *path) {
 
 void rask_fs_write_file(const RaskStr *path, const RaskStr *content) {
     const char *p = rask_string_ptr(path);
+    RASK_SIM_UNSIMULATED("`fs.write_text(\"%s\")`", p);
     const char *c = rask_string_ptr(content);
     int64_t clen = rask_string_len(content);
     FILE *f = fopen(p, "wb");
@@ -628,6 +630,7 @@ RaskVec *rask_fs_read_bytes(const RaskStr *path) {
 
 void rask_fs_write_bytes(const RaskStr *path, RaskVec *data) {
     const char *p = rask_string_ptr(path);
+    RASK_SIM_UNSIMULATED("`fs.write_bytes(\"%s\")`", p);
     FILE *f = fopen(p, "wb");
     if (!f) return;
     int64_t len = rask_vec_len(data);
@@ -684,6 +687,7 @@ int64_t rask_fs_open(const RaskStr *path) {
 
 int64_t rask_fs_create(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
+    RASK_SIM_UNSIMULATED("`fs.create_file(\"%s\")`", p);
     FILE *f = fopen(p, "w");
     return (int64_t)(uintptr_t)f;
 }
@@ -699,6 +703,7 @@ void rask_fs_canonicalize(RaskStr *out, const RaskStr *path) {
 int64_t rask_fs_copy(const RaskStr *from, const RaskStr *to) {
     const char *src = rask_string_ptr(from);
     const char *dst = rask_string_ptr(to);
+    RASK_SIM_UNSIMULATED("`fs.copy` onto `%s`", dst);
     FILE *in = fopen(src, "rb");
     if (!in) return -1;
     FILE *out = fopen(dst, "wb");
@@ -718,11 +723,13 @@ int64_t rask_fs_copy(const RaskStr *from, const RaskStr *to) {
 void rask_fs_rename(const RaskStr *from, const RaskStr *to) {
     const char *s = rask_string_ptr(from);
     const char *d = rask_string_ptr(to);
+    RASK_SIM_UNSIMULATED("`fs.rename(\"%s\", \"%s\")`", s, d);
     rename(s, d);
 }
 
 void rask_fs_remove(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
+    RASK_SIM_UNSIMULATED("`fs.remove(\"%s\")`", p);
     remove(p);
 }
 
@@ -730,9 +737,27 @@ void rask_fs_remove(const RaskStr *path) {
 
 // Thin wrappers for libc functions whose names clash with Rask methods
 // or that access C structs. Self-hosted stdlib calls these via extern "C".
-int32_t rask_libc_rename(const char *from, const char *to) { return rename(from, to); }
-int32_t rask_libc_remove(const char *path) { return remove(path); }
-int32_t rask_libc_mkdir(const char *path, uint32_t mode) { return mkdir(path, mode); }
+// fs.rk reaches these rather than libc directly, so sim can stop a change to
+// the real filesystem at the one place every caller passes (sim/B3).
+int32_t rask_libc_rename(const char *from, const char *to) {
+    RASK_SIM_UNSIMULATED("`fs.rename(\"%s\", \"%s\")`", from, to);
+    return rename(from, to);
+}
+int32_t rask_libc_remove(const char *path) {
+    RASK_SIM_UNSIMULATED("`fs.remove(\"%s\")`", path);
+    return remove(path);
+}
+int32_t rask_libc_mkdir(const char *path, uint32_t mode) {
+    RASK_SIM_UNSIMULATED("`fs.create_dir(\"%s\")`", path);
+    return mkdir(path, mode);
+}
+
+// Opening for reading stays real under sim: the tree is a recorded input
+// (sim/B5). Writing has no overlay yet, so it is refused.
+void *rask_libc_fopen(const char *path, const char *mode) {
+    if (strpbrk(mode, "wa+")) RASK_SIM_UNSIMULATED("opening `%s` to write", path);
+    return fopen(path, mode);
+}
 
 // ─── errno → IoError ──────────────────────────────────────────────
 //
@@ -812,11 +837,13 @@ int64_t rask_stat_atime(const char *path) {
 
 void rask_fs_create_dir(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
+    RASK_SIM_UNSIMULATED("`fs.create_dir(\"%s\")`", p);
     mkdir(p, 0755);
 }
 
 void rask_fs_create_dir_all(const RaskStr *path) {
     const char *p = rask_string_ptr(path);
+    RASK_SIM_UNSIMULATED("`fs.create_dir_all(\"%s\")`", p);
     char tmp[4096];
     snprintf(tmp, sizeof(tmp), "%s", p);
     for (char *c = tmp + 1; *c; c++) {
@@ -831,6 +858,7 @@ void rask_fs_create_dir_all(const RaskStr *path) {
 
 void rask_fs_append_file(const RaskStr *path, const RaskStr *content) {
     const char *p = rask_string_ptr(path);
+    RASK_SIM_UNSIMULATED("`fs.append_text(\"%s\")`", p);
     const char *c = rask_string_ptr(content);
     int64_t clen = rask_string_len(content);
     FILE *f = fopen(p, "ab");
@@ -992,6 +1020,11 @@ int64_t rask_net_tcp_listen(const RaskStr *addr) {
     if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
         return -2;
     }
+#ifdef RASK_SIM
+    char target[300];
+    snprintf(target, sizeof(target), "%s:%s", host, port_str);
+    RASK_SIM_UNSIMULATED("`net.tcp_listen(\"%s\")`", target);
+#endif
 
     // getaddrinfo rather than inet_pton, so "localhost:0" resolves the way it
     // does on the interpreter side — and so a name that resolves to nothing is
@@ -1054,6 +1087,11 @@ int64_t rask_net_tcp_connect(const RaskStr *addr) {
     if (!net_split_addr(addr, host, sizeof(host), port_str, sizeof(port_str))) {
         return -2;
     }
+#ifdef RASK_SIM
+    char target[300];
+    snprintf(target, sizeof(target), "%s:%s", host, port_str);
+    RASK_SIM_UNSIMULATED("`net.tcp_connect(\"%s\")`", target);
+#endif
 
     // Resolve hostname via getaddrinfo (handles both IPs and DNS names)
     struct addrinfo hints, *result;
@@ -1714,6 +1752,8 @@ int64_t rask_http_send_request(int64_t method_ptr, int64_t url_ptr,
     } else {
         if (host_part_len < sizeof(host)) { memcpy(host, host_start, host_part_len); host[host_part_len] = '\0'; }
     }
+
+    RASK_SIM_UNSIMULATED("an HTTP request to `%s`", host);
 
     // Connect
     struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };

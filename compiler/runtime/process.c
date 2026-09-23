@@ -13,6 +13,7 @@
 // window for another run to overwrite it.
 
 #include "rask_runtime.h"
+#include "sim.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -114,6 +115,7 @@ int64_t rask_process_run(
     int64_t stdout_mode,
     int64_t stderr_mode
 ) {
+    RASK_SIM_UNSIMULATED("`Command.run`");
     captured_reset(&g_out);
     captured_reset(&g_err);
 
@@ -346,6 +348,7 @@ int64_t rask_process_spawn(
     int64_t stdout_mode,
     int64_t stderr_mode
 ) {
+    RASK_SIM_UNSIMULATED("`Command.spawn`");
 #ifdef RASK_NO_SUBPROCESS
     (void)program; (void)args; (void)envs; (void)dir;
     (void)stdin_mode; (void)stdout_mode; (void)stderr_mode;

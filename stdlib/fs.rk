@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-extern "C" func fopen(path: *u8, mode: *u8) -> *u8
+// Through the runtime rather than libc: sim refuses a write here (sim/B3).
+extern "C" func rask_libc_fopen(path: *u8, mode: *u8) -> *u8
 
 extern "C" func fclose(f: *u8) -> i32
 
@@ -99,7 +100,7 @@ extend fs {
     /// Read the entire contents of a file as a string.
     public func read_text(path: string) -> string or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe fopen(p, "rb\0".as_ptr())
+        let f = unsafe rask_libc_fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
@@ -121,7 +122,7 @@ extend fs {
     /// Read the entire contents of a file as bytes.
     public func read_bytes(path: string) -> Vec<u8> or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe fopen(p, "rb\0".as_ptr())
+        let f = unsafe rask_libc_fopen(p, "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
@@ -148,7 +149,7 @@ extend fs {
     /// Write a string to a file, replacing its contents.
     public func write_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe fopen(p, "wb\0".as_ptr())
+        let f = unsafe rask_libc_fopen(p, "wb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
@@ -197,11 +198,11 @@ extend fs {
 
     /// Copy a file from one path to another.
     public func copy(from: string, to: string) -> void or IoError {
-        let src = unsafe fopen(from.as_ptr(), "rb\0".as_ptr())
+        let src = unsafe rask_libc_fopen(from.as_ptr(), "rb\0".as_ptr())
         if unsafe src.is_null() {
             return IoError.last_os_error()
         }
-        let dst = unsafe fopen(to.as_ptr(), "wb\0".as_ptr())
+        let dst = unsafe rask_libc_fopen(to.as_ptr(), "wb\0".as_ptr())
         if unsafe dst.is_null() {
             unsafe fclose(src)
             return IoError.last_os_error()
@@ -252,7 +253,7 @@ extend fs {
     /// Append a string to a file.
     public func append_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe fopen(p, "ab\0".as_ptr())
+        let f = unsafe rask_libc_fopen(p, "ab\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }

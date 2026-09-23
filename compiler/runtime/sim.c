@@ -22,6 +22,7 @@
 
 #include "sim.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -321,6 +322,22 @@ void rask_sim_task_join(void *task) {
         self->joining = NULL;
     }
     pthread_mutex_unlock(&g.lock);
+}
+
+// ─── The edge of the model (sim/B3) ─────────────────────────
+
+// Falling through to the real call would make the run depend on the machine
+// without saying so, so the test fails at the call instead.
+void rask_sim_unsimulated(const char *fmt, ...) {
+    if (!g.active) return;
+    char what[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(what, sizeof(what), fmt, ap);
+    va_end(ap);
+    rask_panic_fmt("no simulated implementation for %s: sim fails here instead of "
+                   "reaching the real machine, which the seed can't replay (sim/B3)",
+                   what);
 }
 
 // ─── Test lifecycle (test.c) ────────────────────────────────

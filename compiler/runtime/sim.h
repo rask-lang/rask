@@ -42,7 +42,13 @@ int64_t rask_sim_step(void);
 int64_t rask_sim_time_ns(void);
 _Noreturn void rask_test_sim_fail(const char *msg);
 
+// A call sim has no model for (sim/B3). Panics under sim with "no simulated
+// implementation for <what>", where the format names the call and what it
+// would have reached.
+void rask_sim_unsimulated(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+
 #define RASK_SIM_POINT() rask_sim_point()
+#define RASK_SIM_UNSIMULATED(...) rask_sim_unsimulated(__VA_ARGS__)
 
 static inline void rask_task_cond_wait(pthread_cond_t *c, pthread_mutex_t *m,
                                        const char *what) {
@@ -122,6 +128,7 @@ static inline void rask_task_rwlock_unlock(pthread_rwlock_t *l) {
 #else // !RASK_SIM
 
 #define RASK_SIM_POINT() ((void)0)
+#define RASK_SIM_UNSIMULATED(...) ((void)0)
 
 static inline void rask_task_cond_wait(pthread_cond_t *c, pthread_mutex_t *m,
                                        const char *what) {

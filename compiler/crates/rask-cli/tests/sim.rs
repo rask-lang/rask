@@ -101,6 +101,16 @@ fn thread_spawn_is_refused() {
 }
 
 #[test]
+fn reads_reach_the_real_tree_and_changes_are_refused() {
+    let (out, code) = sim(&["--seed", "1", "io.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("✓ reading a file works"), "{out}");
+    assert!(out.contains("no simulated implementation for opening `sim_should_not_exist.txt` to write"), "{out}");
+    assert!(out.contains("no simulated implementation for `net.tcp_listen(\"127.0.0.1:0\")`"), "{out}");
+    assert!(!fixtures().join("sim_should_not_exist.txt").exists());
+}
+
+#[test]
 fn seed_search_flags_need_sim() {
     let out = Command::new(rask_binary())
         .args(["test", "--seeds", "5", "race.rk"])

@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Sim reads the real tree and refuses to change it.
+import fs
+import net
+
+test "reading a file works" {
+    let text = try fs.read_text("io.rk")
+    assert text.contains("refuses to change it")
+}
+
+test "writing a file is refused" {
+    try fs.write_text("sim_should_not_exist.txt", "no")
+}
+
+test "a socket is refused" {
+    let listener = try net.tcp_listen("127.0.0.1:0")
+    ensure listener.close()
+}
