@@ -1266,11 +1266,12 @@ impl Interpreter {
                     if let Some(func) = self.functions.get(&prefixed).cloned() {
                         return self.call_function(&func, arg_vals);
                     }
-                    // stdlib/sim.rk's one native: is this run under sim? The
-                    // interpreter never is, so `sim.require` skips the test
-                    // as sim-only (sim/F3).
-                    if pkg_name == "sim" && method == "enable_faults" {
-                        return Ok(Value::Bool(false));
+                    // A bodiless `@native` declaration in the stdlib: answered
+                    // by symbol, the way native codegen's dispatch table does.
+                    if let Some(symbol) = Self::stdlib_native_symbol(pkg_name, method) {
+                        if let Some(result) = self.call_native_symbol(&symbol, &arg_vals) {
+                            return result.map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                        }
                     }
                     return Err(RuntimeDiagnostic::new(
                         RuntimeError::UndefinedVariable(method.clone()),

@@ -217,7 +217,7 @@ WHY: Falling through to the real call would make the run unreplayable without
 
 **I6 (sequential):** In-process parallelism buys nothing here. Sim time is virtual, so a suite that sleeps for hours finishes in milliseconds; the wall-clock cost is real CPU work, and that parallelizes across processes during seed search where it actually matters.
 
-**I7 (fresh state):** Carrying module state from one test into the next is what an ordinary run does, because the tests share a process. Under sim it would break I3 outright: `-f` replays one test alone, the tests that set the state never run, and the replay line reproduces nothing. So the runner starts every test in a process of its own, which also gives B4 and B5 their per-test reset for free.
+**I7 (fresh state):** Carrying module state from one test into the next is what an ordinary run does, because the tests share a process. Under sim it would break I3 outright: `-f` replays one test alone, the tests that set the state never run, and the replay line reproduces nothing.
 
 **S3 (no preemption):** An earlier draft preempted CPU-bound code after a seeded number of function calls, like Go. It buys nothing observable. Rask tasks share no memory except through the operations S3 lists: closures move what they capture into a task (`mem.closures`), a link can't cross tasks at all (`mem.ownership/T2`), and there are no data races to interleave. Whatever a task does between two scheduling points, no other task can see it until the next one, so cutting it in half produces no ordering a program can tell apart from not cutting it.
 
@@ -294,6 +294,8 @@ Sim is built on the native runtime, as a link-time swap of the runtime's C side.
 An earlier draft put sim after Phase B fibers, on the grounds that a fiber scheduler is the thing to make deterministic. It isn't needed. Scheduling points (S3) are all runtime calls, so a task only ever yields at a point where it is already inside the runtime, and blocking its thread there costs a futex round trip (a few microseconds) instead of a fiber switch. Virtual time makes that cost invisible to the test. When fibers land, the scheduler and its seed draws stay; only the handover changes.
 
 The interpreter was the other option: stepping evaluation makes "pick a random runnable task" nearly free. It also spawns OS threads today, and a scheduler built there would verify orderings the compiled program may not have.
+
+**One process per test.** The runner starts the test binary once per test and seed, naming the test and handing over its seed. That is what I7 costs: nothing, since a fresh process starts from the initializers. It also gives B4 and B5 their per-test reset, lets a deadlock report and exit from whichever thread noticed it, and makes seed search's parallelism (I6) a matter of starting more processes.
 
 **Allocator.** B7's fixed-base allocator replaces `malloc` for the whole process, not just linked C. Rask's own allocations go through `malloc`, and under the baton only one thread allocates at a time, so every address is a function of the seed. Nothing in Rask can observe an address (`determinism/D11`), but thread-local arenas would still make C-side behavior differ between runs, and one allocator closes both.
 
