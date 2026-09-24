@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A hundred thousand tasks, spawned and joined one after another from the
+// scope's own thread.
+//
+// Nothing here blocks a worker: the joiner is the thread that opened the scope,
+// which isn't one. So this holds today, and it is here to keep holding. It
+// catches a runtime that leaks a thread, a stack or a handle per task, which a
+// switch that forgot to return a fiber stack to its pool would do.
+//
+// soak-expect: 100000
+
+import async.spawn
+
+func main() {
+    using Multitasking(workers: 4) {
+        mut done: i64 = 0
+        mut i: i64 = 0
+        while i < 100000 {
+            let h = spawn(|| { return 1 })
+            ensure h.detach()
+            let v = h.join() catch e => { return }
+            done = done + v
+            i = i + 1
+        }
+        println("{done}")
+    }
+}

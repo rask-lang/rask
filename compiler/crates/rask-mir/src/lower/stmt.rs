@@ -1087,7 +1087,6 @@ impl<'a> MirLowerer<'a> {
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceRegister {
                             dst: resource_id,
                             type_name: name.clone(),
-                            scope_depth: 0,
                             slot: Some(*local_id),
                         }));
                         self.ensure_receivers.insert(cleanup_block, (name.clone(), resource_id));

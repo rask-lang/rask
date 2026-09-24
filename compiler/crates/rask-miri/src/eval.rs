@@ -274,8 +274,7 @@ impl MiriEngine {
 
             // Forbidden at comptime
             MirStmtKind::ResourceRegister { .. }
-            | MirStmtKind::ResourceConsume { .. }
-            | MirStmtKind::ResourceScopeCheck { .. } => {
+            | MirStmtKind::ResourceConsume { .. } => {
                 return Err(MiriError::UnsupportedOperation(
                     "resource types are not available at compile time".to_string(),
                 ));

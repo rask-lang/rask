@@ -1,0 +1,8 @@
+# Soak programs expected to fail today, one per line, with the issue and how.
+# tests/soak_gate.sh reads this. Every line here goes when the v0.5 fiber
+# switch lands: a blocked task parks and gives its worker back.
+#
+s_join_deep.rk           # #1130 — a thread per blocked join; aborts past 32 levels
+s_join_tree.rk           # #1130 — same, thousands of blocked joins at once
+s_panic_tree.rk          # #1130 — same, with unwinding leaves
+s_producer_consumer.rk   # #1353 — a blocked receive keeps its worker; hangs

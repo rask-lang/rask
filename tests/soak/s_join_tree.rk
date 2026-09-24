@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A binary tree of 2^14 tasks on four workers, every inner task joining its two
+// children.
+//
+// Most of the tree is blocked in `join` at any moment: that is the shape a
+// divide-and-conquer program has, and the one that turns "one OS thread per
+// blocked join" into thousands of threads. The runtime caps that at 32 and then
+// reports a deadlock. With parking, four workers run the whole tree.
+//
+// soak-expect: 16384
+
+import async.spawn
+
+func spin(n: i64) -> i64 {
+    mut i: i64 = 0
+    mut t: i64 = 0
+    while i < n {
+        t = t + (i % 3)
+        i = i + 1
+    }
+    return t
+}
+
+func tree(depth: i64) -> i64 {
+    if depth == 0 {
+        let _ = spin(2000)
+        return 1
+    }
+    let left = spawn(|| { return tree(depth - 1) })
+    ensure left.detach()
+    let right = spawn(|| { return tree(depth - 1) })
+    ensure right.detach()
+    let l = left.join() catch e => { return -1 }
+    let r = right.join() catch e => { return -1 }
+    return l + r
+}
+
+func main() {
+    using Multitasking(workers: 4) {
+        let root = spawn(|| { return tree(14) })
+        ensure root.detach()
+        let n = root.join() catch e => { return }
+        println("{n}")
+    }
+}

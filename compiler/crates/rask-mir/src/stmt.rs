@@ -29,7 +29,6 @@ pub enum MirStmtKind {
     ResourceRegister {
         dst: LocalId,
         type_name: String,
-        scope_depth: u32,
         /// The local the registration is about, when lowering knew one.
         ///
         /// `dst` is the runtime token; this is the variable the `ensure` names.
@@ -41,9 +40,6 @@ pub enum MirStmtKind {
     },
     ResourceConsume {
         resource_id: LocalId,
-    },
-    ResourceScopeCheck {
-        scope_depth: u32,
     },
     EnsurePush {
         cleanup_block: BlockId,

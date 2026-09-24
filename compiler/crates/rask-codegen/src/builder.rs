@@ -1051,42 +1051,38 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // ── Resource tracking ──────────────────────────────────────
-            // Calls C runtime functions for runtime must-consume checks.
+            // Whether an `ensure`'s value was consumed on the way out. The flag
+            // lives in the frame that owns the value: the token is the address
+            // of an 8-byte slot, and the ensure thunk captures that address, so
+            // a panic unwinding the frame reads the live flag. It used to be an
+            // index into one process-wide 256-entry table that never recycled
+            // an index, so from the 256th `ensure` on every value read as "not
+            // consumed" and its cleanup ran a second time (a `detach` after
+            // `join`, a `close` after `close`).
 
-            MirStmtKind::ResourceRegister { dst, scope_depth, .. } => {
-                // rask_resource_register(scope_depth) → resource_id
-                let func_ref = ctx.func_refs.get("rask_resource_register")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_register".to_string()))?;
-                let depth_val = builder.ins().iconst(types::I64, *scope_depth as i64);
-                let call_inst = builder.ins().call(*func_ref, &[depth_val]);
-
-                let results = builder.inst_results(call_inst);
-                if !results.is_empty() {
-                    let var = ctx.var_map.get(dst)
-                        .ok_or_else(|| CodegenError::UnsupportedFeature(
-                            "Resource register destination not found".to_string()
-                        ))?;
-                    builder.def_var(*var, results[0]);
-                }
+            MirStmtKind::ResourceRegister { dst, .. } => {
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.ins().stack_store(zero, slot, 0);
+                let addr = builder.ins().stack_addr(types::I64, slot, 0);
+                let var = ctx.var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "Resource register destination not found".to_string()
+                    ))?;
+                builder.def_var(*var, addr);
             }
 
             MirStmtKind::ResourceConsume { resource_id } => {
-                // rask_resource_consume(resource_id)
-                let func_ref = ctx.func_refs.get("rask_resource_consume")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_consume".to_string()))?;
-                let id_val = builder.use_var(*ctx.var_map.get(resource_id)
+                let addr = builder.use_var(*ctx.var_map.get(resource_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Resource ID variable not found".to_string()
                     ))?);
-                builder.ins().call(*func_ref, &[id_val]);
-            }
-
-            MirStmtKind::ResourceScopeCheck { scope_depth } => {
-                // rask_resource_scope_check(scope_depth)
-                let func_ref = ctx.func_refs.get("rask_resource_scope_check")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_scope_check".to_string()))?;
-                let depth_val = builder.ins().iconst(types::I64, *scope_depth as i64);
-                builder.ins().call(*func_ref, &[depth_val]);
+                let one = builder.ins().iconst(types::I64, 1);
+                builder.ins().store(MemFlags::trusted(), one, addr, 0);
             }
 
             // ── Cleanup stack ──────────────────────────────────────────
