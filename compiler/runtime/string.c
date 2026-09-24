@@ -1965,10 +1965,5 @@ void rask_cstring_free(int64_t cs) {
 RaskVec *rask_cstring_bytes(int64_t cs) {
     const char *p = (const char *)(uintptr_t)cs;
     int64_t n = p ? (int64_t)strlen(p) : 0;
-    RaskVec *v = rask_vec_new(n < 8 ? 8 : n, NULL, 0);
-    for (int64_t i = 0; i < n; i++) {
-        int64_t b = (int64_t)(unsigned char)p[i];
-        rask_vec_push(v, &b);
-    }
-    return v;
+    return rask_vec_from_bytes(p, n);
 }

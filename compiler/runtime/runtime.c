@@ -889,7 +889,7 @@ int64_t rask_file_read_bytes(int64_t file) {
     if (size < 0) size = 0;
     char *buf = (char *)rask_alloc((int64_t)size + 1);
     size_t n = fread(buf, 1, (size_t)size, f);
-    RaskVec *v = rask_vec_from_static(buf, (int64_t)n, 1, NULL, 0);
+    RaskVec *v = rask_vec_from_bytes(buf, (int64_t)n);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }
@@ -1283,8 +1283,8 @@ int64_t rask_io_std_write_text(int64_t which, int64_t str_ptr) {
     return n == (size_t)len ? len : -1;
 }
 
-// The bytes are gathered first: a `Vec<u8>` is contiguous only when the runtime
-// built it, and compiled Rask code gives every element its own slot (#863).
+// The bytes are gathered first: a `Vec<u8>` gives every element its own 8-byte
+// slot, so its buffer isn't a byte string (#863).
 int64_t rask_io_std_write_bytes(int64_t which, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(uintptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
@@ -1307,12 +1307,12 @@ int64_t rask_io_std_flush(int64_t which) {
 // `Vec<u8>` cast to i64.
 int64_t rask_io_std_read_bytes(int64_t max) {
     RASK_SIM_UNSIMULATED("reading stdin");
-    RaskVec *v = rask_vec_new(1, NULL, 0);
+    RaskVec *v = rask_vec_new(8, NULL, 0);
     if (max <= 0) return (int64_t)(uintptr_t)v;
     for (int64_t i = 0; i < max; i++) {
         int c = fgetc(stdin);
         if (c == EOF) break;
-        uint8_t byte = (uint8_t)c;
+        int64_t byte = (unsigned char)c;   // one 8-byte slot, as rask_vec_from_bytes
         rask_vec_push(v, &byte);
     }
     return (int64_t)(uintptr_t)v;
@@ -1576,17 +1576,16 @@ int64_t rask_net_read_bytes(int64_t fd) {
             buf = (char *)rask_realloc(buf, cap / 2, cap);
         }
     }
-    RaskVec *v = rask_vec_from_static(buf, total, 1, NULL, 0);
+    RaskVec *v = rask_vec_from_bytes(buf, total);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }
 
 // Write all bytes in a Vec<u8> to a TCP connection. Returns 0 on success, -1 on error.
 //
-// The bytes are gathered before the write because a `Vec<u8>` is only
-// contiguous when the runtime built it. Compiled Rask code gives every element
-// its own 8-byte slot, so taking element 0's address as the start of a byte
-// buffer sent every second byte as seven NULs: "hello" left as
+// The bytes are gathered before the write because a `Vec<u8>` gives every
+// element its own 8-byte slot, so taking element 0's address as the start of a
+// byte buffer sent every second byte as seven NULs: "hello" left as
 // "h\0\0\0\0\0\0\0e\0…" and the far end read one character (#863). Same
 // per-element read `rask_fwrite_vec` does for files.
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
