@@ -37,3 +37,21 @@ test "a static method's Vec parameter takes an array literal" {
 test "and by name" {
     assert Palette.count(kinds: [Kind.Blue]) == 1
 }
+
+// An instance method's slot is known the same way once the receiver has its
+// type. `sink.feed([1, 2, 3])` failed with "expected `Vec<u8>`, found
+// `[i32; 3]`", and so did `file.write_bytes([104, 105])`.
+struct Sink {
+    seen: i64
+}
+
+extend Sink {
+    func feed(self, xs: Vec<u8>) -> usize {
+        return xs.len()
+    }
+}
+
+test "an instance method's parameter shapes the literal too" {
+    let s = Sink { seen: 0 }
+    assert s.feed([1, 2, 3]) == 3
+}

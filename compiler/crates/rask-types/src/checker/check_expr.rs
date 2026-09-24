@@ -3795,17 +3795,18 @@ impl TypeChecker {
         let elem_shape = self
             .first_type_arg(&self.ctx.apply(&obj_ty), "Vec")
             .filter(|t| self.collection_elem_type(t).is_some());
-        // A static call is the other case where the slot *is* known here: the
-        // receiver names the type, so the method is its declared one and the
-        // parameter types can be read off the declaration. `sim.require(faults:
-        // [Fault.IoError])` typed the literal as `[Fault; 1]` and then failed
-        // against `Vec<Fault>`, while the same call to a free function worked.
-        let static_params = self.static_method_params(object, &obj_ty, method);
+        // The other case where the slot *is* known here: the receiver's type is
+        // settled — it names the type (a static call) or is a value already
+        // typed — so the method is its declared one and the parameter types can
+        // be read off the declaration. `sim.require(faults: [Fault.IoError])`
+        // and `sink.feed([1, 2])` typed the literal as an array and then failed
+        // against `Vec<…>`, while the same call to a free function worked.
+        let declared_params = self.declared_method_params(object, &obj_ty, method);
         let arg_types: Vec<_> = args
             .iter()
             .enumerate()
             .map(|(i, a)| {
-                let param = static_params.as_ref().and_then(|p| p.get(i)).cloned();
+                let param = declared_params.as_ref().and_then(|p| p.get(i)).cloned();
                 match (&a.expr.kind, &elem_shape, param) {
                     (ExprKind::Array(_), _, Some(want)) => self.infer_expr_expecting(&a.expr, &want),
                     (ExprKind::Array(_), Some(want), None) => {
@@ -5272,31 +5273,31 @@ impl TypeChecker {
             .collect()
     }
 
-    /// The declared parameter types of `Type.method(…)` when `object` names a
-    /// type rather than a value, for pushing into array-literal arguments
-    /// (std.collections/C9). Only for a non-generic method on a non-generic
-    /// type: a parameter mentioning a type parameter needs the instantiation,
-    /// which isn't bound yet.
-    fn static_method_params(
+    /// The declared parameter types of `recv.method(…)`, for pushing into
+    /// array-literal arguments (std.collections/C9). `object` names either a
+    /// type (a static method) or a value whose type is already known (an
+    /// instance method). Only for a non-generic method on a non-generic type:
+    /// a parameter mentioning a type parameter needs the instantiation, which
+    /// isn't bound yet.
+    fn declared_method_params(
         &self,
         object: &rask_ast::expr::Expr,
         obj_ty: &Type,
         method: &str,
     ) -> Option<Vec<Type>> {
-        let ExprKind::Ident(name) = &object.kind else { return None };
-        if self.lookup_local(name).is_some() {
+        let names_type = matches!(&object.kind, ExprKind::Ident(name) if self.lookup_local(name).is_none());
+        let Type::Named(id) = self.ctx.apply(obj_ty) else { return None };
+        if !self.declared_type_params(id).is_empty() {
             return None;
         }
-        let Type::Named(id) = obj_ty else { return None };
-        if !self.declared_type_params(*id).is_empty() {
-            return None;
-        }
-        let methods = match self.types.get(*id) {
+        let methods = match self.types.get(id) {
             Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => methods,
             _ => return None,
         };
         let sig = methods.iter().find(|m| {
-            m.name == method && matches!(m.self_param, crate::SelfParam::None) && m.type_params.is_empty()
+            m.name == method
+                && m.type_params.is_empty()
+                && names_type == matches!(m.self_param, crate::SelfParam::None)
         })?;
         Some(sig.params.iter().map(|(t, _)| t.clone()).collect())
     }
