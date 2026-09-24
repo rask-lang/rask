@@ -425,10 +425,6 @@ func format_http_response(resp: Response) -> string {
 }
 
 // ─── Socket I/O (C runtime) ─────────────────────────────────────
-//
-// The helpers below carry an `http_` prefix as a workaround: a program's own
-// free function with the same name replaces a private stdlib one (#1351), and
-// a program writing its own `write_raw` is not unusual.
 
 extern "C" {
     // A message handle, or a negative code `read_message` names.
@@ -447,7 +443,7 @@ extern "C" {
 // their Content-Length announces, or for a response without one, everything
 // to the end of the stream. One read is not a message, and a connection that
 // ends or resets before the last byte is an error, never a shorter body.
-func http_read_message(conn_fd: i64, max_bytes: i64, is_response: bool) -> string or HttpError {
+func read_message(conn_fd: i64, max_bytes: i64, is_response: bool) -> string or HttpError {
     let got = unsafe rask_io_http_read(conn_fd, max_bytes, if is_response { 1 } else { 0 })
     if got == -1 {
         return HttpError.Io(IoError.last_os_error().message())
@@ -468,14 +464,14 @@ func http_read_message(conn_fd: i64, max_bytes: i64, is_response: bool) -> strin
 }
 
 // Write a string to a TCP connection. False when it didn't all go out.
-func http_write_raw(conn_fd: i64, data: string) -> bool {
+func write_raw(conn_fd: i64, data: string) -> bool {
     return (unsafe {
         rask_io_write_string(conn_fd, data as i64)
     }) >= 0
 }
 
 // Close a TCP connection.
-func http_close_raw(conn_fd: i64) {
+func close_raw(conn_fd: i64) {
     unsafe {
         rask_io_close_fd(conn_fd)
     }
@@ -665,13 +661,13 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
         req = req.with_body(body)
     }
     let raw_req = format_http_request(req, host)
-    if !http_write_raw(conn_fd, raw_req) {
-        http_close_raw(conn_fd)
+    if !write_raw(conn_fd, raw_req) {
+        close_raw(conn_fd)
         return HttpError.ConnectionFailed("could not send the request to {addr}")
     }
 
-    let raw_resp = http_read_message(conn_fd, 1048576, true) catch e => {
-        http_close_raw(conn_fd)
+    let raw_resp = read_message(conn_fd, 1048576, true) catch e => {
+        close_raw(conn_fd)
         return e
     }
 
@@ -694,7 +690,7 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
 // is not available here.
 @allow(style/snake-case-func)
 func TcpConnection_read_http_request(conn_fd: i64) -> i64 or HttpError {
-    let raw = try http_read_message(conn_fd, 65536, false)
+    let raw = try read_message(conn_fd, 65536, false)
     let request = try parse_http_request(raw)
 
     // Build the legacy struct layout: [method_str, path, body, headers_map]
@@ -716,12 +712,12 @@ func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or Ht
         resp_ptr as Response
     }
     let raw = format_http_response(resp)
-    let sent = http_write_raw(conn_fd, raw)
+    let sent = write_raw(conn_fd, raw)
     // The response says `Connection: close`, so close it — the same promise
     // `Responder.respond` keeps. Without this a caller using the low-level
     // `TcpConnection.write_http_response` got the #1055 bug on a second path:
     // client hangs waiting for an EOF, descriptor held for the process's life.
-    http_close_raw(conn_fd)
+    close_raw(conn_fd)
     if !sent {
         return HttpError.Io("could not send the response")
     }
@@ -741,15 +737,15 @@ extend HttpServer {
         let conn = self.listener.accept() catch _ => {
             return HttpError.Io("accept failed")
         }
-        let raw = http_read_message(conn as i64, 65536, false) catch e => {
-            http_close_raw(conn as i64)
+        let raw = read_message(conn as i64, 65536, false) catch e => {
+            close_raw(conn as i64)
             return e
         }
         let request = parse_http_request(raw) catch _ => {
             // No responder is handed out on this path, so nothing downstream
             // will ever close this connection. Close it here or the descriptor
             // is held until the process ends.
-            http_close_raw(conn as i64)
+            close_raw(conn as i64)
             return HttpError.InvalidResponse("malformed request")
         }
         let responder = Responder { conn_fd: conn as i64 }
@@ -777,12 +773,12 @@ struct Responder {
 extend Responder {
     public func respond(take self, response: Response) -> void or HttpError {
         let raw = format_http_response(response)
-        let sent = http_write_raw(self.conn_fd, raw)
+        let sent = write_raw(self.conn_fd, raw)
         // `format_http_response` writes `Connection: close`, so close it. A
         // client that believes the header waits for an EOF that never arrives
         // — Rask's own client hung on Rask's own server — and the server holds
         // a descriptor per request for the life of the process.
-        http_close_raw(self.conn_fd)
+        close_raw(self.conn_fd)
         if !sent {
             return HttpError.Io("could not send the response")
         }

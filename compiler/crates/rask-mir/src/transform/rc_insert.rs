@@ -2088,7 +2088,7 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 // string's usefulness, but nothing after it mentions the string,
                 // so the naive spot is directly after — the release runs, the
                 // buffer is freed, and the raw address the callee dereferences
-                // is dangling. `http_write_raw` in `stdlib/http.rk` is exactly this
+                // is dangling. `write_raw` in `stdlib/http.rk` is exactly this
                 // shape, which is how the HTTP server answered with eight bytes
                 // of allocator free-list where `HTTP/1.1` should be. Hold the
                 // reference to the end of the block, so every use of the

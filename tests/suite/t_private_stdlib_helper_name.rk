@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #1351: a program's own function named like a private stdlib helper used to
+// replace it inside the stdlib. http.rk has a private `write_raw` returning
+// whether the bytes went out; this `write_raw` returns nothing, and the
+// program failed to compile with a type error inside http.rk, which the import
+// alone is enough to reach. fs.rk's private `read_to_end` is the same shape,
+// and fs.read_text below still reaches its own.
+
+import fs
+import http
+
+func write_raw(fd: i64, data: string) -> i64 {
+    return data.len().to<i64>()!
+}
+
+func read_to_end(n: i64) -> i64 {
+    return n * 2
+}
+
+test "a program's helper and the stdlib's are two functions" {
+    assert write_raw(1, "four") == 4
+    assert read_to_end(21) == 42
+    let p = "/tmp/rask_t_private_stdlib_helper_name.txt"
+    try fs.write_text(p, "stdlib's own read_to_end")
+    assert (try fs.read_text(p)) == "stdlib's own read_to_end"
+    try fs.remove_file(p)
+}
