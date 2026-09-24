@@ -1413,6 +1413,29 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
             }
 
+            LinkSent { name, ty, span } => {
+                let rendered = ty.to_string();
+                let label = if rendered.starts_with("Link<") {
+                    format!("`{}` is a link into a rack", name)
+                } else {
+                    format!("`{}` is a `{}`, which holds a link", name, rendered)
+                };
+                Diagnostic::error(format!("`{}` holds a link, which can't go to another task", name))
+                    .with_code("E0898")
+                    .with_primary(*span, label)
+                    .with_fix(
+                        "copy out what the task needs before the spawn — `let id = n.id` — \
+                         or hand it the whole graph: `let copy = rack.snapshot()` and use \
+                         `copy` inside",
+                    )
+                    .with_why(
+                        "a link is its node's address, and every link can write the node, \
+                         so two tasks holding one would both write the same memory with \
+                         nothing ordering them. A rack moves as a whole, links and all; a \
+                         link on its own never crosses [mem.ownership/T2]",
+                    )
+            }
+
             SharedStrategyMismatch { found, expected, span } => {
                 Diagnostic::error(format!(
                     "this `Shared` uses the `{}` strategy, but `{}` is expected here",

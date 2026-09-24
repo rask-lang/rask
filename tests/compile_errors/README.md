@@ -122,6 +122,7 @@ go down.
 | [stdlib_renames.rk](stdlib_renames.rk) | task-2b rename sweep (#302): old stdlib names are hard errors, not aliases — `recv`/`try_recv`, `as_secs`/`as_secs_f64`, `os.getpid`/`os.vars`, `fs.read_file`/`write_file`/`append_file`, removed `File.lines()` (E0313) |
 | [let_reassign.rk](let_reassign.rk) | Reassigning a let binding |
 | [shared_access_closure.rk](shared_access_closure.rk) | A closure handed to a blocking `read`/`write` on a `Shared` (E0897, #1311). Blocking access is a `with` block or one expression; closures are for `try_read`/`try_write`. The checker accepted the closure form, undeclared, and native read a slot nobody wrote |
+| [link_sent_to_task.rk](link_sent_to_task.rk) | A link captured by `spawn` (E0898, #830) — on its own, optional, in a Vec, in a struct field, or as a channel's element. A link is its node's address, so two tasks would write one node unordered. A copied field and a whole rack still cross |
 | [read_lock_mutate.rk](read_lock_mutate.rk) | Mutating through a `shared.read()` with-binding (E0360, conc.sync/R1) |
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |

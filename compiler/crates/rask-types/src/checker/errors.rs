@@ -746,6 +746,15 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// mem.ownership/T2: a value carrying a `Link` captured by `spawn`. A link
+    /// is a node's address; two tasks holding it would both write the node.
+    #[error("`{name}` holds a link, which can't go to another task")]
+    LinkSent {
+        name: String,
+        ty: Type,
+        span: Span,
+    },
+
     /// conc.sync/SH2: two `Shared` boxes with different strategies met.
     ///
     /// Not a deferrable obligation like most type mismatches — the strategy
@@ -1462,6 +1471,7 @@ impl TypeError {
             | RetiredBoxType { .. }
             | SharedAccessClosure { .. }
             | LocalSharedSent { .. }
+            | LinkSent { .. }
             | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
             | RecursiveTypeHasNoSize { .. }

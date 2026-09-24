@@ -343,7 +343,8 @@ so the deterministic tests run the code that ships.
 What the bench finds joins this list. Fixed in #1344: #1311 (the closure form
 of a blocking `Shared` access is rejected, E0897), #1335 (`rask compile` hung
 on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
-its worker), #1302 (a box inside a box leaked), and three found on the way — an
+its worker), #1302 (a box inside a box leaked), #830 (a link
+captured by `spawn` is rejected, E0898), and three found on the way — an
 `ensure` running after its value was consumed, past the 256th ensure and after
 a `join` whose result returned early, and E0353 on recursion through a spawned
 closure. Open:
@@ -355,9 +356,9 @@ closure. Open:
   `Vec` of task handles, which can't be built. Native `TaskGroup` is the answer,
   since spawning N tasks in a loop is the common case and a variadic call can't
   express it.
-- [#830](https://github.com/rask-lang/rask/issues/830): a `Link` captured by
-  `spawn` lets two tasks write one node. Reject the capture now; snapshot versus
-  read-only links can wait.
+- [#1356](https://github.com/rask-lang/rask/issues/1356): a closure that reaches
+  `spawn` through a return or a field isn't checked for a captured link or
+  `Local` box. Written in place or bound to a local, it is.
 - [#298](https://github.com/rask-lang/rask/issues/298) and
   [#299](https://github.com/rask-lang/rask/issues/299): panic leftovers,
   `staged()` the main one. #298's last case goes when Pool does

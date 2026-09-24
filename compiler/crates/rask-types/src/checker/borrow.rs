@@ -195,6 +195,14 @@ impl TypeChecker {
         None
     }
 
+    /// Depth of the innermost scope defining `name` — 1 is the outermost.
+    pub(super) fn local_depth(&self, name: &str) -> Option<usize> {
+        self.local_types
+            .iter()
+            .rposition(|scope| scope.contains_key(name))
+            .map(|i| i + 1)
+    }
+
     /// Look up the binding kind for a local.
     pub(super) fn lookup_binding_kind(&self, name: &str) -> Option<super::BindingKind> {
         for scope in self.local_types.iter().rev() {
