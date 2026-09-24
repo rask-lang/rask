@@ -1467,10 +1467,13 @@ impl TypeChecker {
                                     Type::Error
                                 }
                             }
+                        } else if !self.in_test_body {
+                            self.errors.push(TypeError::TryOutsideFunction { span: expr.span });
+                            Type::Error
                         } else {
-                            // No return type: a `test` or `benchmark` body,
-                            // where the error ends the test — the same answer
-                            // the resolved case above gives (`error_can_leave`).
+                            // A `test` or `benchmark` body, where the error
+                            // ends the test — the same answer the resolved
+                            // case above gives (`error_can_leave`).
                             // A method call's result is often still a variable
                             // here, and treating that as "outside a function"
                             // rejected `try conn.read_text()` in a test while
@@ -5216,8 +5219,12 @@ impl TypeChecker {
     fn check_absence_can_leave(&mut self, span: rask_ast::Span) {
         // No return type is a `test` or `benchmark` body, which takes either
         // shape: a `none` ends the test the way an error does (ER47,
-        // `std.testing/T20`).
+        // `std.testing/T20`) — or a constant's initializer, which has nowhere
+        // to send it.
         let Some(return_ty) = &self.current_return_type else {
+            if !self.in_test_body {
+                self.errors.push(TypeError::TryOutsideFunction { span });
+            }
             return;
         };
         let resolved = self.ctx.apply(return_ty);
@@ -5299,8 +5306,13 @@ impl TypeChecker {
     fn error_can_leave(&mut self, span: rask_ast::Span) -> bool {
         // No return type at all is a `test` (or `benchmark`) block, which has no
         // caller to propagate to: the error ends the test instead, which is what
-        // the interpreter has always done and what native does since #932.
+        // the interpreter has always done and what native does since #932. Or
+        // it is a constant's initializer, where nothing can take the error.
         let Some(return_ty) = &self.current_return_type else {
+            if !self.in_test_body {
+                self.errors.push(TypeError::TryOutsideFunction { span });
+                return false;
+            }
             return true;
         };
         let resolved = self.ctx.apply(return_ty);

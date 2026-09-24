@@ -1304,12 +1304,12 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             TryOutsideFunction { span } => {
-                Diagnostic::error("`try` can only be used within a function")
+                Diagnostic::error("`try` has nowhere to send the error here")
                     .with_code("E0317")
-                    .with_primary(*span, "not inside a function")
-                    .with_help("move this into a function body")
-                    .with_fix("move this `try` expression inside a function body")
-                    .with_why("`try` needs a function to propagate errors to")
+                    .with_primary(*span, "not inside a function or test")
+                    .with_help("handle it where it happens: `?? fallback` for an optional, `catch e => …` for a result")
+                    .with_fix("const LIMIT: i64 = parse_limit() ?? 100")
+                    .with_why("`try` leaves through the enclosing function's error branch, or ends the enclosing test; a constant's initializer has neither")
             }
 
             MissingReturn {
