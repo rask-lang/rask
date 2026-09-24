@@ -72,14 +72,15 @@ extend JoinError {
 ///
 /// Must be joined or detached, like the handles it holds.
 @resource
-public struct TaskGroup<T> { }
+public struct TaskGroup<T> {
+}
 
 extend TaskGroup<T> {
     @native("rask_task_group_new")
     public func new() -> TaskGroup<T> {}
 
     /// Spawn a task in this group.
-    public func spawn(self, take f: func() -> T) {
+    public func spawn(self, take f: func() -> T) -> void {
         self.adopt(spawn(f))
     }
 
@@ -97,7 +98,7 @@ extend TaskGroup<T> {
     }
 
     /// Let every task run on without waiting for it. Consumes the group.
-    public func detach(take self) {
+    public func detach(take self) -> void {
         mut i = 0
         while i < self.len() {
             self.at(i).detach()
@@ -106,9 +107,11 @@ extend TaskGroup<T> {
         self.release()
     }
 
+    /// Keep a handle for the join or detach.
     @native("rask_task_group_adopt")
     func adopt(self, take handle: TaskHandle<T>) {}
 
+    /// How many tasks were spawned into the group.
     @native("rask_task_group_len")
     func len(self) -> i64 {}
 
@@ -116,6 +119,7 @@ extend TaskGroup<T> {
     @native("rask_task_group_at")
     func at(self, i: i64) -> TaskHandle<T> {}
 
+    /// Free the list. Every handle in it was taken by then.
     @native("rask_task_group_free")
     func release(take self) {}
 }
