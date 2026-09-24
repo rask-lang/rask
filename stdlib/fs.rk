@@ -24,8 +24,6 @@ extern "C" func rask_realloc(ptr: *u8, old_size: i64, new_size: i64) -> *u8
 
 extern "C" func rask_string_from_bytes(out: *u8, data: *u8, len: i64)
 
-extern "C" func rask_fwrite_vec(f: *u8, data: *u8)
-
 extern "C" func rask_libc_access(path: *u8, mode: i32) -> i32
 
 extern "C" func rask_libc_rename(from: *u8, to: *u8) -> i32
@@ -33,6 +31,8 @@ extern "C" func rask_libc_rename(from: *u8, to: *u8) -> i32
 extern "C" func rask_libc_remove(path: *u8) -> i32
 
 extern "C" func rask_libc_mkdir(path: *u8, mode: u32) -> i32
+
+extern "C" func rask_libc_mkdir_or_dir(path: *u8, mode: u32) -> i32
 
 extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
 
@@ -137,12 +137,27 @@ extend fs {
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        return write_all_then_close(f, content)
+        return write_all_then_close(f, unsafe content.as_ptr(), content.len())
     }
 
     /// Write bytes to a file, replacing its contents.
-    @native("rask_fs_write_bytes")
-    public func write_bytes(path: string, data: Vec<u8>) -> void or IoError {}
+    public func write_bytes(path: string, data: Vec<u8>) -> void or IoError {
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "wb\0".as_ptr())
+        if unsafe f.is_null() {
+            return IoError.last_os_error()
+        }
+        // Byte by byte into a flat buffer, the one shape `fwrite` takes.
+        let n = data.len()
+        let buf = unsafe rask_alloc(if n > 0 { n.wrap<i64>() } else { 1 })
+        mut i: usize = 0
+        for b in data {
+            unsafe buf.add(i).write(b)
+            i = i + 1
+        }
+        let result = write_all_then_close(f, buf, n)
+        unsafe rask_free(buf)
+        return result
+    }
 
     /// Check if a file or directory exists at the path.
     public func exists(path: string) -> bool {
@@ -240,9 +255,21 @@ extend fs {
         return
     }
 
-    /// Create a directory and all parent directories.
-    @native("rask_fs_create_dir_all")
-    public func create_dir_all(path: string) -> void or IoError {}
+    /// Create a directory and all parent directories. One that already exists
+    /// is fine; a file in the way is an error.
+    public func create_dir_all(path: string) -> void or IoError {
+        mut prefix = if path.starts_with("/") { "/" } else { "" }
+        for part in path.split("/") {
+            if part.is_empty() {
+                continue
+            }
+            prefix = if prefix.is_empty() || prefix == "/" { "{prefix}{part}" } else { "{prefix}/{part}" }
+            if (unsafe rask_libc_mkdir_or_dir(prefix.as_ptr(), 493)) != 0 {
+                return IoError.last_os_error()
+            }
+        }
+        return
+    }
 
     /// Append a string to a file.
     public func append_text(path: string, content: string) -> void or IoError {
@@ -251,7 +278,7 @@ extend fs {
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        return write_all_then_close(f, content)
+        return write_all_then_close(f, unsafe content.as_ptr(), content.len())
     }
 
     /// List entries in a directory.
@@ -361,13 +388,12 @@ func read_to_end(f: *u8) -> RawBytes or IoError {
     }
 }
 
-/// Write `content` and close `f`, reporting either step failing. The write is
-/// buffered, so a disk that refuses the bytes usually says so at the close; a
-/// caller that only checked `fwrite` would report success for data that never
-/// arrived.
-func write_all_then_close(f: *u8, content: string) -> void or IoError {
-    let ptr = unsafe content.as_ptr()
-    let len = content.len().wrap<u64>()
+/// Write `len` bytes from `ptr` and close `f`, reporting either step failing.
+/// The write is buffered, so a disk that refuses the bytes usually says so at
+/// the close; a caller that only checked `fwrite` would report success for
+/// data that never arrived.
+func write_all_then_close(f: *u8, ptr: *u8, size: usize) -> void or IoError {
+    let len = size.wrap<u64>()
     let wrote = unsafe fwrite(ptr, 1, len, f)
     if wrote < len {
         let err = IoError.last_os_error()

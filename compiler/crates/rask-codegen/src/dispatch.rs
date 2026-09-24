@@ -983,7 +983,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("random_range", "rask_random_range", &[types::I64, types::I64], Some(types::I64), true),
 
         // ── File instance methods ─────────────────────────────────
-        StdlibEntry::simple("File_close", "rask_file_close", &[types::I64], None, false),
+        StdlibEntry::simple("File_close_raw", "rask_file_close", &[types::I64], Some(types::I64), false),
         // `int64_t rask_file_read_all(RaskStr *out, int64_t file)` — the string
         // comes back through the out-param, the return value is the ok/err tag
         // for `string or IoError`. Declared as a 1-arg call returning i64, the
@@ -1000,10 +1000,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // negative-return-means-error convention (used elsewhere for handles
         // like TcpConnection) applies cleanly with no out-param plumbing.
         StdlibEntry::neg_err("File_read_bytes", "rask_file_read_bytes", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("File_write", "rask_file_write", &[types::I64, types::I64], None, false),
-        StdlibEntry::neg_err("File_write_bytes", "rask_file_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("File_write_text", "rask_file_write", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("File_write_line", "rask_file_write_line", &[types::I64, types::I64], None, false),
+        // The writes and close answer 0 or -1 with errno set; stdlib/io.rk
+        // turns -1 into the IoError, which the runtime can't build.
+        StdlibEntry::simple("File_write_raw", "rask_file_write", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("File_write_bytes_raw", "rask_file_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("File_write_line_raw", "rask_file_write_line", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Stdlib module calls ─────────────────────────────────
         StdlibEntry::simple("cli_args", "rask_cli_args", &[], Some(types::I64), false),
@@ -1033,8 +1034,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── FS module ───────────────────────────────────────────
         // Self-hosted from stdlib/fs.rk. Remaining C runtime stubs:
-        StdlibEntry::simple("fs_write_bytes", "rask_fs_write_bytes", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
         StdlibEntry::simple("fs_open_handle", "rask_fs_open", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create_handle", "rask_fs_create", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("File_is_null", "rask_file_is_null", &[types::I64], Some(types::I64), false),

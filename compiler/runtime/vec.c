@@ -4,6 +4,7 @@
 // Growth factor: 2x. Initial allocation deferred until first push.
 
 #include "rask_runtime.h"
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1283,8 +1284,23 @@ RaskVec *rask_iter_take(const RaskVec *src, int64_t n) {
 }
 
 // Write Vec data to a FILE*. Used by self-hosted fs.write_bytes.
-void rask_fwrite_vec(int64_t fptr, const RaskVec *v) {
+// A `Vec<u8>`'s bytes to a file: 0, or -1 with errno set, like the other File
+// writes (runtime.c). Gathered through `rask_vec_get`, which knows the
+// element size, as the socket write does (#863).
+int64_t rask_fwrite_vec(int64_t fptr, const RaskVec *v) {
     FILE *f = (FILE *)(uintptr_t)fptr;
-    if (!f || !v || !v->data) return;
-    fwrite(v->data, 1, (size_t)v->len, f);
+    if (!f) {
+        errno = EBADF;
+        return -1;
+    }
+    int64_t len = v ? v->len : 0;
+    if (len <= 0) return 0;
+    char *bytes = (char *)rask_alloc(len);
+    for (int64_t i = 0; i < len; i++) {
+        const uint8_t *b = (const uint8_t *)rask_vec_get(v, i);
+        bytes[i] = b ? (char)*b : 0;
+    }
+    int64_t rc = rask_fwrite_all(f, bytes, (size_t)len);
+    rask_free(bytes);
+    return rc;
 }

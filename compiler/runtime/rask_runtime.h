@@ -766,7 +766,7 @@ int64_t  rask_random_range(int64_t lo, int64_t hi);
 // Higher-level file operations. Return FILE* as i64.
 
 
-void        rask_fwrite_vec(int64_t fptr, const RaskVec *v);
+int64_t     rask_fwrite_vec(int64_t fptr, const RaskVec *v);
 
 // Thin wrappers for libc functions whose names clash with Rask methods
 // or that access C struct fields
@@ -781,10 +781,8 @@ int32_t     rask_libc_closedir(void *dir);
 int64_t     rask_stat_size(const char *path);
 int64_t     rask_stat_mtime(const char *path);
 int64_t     rask_stat_atime(const char *path);
-void        rask_fs_write_bytes(const RaskStr *path, RaskVec *data);
 int64_t     rask_fs_open(const RaskStr *path);
 int64_t     rask_fs_create(const RaskStr *path);
-void        rask_fs_create_dir_all(const RaskStr *path);
 
 // ─── File instance methods ──────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
@@ -795,7 +793,7 @@ int64_t     rask_file_is_null(int64_t file);
 // the absolute position, or -1 with errno set.
 int64_t     rask_file_seek(int64_t file, int64_t whence, int64_t offset);
 int64_t     rask_file_position(int64_t file);
-void        rask_file_close(int64_t file);
+int64_t     rask_file_close(int64_t file);
 // ─── String-out-param calls ────────────────────────────────
 // A call that hands a string back through an out-param says how it ended, and
 // carries the reason when it failed. It used to return a bare 0/1, and codegen
@@ -814,10 +812,11 @@ const char *rask_io_error_text(int32_t err);
 
 int64_t     rask_file_read_all(RaskStr *out, int64_t file, RaskStr *err_out);
 int64_t     rask_file_read_bytes(int64_t file);
-void        rask_file_write(int64_t file, const RaskStr *content);
-void        rask_file_write_all(int64_t file, const RaskStr *content);
+int64_t     rask_file_write(int64_t file, const RaskStr *content);
 int64_t     rask_file_write_bytes(int64_t file, int64_t vec_ptr);
-void        rask_file_write_line(int64_t file, const RaskStr *content);
+int64_t     rask_file_write_line(int64_t file, const RaskStr *content);
+int64_t     rask_fwrite_all(void *f, const char *ptr, size_t len);  // f is a FILE *
+int32_t     rask_libc_mkdir_or_dir(const char *path, uint32_t mode);
 RaskVec    *rask_file_lines(int64_t file);
 
 // ─── IO module ──────────────────────────────────────────────

@@ -1221,8 +1221,8 @@ impl CodeGenerator {
 
         for mir_fn in mir_functions {
             // Skip empty-body stubs that shadow stdlib entries (e.g.
-            // fs.write_bytes has an empty .rk body but dispatches to
-            // rask_fs_write_bytes in the C runtime via the dispatch table).
+            // `File.write_raw` has an empty .rk body and dispatches to
+            // rask_file_write in the C runtime via the dispatch table).
             if self.func_ids.contains_key(&mir_fn.name) && is_empty_stub(mir_fn) {
                 continue;
             }

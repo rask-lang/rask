@@ -594,17 +594,6 @@ int64_t rask_io_read_line(RaskStr *out, RaskStr *err_out) {
 
 // ─── FS module ────────────────────────────────────────────────────
 
-void rask_fs_write_bytes(const RaskStr *path, RaskVec *data) {
-    const char *p = rask_string_ptr(path);
-    FILE *f = rask_libc_fopen(p, "wb");
-    if (!f) return;
-    int64_t len = rask_vec_len(data);
-    for (int64_t i = 0; i < len; i++) {
-        uint8_t *byte = (uint8_t *)rask_vec_get(data, i);
-        if (byte) fwrite(byte, 1, 1, f);
-    }
-    fclose(f);
-}
 
 // Did `fopen` fail? The handle *is* the value a `File` carries, and a failed
 // open is NULL — so `fs.open` can check it and build the IoError in Rask,
@@ -675,6 +664,19 @@ int32_t rask_libc_mkdir(const char *path, uint32_t mode) {
     if (rask_sim_active()) return rask_sim_fs_mkdir(path);
 #endif
     return mkdir(path, mode);
+}
+
+static int path_stat(const char *path, struct stat *st);
+
+// `mkdir`, where a directory already there counts as made: one step of
+// `fs.create_dir_all`. 0, or -1 with errno set — a file in the way is EEXIST.
+int32_t rask_libc_mkdir_or_dir(const char *path, uint32_t mode) {
+    if (rask_libc_mkdir(path, mode) == 0) return 0;
+    int err = errno;
+    struct stat st;
+    if (err == EEXIST && path_stat(path, &st) == 0 && S_ISDIR(st.st_mode)) return 0;
+    errno = err;
+    return -1;
 }
 
 void *rask_libc_fopen(const char *path, const char *mode) {
@@ -834,27 +836,9 @@ int64_t rask_stat_atime(const char *path) {
     return (int64_t)st.st_atime;
 }
 
-void rask_fs_create_dir_all(const RaskStr *path) {
-    const char *p = rask_string_ptr(path);
-    char tmp[4096];
-    snprintf(tmp, sizeof(tmp), "%s", p);
-    for (char *c = tmp + 1; *c; c++) {
-        if (*c == '/') {
-            *c = '\0';
-            rask_libc_mkdir(tmp, 0755);
-            *c = '/';
-        }
-    }
-    rask_libc_mkdir(tmp, 0755);
-}
 
 // ─── File instance methods ────────────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open / rask_fs_create.
-
-void rask_file_close(int64_t file) {
-    FILE *f = (FILE *)(uintptr_t)file;
-    if (f) fclose(f);
-}
 
 // Read from the current position to EOF. Returns 0 on success, 1 on failure —
 // `File.read_text` is `string or IoError`, and the caller needs the tag.
@@ -916,39 +900,53 @@ int64_t rask_file_read_bytes(int64_t file) {
     return (int64_t)(uintptr_t)v;
 }
 
-// Writes a RaskVec<u8> to the file. Returns 0 on success, -1 on a null handle.
-int64_t rask_file_write_bytes(int64_t file, int64_t vec_ptr) {
-    if (!file) return -1;
-    RaskVec *v = (RaskVec *)(uintptr_t)vec_ptr;
-    rask_fwrite_vec(file, v);
+// The File writes and close report 0, or -1 with errno set: the IoError is
+// built on the Rask side (stdlib/io.rk), which the runtime can't do. A null
+// handle is EBADF.
+
+int64_t rask_fwrite_all(void *stream, const char *ptr, size_t len) {
+    FILE *f = (FILE *)stream;
+    while (len > 0) {
+        size_t written = fwrite(ptr, 1, len, f);
+        if (written == 0) {
+            if (!ferror(f)) errno = EIO;
+            return -1;
+        }
+        ptr += written;
+        len -= written;
+    }
     return 0;
 }
 
-void rask_file_write(int64_t file, const RaskStr *content) {
+int64_t rask_file_write_bytes(int64_t file, int64_t vec_ptr) {
     FILE *f = (FILE *)(uintptr_t)file;
-    if (!f) return;
-    fwrite(rask_string_ptr(content), 1, (size_t)rask_string_len(content), f);
-}
-
-void rask_file_write_all(int64_t file, const RaskStr *content) {
-    FILE *f = (FILE *)(uintptr_t)file;
-    if (!f) return;
-    const char *ptr = rask_string_ptr(content);
-    size_t remaining = (size_t)rask_string_len(content);
-    while (remaining > 0) {
-        size_t written = fwrite(ptr, 1, remaining, f);
-        if (written == 0) break;
-        ptr += written;
-        remaining -= written;
+    if (!f) {
+        errno = EBADF;
+        return -1;
     }
-    fflush(f);
+    return rask_fwrite_vec(file, (const RaskVec *)(uintptr_t)vec_ptr);
 }
 
-void rask_file_write_line(int64_t file, const RaskStr *content) {
+int64_t rask_file_write(int64_t file, const RaskStr *content) {
     FILE *f = (FILE *)(uintptr_t)file;
-    if (!f) return;
-    fwrite(rask_string_ptr(content), 1, (size_t)rask_string_len(content), f);
-    fputc('\n', f);
+    if (!f) {
+        errno = EBADF;
+        return -1;
+    }
+    return rask_fwrite_all(f, rask_string_ptr(content), (size_t)rask_string_len(content));
+}
+
+int64_t rask_file_write_line(int64_t file, const RaskStr *content) {
+    if (rask_file_write(file, content) != 0) return -1;
+    return rask_fwrite_all((FILE *)(uintptr_t)file, "\n", 1);
+}
+
+// Buffered bytes reach the file here, so this is where a full disk usually
+// says so.
+int64_t rask_file_close(int64_t file) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) return 0;
+    return fclose(f) == 0 ? 0 : -1;
 }
 
 RaskVec *rask_file_lines(int64_t file) {
@@ -1508,8 +1506,7 @@ int64_t rask_net_read_bytes(int64_t fd) {
 // its own 8-byte slot, so taking element 0's address as the start of a byte
 // buffer sent every second byte as seven NULs: "hello" left as
 // "h\0\0\0\0\0\0\0e\0…" and the far end read one character (#863). Same
-// per-element read `rask_fs_write_bytes` already does, with one syscall instead
-// of one per byte.
+// per-element read `rask_fwrite_vec` does for files.
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(intptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
