@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// fs.read_text and read_bytes read to end of file, not to the size the file
+// reports. /proc files report 0 and used to read as ""; sysfs files report a
+// page and failed with "Success (os error 0)" once a short read was checked.
+
+import fs
+
+test "a proc file reports size 0 and still has contents" {
+    let text = try fs.read_text("/proc/self/status")
+    assert text.contains("Name:")
+    let bytes = try fs.read_bytes("/proc/self/status")
+    assert bytes.len() == text.len()
+}
+
+test "a sysfs file reads what it holds, not a page" {
+    let text = try fs.read_text("/sys/class/net/lo/address")
+    assert text == "00:00:00:00:00:00\n"
+}
+
+test "a regular file round-trips" {
+    let path = "/tmp/rask_t_fs_read_unsized.txt"
+    try fs.write_text(path, "hello\n")
+    assert (try fs.read_text(path)) == "hello\n"
+    assert (try fs.read_bytes(path)).len() == 6
+    try fs.remove_file(path)
+}
+
+test "an empty file reads as empty" {
+    let path = "/tmp/rask_t_fs_read_unsized_empty.txt"
+    try fs.write_text(path, "")
+    assert (try fs.read_text(path)) == ""
+    try fs.remove_file(path)
+}

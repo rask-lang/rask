@@ -20,6 +20,8 @@ extern "C" func rask_alloc(size: i64) -> *u8
 
 extern "C" func rask_free(ptr: *u8)
 
+extern "C" func rask_realloc(ptr: *u8, old_size: i64, new_size: i64) -> *u8
+
 extern "C" func rask_string_from_bytes(out: *u8, data: *u8, len: i64)
 
 extern "C" func rask_fwrite_vec(f: *u8, data: *u8)
@@ -100,64 +102,31 @@ extend fs {
 
     /// Read the entire contents of a file as a string.
     public func read_text(path: string) -> string or IoError {
-        let p = unsafe path.as_ptr()
-        let f = unsafe rask_libc_fopen(p, "rb\0".as_ptr())
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        unsafe fseek(f, 0, 2)
-        let size = unsafe ftell(f)
-        unsafe fseek(f, 0, 0)
-        if size <= 0 {
-            unsafe fclose(f)
-            return ""
-        }
-        let buf = unsafe rask_alloc(size + 1)
-        let n = unsafe fread(buf, 1, size.wrap<u64>(), f)
-        // Fewer bytes than the file holds is a failed read, not a shorter
-        // file. The errno has to be read before fclose can touch it.
-        if n < size.wrap<u64>() {
-            let err = IoError.last_os_error()
-            unsafe fclose(f)
-            unsafe rask_free(buf)
-            return err
-        }
-        unsafe fclose(f)
-        let result = unsafe string.from_raw(buf, n as usize)
-        unsafe rask_free(buf)
+        let raw = try read_to_end(f)
+        let result = unsafe string.from_raw(raw.ptr, raw.len.wrap<usize>())
+        unsafe rask_free(raw.ptr)
         return result
     }
 
     /// Read the entire contents of a file as bytes.
     public func read_bytes(path: string) -> Vec<u8> or IoError {
-        let p = unsafe path.as_ptr()
-        let f = unsafe rask_libc_fopen(p, "rb\0".as_ptr())
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        unsafe fseek(f, 0, 2)
-        let size = unsafe ftell(f)
-        unsafe fseek(f, 0, 0)
-        mut bytes: Vec<u8> = Vec.new()
-        if size > 0 {
-            let buf = unsafe rask_alloc(size)
-            let n = unsafe fread(buf, 1, size.wrap<u64>(), f)
-            if n < size.wrap<u64>() {
-                let err = IoError.last_os_error()
-                unsafe fclose(f)
-                unsafe rask_free(buf)
-                return err
-            }
-            mut i: u64 = 0
-            loop {
-                if i >= n { break }
-                let b = unsafe buf.add(i as usize).read()
-                bytes.push(b as u8)
-                i = i + 1
-            }
-            unsafe rask_free(buf)
+        let raw = try read_to_end(f)
+        mut bytes: Vec<u8> = Vec.with_capacity(raw.len.wrap<usize>())
+        mut i: i64 = 0
+        loop {
+            if i >= raw.len { break }
+            bytes.push(unsafe raw.ptr.add(i.wrap<usize>()).read())
+            i = i + 1
         }
-        unsafe fclose(f)
+        unsafe rask_free(raw.ptr)
         return bytes
     }
 
@@ -354,12 +323,44 @@ extend fs {
     }
 }
 
-/// File metadata: size, access time, modification time.
-///
-/// Plain fields, as std.fs specifies. It used to be an opaque handle with
-/// `size()`/`accessed()`/`modified()` accessors reading out of a C-allocated
-/// array, which is what forced `metadata` to be `@native` and left it with no
-/// way to report a failure.
+/// A file's bytes, in a buffer the caller frees.
+struct RawBytes {
+    ptr: *u8
+    len: i64
+}
+
+/// Read `f` to end of file and close it. The size `ftell` reports is only a
+/// first guess at the buffer: a /proc file reports 0 and a sysfs file a whole
+/// page, whatever they hold. A short `fread` is the end of the file unless
+/// `ferror` says otherwise.
+func read_to_end(f: *u8) -> RawBytes or IoError {
+    unsafe fseek(f, 0, 2)
+    let guess = unsafe ftell(f)
+    unsafe fseek(f, 0, 0)
+    mut cap: i64 = if guess > 0 { guess + 1 } else { 4096 }
+    mut buf = unsafe rask_alloc(cap)
+    mut len: i64 = 0
+    loop {
+        if len == cap {
+            buf = unsafe rask_realloc(buf, cap, cap * 2)
+            cap = cap * 2
+        }
+        let n = unsafe fread(buf.add(len.wrap<usize>()), 1, (cap - len).wrap<u64>(), f)
+        if n == 0 {
+            // errno is read before fclose can touch it.
+            if (unsafe ferror(f)) != 0 {
+                let err = IoError.last_os_error()
+                unsafe fclose(f)
+                unsafe rask_free(buf)
+                return err
+            }
+            unsafe fclose(f)
+            return RawBytes { ptr: buf, len }
+        }
+        len = len + n.wrap<i64>()
+    }
+}
+
 /// Write `content` and close `f`, reporting either step failing. The write is
 /// buffered, so a disk that refuses the bytes usually says so at the close; a
 /// caller that only checked `fwrite` would report success for data that never
@@ -379,6 +380,12 @@ func write_all_then_close(f: *u8, content: string) -> void or IoError {
     return
 }
 
+/// File metadata: size, access time, modification time.
+///
+/// Plain fields, as std.fs specifies. It used to be an opaque handle with
+/// `size()`/`accessed()`/`modified()` accessors reading out of a C-allocated
+/// array, which is what forced `metadata` to be `@native` and left it with no
+/// way to report a failure.
 public struct Metadata {
     /// File size in bytes.
     public size: u64
