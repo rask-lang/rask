@@ -104,12 +104,6 @@ impl AddrAliases {
         self.pointees.is_empty()
     }
 
-    /// Every local some address points into: its value lives in its storage
-    /// and is written through the address, not by a statement naming it.
-    pub fn addressed(&self) -> std::collections::HashSet<LocalId> {
-        self.pointees.values().flatten().copied().collect()
-    }
-
     /// Every local whose storage `local` may point into.
     pub fn pointees(&self, local: LocalId) -> &[LocalId] {
         self.pointees.get(&local).map_or(&[], |v| v.as_slice())
