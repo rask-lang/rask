@@ -151,9 +151,12 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
         if borrows.is_empty() {
             continue;
         }
-        let name_of = |id: LocalId| -> Option<String> {
-            let origin = aliases.get(&id).copied()?;
-            borrows.get(&origin).map(|n| n.to_string())
+        let name_of = |id: LocalId| -> Vec<String> {
+            aliases
+                .origins(&id)
+                .iter()
+                .filter_map(|origin| borrows.get(origin).map(|n| n.to_string()))
+                .collect()
         };
 
         for block in &func.blocks {
@@ -333,7 +336,7 @@ fn functions_handing_back_a_closure(
                     }
                     _ => continue,
                 };
-                if aliases.contains_key(&returned) {
+                if aliases.holds_closure(&returned) {
                     names.insert(func.name.clone());
                 }
             }
@@ -510,7 +513,7 @@ fn find_escaping_closures(
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
-                            if let Some(origin) = aliases.get(&id).copied() {
+                            for &origin in aliases.origins(&id) {
                                 // A bodiless runtime helper has no escape map
                                 // to read, and "unaccounted for" has to mean
                                 // "might keep it". The ones that demonstrably
@@ -537,9 +540,7 @@ fn find_escaping_closures(
                 MirStmtKind::Store { value: MirOperand::Local(id), .. }
                 | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
                 | MirStmtKind::TraitBox { value: MirOperand::Local(id), .. } => {
-                    if let Some(origin) = aliases.get(id).copied() {
-                        escaping.insert(origin);
-                    }
+                    escaping.extend(aliases.origins(id).iter().copied());
                 }
                 _ => {}
             }
@@ -548,9 +549,7 @@ fn find_escaping_closures(
         match &block.terminator.kind {
             MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
             | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
-                if let Some(origin) = aliases.get(id).copied() {
-                    escaping.insert(origin);
-                }
+                escaping.extend(aliases.origins(id).iter().copied());
             }
             _ => {}
         }
@@ -595,7 +594,7 @@ fn find_escaping_closures(
                 continue;
             }
             for cap in captures {
-                if let Some(inner) = aliases.get(cap).copied() {
+                for &inner in aliases.origins(cap) {
                     grew |= escaping.insert(inner);
                 }
             }
@@ -609,12 +608,60 @@ fn find_escaping_closures(
 }
 
 /// Every local that holds one of this function's closures, mapped to the
-/// `ClosureCreate` destination it came from — itself, for the original.
+/// `ClosureCreate` destinations it may have come from — itself, for an
+/// original.
+///
+/// A set, not one origin: a `mut` name reassigned from one closure to another
+/// holds either, depending on where you are. With one origin per local the
+/// fixed point below never settled — each pass moved the name from the first
+/// closure to the second and back, and `rask compile` spun forever on
+///
+/// ```text
+/// mut f = || { dropped += 1 }
+/// f = || { seen += 1 }
+/// spawn(f)
+/// ```
+///
+/// (#1335). The analyses that read this are all "might": a closure a local
+/// might hold escapes if the local does, so each answers for every origin.
+pub(crate) struct ClosureAliases {
+    map: HashMap<LocalId, Vec<LocalId>>,
+}
+
+impl ClosureAliases {
+    /// The closures `id` may hold; empty when it holds none.
+    pub(crate) fn origins(&self, id: &LocalId) -> &[LocalId] {
+        self.map.get(id).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    pub(crate) fn holds_closure(&self, id: &LocalId) -> bool {
+        !self.origins(id).is_empty()
+    }
+}
+
+/// The one closure `id` holds, when there is exactly one. A capture that might
+/// be either of two closures has no single owner to free it, so the ownership
+/// analyses leave it alone — a leak rather than a free of the wrong one.
+fn sole_origin(aliases: &ClosureAliases, id: &LocalId) -> Option<LocalId> {
+    match aliases.origins(id) {
+        [only] => Some(*only),
+        _ => None,
+    }
+}
+
+/// What a `return id` hands back: every closure `id` may hold, or `id` itself.
+fn returned_origins(aliases: &ClosureAliases, id: &LocalId) -> Vec<LocalId> {
+    let origins = aliases.origins(id);
+    if origins.is_empty() { vec![*id] } else { origins.to_vec() }
+}
+
 fn closure_aliases(
     func: &MirFunction,
     closure_locals: &HashMap<LocalId, bool>,
-) -> HashMap<LocalId, LocalId> {
-    let mut holds: HashMap<LocalId, LocalId> = closure_locals.keys().map(|id| (*id, *id)).collect();
+) -> ClosureAliases {
+    let mut map: HashMap<LocalId, Vec<LocalId>> =
+        closure_locals.keys().map(|id| (*id, vec![*id])).collect();
+    // Sets only grow, so this settles.
     let mut changed = true;
     while changed {
         changed = false;
@@ -625,15 +672,18 @@ fn closure_aliases(
                 else {
                     continue;
                 };
-                if let Some(origin) = holds.get(src).copied() {
-                    if holds.insert(*dst, origin) != Some(origin) {
+                let Some(from) = map.get(src).cloned() else { continue };
+                let into = map.entry(*dst).or_default();
+                for origin in from {
+                    if !into.contains(&origin) {
+                        into.push(origin);
                         changed = true;
                     }
                 }
             }
         }
     }
-    holds
+    ClosureAliases { map }
 }
 
 /// Find closures whose ownership was transferred out of the function.
@@ -671,15 +721,13 @@ fn find_transferred_closures(
                 // memory (#1051).
                 MirStmtKind::ClosureCreate { heap: true, captures, .. } => {
                     for cap in captures {
-                        if let Some(origin) = aliases.get(&cap.local_id).copied() {
-                            passed_or_stored.insert(origin);
-                        }
+                        passed_or_stored.extend(aliases.origins(&cap.local_id).iter().copied());
                     }
                 }
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (arg_idx, arg) in args.iter().enumerate() {
                         if let Some(id) = uses::operand_local(arg) {
-                            if let Some(origin) = aliases.get(&id).copied() {
+                            for &origin in aliases.origins(&id) {
                                 let is_borrow = callee_escapes.get(&callee.name)
                                     .and_then(|e| e.get(arg_idx))
                                     .map(|escapes| !escapes)
@@ -693,14 +741,10 @@ fn find_transferred_closures(
                     }
                 }
                 MirStmtKind::Store { value: MirOperand::Local(id), .. } => {
-                    if let Some(origin) = aliases.get(id).copied() {
-                        passed_or_stored.insert(origin);
-                    }
+                    passed_or_stored.extend(aliases.origins(id).iter().copied());
                 }
                 MirStmtKind::ClosureCall { closure, .. } => {
-                    if let Some(origin) = aliases.get(closure).copied() {
-                        used_locally.insert(origin);
-                    }
+                    used_locally.extend(aliases.origins(closure).iter().copied());
                 }
                 _ => {}
             }
@@ -735,7 +779,7 @@ fn find_transferred_closures(
 fn capture_counts(
     func: &MirFunction,
     closure_locals: &HashMap<LocalId, bool>,
-    aliases: &HashMap<LocalId, LocalId>,
+    aliases: &ClosureAliases,
 ) -> HashMap<LocalId, usize> {
     let mut counts: HashMap<LocalId, usize> = HashMap::new();
     for block in &func.blocks {
@@ -743,10 +787,10 @@ fn capture_counts(
             let MirStmtKind::ClosureCreate { dst, captures, heap: true, .. } = &stmt.kind else {
                 continue;
             };
-            let owner = aliases.get(dst).copied().unwrap_or(*dst);
+            let owner = *dst;
             let mut seen_here: HashSet<LocalId> = HashSet::new();
             for cap in captures {
-                let Some(inner) = aliases.get(&cap.local_id).copied() else { continue };
+                let Some(inner) = sole_origin(aliases, &cap.local_id) else { continue };
                 if inner == owner || !closure_locals.contains_key(&inner) {
                     continue;
                 }
@@ -773,7 +817,7 @@ fn capture_counts(
 fn captured_environments(
     func: &MirFunction,
     closure_locals: &HashMap<LocalId, bool>,
-    aliases: &HashMap<LocalId, LocalId>,
+    aliases: &ClosureAliases,
 ) -> HashMap<LocalId, Vec<LocalId>> {
     let counts = capture_counts(func, closure_locals, aliases);
     let mut owned: HashMap<LocalId, Vec<LocalId>> = HashMap::new();
@@ -782,9 +826,9 @@ fn captured_environments(
             let MirStmtKind::ClosureCreate { dst, captures, heap: true, .. } = &stmt.kind else {
                 continue;
             };
-            let owner = aliases.get(dst).copied().unwrap_or(*dst);
+            let owner = *dst;
             for cap in captures {
-                let Some(inner) = aliases.get(&cap.local_id).copied() else { continue };
+                let Some(inner) = sole_origin(aliases, &cap.local_id) else { continue };
                 if inner == owner || !closure_locals.contains_key(&inner) {
                     continue;
                 }
@@ -837,7 +881,7 @@ fn insert_closure_drops(
     func: &mut MirFunction,
     heap_closures: &HashSet<LocalId>,
     owned_by: &HashMap<LocalId, Vec<LocalId>>,
-    aliases: &HashMap<LocalId, LocalId>,
+    aliases: &ClosureAliases,
 ) {
     // Which block each owned closure arrives in — built here, made there, or
     // handed back by a call.
@@ -913,15 +957,13 @@ fn insert_closure_drops(
                 // environment it was handing back. `|x| { return upto(x) }`
                 // as a `flat_map` callback segfaulted: every element built a
                 // sequence and freed it on the way out.
-                let returned_local = match value {
-                    Some(MirOperand::Local(id)) => {
-                        Some(aliases.get(id).copied().unwrap_or(*id))
-                    }
-                    _ => None,
+                let returned: Vec<LocalId> = match value {
+                    Some(MirOperand::Local(id)) => returned_origins(aliases, id),
+                    _ => Vec::new(),
                 };
                 let to_drop: Vec<LocalId> = heap_closures
                     .iter()
-                    .filter(|id| Some(**id) != returned_local)
+                    .filter(|id| !returned.contains(id))
                     .filter(|id| {
                         closure_block.get(id).is_some_and(|&cidx| {
                             dom.dominates(func.blocks[cidx].id, block.id)
@@ -972,7 +1014,7 @@ fn insert_closure_drops(
                 &b.terminator.kind,
                 MirTerminatorKind::Return { value: Some(MirOperand::Local(v)) }
                 | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(v)), .. }
-                    if aliases.get(v).copied().unwrap_or(*v) == id
+                    if returned_origins(aliases, v).contains(&id)
             )
         });
         if returned {
