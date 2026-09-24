@@ -1384,6 +1384,16 @@ int64_t rask_channel_recv_async(int64_t rx);
 
 void rask_green_sleep_ns(int64_t ns);
 
+// Park the running green fiber for `ns` (green.c). Only valid on a fiber —
+// check rask_fiber_active() first.
+void rask_fiber_sleep_ns(int64_t ns);
+int  rask_fiber_active(void);
+
+// A task's share of the runtime's thread-local state, swapped on and off a
+// worker thread as the task's fiber switches (panic.c).
+size_t rask_task_tls_size(void);
+void   rask_task_tls_swap(void *blob);
+
 // ─── Ensure hooks (LIFO cleanup) ───────────────────────────
 // Per-task cleanup stack. Hooks run LIFO on cancel or panic.
 

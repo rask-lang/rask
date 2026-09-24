@@ -209,4 +209,17 @@ int64_t rask_async_accept(int listen_fd) {
     return (int64_t)accept(listen_fd, NULL, NULL);
 }
 
+// ─── Fiber waits ────────────────────────────────────────────
+//
+// sim.h asks these whether a wait is on a green fiber. Here no task is: each
+// one owns a thread, and every wait is the pthread one.
+
+int rask_fiber_active(void) { return 0; }
+void rask_fiber_notify(const void *key, int all) { (void)key; (void)all; }
+void rask_fiber_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) { pthread_cond_wait(c, m); }
+void rask_fiber_mutex_lock(pthread_mutex_t *m) { pthread_mutex_lock(m); }
+void rask_fiber_rwlock_rdlock(pthread_rwlock_t *l) { pthread_rwlock_rdlock(l); }
+void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l) { pthread_rwlock_wrlock(l); }
+void rask_fiber_sleep_ns(int64_t ns) { rask_sleep_ns(ns); }
+
 #endif // !RASK_HAS_GREEN

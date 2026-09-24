@@ -5,10 +5,11 @@
 // A panicking task unwinds on its own stack and its joiner gets the error. With
 // parking, the unwind runs on a fiber stack while its parent sits parked on
 // another, which is where a switch that saved the wrong registers, or ran an
-// ensure on the wrong stack, would show up. The count is the leaves that
-// finished without panicking: 2^12 minus the multiples of seven below it.
+// ensure on the wrong stack, would show up. A node whose child panicked
+// returns 0 for its whole subtree, so the count is what that rule leaves of
+// 2^12 leaves (the interpreter agrees).
 //
-// soak-expect: 3510
+// soak-expect: 2924
 
 import async.spawn
 

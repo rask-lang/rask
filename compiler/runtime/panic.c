@@ -302,6 +302,56 @@ static __thread const char *panic_loc_file;
 static __thread int32_t     panic_loc_line;
 static __thread int32_t     panic_loc_col;
 
+// ─── Task-owned thread state ───────────────────────────────
+//
+// Everything above that belongs to the task running on a thread rather than
+// to the thread: its panic handler, its ensure hooks, the locks it holds, its
+// id, whether it is mid-unwind, how deep it is in FFI, where its next panic
+// is, and (sync.c) its staged frames. A fiber that parks on one worker and
+// resumes on another has to take all of it along, so the scheduler swaps it
+// out when a task switches off a thread and back in when one switches on.
+// A zeroed blob is a task that hasn't started.
+//
+// Anything added to this file as `__thread` has the same question to answer:
+// the thread's, or the task's? The task's goes in here.
+
+typedef struct TaskTls {
+    struct RaskPanicCtx panic;
+    int                 ffi_depth;
+    int64_t             task_id;
+    EnsureHook         *ensure;
+    int                 in_unwind;
+    HeldAccess         *held;
+    const char         *loc_file;
+    int32_t             loc_line;
+    int32_t             loc_col;
+    void               *staged;
+} TaskTls;
+
+extern void *rask_staged_stack_swap(void *head);
+
+size_t rask_task_tls_size(void) {
+    return sizeof(TaskTls);
+}
+
+#define SWAP(a, b) do { __typeof__(a) tmp_ = (a); (a) = (b); (b) = tmp_; } while (0)
+
+void rask_task_tls_swap(void *blob) {
+    TaskTls *t = (TaskTls *)blob;
+    SWAP(panic_ctx, t->panic);
+    SWAP(ffi_boundary_depth, t->ffi_depth);
+    SWAP(tl_task_id, t->task_id);
+    SWAP(tl_ensure_stack, t->ensure);
+    SWAP(tl_in_unwind, t->in_unwind);
+    SWAP(tl_held_access, t->held);
+    SWAP(panic_loc_file, t->loc_file);
+    SWAP(panic_loc_line, t->loc_line);
+    SWAP(panic_loc_col, t->loc_col);
+    t->staged = rask_staged_stack_swap(t->staged);
+}
+
+#undef SWAP
+
 void rask_set_panic_location(const char *file, int32_t line, int32_t col) {
     panic_loc_file = file;
     panic_loc_line = line;

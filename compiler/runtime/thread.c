@@ -481,6 +481,11 @@ int64_t rask_sleep_ns(int64_t ns) {
     }
 #endif
     if (ns <= 0) return 0;
+    // A green task parks and leaves its worker to the others.
+    if (rask_fiber_active()) {
+        rask_fiber_sleep_ns(ns);
+        return 0;
+    }
     struct timespec ts;
     ts.tv_sec  = ns / 1000000000LL;
     ts.tv_nsec = ns % 1000000000LL;

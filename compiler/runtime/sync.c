@@ -233,6 +233,14 @@ typedef struct StagedFrame {
 
 static __thread StagedFrame *tl_staged = NULL;
 
+// The running task's staged frames, moved with it when it parks — see
+// rask_task_tls_swap in panic.c.
+void *rask_staged_stack_swap(void *head) {
+    void *old = tl_staged;
+    tl_staged = (StagedFrame *)head;
+    return old;
+}
+
 // Copy the payload aside and hand back the copy's address. The caller has
 // already taken the lock.
 static int64_t staged_begin(int64_t handle, void *payload, int64_t size,

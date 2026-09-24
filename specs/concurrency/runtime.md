@@ -272,6 +272,10 @@ fn run_task(task: Arc<Task>, worker: &Worker) {
 
 **Why not Go's approach (no stealing)?** Poor load balance when work is uneven. Example: One connection spawns 1000 tasks, others spawn 10 each. Without stealing, that worker is swamped while others idle.
 
+**S3a: Only unstarted tasks are stolen.** A task that has started runs to completion on the worker that started it: a parked fiber resumes there, not wherever a worker is free.
+
+The C runtime under a fiber reads `__thread` variables, and the C compiler may compute a thread-local's address once and reuse it across a call. A park is a call, so a fiber resumed on another thread could read the old thread's state through an address it computed before parking. Pinning makes that impossible rather than something every `__thread` in the runtime, and every C library a program links, has to be audited for. It also means a lock held across a park is released by the thread that took it. The cost: a resumed fiber waits for its home worker even when another is idle. Stealing still balances the work that hasn't started, which is where the imbalance in the example above lives.
+
 ### Spawn Flow (S4 - realizes conc.async/S1, S4)
 
 ```rust

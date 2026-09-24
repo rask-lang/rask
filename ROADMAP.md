@@ -38,8 +38,8 @@ Re-measure these rather than trusting them — each line names the command.
 | Programs that leak | 5, holding 8 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
 | Programs memcheck finds an error in | 0 of 557 | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 71 | `tests/tsan_gate.sh` |
-| Soak programs within their thread budget | 1 of 5 | `tests/soak_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 72 | `tests/tsan_gate.sh` |
+| Soak programs within their thread budget | 5 of 5 | `tests/soak_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
 | Open bugs | 39 of 85 open issues | issue search |
@@ -282,19 +282,20 @@ only kind that closes.
 - **The stress gate finds no deadlock, race or lost panic** across its seeds and
   its soak.
 - **OS threads never exceed the worker count** under the soak: 100k tasks,
-  nested joins, `workers: 1`, panics mixed in. Today it doesn't hold. A worker
-  blocked in join gets a replacement thread (`JOIN_HELPER_SLOTS`, up to 32 of
-  them), which is how [#1130](https://github.com/rask-lang/rask/issues/1130)
-  was fixed. That was correctness bought with threads. This number is the fiber
-  switch paying it back.
+  nested joins, `workers: 1`, panics mixed in. It holds on Linux since the
+  fiber switch. Before it, a worker blocked in join got a replacement thread
+  (up to 32), which is how [#1130](https://github.com/rask-lang/rask/issues/1130)
+  was first fixed, and a blocked receive kept its worker
+  ([#1353](https://github.com/rask-lang/rask/issues/1353)).
 
 Fibers are in this version, not after it. Writing them is cheap; knowing they
 work is what costs, so the bench comes first and has to fail on today's runtime
 before any fiber code lands. "Fibers work" then means those checks turned green.
 
-The payoff is one scheduler instead of three. `green.c` runs spawned closures as
-poll functions that run to completion, `thread.c` gives `Thread.spawn` a
-pthread, and `green_threads.c` stands in with threads off Linux. Sim mode
+The payoff is one scheduler instead of three. `green.c` ran spawned closures
+as poll functions that ran to completion (it runs fibers now), `thread.c`
+gives `Thread.spawn` a pthread, and `green_threads.c` stands in with threads
+off Linux. Sim mode
 ([#1337](https://github.com/rask-lang/rask/pull/1337)) adds a fourth shape: it
 builds without `green.c` and passes a baton between OS threads. With fibers,
 sim is the real scheduler with one worker and a seeded pick of the next fiber,
@@ -320,16 +321,17 @@ so the deterministic tests run the code that ships.
 
 ### Order
 
-1. Bench legs 2 and 3, failing on today's runtime. Done: `tests/soak_gate.sh`
-   holds 1 of 5 programs in budget, the other four registered in
-   `tests/known_soak.txt`, and `tests/tsan_gate.sh` is clean on today's
-   threads. Both run in CI as `gates-concurrency`. The TSan switch
-   annotations and valgrind stack registration come with the switch itself.
-2. Cooperative fibers: a task switches only where it blocks (join, channel,
-   lock, I/O). Delete the join helper threads, the unused poll-function spawn
-   path ([#1336](https://github.com/rask-lang/rask/issues/1336)) and
-   `green_threads.c`. `specs/concurrency/runtime-strategy.md` still calls
-   `green.c` a stub, so it gets rewritten here too.
+1. Bench legs 2 and 3, failing on today's runtime. Done: the soak held 1 of
+   5 programs in budget on the thread-per-join runtime, and `tests/tsan_gate.sh`
+   was clean. Both run in CI as `gates-concurrency`.
+2. Cooperative fibers. **Done on Linux:** a task parks in join, channel, lock
+   and sleep; the join helper threads are gone; the soak holds 5 of 5 and TSan
+   is clean with every switch annotated. A started fiber stays on its worker
+   (`conc.runtime/S3a`). Still to go in this step: I/O parking (stdlib I/O
+   still blocks the worker), the poll-function spawn path
+   ([#1336](https://github.com/rask-lang/rask/issues/1336)), and macOS, which
+   needs a kqueue backend before `green_threads.c` can go. The aarch64 switch
+   is written and assembles; nothing has run it yet.
 3. Sim on fibers, replacing the baton.
 4. Preemption last. Codegen puts a flag check in every function prologue, and
    a loop that never calls anything gets a signal instead (`conc.runtime/P2`),
