@@ -1666,6 +1666,7 @@ fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId]) {
 /// them fired for the same death in a loop that overwrote a string, and freed
 /// it twice.
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
+    define_unassigned_strings(func, string_locals);
     let live = liveness::analyze_phis_on_edges(func);
     // `s as i64` into an unsafe call hands out the address of `s`, and the
     // native callee reads the buffer through it. Counting only the cast as a
@@ -1702,6 +1703,56 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
         func.blocks[bi].statements.insert(at, MirStmt::new(MirStmtKind::RcDec { local }, span));
     }
     release_on_edges(func, edges);
+}
+
+/// Give every string that nothing assigns the empty string, at the entry.
+///
+/// A pattern's binding exists only where the pattern matched, but a
+/// condition like `m is Msg.Text(t) && t.len() > 1` carries `t` past the
+/// join of the two sides. SSA builds `phi [matched: t1, not matched: t]` there,
+/// where the bare `t` is the name nothing wrote, so its slot holds whatever
+/// the stack held. Releasing the phi on the path that didn't match released
+/// that: a segfault on some machines and not others (`t_is_pattern_and`).
+///
+/// The empty string sits in the header itself, so releasing one does nothing.
+/// Only a local with no definition anywhere gets it, which is exactly the name
+/// SSA uses for "no value reached here", and a definition at the entry keeps
+/// it the single definition SSA expects.
+fn define_unassigned_strings(func: &mut MirFunction, string_locals: &[LocalId]) {
+    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+    // A local captured by reference or cast to an address is written through
+    // that address, by the closure or the callee, and no statement names it
+    // as the thing it defines.
+    let addressed = AddrAliases::build(func).addressed();
+    let defined: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter().filter_map(uses::stmt_def))
+        .collect();
+    let read: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter().flat_map(uses::stmt_uses).chain(uses::terminator_uses(&b.terminator)))
+        .collect();
+    let unassigned: Vec<LocalId> = string_locals
+        .iter()
+        .copied()
+        .filter(|l| !params.contains(l) && !addressed.contains(l) && !defined.contains(l) && read.contains(l))
+        .collect();
+    if unassigned.is_empty() {
+        return;
+    }
+    let entry = func.entry_block;
+    let Some(block) = func.blocks.iter_mut().find(|b| b.id == entry) else { return };
+    let span = block.terminator.span;
+    let at = block.statements.iter().take_while(|s| matches!(s.kind, MirStmtKind::Phi { .. })).count();
+    let defs = unassigned.into_iter().map(|dst| {
+        MirStmt::new(
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Constant(crate::MirConst::String(String::new()))) },
+            span,
+        )
+    });
+    block.statements.splice(at..at, defs);
 }
 
 /// Where in `block` the value of `local` dies, as the index to insert its
