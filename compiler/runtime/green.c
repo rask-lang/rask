@@ -110,8 +110,9 @@ typedef struct GreenTask {
 
     // Run-queue link (global queue, inboxes) — a task is in one queue at most.
     struct GreenTask *qnext;
-    // Wait-table link and key.
+    // Wait-table link and key, and what the wait is for (the deadlock report).
     const void       *wait_key;
+    const char       *wait_what;
     struct GreenTask *wait_next;
     // Sleep deadline, and the timer list link.
     int64_t           wake_at_ns;
@@ -251,6 +252,9 @@ typedef struct {
     pthread_mutex_t sleep_lock;
     pthread_cond_t  sleep_cond;
     atomic_int      sleeping;
+    // Fibers this worker has switched to. Only its own thread writes it; the
+    // deadlock check reads it to see whether anything ran.
+    atomic_long     runs;
     pthread_t       thread;
 } Worker;
 
@@ -271,6 +275,12 @@ struct GreenScheduler {
     // Shutdown barrier: the scope's thread waits here
     pthread_mutex_t  done_lock;
     pthread_cond_t   done_cond;
+
+    // Deadlock check: when nothing could move was first seen, and the
+    // progress count then. See `check_deadlock`.
+    pthread_mutex_t  stuck_lock;
+    int64_t          stuck_since;
+    int64_t          stuck_progress;
 };
 
 // Singleton scheduler
@@ -582,6 +592,83 @@ static void install_overflow_handler(void) {
     sigaction(SIGBUS, &sa, &prev_bus);
 }
 
+// ─── Deadlock ───────────────────────────────────────────────
+//
+// Every task parked and nothing left that could wake one: no worker running a
+// fiber, nothing queued, no sleeper whose timer will fire, and every program
+// thread outside the scheduler itself blocked in a wait (thread.c). Once that
+// holds, it holds forever. A worker about to sleep checks it; one that finds it
+// true, and finds it still true with nothing having run a second later, reports
+// the waits and ends the process rather than hang.
+//
+// The second is for the one gap the counts can't see: a thread outside the
+// scheduler that has been signalled still counts as waiting until it gets a
+// CPU and comes out of `pthread_cond_wait`. On a loaded machine, or under
+// valgrind, that can take a while.
+//
+// Fibers don't park on I/O yet: a task in a blocking read keeps its worker
+// busy, so it can never be mistaken for stuck.
+
+#define DEADLOCK_CONFIRM_NS (1000LL * 1000000LL)
+
+void rask_outside_report(FILE *out);   // thread.c
+static void report_waits(FILE *out);
+
+static int nothing_can_move(GreenScheduler *s, Worker *self) {
+    if (atomic_load_explicit(&s->active_tasks, memory_order_seq_cst) == 0) return 0;
+    if (atomic_load_explicit(&s->timer_count, memory_order_seq_cst) != 0) return 0;
+    if (rask_outside_running() != 0) return 0;
+    if (atomic_load_explicit(&s->global.len, memory_order_seq_cst) != 0) return 0;
+    for (int i = 0; i < s->worker_count; i++) {
+        Worker *w = &s->workers[i];
+        if (w != self && !atomic_load_explicit(&w->sleeping, memory_order_seq_cst)) return 0;
+        if (atomic_load_explicit(&w->inbox.len, memory_order_seq_cst) != 0) return 0;
+        long top = atomic_load_explicit(&w->deque.top, memory_order_seq_cst);
+        long bottom = atomic_load_explicit(&w->deque.bottom, memory_order_seq_cst);
+        if (bottom > top) return 0;
+    }
+    return 1;
+}
+
+static int64_t progress_count(GreenScheduler *s) {
+    int64_t n = rask_outside_progress();
+    for (int i = 0; i < s->worker_count; i++) {
+        n += atomic_load_explicit(&s->workers[i].runs, memory_order_relaxed);
+    }
+    return n;
+}
+
+_Noreturn static void report_deadlock(void) {
+    fflush(stdout);
+    fprintf(stderr, "rask: deadlock: every task is waiting and nothing can wake one\n");
+    report_waits(stderr);
+    rask_outside_report(stderr);
+    fflush(stderr);
+    _exit(101);
+}
+
+// A failed check doesn't restart the clock: another worker is often awake for
+// a moment between its timed sleeps, which says nothing. What restarts it is
+// progress — a fiber running, or an outside thread coming out of a wait — and
+// nothing can un-stick the program without one of those.
+static void check_deadlock(GreenScheduler *s, Worker *self) {
+    if (!nothing_can_move(s, self)) return;
+    int64_t now = now_ns();
+    int64_t progress = progress_count(s);
+    pthread_mutex_lock(&s->stuck_lock);
+    int confirmed = 0;
+    if (s->stuck_since && s->stuck_progress == progress) {
+        confirmed = now - s->stuck_since >= DEADLOCK_CONFIRM_NS;
+    } else {
+        s->stuck_since = now;
+        s->stuck_progress = progress;
+    }
+    pthread_mutex_unlock(&s->stuck_lock);
+    if (confirmed && nothing_can_move(s, self) && progress_count(s) == progress) {
+        report_deadlock();
+    }
+}
+
 // ─── Worker loop ────────────────────────────────────────────
 
 static GreenTask *find_work(GreenScheduler *s, Worker *w) {
@@ -620,6 +707,7 @@ static void *worker_entry(void *arg) {
         GreenTask *task = find_work(s, w);
         if (task) {
             idle_spins = 0;
+            atomic_fetch_add_explicit(&w->runs, 1, memory_order_relaxed);
             run_task(s, w, task);
             continue;
         }
@@ -640,6 +728,8 @@ static void *worker_entry(void *arg) {
             sched_yield();
             continue;
         }
+
+        check_deadlock(s, w);
 
         // Sleep until woken, or at most 1ms (I/O, timers), or the next timer.
         int64_t wait_ns = 1000000;
@@ -707,6 +797,7 @@ void rask_runtime_init(int64_t worker_count) {
     pthread_mutex_init(&s->timers_lock, NULL);
     pthread_mutex_init(&s->done_lock, NULL);
     pthread_cond_init(&s->done_cond, NULL);
+    pthread_mutex_init(&s->stuck_lock, NULL);
 
     for (int i = 0; i < s->worker_count; i++) {
         Worker *w = &s->workers[i];
@@ -717,6 +808,7 @@ void rask_runtime_init(int64_t worker_count) {
         pthread_mutex_init(&w->sleep_lock, NULL);
         pthread_cond_init(&w->sleep_cond, NULL);
         atomic_init(&w->sleeping, 0);
+        atomic_init(&w->runs, 0);
     }
 
     // Create I/O engine
@@ -741,7 +833,10 @@ void rask_runtime_shutdown(void) {
     GreenScheduler *s = g_sched;
     if (!s) return;
 
-    // Wait for all active tasks to complete
+    // Wait for all active tasks to complete. Timed only so a missed broadcast
+    // can't hang it; the thread can't wake anyone meanwhile, so it counts as
+    // waiting for the deadlock check.
+    rask_thread_wait_begin("the end of `using Multitasking`");
     pthread_mutex_lock(&s->done_lock);
     while (atomic_load_explicit(&s->active_tasks, memory_order_acquire) > 0) {
         struct timespec ts;
@@ -754,6 +849,7 @@ void rask_runtime_shutdown(void) {
         pthread_cond_timedwait(&s->done_cond, &s->done_lock, &ts);
     }
     pthread_mutex_unlock(&s->done_lock);
+    rask_thread_wait_end();
 
     // Signal shutdown and wake all workers
     atomic_store_explicit(&s->shutdown, 1, memory_order_release);
@@ -779,6 +875,7 @@ void rask_runtime_shutdown(void) {
     pthread_mutex_destroy(&s->timers_lock);
     pthread_mutex_destroy(&s->done_lock);
     pthread_cond_destroy(&s->done_cond);
+    pthread_mutex_destroy(&s->stuck_lock);
     free(s->workers);
     free(s);
     g_sched = NULL;
@@ -872,9 +969,10 @@ void rask_fiber_notify(const void *key, int all) {
 // Condition wait on a fiber: become a waiter on `c`, let go of `m`, park, and
 // take `m` back once woken. Like pthread_cond_wait, a caller loops on its own
 // condition — a wake can be spurious.
-void rask_fiber_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) {
+void rask_fiber_cond_wait(pthread_cond_t *c, pthread_mutex_t *m, const char *what) {
     GreenTask *t = tl_current_task;
     WaitBucket *b = bucket_for(c);
+    t->wait_what = what;
     pthread_mutex_lock(&b->lock);
     atomic_store_explicit(&t->park, PARK_PARKING, memory_order_release);
     bucket_add(b, t, c);
@@ -887,9 +985,11 @@ void rask_fiber_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) {
 // Park until `try_take(obj)` succeeds. The retry happens after becoming a
 // waiter and before sleeping, so a release between the failed attempt and
 // the park still wakes us.
-static void park_until(const void *key, int (*try_take)(void *), void *obj) {
+static void park_until(const void *key, int (*try_take)(void *), void *obj,
+                       const char *what) {
     GreenTask *t = tl_current_task;
     WaitBucket *b = bucket_for(key);
+    t->wait_what = what;
     for (;;) {
         if (try_take(obj)) return;
         pthread_mutex_lock(&b->lock);
@@ -910,9 +1010,28 @@ static int try_mutex(void *m) { return pthread_mutex_trylock((pthread_mutex_t *)
 static int try_rd(void *l) { return pthread_rwlock_tryrdlock((pthread_rwlock_t *)l) == 0; }
 static int try_wr(void *l) { return pthread_rwlock_trywrlock((pthread_rwlock_t *)l) == 0; }
 
-void rask_fiber_mutex_lock(pthread_mutex_t *m) { park_until(m, try_mutex, m); }
-void rask_fiber_rwlock_rdlock(pthread_rwlock_t *l) { park_until(l, try_rd, l); }
-void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l) { park_until(l, try_wr, l); }
+void rask_fiber_mutex_lock(pthread_mutex_t *m, const char *what) {
+    park_until(m, try_mutex, m, what);
+}
+void rask_fiber_rwlock_rdlock(pthread_rwlock_t *l, const char *what) {
+    park_until(l, try_rd, l, what);
+}
+void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l, const char *what) {
+    park_until(l, try_wr, l, what);
+}
+
+// Every parked task and what it waits on, for the deadlock report.
+static void report_waits(FILE *out) {
+    for (int i = 0; i < WAIT_BUCKETS; i++) {
+        WaitBucket *b = &g_wait[i];
+        pthread_mutex_lock(&b->lock);
+        for (GreenTask *t = b->head; t; t = t->wait_next) {
+            fprintf(out, "  task %lld waiting on %s\n", (long long)t->task_id,
+                    t->wait_what ? t->wait_what : "a wakeup");
+        }
+        pthread_mutex_unlock(&b->lock);
+    }
+}
 
 void rask_fiber_sleep_ns(int64_t ns) {
     GreenTask *t = tl_current_task;

@@ -77,6 +77,7 @@ static void *pool_worker(void *arg) {
 #else
     (void)arg;
 #endif
+    rask_outside_thread_start();
     for (;;) {
         pthread_mutex_lock(&g_pool.lock);
         while (!g_pool.head && !g_pool.shutting_down) {
@@ -90,6 +91,7 @@ static void *pool_worker(void *arg) {
 #ifdef RASK_SIM
             if (arg) rask_sim_task_exit();
 #endif
+            rask_outside_thread_exit();
             return NULL;
         }
         pthread_mutex_unlock(&g_pool.lock);

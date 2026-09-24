@@ -283,6 +283,7 @@ void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
 static void *task_thread_entry(void *arg) {
     TaskEntry *entry = (TaskEntry *)arg;
     RaskTaskState *state = entry->state;
+    rask_outside_thread_start();
 #ifdef RASK_SIM
     // Before anything else: under sim this thread may not run until picked.
     void *sim = state->sim;
@@ -298,6 +299,7 @@ static void *task_thread_entry(void *arg) {
 #ifdef RASK_SIM
     if (sim) rask_sim_task_exit();
 #endif
+    rask_outside_thread_exit();
     return NULL;
 }
 
@@ -659,4 +661,86 @@ void rask_task_group_free(int64_t group) {
     if (!g) return;
     rask_free(g->handles);
     rask_free(g);
+}
+
+// ─── Threads that could wake a task ────────────────────────
+//
+// The green scheduler reports a deadlock when every task is parked and nothing
+// can wake one (green.c). A parked task can be woken from outside the fibers
+// too: by the scope's own thread, a `Thread.spawn` thread or a pool worker. So
+// the scheduler also needs to know that each of those is itself stuck in a
+// wait, and not running code that might still send or unlock.
+//
+// `outside_running` counts program threads outside the scheduler that aren't
+// in an untimed runtime wait. The scope's thread counts from the start; the
+// threads this runtime creates count from when they start. A thread in a
+// blocking syscall, a sleep or a timed wait stays counted, which only ever
+// errs towards not reporting.
+
+#define OUTSIDE_SLOTS 32
+
+static atomic_int  outside_running = 1;
+static atomic_long outside_waits_done;
+static pthread_mutex_t outside_lock = PTHREAD_MUTEX_INITIALIZER;
+static const char *outside_what[OUTSIDE_SLOTS];
+static int outside_waiting;
+static __thread int tl_outside_slot = -1;
+
+void rask_outside_thread_start(void) {
+    atomic_fetch_add_explicit(&outside_running, 1, memory_order_seq_cst);
+}
+
+void rask_outside_thread_exit(void) {
+    atomic_fetch_sub_explicit(&outside_running, 1, memory_order_seq_cst);
+}
+
+void rask_thread_wait_begin(const char *what) {
+    pthread_mutex_lock(&outside_lock);
+    outside_waiting++;
+    for (int i = 0; i < OUTSIDE_SLOTS; i++) {
+        if (!outside_what[i]) {
+            outside_what[i] = what ? what : "a wakeup";
+            tl_outside_slot = i;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&outside_lock);
+    atomic_fetch_sub_explicit(&outside_running, 1, memory_order_seq_cst);
+}
+
+void rask_thread_wait_end(void) {
+    atomic_fetch_add_explicit(&outside_running, 1, memory_order_seq_cst);
+    atomic_fetch_add_explicit(&outside_waits_done, 1, memory_order_relaxed);
+    pthread_mutex_lock(&outside_lock);
+    outside_waiting--;
+    if (tl_outside_slot >= 0) {
+        outside_what[tl_outside_slot] = NULL;
+        tl_outside_slot = -1;
+    }
+    pthread_mutex_unlock(&outside_lock);
+}
+
+int64_t rask_outside_running(void) {
+    return atomic_load_explicit(&outside_running, memory_order_seq_cst);
+}
+
+// Changes whenever an outside thread comes out of a wait.
+int64_t rask_outside_progress(void) {
+    return atomic_load_explicit(&outside_waits_done, memory_order_relaxed);
+}
+
+// One line per outside thread that is waiting, for the deadlock report.
+void rask_outside_report(FILE *out) {
+    pthread_mutex_lock(&outside_lock);
+    int named = 0;
+    for (int i = 0; i < OUTSIDE_SLOTS; i++) {
+        if (outside_what[i]) {
+            fprintf(out, "  a thread outside the tasks, waiting on %s\n", outside_what[i]);
+            named++;
+        }
+    }
+    if (outside_waiting > named) {
+        fprintf(out, "  %d more thread(s) outside the tasks, waiting\n", outside_waiting - named);
+    }
+    pthread_mutex_unlock(&outside_lock);
 }

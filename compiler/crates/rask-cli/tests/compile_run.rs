@@ -4235,6 +4235,34 @@ fn panic_in_a_lock_closure_releases_the_lock() {
     }
 }
 
+// A real deadlock is reported instead of hanging (#1354). Every task is parked
+// and the scope's thread is waiting in `join`, so nothing can move again; the
+// scheduler says which task waits on what and ends the process. Native only:
+// the interpreter runs a task per OS thread and has no scheduler to ask.
+#[test]
+fn a_deadlock_is_reported() {
+    let rask = rask_binary();
+    let out = Command::new("timeout")
+        .arg("60")
+        .arg(&rask)
+        .args(["run", "--native"])
+        .arg(fixture("deadlock_is_reported.rk"))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(101), "should exit 101, not hang (124); stderr: {}", stderr);
+    assert!(
+        stderr.contains("deadlock: every task is waiting and nothing can wake one"),
+        "stderr: {}", stderr,
+    );
+    assert_eq!(
+        stderr.matches("waiting on channel receive").count(), 2,
+        "both tasks named with their wait; stderr: {}", stderr,
+    );
+    assert!(stderr.contains("waiting on join"), "the scope's thread too; stderr: {}", stderr);
+}
+
 // ctrl.panic/U3, U4, LK1–LK3: the locks a dying task holds get released.
 //
 // Codegen emits the acquire and the release around a `with` block, but only the

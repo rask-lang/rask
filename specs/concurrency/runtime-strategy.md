@@ -67,6 +67,8 @@ All C files live in `compiler/runtime/`.
 
 On Linux, `using Multitasking(workers: n)` runs tasks as stackful fibers on n worker threads. A task that waits in a join, a channel operation, a `Shared` lock or a sleep parks and gives its worker to another task. `tests/soak_gate.sh` holds five programs to `workers + 1` threads, including a 2^14-task join tree and a producer/consumer pair on one worker; `tests/tsan_gate.sh` runs the concurrency suite under ThreadSanitizer with every switch annotated.
 
+A deadlock ends the process instead of hanging it. Once every task is parked, nothing is queued or sleeping on a timer, and every thread outside the scheduler is itself blocked in a runtime wait, nothing can wake anyone. After a second of that, the runtime prints which task waits on what and exits 101.
+
 Not yet:
 
 - **I/O parking.** Stdlib I/O still makes the blocking syscall, so a task blocked on a socket holds its worker. The reactor engines (`io_epoll_engine.c`, `io_uring_engine.c`) exist and workers poll them; nothing submits to them yet.
@@ -74,7 +76,6 @@ Not yet:
 - **Preemption** (`conc.runtime/P1-P3`). Switching is cooperative: a task that computes without waiting keeps its worker until it finishes.
 - **macOS.** `green.c` needs a kqueue backend; until then macOS runs `green_threads.c`. The aarch64 switch is assembled for both ELF and Mach-O and has not run yet.
 - **Sim on fibers.** Sim mode still runs one OS thread per task with a baton.
-- **`select` parking.** A `select` with nothing ready yields and polls again rather than parking on its arms (#1342).
 - **Stack overflow is an abort, not a panic.** Running into a fiber's guard page prints which task overflowed and aborts.
 
 ## Phase B: M:N Stackful Fibers

@@ -1190,6 +1190,14 @@ void rask_task_detach(RaskTaskHandle *h);
 // detached panic can't be lost to process exit. Called from `main`.
 void rask_await_detached_tasks(void);
 
+// Program threads outside the green scheduler, for its deadlock check
+// (thread.c). A thread this runtime creates counts itself in at start and out
+// at exit; the scope's own thread is counted from the beginning.
+void    rask_outside_thread_start(void);
+void    rask_outside_thread_exit(void);
+int64_t rask_outside_running(void);
+int64_t rask_outside_progress(void);
+
 // A `TaskGroup<T>`'s handle list, in spawn order (thread.c). The join and
 // detach loops are Rask, in stdlib/async.rk.
 int64_t rask_task_group_new(void);
