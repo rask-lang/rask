@@ -326,9 +326,10 @@ the deterministic tests run the code that ships.
    `green_threads.c`. `specs/concurrency/runtime-strategy.md` still calls
    `green.c` a stub, so it gets rewritten here too.
 4. Sim on fibers, replacing the baton.
-5. Preemption last. It needs the compiler to put safe points in loops, so it
-   touches codegen, not only the runtime. Its test: a task spinning in a loop
-   doesn't stop another task from finishing.
+5. Preemption last. Codegen puts a flag check in every function prologue, and
+   a loop that never calls anything gets a signal instead (`conc.runtime/P2`),
+   so it touches the compiler, not only the runtime. Its test: a task spinning
+   in a loop doesn't stop another task from finishing.
 
 ### Bugs in the theme
 
