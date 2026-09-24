@@ -288,6 +288,13 @@ fn two_writers_with_full_windows_are_a_deadlock() {
 }
 
 #[test]
+fn one_bug_is_reported_once_across_a_search() {
+    let (out, code) = sim(&["--seed", "1", "--seeds", "200", "--keep-going", "race.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(out.matches("FAIL: lost update").count(), 1, "{out}");
+}
+
+#[test]
 fn seed_search_flags_need_sim() {
     let out = Command::new(rask_binary())
         .args(["test", "--seeds", "5", "race.rk"])

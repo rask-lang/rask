@@ -207,6 +207,30 @@ fn run_one(bin: &Path, index: usize, seed: u64, max_steps: Option<u64>) -> Run {
     }
 }
 
+/// What makes two failures the same bug, for grouping a seed search (sim/R3):
+/// where it happened and what kind of failure it was, not the values. One
+/// lost update fails `12 == 20` on one seed and `13 == 20` on the next, and
+/// keying on the whole message printed it eleven times over 200 seeds.
+///
+/// `race.rk:20: assertion failed: 12 == 20 (…)` groups as `race.rk:20:
+/// assertion failed`. A message with no location (a deadlock, a spent
+/// budget) is its own signature.
+fn failure_signature(error: &str) -> String {
+    let first = error.lines().next().unwrap_or("");
+    let mut parts = first.splitn(3, ": ");
+    let (Some(loc), Some(kind)) = (parts.next(), parts.next()) else {
+        return first.to_string();
+    };
+    let located = loc
+        .rsplit_once(':')
+        .is_some_and(|(file, line)| !file.is_empty() && !line.is_empty() && line.bytes().all(|b| b.is_ascii_digit()));
+    if located {
+        format!("{loc}: {kind}")
+    } else {
+        first.to_string()
+    }
+}
+
 /// `HH:MM:SS.uuuuuu`. Microseconds, because the clock ticks 1 µs per step
 /// (sim/C3) and a short test's whole run fits inside one millisecond.
 fn format_virtual_time(ns: i64) -> String {
@@ -384,7 +408,7 @@ fn run_file(bin: &super::run::TestBinary, path: &str, run_seed: u64, opts: &SimO
                     break 'seeds;
                 }
                 if !run.passed {
-                    let key = run.error.clone().unwrap_or_default();
+                    let key = failure_signature(run.error.as_deref().unwrap_or(""));
                     distinct.entry(key).or_insert((sweep, run));
                     if !opts.keep_going {
                         break 'seeds;
@@ -424,6 +448,17 @@ mod tests {
         let a = test_seed(7, "f::alpha");
         assert_eq!(a, test_seed(7, "f::alpha"));
         assert_ne!(a, test_seed(7, "g::alpha"));
+    }
+
+    #[test]
+    fn one_bug_is_one_failure_whatever_values_it_saw() {
+        let a = failure_signature("race.rk:20: assertion failed: 12 == 20 (left: 12, right: 20)");
+        let b = failure_signature("race.rk:20: assertion failed: 13 == 20 (left: 13, right: 20)");
+        assert_eq!(a, b);
+        assert_eq!(a, "race.rk:20: assertion failed");
+        assert_ne!(a, failure_signature("race.rk:21: assertion failed: 1 == 2"));
+        let dead = "deadlock: no task can make progress\n  task 0 (main) waiting on join(task 1)";
+        assert_eq!(failure_signature(dead), "deadlock: no task can make progress");
     }
 
     #[test]
