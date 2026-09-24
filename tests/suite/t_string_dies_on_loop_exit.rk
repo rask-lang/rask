@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mut` string reassigned in a loop and never read after it was never
+// released: it is live leaving the loop's header, because the body reads it,
+// and dead in the block after the loop, so it died on the edge between them
+// where no release goes. The leak gate caught it in `fs.create_dir_all`.
+// Strings long enough to leave the inline buffer, or there's nothing to leak.
+
+func grow_for(n: i64) {
+    mut s = ""
+    for i in 0..n {
+        s = "{s}-a-piece-long-enough-for-the-heap"
+    }
+}
+
+func grow_while(n: i64) {
+    mut s = ""
+    mut i = 0
+    while i < n {
+        s = "{s}-a-piece-long-enough-for-the-heap"
+        i += 1
+    }
+}
+
+func grow_then_leave(n: i64) -> i64 {
+    mut s = ""
+    for i in 0..n {
+        s = "{s}-a-piece-long-enough-for-the-heap"
+        if i == 1 {
+            return i
+        }
+    }
+    return -1
+}
+
+func grow_with_continue(parts: Vec<string>) -> i64 {
+    mut s = ""
+    mut n = 0
+    for p in parts {
+        if p.is_empty() {
+            continue
+        }
+        s = "{s}/{p}-a-piece-long-enough-for-the-heap"
+        n += 1
+    }
+    return n
+}
+
+test "a string built in a for loop is released" {
+    grow_for(3)
+}
+
+test "a string built in a while loop is released" {
+    grow_while(3)
+}
+
+test "a return from inside the loop releases it too" {
+    assert grow_then_leave(5) == 1
+}
+
+test "a loop with continue releases it" {
+    assert grow_with_continue(["a", "", "b"]) == 2
+}

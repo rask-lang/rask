@@ -1355,6 +1355,24 @@ fn blocks_past_a_handover(func: &MirFunction, sites: &HashSet<BlockId>) -> HashS
 /// the slot live. `maybe(0)!` on a `T? or E` released a slot nobody had ever
 /// written. It only crashed once the option wrapper moved the frame enough that
 /// the slot read as garbage instead of zero.
+/// Can control get from `from` (itself included) to any of `targets`?
+fn reaches_any(func: &MirFunction, from: BlockId, targets: &[BlockId]) -> bool {
+    let mut seen: HashSet<BlockId> = HashSet::new();
+    let mut work = vec![from];
+    while let Some(b) = work.pop() {
+        if !seen.insert(b) {
+            continue;
+        }
+        if targets.contains(&b) {
+            return true;
+        }
+        if let Some(block) = func.blocks.iter().find(|x| x.id == b) {
+            work.extend(cfg::successors(&block.terminator));
+        }
+    }
+    false
+}
+
 fn defined_only_where_it_aborts(
     func: &MirFunction,
     aborting: &HashSet<BlockId>,
@@ -1937,6 +1955,60 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
                 }
                 // And the value has to exist by the time control gets there.
                 if defined_only_where_it_aborts(func, &aborting, *local) {
+                    continue;
+                }
+                edge_releases.push((*succ, *local));
+            }
+        }
+    }
+
+    // A string can die on an edge rather than in a block: live leaving `B`
+    // because one successor reads it, dead entering the other. The last-use
+    // loop below places releases inside blocks, so on that edge nobody
+    // releases it. A `mut` string reassigned in a loop and not read after it
+    // is exactly this — live out of the loop header, dead in the exit block —
+    // and `fs.create_dir_all` leaked its last path that way, as did a
+    // `return` from inside the loop.
+    //
+    // Released at the top of the successor, and only where that is safe: the
+    // successor is reached from `B` alone, so the release runs once; the
+    // local's definition dominates `B`, so it holds a value on every path
+    // there; and nothing reachable from the successor writes the local again.
+    // Dead because it is about to be overwritten is not dying on the edge —
+    // the overwrite releases the old value itself, and releasing here as well
+    // freed the buffer twice. (A wider version once released locals defined on
+    // only some paths; see the note on the aborting case above.)
+    let already: HashSet<(BlockId, LocalId)> = edge_releases.iter().copied().collect();
+    let defined_in = |local: LocalId| -> Vec<BlockId> {
+        func.blocks
+            .iter()
+            .filter(|b| b.statements.iter().any(|st| uses::stmt_def(st) == Some(local)))
+            .map(|b| b.id)
+            .collect()
+    };
+    for block in &func.blocks {
+        if aborting.contains(&block.id) {
+            continue;
+        }
+        let succs = cfg::successors(&block.terminator);
+        if succs.len() < 2 {
+            continue;
+        }
+        for local in string_locals {
+            if params.contains(local) || !live.live_at_exit(block.id, *local) {
+                continue;
+            }
+            let defs = defined_in(*local);
+            if defs.is_empty() || !defs.iter().any(|d| dom.dominates(*d, block.id)) {
+                continue;
+            }
+            for succ in &succs {
+                if aborting.contains(succ)
+                    || live.live_at_entry(*succ, *local)
+                    || preds.get(succ).map(|p| p.len()) != Some(1)
+                    || already.contains(&(*succ, *local))
+                    || reaches_any(func, *succ, &defs)
+                {
                     continue;
                 }
                 edge_releases.push((*succ, *local));
