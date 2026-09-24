@@ -1442,6 +1442,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
             }
 
+            SharedAccessClosure { method, span } => {
+                Diagnostic::error(format!("`{}` on a `Shared` doesn't take a closure", method))
+                    .with_code("E0897")
+                    .with_primary(*span, format!("`.{}(…)` with an argument", method))
+                    .with_fix(format!(
+                        "open a `with` block, whose value is the block's last expression:\n    \
+                         with s.{m}() as v {{ v * 2 }}\n\
+                         or chain the access into one expression: `s.{m}().field`",
+                        m = method,
+                    ))
+                    .with_why(
+                        "`read` and `write` block until the lock is free, and a blocking \
+                         access is scoped by a `with` block or a single expression. A \
+                         closure is the shape of `try_read`/`try_write`, which can fail \
+                         to get the lock and say so [conc.sync]",
+                    )
+            }
+
             RetiredBoxType { name, replacement, span } => {
                 Diagnostic::error(format!(
                     "`{}` is not a type any more — it's a strategy on `Shared`", name

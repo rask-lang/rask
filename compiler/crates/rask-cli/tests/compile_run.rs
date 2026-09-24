@@ -4219,17 +4219,18 @@ fn ensure_handler_binds_a_binding_bodys_error() {
 
 #[test]
 fn panic_in_a_lock_closure_releases_the_lock() {
-    // ctrl.panic/U3–U4 + LK1: `write(|v| …)` and `try_write(|v| …)` take the
-    // lock, call the closure, then unlock — and a panic longjmps over that
-    // unlock. Nothing had registered the lock, so the unwind had nothing to
-    // release and the next acquirer blocked forever. Both of these hung.
+    // ctrl.panic/U3–U4 + LK1: `try_write(|v| …)` takes the lock, calls the
+    // closure, then unlocks — and a panic longjmps over that unlock. Nothing
+    // had registered the lock, so the unwind had nothing to release and the
+    // next acquirer blocked forever. The `with` case beside it is the blocking
+    // form, which the closure spelling used to stand in for (E0897).
     for mode in ["--interp", "--native"] {
         let (stdout, stderr, code) = run_capture(mode, "panic_closure_releases_lock.rk");
         assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);
         assert_eq!(
             stdout,
             "write panicked\ntry_write panicked\nblocking lock free\nnon-blocking lock free\n",
-            "{}: both closure forms hand the lock back", mode,
+            "{}: both the with block and the closure hand the lock back", mode,
         );
     }
 }

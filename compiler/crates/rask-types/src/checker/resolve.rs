@@ -2445,26 +2445,22 @@ impl TypeChecker {
         }
     }
 
-    /// `s.read(|v| …)` and its three siblings: tie the closure to the box.
+    /// `s.try_read(|v| …)` and `try_write`: tie the closure to the box.
     ///
     /// The arms used to invent a fresh variable for the result and unify the
-    /// return with *that*, which relates the call to nothing. So the binding
-    /// was left open — `let doubled = s.read(|v| { return v * 2 })` reported
-    /// "couldn't work out the type of `doubled`" while the same line with
-    /// `: i64` written on it was fine, which reads like an inference hiccup
-    /// rather than a missing constraint (#1155).
+    /// return with *that*, which relates the call to nothing, so the binding
+    /// was left open unless annotated (#1155).
     ///
     /// Two constraints, both off the closure's own `Type::Fn`: its parameter is
     /// the box's `T`, so `|v| v * 2` knows `v` is an `i64` instead of guessing
-    /// from use, and its return is the call's `R`. `try_read`/`try_write` wrap
-    /// that `R` in an optional, which is the only difference between the four.
+    /// from use, and its return is the call's `R`, wrapped in an optional:
+    /// `try_read`/`try_write` can come back without the lock.
     fn unify_accessor_closure(
         &mut self,
         closure_ty: &Type,
         inner_type: &Type,
         ret: &Type,
         span: Span,
-        optional: bool,
     ) -> Result<bool, TypeError> {
         let result = match self.ctx.apply(closure_ty) {
             Type::Fn { params, ret: closure_ret } => {
@@ -2478,8 +2474,7 @@ impl TypeChecker {
             // is, which is what the old code was missing.
             _ => self.ctx.fresh_var(),
         };
-        let answer = if optional { Type::option(result) } else { result };
-        self.unify(ret, &answer, span)
+        self.unify(ret, &Type::option(result), span)
     }
 
     pub(super) fn resolve_concurrency_generic_method(
@@ -2518,13 +2513,17 @@ impl TypeChecker {
             ("Shared", "write") if args.is_empty() => {
                 self.unify(ret, &inner_type, span)
             }
-            // Shared<T>.read(|T| -> R) -> R  (closure-based, try_read)
-            ("Shared", "read") if args.len() == 1 => {
-                self.unify_accessor_closure(&args[0], &inner_type, ret, span, false)
-            }
-            // Shared<T>.write(|T| -> R) -> R  (closure-based, try_write)
-            ("Shared", "write") if args.len() == 1 => {
-                self.unify_accessor_closure(&args[0], &inner_type, ret, span, false)
+            // Blocking access is `with s.read() as v { … }` or `s.read().field`;
+            // a closure is the non-blocking `try_read`/`try_write` shape only
+            // (conc.sync, "Non-blocking variants"). The closure form of the
+            // blocking pair was accepted here, undeclared, and native compiled
+            // it to a read of a slot nobody wrote (#1311).
+            ("Shared", method @ ("read" | "write")) if !args.is_empty() => {
+                self.errors.push(TypeError::SharedAccessClosure {
+                    method: method.to_string(),
+                    span,
+                });
+                Ok(true)
             }
             // Shared<T>.staged() -> T  (ST1: a working copy under the
             // exclusive lock, committed as one move on any non-panic exit)
@@ -2533,11 +2532,11 @@ impl TypeChecker {
             }
             // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_read") if args.len() == 1 => {
-                self.unify_accessor_closure(&args[0], &inner_type, ret, span, true)
+                self.unify_accessor_closure(&args[0], &inner_type, ret, span)
             }
             // Shared<T>.try_write(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_write") if args.len() == 1 => {
-                self.unify_accessor_closure(&args[0], &inner_type, ret, span, true)
+                self.unify_accessor_closure(&args[0], &inner_type, ret, span)
             }
             // The single-expression shorthands `Cell` had (conc.sync API table).
             ("Shared", "get" | "take") if args.is_empty() => {

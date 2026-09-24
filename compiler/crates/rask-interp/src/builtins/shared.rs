@@ -36,28 +36,6 @@ impl Interpreter {
                 })?;
                 Ok(guard.clone())
             }
-            // Shared<T>.read(|T| -> R) -> R  (closure-based)
-            "read" => {
-                let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
-                    expected: 1,
-                    got: 0,
-                })?;
-                let snapshot = {
-                    let guard = shared.read().map_err(|e| {
-                        RuntimeError::Panic(format!("Shared.read: lock poisoned: {}", e))
-                    })?;
-                    guard.clone()
-                };
-                self.call_closure_with_arg(&closure, snapshot)
-            }
-            // Shared<T>.write(|T| -> R) -> R  (closure-based)
-            "write" => {
-                let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
-                    expected: 1,
-                    got: 0,
-                })?;
-                self.call_shared_write_closure(shared, &closure)
-            }
             // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
             "try_read" => {
                 let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
@@ -258,65 +236,6 @@ impl Interpreter {
         }
     }
 
-    /// Execute a write closure — locks the RwLock, runs the closure with the
-    /// inner value, writes back any mutations, then unlocks.
-    fn call_shared_write_closure(
-        &mut self,
-        shared: &Arc<RwLock<Value>>,
-        closure: &Value,
-    ) -> Result<Value, RuntimeError> {
-        match closure {
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-            } => {
-                let mut guard = shared.write().map_err(|e| {
-                    RuntimeError::Panic(format!("Shared.write: lock poisoned: {}", e))
-                })?;
-
-                self.env.push_scope();
-                for (k, cell) in captured_env {
-                    self.env.define_slot(k.clone(), cell.clone());
-                }
-                let param_name = params
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| "_".to_string());
-                self.env.define(param_name.clone(), guard.clone());
-
-                let result = self.eval_expr(body).map_err(|diag| diag.error);
-
-                // Write back: use closure return value if available,
-                // fall back to checking environment mutations
-                match &result {
-                    Err(RuntimeError::Return(v)) => {
-                        *guard = v.clone();
-                    }
-                    Ok(v) if !matches!(v, Value::Unit) => {
-                        *guard = v.clone();
-                    }
-                    _ => {
-                        if let Some(updated) = self.env.get(&param_name) {
-                            *guard = updated.clone();
-                        }
-                    }
-                }
-
-                self.env.pop_scope();
-                match result {
-                    Ok(v) => Ok(v),
-                    Err(RuntimeError::Return(v)) => Ok(v),
-                    Err(e) => Err(e),
-                }
-            }
-            _ => Err(RuntimeError::TypeError(format!(
-                "expected closure, found {}",
-                closure.type_name()
-            ))),
-        }
-    }
-
     /// Handle Mutex<T> instance methods.
     pub(crate) fn call_mutex_method(
         &mut self,
@@ -366,27 +285,6 @@ impl Interpreter {
                         variant_index: 1, origin: None,
                     }),
                 }
-            }
-            // The closure form, which had no arm at all here: `s.read(|v| …)`
-            // on a `Mutex` box reported "no method `read` on type `Mutex`"
-            // while the same call on a `Readers` box ran (#1155). One lock for
-            // both, as below.
-            "read" | "write" if args.len() == 1 => {
-                let closure = args.into_iter().next().unwrap();
-                let snapshot = {
-                    let guard = mutex.lock().map_err(|e| {
-                        RuntimeError::Panic(format!("Shared.{}: lock poisoned: {}", method, e))
-                    })?;
-                    guard.clone()
-                };
-                let result = self.call_closure_with_arg(&closure, snapshot)?;
-                if method == "write" {
-                    let mut guard = mutex.lock().map_err(|e| {
-                        RuntimeError::Panic(format!("Shared.write: lock poisoned: {}", e))
-                    })?;
-                    *guard = result.clone();
-                }
-                Ok(result)
             }
             // `read`/`write` on the `Mutex` strategy both take the one lock it
             // has — slower than `Readers` would be there, never wrong (SH5).

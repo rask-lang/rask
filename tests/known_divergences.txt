@@ -143,7 +143,6 @@ p08_sequence.rk  # sequence — #1324 (interp run)
 # The interpreter is right for all three strategies as of #1155 — `Local`
 # ignored its argument and `Mutex` had no closure arm before that, so only
 # `Readers` ran the closure at all.
-t_shared_closure_access.rk  # Shared closure access — #1311 (native compile)
 
 # `extern "C"` needs dlsym and a C ABI, which a tree walker doesn't have — the
 # same reason `examples/19_unsafe.rk` is on known_fail_examples.txt. Not a bug

@@ -7,28 +7,27 @@
 // Python's fix: threading.Lock(). You manually acquire/release it.
 // Problem: forget to release → deadlock. Forget to acquire → data race.
 //
-// Rask makes this impossible to get wrong. Three tools:
+// Rask makes this impossible to get wrong. Two tools:
 //
-//   Shared<T> — many readers, one writer at a time (like a library book)
-//     config.read(|c| c.timeout)        // anyone can read simultaneously
-//     config.write(|c| c.timeout = 60)  // only one can write, blocks others
-//
-//   Shared<T, Mutex> — exclusive access (like a bathroom key)
-//     counter.lock(|c| c += 1)          // only one thread at a time
+//   Shared<T> — one value, reached through a scoped view
+//     with config.read() as c { c.timeout }     // many readers at once
+//     with config.write() as c { c.timeout = 60 }  // one writer, blocks the rest
+//     config.read().timeout                     // one expression, same lock
 //
 //   Atomic<T> — lock-free single values (for simple counters and flags)
 //     counter.fetch_add(1, Relaxed)     // hardware-level atomic increment
 //     There is one atomic type and one way to spell it. The payload has to fit
 //     one machine word: an integer, a bool, a float.
 //
-// Both Shared and Mutex use closures — the lock is held only while
-// the closure runs and automatically released when it returns.
-// You literally can't forget to unlock. Compare:
+// Which lock a view takes is the strategy's business: `Shared.new` lets
+// readers share, `Shared.mutex` takes one lock for both, `Shared.local` takes
+// none and can't leave its task. The lock is held for the block and released
+// when it ends, however it ends. You literally can't forget to unlock:
 //
 //   Python:                       Rask:
-//   lock.acquire()                counter.lock(|c| {
+//   lock.acquire()                with counter.write() as c {
 //   counter += 1                      c += 1
-//   lock.release()  # forget?     })  # auto-released
+//   lock.release()  # forget?     }   # released here, or on any early exit
 //
 
 import async.spawn

@@ -268,6 +268,11 @@ pub enum TypeError {
         recv: String,
         span: Span,
     },
+    #[error("`{method}` on a `Shared` doesn't take a closure")]
+    SharedAccessClosure {
+        method: String,
+        span: Span,
+    },
     #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
     RetiredBoxType {
         name: String,
@@ -1455,6 +1460,7 @@ impl TypeError {
             | MutateReadOnlyParam { .. }
             | MutateConst { .. }
             | RetiredBoxType { .. }
+            | SharedAccessClosure { .. }
             | LocalSharedSent { .. }
             | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
