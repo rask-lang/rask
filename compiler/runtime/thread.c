@@ -608,3 +608,55 @@ void rask_await_detached_tasks(void) {
         nanosleep(&ts, NULL);
     }
 }
+
+// ─── Task groups ───────────────────────────────────────────
+//
+// A `TaskGroup<T>` holds the handles of the tasks spawned into it, in spawn
+// order. The joining and detaching are written in Rask (`stdlib/async.rk`); this
+// is only the list, because a `Vec` can't hold a linear value.
+
+typedef struct {
+    int64_t  len;
+    int64_t  cap;
+    int64_t *handles;
+} RaskTaskGroup;
+
+int64_t rask_task_group_new(void) {
+    RaskTaskGroup *g = (RaskTaskGroup *)rask_alloc(sizeof(RaskTaskGroup));
+    *g = (RaskTaskGroup){ 0 };
+    return (int64_t)(intptr_t)g;
+}
+
+void rask_task_group_adopt(int64_t group, int64_t handle) {
+    RaskTaskGroup *g = (RaskTaskGroup *)(intptr_t)group;
+    if (g->len == g->cap) {
+        int64_t cap = g->cap ? g->cap * 2 : 8;
+        g->handles = (int64_t *)rask_realloc(g->handles,
+                                             g->cap * (int64_t)sizeof(int64_t),
+                                             cap * (int64_t)sizeof(int64_t));
+        g->cap = cap;
+    }
+    g->handles[g->len++] = handle;
+}
+
+int64_t rask_task_group_len(int64_t group) {
+    return ((RaskTaskGroup *)(intptr_t)group)->len;
+}
+
+// Hands out the i-th handle. The Rask side takes each exactly once, then frees
+// the group, so nothing here tracks which were taken.
+int64_t rask_task_group_at(int64_t group, int64_t i) {
+    RaskTaskGroup *g = (RaskTaskGroup *)(intptr_t)group;
+    if (i < 0 || i >= g->len) {
+        rask_panic_fmt("task group index %lld out of range (len %lld)",
+                       (long long)i, (long long)g->len);
+    }
+    return g->handles[i];
+}
+
+void rask_task_group_free(int64_t group) {
+    RaskTaskGroup *g = (RaskTaskGroup *)(intptr_t)group;
+    if (!g) return;
+    rask_free(g->handles);
+    rask_free(g);
+}

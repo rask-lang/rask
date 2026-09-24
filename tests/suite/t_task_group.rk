@@ -1,20 +1,99 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `TaskGroup<T>` runs on the interpreter and has no native entry point.
+//
+// `TaskGroup<T>` runs a number of tasks known only at run time and joins them
+// together (#1288, #891). It had no native entry point:
 //
 //     error: codegen 'main': Function not found: TaskGroup_new
 //
-// `spawn` names `rask_green_closure_spawn` and would resolve; `new` and
-// `join_all` are `@native` with no symbol and no dispatch row, so a program
-// can't get as far as calling `spawn`. From
-// `NATIVE_WITHOUT_A_DISPATCH_ROW` in rask-codegen/src/dispatch.rs — see the
-// sibling t_native_reach_* files for the rest of the sweep.
+// and the free `join_all(Vec<TaskHandle<T>>)` it was meant to stand beside
+// couldn't be called at all, since a `Vec` can't hold a linear handle. The
+// group keeps its handles in the runtime and does the joining in Rask, so both
+// backends run the same loop.
 
-import async.TaskGroup
+import async.{spawn, TaskGroup, JoinError}
 
-test "task group spawns and joins" {
-    mut g: TaskGroup<i64> = TaskGroup.new()
-    g.spawn(|| { return 1 })
-    g.spawn(|| { return 2 })
-    let results = g.join_all()
-    assert(results.len() == 2)
+func squares(n: i64) -> Vec<i64 or JoinError> {
+    let group = TaskGroup<i64>.new()
+    ensure group.detach()
+    mut i = 0
+    while i < n {
+        let k = i
+        group.spawn(|| { return k * k })
+        i += 1
+    }
+    return group.join_all()
 }
+
+test "results come back in spawn order" {
+    using Multitasking(workers: 4) {
+        let results = squares(20)
+        assert results.len() == 20
+        mut i = 0
+        for r in results {
+            if r is i64 as v {
+                assert v == i * i
+            } else {
+                assert false
+            }
+            i += 1
+        }
+    }
+}
+
+test "a task that panics costs only its own result" {
+    using Multitasking(workers: 2) {
+        let group = TaskGroup<i64>.new()
+        ensure group.detach()
+        group.spawn(|| { return 1 })
+        group.spawn(|| {
+            panic("boom")
+            return 2
+        })
+        group.spawn(|| { return 3 })
+        let results = group.join_all()
+        mut ok = 0
+        mut panicked = 0
+        for r in results {
+            match r {
+                i64 as v => { ok += v },
+                JoinError.Panicked(msg) => { panicked += 1 },
+                JoinError.Cancelled => {},
+            }
+        }
+        assert ok == 4
+        assert panicked == 1
+    }
+}
+
+test "an empty group joins to nothing" {
+    using Multitasking {
+        let group = TaskGroup<i64>.new()
+        let results = group.join_all()
+        assert results.len() == 0
+    }
+}
+
+test "a detached group lets its tasks finish" {
+    using Multitasking(workers: 2) {
+        let group = TaskGroup<i64>.new()
+        ensure group.detach()
+        group.spawn(|| { return 1 })
+        group.spawn(|| { return 2 })
+    }
+}
+
+test "many groups, many tasks" {
+    using Multitasking(workers: 4) {
+        mut total = 0
+        mut round = 0
+        while round < 10 {
+            for r in squares(30) {
+                if r is i64 as v { total += v }
+            }
+            round += 1
+        }
+        assert total == 10 * 8555
+    }
+}
+
+func main() {}

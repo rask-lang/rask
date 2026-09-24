@@ -202,12 +202,8 @@ func main() -> void or Error {
         let server = try http.listen("0.0.0.0:8080")
         ensure server.close()
 
-        let shutdown = spawn(|| {
-            signals.receive()
-        })
-
         let serve = spawn(|| {
-            loop {
+            while !cancelled() {
                 let (req, responder) = try server.accept()
                 spawn(|| {
                     ensure responder.respond(Response.internal_error("error"))
@@ -216,8 +212,8 @@ func main() -> void or Error {
             }
         })
 
-        // Wait for either shutdown signal or server error
-        select_first(shutdown, serve)
+        signals.receive()          // wait for Ctrl-C or SIGTERM
+        let _ = serve.cancel()     // stop taking connections
     }
 }
 ```
@@ -338,5 +334,5 @@ spawn(|| {
 
 - `std.cli` — Structured argument parsing (builds on `os.args()`)
 - `std.io` — `IoError`, `Reader`/`Writer` traits
-- `conc.async` — Channels for signal delivery, `select_first` for shutdown
+- `conc.async` — Channels for signal delivery, `cancel` for shutdown
 - `mem.resource-types` — `@resource` and `ensure` semantics

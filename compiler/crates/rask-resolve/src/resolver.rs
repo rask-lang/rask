@@ -193,7 +193,7 @@ impl Resolver {
         // See resolve_import() for how they enter scope.
 
         // Top-level stdlib stub functions (e.g. async.rk's `spawn`,
-        // `cancelled`, `join_all`, `select_first`) are auto-registered.
+        // `cancelled`) are auto-registered.
         // The pipeline sometimes runs the resolver without stdlib_decls
         // (single-file `rask check`), and these names are spec-required to
         // be in scope under their context (`spawn` under `using Multitasking`,

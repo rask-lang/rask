@@ -92,23 +92,30 @@ enum JoinError {
 
 | Rule | Description |
 |------|-------------|
-| **M1: Join all** | `join_all(...)` waits for all tasks |
-| **M2: Select first** | `select_first(...)` returns first result, cancels remaining |
-| **M3: Task group** | `TaskGroup` for dynamic task counts |
+| **M1: Join each** | A fixed set of tasks is joined handle by handle |
+| **M2: Task group** | `TaskGroup<T>` holds the tasks of a count known only at run time. `join_all` gives one `T or JoinError` per task in spawn order; `detach` lets them all run on. The group is linear like the handles it holds: joined or detached exactly once |
 
 <!-- test: skip -->
 ```rask
-mut (a, b) = join_all(
-    spawn(|| { work1() }),
-    spawn(|| { work2() })
-)
+let h1 = spawn(|| { work1() })
+let h2 = spawn(|| { work2() })
+let a = try h1.join()
+let b = try h2.join()
 
-let group = TaskGroup.new()
+let group = TaskGroup<Page>.new()
+ensure group.detach()
 for url in urls {
-    group.spawn(|| { fetch(url) })
+    group.spawn(|| { return fetch(url) })
 }
-let results = try group.join_all()
+let pages = group.join_all()
 ```
+
+I dropped the free `join_all(a, b)` and `select_first(a, b)`. A call that takes
+any number of handles and hands back a tuple of their results can't be declared
+in Rask, and the `Vec<TaskHandle<T>>` version couldn't be called, since a `Vec`
+can't hold a linear value. Joining two handles is two lines, and a loop is
+what `TaskGroup` is for. Racing tasks for the first result is still open; a
+channel both send to covers it today.
 
 ## Runtime Scope
 
@@ -254,7 +261,8 @@ let consumer = spawn(|| {
     }
 })
 
-try join_all(producer, consumer)
+try producer.join()
+try consumer.join()
 ```
 
 ### Channel Operations

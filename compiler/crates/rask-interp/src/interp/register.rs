@@ -25,8 +25,6 @@ fn strip_generics(name: &str) -> &str {
 pub(super) fn prelude_builtin(name: &str) -> Option<BuiltinKind> {
     match name {
         "spawn" => Some(BuiltinKind::AsyncSpawn),
-        "join_all" => Some(BuiltinKind::JoinAll),
-        "select_first" => Some(BuiltinKind::SelectFirst),
         "cancelled" => Some(BuiltinKind::Cancelled),
         _ => None,
     }
@@ -46,12 +44,6 @@ impl Interpreter {
             // Async module members
             (ModuleKind::Async, "spawn") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawn));
-            }
-            (ModuleKind::Async, "join_all") => {
-                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::JoinAll));
-            }
-            (ModuleKind::Async, "select_first") => {
-                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::SelectFirst));
             }
             (ModuleKind::Async, "cancelled") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::Cancelled));

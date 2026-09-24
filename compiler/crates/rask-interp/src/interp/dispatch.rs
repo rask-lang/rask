@@ -102,12 +102,6 @@ impl Interpreter {
                 if kind == BuiltinKind::AsyncSpawn {
                     return self.spawn_async_task(args);
                 }
-                if kind == BuiltinKind::JoinAll {
-                    return self.call_async_method("join_all", args);
-                }
-                if kind == BuiltinKind::SelectFirst {
-                    return self.call_async_method("select_first", args);
-                }
                 if kind == BuiltinKind::Cancelled {
                     return self.call_async_method("cancelled", args);
                 }
@@ -217,8 +211,7 @@ impl Interpreter {
                     .unwrap_or_else(|| "panic".to_string());
                 Err(RuntimeError::Panic(msg))
             }
-            BuiltinKind::AsyncSpawn | BuiltinKind::JoinAll
-            | BuiltinKind::SelectFirst | BuiltinKind::Cancelled => {
+            BuiltinKind::AsyncSpawn | BuiltinKind::Cancelled => {
                 // These should have been handled in call_value
                 unreachable!("Async builtins should be handled in call_value")
             }
@@ -378,6 +371,7 @@ impl Interpreter {
             Value::File(_) => "File".to_string(),
             Value::TcpListener(_) => "TcpListener".to_string(),
             Value::TcpConnection(_) => "TcpConnection".to_string(),
+            Value::TaskGroup(_) => "TaskGroup".to_string(),
             _ => return None,
         })
     }

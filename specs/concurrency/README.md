@@ -75,18 +75,19 @@ let result = try h.join()
 // Fire-and-forget (explicit)
 spawn(|| { background_work() }).detach()
 
-// Multiple tasks
-mut (a, b) = join_all(
-    spawn(|| { work1() }),
-    spawn(|| { work2() })
-)
+// A fixed few: join each
+let h1 = spawn(|| { work1() })
+let h2 = spawn(|| { work2() })
+let a = try h1.join()
+let b = try h2.join()
 
-// Dynamic spawning
-let group = TaskGroup.new()
+// A count known at run time
+let group = TaskGroup<Page>.new()
+ensure group.detach()
 for url in urls {
-    group.spawn(|| { fetch(url) })
+    group.spawn(|| { return fetch(url) })
 }
-let results = try group.join_all()
+let pages = group.join_all()      // Vec<Page or JoinError>, spawn order
 
 // Raw OS thread (works anywhere)
 let h = Thread.spawn(|| { needs_thread_affinity() })
@@ -107,7 +108,7 @@ try h.join()
 |---------|--------|
 | Spawn and wait | `try spawn(|| {}).join()` |
 | Fire-and-forget | `spawn(|| {}).detach()` |
-| Wait for all | `join_all(spawn(|| {}), spawn(|| {}))` |
+| Wait for a few | `try h1.join()`, `try h2.join()` |
 | Dynamic spawning | `TaskGroup` |
 | CPU parallelism | `ThreadPool.spawn(|| {})` |
 | Raw OS thread | `Thread.spawn(|| {})` |

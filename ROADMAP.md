@@ -34,8 +34,8 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 557 green, 7 registered red | `tests/differential.sh` |
-| Programs that leak | 4, holding 6 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Suite programs agreeing on both backends | 560 green, 6 registered red | `tests/differential.sh` |
+| Programs that leak | 5, holding 7 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
 | Programs memcheck finds an error in | 0 of 557 | `tests/memcheck_gate.sh` |
 | Concurrency files TSan reports a race in | 0 of 72 | `tests/tsan_gate.sh` |
@@ -344,18 +344,17 @@ What the bench finds joins this list. Fixed in #1344: #1311 (the closure form
 of a blocking `Shared` access is rejected, E0897), #1335 (`rask compile` hung
 on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
 its worker), #1302 (a box inside a box leaked), #830 (a link
-captured by `spawn` is rejected, E0898), and three found on the way — an
+captured by `spawn` is rejected, E0898), #891 and #1288 (`TaskGroup` runs
+natively; the uncallable free `join_all`/`select_first` are gone), and three found on the way — an
 `ensure` running after its value was consumed, past the 256th ensure and after
 a `join` whose result returned early, and E0353 on recursion through a spawned
 closure. Open:
 
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
   tasks over one `Shared` plus a channel.
-- [#891](https://github.com/rask-lang/rask/issues/891) and
-  [#1288](https://github.com/rask-lang/rask/issues/1288): `join_all` takes a
-  `Vec` of task handles, which can't be built. Native `TaskGroup` is the answer,
-  since spawning N tasks in a loop is the common case and a variadic call can't
-  express it.
+- [#1357](https://github.com/rask-lang/rask/issues/1357): freeing a
+  `Vec<T or E>` doesn't release an error element's payload, so each panicked
+  task in a `TaskGroup` leaks its message.
 - [#1356](https://github.com/rask-lang/rask/issues/1356): a closure that reaches
   `spawn` through a return or a field isn't checked for a captured link or
   `Local` box. Written in place or bound to a local, it is.

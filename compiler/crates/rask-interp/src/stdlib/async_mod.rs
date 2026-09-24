@@ -2,7 +2,7 @@
 //! Async module - green task spawning.
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{ThreadHandleInner, Value, ACTIVE_RUNTIME};
+use crate::value::Value;
 use std::sync::{Arc, Mutex};
 
 impl Interpreter {
@@ -20,80 +20,6 @@ impl Interpreter {
             // reached by `spawn(|| …)`, so a fix applied here did nothing
             // (#882 was landed into this copy first and changed no behaviour).
             "spawn" => self.spawn_async_task(args),
-            "join_all" => {
-                // join_all(handles) — wait for all task handles, return Vec of results
-                if args.is_empty() {
-                    return Ok(Value::vec(Vec::new()));
-                }
-
-                // Accept either a Vec of handles or variadic handles
-                let handles: Vec<Value> = match &args[0] {
-                    Value::Vec(v) => v.lock().unwrap().items.clone(),
-                    _ => args,
-                };
-
-                let mut results = Vec::with_capacity(handles.len());
-                for handle in handles {
-                    match handle {
-                        Value::TaskHandle(h) => {
-                            let result = self.call_task_handle_method(&h, "join")?;
-                            results.push(result);
-                        }
-                        Value::ThreadHandle(h) => {
-                            let result = self.call_thread_handle_method(&h, "join")?;
-                            results.push(result);
-                        }
-                        _ => {
-                            return Err(RuntimeError::TypeError(format!(
-                                "join_all expects TaskHandle or ThreadHandle, got {}",
-                                handle.type_name()
-                            )));
-                        }
-                    }
-                }
-                Ok(Value::vec(results))
-            }
-            "select_first" => {
-                // select_first(handles) — return first completed, cancel rest
-                if args.is_empty() {
-                    return Err(RuntimeError::TypeError(
-                        "select_first requires at least one handle".to_string(),
-                    ));
-                }
-
-                let handles: Vec<Value> = match &args[0] {
-                    Value::Vec(v) => v.lock().unwrap().items.clone(),
-                    _ => args,
-                };
-
-                if handles.is_empty() {
-                    return Err(RuntimeError::TypeError(
-                        "select_first requires at least one handle".to_string(),
-                    ));
-                }
-
-                // Phase A: no real cancellation — join sequentially, return first
-                // that succeeds. In a real green-task runtime, we'd race them.
-                for handle in handles {
-                    match handle {
-                        Value::TaskHandle(h) => {
-                            let result = self.call_task_handle_method(&h, "join")?;
-                            return Ok(result);
-                        }
-                        Value::ThreadHandle(h) => {
-                            let result = self.call_thread_handle_method(&h, "join")?;
-                            return Ok(result);
-                        }
-                        _ => {
-                            return Err(RuntimeError::TypeError(format!(
-                                "select_first expects TaskHandle or ThreadHandle, got {}",
-                                handle.type_name()
-                            )));
-                        }
-                    }
-                }
-                unreachable!()
-            }
             "cancelled" => {
                 // Phase A: cooperative cancellation not yet implemented with OS threads.
                 // Always returns false — tasks must use other mechanisms to check.
@@ -106,7 +32,10 @@ impl Interpreter {
         }
     }
 
-    /// Handle TaskGroup method calls.
+    /// The natives under `TaskGroup<T>`: its handle list. `spawn`, `join_all`
+    /// and `detach` are Rask (`stdlib/async.rk`) and reach this through them,
+    /// so both backends run the same loops. There used to be a second `spawn`
+    /// here, with its own child interpreter and no runtime check.
     pub(crate) fn call_task_group_method(
         &mut self,
         tasks: &Arc<Mutex<Vec<Value>>>,
@@ -114,62 +43,36 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "spawn" => {
-                let closure = args.into_iter().next().ok_or_else(|| {
-                    RuntimeError::TypeError("TaskGroup.spawn requires a closure".to_string())
+            "adopt" => {
+                let handle = args.into_iter().next().ok_or_else(|| {
+                    RuntimeError::TypeError("TaskGroup.adopt expects a handle".to_string())
                 })?;
-
-                match closure {
-                    Value::Closure { params, body, captured_env } => {
-                        if !params.is_empty() {
-                            return Err(RuntimeError::TypeError(
-                                "TaskGroup.spawn closure must take no parameters".to_string(),
-                            ));
-                        }
-
-                        let captured = captured_env.clone();
-                        let child = self.spawn_child(captured);
-                        let body_clone = body.clone();
-
-                        let join_handle = crate::spawn_interp_thread(move || {
-                            let mut interp = child;
-                            match interp.eval_expr(&body_clone) {
-                                Ok(val) => Ok(val),
-                                Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
-                                    match diag.error {
-                                        RuntimeError::Return(val) => Ok(val),
-                                        _ => unreachable!("checked above"),
-                                    }
-                                }
-                                Err(diag) => Err(interp.task_failure_message(&diag)),
-                            }
-                        })?;
-
-                        let handle_inner = Arc::new(ThreadHandleInner {
-                            handle: Mutex::new(Some(join_handle)),
-                            receiver: Mutex::new(None),
-                            task_id: crate::value::next_task_id(),
-                        });
-
-                        tasks.lock().unwrap().push(Value::TaskHandle(handle_inner));
-                        Ok(Value::Unit)
+                // The group owns the handle now, and the checker holds the group
+                // to one join or detach. The frame that spawned it no longer
+                // owes it.
+                if let Value::TaskHandle(h) = &handle {
+                    if let Some(id) = self.resource_tracker.lookup_handle_id(Arc::as_ptr(h) as usize) {
+                        self.resource_tracker.take_entry(id);
                     }
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "TaskGroup.spawn expects a closure, got {}",
-                        closure.type_name()
-                    ))),
                 }
+                tasks.lock().unwrap().push(handle);
+                Ok(Value::Unit)
             }
-            "join_all" => {
-                let handles: Vec<Value> = tasks.lock().unwrap().drain(..).collect();
-                let mut results = Vec::with_capacity(handles.len());
-                for handle in handles {
-                    if let Value::TaskHandle(h) = handle {
-                        let result = self.call_task_handle_method(&h, "join")?;
-                        results.push(result);
-                    }
-                }
-                Ok(Value::vec(results))
+            "len" => Ok(Value::Int(tasks.lock().unwrap().len() as i64, crate::value::IntKind::I64)),
+            "at" => {
+                let i = self.expect_int(&args, 0)?;
+                let guard = tasks.lock().unwrap();
+                guard.get(i as usize).cloned().ok_or_else(|| {
+                    RuntimeError::Panic(format!(
+                        "task group index {} out of range (len {})",
+                        i,
+                        guard.len()
+                    ))
+                })
+            }
+            "release" => {
+                tasks.lock().unwrap().clear();
+                Ok(Value::Unit)
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "TaskGroup".to_string(),

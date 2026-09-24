@@ -60,28 +60,64 @@ extend JoinError {
 
 // --- Multiple tasks ---
 
-/// Wait for all tasks to complete. Returns results in order.
-@native
-public func join_all(handles: Vec<TaskHandle<T>>) -> Vec<T or JoinError> {}
-
-/// Return the first result, cancel remaining tasks.
-@native
-public func select_first(handles: Vec<TaskHandle<T>>) -> T or JoinError {}
-
-/// Dynamic task group for spawning a variable number of tasks.
+/// Tasks spawned into one place, joined together. For a count known only at
+/// run time; a fixed handful is just as clear joined one by one.
+///
+///     let group = TaskGroup<string>.new()
+///     ensure group.detach()
+///     for url in urls {
+///         group.spawn(|| { return fetch(url) })
+///     }
+///     let pages = group.join_all()
+///
+/// Must be joined or detached, like the handles it holds.
+@resource
 public struct TaskGroup<T> { }
 
 extend TaskGroup<T> {
-    @native
+    @native("rask_task_group_new")
     public func new() -> TaskGroup<T> {}
 
     /// Spawn a task in this group.
-    @native("rask_green_closure_spawn")
-    public func spawn(self, take f: func() -> T) {}
+    public func spawn(self, take f: func() -> T) {
+        self.adopt(spawn(f))
+    }
 
-    /// Wait for all tasks in the group. Returns results in spawn order.
-    @native
-    public func join_all(take self) -> Vec<T or JoinError> {}
+    /// Wait for every task. Results come back in spawn order, one per task, so
+    /// a task that panicked doesn't cost the others theirs.
+    public func join_all(take self) -> Vec<T or JoinError> {
+        mut results: Vec<T or JoinError> = Vec.new()
+        mut i = 0
+        while i < self.len() {
+            results.push(self.at(i).join())
+            i += 1
+        }
+        self.release()
+        return results
+    }
+
+    /// Let every task run on without waiting for it. Consumes the group.
+    public func detach(take self) {
+        mut i = 0
+        while i < self.len() {
+            self.at(i).detach()
+            i += 1
+        }
+        self.release()
+    }
+
+    @native("rask_task_group_adopt")
+    func adopt(self, take handle: TaskHandle<T>) {}
+
+    @native("rask_task_group_len")
+    func len(self) -> i64 {}
+
+    /// The i-th handle. `join_all` and `detach` take each exactly once.
+    @native("rask_task_group_at")
+    func at(self, i: i64) -> TaskHandle<T> {}
+
+    @native("rask_task_group_free")
+    func release(take self) {}
 }
 
 // --- Channels ---

@@ -176,4 +176,3 @@ t_raw_pointer_width.rk  # extern "C" is native-only — no issue, see above (int
 #
 # Each file is a whole family, so the line goes when the family lands.
 t_native_reach_wide.rk       # Wide<T> lowers nothing but `sum` — #1287 (native compile)
-t_native_reach_taskgroup.rk  # TaskGroup can't even be constructed natively — #1288 (native compile)

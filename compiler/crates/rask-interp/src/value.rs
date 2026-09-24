@@ -507,8 +507,6 @@ pub enum BuiltinKind {
     Panic,
     Format,
     AsyncSpawn,     // spawn(|| {}) from async module
-    JoinAll,        // join_all(handles) — wait for all tasks
-    SelectFirst,    // select_first(handles) — first completed wins
     Cancelled,      // cancelled() — cooperative cancellation check
     Todo,
     Unreachable,
