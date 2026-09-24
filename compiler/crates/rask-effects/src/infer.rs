@@ -122,12 +122,28 @@ impl InferPass {
                         self.collect_fn(&qname, method);
                     }
                 }
+                // A test or benchmark body is a caller like `main`. Left out,
+                // a helper only tests call looked uncalled, so it counted as
+                // an entry point that could run without a runtime, and CW2
+                // warned about the loop in it that every test ran inside
+                // `using Multitasking`. The name has a space in it, so no call
+                // can resolve to it.
+                DeclKind::Test(t) => {
+                    self.collect_body(&format!("test {:?}", t.name), &t.body, &t.attrs, false);
+                }
+                DeclKind::Benchmark(b) => {
+                    self.collect_body(&format!("benchmark {:?}", b.name), &b.body, &b.attrs, false);
+                }
                 _ => {}
             }
         }
     }
 
     fn collect_fn(&mut self, qname: &str, f: &FnDecl) {
+        self.collect_body(qname, &f.body, &f.attrs, f.is_pub);
+    }
+
+    fn collect_body(&mut self, qname: &str, body: &[Stmt], attrs: &[String], is_pub: bool) {
         // PU2 says a `comptime func` is pure and that "effect inference
         // confirms this". It used to *assert* it: stamp `Effects::default()`
         // on anything wearing the keyword and skip the body, so the map could
@@ -140,10 +156,10 @@ impl InferPass {
         // Classify direct effects from function body
         let mut direct = Effects::default();
         let mut callees = HashSet::new();
-        classify_body(&f.body, &mut direct, &mut callees);
+        classify_body(body, &mut direct, &mut callees);
 
         // @no_io suppresses conservative IO marking
-        let has_no_io = f.attrs.iter().any(|a| a == "no_io");
+        let has_no_io = attrs.iter().any(|a| a == "no_io");
         if has_no_io {
             direct.io = false;
         }
@@ -154,13 +170,13 @@ impl InferPass {
             self.call_graph.insert(qname.to_string(), callees);
         }
 
-        if f.is_pub {
+        if is_pub {
             self.reachable_from_outside.insert(qname.to_string());
         }
 
         // CC2: compute which functions call spawn (or runtime-needing callees) without a guard
         let mut scan = ReachScan::default();
-        let direct_needs_rt = rt_scan_stmts(&f.body, 0, &mut scan);
+        let direct_needs_rt = rt_scan_stmts(body, 0, &mut scan);
         if direct_needs_rt {
             self.direct_needs_runtime.insert(qname.to_string());
         }
