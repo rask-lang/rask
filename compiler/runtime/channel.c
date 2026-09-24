@@ -588,19 +588,6 @@ int64_t rask_select_rotate(int64_t num_arms) {
     return (int64_t)(n % (unsigned long long)num_arms);
 }
 
-// ─── Async channel ops (yield-based for green tasks) ─────────
-//
-// Try non-blocking send/recv. If would block, yield and retry.
-// Outside green tasks, fall back to blocking ops.
-
-// Both names come from the header now: green.c defines them where there is a
-// scheduler, green_threads.c where tasks are OS threads. This file used to
-// carry its own `static` pair for the second case, because without the
-// scheduler the two were undefined and channel.o dragged them into every link
-// — which is why a macOS hello-world failed to link at all, channels or no
-// channels (#1176). With `spawn` backed by threads off Linux (#1180) there is
-// nothing left for a local copy to stand in for.
-
 // ─── Pointer-based wrappers for aggregate types ──────────
 //
 // These use the actual element size instead of hardcoding sizeof(int64_t).
@@ -630,82 +617,6 @@ int64_t rask_channel_recv_ptr(int64_t rx, int64_t out_ptr) {
     return out_ptr;
 }
 
-int64_t rask_channel_send_async_ptr(int64_t tx, int64_t data_ptr) {
-    RaskSender *sender = (RaskSender *)(intptr_t)tx;
-    int64_t status = rask_channel_try_send(sender, (const void *)(intptr_t)data_ptr);
-    if (status == RASK_CHAN_OK || status == RASK_CHAN_CLOSED) {
-        return status;
-    }
-    while (status == RASK_CHAN_FULL) {
-        rask_yield();
-        if (rask_green_task_is_cancelled()) {
-            return RASK_CHAN_CLOSED;
-        }
-        status = rask_channel_try_send(sender, (const void *)(intptr_t)data_ptr);
-    }
-    return status;
-}
 
-int64_t rask_channel_recv_async_ptr(int64_t rx, int64_t out_ptr) {
-    RaskRecver *recver = (RaskRecver *)(intptr_t)rx;
-    int64_t status = rask_channel_try_recv(recver, (void *)(intptr_t)out_ptr);
-    if (status == RASK_CHAN_OK) {
-        return out_ptr;
-    }
-    if (status == RASK_CHAN_CLOSED) {
-        rask_panic("recv on closed channel");
-    }
-    while (status == RASK_CHAN_EMPTY) {
-        rask_yield();
-        if (rask_green_task_is_cancelled()) {
-            rask_panic("recv cancelled");
-        }
-        status = rask_channel_try_recv(recver, (void *)(intptr_t)out_ptr);
-    }
-    if (status == RASK_CHAN_CLOSED) {
-        rask_panic("recv on closed channel");
-    }
-    return out_ptr;
-}
 
-int64_t rask_channel_send_async(int64_t tx, int64_t value) {
-    RaskSender *sender = (RaskSender *)(intptr_t)tx;
-    // Try non-blocking first
-    int64_t status = rask_channel_try_send(sender, &value);
-    if (status == RASK_CHAN_OK || status == RASK_CHAN_CLOSED) {
-        return status;
-    }
-    // Channel full — yield and retry loop
-    while (status == RASK_CHAN_FULL) {
-        rask_yield();
-        if (rask_green_task_is_cancelled()) {
-            return RASK_CHAN_CLOSED;
-        }
-        status = rask_channel_try_send(sender, &value);
-    }
-    return status;
-}
 
-int64_t rask_channel_recv_async(int64_t rx) {
-    RaskRecver *recver = (RaskRecver *)(intptr_t)rx;
-    int64_t data = 0;
-    int64_t status = rask_channel_try_recv(recver, &data);
-    if (status == RASK_CHAN_OK) {
-        return data;
-    }
-    if (status == RASK_CHAN_CLOSED) {
-        rask_panic("recv on closed channel");
-    }
-    // Channel empty — yield and retry loop
-    while (status == RASK_CHAN_EMPTY) {
-        rask_yield();
-        if (rask_green_task_is_cancelled()) {
-            rask_panic("recv cancelled");
-        }
-        status = rask_channel_try_recv(recver, &data);
-    }
-    if (status == RASK_CHAN_CLOSED) {
-        rask_panic("recv on closed channel");
-    }
-    return data;
-}

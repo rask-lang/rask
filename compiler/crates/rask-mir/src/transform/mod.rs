@@ -12,5 +12,4 @@ pub mod pass;
 pub mod rc_elide;
 pub mod rc_insert;
 pub mod ssa;
-pub mod state_machine;
 pub mod string_append;

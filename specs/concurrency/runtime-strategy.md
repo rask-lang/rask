@@ -69,7 +69,7 @@ On Linux, `using Multitasking(workers: n)` runs tasks as stackful fibers on n wo
 
 Not yet:
 
-- **I/O parking.** Stdlib I/O still makes the blocking syscall, so a task blocked on a socket holds its worker. The reactor engines exist; wiring them through `rask_yield_read` and friends is next.
+- **I/O parking.** Stdlib I/O still makes the blocking syscall, so a task blocked on a socket holds its worker. The reactor engines (`io_epoll_engine.c`, `io_uring_engine.c`) exist and workers poll them; nothing submits to them yet.
 - **Worker compensation for blocking FFI** (`conc.phase-b/FFI3`) — not built, so a long C call holds its worker too.
 - **Preemption** (`conc.runtime/P1-P3`). Switching is cooperative: a task that computes without waiting keeps its worker until it finishes.
 - **macOS.** `green.c` needs a kqueue backend; until then macOS runs `green_threads.c`. The aarch64 switch is assembled for both ELF and Mach-O and has not run yet.

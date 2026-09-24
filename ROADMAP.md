@@ -327,10 +327,10 @@ so the deterministic tests run the code that ships.
 2. Cooperative fibers. **Done on Linux:** a task parks in join, channel, lock
    and sleep; the join helper threads are gone; the soak holds 5 of 5 and TSan
    is clean with every switch annotated. A started fiber stays on its worker
-   (`conc.runtime/S3a`). Still to go in this step: I/O parking (stdlib I/O
-   still blocks the worker), the poll-function spawn path
-   ([#1336](https://github.com/rask-lang/rask/issues/1336)), and macOS, which
-   needs a kqueue backend before `green_threads.c` can go. The aarch64 switch
+   (`conc.runtime/S3a`). The dead poll-function path is deleted
+   ([#1336](https://github.com/rask-lang/rask/issues/1336)). Still to go in
+   this step: I/O parking (stdlib I/O still blocks the worker), and macOS,
+   which needs a kqueue backend before `green_threads.c` can go. The aarch64 switch
    is written and assembles; nothing has run it yet.
 3. Sim on fibers, replacing the baton.
 4. Preemption last. Codegen puts a flag check in every function prologue, and

@@ -1346,30 +1346,19 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("TaskHandle_detach", "rask_green_detach", &[types::I64], None, true),
         StdlibEntry::join_outcome("TaskHandle_cancel", "rask_green_cancel_outcome"),
         StdlibEntry::simple("rask_task_cancelled", "rask_green_task_is_cancelled", &[], Some(types::I32), false),
-        StdlibEntry::simple("rask_sleep_ns", "rask_green_sleep_ns", &[types::I64], None, false),
+        StdlibEntry::simple("rask_sleep_ns", "rask_sleep_ns", &[types::I64], None, false),
 
         // ── Concurrency: runtime init/shutdown ───────────────────────
         StdlibEntry::simple("rask_runtime_init", "rask_runtime_init", &[types::I64], None, false),
         StdlibEntry::simple("rask_runtime_shutdown", "rask_runtime_shutdown", &[], None, false),
         StdlibEntry::simple("rask_threadpool_init", "rask_threadpool_init", &[types::I64], None, false),
         StdlibEntry::simple("rask_threadpool_shutdown", "rask_threadpool_shutdown", &[], None, false),
-        StdlibEntry::simple("rask_green_spawn", "rask_green_spawn", &[types::I64, types::I64, types::I64], Some(types::I64), true),
 
         // ── Concurrency: yield helpers ───────────────────────────────
-        StdlibEntry::simple("rask_yield", "rask_yield", &[], None, false),
-        StdlibEntry::simple("rask_yield_timeout", "rask_yield_timeout", &[types::I64], None, false),
-        StdlibEntry::simple("rask_yield_read", "rask_yield_read", &[types::I32, types::I64, types::I64], None, false),
-        StdlibEntry::simple("rask_yield_write", "rask_yield_write", &[types::I32, types::I64, types::I64], None, false),
-        StdlibEntry::simple("rask_yield_accept", "rask_yield_accept", &[types::I32], None, false),
 
         // ── Async I/O ─────────────────────────────────────────────────
-        StdlibEntry::simple("rask_async_read", "rask_async_read", &[types::I32, types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_async_write", "rask_async_write", &[types::I32, types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_async_accept", "rask_async_accept", &[types::I32], Some(types::I64), false),
 
         // ── Async channels ─────────────────────────────────────────
-        StdlibEntry::simple("rask_channel_send_async", "rask_channel_send_async", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_channel_recv_async", "rask_channel_recv_async", &[types::I64], Some(types::I64), true),
 
         // ── Ensure hooks ──────────────────────────────────────────
         StdlibEntry::simple("rask_ensure_push", "rask_ensure_push", &[types::I64, types::I64], None, false),

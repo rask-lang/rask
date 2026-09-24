@@ -41,15 +41,12 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sched.h>
-#include <sys/socket.h>
 #include <errno.h>
 #include <time.h>
 
 #define DEQUE_CAP 1024
 
 // ─── Green task ─────────────────────────────────────────────
-
-typedef int (*rask_poll_fn)(void *state, void *task_ctx);
 
 // Where a fiber is in going to sleep, read by the worker it switched off and
 // by whoever wakes it — the two can race. A wake that arrives while the fiber
@@ -63,12 +60,9 @@ enum { PARK_RUNNING = 0, PARK_PARKING, PARK_PARKED, PARK_WOKEN };
 enum { SWITCH_DONE = 1, SWITCH_PARKED, SWITCH_YIELD };
 
 typedef struct GreenTask {
-    // The body. A closure spawn runs `body(body_arg)` once; the poll-function
-    // form polls until ready.
+    // The body: the closure's function and its environment.
     int64_t       (*body)(void *);
     void           *body_arg;
-    rask_poll_fn    poll_fn;
-    void           *state;
 
     atomic_int      cancel_flag;
     int64_t         result;
@@ -104,10 +98,6 @@ typedef struct GreenTask {
 
     // Refcount: handle(1) + scheduler(1)
     atomic_int      refcount;
-
-    // I/O result staging (set by the completion callback before the wake)
-    int64_t         io_result;
-    int             io_err;
 
     // ── Fiber ──
     RaskFiber       fiber;
@@ -352,7 +342,6 @@ static void task_release(GreenTask *t) {
         pthread_mutex_destroy(&t->done_lock);
         pthread_cond_destroy(&t->done_cond);
         if (t->panic_msg) free(t->panic_msg);
-        if (t->state) free(t->state);
         // The task body's closure allocation, whichever way the body ended.
         if (t->closure_base) rask_closure_free(t->closure_base);
         // Still set means nobody took it — a detached task whose value no join
@@ -433,6 +422,13 @@ static void switch_to_worker(GreenTask *t, int reason) {
     rask_fiber_switch(&t->fiber, t->worker_fiber);
 }
 
+// Let everything else that is runnable here go first.
+static void fiber_yield(void) {
+    GreenTask *t = tl_current_task;
+    if (!t) return;
+    switch_to_worker(t, SWITCH_YIELD);
+}
+
 static void fiber_main(void *arg) {
     rask_fiber_started();
     // A fresh fiber stack reads as zeros, which hides a slot codegen forgot to
@@ -446,13 +442,7 @@ static void fiber_main(void *arg) {
 
     if (setjmp(*jb) == 0) {
         rask_panic_activate();
-        if (t->body) {
-            t->result = t->body(t->body_arg);
-        } else {
-            while (t->poll_fn(t->state, t) != RASK_POLL_READY) {
-                rask_yield();
-            }
-        }
+        t->result = t->body(t->body_arg);
     } else {
         // Panicked — the hooks ran before the longjmp; drain anything left.
         rask_ensure_run_all();
@@ -928,7 +918,7 @@ void rask_fiber_sleep_ns(int64_t ns) {
     GreenTask *t = tl_current_task;
     GreenScheduler *s = g_sched;
     if (ns <= 0) {
-        rask_yield();
+        fiber_yield();
         return;
     }
     t->wake_at_ns = now_ns() + ns;
@@ -959,17 +949,6 @@ static void *spawn_task(GreenTask *t) {
     atomic_fetch_add_explicit(&s->active_tasks, 1, memory_order_relaxed);
     sched_enqueue_new(s, t);
     return h;
-}
-
-void *rask_green_spawn(void *poll_fn, void *state, int64_t state_size) {
-    (void)state_size;
-    if (!g_sched) {
-        rask_panic("spawn outside `using Multitasking {}` block");
-    }
-    GreenTask *t = task_new();
-    t->poll_fn = (rask_poll_fn)poll_fn;
-    t->state = state;
-    return spawn_task(t);
 }
 
 // `result_owned` says the closure hands back a heap box rather than a plain
@@ -1117,89 +1096,8 @@ int64_t rask_green_cancel_outcome(void *handle, int64_t *value_out, RaskStr *msg
     return green_join_outcome(handle, 1, value_out, msg_out);
 }
 
-// ─── Yield and I/O waits ────────────────────────────────────
-//
-// On a fiber, an I/O wait submits the operation with a callback that wakes the
-// task, then parks; the result lands in `io_result` before the wake. Off a
-// fiber — or with no I/O engine — they do nothing, and the caller does the
-// blocking call itself.
-
-static void io_completion_cb(void *userdata, int64_t result, int err) {
-    GreenTask *t = (GreenTask *)userdata;
-    t->io_result = result;
-    t->io_err    = err;
-    task_wake(t);
-}
-
-// Submit through `submit`, then park until the completion wakes us.
-#define PARK_ON_IO(submit_expr) do {                                          \
-        GreenScheduler *s = g_sched;                                          \
-        GreenTask *t = tl_current_task;                                       \
-        if (!s || !s->io || !t) return;                                       \
-        atomic_store_explicit(&t->park, PARK_PARKING, memory_order_release);  \
-        submit_expr;                                                          \
-        switch_to_worker(t, SWITCH_PARKED);                                   \
-    } while (0)
-
-void rask_yield_read(int fd, void *buf, size_t len) {
-    PARK_ON_IO(s->io->submit_read(s->io, fd, buf, len, io_completion_cb, t));
-}
-
-void rask_yield_write(int fd, const void *buf, size_t len) {
-    PARK_ON_IO(s->io->submit_write(s->io, fd, buf, len, io_completion_cb, t));
-}
-
-void rask_yield_accept(int listen_fd) {
-    PARK_ON_IO(s->io->submit_accept(s->io, listen_fd, io_completion_cb, t));
-}
-
-void rask_yield_timeout(uint64_t ns) {
-    if (!tl_current_task) return;
-    rask_fiber_sleep_ns((int64_t)ns);
-}
-
-// Let everything else that is runnable here go first.
-void rask_yield(void) {
-    GreenTask *t = tl_current_task;
-    if (!t) return;
-    switch_to_worker(t, SWITCH_YIELD);
-}
-
 int rask_green_task_is_cancelled(void) {
     GreenTask *t = tl_current_task;
     if (!t) return 0;
     return atomic_load_explicit(&t->cancel_flag, memory_order_acquire);
-}
-
-// ─── I/O wrappers ───────────────────────────────────────────
-//
-// Blocking syscall wrappers, for non-green contexts and the channel retry
-// loops that handle waiting themselves.
-
-int64_t rask_async_read(int fd, void *buf, int64_t len) {
-    ssize_t n = read(fd, buf, (size_t)len);
-    return (int64_t)n;
-}
-
-int64_t rask_async_write(int fd, const void *buf, int64_t len) {
-    ssize_t n = write(fd, buf, (size_t)len);
-    return (int64_t)n;
-}
-
-int64_t rask_async_accept(int listen_fd) {
-    int client = accept(listen_fd, NULL, NULL);
-    return (int64_t)client;
-}
-
-// ─── Green-aware sleep ──────────────────────────────────────
-
-void rask_green_sleep_ns(int64_t ns) {
-    if (tl_current_task) {
-        rask_fiber_sleep_ns(ns);
-        return;
-    }
-    struct timespec ts;
-    ts.tv_sec  = ns / 1000000000LL;
-    ts.tv_nsec = ns % 1000000000LL;
-    nanosleep(&ts, NULL);
 }

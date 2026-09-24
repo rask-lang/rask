@@ -1132,12 +1132,6 @@ void    rask_panic_set_task_id(int64_t id);
 #define RASK_HAS_GREEN 0
 #endif
 
-// What a task's poll function reports. The state machine the compiler
-// generates returns one of these, so both schedulers — green.c and the
-// thread-backed stand-in in green_threads.c — read the same two numbers.
-#define RASK_POLL_READY   0
-#define RASK_POLL_PENDING 1
-
 // Every name below is defined by green.c on a build that has the scheduler and
 // by green_threads.c on one that doesn't, so a caller needs neither to care.
 // Off Linux a task is an OS thread, which is what Phase A concurrency is
@@ -1145,10 +1139,6 @@ void    rask_panic_set_task_id(int64_t id);
 
 void      rask_runtime_init(int64_t worker_count);
 void      rask_runtime_shutdown(void);
-
-// Spawn a green task. poll_fn signature: int (*)(void *state, void *task_ctx).
-// state is heap-allocated, freed by scheduler on completion.
-void     *rask_green_spawn(void *poll_fn, void *state, int64_t state_size);
 
 // Block until the task finishes. Returns 0 on success, -1 on panic.
 // On panic, if msg_out is non-NULL, receives a heap-allocated panic message
@@ -1165,17 +1155,8 @@ int64_t   rask_green_cancel(void *handle, char **msg_out);
 int64_t   rask_green_join_simple(void *handle);
 int64_t   rask_green_cancel_simple(void *handle);
 
-// Closure-based spawn (bridge for codegen before state machine transform).
+// Spawn a task running the closure; its result becomes the join value.
 void     *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned);
-
-// Yield helpers — called by state machines to pause on I/O.
-void      rask_yield_read(int fd, void *buf, size_t len);
-void      rask_yield_write(int fd, const void *buf, size_t len);
-void      rask_yield_accept(int listen_fd);
-void      rask_yield_timeout(uint64_t ns);
-
-// Cooperative yield — re-enqueue current task for later polling.
-void      rask_yield(void);
 
 // Check cancel flag for the current green task.
 int       rask_green_task_is_cancelled(void);
@@ -1368,26 +1349,6 @@ int64_t rask_select_rotate(int64_t num_arms);
 int64_t rask_select_epoch(void);
 void    rask_select_wait(int64_t seen);
 
-// ─── Async I/O (dual-path: green task or blocking) ──────────
-// Inside a green task, these submit async ops and return PENDING.
-// Outside a green task, they fall back to blocking syscalls.
-
-int64_t rask_async_read(int fd, void *buf, int64_t len);
-int64_t rask_async_write(int fd, const void *buf, int64_t len);
-int64_t rask_async_accept(int listen_fd);
-
-// ─── Async channels (yield-based) ──────────────────────────
-// Non-blocking try + yield loop for green tasks.
-// Outside green tasks, falls back to blocking channel ops.
-
-int64_t rask_channel_send_async(int64_t tx, int64_t value);
-int64_t rask_channel_recv_async(int64_t rx);
-
-// ─── Green-aware sleep ──────────────────────────────────────
-// Yields to scheduler in green tasks, blocking nanosleep otherwise.
-
-void rask_green_sleep_ns(int64_t ns);
-
 // Park the running green fiber for `ns` (green.c). Only valid on a fiber —
 // check rask_fiber_active() first.
 void rask_fiber_sleep_ns(int64_t ns);
@@ -1547,8 +1508,6 @@ int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity);
 int64_t rask_channel_send_ptr(int64_t tx, int64_t data_ptr);
 int64_t rask_channel_recv_ptr(int64_t rx, int64_t out_ptr);
-int64_t rask_channel_send_async_ptr(int64_t tx, int64_t data_ptr);
-int64_t rask_channel_recv_async_ptr(int64_t rx, int64_t out_ptr);
 
 // ── Error origin (ER15/ER16) ────────────────────────────────────
 // Set the source file name for error origin formatting.
