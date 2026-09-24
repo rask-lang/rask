@@ -337,7 +337,7 @@ pub fn cmd_test_sim(path: &str, filter: Option<String>, format: Format, opts: Si
     }
 
     let mut tally = Tally::default();
-    let mut broken = false;
+    let mut broken = 0usize;
     for file in &files {
         // A file named on its own must have tests; in a directory, a module
         // with none is ordinary.
@@ -346,9 +346,18 @@ pub fn cmd_test_sim(path: &str, filter: Option<String>, format: Format, opts: Si
                 if !single {
                     println!("{} {} {}", "===".dimmed(), output::file_path(file), "===".dimmed());
                 }
+                // Comptime tests ran while the file compiled (std.testing/T11a),
+                // the same under sim as anywhere: there's no schedule in them.
+                for line in bin.comptime_records.lines() {
+                    if let (_, Some(record)) = split_record(line) {
+                        let name = parse_json_str(record, "name").map(unescape_json_str).unwrap_or_default();
+                        println!("  {} {} {}", output::status_pass(), name, "(comptime)".dimmed());
+                        tally.passed += 1;
+                    }
+                }
                 run_file(&bin, file, run_seed, &opts, &mut tally);
             }
-            Err(TestOutcome::Failed) => broken = true,
+            Err(TestOutcome::Failed) => broken += 1,
             Err(_) => {}
         }
     }
@@ -367,9 +376,12 @@ pub fn cmd_test_sim(path: &str, filter: Option<String>, format: Format, opts: Si
     if opts.seeds > 1 {
         summary.push_str(&format!(" ({} runs)", tally.runs));
     }
+    if broken > 0 {
+        summary.push_str(&format!(", {broken} file{} didn't compile", if broken == 1 { "" } else { "s" }));
+    }
     println!("{summary}");
 
-    if tally.failed > 0 || broken {
+    if tally.failed > 0 || broken > 0 {
         process::exit(1);
     }
 }

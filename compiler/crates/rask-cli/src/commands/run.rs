@@ -234,8 +234,12 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
         compiled.comptime_globals,
     );
 
+    // One path per binary, not per process: a directory builds one per file,
+    // and with RASK_KEEP_TEST_BIN set every file overwrote the last one's.
+    static NEXT_BIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT_BIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp_dir = std::env::temp_dir();
-    let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
+    let bin_path = tmp_dir.join(format!("rask_test_{}_{n}", process::id()));
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
@@ -681,16 +685,16 @@ pub fn build_test_binary(
                 TestOutcome::Failed
             });
         }
-        if format == Format::Human {
+        // In a directory, a file with nothing matching is ordinary and says
+        // nothing; named on its own, it is a mistake and says so.
+        if format == Format::Human && require_tests {
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
-            if require_tests {
-                eprintln!(
-                    "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
-                    output::error_label(),
-                    path,
-                );
-            }
+            eprintln!(
+                "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
+                output::error_label(),
+                path,
+            );
         }
         // A file asked for by name with no tests in it is a mistake, not a
         // pass — see `run_test_file_native`.
