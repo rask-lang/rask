@@ -294,14 +294,14 @@ The payoff is one scheduler instead of three. `green.c` runs spawned closures as
 poll functions that run to completion, `thread.c` gives `Thread.spawn` a
 pthread, and `green_threads.c` stands in with threads off Linux. Sim mode
 ([#1337](https://github.com/rask-lang/rask/pull/1337)) adds a fourth shape: it
-builds without `green.c` and passes a baton between OS threads. With fibers, sim
-is the real scheduler with one worker and a seeded pick of the next fiber, so
-the deterministic tests run the code that ships.
+builds without `green.c` and passes a baton between OS threads. With fibers,
+sim is the real scheduler with one worker and a seeded pick of the next fiber,
+so the deterministic tests run the code that ships.
 
 ### The bench
 
 1. **Sim over many seeds.** Every concurrency and panic suite file, with the
-   deadlock report and a replay line on failure. Most of it is #1337.
+   deadlock report and a replay line on failure. `rask test --sim` is most of it.
 2. **The thread-count soak.** Real runtime, reads `/proc/self/task`, fails the
    moment the count passes the worker count.
 3. **Fiber-aware checkers.** The runtime under TSan, with each switch announced
@@ -318,15 +318,14 @@ the deterministic tests run the code that ships.
 
 ### Order
 
-1. Land #1337.
-2. Bench legs 2 and 3, failing on today's runtime.
-3. Cooperative fibers: a task switches only where it blocks (join, channel,
+1. Bench legs 2 and 3, failing on today's runtime.
+2. Cooperative fibers: a task switches only where it blocks (join, channel,
    lock, I/O). Delete the join helper threads, the unused poll-function spawn
    path ([#1336](https://github.com/rask-lang/rask/issues/1336)) and
    `green_threads.c`. `specs/concurrency/runtime-strategy.md` still calls
    `green.c` a stub, so it gets rewritten here too.
-4. Sim on fibers, replacing the baton.
-5. Preemption last. Codegen puts a flag check in every function prologue, and
+3. Sim on fibers, replacing the baton.
+4. Preemption last. Codegen puts a flag check in every function prologue, and
    a loop that never calls anything gets a signal instead (`conc.runtime/P2`),
    so it touches the compiler, not only the runtime. Its test: a task spinning
    in a loop doesn't stop another task from finishing.
