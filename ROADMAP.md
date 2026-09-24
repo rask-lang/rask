@@ -346,11 +346,13 @@ on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
 its worker), #1302 (a box inside a box leaked), #830 (a link
 captured by `spawn` is rejected, E0898), #891 and #1288 (`TaskGroup` runs
 natively; the uncallable free `join_all`/`select_first` are gone), #890 (its
-program is a compile error now, E0882), and four found on the way: an
+program is a compile error now, E0882), #1354 (a deadlock is reported instead
+of hanging), and five found on the way: an
 `ensure` running after its value was consumed, past the 256th ensure and after
 a `join` whose result returned early; E0353 on recursion through a spawned
-closure; and the interpreter skipping every `ensure` inside a `using` or
-`with` block. Open:
+closure; the interpreter skipping every `ensure` inside a `using` or `with`
+block; and a `Thread` handle freed twice by `ensure t.detach()` after its
+join. Open:
 
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
   tasks over one `Shared` plus a channel.
@@ -364,8 +366,6 @@ closure; and the interpreter skipping every `ensure` inside a `using` or
   [#299](https://github.com/rask-lang/rask/issues/299): panic leftovers,
   `staged()` the main one. #298's last case goes when Pool does
   ([#1296](https://github.com/rask-lang/rask/issues/1296)).
-- [#1354](https://github.com/rask-lang/rask/issues/1354): a real deadlock
-  hangs silently; report it once every task is parked.
 
 ## v0.6 — The stdlib matches its own spec
 
