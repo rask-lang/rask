@@ -2,8 +2,9 @@
 // Two peers that each send a large message before reading any of the other's
 // deadlock over TCP once both windows fill. How large "large" is depends on
 // the machine's buffers, so it can pass locally and hang in production. Sim's
-// writes never waited, so this passed on every seed; now a writer waits for
-// room in a 64 KB window, and the deadlock is reported.
+// writes never waited, so this passed on every seed. Now the seed draws each
+// end's receive window, from 1 KB to 256 KB, and on the seeds where both are
+// smaller than the message the deadlock is reported.
 import net
 import async.spawn
 

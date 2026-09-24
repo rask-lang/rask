@@ -286,7 +286,7 @@ fn the_network_corners_answer_instead_of_hanging() {
 
 #[test]
 fn two_writers_with_full_windows_are_a_deadlock() {
-    let (out, code) = sim(&["--seed", "1", "window.rk"]);
+    let (out, code) = sim(&["--seed", "1", "--seeds", "20", "window.rk"]);
     assert_eq!(code, 1, "{out}");
     assert!(out.contains("deadlock: no task can make progress"), "{out}");
     assert!(out.contains("waiting on room in the peer's receive window"), "{out}");

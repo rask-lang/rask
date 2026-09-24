@@ -63,7 +63,7 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 
 | Rule | Description |
 |------|-------------|
-| **F1: Always on** | Adversarial scheduling (S2), short reads/writes, and I/O latency (C4). These are legal behavior, not faults — code that breaks on them was already broken |
+| **F1: Always on** | Adversarial scheduling (S2), short reads/writes, I/O latency (C4), and each connection end's receive window, a power of two from 1 KB to 256 KB: a write waits while the reader holds that much unread. These are legal behavior, not faults — code that breaks on them was already broken |
 | **F2: Opt-in** | `Fault.IoError`, `Fault.Disconnect`, `Fault.ClockJump`, from `import sim`. A test enables them by calling `sim.require(faults: [...])` as its first statement. `Instant` never jumps — `std.time/I1` is monotonic and stays monotonic |
 | **F3: Sim-only tests** | Outside sim, `sim.require` skips the rest of the test and says why, reusing `std.testing/T12`. A fault test never passes vacuously under a plain `rask test` |
 | **F4: Faults land on resources, not on everything** | At each open — a file, a socket, a peer — the seed decides whether *that* resource is sick for this run. A sick resource then fails at a fixed documented rate; a healthy one never fails. The report names what was sick. A file is one resource however many times it is opened; each end of a connection is its own |

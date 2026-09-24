@@ -29,10 +29,17 @@
 #define SIM_FD_BASE (1 << 24)
 #define FIRST_EPHEMERAL_PORT 49152
 #define MAX_LATENCY_NS 500000   // 0.5 ms
-// What a peer can have waiting unread before a write has to wait for it.
-// Real TCP has a window too, and without one two peers each writing a large
-// message before reading never deadlock under sim, though they do for real.
-#define RECV_WINDOW (64 * 1024)
+// How much a connection's reader can have waiting unread before a write to
+// it has to wait. Real TCP has a window too, and without one two peers each
+// writing a large message before reading never deadlock under sim, though
+// they do for real once the windows fill. How large a real window is depends
+// on the machine and the path — Linux starts a receive buffer at 128 KB and
+// grows it to megabytes, a congested link can hold a few KB — so no one size
+// is the true one. The seed draws each end's window, a power of two from
+// MIN_WINDOW to MAX_WINDOW, the way it draws short reads and latency: seeds
+// with a small window find the deadlock, and the replay line keeps it.
+#define MIN_WINDOW_SHIFT 10   // 1 KB
+#define WINDOW_SHIFTS    9    // ... to 256 KB
 
 typedef enum { SOCK_LISTENER, SOCK_CONN } SockKind;
 
@@ -50,6 +57,7 @@ typedef struct SimSock {
     char           *in;
     size_t          in_head, in_len, in_cap;
     int             peer_closed;
+    size_t          window;     // most unread bytes this end holds before writers wait
     int             sick;       // sim/F4: this end's operations may fail
     int             reset;      // cut by an injected Disconnect
     int             peer_reset; // the other end was cut: reads fail, not EOF
@@ -165,6 +173,10 @@ static int injected(SimSock *s, const char *op) {
     return 1;
 }
 
+static size_t draw_window(void) {
+    return (size_t)1 << (MIN_WINDOW_SHIFT + rask_sim_fault_draw() % WINDOW_SHIFTS);
+}
+
 static void draw_sickness(SimSock *s) {
     s->sick = rask_sim_draw_sick(SIM_FAULT_IO_ERROR | SIM_FAULT_DISCONNECT, s->label);
 }
@@ -227,6 +239,8 @@ int64_t rask_sim_net_connect(const char *host, const char *port_str) {
     server->remote_port = client->port;
     snprintf(client->label, sizeof(client->label), "connection to :%d", l->port);
     snprintf(server->label, sizeof(server->label), "connection from :%d", client->port);
+    client->window = draw_window();
+    server->window = draw_window();
     draw_sickness(client);
     draw_sickness(server);
 
@@ -311,7 +325,7 @@ int64_t rask_sim_net_write(int64_t fd, const void *buf, size_t n) {
     if (injected(s, "write")) return -1;
     SimSock *p = s->peer;
     // A full window waits for the reader, as a real send buffer does.
-    while (p && !p->closed && !p->reset && !s->closed && !s->reset && p->in_len >= RECV_WINDOW) {
+    while (p && !p->closed && !p->reset && !s->closed && !s->reset && p->in_len >= p->window) {
         rask_sim_park(p, "room in the peer's receive window");
     }
     if (s->closed) {
@@ -326,7 +340,7 @@ int64_t rask_sim_net_write(int64_t fd, const void *buf, size_t n) {
         errno = EPIPE;
         return -1;
     }
-    size_t room = RECV_WINDOW - p->in_len;
+    size_t room = p->window - p->in_len;
     size_t k = short_len(n < room ? n : room);
     if (p->in_head > 0 && p->in_head + p->in_len + k > p->in_cap) {
         memmove(p->in, p->in + p->in_head, p->in_len);
