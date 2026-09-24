@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Two peers that each send a large message before reading any of the other's
+// deadlock over TCP once both windows fill. How large "large" is depends on
+// the machine's buffers, so it can pass locally and hang in production. Sim's
+// writes never waited, so this passed on every seed; now a writer waits for
+// room in a 64 KB window, and the deadlock is reported.
+import net
+import async.spawn
+
+func big() -> string {
+    return "x".repeat(200000)
+}
+
+test "both sides write before reading" {
+    using Multitasking {
+        let listener = try net.tcp_listen("127.0.0.1:0")
+        let addr = listener.local_addr()
+        let server = spawn(|| {
+            let conn = listener.accept() catch e => { return }
+            let _ = conn.write_text(big())
+            let _ = conn.read_text()
+            let _ = conn.close()
+            let _ = listener.close()
+        })
+        ensure server.detach()
+        let conn = try net.tcp_connect(addr)
+        try conn.write_text(big())
+        let _ = conn.read_text()
+        try conn.close()
+        server.join()!
+    }
+}

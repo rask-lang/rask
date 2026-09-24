@@ -29,6 +29,10 @@
 #define SIM_FD_BASE (1 << 24)
 #define FIRST_EPHEMERAL_PORT 49152
 #define MAX_LATENCY_NS 500000   // 0.5 ms
+// What a peer can have waiting unread before a write has to wait for it.
+// Real TCP has a window too, and without one two peers each writing a large
+// message before reading never deadlock under sim, though they do for real.
+#define RECV_WINDOW (64 * 1024)
 
 typedef enum { SOCK_LISTENER, SOCK_CONN } SockKind;
 
@@ -83,8 +87,36 @@ int rask_sim_net_owns(int64_t fd) {
 }
 
 static int is_loopback(const char *host) {
-    return strcmp(host, "localhost") == 0 || strcmp(host, "127.0.0.1") == 0 ||
-           strcmp(host, "0.0.0.0") == 0;
+    static const char *const names[] = {
+        "localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", "::", "[::]",
+    };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        if (strcmp(host, names[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+// A port number, or -1 when `s` isn't one. `atoi` read "http" as 0, which
+// means "any port" to listen.
+static int parse_port(const char *s) {
+    if (!*s) return -1;
+    int port = 0;
+    for (const char *p = s; *p; p++) {
+        if (*p < '0' || *p > '9') return -1;
+        port = port * 10 + (*p - '0');
+        if (port > 65535) return -1;
+    }
+    return port;
+}
+
+// Cut a connection from this end: this end's calls fail, and so does the
+// peer's next read, with a reset rather than an end of stream.
+static void reset_conn(SimSock *s) {
+    s->reset = 1;
+    if (s->peer) {
+        s->peer->peer_reset = 1;
+        rask_sim_notify(s->peer);
+    }
 }
 
 static SimSock *listener_on(int port) {
@@ -125,11 +157,7 @@ static int injected(SimSock *s, const char *op) {
              cut ? s->label : op, cut ? op : s->label);
     if (!rask_sim_draw_failure(what)) return 0;
     if (cut) {
-        s->reset = 1;
-        if (s->peer) {
-            s->peer->peer_reset = 1;
-            rask_sim_notify(s->peer);
-        }
+        reset_conn(s);
         errno = ECONNRESET;
     } else {
         errno = EIO;
@@ -153,7 +181,11 @@ int64_t rask_sim_net_listen(const char *host, const char *port_str) {
                              "loopback only", host, port_str);
     }
     RASK_SIM_POINT();
-    int port = atoi(port_str);
+    int port = parse_port(port_str);
+    if (port < 0) {
+        errno = EINVAL;
+        return -1;
+    }
     if (port == 0) {
         while (listener_on(next_port)) next_port++;
         port = next_port++;
@@ -174,7 +206,12 @@ int64_t rask_sim_net_connect(const char *host, const char *port_str) {
     }
     RASK_SIM_POINT();
     latency();
-    SimSock *l = listener_on(atoi(port_str));
+    int port = parse_port(port_str);
+    if (port <= 0) {
+        errno = port < 0 ? EINVAL : ECONNREFUSED;
+        return -1;
+    }
+    SimSock *l = listener_on(port);
     if (!l) {
         errno = ECONNREFUSED;
         return -1;
@@ -210,7 +247,11 @@ int64_t rask_sim_net_connect(const char *host, const char *port_str) {
 int64_t rask_sim_net_accept(int64_t fd) {
     SimSock *l = sock_at((int)fd);
     RASK_SIM_POINT();
-    if (!l || l->kind != SOCK_LISTENER) {
+    if (!l) {
+        errno = EBADF;
+        return -1;
+    }
+    if (l->kind != SOCK_LISTENER) {
         errno = EINVAL;
         return -1;
     }
@@ -235,20 +276,28 @@ int64_t rask_sim_net_read(int64_t fd, void *buf, size_t n) {
         return -1;
     }
     if (injected(s, "read")) return -1;
-    while (s->in_len == 0 && !s->peer_closed && !s->peer_reset) {
+    // The latency goes first. Between the wait below and taking the bytes
+    // nothing may yield, or a second reader of the same socket takes them and
+    // this one reports an end of stream that never happened.
+    latency();
+    while (s->in_len == 0 && !s->peer_closed && !s->peer_reset && !s->closed && !s->reset) {
         rask_sim_park(s, "socket read");
     }
-    if (s->peer_reset) {
+    if (s->closed) {
+        errno = EBADF;   // closed by another task while this one waited
+        return -1;
+    }
+    if (s->peer_reset || s->reset) {
         errno = ECONNRESET;
         return -1;
     }
     if (s->in_len == 0) return 0;   // the peer closed and everything is read
-    latency();
     size_t k = short_len(n < s->in_len ? n : s->in_len);
     memcpy(buf, s->in + s->in_head, k);
     s->in_head += k;
     s->in_len -= k;
     if (s->in_len == 0) s->in_head = 0;
+    rask_sim_notify(s);   // a writer waiting for room parks on the reader
     return (int64_t)k;
 }
 
@@ -261,11 +310,28 @@ int64_t rask_sim_net_write(int64_t fd, const void *buf, size_t n) {
     }
     if (injected(s, "write")) return -1;
     SimSock *p = s->peer;
+    // A full window waits for the reader, as a real send buffer does.
+    while (p && !p->closed && !p->reset && !s->closed && !s->reset && p->in_len >= RECV_WINDOW) {
+        rask_sim_park(p, "room in the peer's receive window");
+    }
+    if (s->closed) {
+        errno = EBADF;
+        return -1;
+    }
+    if (s->reset) {
+        errno = ECONNRESET;
+        return -1;
+    }
     if (!p || p->closed || p->reset) {
         errno = EPIPE;
         return -1;
     }
-    size_t k = short_len(n);
+    size_t room = RECV_WINDOW - p->in_len;
+    size_t k = short_len(n < room ? n : room);
+    if (p->in_head > 0 && p->in_head + p->in_len + k > p->in_cap) {
+        memmove(p->in, p->in + p->in_head, p->in_len);
+        p->in_head = 0;
+    }
     size_t need = p->in_head + p->in_len + k;
     if (need > p->in_cap) {
         size_t cap = p->in_cap ? p->in_cap : 256;
@@ -292,7 +358,21 @@ int rask_sim_net_close(int64_t fd) {
     if (--s->refs > 0) return 0;
     s->closed = 1;
     rask_sim_notify(s);
-    if (s->kind == SOCK_CONN && s->peer) {
+    if (s->kind == SOCK_LISTENER) {
+        // Connections nobody accepted are refused, the way a real listener's
+        // backlog is reset when it closes. Left queued, their clients waited
+        // for a reply that could never come.
+        while (s->q_len > 0) {
+            SimSock *conn = s->queue[s->q_head];
+            s->q_head = (s->q_head + 1) % s->q_cap;
+            s->q_len--;
+            conn->closed = 1;
+            reset_conn(conn);
+        }
+    } else if (s->peer) {
+        // Closing with bytes still unread resets the connection, as TCP does:
+        // the peer learns that what it sent wasn't all read.
+        if (s->in_len > 0) reset_conn(s);
         s->peer->peer_closed = 1;
         rask_sim_notify(s->peer);
     }

@@ -274,6 +274,20 @@ fn a_spinning_test_fails_at_its_step_budget_and_replays() {
 }
 
 #[test]
+fn the_network_corners_answer_instead_of_hanging() {
+    let (out, code) = sim(&["--seed", "1", "--seeds", "30", "net_edges.rk"]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
+fn two_writers_with_full_windows_are_a_deadlock() {
+    let (out, code) = sim(&["--seed", "1", "window.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("deadlock: no task can make progress"), "{out}");
+    assert!(out.contains("waiting on room in the peer's receive window"), "{out}");
+}
+
+#[test]
 fn seed_search_flags_need_sim() {
     let out = Command::new(rask_binary())
         .args(["test", "--seeds", "5", "race.rk"])
