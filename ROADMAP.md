@@ -340,16 +340,15 @@ so the deterministic tests run the code that ships.
 
 ### Bugs in the theme
 
-What the bench finds joins this list.
+What the bench finds joins this list. Fixed in #1344: #1311 (the closure form
+of a blocking `Shared` access is rejected, E0897), #1335 (`rask compile` hung
+on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
+its worker), and three found on the way — an `ensure` running after its value
+was consumed, past the 256th ensure and after a `join` whose result returned
+early, and E0353 on recursion through a spawned closure. Open:
 
-- [#1311](https://github.com/rask-lang/rask/issues/1311): `Shared.read`
-  returns garbage on native, all three strategies.
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
   tasks over one `Shared` plus a channel.
-- [#1335](https://github.com/rask-lang/rask/issues/1335): native hangs when a
-  closure is reassigned before it's spawned.
-- [#1342](https://github.com/rask-lang/rask/issues/1342): `select` spins under
-  sim instead of parking, so a deadlocked select isn't reported.
 - [#1302](https://github.com/rask-lang/rask/issues/1302): a `Shared` holding a
   `Shared` leaks the inner box.
 - [#891](https://github.com/rask-lang/rask/issues/891) and
@@ -366,6 +365,8 @@ What the bench finds joins this list.
   ([#1296](https://github.com/rask-lang/rask/issues/1296)).
 - [#890](https://github.com/rask-lang/rask/issues/890): can no longer be
   written. Close it.
+- [#1354](https://github.com/rask-lang/rask/issues/1354): a real deadlock
+  hangs silently; report it once every task is parked.
 
 ## v0.6 — The stdlib matches its own spec
 
