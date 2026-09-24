@@ -1680,7 +1680,26 @@ impl<'a> MirLowerer<'a> {
         };
         if let ExprKind::MethodCall { object, method, .. } = &init_inner.kind {
             if let ExprKind::Ident(obj_name) = &object.kind {
-                if super::is_type_constructor_name(obj_name) {
+                // What `Type.method()` returns is whatever the checker says it
+                // is. `Thread.spawn` hands back a `ThreadHandle`, not a
+                // `Thread`, and reading the prefix off the type name gave the
+                // handle `Thread_join`, which isn't known to consume it — so an
+                // `ensure t.detach()` ran after the join and freed the handle
+                // twice. The type name is the fallback for a call the checker
+                // left no type on.
+                //
+                // Not for a `T or E` or `T?`: the binding holds the wrapper, and
+                // the code that later unwraps it reads the prefix as the payload's.
+                let checked = self
+                    .ctx
+                    .lookup_raw_type(init_inner.id)
+                    .filter(|ty| !matches!(ty, rask_types::Type::Result { .. })
+                        && !ty.is_option())
+                    .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+                    .map(|p| p.split('<').next().unwrap_or(&p).to_string());
+                if let (true, Some(prefix)) = (super::is_type_constructor_name(obj_name), checked) {
+                    self.meta_mut(name).type_prefix = Some(prefix);
+                } else if super::is_type_constructor_name(obj_name) {
                     // Type.method() → prefix is the type name.
                     // Covers stdlib (Vec, Map, string) and user types (Person, Document).
                     // Strip generic args: Map<string, JsonValue> → Map
