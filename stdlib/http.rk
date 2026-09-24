@@ -9,6 +9,7 @@
 
 import async.spawn
 import net
+import io.IoError
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -426,31 +427,47 @@ func format_http_response(resp: Response) -> string {
 // ─── Socket I/O (C runtime) ─────────────────────────────────────
 
 extern "C" {
-    // Both readers fill a string out-param, so they're declared returning
-    // `string`. Declared `-> i64` the result stayed an integer and `as string`
-    // didn't reinterpret it, so every request body read back as the pointer's
-    // decimal value and request parsing failed.
-    func rask_io_read_http_message(fd: i64, max: i64) -> string
-    func rask_io_read_until_close(fd: i64, max: i64) -> string
+    // A message handle, or a negative code `read_message` names.
+    func rask_io_http_read(fd: i64, max: i64, is_response: i64) -> i64
+    // Fills a string out-param, so it's declared returning `string`. Declared
+    // `-> i64` the result stayed an integer and `as string` didn't reinterpret
+    // it, so every request body read back as the pointer's decimal value.
+    func rask_io_http_take(message: i64) -> string
 
     func rask_io_write_string(fd: i64, s: i64) -> i64
     func rask_net_tcp_connect(addr: i64) -> i64
     func rask_io_close_fd(fd: i64) -> void
 }
 
-// Read one request from a TCP connection: the headers, then the body their
-// Content-Length announces (up to max_bytes). One read is not a request.
-func read_request_raw(conn_fd: i64, max_bytes: i64) -> string {
-    return unsafe {
-        rask_io_read_http_message(conn_fd, max_bytes)
+// One whole HTTP message from a TCP connection: the headers, then the body
+// their Content-Length announces, or for a response without one, everything
+// to the end of the stream. One read is not a message, and a connection that
+// ends or resets before the last byte is an error, never a shorter body.
+func read_message(conn_fd: i64, max_bytes: i64, is_response: bool) -> string or HttpError {
+    let got = unsafe rask_io_http_read(conn_fd, max_bytes, if is_response { 1 } else { 0 })
+    if got == -1 {
+        return HttpError.Io(IoError.last_os_error().message())
     }
+    if got == -2 {
+        return HttpError.Io("the connection ended before the whole message arrived")
+    }
+    if got == -3 {
+        return HttpError.InvalidResponse("message larger than {max_bytes} bytes")
+    }
+    if got == -4 {
+        return HttpError.InvalidResponse("Content-Length is not a number")
+    }
+    if got == -5 {
+        return HttpError.InvalidResponse("chunked transfer encoding isn't supported")
+    }
+    return unsafe rask_io_http_take(got)
 }
 
-// Write a string to a TCP connection.
-func write_raw(conn_fd: i64, data: string) {
-    unsafe {
+// Write a string to a TCP connection. False when it didn't all go out.
+func write_raw(conn_fd: i64, data: string) -> bool {
+    return (unsafe {
         rask_io_write_string(conn_fd, data as i64)
-    }
+    }) >= 0
 }
 
 // Close a TCP connection.
@@ -644,11 +661,14 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
         req = req.with_body(body)
     }
     let raw_req = format_http_request(req, host)
-    write_raw(conn_fd, raw_req)
+    if !write_raw(conn_fd, raw_req) {
+        close_raw(conn_fd)
+        return HttpError.ConnectionFailed("could not send the request to {addr}")
+    }
 
-    // Read response (reads until server closes connection)
-    let raw_resp = unsafe {
-        rask_io_read_until_close(conn_fd, 1048576)
+    let raw_resp = read_message(conn_fd, 1048576, true) catch e => {
+        close_raw(conn_fd)
+        return e
     }
 
     // Close connection
@@ -670,7 +690,7 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
 // is not available here.
 @allow(style/snake-case-func)
 func TcpConnection_read_http_request(conn_fd: i64) -> i64 or HttpError {
-    let raw = read_request_raw(conn_fd, 65536)
+    let raw = try read_message(conn_fd, 65536, false)
     let request = try parse_http_request(raw)
 
     // Build the legacy struct layout: [method_str, path, body, headers_map]
@@ -692,12 +712,15 @@ func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or Ht
         resp_ptr as Response
     }
     let raw = format_http_response(resp)
-    write_raw(conn_fd, raw)
+    let sent = write_raw(conn_fd, raw)
     // The response says `Connection: close`, so close it — the same promise
     // `Responder.respond` keeps. Without this a caller using the low-level
     // `TcpConnection.write_http_response` got the #1055 bug on a second path:
     // client hangs waiting for an EOF, descriptor held for the process's life.
     close_raw(conn_fd)
+    if !sent {
+        return HttpError.Io("could not send the response")
+    }
     return 0
 }
 
@@ -714,7 +737,10 @@ extend HttpServer {
         let conn = self.listener.accept() catch _ => {
             return HttpError.Io("accept failed")
         }
-        let raw = read_request_raw(conn as i64, 65536)
+        let raw = read_message(conn as i64, 65536, false) catch e => {
+            close_raw(conn as i64)
+            return e
+        }
         let request = parse_http_request(raw) catch _ => {
             // No responder is handed out on this path, so nothing downstream
             // will ever close this connection. Close it here or the descriptor
@@ -747,12 +773,16 @@ struct Responder {
 extend Responder {
     public func respond(take self, response: Response) -> void or HttpError {
         let raw = format_http_response(response)
-        write_raw(self.conn_fd, raw)
+        let sent = write_raw(self.conn_fd, raw)
         // `format_http_response` writes `Connection: close`, so close it. A
         // client that believes the header waits for an EOF that never arrives
         // — Rask's own client hung on Rask's own server — and the server holds
         // a descriptor per request for the life of the process.
         close_raw(self.conn_fd)
+        if !sent {
+            return HttpError.Io("could not send the response")
+        }
+        return
     }
 }
 
@@ -769,7 +799,10 @@ extend http {
         let listener = net.tcp_listen(addr) catch _ => {
             return HttpError.ConnectionFailed("failed to bind {addr}")
         }
-        return HttpServer { listener, addr }
+        // The address the listener got, not the one asked for: `:0` asks the
+        // OS for a port, and handing back `:0` sent clients nowhere.
+        let bound = listener.local_addr()
+        return HttpServer { listener, addr: bound }
     }
 
     /// One-line HTTP server. Spawns a green task per request.
