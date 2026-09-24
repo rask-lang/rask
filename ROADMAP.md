@@ -34,8 +34,8 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 555 green, 8 registered red | `tests/differential.sh` |
-| Programs that leak | 5, holding 8 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Suite programs agreeing on both backends | 557 green, 7 registered red | `tests/differential.sh` |
+| Programs that leak | 4, holding 6 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
 | Programs memcheck finds an error in | 0 of 557 | `tests/memcheck_gate.sh` |
 | Concurrency files TSan reports a race in | 0 of 72 | `tests/tsan_gate.sh` |
@@ -343,14 +343,13 @@ so the deterministic tests run the code that ships.
 What the bench finds joins this list. Fixed in #1344: #1311 (the closure form
 of a blocking `Shared` access is rejected, E0897), #1335 (`rask compile` hung
 on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
-its worker), and three found on the way — an `ensure` running after its value
-was consumed, past the 256th ensure and after a `join` whose result returned
-early, and E0353 on recursion through a spawned closure. Open:
+its worker), #1302 (a box inside a box leaked), and three found on the way — an
+`ensure` running after its value was consumed, past the 256th ensure and after
+a `join` whose result returned early, and E0353 on recursion through a spawned
+closure. Open:
 
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
   tasks over one `Shared` plus a channel.
-- [#1302](https://github.com/rask-lang/rask/issues/1302): a `Shared` holding a
-  `Shared` leaks the inner box.
 - [#891](https://github.com/rask-lang/rask/issues/891) and
   [#1288](https://github.com/rask-lang/rask/issues/1288): `join_all` takes a
   `Vec` of task handles, which can't be built. Native `TaskGroup` is the answer,

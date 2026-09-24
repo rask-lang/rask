@@ -524,6 +524,9 @@ impl Interpreter {
                     let guard = c.lock().unwrap();
                     Ok(guard.clone())
                 }
+                // Another handle on the same cell, as under the other two
+                // strategies.
+                "clone" => Ok(Value::Cell(Arc::clone(c))),
                 "set" => {
                     if args.len() != 1 {
                         return Err(RuntimeError::TypeError("Cell.set expects 1 argument".into()));

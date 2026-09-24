@@ -80,14 +80,13 @@ pub fn container_tag(rendered: &str) -> Option<i64> {
 /// descriptor does. Without it `Shared<Map<string, i64>, Mutex>` freed the
 /// mutex and left the map and its tables behind.
 ///
-/// Only the two byte stores. An arena is not a box's payload, a nested box
-/// would need its own strategy read at the same time, and a string is
-/// refcounted and released by whoever put it in.
+/// An arena is not a box's payload, and a string is refcounted and released
+/// by whoever put it in.
 ///
-/// These three values are duplicated in `rask_runtime.h` as
-/// `RASK_BOX_PAYLOAD_*`. They are three integers with no other reader; keeping
-/// them in step is a comment because generating them would be more machinery
-/// than the thing itself.
+/// These values are duplicated in `rask_runtime.h` as `RASK_BOX_PAYLOAD_*`.
+/// They are a handful of integers with no other reader; keeping them in step
+/// is a comment because generating them would be more machinery than the
+/// thing itself.
 pub const BOX_PAYLOAD_NONE: i64 = 0;
 pub const BOX_PAYLOAD_VEC: i64 = 1;
 pub const BOX_PAYLOAD_MAP: i64 = 2;
@@ -95,14 +94,24 @@ pub const BOX_PAYLOAD_MAP: i64 = 2;
 /// address and the frame that built the closure gave it away, so the block
 /// comes back when the box's last reference does (#1253).
 pub const BOX_PAYLOAD_CLOSURE: i64 = 3;
+/// Another box. Its strategy isn't this box's to know: every box starts with
+/// its own release, and the runtime calls that (#1302).
+pub const BOX_PAYLOAD_BOX: i64 = 4;
 
 /// The payload kind for a rendered type name.
 pub fn box_payload_kind(rendered: &str) -> i64 {
     match container_tag(rendered) {
         Some(ELEM_VEC) => BOX_PAYLOAD_VEC,
         Some(ELEM_MAP) => BOX_PAYLOAD_MAP,
+        _ if is_box_type(rendered) => BOX_PAYLOAD_BOX,
         _ => BOX_PAYLOAD_NONE,
     }
+}
+
+fn is_box_type(rendered: &str) -> bool {
+    !rendered.ends_with('?')
+        && !rendered.contains(" or ")
+        && rendered.split('<').next().unwrap_or(rendered).trim() == "Shared"
 }
 
 /// The payload kind for a checker type, with its rendered head where it has

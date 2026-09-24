@@ -119,12 +119,13 @@ typedef struct {
 // container payload is a handle in the box's slot rather than bytes the box can
 // free, and only the runtime knows when the last reference goes.
 //
-// Same three integers as `elem_strs::BOX_PAYLOAD_*` on the compiler side; that
+// Same integers as `elem_strs::BOX_PAYLOAD_*` on the compiler side; that
 // comment names this one back.
 #define RASK_BOX_PAYLOAD_NONE 0
 #define RASK_BOX_PAYLOAD_VEC  1
 #define RASK_BOX_PAYLOAD_MAP  2
 #define RASK_BOX_PAYLOAD_CLOSURE 3
+#define RASK_BOX_PAYLOAD_BOX  4   // another box: freed through its own header
 
 #define RASK_OWNED_KIND_SHIFT 28
 #define RASK_OWNED_OFFSET_MASK 0x0FFFFFFF

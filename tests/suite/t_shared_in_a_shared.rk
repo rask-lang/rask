@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A box holding a box frees both (#1302).
+//
+//     let b: Shared<Shared<i64, Local>, Local> = Shared.local(Shared.local(42))
+//     rask: 2 allocations never released
+//
+// The outer box kept a payload kind saying how to free what it holds, and a
+// box wasn't one of the kinds, so the inner one was left behind. Every box now
+// starts with its own release, and the outer one calls it without needing to
+// know the inner one's strategy. Each pairing below is checked by the leak gate.
+
+import sync.{Shared, Local, Readers, Mutex}
+
+test "a box in a box, every strategy on each side" {
+    let a: Shared<Shared<i64, Mutex>, Local> = Shared.local(Shared.mutex(1))
+    let b: Shared<Shared<i64, Local>, Readers> = Shared.new(Shared.local(2))
+    let c: Shared<Shared<i64, Readers>, Mutex> = Shared.mutex(Shared.new(3))
+    mut total = 0
+    with a.read() as inner {
+        with inner.read() as v {
+            total += v
+        }
+    }
+    with b.read() as inner {
+        total += inner.get()
+    }
+    with c.read() as inner {
+        with inner.read() as v {
+            total += v
+        }
+    }
+    assert total == 6
+}
+
+test "three deep" {
+    let d: Shared<Shared<Shared<i64, Local>, Local>, Local> = Shared.local(Shared.local(Shared.local(7)))
+    with d.read() as mid {
+        with mid.read() as inner {
+            assert inner.get() == 7
+        }
+    }
+}
+
+func main() {}
