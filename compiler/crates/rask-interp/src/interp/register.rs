@@ -89,7 +89,7 @@ impl Interpreter {
         for (name, decl) in rask_stdlib::modules::enum_decls() {
             let entry = self.enums.entry(name.clone()).or_insert_with(|| {
                 let mut implemented = decl.clone();
-                implemented.methods.retain(|m| !m.body.is_empty());
+                implemented.methods.retain(|m| !m.body_lives_elsewhere());
                 implemented
             });
             let methods = entry.methods.clone();

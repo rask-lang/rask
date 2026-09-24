@@ -718,7 +718,7 @@ impl Interpreter {
             .get(type_name)
             .and_then(|ms| ms.get(method))
             .cloned()
-            .filter(|f| !f.body.is_empty())
+            .filter(|f| !f.body_lives_elsewhere())
         else {
             return Err(RuntimeError::NoSuchMethod {
                 ty: type_name.to_string(),
@@ -744,7 +744,7 @@ impl Interpreter {
             .get(type_name)
             .and_then(|ms| ms.get(method))
             .cloned()
-            .filter(|f| !f.body.is_empty())
+            .filter(|f| !f.body_lives_elsewhere())
         else {
             return Err(RuntimeError::NoSuchMethod {
                 ty: type_name.to_string(),

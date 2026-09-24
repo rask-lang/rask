@@ -1098,10 +1098,10 @@ impl Interpreter {
 
                     if let Some(type_methods) = self.methods.get(name).cloned() {
                         if let Some(method_fn) = type_methods.get(method) {
-                            // Skip empty-body stubs (e.g. fs.write_bytes) —
-                            // they exist for native codegen and should fall
+                            // Skip a declaration whose body lives in the
+                            // backend (e.g. `@native` fs.write_bytes): it falls
                             // through to the built-in module dispatch.
-                            let has_body = !method_fn.body.is_empty();
+                            let has_body = !method_fn.body_lives_elsewhere();
                             let is_static = method_fn
                                 .params
                                 .first()

@@ -170,6 +170,17 @@ pub struct FnDecl {
     pub span: Span,
 }
 
+impl FnDecl {
+    /// Declared without a Rask body: the backend implements it (`@native`,
+    /// `@builtin`) or nothing does yet (`@unimplemented`). An empty `{}`
+    /// without one of those is a real body that does nothing.
+    pub fn body_lives_elsewhere(&self) -> bool {
+        self.attrs.iter().any(|a| {
+            a == "native" || a.starts_with("native(") || a == "builtin" || a == "unimplemented"
+        })
+    }
+}
+
 /// A function parameter.
 #[derive(Debug, Clone)]
 pub struct Param {
