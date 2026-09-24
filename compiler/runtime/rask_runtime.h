@@ -1363,6 +1363,10 @@ void     rask_process_release(int64_t handle);
 // Round-robin starting offset for a native `select` with num_arms arms
 // (conc.select/P1) — see rask-mir's lower_select.
 int64_t rask_select_rotate(int64_t num_arms);
+// A select with nothing ready: read the epoch before probing the arms, and
+// if none was ready, wait for it to move (channel.c).
+int64_t rask_select_epoch(void);
+void    rask_select_wait(int64_t seen);
 
 // ─── Async I/O (dual-path: green task or blocking) ──────────
 // Inside a green task, these submit async ops and return PENDING.

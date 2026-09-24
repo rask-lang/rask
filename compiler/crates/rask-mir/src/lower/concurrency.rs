@@ -627,9 +627,17 @@ impl<'a> MirLowerer<'a> {
         // How many arms this round has probed — the cycle stops once every
         // arm's had exactly one turn, wherever it started.
         let visited = self.builder.alloc_temp(MirType::I64);
+        // Read before the arms are probed, so a channel that changes after a
+        // probe found it not ready still wakes the wait below (#1342).
+        let epoch = self.builder.alloc_temp(MirType::I64);
 
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: poll_block }));
         self.builder.switch_to_block(poll_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(epoch),
+            func: FunctionRef::internal("rask_select_epoch".to_string()),
+            args: vec![],
+        }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: any_open,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
@@ -786,11 +794,14 @@ impl<'a> MirLowerer<'a> {
                 else_block: all_closed,
             }));
 
+            // Nothing ready: sleep until some channel changes, then probe
+            // again. It used to yield and probe straight away, which spun a
+            // worker and, under sim, hid a deadlocked select as a busy one.
             self.builder.switch_to_block(wait);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("rask_yield".to_string()),
-                args: vec![],
+                func: FunctionRef::internal("rask_select_wait".to_string()),
+                args: vec![MirOperand::Local(epoch)],
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: poll_block,

@@ -1426,6 +1426,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         // Rotating start offset for a plain `select`'s probe order (conc.select/P1).
         StdlibEntry::simple("rask_select_rotate", "rask_select_rotate", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_select_epoch", "rask_select_epoch", &[], Some(types::I64), false),
+        StdlibEntry::simple("rask_select_wait", "rask_select_wait", &[types::I64], None, false),
         StdlibEntry::neg_err("Receiver_close", "rask_recver_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Receiver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
         StdlibEntry::simple("receive", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),

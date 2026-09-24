@@ -106,6 +106,58 @@ static void channel_maybe_destroy(RaskChannel *ch) {
     }
 }
 
+// ─── Waking a select ───────────────────────────────────────
+//
+// A `select` with no arm ready waits for *any* of its channels to change, and
+// one waiter can't sit on several condvars at once. So every change to any
+// channel — a value in, a value out, an end closed — moves one global epoch,
+// and a waiting select sleeps until the epoch moves past the one it read before
+// probing its arms. Any change after that read wakes it, so none is missed. A
+// change on an unrelated channel wakes it too, and it probes and sleeps again:
+// a spurious wake, not a busy loop.
+//
+// The wait goes through rask_task_cond_wait, so a green task parks, a sim task
+// parks under the seeded scheduler (and can be reported as deadlocked, #1342),
+// and a thread blocks. Channel operations skip the lock entirely while no
+// select is waiting.
+
+static atomic_ullong select_epoch = 0;
+static atomic_int select_waiters = 0;
+static pthread_mutex_t select_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t select_cond = PTHREAD_COND_INITIALIZER;
+
+static void select_notify(void) {
+    atomic_fetch_add_explicit(&select_epoch, 1, memory_order_seq_cst);
+    if (atomic_load_explicit(&select_waiters, memory_order_seq_cst) == 0) return;
+    pthread_mutex_lock(&select_lock);
+    rask_task_cond_broadcast(&select_cond);
+    pthread_mutex_unlock(&select_lock);
+}
+
+static void chan_signal(pthread_cond_t *c) {
+    rask_task_cond_signal(c);
+    select_notify();
+}
+
+static void chan_broadcast(pthread_cond_t *c) {
+    rask_task_cond_broadcast(c);
+    select_notify();
+}
+
+int64_t rask_select_epoch(void) {
+    return (int64_t)atomic_load_explicit(&select_epoch, memory_order_seq_cst);
+}
+
+void rask_select_wait(int64_t seen) {
+    atomic_fetch_add_explicit(&select_waiters, 1, memory_order_seq_cst);
+    pthread_mutex_lock(&select_lock);
+    while ((int64_t)atomic_load_explicit(&select_epoch, memory_order_seq_cst) == seen) {
+        rask_task_cond_wait(&select_cond, &select_lock, "select");
+    }
+    pthread_mutex_unlock(&select_lock);
+    atomic_fetch_sub_explicit(&select_waiters, 1, memory_order_seq_cst);
+}
+
 // ─── Buffered operations ───────────────────────────────────
 
 static int64_t buffered_send(RaskChannel *ch, const void *data) {
@@ -131,7 +183,7 @@ static int64_t buffered_send(RaskChannel *ch, const void *data) {
     ch->tail = (ch->tail + 1) % ch->capacity;
     ch->count++;
 
-    rask_task_cond_signal(&ch->not_empty);
+    chan_signal(&ch->not_empty);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -157,7 +209,7 @@ static int64_t buffered_recv(RaskChannel *ch, void *data_out) {
     ch->head = (ch->head + 1) % ch->capacity;
     ch->count--;
 
-    rask_task_cond_signal(&ch->not_full);
+    chan_signal(&ch->not_full);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -181,7 +233,7 @@ static int64_t buffered_try_send(RaskChannel *ch, const void *data) {
     ch->tail = (ch->tail + 1) % ch->capacity;
     ch->count++;
 
-    rask_task_cond_signal(&ch->not_empty);
+    chan_signal(&ch->not_empty);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -204,7 +256,7 @@ static int64_t buffered_try_recv(RaskChannel *ch, void *data_out) {
     ch->head = (ch->head + 1) % ch->capacity;
     ch->count--;
 
-    rask_task_cond_signal(&ch->not_full);
+    chan_signal(&ch->not_full);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -240,7 +292,7 @@ static int64_t unbuffered_send(RaskChannel *ch, const void *data) {
     ch->handoff_data  = data;
     ch->handoff_ready = 1;
     ch->handoff_taken = 0;
-    rask_task_cond_signal(&ch->not_empty);
+    chan_signal(&ch->not_empty);
 
     // Wait until a receiver has copied it.
     while (!ch->handoff_taken && !ch->closed) {
@@ -256,7 +308,7 @@ static int64_t unbuffered_send(RaskChannel *ch, const void *data) {
     ch->handoff_ready = 0;
     ch->handoff_data  = NULL;
     ch->handoff_taken = 0;
-    rask_task_cond_broadcast(&ch->not_full);   // the next sender's turn
+    chan_broadcast(&ch->not_full);   // the next sender's turn
 
     pthread_mutex_unlock(&ch->mutex);
     return delivered ? RASK_CHAN_OK : RASK_CHAN_CLOSED;
@@ -269,7 +321,7 @@ static void unbuffered_take(RaskChannel *ch, void *data_out) {
     // stays the sender's until it has seen this.
     ch->handoff_ready = 0;
     ch->handoff_taken = 1;
-    rask_task_cond_broadcast(&ch->not_full);
+    chan_broadcast(&ch->not_full);
 }
 
 static int64_t unbuffered_recv(RaskChannel *ch, void *data_out) {
@@ -400,7 +452,7 @@ void rask_sender_drop(RaskSender *tx) {
         // Last sender dropped — wake any blocked receivers
         pthread_mutex_lock(&ch->mutex);
         ch->closed = 1;
-        rask_task_cond_broadcast(&ch->not_empty);
+        chan_broadcast(&ch->not_empty);
         pthread_mutex_unlock(&ch->mutex);
         channel_maybe_destroy(ch);
     }
@@ -415,7 +467,7 @@ void rask_recver_drop(RaskRecver *rx) {
         // Last receiver dropped — wake any blocked senders
         pthread_mutex_lock(&ch->mutex);
         ch->closed = 1;
-        rask_task_cond_broadcast(&ch->not_full);
+        chan_broadcast(&ch->not_full);
         pthread_mutex_unlock(&ch->mutex);
         channel_maybe_destroy(ch);
     }

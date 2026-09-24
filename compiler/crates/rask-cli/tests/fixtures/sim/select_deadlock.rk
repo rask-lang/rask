@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A select whose channels nobody will ever send on (#1342). It used to yield
+// and probe again forever, so sim always had a runnable task and never saw the
+// deadlock; the test ran into its step budget instead.
+
+test "select on channels nobody will ever send on" {
+    using Multitasking {
+        let (tx_a, rx_a) = Channel<i64>.buffered(1)
+        let (tx_b, rx_b) = Channel<i64>.buffered(1)
+        let got = select {
+            rx_a -> v: v,
+            rx_b -> v: v,
+        }
+        assert got == 0
+    }
+}
