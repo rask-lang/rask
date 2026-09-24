@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Two tasks doing read-modify-write on one file lose an update on some
+// seeds. File operations weren't scheduling points, so each task's read and
+// write ran back to back and 300 seeds all passed.
+
+import fs
+import async.spawn
+
+func bump() {
+    let t = fs.read_text("sim_counter.txt") catch e => { "" }
+    let _ = fs.write_text("sim_counter.txt", "{t}x")
+}
+
+test "lost update through a file" {
+    try fs.write_text("sim_counter.txt", "")
+    using Multitasking {
+        let a = spawn(|| { bump() })
+        ensure a.detach()
+        let b = spawn(|| { bump() })
+        ensure b.detach()
+        a.join()!
+        b.join()!
+    }
+    assert (try fs.read_text("sim_counter.txt")) == "xx"
+}

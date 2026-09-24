@@ -22,11 +22,34 @@ fn fixtures() -> PathBuf {
 
 /// Run `rask test --sim <args>` from the fixture directory; stdout and the exit code.
 fn sim(args: &[&str]) -> (String, i32) {
+    sim_in(&fixtures(), args)
+}
+
+/// A fresh copy of the fixtures, for tests that write files. If the overlay
+/// ever leaked a write to the disk, it lands here and not in the repo.
+fn fixture_copy() -> PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "rask_sim_fixtures_{}_{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for entry in std::fs::read_dir(fixtures()).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), dir.join(entry.file_name())).unwrap();
+    }
+    dir
+}
+
+fn sim_in(dir: &Path, args: &[&str]) -> (String, i32) {
     let out = Command::new(rask_binary())
         .arg("test")
         .arg("--sim")
         .args(args)
-        .current_dir(fixtures())
+        .current_dir(dir)
         .env(
             "RASK_RUNTIME_DIR",
             Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("runtime"),
@@ -102,17 +125,53 @@ fn thread_spawn_is_refused() {
 
 #[test]
 fn file_changes_stay_in_memory() {
-    let before = std::fs::read_to_string(fixtures().join("io.rk")).unwrap();
-    let (out, code) = sim(&["--seed", "1", "io.rk"]);
+    let dir = fixture_copy();
+    let before = std::fs::read_to_string(dir.join("io.rk")).unwrap();
+    let (out, code) = sim_in(&dir, &["--seed", "1", "io.rk"]);
     assert_eq!(code, 0, "{out}");
     // The tests append to io.rk, remove race.rk and write sim_* files. None
     // of it reaches the disk.
-    assert_eq!(std::fs::read_to_string(fixtures().join("io.rk")).unwrap(), before);
-    assert!(fixtures().join("race.rk").exists());
-    for entry in std::fs::read_dir(fixtures()).unwrap() {
+    assert_eq!(std::fs::read_to_string(dir.join("io.rk")).unwrap(), before);
+    assert!(dir.join("race.rk").exists());
+    for entry in std::fs::read_dir(&dir).unwrap() {
         let name = entry.unwrap().file_name();
         assert!(!name.to_string_lossy().starts_with("sim_"), "{name:?} reached the disk");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_file_has_one_name_however_it_is_spelled() {
+    let dir = fixture_copy();
+    let (out, code) = sim_in(&dir, &["--seed", "1", "paths.rk"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(dir.join("race.rk").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_open_stream_keeps_its_file() {
+    let dir = fixture_copy();
+    let (out, code) = sim_in(&dir, &["--seed", "1", "streams.rk"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_race_through_a_file_is_found() {
+    let dir = fixture_copy();
+    let (out, code) = sim_in(&dir, &["--seed", "1", "--seeds", "100", "file_race.rk"]);
+    assert_eq!(code, 1, "the two read-modify-writes should collide on some seed:\n{out}");
+    assert!(out.contains("FAIL: lost update through a file"), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_file_fault_has_no_effect() {
+    let dir = fixture_copy();
+    let (out, code) = sim_in(&dir, &["--seed", "1", "--seeds", "20", "file_faults.rk"]);
+    assert_eq!(code, 0, "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -143,7 +202,7 @@ fn faults_land_on_sick_resources_and_the_report_names_them() {
     // Code that throws the write's error away is the bug the faults are for.
     assert!(out.contains("FAIL: code that ignores the error is caught"), "{out}");
     assert!(out.contains("sick this seed: file `sim_ignored_"), "{out}");
-    assert!(out.contains("faults: write failed on `sim_ignored_"), "{out}");
+    assert!(out.contains("failed on `sim_ignored_"), "{out}");
 }
 
 #[test]

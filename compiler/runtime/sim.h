@@ -67,11 +67,10 @@ _Noreturn void rask_test_sim_fail(const char *msg);
 // would have reached.
 void rask_sim_unsimulated(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
-// Filesystem overlay (sim_fs.c, sim/B5). `fopen` sets *handled to 0 and
-// `stat` returns SIM_FS_PASS when the overlay has nothing for the path, and
-// the caller asks the real tree. The rest always answer.
-#define SIM_FS_PASS (-1000)
-FILE *rask_sim_fs_fopen(const char *path, const char *mode, int *handled);
+// Filesystem overlay (sim_fs.c, sim/B5). Under sim every file operation goes
+// here; the overlay asks the real tree itself for what the test hasn't
+// touched.
+FILE *rask_sim_fs_fopen(const char *path, const char *mode);
 int   rask_sim_fs_rename(const char *from, const char *to);
 int   rask_sim_fs_remove(const char *path);
 int   rask_sim_fs_mkdir(const char *path);

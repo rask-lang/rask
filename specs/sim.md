@@ -56,7 +56,7 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 | **C1: Fixed start** | `Instant` starts at 0; `SystemTime` starts at 2020-01-01T00:00:00Z. Wall-clock start is not an input (`determinism/D10`) |
 | **C2: Jump when idle** | When nothing is runnable and a timer is pending, the clock jumps to the earliest deadline and wakes it. A 30-day `sleep` costs no wall time |
 | **C3: Time is charged, not free** | Every scheduling step advances the clock 1 µs. Clock reads (`Instant.now()`, `elapsed()`, `SystemTime.now()`) are scheduling steps (S3), so observing time costs time |
-| **C4: I/O latency** | Every simulated I/O completes at `now + latency`, drawn per operation class from the fault stream. Slow-peer orderings come from the seed, not from a mock. *Built for sockets; file operations have no latency yet* |
+| **C4: I/O latency** | Every simulated I/O completes at `now + latency`, drawn per operation class from the fault stream. Slow-peer orderings come from the seed, not from a mock. |
 | **C5: No advance API** | Tests cannot advance the clock explicitly at v1. Same code in both modes (`determinism/D3`) — a test that wants time to pass sleeps |
 
 ## Faults

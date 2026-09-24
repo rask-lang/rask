@@ -681,31 +681,24 @@ int32_t rask_libc_mkdir_or_dir(const char *path, uint32_t mode) {
 
 void *rask_libc_fopen(const char *path, const char *mode) {
 #ifdef RASK_SIM
-    if (rask_sim_active()) {
-        int handled;
-        FILE *f = rask_sim_fs_fopen(path, mode, &handled);
-        if (handled) return f;
-    }
+    if (rask_sim_active()) return rask_sim_fs_fopen(path, mode);
 #endif
     return fopen(path, mode);
 }
 
 static int path_stat(const char *path, struct stat *st) {
 #ifdef RASK_SIM
-    if (rask_sim_active()) {
-        int rc = rask_sim_fs_stat(path, st);
-        if (rc != SIM_FS_PASS) return rc;
-    }
+    if (rask_sim_active()) return rask_sim_fs_stat(path, st);
 #endif
     return stat(path, st);
 }
 
 int32_t rask_libc_access(const char *path, int32_t mode) {
 #ifdef RASK_SIM
+    // Existence is all sim answers: the overlay has no permissions to check.
     if (rask_sim_active()) {
         struct stat st;
-        int rc = rask_sim_fs_stat(path, &st);
-        if (rc != SIM_FS_PASS) return rc;
+        return rask_sim_fs_stat(path, &st);
     }
 #endif
     return access(path, mode);
@@ -904,12 +897,14 @@ int64_t rask_file_read_bytes(int64_t file) {
 // built on the Rask side (stdlib/io.rk), which the runtime can't do. A null
 // handle is EBADF.
 
+// `ferror`, not the count, says whether a write failed: an unbuffered cookie
+// stream (the sim overlay's) reports the whole count for a write that failed.
 int64_t rask_fwrite_all(void *stream, const char *ptr, size_t len) {
     FILE *f = (FILE *)stream;
     while (len > 0) {
         size_t written = fwrite(ptr, 1, len, f);
-        if (written == 0) {
-            if (!ferror(f)) errno = EIO;
+        if (ferror(f) || written == 0) {
+            if (errno == 0) errno = EIO;
             return -1;
         }
         ptr += written;

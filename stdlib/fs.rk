@@ -208,7 +208,7 @@ extend fs {
             let failed = if n == 0 {
                 (unsafe ferror(src)) != 0
             } else {
-                (unsafe fwrite(buf, 1, n, dst)) < n
+                (unsafe fwrite(buf, 1, n, dst)) < n || (unsafe ferror(dst)) != 0
             }
             // errno is read before either close can touch it.
             if failed {
@@ -395,7 +395,9 @@ func read_to_end(f: *u8) -> RawBytes or IoError {
 func write_all_then_close(f: *u8, ptr: *u8, size: usize) -> void or IoError {
     let len = size.wrap<u64>()
     let wrote = unsafe fwrite(ptr, 1, len, f)
-    if wrote < len {
+    // `ferror` as well as the count: an unbuffered stream can report the
+    // whole count for a write that failed.
+    if wrote < len || (unsafe ferror(f)) != 0 {
         let err = IoError.last_os_error()
         unsafe fclose(f)
         return err
