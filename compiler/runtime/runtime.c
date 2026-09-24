@@ -575,6 +575,7 @@ RaskVec *rask_cli_args(void) {
 // runs out; distinguishing EOF from a read *error* is what stops a failure
 // being reported as end-of-input (#682).
 int64_t rask_io_read_line(RaskStr *out, RaskStr *err_out) {
+    RASK_SIM_UNSIMULATED("reading stdin");
     char buf[4096];
     rask_string_new(err_out);
     if (!fgets(buf, sizeof(buf), stdin)) {
@@ -1305,6 +1306,7 @@ int64_t rask_io_std_flush(int64_t which) {
 // Read up to `max` bytes from stdin, stopping at end of input. Returns a
 // `Vec<u8>` cast to i64.
 int64_t rask_io_std_read_bytes(int64_t max) {
+    RASK_SIM_UNSIMULATED("reading stdin");
     RaskVec *v = rask_vec_new(1, NULL, 0);
     if (max <= 0) return (int64_t)(uintptr_t)v;
     for (int64_t i = 0; i < max; i++) {

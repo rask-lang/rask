@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A test that passes and leaks. A match over `Vec<T> or E` drops only the Vec
+// side, so the IoError's message stays allocated (#1338, tests/known_leaks.txt).
+// When that is fixed this needs another leak, or the sim test using it fails.
+import fs
+
+test "a missing directory is an error" {
+    mut failed = false
+    match fs.list_dir("/definitely/not/here") {
+        Vec<string> as names => { failed = false }
+        IoError as e => { failed = true }
+    }
+    assert failed
+}

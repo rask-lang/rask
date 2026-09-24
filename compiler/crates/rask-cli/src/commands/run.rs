@@ -348,7 +348,7 @@ fn test_exit_code(status: &process::ExitStatus) -> i32 {
 }
 
 /// `rask_leak_check`'s exit code in `runtime/string.c`.
-const RASK_LEAK_EXIT: i32 = 97;
+pub(super) const RASK_LEAK_EXIT: i32 = 97;
 
 /// Pass the test binary's stderr through to ours.
 ///

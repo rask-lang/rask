@@ -135,6 +135,8 @@ static const char *record_mark(void) {
 // variable or allocation outlives the test that made it.
 
 #ifdef RASK_SIM
+extern void rask_const_free(void);   // generated with the module constants
+
 static const char *sim_current_name;
 
 static void sim_print_position(void) {
@@ -323,6 +325,14 @@ int rask_test_run(test_fn fn, const char *name) {
     if (!sim_select(name)) return 0;
     int failed = test_run_one(fn, name);
     fflush(NULL);
+    // What `main` does at exit, which this process never reaches: without it
+    // RASK_LEAK_CHECK was silent under sim whatever the test leaked. Only on a
+    // pass — a failed test's leak is the failure's, not a second finding.
+    if (!failed) {
+        rask_await_detached_tasks();
+        rask_const_free();
+        rask_leak_check();   // exits 97 when something is still held
+    }
     _exit(failed);
 #else
     return test_run_one(fn, name);

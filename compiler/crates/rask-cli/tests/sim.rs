@@ -45,7 +45,12 @@ fn fixture_copy() -> PathBuf {
 }
 
 fn sim_in(dir: &Path, args: &[&str]) -> (String, i32) {
+    sim_with(dir, args, &[])
+}
+
+fn sim_with(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> (String, i32) {
     let out = Command::new(rask_binary())
+        .envs(env.iter().copied())
         .arg("test")
         .arg("--sim")
         .args(args)
@@ -292,6 +297,22 @@ fn one_bug_is_reported_once_across_a_search() {
     let (out, code) = sim(&["--seed", "1", "--seeds", "200", "--keep-going", "race.rk"]);
     assert_eq!(code, 1, "{out}");
     assert_eq!(out.matches("FAIL: lost update").count(), 1, "{out}");
+}
+
+#[test]
+fn the_leak_check_works_under_sim() {
+    let (out, code) = sim_with(&fixtures(), &["--seed", "1", "leak.rk"], &[("RASK_LEAK_CHECK", "1")]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("passed, but left allocations unreleased"), "{out}");
+    let (out, code) = sim_with(&fixtures(), &["--seed", "1", "sleep.rk"], &[("RASK_LEAK_CHECK", "1")]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
+fn reading_stdin_is_refused() {
+    let (out, code) = sim(&["--seed", "1", "stdin.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("no simulated implementation for reading stdin"), "{out}");
 }
 
 #[test]

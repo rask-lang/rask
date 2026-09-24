@@ -318,7 +318,8 @@ void rask_sim_sleep(int64_t ns) {
     SimTask *self = self_or_die("sleep");
     if (ns > 0) {
         self->state = SIM_SLEEPING;
-        self->deadline_ns = g.now_ns + ns;
+        // A sleep past the end of time is forever, not a wrap into the past.
+        self->deadline_ns = ns > INT64_MAX - g.now_ns ? INT64_MAX : g.now_ns + ns;
     }
     schedule_locked(self);
     pthread_mutex_unlock(&g.lock);
@@ -358,6 +359,18 @@ static void log_append(char *log, size_t cap, const char *text) {
     snprintf(log + used, cap - used, "%s%s", used ? "; " : "", text);
 }
 
+// The faults that led up to a failure are the ones worth reading, so the
+// log keeps the newest and counts what it let go. (It used to keep the
+// oldest and drop the rest, which cut off exactly the part that mattered.)
+#define FAULTS_KEPT 16
+static char   fault_ring[FAULTS_KEPT][192];
+static int64_t faults_seen;
+
+static void fault_record(const char *line) {
+    snprintf(fault_ring[faults_seen % FAULTS_KEPT], sizeof(fault_ring[0]), "%s", line);
+    faults_seen++;
+}
+
 int rask_sim_draw_sick(int64_t fault_bits, const char *what) {
     if (!g.active || !(g.faults & fault_bits)) return 0;
     if (splitmix64(&g.fault) % SICK_ONE_IN != 0) return 0;
@@ -369,7 +382,7 @@ int rask_sim_draw_failure(const char *what) {
     if (splitmix64(&g.fault) % FAIL_ONE_IN != 0) return 0;
     char line[512];
     snprintf(line, sizeof(line), "%s (step %lld)", what, (long long)g.step);
-    log_append(g.fault_log, sizeof(g.fault_log), line);
+    fault_record(line);
     return 1;
 }
 
@@ -383,13 +396,25 @@ int64_t rask_sim_wall_jump_ns(void) {
         char line[128];
         snprintf(line, sizeof(line), "SystemTime jumped %llds (step %lld)",
                  (long long)(jump / 1000000000LL), (long long)g.step);
-        log_append(g.fault_log, sizeof(g.fault_log), line);
+        fault_record(line);
     }
     return g.wall_jump_ns;
 }
 
 const char *rask_sim_sick_log(void) { return g.sick_log; }
-const char *rask_sim_fault_log(void) { return g.fault_log; }
+const char *rask_sim_fault_log(void) {
+    g.fault_log[0] = '\0';
+    int64_t first = faults_seen > FAULTS_KEPT ? faults_seen - FAULTS_KEPT : 0;
+    if (first > 0) {
+        char line[64];
+        snprintf(line, sizeof(line), "%lld earlier", (long long)first);
+        log_append(g.fault_log, sizeof(g.fault_log), line);
+    }
+    for (int64_t i = first; i < faults_seen; i++) {
+        log_append(g.fault_log, sizeof(g.fault_log), fault_ring[i % FAULTS_KEPT]);
+    }
+    return g.fault_log;
+}
 
 // Short reads, latencies and injected errors all draw here, so none of them
 // can shift the schedule (sim/SD2).

@@ -47,21 +47,25 @@ static uint64_t rng_next_u64(RaskRng *rng) {
 
 // ── Rng instance methods ──────────────────────────────────────
 
-RaskRng *rask_rng_new(void) {
-    RaskRng *rng = (RaskRng *)rask_alloc(sizeof(RaskRng));
-    *rng = (RaskRng){0};
+// A generator seeded from nowhere in particular.
+static void rng_seed_fresh(RaskRng *rng) {
 #ifdef RASK_SIM
     // Under sim every generator draws its seed from the task's own stream
     // (sim/SD3), so how often one task uses randomness can't move another's.
     if (rask_sim_active()) {
         rng_seed(rng, rask_sim_random_seed());
-        return rng;
+        return;
     }
 #endif
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    uint64_t seed = (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
-    rng_seed(rng, seed);
+    rng_seed(rng, (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec);
+}
+
+RaskRng *rask_rng_new(void) {
+    RaskRng *rng = (RaskRng *)rask_alloc(sizeof(RaskRng));
+    *rng = (RaskRng){0};
+    rng_seed_fresh(rng);
     return rng;
 }
 
@@ -135,13 +139,18 @@ void *rask_random_choice(RaskRng *rng, RaskVec *v) {
 
 // ── Module-level convenience functions (thread-local PRNG) ───
 
-static __thread RaskRng *tl_random_rng = NULL;
+// Held in the thread itself rather than allocated: it lives as long as the
+// thread, and an allocation nothing ever frees was one leak per thread that
+// used `random.*` (RASK_LEAK_CHECK found it on the main thread).
+static __thread RaskRng tl_random_rng;
+static __thread int     tl_random_ready;
 
 static RaskRng *get_tl_rng(void) {
-    if (!tl_random_rng) {
-        tl_random_rng = rask_rng_new();
+    if (!tl_random_ready) {
+        rng_seed_fresh(&tl_random_rng);
+        tl_random_ready = 1;
     }
-    return tl_random_rng;
+    return &tl_random_rng;
 }
 
 double  rask_random_f64(void)                   { return rask_rng_f64(get_tl_rng()); }

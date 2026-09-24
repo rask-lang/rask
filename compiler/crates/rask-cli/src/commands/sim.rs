@@ -15,7 +15,7 @@ use colored::Colorize;
 
 use super::run::{
     build_test_binary, death_description, parse_json_i64, parse_json_str, split_record,
-    test_binary_command, unescape_json_str, TestOutcome,
+    test_binary_command, unescape_json_str, TestOutcome, RASK_LEAK_EXIT,
 };
 use crate::{output, Format};
 
@@ -194,10 +194,18 @@ fn run_one(bin: &Path, index: usize, seed: u64, max_steps: Option<u64>) -> Run {
             stderr,
         };
     };
+    // RASK_LEAK_CHECK's verdict comes after the record, as the exit status:
+    // the test passed and left allocations behind. The runtime's report of
+    // what they are is on stderr.
+    let leaked = out.status.code() == Some(RASK_LEAK_EXIT);
     Run {
-        passed: rec.contains("\"passed\":true"),
+        passed: rec.contains("\"passed\":true") && !leaked,
         skipped: parse_json_str(&rec, "skipped").map(unescape_json_str),
-        error: parse_json_str(&rec, "error").map(unescape_json_str),
+        error: if leaked {
+            Some("passed, but left allocations unreleased (RASK_LEAK_CHECK)".to_string())
+        } else {
+            parse_json_str(&rec, "error").map(unescape_json_str)
+        },
         step: parse_json_i64(&rec, "sim_step"),
         time_ns: parse_json_i64(&rec, "sim_time_ns"),
         sick: parse_json_str(&rec, "sim_sick").map(unescape_json_str),
