@@ -6,7 +6,7 @@
 //! CW2: IO function called in a loop without `using Multitasking` context
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::expr::{CallArg, Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 
 use std::collections::HashSet;
@@ -114,6 +114,27 @@ impl<'a> WarnContext<'a> {
         self.in_root = is_root;
         self.under_runtime = self.runtime_only.contains(qname);
         self.check_stmts(&f.body, warnings);
+    }
+
+    /// A closure handed to `spawn` runs as a task, and a task only exists once a
+    /// runtime has accepted it — so its body is under a runtime wherever the
+    /// `spawn` is written. Without this, a function that recursed through a
+    /// spawned closure (divide-and-conquer) was rejected at its own recursive
+    /// call, a call that can never be missing a runtime.
+    fn check_args_maybe_spawned(
+        &mut self,
+        spawned: bool,
+        args: &[CallArg],
+        warnings: &mut Vec<EffectWarning>,
+    ) {
+        let was_mt = self.in_multitasking;
+        if spawned {
+            self.in_multitasking = true;
+        }
+        for arg in args {
+            self.check_expr(&arg.expr, warnings);
+        }
+        self.in_multitasking = was_mt;
     }
 
     fn check_stmts(&mut self, stmts: &[Stmt], warnings: &mut Vec<EffectWarning>) {
@@ -250,9 +271,10 @@ impl<'a> WarnContext<'a> {
                     }
                 }
                 self.check_expr(func, warnings);
-                for arg in args {
-                    self.check_expr(&arg.expr, warnings);
-                }
+                let is_spawn = callee_name
+                    .as_deref()
+                    .is_some_and(|n| n == "spawn" || n == "async.spawn");
+                self.check_args_maybe_spawned(is_spawn, args, warnings);
             }
 
             ExprKind::MethodCall { object, method, args, .. } => {
@@ -279,9 +301,8 @@ impl<'a> WarnContext<'a> {
                     }
                     self.in_thread_pool = was_in_tp;
                 } else {
-                    for arg in args {
-                        self.check_expr(&arg.expr, warnings);
-                    }
+                    // `TaskGroup.spawn` — same as the free function.
+                    self.check_args_maybe_spawned(method == "spawn", args, warnings);
                 }
             }
 
@@ -819,5 +840,62 @@ mod tests {
             warnings.iter().any(|w| w.code == "comp.effects/CW2"),
             "CW2 should still fire when the loop is reachable without a runtime",
         );
+    }
+
+    /// `spawn(|| { <inner> })`.
+    fn task_spawn(inner: Vec<Stmt>) -> Expr {
+        Expr {
+            id: NodeId(0),
+            kind: ExprKind::Call {
+                func: Box::new(ident("spawn")),
+                args: vec![CallArg {
+                    name: None,
+                    mode: ArgMode::Default,
+                    expr: Expr {
+                        id: NodeId(0),
+                        kind: ExprKind::Closure {
+                            params: vec![],
+                            ret_ty: None,
+                            body: Box::new(Expr { id: NodeId(0), kind: ExprKind::Block(inner), span: sp() }),
+                        },
+                        span: sp(),
+                    },
+                }],
+            },
+            span: sp(),
+        }
+    }
+
+    /// Divide-and-conquer: `func tree() { spawn(|| { tree() }) }`. The
+    /// recursive call runs inside a task, which only exists under a runtime,
+    /// so it can't be missing one. It used to be E0353.
+    #[test]
+    fn no_cc2_for_a_call_inside_a_spawned_closure() {
+        let tree = make_fn("tree", vec![expr_stmt(task_spawn(vec![expr_stmt(call("tree"))]))]);
+        let main = make_fn("main", vec![expr_stmt(Expr {
+            id: NodeId(0),
+            kind: ExprKind::UsingBlock {
+                name: "Multitasking".into(),
+                args: vec![],
+                body: vec![expr_stmt(call("tree"))],
+            },
+            span: sp(),
+        })]);
+        let (_, warnings) = crate::infer_effects(&[tree, main]);
+        assert!(
+            warnings.iter().all(|w| w.code != "E0353"),
+            "E0353 fired inside a spawned closure: {:?}",
+            warnings.iter().map(|w| &w.message).collect::<Vec<_>>(),
+        );
+    }
+
+    /// The same function called outside any scope is still E0353 — the spawned
+    /// closure doesn't lend its runtime to the call that starts it.
+    #[test]
+    fn cc2_still_fires_for_the_call_that_starts_the_tree() {
+        let tree = make_fn("tree", vec![expr_stmt(task_spawn(vec![expr_stmt(call("tree"))]))]);
+        let main = make_fn("main", vec![expr_stmt(call("tree"))]);
+        let (_, warnings) = crate::infer_effects(&[tree, main]);
+        assert_eq!(warnings.iter().filter(|w| w.code == "E0353").count(), 1);
     }
 }
