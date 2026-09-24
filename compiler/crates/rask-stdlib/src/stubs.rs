@@ -101,29 +101,37 @@ fn parse_stub(stub_index: usize, next_id: &mut u32) -> Option<Vec<Decl>> {
     Some(decls)
 }
 
-/// `write_raw` in `http.rk` → `write_raw__http`, and every call to it there.
+/// `write_raw` in `http.rk` → `write_raw__http`, and every call to it there;
+/// `RawBytes` in `fs.rk` → `RawBytes_fs`, and every use of it.
 ///
 /// The stdlib's declarations are merged with the program's into one
-/// namespace, so a private helper and a program function sharing its name
+/// namespace, so a private helper and a program declaration sharing its name
 /// were one name: the program's replaced the stdlib's inside the stdlib's own
-/// bodies. A private function is visible only in its module
+/// bodies. A private declaration is visible only in its module
 /// (structure.modules), and giving it the module in its name is what makes
 /// that true in a pipeline keyed by bare strings, the same way a
-/// dependency's names carry their package (`package_scope`). A double
-/// underscore is a spelling snake_case never produces, so no program writes
-/// the qualified name.
+/// dependency's names carry their package (`package_scope`).
 ///
-/// Only snake_case free functions. A private function spelled `Type_method`
-/// is there to shadow that dispatch entry (http.rk's
-/// `TcpConnection_read_http_request`), and renaming it would unhook it.
+/// The spellings are ones a program can't write by accident. A type is
+/// UpperCamel, so `RawBytes_fs` already has a character no type name has; that
+/// is the package convention too. A function is snake_case, where one
+/// underscore is ordinary, so it gets two.
+///
+/// Left alone: a module's lowercase namespace struct (`struct fs { }`), which
+/// the checker finds by the module's name, and a private function spelled
+/// `Type_method`, which is there to shadow that dispatch entry (http.rk's
+/// `TcpConnection_read_http_request`).
 fn qualify_private_helpers(decls: &mut [Decl], module: &str) {
     let snake = |n: &str| n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    let camel = |n: &str| n.starts_with(|c: char| c.is_ascii_uppercase()) && !n.contains(['<', '_']);
     let map: HashMap<String, String> = decls
         .iter()
         .filter_map(|d| match &d.kind {
             DeclKind::Fn(f) if !f.is_pub && snake(&f.name) => {
                 Some((f.name.clone(), format!("{}__{module}", f.name)))
             }
+            DeclKind::Struct(t) if !t.is_pub && camel(&t.name) => Some((t.name.clone(), format!("{}_{module}", t.name))),
+            DeclKind::Enum(t) if !t.is_pub && camel(&t.name) => Some((t.name.clone(), format!("{}_{module}", t.name))),
             _ => None,
         })
         .collect();
@@ -252,6 +260,11 @@ pub struct MethodStub {
 #[derive(Debug, Clone)]
 pub struct TypeStub {
     pub name: String,
+    /// Declared without `public`: the module's own, under a qualified name
+    /// (`qualify_private_helpers`), and not importable. A compiler-provided
+    /// type the stdlib only `extend`s has no declaration to say so, and is
+    /// public.
+    pub is_private: bool,
     pub doc: Option<String>,
     pub methods: Vec<MethodStub>,
     pub source_file: String,
@@ -518,11 +531,13 @@ impl StubRegistry {
                 let name_span = find_name_span(source, &base_name, "struct", decl_span);
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name,
+                    is_private: false,
                     doc: s.doc.clone(),
                     methods: Vec::new(),
                     source_file: format!("stdlib/{}", filename),
                     span: name_span,
                 });
+                entry.is_private |= !s.is_pub;
                 for m in &s.methods {
                     entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
                 }
@@ -532,11 +547,13 @@ impl StubRegistry {
                 let name_span = find_name_span(source, &base_name, "enum", decl_span);
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name,
+                    is_private: false,
                     doc: e.doc.clone(),
                     methods: Vec::new(),
                     source_file: format!("stdlib/{}", filename),
                     span: name_span,
                 });
+                entry.is_private |= !e.is_pub;
                 for m in &e.methods {
                     entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
                 }
@@ -562,6 +579,7 @@ impl StubRegistry {
                 }
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name.clone(),
+                    is_private: false,
                     doc: None,
                     methods: Vec::new(),
                     source_file: format!("stdlib/{}", filename),
@@ -864,7 +882,7 @@ mod tests {
         let expected = [
             "Vec", "Map", "Rack", "Link", "string", "Option", "Result", "File", "Random",
             "fs", "net", "json", "cli", "io", "std", "http",
-            "JsonValue", "JsonError", "JsonParser",
+            "JsonValue", "JsonError",
             "Headers", "Request", "Response", "HttpServer", "Responder", "HttpClient",
             "Method", "HttpError",
         ];

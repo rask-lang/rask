@@ -13,7 +13,7 @@ import io.IoError
 
 // ─── Types ───────────────────────────────────────────────────────
 
-enum Method {
+public enum Method {
     Get
     Head
     Post
@@ -74,7 +74,7 @@ extend Method with Displayable {
 }
 
 // Case-insensitive header map.
-struct Headers {
+public struct Headers {
     entries: Map<string, string>
 }
 
@@ -100,7 +100,7 @@ extend Headers {
     }
 }
 
-struct Request {
+public struct Request {
     public method: Method
     public url: string
     public headers: Headers
@@ -177,7 +177,7 @@ extend Request {
     }
 }
 
-struct Response {
+public struct Response {
     public status: u16
     public headers: Headers
     public body: string
@@ -254,7 +254,7 @@ extend Response {
 
 // ─── Errors ──────────────────────────────────────────────────────
 
-enum HttpError {
+public enum HttpError {
     InternalServerError(string)
     ConnectionFailed(string)
     Timeout
@@ -727,7 +727,7 @@ func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or Ht
 // ─── Server Types ────────────────────────────────────────────────
 
 @resource
-struct HttpServer {
+public struct HttpServer {
     listener: TcpListener
     addr: string
 }
@@ -766,7 +766,7 @@ extend HttpServer {
 // compile-time fact, so there's no `sent` flag to check at runtime — a second
 // response has nothing left to send it with.
 @resource
-struct Responder {
+public struct Responder {
     conn_fd: i64
 }
 
@@ -846,7 +846,7 @@ extend http {
 
 // ─── HttpClient ──────────────────────────────────────────────────
 
-struct HttpClient {
+public struct HttpClient {
     default_headers: Headers
 }
 

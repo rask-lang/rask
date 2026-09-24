@@ -4,10 +4,14 @@
 // whether the bytes went out; this `write_raw` returns nothing, and the
 // program failed to compile with a type error inside http.rk, which the import
 // alone is enough to reach. fs.rk's private `read_to_end` is the same shape,
-// and fs.read_text below still reaches its own.
+// and fs.read_text below still reaches its own. So are private types: fs.rk
+// keeps a `RawBytes` and json.rk a `JsonParser`, and a program's own types of
+// those names are its own.
 
 import fs
 import http
+import json
+import json.JsonValue
 
 func write_raw(fd: i64, data: string) -> i64 {
     return data.len().to<i64>()!
@@ -15,6 +19,27 @@ func write_raw(fd: i64, data: string) -> i64 {
 
 func read_to_end(n: i64) -> i64 {
     return n * 2
+}
+
+struct RawBytes {
+    label: string
+}
+
+struct JsonParser {
+    depth: i64
+}
+
+test "a program's type and the stdlib's private one are two types" {
+    let r = RawBytes { label: "mine" }
+    let p = JsonParser { depth: 3 }
+    assert r.label == "mine"
+    assert p.depth == 3
+    // json.parse runs on the stdlib's JsonParser, not this one
+    let items = match try json.parse("[1, 2]") {
+        JsonValue.Array(a) => a.len(),
+        _ => 0,
+    }
+    assert items == 2
 }
 
 test "a program's helper and the stdlib's are two functions" {

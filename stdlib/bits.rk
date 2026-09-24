@@ -17,7 +17,7 @@
 
 // ── Binary parsing (P1-P4) ──────────────────────────────────────────
 
-enum BinaryParseError {
+public enum BinaryParseError {
     UnexpectedEnd { expected: usize, actual: usize }
     InvalidData { message: string }
 }
@@ -33,7 +33,7 @@ extend BinaryParseError {
 
 // ── Binary building (K1-K2) ─────────────────────────────────────────
 
-struct BinaryBuilder {
+public struct BinaryBuilder {
     data: Vec<u8>
 }
 
