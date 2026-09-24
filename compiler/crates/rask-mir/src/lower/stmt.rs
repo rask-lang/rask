@@ -376,9 +376,6 @@ impl<'a> MirLowerer<'a> {
         match &stmt.kind {
             StmtKind::Expr(e) => {
                 self.lower_expr(e)?;
-                // C1/C2: if this is a consuming method call on an ensure receiver,
-                // emit ResourceConsume so the ensure is cancelled at cleanup time.
-                self.check_resource_consume(e);
                 Ok(())
             }
 
@@ -387,9 +384,6 @@ impl<'a> MirLowerer<'a> {
                 // `value.(name)` before, it doesn't now.
                 self.comptime_strings.remove(name);
                 let r = self.lower_binding(name, ty.as_deref(), init);
-                // The initializer can be the consuming call — `mut v = try
-                // c.finish()` — and then the ensure it cancels is this one.
-                self.check_resource_consume(init);
                 self.check_resource_moved(init);
                 r
             }
@@ -457,9 +451,6 @@ impl<'a> MirLowerer<'a> {
                     return Ok(());
                 }
                 let r = self.lower_binding(name, ty.as_deref(), init);
-                // The initializer can be the consuming call — `let v = try
-                // c.finish()` — and then the ensure it cancels is this one.
-                self.check_resource_consume(init);
                 self.check_resource_moved(init);
                 r
             }
@@ -468,13 +459,10 @@ impl<'a> MirLowerer<'a> {
                 let mut returned_ty = None;
                 let value = if let Some(e) = opt_expr {
                     let (op, op_ty) = self.lower_expr(e)?;
-                    // `return c.finish()` consumes `c` on the way out, so the
-                    // ensure is cancelled before the cleanup chain runs. `return
-                    // c` hands the value itself to the caller, which is the same
-                    // cancellation for a name rather than a call — without it the
-                    // cleanup ran as part of returning and the caller was given a
-                    // closed handle.
-                    self.check_resource_consume(e);
+                    // `return c` hands the value itself to the caller, so the
+                    // ensure is cancelled before the cleanup chain runs —
+                    // without it the cleanup ran as part of returning and the
+                    // caller was given a closed handle.
                     self.check_resource_moved(e);
                     returned_ty = Some(op_ty.clone());
                     // Wrap a bare value into whatever the return type asks for:
@@ -533,11 +521,6 @@ impl<'a> MirLowerer<'a> {
                 // with no error at all (#737).
                 let target = self.peel_owned_deref(target);
                 let (val_op, val_ty) = self.lower_expr(value)?;
-                // `v = try c.finish()` consumes `c` exactly as `let v = …`
-                // does, so the ensure it cancels is the same one. Wiring this
-                // into the bindings and `return` and not into plain assignment
-                // left the same double consume one spelling away (#1216).
-                self.check_resource_consume(value);
                 self.check_resource_moved(value);
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker
@@ -3135,7 +3118,6 @@ impl<'a> MirLowerer<'a> {
             // `break a` carries the resource out of the loop, so the loop's own
             // `ensure` must not still close it on the way past. Emitted before
             // `emit_loop_cleanup` below, which is the chain that would.
-            self.check_resource_consume(val_expr);
             self.check_resource_moved(val_expr);
             if let Some(result) = result_local {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

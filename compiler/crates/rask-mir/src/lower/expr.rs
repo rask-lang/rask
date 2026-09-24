@@ -1315,10 +1315,12 @@ impl<'a> MirLowerer<'a> {
             if step == expr.id {
                 self.pending_try_step = None;
                 let (op, ty) = self.lower_expr_inner(expr)?;
+                self.mark_consumed_by(expr);
                 return self.emit_try_branch(try_id, expr, op, ty);
             }
         }
         let (op, ty) = self.lower_expr_inner(expr)?;
+        self.mark_consumed_by(expr);
         // Lowering works each expression's type out as it goes, and lands on
         // `Ptr` — "some address, contents unknown" — whenever it can't. The
         // checker already answered the question; ask it here, once, instead of
@@ -10256,11 +10258,6 @@ impl<'a> MirLowerer<'a> {
             if i == stmts.len() - 1 {
                 if let StmtKind::Expr(e) = &stmt.kind {
                     let (val, ty) = self.lower_expr(e)?;
-                    // The tail is lowered here rather than through `lower_stmt`,
-                    // so the consumption check has to be repeated — without it
-                    // a block ending in `c.close()` never cancelled the `ensure`
-                    // that scheduled the same cleanup, and both ran.
-                    self.check_resource_consume(e);
                     last_val = val;
                     last_ty = ty;
                     continue;

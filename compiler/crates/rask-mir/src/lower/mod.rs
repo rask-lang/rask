@@ -2927,73 +2927,29 @@ impl<'a> MirLowerer<'a> {
     /// Copies statements from ensures registered after `depth` in LIFO order.
     /// For simple ensures (Unreachable terminator): copies statements inline.
     /// For branching ensures (else handler): creates block copies at the exit point.
-    /// C1/C2: check if an expression is a consuming method call on an ensure
-    /// receiver. If so, emit ResourceConsume to cancel the ensure at cleanup time.
-    fn check_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
-        // An ensure body *is* the deferred consumption, so a consuming call in
-        // it cancels nothing — and the resource's slot belongs to the function
-        // that registered it, not to the thunk. Emitting one here made codegen
-        // look up a local the thunk's frame doesn't have.
+    /// C1/C2: `expr` has just been lowered. If it is the call (or aggregate)
+    /// that consumes an ensure's value, mark the value consumed now, so the
+    /// ensure stands down.
+    ///
+    /// Now, and not when the enclosing statement ends. A consuming call owns
+    /// its receiver from the moment it is made, whatever it returns, and code
+    /// can leave between the call and the end of the statement: `let v =
+    /// h.join() catch e => { return -1 }` returns from the catch arm with the
+    /// handle already freed by `join`. The mark used to be emitted after the
+    /// whole statement, so that return ran `ensure h.detach()` on a freed
+    /// handle, and `!`, `try` and a `match` arm did the same. Hooking every
+    /// lowered expression also retires the old statement-level walk and its
+    /// list of shapes to look inside, which had been one spelling behind the
+    /// AST four times (#1216, #1224, #1231).
+    ///
+    /// An ensure body *is* the deferred consumption, so a consuming call in it
+    /// cancels nothing — and the resource's slot belongs to the function that
+    /// registered it, not to the thunk.
+    pub(super) fn mark_consumed_by(&mut self, expr: &rask_ast::expr::Expr) {
         if self.in_ensure_thunk {
             return;
         }
-        self.walk_for_resource_consume(expr);
-    }
-
-    /// The consuming call can be anywhere in the expression, not only at its
-    /// root: `(ha.join() catch _ => 0) + (hb.join() catch _ => 0)` consumes both
-    /// handles from inside a sum, and `Wrapper { value: c.close() }` consumes
-    /// one from inside a struct literal.
-    ///
-    /// This used to name the shapes it looked inside — a method call, a plain
-    /// call, the operands of a binary, a cast — and every shape it forgot was a
-    /// double free: the `ensure` fired on a handle the program had already
-    /// closed (#1216, #1224, #1231). A list like that can only ever be behind
-    /// the AST, so there isn't one any more. The walk visits every
-    /// subexpression and stops only where a boundary says to.
-    ///
-    /// Emitting for a call the program might not reach would be wrong, and
-    /// can't happen: `ctrl.ensure/C4` rejects an ensured value that is consumed
-    /// on some paths and not others, so whatever is here runs.
-    fn walk_for_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
-        use rask_ast::expr::ExprKind;
-        let mut consuming = Vec::new();
-        let mut heads = Vec::new();
-        rask_ast::visit::walk_expr_pruned(expr, &mut |e| {
-            match &e.kind {
-                // Their own functions, with their own obligations — a consume
-                // in there is not this frame's.
-                ExprKind::Closure { .. } => return false,
-                // Statements. They run through `lower_block`, which asks about
-                // each of them on its own; walking in from here would emit the
-                // cancellation at the wrong point — before the block, whether
-                // or not it is reached.
-                ExprKind::Block(_)
-                | ExprKind::BlockCall { .. }
-                | ExprKind::Unsafe { .. }
-                | ExprKind::Comptime { .. }
-                | ExprKind::Loop { .. } => return false,
-                // Body as above, but the head is lowered here, so it keeps its
-                // walk: `using open(p) as f` evaluates `open(p)` in this frame.
-                ExprKind::UsingBlock { args, .. } => {
-                    heads.extend(args.iter().map(|a| &a.expr));
-                    return false;
-                }
-                ExprKind::WithAs { bindings, .. } => {
-                    heads.extend(bindings.iter().map(|b| &b.source));
-                    return false;
-                }
-                _ => {}
-            }
-            consuming.push(e);
-            true
-        });
-        for e in consuming {
-            self.emit_resource_consume(e);
-        }
-        for e in heads {
-            self.walk_for_resource_consume(e);
-        }
+        self.emit_resource_consume(expr);
     }
 
     /// This whole expression is being moved somewhere else, so a bare name in
