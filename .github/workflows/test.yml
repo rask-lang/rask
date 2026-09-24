@@ -373,7 +373,7 @@ jobs:
   # what a blocked task costs in OS threads. The soak is v0.5's second number:
   # its known-red programs are the fiber switch's to turn green.
   gates-concurrency:
-    name: gates-concurrency (tsan, thread-count soak)
+    name: gates-concurrency (tsan, thread-count soak, fiber switch)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -382,6 +382,14 @@ jobs:
       RUSTC_WRAPPER: sccache
     steps:
     - uses: actions/checkout@v4
+    # The context switch on x86_64 and, under qemu, aarch64 — the one place
+    # the aarch64 switch runs at all. Needs no compiler, so it goes first.
+    - name: Fiber switch (x86_64, aarch64 under qemu)
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends \
+          qemu-user gcc-aarch64-linux-gnu libc6-dev-arm64-cross > /dev/null
+        FIBER_GATE_REQUIRE_AARCH64=1 tests/fiber_gate.sh
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)

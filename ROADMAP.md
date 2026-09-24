@@ -317,7 +317,11 @@ so the deterministic tests run the code that ships.
    `RASK_POISON_STACK` covers each new fiber stack.
 5. **Both architectures.** `fiber_switch` is assembly per target. Linux CI is
    x86_64 and the macOS job is aarch64, but that job only builds and links one
-   program today. The fiber tests have to run there too.
+   program today. The fiber tests have to run there too. **Switch done:**
+   `tests/fiber_gate.sh` checks every callee-saved register and the float
+   control state across switches on x86_64 and, under qemu, aarch64 Linux, in
+   CI; deleting any one register's save makes it fail. Running whole programs
+   on macOS waits on the kqueue poller.
 
 ### Order
 
@@ -333,7 +337,7 @@ so the deterministic tests run the code that ships.
    ([#1336](https://github.com/rask-lang/rask/issues/1336)). Still to go in
    this step: macOS, which needs a kqueue backend before `green_threads.c` can
    go. Files and stdin still block their worker (that waits on io_uring). The
-   aarch64 switch is written and assembles; nothing has run it yet.
+   aarch64 switch runs under qemu in the fiber gate.
 3. Sim on fibers, replacing the baton.
 4. Preemption last. Codegen puts a flag check in every function prologue, and
    a loop that never calls anything gets a signal instead (`conc.runtime/P2`),
