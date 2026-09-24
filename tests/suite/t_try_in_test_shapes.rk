@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `test` block takes either shape of `try`: an error or a `none` ends the
+// test (type.errors/ER47, std.testing/T20).
+//
+// Two spellings of that were rejected with E0317 "`try` can only be used within
+// a function": `try` on a method call whose result type the checker hadn't
+// settled yet (`try conn.read_text()`, while `try fs.read_text(p)` beside it
+// was fine), and `try` on an optional of any kind.
+
+import string.ParseError
+
+func parse_port(text: string) -> i64 or ParseError {
+    return text.parse<i64>()
+}
+
+test "try on a method call's result" {
+    let v: Vec<i64> = [4, 5]
+    let first = try v.first()
+    assert first == 4
+}
+
+test "try on a known optional" {
+    let o: i64? = 3
+    let x = try o
+    assert x == 3
+}
+
+test "try on a result, as before" {
+    let port = try parse_port("8080")
+    assert port == 8080
+}

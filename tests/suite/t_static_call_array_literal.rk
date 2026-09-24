@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// std.collections/C9: an array literal takes the shape of the slot it fills.
+//
+// For a static method the slot is known before the arguments are typed: the
+// receiver names the type, so the method is its declared one. The checker
+// typed the arguments first and resolved the method later, so the literal took
+// its own shape and failed against the parameter: "expected `Vec<Kind>`,
+// found `[Kind; 2]`". The same call to a free function worked.
+
+enum Kind {
+    Red
+    Blue
+}
+
+struct Palette { }
+
+extend Palette {
+    public func count(kinds: Vec<Kind>) -> usize {
+        return kinds.len()
+    }
+
+    public func total(xs: Vec<i64>) -> i64 {
+        mut t = 0
+        for x in xs {
+            t += x
+        }
+        return t
+    }
+}
+
+test "a static method's Vec parameter takes an array literal" {
+    assert Palette.count([Kind.Red, Kind.Blue]) == 2
+    assert Palette.total([1, 2, 3]) == 6
+}
+
+test "and by name" {
+    assert Palette.count(kinds: [Kind.Blue]) == 1
+}
+
+// An instance method's slot is known the same way once the receiver has its
+// type. `sink.feed([1, 2, 3])` failed with "expected `Vec<u8>`, found
+// `[i32; 3]`", and so did `file.write_bytes([104, 105])`.
+struct Sink {
+    seen: i64
+}
+
+extend Sink {
+    func feed(self, xs: Vec<u8>) -> usize {
+        return xs.len()
+    }
+}
+
+test "an instance method's parameter shapes the literal too" {
+    let s = Sink { seen: 0 }
+    assert s.feed([1, 2, 3]) == 3
+}

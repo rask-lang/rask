@@ -10,6 +10,7 @@
 // second.
 
 #include "rask_runtime.h"
+#include "sim.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -52,18 +53,25 @@ int64_t rask_atomic_int_default(void) {
 }
 
 // ── Load / Store / Swap ─────────────────────────────────────
+//
+// Every operation below is a scheduling point under sim (sim/S3). Atomics
+// never park, so without that a task spinning on a flag would never let the
+// task that sets it run.
 
 int64_t rask_atomic_int_load(int64_t ptr, int64_t ordering) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     return atomic_load_explicit(&a->value, to_order(ordering));
 }
 
 void rask_atomic_int_store(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     atomic_store_explicit(&a->value, val, to_order(ordering));
 }
 
 int64_t rask_atomic_int_swap(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     return atomic_exchange_explicit(&a->value, val, to_order(ordering));
 }
@@ -75,6 +83,7 @@ int64_t rask_atomic_int_swap(int64_t ptr, int64_t val, int64_t ordering) {
 int64_t rask_atomic_int_compare_exchange(int64_t ptr, int64_t expected,
                                           int64_t desired, int64_t success_ord,
                                           int64_t fail_ord, int64_t *out_ok) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     int64_t current = expected;
     _Bool ok = atomic_compare_exchange_strong_explicit(
@@ -87,6 +96,7 @@ int64_t rask_atomic_int_compare_exchange(int64_t ptr, int64_t expected,
 int64_t rask_atomic_int_compare_exchange_weak(int64_t ptr, int64_t expected,
                                                int64_t desired, int64_t success_ord,
                                                int64_t fail_ord, int64_t *out_ok) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     int64_t current = expected;
     _Bool ok = atomic_compare_exchange_weak_explicit(
@@ -99,31 +109,37 @@ int64_t rask_atomic_int_compare_exchange_weak(int64_t ptr, int64_t expected,
 // ── Fetch operations ────────────────────────────────────────
 
 int64_t rask_atomic_int_fetch_add(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     return atomic_fetch_add_explicit(&a->value, val, to_order(ordering));
 }
 
 int64_t rask_atomic_int_fetch_sub(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     return atomic_fetch_sub_explicit(&a->value, val, to_order(ordering));
 }
 
 int64_t rask_atomic_int_fetch_and(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     return atomic_fetch_and_explicit(&a->value, val, to_order(ordering));
 }
 
 int64_t rask_atomic_int_fetch_or(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     return atomic_fetch_or_explicit(&a->value, val, to_order(ordering));
 }
 
 int64_t rask_atomic_int_fetch_xor(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     return atomic_fetch_xor_explicit(&a->value, val, to_order(ordering));
 }
 
 int64_t rask_atomic_int_fetch_nand(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     // C11 doesn't have atomic_fetch_nand, implement with CAS loop
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     int64_t old = atomic_load_explicit(&a->value, memory_order_relaxed);
@@ -136,6 +152,7 @@ int64_t rask_atomic_int_fetch_nand(int64_t ptr, int64_t val, int64_t ordering) {
 }
 
 int64_t rask_atomic_int_fetch_max(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     // CAS loop — C11 doesn't have atomic_fetch_max for signed
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     int64_t old = atomic_load_explicit(&a->value, memory_order_relaxed);
@@ -150,6 +167,7 @@ int64_t rask_atomic_int_fetch_max(int64_t ptr, int64_t val, int64_t ordering) {
 }
 
 int64_t rask_atomic_int_fetch_min(int64_t ptr, int64_t val, int64_t ordering) {
+    RASK_SIM_POINT();
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     int64_t old = atomic_load_explicit(&a->value, memory_order_relaxed);
     while (old > val) {

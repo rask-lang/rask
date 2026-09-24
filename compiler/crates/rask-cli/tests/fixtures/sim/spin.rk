@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A task spinning on an atomic nobody sets never parks, so sim can't prove
+// it stuck. It used to hang the runner; the step budget fails it instead.
+
+import sync.Atomic
+import sync.SeqCst
+
+const FLAG: Atomic<i64> = Atomic<i64>.new(0)
+
+test "spins on a flag nobody sets" {
+    while FLAG.load(SeqCst) == 0 {
+    }
+}

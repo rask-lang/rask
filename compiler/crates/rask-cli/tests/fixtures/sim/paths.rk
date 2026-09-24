@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// One file, however the path is spelled. The overlay used to compare paths
+// as written, so `d/./x` and `d/x` were two files, a relative write was
+// invisible through the absolute path, and `list_dir("./")` found nothing.
+
+import fs
+
+test "dot, double slash and dot-dot all name one file" {
+    try fs.create_dir("sim_d")
+    try fs.write_text("sim_d/./a.txt", "a")
+    assert fs.exists("sim_d/a.txt")
+    try fs.write_text("sim_d//b.txt", "b")
+    assert (try fs.read_text("sim_d/b.txt")) == "b"
+    try fs.write_text("sim_d/../sim_top.txt", "top")
+    assert (try fs.read_text("sim_top.txt")) == "top"
+}
+
+test "relative and absolute agree" {
+    let cwd = fs.current_dir().as_string()
+    try fs.append_text("io.rk", "// changed\n")
+    assert (try fs.read_text("{cwd}/io.rk")).ends_with("// changed\n")
+    try fs.remove_file("{cwd}/race.rk")
+    assert !fs.exists("race.rk")
+}
+
+test "a listing answers to any spelling of the directory" {
+    try fs.create_dir("sim_nd/")
+    try fs.write_text("sim_nd/a.txt", "x")
+    assert (try fs.list_dir("sim_nd/")).len() == 1
+    assert (try fs.list_dir("./")).len() > 0
+}

@@ -234,8 +234,12 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
         compiled.comptime_globals,
     );
 
+    // One path per binary, not per process: a directory builds one per file,
+    // and with RASK_KEEP_TEST_BIN set every file overwrote the last one's.
+    static NEXT_BIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT_BIN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp_dir = std::env::temp_dir();
-    let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
+    let bin_path = tmp_dir.join(format!("rask_test_{}_{n}", process::id()));
     let bin_str = bin_path.to_string_lossy().to_string();
     let obj_path = format!("{}.o", bin_str);
 
@@ -259,7 +263,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     }
     let _ = std::fs::remove_file(&obj_path);
 
-    let run_output = process::Command::new(&bin_str).output();
+    let run_output = test_binary_command(&bin_str).output();
     let _ = std::fs::remove_file(&bin_path);
 
     match run_output {
@@ -286,7 +290,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
 /// intermittent crash is diagnosed from — SIGSEGV, SIGABRT and an OOM kill point
 /// at three different bugs — and a CI failure that reported only "the test binary
 /// died mid-run" had to be chased without it (#1105).
-fn death_description(status: &process::ExitStatus) -> String {
+pub(super) fn death_description(status: &process::ExitStatus) -> String {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
@@ -348,7 +352,7 @@ fn test_exit_code(status: &process::ExitStatus) -> i32 {
 }
 
 /// `rask_leak_check`'s exit code in `runtime/string.c`.
-const RASK_LEAK_EXIT: i32 = 97;
+pub(super) const RASK_LEAK_EXIT: i32 = 97;
 
 /// Pass the test binary's stderr through to ours.
 ///
@@ -358,7 +362,7 @@ const RASK_LEAK_EXIT: i32 = 97;
 /// this worth chasing — the leak checker's report. `tests/leak_gate.sh` decides
 /// by grepping for "never released", so it read every file as clean while the
 /// binaries were exiting 97 underneath it.
-fn forward_test_stderr(stderr: &[u8]) {
+pub(super) fn forward_test_stderr(stderr: &[u8]) {
     if !stderr.is_empty() {
         eprint!("{}", String::from_utf8_lossy(stderr));
     }
@@ -420,18 +424,18 @@ fn run_test_file_interp(
         }
         if let Some(reason) = &r.skipped {
             json_lines.push_str(&format!(
-                "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{},\"skipped\":\"{}\"}}\n",
-                escaped_name, dur_ns, json_escape(reason),
+                "{}{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{},\"skipped\":\"{}\"}}\n",
+                record_mark(), escaped_name, dur_ns, json_escape(reason),
             ));
         } else if r.passed {
             json_lines.push_str(&format!(
-                "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{}}}\n",
-                escaped_name, dur_ns,
+                "{}{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{}}}\n",
+                record_mark(), escaped_name, dur_ns,
             ));
         } else {
             json_lines.push_str(&format!(
-                "{{\"name\":\"{}\",\"passed\":false,\"duration_ns\":{},\"error\":\"{}\"}}\n",
-                escaped_name, dur_ns, json_escape(&r.errors.join("; ")),
+                "{}{{\"name\":\"{}\",\"passed\":false,\"duration_ns\":{},\"error\":\"{}\"}}\n",
+                record_mark(), escaped_name, dur_ns, json_escape(&r.errors.join("; ")),
             ));
         }
     }
@@ -574,12 +578,73 @@ pub fn run_test_file_native_req(
     }
 }
 
+/// A compiled test binary, ready to run. Deleted on drop unless
+/// `RASK_KEEP_TEST_BIN` is set.
+pub struct TestBinary {
+    pub path: std::path::PathBuf,
+    /// Runtime tests in the binary, display name first.
+    pub tests: Vec<(String, String)>,
+    /// Records for comptime tests, which already ran during compilation.
+    pub comptime_records: String,
+    pub comptime_count: usize,
+}
+
+impl Drop for TestBinary {
+    fn drop(&mut self) {
+        // A test binary that dies mid-run takes the evidence with it. Keeping it
+        // is the difference between "something crashed" and a backtrace.
+        if std::env::var_os("RASK_KEEP_TEST_BIN").is_some() {
+            eprintln!("{}: test binary kept at {}", output::warning_label(), self.path.display());
+        } else {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 fn run_test_file_native_inner(
     path: &str,
     filter: Option<&str>,
     format: Format,
     require_tests: bool,
 ) -> TestOutcome {
+    let bin = match build_test_binary(path, filter, format, require_tests, false) {
+        Ok(bin) => bin,
+        Err(outcome) => return outcome,
+    };
+    let run_output = test_binary_command(&bin.path).output();
+
+    match run_output {
+        Ok(out) => {
+            forward_test_stderr(&out.stderr);
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let all = format!("{}{stdout}", bin.comptime_records);
+            let complete = display_test_results(
+                &all, path, format, bin.tests.len() + bin.comptime_count, Some(&out.status),
+            );
+            let leaked = out.status.code() == Some(RASK_LEAK_EXIT);
+            if complete && (out.status.success() || leaked) {
+                if leaked { TestOutcome::Leaked } else { TestOutcome::Passed }
+            } else {
+                TestOutcome::Failed
+            }
+        }
+        Err(e) => {
+            eprintln!("{}: executing test binary: {}", output::error_label(), e);
+            TestOutcome::Failed
+        }
+    }
+}
+
+/// Compile and link a file's tests into one binary. `Err` carries the outcome
+/// when there is nothing to run: the file failed to compile, or it has no
+/// runtime tests (comptime-only files are reported here too).
+pub fn build_test_binary(
+    path: &str,
+    filter: Option<&str>,
+    format: Format,
+    require_tests: bool,
+    sim: bool,
+) -> Result<TestBinary, TestOutcome> {
     // One frontend, shared with `rask build` — the test runner is the decl
     // rewrite handed to it, not a second copy of the pipeline (#330).
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
@@ -608,32 +673,32 @@ fn run_test_file_native_inner(
         if format == Format::Human {
             eprintln!("{}", output::banner_fail("Check", output.diagnostics.len()));
         }
-        return TestOutcome::Failed;
+        return Err(TestOutcome::Failed);
     };
 
     if tests.is_empty() {
         // Comptime tests are already in — nothing to build or run for them.
         if comptime_count > 0 {
-            return if display_test_results(&comptime_records, path, format, comptime_count, None) {
+            return Err(if display_test_results(&comptime_records, path, format, comptime_count, None) {
                 TestOutcome::Passed
             } else {
                 TestOutcome::Failed
-            };
+            });
         }
-        if format == Format::Human {
+        // In a directory, a file with nothing matching is ordinary and says
+        // nothing; named on its own, it is a mistake and says so.
+        if format == Format::Human && require_tests {
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
-            if require_tests {
-                eprintln!(
-                    "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
-                    output::error_label(),
-                    path,
-                );
-            }
+            eprintln!(
+                "{}: {} has no tests — a `-f` filter that matches nothing, or the blocks are gone",
+                output::error_label(),
+                path,
+            );
         }
         // A file asked for by name with no tests in it is a mistake, not a
         // pass — see `run_test_file_native`.
-        return if require_tests { TestOutcome::Failed } else { TestOutcome::Passed };
+        return Err(if require_tests { TestOutcome::Failed } else { TestOutcome::Passed });
     }
 
     let mono = result.mono;
@@ -652,46 +717,18 @@ fn run_test_file_native_inner(
             eprintln!("{}: compile: {}", output::error_label(), e);
         }
         let _ = std::fs::remove_file(&obj_path);
-        return TestOutcome::Failed;
+        return Err(TestOutcome::Failed);
     }
 
-    let link_opts = super::link::LinkOptions::default();
+    let link_opts = super::link::LinkOptions { sim, ..Default::default() };
     if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, false, None) {
         eprintln!("{}: link: {}", output::error_label(), e);
         let _ = std::fs::remove_file(&obj_path);
-        return TestOutcome::Failed;
+        return Err(TestOutcome::Failed);
     }
     let _ = std::fs::remove_file(&obj_path);
 
-    let run_output = process::Command::new(&bin_str).output();
-    // A test binary that dies mid-run takes the evidence with it. Keeping it
-    // is the difference between "something crashed" and a backtrace.
-    if std::env::var_os("RASK_KEEP_TEST_BIN").is_some() {
-        eprintln!("{}: test binary kept at {}", output::warning_label(), bin_str);
-    } else {
-        let _ = std::fs::remove_file(&bin_path);
-    }
-
-    match run_output {
-        Ok(out) => {
-            forward_test_stderr(&out.stderr);
-            let stdout = String::from_utf8_lossy(&out.stdout);
-            let all = format!("{comptime_records}{stdout}");
-            let complete = display_test_results(
-                &all, path, format, tests.len() + comptime_count, Some(&out.status),
-            );
-            let leaked = out.status.code() == Some(RASK_LEAK_EXIT);
-            if complete && (out.status.success() || leaked) {
-                if leaked { TestOutcome::Leaked } else { TestOutcome::Passed }
-            } else {
-                TestOutcome::Failed
-            }
-        }
-        Err(e) => {
-            eprintln!("{}: executing test binary: {}", output::error_label(), e);
-            TestOutcome::Failed
-        }
-    }
+    Ok(TestBinary { path: bin_path, tests, comptime_records, comptime_count })
 }
 
 /// Drop `foo.rk` when `foo_test.rk` sits beside it.
@@ -699,7 +736,7 @@ fn run_test_file_native_inner(
 /// The companion file compiles the two together (std.testing/T3), so running
 /// `foo.rk` on its own as well would run any inline tests it has twice — once
 /// alone and once as part of the pair.
-fn without_companion_modules(files: Vec<String>) -> Vec<String> {
+pub(super) fn without_companion_modules(files: Vec<String>) -> Vec<String> {
     let paired: std::collections::HashSet<String> = files
         .iter()
         .filter_map(|f| {
@@ -757,6 +794,42 @@ pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) 
     }
 }
 
+// ─── Result records ─────────────────────────────────────────
+//
+// A test binary writes one JSON record per test to stdout, in among whatever
+// the tests print. Each record starts with a mark the runner hands the binary
+// in RASK_TEST_RECORD_MARK, fresh per `rask` process, so no output a test
+// writes can pass for a record: a test printing a JSON body used to be read as
+// its own result.
+
+const RECORD_MARK_ENV: &str = "RASK_TEST_RECORD_MARK";
+
+pub(super) fn record_mark() -> &'static str {
+    use std::hash::{BuildHasher, Hasher};
+    static MARK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u32(process::id());
+        format!("\x1erask-test-{:016x}:", h.finish())
+    })
+}
+
+/// A command that runs a test binary with the record mark in its environment.
+pub(super) fn test_binary_command(bin: impl AsRef<std::ffi::OsStr>) -> process::Command {
+    let mut cmd = process::Command::new(bin);
+    cmd.env(RECORD_MARK_ENV, record_mark());
+    cmd
+}
+
+/// A stdout line split into what the test printed and the record after it.
+/// A `print` with no newline puts the next record on the same line.
+pub(super) fn split_record(line: &str) -> (&str, Option<&str>) {
+    match line.find(record_mark()) {
+        Some(at) => (&line[..at], Some(line[at + record_mark().len()..].trim())),
+        None => (line, None),
+    }
+}
+
 /// Parse and display test results from JSON output lines.
 /// Print the run's results. `expected` is how many tests the binary was built
 /// with; fewer results than that means it died partway and the run is a
@@ -780,7 +853,8 @@ fn comptime_test_records(decls: &[rask_ast::decl::Decl], filter: Option<&str>) -
             continue;
         }
         records.push_str(&format!(
-            "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":0}}\n",
+            "{}{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":0}}\n",
+            record_mark(),
             json_escape(&t.name),
         ));
         count += 1;
@@ -795,12 +869,22 @@ fn display_test_results(
     expected: usize,
     death: Option<&process::ExitStatus>,
 ) -> bool {
-    let reported = stdout.lines().filter(|l| l.trim().starts_with('{')).count();
+    let reported = stdout.lines().filter(|l| split_record(l).1.is_some()).count();
     let truncated = reported < expected;
 
     if format != Format::Human {
-        // JSON mode: pass through raw output
-        print!("{}", stdout);
+        // JSON mode: the records as they are, without their mark.
+        for line in stdout.lines() {
+            match split_record(line) {
+                (printed, Some(record)) => {
+                    if !printed.is_empty() {
+                        println!("{printed}");
+                    }
+                    println!("{record}");
+                }
+                (printed, None) => println!("{printed}"),
+            }
+        }
         if truncated {
             eprintln!(
                 "{}: test run stopped after {} of {} tests — the binary {}",
@@ -837,12 +921,11 @@ fn display_test_results(
     };
 
     for line in stdout.lines() {
-        let raw = line;
-        let line = line.trim();
-        if !line.starts_with('{') {
-            pending_output.push(raw);
-            continue;
+        let (printed, record) = split_record(line);
+        if record.is_none() || !printed.is_empty() {
+            pending_output.push(printed);
         }
+        let Some(line) = record else { continue };
 
         // The name is JSON-escaped on the way out, so it comes back escaped.
         // Unescaped nothing used to escape it either, and a test whose name
@@ -951,7 +1034,7 @@ fn json_escape(s: &str) -> String {
 /// literally and the whole diff ran together on one line.
 /// Undo the escaping the test harness applies to a JSON string value. Same
 /// rules as `format_test_error`, minus its message-specific newline indent.
-fn unescape_json_str(raw: &str) -> String {
+pub(super) fn unescape_json_str(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();
     while let Some(c) = chars.next() {
@@ -975,7 +1058,7 @@ fn unescape_json_str(raw: &str) -> String {
     out
 }
 
-fn format_test_error(raw: &str) -> String {
+pub(super) fn format_test_error(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut chars = raw.chars();
     while let Some(c) = chars.next() {
@@ -998,7 +1081,7 @@ fn format_test_error(raw: &str) -> String {
     out
 }
 
-fn parse_json_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+pub(super) fn parse_json_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     let pat = format!("\"{}\":\"", key);
     let start = s.find(&pat)? + pat.len();
     // Walk past escaped characters to find the real closing quote
@@ -1016,7 +1099,7 @@ fn parse_json_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-fn parse_json_i64(s: &str, key: &str) -> Option<i64> {
+pub(super) fn parse_json_i64(s: &str, key: &str) -> Option<i64> {
     let pat = format!("\"{}\":", key);
     let start = s.find(&pat)? + pat.len();
     let rest = &s[start..];

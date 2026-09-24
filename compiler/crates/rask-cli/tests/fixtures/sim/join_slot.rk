@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #1346: the block's own body isn't a task and holds no worker slot, but a
+// `join` there took one on the way out and kept it. With `workers: 1` the
+// task still to run then waited for a slot forever.
+
+import async.spawn
+
+test "join then receive" {
+    using Multitasking(workers: 1) {
+        let (tx, rx) = Channel<i64>.buffered(1)
+        let a = spawn(|| { })
+        ensure a.detach()
+        let b = spawn(|| {
+            let _ = tx.send(7)
+        })
+        ensure b.detach()
+        a.join()!
+        let v = rx.receive()!
+        assert v == 7
+        b.join()!
+    }
+}

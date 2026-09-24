@@ -20,6 +20,7 @@ use crate::analysis::dominators::DominatorTree;
 use crate::analysis::liveness;
 use crate::analysis::uses;
 use crate::{
+    MirBlock, MirTerminator,
     BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
 };
 
@@ -1340,37 +1341,6 @@ fn blocks_past_a_handover(func: &MirFunction, sites: &HashSet<BlockId>) -> HashS
     out
 }
 
-/// Is every definition of `local` on the aborting side?
-///
-/// The edge release below exists for a value the aborting branch is the only
-/// remaining reader of — so it releases on the branch that carries on. That is
-/// wrong for a value the aborting branch also *builds*: on the surviving branch
-/// the slot was never written. `combined("42", 2)!` succeeded and still handed
-/// `rask_string_free` a header nobody had written, because the panic branch's
-/// `"parse error: …"` was released on the success branch (#1121).
-///
-/// A local with no definition anywhere counts too, and that is not a hypothetical
-/// — inlining `e.message()` for `!` leaves the inlined return slot unwritten on
-/// the match's unreachable default arm, and that arm is the only thing keeping
-/// the slot live. `maybe(0)!` on a `T? or E` released a slot nobody had ever
-/// written. It only crashed once the option wrapper moved the frame enough that
-/// the slot read as garbage instead of zero.
-fn defined_only_where_it_aborts(
-    func: &MirFunction,
-    aborting: &HashSet<BlockId>,
-    local: LocalId,
-) -> bool {
-    for b in &func.blocks {
-        if !b.statements.iter().any(|st| uses::stmt_def(st) == Some(local)) {
-            continue;
-        }
-        if !aborting.contains(&b.id) {
-            return false;
-        }
-    }
-    true
-}
-
 /// Group the aggregate locals that name one value.
 ///
 /// Three things put two names on the same bytes: an SSA copy (`b = a`), a phi,
@@ -1669,427 +1639,323 @@ fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId]) {
     }
 }
 
-/// Insert `RcDec` at last-use points for string locals.
+/// Release each string where it stops being live.
 ///
-/// Uses liveness analysis: when a string local is live at a statement but dead
-/// after it (no further uses on any path), insert `RcDec` after that statement.
-/// Blocks the program never leaves — a terminator of `unreachable`, or a chain
-/// of gotos that only reaches those. A release placed in one of these is dead
-/// code: the process is gone before it runs.
+/// A string holds one reference, and the reference is given back at the
+/// point its value dies. There are two kinds of place that can be:
 ///
-/// An `ensure` body's blocks are not these, however they look. A cleanup chain
-/// ends in `unreachable` because there is nothing left in MIR to say after it —
-/// codegen turns that into the function's actual return. Reading it as an abort
-/// made every exit through an `ensure` an abort too, which is what kept the
-/// release below from firing in a function that has one: `assert out.stdout ==
-/// "…"` in a test that also writes `ensure p.kill_and_wait()` leaked the string
-/// it compared, while the same assert in a function without the `ensure` did
-/// not (#1224).
-fn aborting_blocks(func: &MirFunction) -> HashSet<BlockId> {
-    let mut cleanup: HashSet<BlockId> = HashSet::new();
-    let mut queue: Vec<BlockId> = func
-        .blocks
-        .iter()
-        .filter_map(|b| match &b.terminator.kind {
-            MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => Some(cleanup_chain.clone()),
-            _ => None,
-        })
-        .flatten()
-        .collect();
-    while let Some(bid) = queue.pop() {
-        if !cleanup.insert(bid) {
-            continue;
-        }
-        if let Some(b) = func.blocks.iter().find(|b| b.id == bid) {
-            queue.extend(cfg::successors(&b.terminator));
-        }
-    }
-
-    let mut aborting: HashSet<BlockId> = func
-        .blocks
-        .iter()
-        .filter(|b| {
-            matches!(b.terminator.kind, MirTerminatorKind::Unreachable)
-                && !cleanup.contains(&b.id)
-        })
-        .map(|b| b.id)
-        .collect();
-    // Walk backwards: a block all of whose successors abort, aborts too.
-    loop {
-        let mut grew = false;
-        for block in &func.blocks {
-            if aborting.contains(&block.id) {
-                continue;
-            }
-            let succs = cfg::successors(&block.terminator);
-            if !succs.is_empty() && succs.iter().all(|s| aborting.contains(s)) {
-                aborting.insert(block.id);
-                grew = true;
-            }
-        }
-        if !grew {
-            break;
-        }
-    }
-    aborting
-}
-
-/// Loop-carried string phis whose previous value is replaced on the back edge.
+/// - Inside a block, just after the statement that reads it for the last
+///   time, or just after the one that makes it when nothing ever reads it.
+/// - On an edge. A block with several successors can have a string live on
+///   its way out because one successor reads it, while another doesn't: the
+///   value dies on the way into that one. A `mut` string reassigned in a loop
+///   and not read after it is the shape: live out of the loop header, dead in
+///   the block after the loop. So is a string an `assert` would print if it
+///   failed, dead on the branch that carries on.
 ///
-/// `junk = "filler {i}"` inside a loop overwrote the reference the last turn
-/// took, and nothing released it — eight turns leaked seven buffers. At this
-/// point the loop-carried update isn't a statement at all, it's the phi's
-/// incoming edge:
+/// Both come from one liveness answer, the edge-aware one: a phi reads its
+/// operand on the edge it arrives by, and takes over that operand's reference
+/// there rather than copying it (`insert_rc_inc` adds no count for a phi). So
+/// a value handed to a phi is not dead on that edge, and one the phi doesn't
+/// take is.
 ///
-/// ```text
-/// bb1:  _14 = phi [bb0: _11, bb3: _20]
-/// bb2:  _19 = concat(_18, " padded out")
-///       _20 = _19
-///       rc_inc(_20)
-/// bb3:  goto bb1                          // _14's reference goes nowhere
-/// ```
-///
-/// The last-use walk can't see it from either side: `_14` is not read in bb3
-/// and not live out of it — the phi takes `_20`, not `_14` — so liveness calls
-/// it dead at bb3's entry, which is exactly the branch that would have
-/// released it, and it never fires.
-///
-/// The release belongs at the end of the back-edge block, where `_14` still
-/// names the value about to be replaced. On the last turn the phi runs once
-/// more before the exit, so what leaves the loop is a value this release never
-/// touched.
-///
-/// Three things disqualify an edge:
-///
-///   - the argument *is* `dst`, the shape of a variable the body doesn't write.
-///   - the argument reaches `dst` through copies or an inner phi, which is what
-///     `if cond { s = "new" }` inside the loop lowers to — one arm's value is
-///     the phi's own, and freeing it would be a use-after-free rather than a
-///     leak.
-///   - the body *reads* `dst` anywhere. Then its death inside the loop is the
-///     last-use walk's business and it has already placed a release there;
-///     adding this one drives the count to zero a turn early. `s = "{s}-{i}"`
-///     is the shape — the concatenation reads the old value, so the walk
-///     releases it right after, and a second release left the first eight bytes
-///     of the seed reading as allocator free-list.
-///
-/// This is a string rule and not a container one. A release is per-name —
-/// whoever else holds the value holds their own reference — so it is safe where
-/// the same shape on a `Vec` needs to know who else has it (#1154).
-fn phi_backedge_releases(
-    func: &MirFunction,
-    dom: &DominatorTree,
-    string_locals: &[LocalId],
-) -> Vec<(BlockId, LocalId)> {
-    let mut out = Vec::new();
-    for header in &func.blocks {
-        for stmt in &header.statements {
-            let MirStmtKind::Phi { dst, args } = &stmt.kind else { continue };
-            if !string_locals.contains(dst) {
-                continue;
-            }
-            for (pred, op) in args {
-                let MirOperand::Local(arg) = op else { continue };
-                if arg == dst || !dom.dominates(header.id, *pred) {
-                    continue;
-                }
-                if copies_reach(func, *arg, *dst) || read_in_loop(func, dom, header.id, *pred, *dst) {
-                    continue;
-                }
-                out.push((*pred, *dst));
-            }
-        }
-    }
-    out
-}
-
-/// Is `local` read anywhere in the loop `header` heads?
-///
-/// The body is what the header rules and what can get back to the back edge —
-/// the exit block is dominated by the header too, and a read there is the value
-/// leaving the loop rather than one this release would touch. Phis don't count:
-/// they read their arguments on the incoming edge, not in the block they sit
-/// in.
-fn read_in_loop(
-    func: &MirFunction,
-    dom: &DominatorTree,
-    header: BlockId,
-    latch: BlockId,
-    local: LocalId,
-) -> bool {
-    func.blocks
-        .iter()
-        .filter(|b| dom.dominates(header, b.id))
-        .filter(|b| b.id == latch || cfg::reachable_from(func, b.id).contains(&latch))
-        .any(|b| {
-            b.statements
-                .iter()
-                .filter(|st| !matches!(st.kind, MirStmtKind::Phi { .. }))
-                .any(|st| uses::stmt_reads(st, local))
-                || uses::terminator_reads(&b.terminator, local)
-        })
-}
-
-/// Does `from` hold what `target` holds, by copy or through a phi?
-fn copies_reach(func: &MirFunction, from: LocalId, target: LocalId) -> bool {
-    let mut seen: HashSet<LocalId> = HashSet::new();
-    let mut frontier = vec![from];
-    while let Some(id) = frontier.pop() {
-        if id == target {
-            return true;
-        }
-        if !seen.insert(id) {
-            continue;
-        }
-        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            if uses::stmt_def(stmt) != Some(id) {
-                continue;
-            }
-            match &stmt.kind {
-                MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => {
-                    frontier.push(*src);
-                }
-                MirStmtKind::Phi { args, .. } => {
-                    for (_, op) in args {
-                        if let MirOperand::Local(src) = op {
-                            frontier.push(*src);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    false
-}
-
+/// This used to be four rules: a last use in a block, a release before a
+/// redefinition, one at a loop's back edge, and one on the branch beside an
+/// abort. The last three were each a case of dying on an edge, placed
+/// somewhere that happened to work for the shapes that found them; two of
+/// them fired for the same death in a loop that overwrote a string, and freed
+/// it twice.
 fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
-    let dom = DominatorTree::build(func);
-    let live = liveness::analyze(func, &dom);
-    // The same question with a phi's operands read on their own incoming edge.
-    // Used for one decision below — whether a string is still live when a block
-    // ends — because the shared answer says a phi operand is live out of every
-    // predecessor, and a filtered loop's accumulator is then never dead
-    // anywhere (#1200). Every other consumer of liveness keeps the shared one:
-    // the doc on `analyze_phis_on_edges` says what happened when they didn't.
-    let live_edges = liveness::analyze_phis_on_edges(func);
+    let live = liveness::analyze_phis_on_edges(func);
     // `s as i64` into an unsafe call hands out the address of `s`, and the
     // native callee reads the buffer through it. Counting only the cast as a
     // use released the buffer one statement before the call read it (#1036).
     let aliases = AddrAliases::build(func);
     // A string parameter is borrowed from the caller, which keeps its own
     // reference and releases it at its own last use. Releasing here as well is
-    // two releases for one reference:
-    //
-    //     open_result("/tmp/missing")   // main holds the only reference
-    //       -> open_result decs `path` after fs.open(path)
-    //       -> fs.open decs `path` too
-    //
-    // Nothing noticed because the elision pass deleted both. A callee that
-    // needs to outlive the call takes its own reference: storing incs, and
-    // returning a parameter incs just below.
+    // two releases for one reference; a callee that needs to outlive the call
+    // takes its own reference (storing incs, and returning a parameter incs in
+    // `retain_returned_params`).
     let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+    let locals: Vec<LocalId> = string_locals.iter().copied().filter(|l| !params.contains(l)).collect();
 
-    // `assert s == t` branches to a block that prints `s` and aborts. That
-    // block holds the local's last use, so the release lands there — dead code,
-    // because the process is gone before it runs — and the branch that actually
-    // continues gets nothing. One allocation leaked per passing assert on a
-    // string too long to sit inline (#1049).
-    //
-    // The release is owed either way: this pass already decided so when it put
-    // one on the aborting branch. What is wrong is only *which* path discharges
-    // it. So when the sole reason a local outlives a block is a successor that
-    // aborts, put a release at the top of the successors that don't.
-    //
-    // Narrower than it looks, and deliberately. An earlier attempt at this
-    // released whenever a local was live-out of every predecessor and dead on
-    // entry here, which fires on shapes where no release exists anywhere — and
-    // "liveness says dead" is not "the data is dead" when ownership has moved
-    // into an aggregate or a rack node. That version segfaulted
-    // `l3_scene_handles.rk`. This one adds no obligation that wasn't already
-    // placed; it moves one onto the path that runs.
-    let aborting = aborting_blocks(func);
-    let preds = cfg::predecessors(func);
-    let mut edge_releases: Vec<(BlockId, LocalId)> = Vec::new();
-    for block in &func.blocks {
-        if aborting.contains(&block.id) {
-            continue;
-        }
-        let succs = cfg::successors(&block.terminator);
-        let (dead_end, live_on): (Vec<BlockId>, Vec<BlockId>) =
-            succs.iter().partition(|s| aborting.contains(s));
-        if dead_end.is_empty() || live_on.is_empty() {
-            continue;
-        }
-        for local in string_locals {
-            if params.contains(local) || !live.live_at_exit(block.id, *local) {
-                continue;
-            }
-            // Only when the aborting side is the whole reason it is still live.
-            if live_on.iter().any(|s| live.live_at_entry(*s, *local)) {
-                continue;
-            }
-            for succ in &live_on {
-                // A successor reached from anywhere else could arrive with the
-                // value still live, and releasing at its top would run twice.
-                if preds.get(succ).map(|p| p.len()) != Some(1) {
-                    continue;
-                }
-                // And the value has to exist by the time control gets there.
-                if defined_only_where_it_aborts(func, &aborting, *local) {
-                    continue;
-                }
-                edge_releases.push((*succ, *local));
+    let mut in_block: Vec<(usize, usize, LocalId)> = Vec::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for &local in &locals {
+            if let Some(at) = dies_in_block(block, local, live.live_at_exit(block.id, local), &aliases) {
+                in_block.push((bi, at, local));
             }
         }
     }
 
-    for block_idx in 0..func.blocks.len() {
-        let block_id = func.blocks[block_idx].id;
-        let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
+    let edges = edge_deaths(func, &live, &locals);
 
-        let stmts_len = func.blocks[block_idx].statements.len();
+    // Positions descending within a block, so an insertion doesn't move the
+    // next one's index.
+    in_block.sort_by(|a, b| (a.0, b.1).cmp(&(b.0, a.1)));
+    for (bi, at, local) in in_block {
+        let span = func.blocks[bi]
+            .statements
+            .get(at.saturating_sub(1))
+            .map(|s| s.span)
+            .unwrap_or(func.blocks[bi].terminator.span);
+        func.blocks[bi].statements.insert(at, MirStmt::new(MirStmtKind::RcDec { local }, span));
+    }
+    release_on_edges(func, edges);
+}
 
-        for local in string_locals {
-            if params.contains(local) {
-                continue;
+/// Where in `block` the value of `local` dies, as the index to insert its
+/// release at, or `None` when it doesn't die here: it's live on the way out,
+/// it's returned, or this block never had it.
+///
+/// Scanned backwards from the block's exit, where the value is dead unless
+/// `live_out`. The first statement met that reads it, or failing that the one
+/// that makes it, is where it dies.
+fn dies_in_block(block: &MirBlock, local: LocalId, live_out: bool, aliases: &AddrAliases) -> Option<usize> {
+    if live_out {
+        return None;
+    }
+    // A returned string is handed to the caller, not dropped. Decrementing it
+    // here freed the buffer while the caller still held the only reference —
+    // `return json.encode(v)` from a `string or E` function came back with its
+    // first eight bytes overwritten by whatever the caller allocated next
+    // (#499).
+    let returned = matches!(
+        &block.terminator.kind,
+        MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+        | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. }
+            if id == &local
+    );
+    if returned {
+        return None;
+    }
+    let n = block.statements.len();
+    if aliases.terminator_reads(&block.terminator, local) {
+        return Some(n);
+    }
+    for (si, stmt) in block.statements.iter().enumerate().rev() {
+        // A phi reads its operand on the incoming edge, not here, and hands
+        // the reference over to its own name there.
+        let phi = matches!(stmt.kind, MirStmtKind::Phi { .. });
+        let reads = !phi && aliases.stmt_reads(stmt, local);
+        let defines = uses::stmt_def(stmt) == Some(local);
+        if reads && defines {
+            // Reads the old value and writes the new one in one statement, so
+            // no point after it names the old one. Lowering puts a fresh
+            // local between the two, so this doesn't arise.
+            return None;
+        }
+        if reads {
+            // Handing out the buffer's address is not the end of the string's
+            // usefulness, but nothing after it mentions the string, so the
+            // naive spot is directly after — the release runs, the buffer is
+            // freed, and the raw address the callee dereferences is dangling.
+            // `write_raw` in `stdlib/http.rk` is exactly this shape, which is
+            // how the HTTP server answered with eight bytes of allocator
+            // free-list where `HTTP/1.1` should be. Hold the reference to the
+            // end of the block, so every use of the address it produced is
+            // covered.
+            if hands_out_the_buffer(stmt, local) {
+                return Some(n);
             }
-            // Find the last use of this local in the block
-            let mut last_use_idx: Option<usize> = None;
+            return Some(after_increments(block, si + 1));
+        }
+        if defines {
+            // Made and never read: dead as soon as it exists.
+            return Some(after_increments(block, si + 1));
+        }
+    }
+    None
+}
 
-            for si in 0..stmts_len {
-                let stmt = &func.blocks[block_idx].statements[si];
-                // A phi reads its argument on the incoming edge, not here. Counting
-                // it as a use in the phi's own block put the drop at the top of a
-                // loop header, where it runs on the first iteration — before the
-                // value it releases has been written. That freed whatever the
-                // uninitialized slot happened to point at.
-                let phi = matches!(stmt.kind, MirStmtKind::Phi { .. });
-                if !phi && aliases.stmt_reads(stmt, *local) {
-                    last_use_idx = Some(si);
-                }
-                // If this statement defines the local, earlier uses are irrelevant
-                if uses::stmt_def(stmt) == Some(*local) {
-                    last_use_idx = None;
+/// Step over the increments the copy pass put at `at`. At `dst = src`, `src`'s
+/// last use is the copy itself, so the naive spot is directly between
+/// `dst = src` and `RcInc(dst)` — the release runs first, the buffer hits
+/// zero, and the increment that was meant to keep it alive touches freed
+/// memory.
+fn after_increments(block: &MirBlock, mut at: usize) -> usize {
+    while at < block.statements.len() && matches!(block.statements[at].kind, MirStmtKind::RcInc { .. }) {
+        at += 1;
+    }
+    at
+}
+
+/// Each `(from, to)` edge a string dies on, with the strings.
+///
+/// Dead on the edge means live on the way out of `from`, because some
+/// successor needs it, and not needed by `to`: not live into it, and not an
+/// operand its phis take along this edge.
+///
+/// Only where the local is certainly assigned on the way out of `from`, so it
+/// holds a value whichever path got there. A local SSA renamed has one
+/// definition that dominates every use; one it left alone can be written in
+/// each arm of a branch and read after the join, with no single definition
+/// dominating anything, and one read on a path that never wrote it (a match's
+/// impossible default arm) must not be released there.
+///
+/// Not the edges a `CleanupReturn` names. Those run the `ensure` chain on the
+/// way out of the function, and a value returned through one flows through
+/// them to the caller.
+fn edge_deaths(
+    func: &MirFunction,
+    live: &liveness::LivenessResults,
+    locals: &[LocalId],
+) -> Vec<(BlockId, BlockId, Vec<LocalId>)> {
+    let mut phi_takes: HashMap<(BlockId, BlockId), HashSet<LocalId>> = HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let MirStmtKind::Phi { args, .. } = &stmt.kind else { continue };
+            for (from, op) in args {
+                if let Some(id) = uses::operand_local(op) {
+                    phi_takes.entry((*from, block.id)).or_default().insert(id);
                 }
             }
+        }
+    }
+    let assigned = assigned_on_exit(func, locals);
 
-            // Check terminator
-            let term_reads = aliases.terminator_reads(&func.blocks[block_idx].terminator, *local);
-
-            // A returned string is handed to the caller, not dropped. Decrementing
-            // it here freed the buffer while the caller still held the only
-            // reference — `return json.encode(v)` from a `string or E` function
-            // came back with its first eight bytes overwritten by whatever the
-            // caller allocated next (#499).
-            let returned = matches!(
-                &func.blocks[block_idx].terminator.kind,
-                MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
-                | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. }
-                    if *id == *local
-            );
-            if returned {
-                continue;
+    let mut out = Vec::new();
+    for block in &func.blocks {
+        if matches!(block.terminator.kind, MirTerminatorKind::CleanupReturn { .. }) {
+            continue;
+        }
+        let mut succs = cfg::successors(&block.terminator);
+        succs.sort_by_key(|b| b.0);
+        succs.dedup();
+        if succs.len() < 2 {
+            continue; // one way out: live out and live in are the same set
+        }
+        for &succ in &succs {
+            let taken = phi_takes.get(&(block.id, succ));
+            let dying: Vec<LocalId> = locals
+                .iter()
+                .copied()
+                .filter(|&l| live.live_at_exit(block.id, l))
+                .filter(|&l| !live.live_at_entry(succ, l) && !taken.is_some_and(|t| t.contains(&l)))
+                .filter(|l| assigned.get(&block.id).is_some_and(|a| a.contains(l)))
+                .collect();
+            if !dying.is_empty() {
+                out.push((block.id, succ, dying));
             }
+        }
+    }
+    out
+}
 
-            // If the local is live at block exit, it's used downstream — no dec
-            // here. Asked of the edge-aware answer: a successor phi that takes
-            // this local from a *different* predecessor doesn't keep it alive
-            // on the way out of this one.
-            if live_edges.live_at_exit(block_id, *local) {
-                continue;
-            }
-
-            // Local dies in this block. Place RcDec after the last use.
-            if term_reads {
-                // Used in terminator and dead after — dec at block end
-                // (We can't insert after terminator, so append to statements.
-                //  The dec runs before the terminator logically.)
-                let span = func.blocks[block_idx].terminator.span;
-                insertions.push((stmts_len, MirStmt::new(
-                    MirStmtKind::RcDec { local: *local },
-                    span,
-                )));
-            } else if let Some(si) = last_use_idx {
-                let span = func.blocks[block_idx].statements[si].span;
-                // Handing out the buffer's address is not the end of the
-                // string's usefulness, but nothing after it mentions the string,
-                // so the naive spot is directly after — the release runs, the
-                // buffer is freed, and the raw address the callee dereferences
-                // is dangling. `write_raw` in `stdlib/http.rk` is exactly this
-                // shape, which is how the HTTP server answered with eight bytes
-                // of allocator free-list where `HTTP/1.1` should be. Hold the
-                // reference to the end of the block, so every use of the
-                // address it produced is covered.
-                if hands_out_the_buffer(&func.blocks[block_idx].statements[si], *local) {
-                    let span = func.blocks[block_idx].terminator.span;
-                    insertions.push((stmts_len, MirStmt::new(
-                        MirStmtKind::RcDec { local: *local },
-                        span,
-                    )));
-                    continue;
-                }
-                // Step over the increments the copy pass already put here. At
-                // `dst = src`, `src`'s last use is the copy itself, so the naive
-                // spot is directly between `dst = src` and `RcInc(dst)` — the
-                // release runs first, the buffer hits zero, and the increment
-                // that was meant to keep it alive touches freed memory.
-                let mut at = si + 1;
-                while at < func.blocks[block_idx].statements.len()
-                    && matches!(
-                        func.blocks[block_idx].statements[at].kind,
-                        MirStmtKind::RcInc { .. }
-                    )
-                {
-                    at += 1;
-                }
-                insertions.push((at, MirStmt::new(
-                    MirStmtKind::RcDec { local: *local },
-                    span,
-                )));
+/// For each block, the `locals` certainly assigned on the way out of it: on
+/// every path from the entry, something wrote them. Forward, and an
+/// intersection over predecessors, so a path that skips the write keeps the
+/// local out.
+fn assigned_on_exit(func: &MirFunction, locals: &[LocalId]) -> HashMap<BlockId, HashSet<LocalId>> {
+    let preds = cfg::predecessors(func);
+    let everything: HashSet<LocalId> = locals.iter().copied().collect();
+    let writes: HashMap<BlockId, HashSet<LocalId>> = func
+        .blocks
+        .iter()
+        .map(|b| {
+            let w = b.statements.iter().filter_map(uses::stmt_def).filter(|d| everything.contains(d)).collect();
+            (b.id, w)
+        })
+        .collect();
+    // Start from "everything" and shrink, so a loop's back edge doesn't wipe
+    // out what the way in established.
+    let mut out: HashMap<BlockId, HashSet<LocalId>> =
+        func.blocks.iter().map(|b| (b.id, everything.clone())).collect();
+    loop {
+        let mut changed = false;
+        for block in &func.blocks {
+            let mut inn: HashSet<LocalId> = if block.id == func.entry_block {
+                HashSet::new()
             } else {
-                // Not used in this block at all but enters live — check entry
-                if live.live_at_entry(block_id, *local) {
-                    // Was live at entry, dead at exit, no uses: killed by redefinition.
-                    // The old value needs an RcDec before the redefinition.
-                    for si in 0..stmts_len {
-                        if uses::stmt_def(&func.blocks[block_idx].statements[si]) == Some(*local) {
-                            let span = func.blocks[block_idx].statements[si].span;
-                            insertions.push((si, MirStmt::new(
-                                MirStmtKind::RcDec { local: *local },
-                                span,
-                            )));
-                            break;
+                let mut sets = preds.get(&block.id).into_iter().flatten().filter_map(|p| out.get(p));
+                match sets.next() {
+                    Some(first) => sets.fold(first.clone(), |acc, s| acc.intersection(s).copied().collect()),
+                    None => HashSet::new(), // unreachable: nothing is known assigned
+                }
+            };
+            inn.extend(writes[&block.id].iter().copied());
+            if out.get(&block.id) != Some(&inn) {
+                out.insert(block.id, inn);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    out
+}
+
+/// Put each edge's releases on its edge: at the top of the successor when this
+/// is the only way into it, and otherwise in a new block between the two, so
+/// the release runs on this edge and no other.
+fn release_on_edges(func: &mut MirFunction, edges: Vec<(BlockId, BlockId, Vec<LocalId>)>) {
+    if edges.is_empty() {
+        return;
+    }
+    let preds = cfg::predecessors(func);
+    let mut next_id = func.blocks.iter().map(|b| b.id.0).max().unwrap_or(0) + 1;
+    for (from, to, locals) in edges {
+        let only_way_in = preds
+            .get(&to)
+            .is_some_and(|ps| ps.iter().all(|p| *p == from));
+        let span = func
+            .blocks
+            .iter()
+            .find(|b| b.id == from)
+            .map(|b| b.terminator.span)
+            .unwrap_or(crate::Span::new(0, 0));
+        let releases: Vec<MirStmt> =
+            locals.iter().map(|&local| MirStmt::new(MirStmtKind::RcDec { local }, span)).collect();
+        if only_way_in {
+            let Some(block) = func.blocks.iter_mut().find(|b| b.id == to) else { continue };
+            let at = block.statements.iter().take_while(|s| matches!(s.kind, MirStmtKind::Phi { .. })).count();
+            block.statements.splice(at..at, releases);
+            continue;
+        }
+        let between = BlockId(next_id);
+        next_id += 1;
+        if let Some(block) = func.blocks.iter_mut().find(|b| b.id == from) {
+            retarget(&mut block.terminator, to, between);
+        }
+        if let Some(block) = func.blocks.iter_mut().find(|b| b.id == to) {
+            for stmt in &mut block.statements {
+                if let MirStmtKind::Phi { args, .. } = &mut stmt.kind {
+                    for (pred, _) in args.iter_mut() {
+                        if *pred == from {
+                            *pred = between;
                         }
                     }
                 }
             }
         }
-
-        // Sort by position descending so insertions don't shift indices
-        insertions.sort_by(|a, b| b.0.cmp(&a.0));
-        for (idx, stmt) in insertions {
-            func.blocks[block_idx].statements.insert(idx, stmt);
-        }
+        func.blocks.push(MirBlock {
+            id: between,
+            statements: releases,
+            terminator: MirTerminator::new(MirTerminatorKind::Goto { target: to }, span),
+        });
     }
+}
 
-    // At the end of the back-edge block, after the last-use loop has had its
-    // say: what the phi held on the way round is replaced, not read again.
-    for (block_id, local) in phi_backedge_releases(func, &dom, string_locals) {
-        if let Some(b) = func.blocks.iter_mut().find(|b| b.id == block_id) {
-            let span = b.terminator.span;
-            b.statements.push(MirStmt::new(MirStmtKind::RcDec { local }, span));
+/// Point every arm of `term` that goes to `old` at `new`.
+fn retarget(term: &mut MirTerminator, old: BlockId, new: BlockId) {
+    let swap = |b: &mut BlockId| {
+        if *b == old {
+            *b = new;
         }
-    }
-
-    // After the last-use loop, not before it: an `RcDec` sitting at the top of
-    // the block reads the local, so the loop counted it as a use, found the
-    // local dead at exit, and placed a second release right behind it.
-    for (block_id, local) in edge_releases {
-        if let Some(b) = func.blocks.iter_mut().find(|b| b.id == block_id) {
-            let span = b.terminator.span;
-            b.statements.insert(0, MirStmt::new(MirStmtKind::RcDec { local }, span));
+    };
+    match &mut term.kind {
+        MirTerminatorKind::Goto { target } => swap(target),
+        MirTerminatorKind::Branch { then_block, else_block, .. } => {
+            swap(then_block);
+            swap(else_block);
         }
+        MirTerminatorKind::Switch { cases, default, .. } => {
+            cases.iter_mut().for_each(|(_, b)| swap(b));
+            swap(default);
+        }
+        MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => cleanup_chain.iter_mut().for_each(swap),
+        MirTerminatorKind::Return { .. } | MirTerminatorKind::Unreachable => {}
     }
 }
 

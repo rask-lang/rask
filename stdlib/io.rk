@@ -47,19 +47,9 @@ extend IoError {
     /// thing being matched, not a caller (#674).
     public func last_os_error() -> IoError {
         let code = unsafe rask_io_errno()
-        let ptr = unsafe rask_io_error_text(code)
-        let len = unsafe rask_io_cstr_len(ptr)
-        let msg = unsafe string.from_raw(ptr, len as usize)
         let kind = unsafe rask_io_error_kind(code)
-        if kind == 0 {
-            return IoError.NotFound(msg)
-        }
-        if kind == 1 {
-            return IoError.PermissionDenied(msg)
-        }
-        if kind == 2 {
-            return IoError.AlreadyExists(msg)
-        }
+        // The variants without a message first, so the message is only built
+        // where it's kept (building it up front leaked it on these paths, #1341).
         if kind == 3 {
             return IoError.BrokenPipe
         }
@@ -69,8 +59,24 @@ extend IoError {
         if kind == 5 {
             return IoError.TimedOut
         }
+        let msg = os_error_text(code)
+        if kind == 0 {
+            return IoError.NotFound(msg)
+        }
+        if kind == 1 {
+            return IoError.PermissionDenied(msg)
+        }
+        if kind == 2 {
+            return IoError.AlreadyExists(msg)
+        }
         return IoError.Other(msg)
     }
+}
+
+func os_error_text(code: i32) -> string {
+    let ptr = unsafe rask_io_error_text(code)
+    let len = unsafe rask_io_cstr_len(ptr)
+    return unsafe string.from_raw(ptr, len as usize)
 }
 
 /// Readable stream: bytes in, `IoError` out. `read`/`read_bytes`/`read_text`
@@ -558,22 +564,59 @@ extend File {
     public func read_text(self) -> string or IoError {}
 
     /// Write a string to the file.
-    @native("rask_file_write")
-    public func write(mutate self, data: string) -> void or IoError {}
+    public func write(self, data: string) -> void or IoError {
+        if self.write_raw(data) != 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
 
     /// Write all bytes, retrying partial writes.
-    @native("rask_file_write_bytes")
-    public func write_bytes(mutate self, data: Vec<u8>) -> void or IoError {}
+    public func write_bytes(self, data: Vec<u8>) -> void or IoError {
+        if self.write_bytes_raw(data) != 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
 
     /// Write a string.
-    @native("rask_file_write")
-    public func write_text(mutate self, data: string) -> void or IoError {}
+    public func write_text(self, data: string) -> void or IoError {
+        if self.write_raw(data) != 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
 
     /// Write a string followed by a newline.
-    @native("rask_file_write_line")
-    public func write_line(mutate self, data: string) -> void or IoError {}
+    public func write_line(self, data: string) -> void or IoError {
+        if self.write_line_raw(data) != 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
 
-    /// Close the file handle.
+    /// Close the file handle. Buffered bytes reach the disk here, so this is
+    /// where a full disk usually says so. `self` rather than `mutate self`,
+    /// like the writes: a Rask body taking a handle by `mutate self` crashes
+    /// natively (#1350).
+    public func close(self) -> void or IoError {
+        if self.close_raw() != 0 {
+            return IoError.last_os_error()
+        }
+        return
+    }
+
+    /// The writes and close as the backends see them: 0, or -1 with the OS
+    /// error left for `IoError.last_os_error`. The runtime can't build an
+    /// `IoError`, so the bodies above do. These used to be the public methods
+    /// themselves and returned nothing natively, so a failed write read as a
+    /// success.
+    @native("rask_file_write")
+    func write_raw(self, data: string) -> i64 {}
+    @native("rask_file_write_bytes")
+    func write_bytes_raw(self, data: Vec<u8>) -> i64 {}
+    @native("rask_file_write_line")
+    func write_line_raw(self, data: string) -> i64 {}
     @native("rask_file_close")
-    public func close(mutate self) {}
+    func close_raw(self) -> i64 {}
 }

@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A read-then-write on an atomic, from two tasks. Native tasks run each body to
+// completion, so a plain `rask test` never sees the lost update; sim does.
+import sync.Atomic
+import sync.SeqCst
+import async.spawn
+
+const COUNTER: Atomic<i64> = Atomic<i64>.new(0)
+
+func racy_bump(times: i64) {
+    for i in 0..times {
+        let v = COUNTER.load(SeqCst)
+        COUNTER.store(v + 1, SeqCst)
+    }
+}
+
+test "lost update" {
+    using Multitasking {
+        let a = spawn(|| { racy_bump(10) })
+        ensure a.detach()
+        let b = spawn(|| { racy_bump(10) })
+        ensure b.detach()
+        a.join()!
+        b.join()!
+        let total = COUNTER.load(SeqCst)
+        println("total {total}")
+        assert total == 20
+    }
+}

@@ -13,6 +13,7 @@
 // When all receivers drop, senders see CLOSED.
 
 #include "rask_runtime.h"
+#include "sim.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -37,10 +38,13 @@ struct RaskChannel {
     int64_t tail;            // next write position
     int64_t count;           // items in buffer
 
-    // Unbuffered handoff slot
+    // Unbuffered handoff slot. A sender owns it from offering a value until it
+    // has seen that value taken, so a second sender can't install its own in
+    // between and reset `handoff_taken` under the first (#1345).
     const void *handoff_data;  // pointer to sender's data (unbuffered only)
-    int         handoff_ready; // sender has data waiting
-    int         handoff_taken; // receiver has copied data
+    int         handoff_busy;  // a sender owns the slot
+    int         handoff_ready; // the value is there to take
+    int         handoff_taken; // a receiver has copied it
 
     // Lifecycle
     atomic_int sender_count;
@@ -68,6 +72,7 @@ static RaskChannel *channel_alloc(int64_t elem_size, int64_t capacity) {
     ch->capacity  = capacity;
     ch->head = ch->tail = ch->count = 0;
     ch->handoff_data  = NULL;
+    ch->handoff_busy  = 0;
     ch->handoff_ready = 0;
     ch->handoff_taken = 0;
 
@@ -112,7 +117,7 @@ static int64_t buffered_send(RaskChannel *ch, const void *data) {
             ch->closed = 1;
             break;
         }
-        pthread_cond_wait(&ch->not_full, &ch->mutex);
+        rask_task_cond_wait(&ch->not_full, &ch->mutex, "channel send");
     }
 
     if (ch->closed ||
@@ -126,7 +131,7 @@ static int64_t buffered_send(RaskChannel *ch, const void *data) {
     ch->tail = (ch->tail + 1) % ch->capacity;
     ch->count++;
 
-    pthread_cond_signal(&ch->not_empty);
+    rask_task_cond_signal(&ch->not_empty);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -144,7 +149,7 @@ static int64_t buffered_recv(RaskChannel *ch, void *data_out) {
             pthread_mutex_unlock(&ch->mutex);
             return RASK_CHAN_CLOSED;
         }
-        pthread_cond_wait(&ch->not_empty, &ch->mutex);
+        rask_task_cond_wait(&ch->not_empty, &ch->mutex, "channel receive");
     }
 
     char *slot = (char *)ch->buffer + ch->head * ch->elem_size;
@@ -152,7 +157,7 @@ static int64_t buffered_recv(RaskChannel *ch, void *data_out) {
     ch->head = (ch->head + 1) % ch->capacity;
     ch->count--;
 
-    pthread_cond_signal(&ch->not_full);
+    rask_task_cond_signal(&ch->not_full);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -176,7 +181,7 @@ static int64_t buffered_try_send(RaskChannel *ch, const void *data) {
     ch->tail = (ch->tail + 1) % ch->capacity;
     ch->count++;
 
-    pthread_cond_signal(&ch->not_empty);
+    rask_task_cond_signal(&ch->not_empty);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -199,7 +204,7 @@ static int64_t buffered_try_recv(RaskChannel *ch, void *data_out) {
     ch->head = (ch->head + 1) % ch->capacity;
     ch->count--;
 
-    pthread_cond_signal(&ch->not_full);
+    rask_task_cond_signal(&ch->not_full);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -207,16 +212,21 @@ static int64_t buffered_try_recv(RaskChannel *ch, void *data_out) {
 // ─── Unbuffered (rendezvous) operations ────────────────────
 // Sender blocks until a receiver takes the value directly.
 
+// `not_full` has two kinds of waiter on an unbuffered channel — senders
+// waiting for the slot, and the slot's owner waiting for its value to be
+// taken — so it is broadcast: a signal can wake the wrong kind and leave the
+// right one asleep.
+
 static int64_t unbuffered_send(RaskChannel *ch, const void *data) {
     pthread_mutex_lock(&ch->mutex);
 
-    // Wait for previous handoff to complete
-    while (ch->handoff_ready && !ch->closed) {
+    // Wait for the slot.
+    while (ch->handoff_busy && !ch->closed) {
         if (atomic_load_explicit(&ch->recver_count, memory_order_acquire) == 0) {
             ch->closed = 1;
             break;
         }
-        pthread_cond_wait(&ch->not_full, &ch->mutex);
+        rask_task_cond_wait(&ch->not_full, &ch->mutex, "channel send");
     }
 
     if (ch->closed ||
@@ -225,28 +235,41 @@ static int64_t unbuffered_send(RaskChannel *ch, const void *data) {
         return RASK_CHAN_CLOSED;
     }
 
-    // Offer data to receiver
+    // Offer the value.
+    ch->handoff_busy  = 1;
     ch->handoff_data  = data;
     ch->handoff_ready = 1;
     ch->handoff_taken = 0;
-    pthread_cond_signal(&ch->not_empty);
+    rask_task_cond_signal(&ch->not_empty);
 
-    // Wait until receiver copies the data
+    // Wait until a receiver has copied it.
     while (!ch->handoff_taken && !ch->closed) {
         if (atomic_load_explicit(&ch->recver_count, memory_order_acquire) == 0) {
             ch->closed = 1;
             break;
         }
-        pthread_cond_wait(&ch->not_full, &ch->mutex);
+        rask_task_cond_wait(&ch->not_full, &ch->mutex, "channel send");
     }
 
+    int delivered = ch->handoff_taken;
+    ch->handoff_busy  = 0;
     ch->handoff_ready = 0;
     ch->handoff_data  = NULL;
     ch->handoff_taken = 0;
+    rask_task_cond_broadcast(&ch->not_full);   // the next sender's turn
 
-    int was_closed = ch->closed;
     pthread_mutex_unlock(&ch->mutex);
-    return was_closed ? RASK_CHAN_CLOSED : RASK_CHAN_OK;
+    return delivered ? RASK_CHAN_OK : RASK_CHAN_CLOSED;
+}
+
+// Take the offered value. The caller holds the mutex and has seen it ready.
+static void unbuffered_take(RaskChannel *ch, void *data_out) {
+    memcpy(data_out, ch->handoff_data, (size_t)ch->elem_size);
+    // Not ready any more, so a second receiver can't take it too; the slot
+    // stays the sender's until it has seen this.
+    ch->handoff_ready = 0;
+    ch->handoff_taken = 1;
+    rask_task_cond_broadcast(&ch->not_full);
 }
 
 static int64_t unbuffered_recv(RaskChannel *ch, void *data_out) {
@@ -258,20 +281,10 @@ static int64_t unbuffered_recv(RaskChannel *ch, void *data_out) {
             pthread_mutex_unlock(&ch->mutex);
             return RASK_CHAN_CLOSED;
         }
-        pthread_cond_wait(&ch->not_empty, &ch->mutex);
+        rask_task_cond_wait(&ch->not_empty, &ch->mutex, "channel receive");
     }
 
-    // Copy from sender's data
-    memcpy(data_out, ch->handoff_data, (size_t)ch->elem_size);
-
-    // Clear ready flag BEFORE signaling sender — prevents the receiver from
-    // re-entering recv and seeing the stale handoff_ready=1 before the sender
-    // has a chance to reset it.
-    ch->handoff_ready = 0;
-    ch->handoff_taken = 1;
-
-    // Wake sender to let it know we've taken the data
-    pthread_cond_signal(&ch->not_full);
+    unbuffered_take(ch, data_out);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -305,9 +318,7 @@ static int64_t unbuffered_try_recv(RaskChannel *ch, void *data_out) {
         return result;
     }
 
-    memcpy(data_out, ch->handoff_data, (size_t)ch->elem_size);
-    ch->handoff_taken = 1;
-    pthread_cond_signal(&ch->not_full);
+    unbuffered_take(ch, data_out);
     pthread_mutex_unlock(&ch->mutex);
     return RASK_CHAN_OK;
 }
@@ -335,6 +346,7 @@ void rask_channel_new(int64_t elem_size, int64_t capacity,
 }
 
 int64_t rask_channel_send(RaskSender *tx, const void *data) {
+    RASK_SIM_POINT();
     RASK_CHECK_NONNULL(tx, "Sender.send: tx handle is null (bad channel destructure?)");
     RaskChannel *ch = tx->chan;
     if (ch->capacity > 0) {
@@ -344,6 +356,7 @@ int64_t rask_channel_send(RaskSender *tx, const void *data) {
 }
 
 int64_t rask_channel_recv(RaskRecver *rx, void *data_out) {
+    RASK_SIM_POINT();
     RASK_CHECK_NONNULL(rx, "Receiver.recv: rx handle is null (bad channel destructure?)");
     RaskChannel *ch = rx->chan;
     if (ch->capacity > 0) {
@@ -353,6 +366,7 @@ int64_t rask_channel_recv(RaskRecver *rx, void *data_out) {
 }
 
 int64_t rask_channel_try_send(RaskSender *tx, const void *data) {
+    RASK_SIM_POINT();
     RASK_CHECK_NONNULL(tx, "Sender.try_send: tx handle is null");
     RaskChannel *ch = tx->chan;
     if (ch->capacity > 0) {
@@ -362,6 +376,7 @@ int64_t rask_channel_try_send(RaskSender *tx, const void *data) {
 }
 
 int64_t rask_channel_try_recv(RaskRecver *rx, void *data_out) {
+    RASK_SIM_POINT();
     RaskChannel *ch = rx->chan;
     if (ch->capacity > 0) {
         return buffered_try_recv(ch, data_out);
@@ -377,6 +392,7 @@ RaskSender *rask_sender_clone(RaskSender *tx) {
 }
 
 void rask_sender_drop(RaskSender *tx) {
+    RASK_SIM_POINT();
     RaskChannel *ch = tx->chan;
     rask_free(tx);
 
@@ -384,13 +400,14 @@ void rask_sender_drop(RaskSender *tx) {
         // Last sender dropped — wake any blocked receivers
         pthread_mutex_lock(&ch->mutex);
         ch->closed = 1;
-        pthread_cond_broadcast(&ch->not_empty);
+        rask_task_cond_broadcast(&ch->not_empty);
         pthread_mutex_unlock(&ch->mutex);
         channel_maybe_destroy(ch);
     }
 }
 
 void rask_recver_drop(RaskRecver *rx) {
+    RASK_SIM_POINT();
     RaskChannel *ch = rx->chan;
     rask_free(rx);
 
@@ -398,7 +415,7 @@ void rask_recver_drop(RaskRecver *rx) {
         // Last receiver dropped — wake any blocked senders
         pthread_mutex_lock(&ch->mutex);
         ch->closed = 1;
-        pthread_cond_broadcast(&ch->not_full);
+        rask_task_cond_broadcast(&ch->not_full);
         pthread_mutex_unlock(&ch->mutex);
         channel_maybe_destroy(ch);
     }

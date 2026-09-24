@@ -390,9 +390,18 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
+            // `void or IoError`, as the native one is. `std::fs::File` buffers
+            // nothing, so every write has already reported its error and
+            // closing has none left to give.
             "close" => {
+                let ok = Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![Value::Unit],
+                    variant_index: 0, origin: None,
+                };
                 if file.lock().unwrap().is_none() {
-                    return Ok(Value::Unit);
+                    return Ok(ok);
                 }
                 let ptr = Arc::as_ptr(file) as usize;
                 if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
@@ -400,7 +409,7 @@ impl Interpreter {
                         .map_err(|msg| RuntimeError::Panic(msg))?;
                 }
                 let _ = file.lock().unwrap().take();
-                Ok(Value::Unit)
+                Ok(ok)
             }
             // std.io/K1, K3. The two halves of `Seeker` as the backends see
             // them: a position, or -1. The `SeekFrom` is taken apart by the

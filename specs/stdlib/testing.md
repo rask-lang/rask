@@ -11,6 +11,7 @@ Built-in test framework with `test` blocks, `@test` functions, assertions, paral
 | Rule | Description |
 |------|-------------|
 | **T1: Test blocks** | `test "name" { body }` — standalone, not exported, stripped in release builds before anything resolves, along with imports that only a test used. That is also what makes `scope "dev"` mean something: with the tests gone, a release build has no honest reason to reach a dev dependency (`struct.build/D4a`) |
+| **T1a: Unique names** | Two tests, or two benchmarks, in one file can't share a name. The name is how a test is picked: `-f`, the report, and sim's replay line all go by it |
 | **T2: @test functions** | `@test` on a function makes it both a test and a callable function |
 | **T3: Location** | Tests may appear inline in any `.rk` file or in separate `*_test.rk` files. `foo_test.rk` beside `foo.rk` is that module's companion and compiles with it, package or no package |
 | **T4: Private access** | Inline and same-package `*_test.rk` tests can access private members; external test files see `public` only |
@@ -80,7 +81,7 @@ test "add cases" {
 
 | Rule | Description |
 |------|-------------|
-| **T6: Isolation** | Each test gets its own locals and its own failure. One test's `assert` failing doesn't stop the next, and nothing a test binds is visible to another. Process-global state is not reset between tests: a module-level `Shared` written by one is read by the next, the same way it would be by any other code in the process |
+| **T6: Isolation** | Each test gets its own locals and its own failure. One test's `assert` failing doesn't stop the next, and nothing a test binds is visible to another. Process-global state is not reset between tests: a module-level `Shared` written by one is read by the next, the same way it would be by any other code in the process. Sim mode is the exception: each test runs in a fresh process there (`sim/I7`) |
 | **T7: Parallel** | Tests run in parallel by default; opt-out with `--sequential`. *Not built — tests run sequentially, and `--sequential` isn't a flag until it means something* |
 | **T8: Seeded random** | Random uses per-test seed; reproduce with `--seed X`. *Not built, same as T7* |
 | **T9: Cleanup** | Tests use `ensure` for cleanup (same semantics as regular code) |

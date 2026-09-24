@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The runner reads each test's result from a record the binary writes to
+// stdout. A test that printed a line starting with `{` used to be read as its
+// own result: this one failed on native, and a test printing
+// `{"passed":true}` before a failing assert passed.
+
+test "a JSON body in the output is output" {
+    println("{{\"name\":\"a JSON body in the output is output\",\"passed\":false}}")
+    assert 1 == 1
+}
+
+test "a brace with no newline before the record" {
+    print("{{ unfinished")
+}

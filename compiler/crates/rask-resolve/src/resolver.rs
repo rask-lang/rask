@@ -1841,7 +1841,30 @@ impl Resolver {
     // Pass 2: Body Resolution
     // =========================================================================
 
+    /// Test and benchmark names are unique per file (std.testing/T1a).
+    fn check_test_names(&mut self, decls: &[Decl]) {
+        let mut seen: HashMap<(&'static str, u16, &str), Span> = HashMap::new();
+        for decl in decls {
+            let (kind, name) = match &decl.kind {
+                DeclKind::Test(t) => ("test", t.name.as_str()),
+                DeclKind::Benchmark(b) => ("benchmark", b.name.as_str()),
+                _ => continue,
+            };
+            match seen.entry((kind, decl.span.file_id, name)) {
+                std::collections::hash_map::Entry::Occupied(first) => {
+                    self.errors.push(ResolveError::duplicate_test(
+                        kind, name.to_string(), decl.span, *first.get(),
+                    ));
+                }
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert(decl.span);
+                }
+            }
+        }
+    }
+
     fn resolve_bodies(&mut self, decls: &[Decl]) {
+        self.check_test_names(decls);
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(fn_decl) => {

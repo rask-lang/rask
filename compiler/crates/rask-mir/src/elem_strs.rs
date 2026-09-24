@@ -264,7 +264,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // integers — nothing points into the source, and nothing in it owns
     // anything — so the vector is the caller's, elements and all.
     ("string_char_indices", 0, 0, "Vec_free"),
-    // The three the runtime builds from the OS: each copies what it found into
+    // The two the runtime builds from the OS: each copies what it found into
     // fresh strings and carries the element map, so the vector it hands back is
     // the caller's to free — elements and all. They were the largest single
     // leak left in the suite once the closures were fixed: 150 strings for one
@@ -274,7 +274,6 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // the caller still holds.
     ("os_env_vars", 0, 0, "Vec_free"),
     ("os_args", 0, 0, "Vec_free"),
-    ("fs_list_dir", 0, 0, "Vec_free"),
     // A `Shared` box carries no element tag — its payload is opaque bytes it
     // was handed, the same as a pool slot. It is here for the same reason
     // `Rack_new` is: `rask_shared_free` has existed all along with nothing
@@ -360,6 +359,31 @@ pub fn ctor_shape(name: &str) -> Option<(usize, usize)> {
 /// What frees the container this call handed back, or `None` if it isn't one.
 pub fn free_fn(name: &str) -> Option<&'static str> {
     entry(name).map(|(_, _, _, free)| *free)
+}
+
+/// Natives that hand back a fresh container *inside* a wrapper — `Vec<u8>?`,
+/// `T or E` — with the free that matches it. The caller owns what it
+/// unwraps; the wrapper itself is a value.
+///
+/// `CTORS` can't say this: its entries mean the call's result *is* the
+/// container, and registering one of these there freed the wrapper as if it
+/// were the vector. A Rask function returning a wrapped container gets the
+/// same answer from the hand-back analysis in container_drop; this is that
+/// answer for a native, which has no body to analyse.
+pub const WRAPPED_CTORS: &[(&str, &str)] = &[
+    // Bytes off a socket, in a Vec the runtime made for this call; `none`
+    // when the read failed. `TcpConnection.read_bytes` is one of the bodies
+    // behind `reader.read_bytes()`, and a trait call's result is only owned
+    // when every body hands back a fresh container — so leaving this out
+    // made every reader's bytes nobody's, a `Buffer`'s included.
+    ("TcpConnection_read_bytes_raw", "Vec_free"),
+];
+
+/// What frees the container inside the wrapper this native call handed back.
+pub fn wrapped_free_fn(name: &str) -> Option<&'static str> {
+    let head = name.rsplit("::").next().unwrap_or(name);
+    let base = head.split('$').next().unwrap_or(head);
+    WRAPPED_CTORS.iter().find(|(n, _)| *n == base).map(|(_, free)| *free)
 }
 
 fn entry(name: &str) -> Option<&'static (&'static str, u8, u8, &'static str)> {

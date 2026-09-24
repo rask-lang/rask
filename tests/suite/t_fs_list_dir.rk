@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `fs.list_dir` and `fs.read_lines` return `Vec<string> or IoError`, written in
+// Rask. Codegen still carried their old native mappings, and a leftover drop
+// rule freed the result of `fs_list_dir` as a bare `Vec`. So matching on the
+// result crashed natively: `free(): invalid pointer` on success, a "Vec.free
+// while one of its elements was being modified" panic on failure.
+
+import fs
+
+test "listing a directory that exists" {
+    mut found = false
+    match fs.list_dir("/") {
+        Vec<string> as names => { found = names.len() > 0 }
+        IoError as e => { found = false }
+    }
+    assert found
+}
+
+test "listing a directory that doesn't exist is an IoError" {
+    mut failed = false
+    match fs.list_dir("/definitely/not/here") {
+        Vec<string> as names => { failed = false }
+        IoError as e => { failed = true }
+    }
+    assert failed
+}
+
+test "read_lines on a missing file is an IoError" {
+    mut failed = false
+    match fs.read_lines("/definitely/not/here") {
+        Vec<string> as lines => { failed = false }
+        IoError as e => { failed = true }
+    }
+    assert failed
+}

@@ -4,11 +4,13 @@
 // Called from generated test runner entry points.
 
 #include "rask_runtime.h"
+#include "sim.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <setjmp.h>
 #include <time.h>
+#include <unistd.h>
 
 typedef void (*test_fn)(void);
 
@@ -107,9 +109,99 @@ static void json_print_escaped(const char *s) {
     }
 }
 
-// Run a single test: catch panics, print JSON result line.
-// Returns 0 on pass, 1 on fail.
-int rask_test_run(test_fn fn, const char *name) {
+// Every result record starts with the mark the runner passed in
+// RASK_TEST_RECORD_MARK, so the runner can tell records from what the tests
+// print. It is taken out of the environment before any Rask code runs, so a
+// test can't read it, and a program the test starts doesn't inherit it. Run
+// by hand, with no mark, the records are bare JSON lines.
+static char *record_mark_value;
+
+__attribute__((constructor)) static void record_mark_take(void) {
+    const char *mark = getenv("RASK_TEST_RECORD_MARK");
+    record_mark_value = strdup(mark ? mark : "");
+    unsetenv("RASK_TEST_RECORD_MARK");
+}
+
+static const char *record_mark(void) {
+    return record_mark_value ? record_mark_value : "";
+}
+
+// ─── Sim mode ──────────────────────────────────────────────
+//
+// A sim test runs alone in its process (sim/I6): the runner starts the binary
+// once per test, picking it in RASK_SIM_TEST and handing over its seed in
+// RASK_SIM_SEED. Every other test is skipped without a word, and the process
+// exits as soon as the chosen one is reported, so no task, environment
+// variable or allocation outlives the test that made it.
+
+#ifdef RASK_SIM
+extern void rask_const_free(void);   // generated with the module constants
+
+static const char *sim_current_name;
+
+static void sim_print_position(void) {
+    printf(",\"sim_step\":%lld,\"sim_time_ns\":%lld",
+           (long long)rask_sim_step(), (long long)rask_sim_time_ns());
+    if (rask_sim_sick_log()[0]) {
+        printf(",\"sim_sick\":\"");
+        json_print_escaped(rask_sim_sick_log());
+        printf("\"");
+    }
+    if (rask_sim_fault_log()[0]) {
+        printf(",\"sim_faults\":\"");
+        json_print_escaped(rask_sim_fault_log());
+        printf("\"");
+    }
+}
+
+// A failure that can't unwind to the test's setjmp — a deadlock is noticed on
+// whichever thread tried to schedule, not on the test's own.
+_Noreturn void rask_test_sim_fail(const char *msg) {
+    printf("%s{\"name\":\"", record_mark());
+    json_print_escaped(sim_current_name ? sim_current_name : "");
+    printf("\",\"passed\":false,\"duration_ns\":0,\"error\":\"");
+    json_print_escaped(msg);
+    printf("\"");
+    sim_print_position();
+    printf("}\n");
+    fflush(NULL);
+    _exit(1);
+}
+
+// Sim starts before module constants initialise, so a constant sees the
+// same world the tests do: a Map built there uses the run's hash seed, and a
+// constant that reads the clock or `random` reads the simulated ones.
+static long sim_want;
+
+static void sim_start(void) {
+    const char *want = getenv("RASK_SIM_TEST");
+    const char *seed = getenv("RASK_SIM_SEED");
+    if (!want || !seed) {
+        fprintf(stderr, "sim: RASK_SIM_TEST and RASK_SIM_SEED must both be set — "
+                        "run sim binaries through `rask test --sim`\n");
+        _exit(2);
+    }
+    // Set only by `--max-steps`; the default budget lives here.
+    const char *steps = getenv("RASK_SIM_MAX_STEPS");
+    long long max_steps = steps ? strtoll(steps, NULL, 10) : 0;
+    if (max_steps <= 0) max_steps = 10000000;
+    sim_want = strtol(want, NULL, 10);
+    rask_sim_begin(strtoull(seed, NULL, 10), (int64_t)max_steps);
+}
+
+// Returns 1 when `name` is the test this process was started for.
+// RASK_SIM_TEST is the test's position in the binary, counting from 0, so two
+// tests can never answer to one request.
+static int sim_select(const char *name) {
+    static long next_index;
+    if (next_index++ != sim_want) return 0;
+    sim_current_name = name;
+    return 1;
+}
+#endif
+
+// Catch panics, print the JSON result line. Returns 0 on pass, 1 on fail.
+static int test_run_one(test_fn fn, const char *name) {
     // Reset per-test state
     rask_test_skipped = 0;
     rask_test_skip_reason = NULL;
@@ -141,7 +233,7 @@ int rask_test_run(test_fn fn, const char *name) {
 
     // Handle skipped tests — use panic message as skip reason
     if (was_skipped) {
-        printf("{\"name\":\"");
+        printf("%s{\"name\":\"", record_mark());
            json_print_escaped(name);
            printf("\",\"passed\":true,\"duration_ns\":%lld,\"skipped\":\"",
                (long long)elapsed_ns);
@@ -163,7 +255,7 @@ int rask_test_run(test_fn fn, const char *name) {
         if (failed) {
             // Expected failure occurred — pass
             if (error_msg) free(error_msg);
-            printf("{\"name\":\"");
+            printf("%s{\"name\":\"", record_mark());
                json_print_escaped(name);
                printf("\",\"passed\":true,\"duration_ns\":%lld}\n",
                    (long long)elapsed_ns);
@@ -171,7 +263,7 @@ int rask_test_run(test_fn fn, const char *name) {
             return 0;
         } else {
             // Expected failure but test passed — fail
-            printf("{\"name\":\"");
+            printf("%s{\"name\":\"", record_mark());
                json_print_escaped(name);
                printf("\",\"passed\":false,\"duration_ns\":%lld,\"error\":\"expected failure but test passed\"}\n",
                    (long long)elapsed_ns);
@@ -189,7 +281,7 @@ int rask_test_run(test_fn fn, const char *name) {
 
     // Normal case: escape quotes in error message for JSON
     if (failed) {
-        printf("{\"name\":\"");
+        printf("%s{\"name\":\"", record_mark());
            json_print_escaped(name);
            printf("\",\"passed\":false,\"duration_ns\":%lld,\"error\":\"",
                (long long)elapsed_ns);
@@ -204,9 +296,13 @@ int rask_test_run(test_fn fn, const char *name) {
         } else {
             printf("(unknown)");
         }
-        printf("\"}\n");
+        printf("\"");
+#ifdef RASK_SIM
+        sim_print_position();
+#endif
+        printf("}\n");
     } else {
-        printf("{\"name\":\"");
+        printf("%s{\"name\":\"", record_mark());
            json_print_escaped(name);
            printf("\",\"passed\":true,\"duration_ns\":%lld}\n",
                (long long)elapsed_ns);
@@ -214,4 +310,31 @@ int rask_test_run(test_fn fn, const char *name) {
     fflush(stdout);
 
     return failed;
+}
+
+// First call of the test runner's entry point, ahead of the module constants.
+void rask_test_start(void) {
+#ifdef RASK_SIM
+    sim_start();
+#endif
+}
+
+// Run a single test. Returns 0 on pass, 1 on fail.
+int rask_test_run(test_fn fn, const char *name) {
+#ifdef RASK_SIM
+    if (!sim_select(name)) return 0;
+    int failed = test_run_one(fn, name);
+    fflush(NULL);
+    // What `main` does at exit, which this process never reaches: without it
+    // RASK_LEAK_CHECK was silent under sim whatever the test leaked. Only on a
+    // pass — a failed test's leak is the failure's, not a second finding.
+    if (!failed) {
+        rask_await_detached_tasks();
+        rask_const_free();
+        rask_leak_check();   // exits 97 when something is still held
+    }
+    _exit(failed);
+#else
+    return test_run_one(fn, name);
+#endif
 }

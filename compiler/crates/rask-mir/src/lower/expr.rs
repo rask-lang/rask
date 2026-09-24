@@ -10019,16 +10019,6 @@ impl<'a> MirLowerer<'a> {
 
         let result_local = self.builder.alloc_temp(MirType::Bool);
 
-        // No-match path: short-circuit to false.
-        self.builder.switch_to_block(short_block);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: result_local,
-            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-        }));
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-            target: merge_block,
-        }));
-
         // Match path: bind the payload, yield true.
         self.builder.switch_to_block(bind_block);
         let payload_ty = self.payload_type_of_niche(scrutinee, &val_ty, is_niche);
@@ -10036,6 +10026,30 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result_local,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+            target: merge_block,
+        }));
+
+        // No-match path: short-circuit to false.
+        //
+        // The bindings stay in scope past the merge: `m is Msg.Text(t) &&
+        // t.len() > 1` reads `t` after it. A string binding left unwritten here
+        // reaches the merge as stack garbage, and releasing it there freed
+        // that (`t_is_pattern_and`). The empty string lives in the header,
+        // so releasing it does nothing.
+        self.builder.switch_to_block(short_block);
+        for name in rask_ast::stmt::pattern_binding_names(pattern) {
+            if let Some((dst, MirType::String)) = self.locals.get(&name).cloned() {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::String(String::new()))),
+                }));
+            }
+        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: result_local,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
         }));
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: merge_block,

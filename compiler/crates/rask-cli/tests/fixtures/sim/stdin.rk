@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Stdin is outside the test, so sim refuses to read it (sim/B3).
+import io
+
+test "reads stdin" {
+    let line = try io.read_line()
+    println("got {line}")
+}
+
