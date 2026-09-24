@@ -80,6 +80,64 @@ fn stub_file_id(index: usize) -> u16 {
     STDLIB_FILE_ID_BASE + index as u16
 }
 
+/// One stub file's declarations, parsed with ids from `next_id` (which comes
+/// back advanced past them), or `None` if it doesn't lex.
+///
+/// Every reader of the stubs goes through here, so they all see the same
+/// names: a module's private helpers are qualified with the module, and a
+/// program's own function of the same name can't replace one (#1351).
+fn parse_stub(stub_index: usize, next_id: &mut u32) -> Option<Vec<Decl>> {
+    let (filename, source) = all_sources()[stub_index];
+    let file_id = stub_file_id(stub_index);
+    let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
+    if !lex_result.is_ok() {
+        return None;
+    }
+    let mut parser = rask_parser::Parser::new_with_file_id(lex_result.tokens, *next_id, file_id)
+        .allow_keyword_fn_names();
+    let mut decls = parser.parse().decls;
+    *next_id = parser.next_node_id();
+    qualify_private_helpers(&mut decls, filename.trim_end_matches(".rk"));
+    Some(decls)
+}
+
+/// `write_raw` in `http.rk` → `write_raw__http`, and every call to it there;
+/// `RawBytes` in `fs.rk` → `RawBytes_fs`, and every use of it.
+///
+/// The stdlib's declarations are merged with the program's into one
+/// namespace, so a private helper and a program declaration sharing its name
+/// were one name: the program's replaced the stdlib's inside the stdlib's own
+/// bodies. A private declaration is visible only in its module
+/// (structure.modules), and giving it the module in its name is what makes
+/// that true in a pipeline keyed by bare strings, the same way a
+/// dependency's names carry their package (`package_scope`).
+///
+/// The spellings are ones a program can't write by accident. A type is
+/// UpperCamel, so `RawBytes_fs` already has a character no type name has; that
+/// is the package convention too. A function is snake_case, where one
+/// underscore is ordinary, so it gets two.
+///
+/// Left alone: a module's lowercase namespace struct (`struct fs { }`), which
+/// the checker finds by the module's name, and a private function spelled
+/// `Type_method`, which is there to shadow that dispatch entry (http.rk's
+/// `TcpConnection_read_http_request`).
+fn qualify_private_helpers(decls: &mut [Decl], module: &str) {
+    let snake = |n: &str| n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    let camel = |n: &str| n.starts_with(|c: char| c.is_ascii_uppercase()) && !n.contains(['<', '_']);
+    let map: HashMap<String, String> = decls
+        .iter()
+        .filter_map(|d| match &d.kind {
+            DeclKind::Fn(f) if !f.is_pub && snake(&f.name) => {
+                Some((f.name.clone(), format!("{}__{module}", f.name)))
+            }
+            DeclKind::Struct(t) if !t.is_pub && camel(&t.name) => Some((t.name.clone(), format!("{}_{module}", t.name))),
+            DeclKind::Enum(t) if !t.is_pub && camel(&t.name) => Some((t.name.clone(), format!("{}_{module}", t.name))),
+            _ => None,
+        })
+        .collect();
+    rask_ast::qualify::qualify_in_place(decls, &map);
+}
+
 /// Embedded stub file sources.
 const STUB_SOURCES: &[(&str, &str)] = &[
     ("collections.rk", include_str!("../../../../stdlib/collections.rk")),
@@ -106,6 +164,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("cli.rk", include_str!("../../../../stdlib/cli.rk")),
     ("std.rk", include_str!("../../../../stdlib/std.rk")),
     ("http.rk", include_str!("../../../../stdlib/http.rk")),
+    ("sim.rk", include_str!("../../../../stdlib/sim.rk")),
     ("async.rk", include_str!("../../../../stdlib/async.rk")),
     ("thread.rk", include_str!("../../../../stdlib/thread.rk")),
     ("sync.rk", include_str!("../../../../stdlib/sync.rk")),
@@ -201,6 +260,11 @@ pub struct MethodStub {
 #[derive(Debug, Clone)]
 pub struct TypeStub {
     pub name: String,
+    /// Declared without `public`: the module's own, under a qualified name
+    /// (`qualify_private_helpers`), and not importable. A compiler-provided
+    /// type the stdlib only `extend`s has no declaration to say so, and is
+    /// public.
+    pub is_private: bool,
     pub doc: Option<String>,
     pub methods: Vec<MethodStub>,
     pub source_file: String,
@@ -269,14 +333,11 @@ impl StubRegistry {
                 sources: HashMap::new(),
             };
 
-            for (filename, source) in all_sources() {
+            let mut next_id: u32 = 5_000_000;
+            for (stub_index, (filename, source)) in all_sources().iter().enumerate() {
                 registry.sources.insert(filename.to_string(), source);
-                let lex_result = rask_lexer::Lexer::new(source).tokenize();
-                if !lex_result.is_ok() {
-                    continue;
-                }
-                let parse_result = rask_parser::Parser::new(lex_result.tokens).allow_keyword_fn_names().parse();
-                for decl in &parse_result.decls {
+                let Some(decls) = parse_stub(stub_index, &mut next_id) else { continue };
+                for decl in &decls {
                     registry.process_decl(decl, filename, source);
                 }
             }
@@ -295,18 +356,9 @@ impl StubRegistry {
         let mut decls = Vec::new();
         let mut next_id: u32 = 1_000_000;
 
-        for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
-            let file_id = stub_file_id(stub_index);
-            let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
-            if !lex_result.is_ok() {
-                continue;
-            }
-            let mut parser =
-                rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
-                    .allow_keyword_fn_names();
-            let parse_result = parser.parse();
-            next_id = parser.next_node_id();
-            for decl in parse_result.decls {
+        for stub_index in 0..all_sources().len() {
+            let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
+            for decl in parsed {
                 match &decl.kind {
                     DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Extern(_)
                     | DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Import(_)
@@ -338,23 +390,14 @@ impl StubRegistry {
         // Start NodeIds high to avoid collision with user code NodeIds.
         let mut next_id: u32 = 1_000_000;
 
-        for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
-            let file_id = stub_file_id(stub_index);
-            let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
-            if !lex_result.is_ok() {
-                continue;
-            }
-            let mut parser =
-                rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
-                    .allow_keyword_fn_names();
-            let parse_result = parser.parse();
-            next_id = parser.next_node_id();
-            let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
+        for stub_index in 0..all_sources().len() {
+            let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
+            let has_fn_body = parsed.iter().any(|d| match &d.kind {
                 DeclKind::Fn(f) => !f.body.is_empty(),
                 DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
                 _ => false,
             });
-            for mut decl in parse_result.decls {
+            for mut decl in parsed {
                 let dominated = if has_fn_body {
                     match &decl.kind {
                         DeclKind::Fn(f) => !f.body.is_empty(),
@@ -397,24 +440,15 @@ impl StubRegistry {
         let mut decls = Vec::new();
         let mut next_id: u32 = 2_000_000;
 
-        for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
-            let file_id = stub_file_id(stub_index);
-            let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
-            if !lex_result.is_ok() {
-                continue;
-            }
-            let mut parser =
-                rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
-                    .allow_keyword_fn_names();
-            let parse_result = parser.parse();
-            next_id = parser.next_node_id();
-            let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
+        for stub_index in 0..all_sources().len() {
+            let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
+            let has_fn_body = parsed.iter().any(|d| match &d.kind {
                 DeclKind::Fn(f) => !f.body.is_empty(),
                 DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
                 _ => false,
             });
             if has_fn_body {
-                for decl in parse_result.decls {
+                for decl in parsed {
                     if matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_)) {
                         decls.push(decl);
                     }
@@ -448,18 +482,9 @@ impl StubRegistry {
             let mut next_id: u32 = 4_000_000;
 
             let defaulted = |f: &FnDecl| f.params.iter().any(|p| p.default.is_some());
-            for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
-                let file_id = stub_file_id(stub_index);
-                let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
-                if !lex_result.is_ok() {
-                    continue;
-                }
-                let mut parser =
-                    rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
-                        .allow_keyword_fn_names();
-                let parse_result = parser.parse();
-                next_id = parser.next_node_id();
-                for decl in parse_result.decls {
+            for stub_index in 0..all_sources().len() {
+                let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
+                for decl in parsed {
                     let keep = match &decl.kind {
                         DeclKind::Fn(f) => defaulted(f),
                         DeclKind::Impl(i) => i.methods.iter().any(defaulted),
@@ -486,18 +511,9 @@ impl StubRegistry {
         let mut decls = Vec::new();
         let mut next_id: u32 = 3_000_000;
 
-        for (stub_index, (_filename, source)) in all_sources().iter().enumerate() {
-            let file_id = stub_file_id(stub_index);
-            let lex_result = rask_lexer::Lexer::new_with_file_id(source, file_id).tokenize();
-            if !lex_result.is_ok() {
-                continue;
-            }
-            let mut parser =
-                rask_parser::Parser::new_with_file_id(lex_result.tokens, next_id, file_id)
-                    .allow_keyword_fn_names();
-            let parse_result = parser.parse();
-            next_id = parser.next_node_id();
-            for decl in parse_result.decls {
+        for stub_index in 0..all_sources().len() {
+            let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
+            for decl in parsed {
                 if matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Impl(_)) {
                     decls.push(decl);
                 }
@@ -515,11 +531,13 @@ impl StubRegistry {
                 let name_span = find_name_span(source, &base_name, "struct", decl_span);
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name,
+                    is_private: false,
                     doc: s.doc.clone(),
                     methods: Vec::new(),
                     source_file: format!("stdlib/{}", filename),
                     span: name_span,
                 });
+                entry.is_private |= !s.is_pub;
                 for m in &s.methods {
                     entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
                 }
@@ -529,11 +547,13 @@ impl StubRegistry {
                 let name_span = find_name_span(source, &base_name, "enum", decl_span);
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name,
+                    is_private: false,
                     doc: e.doc.clone(),
                     methods: Vec::new(),
                     source_file: format!("stdlib/{}", filename),
                     span: name_span,
                 });
+                entry.is_private |= !e.is_pub;
                 for m in &e.methods {
                     entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
                 }
@@ -559,6 +579,7 @@ impl StubRegistry {
                 }
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name.clone(),
+                    is_private: false,
                     doc: None,
                     methods: Vec::new(),
                     source_file: format!("stdlib/{}", filename),
@@ -861,7 +882,7 @@ mod tests {
         let expected = [
             "Vec", "Map", "Rack", "Link", "string", "Option", "Result", "File", "Random",
             "fs", "net", "json", "cli", "io", "std", "http",
-            "JsonValue", "JsonError", "JsonParser",
+            "JsonValue", "JsonError",
             "Headers", "Request", "Response", "HttpServer", "Responder", "HttpClient",
             "Method", "HttpError",
         ];

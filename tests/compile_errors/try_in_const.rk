@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: `try` in a constant's initializer.
+//
+// A constant has no return type, and neither does a test body, where `try`
+// ends the test. The checker told them apart by the missing return type
+// alone, so `const X: i64 = try maybe()` type-checked and then native died in
+// the Cranelift verifier.
+
+func maybe() -> i64? {
+    return 1
+}
+
+// ERROR: `try` has nowhere to send the error here
+const X: i64 = try maybe()
+
+// ERROR: `try` has nowhere to send the error here
+const Y: i64 = try "2".parse<i64>()
+
+func main() {
+    println("{X} {Y}")
+}

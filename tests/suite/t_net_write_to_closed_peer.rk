@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Writing to a peer that has hung up is an `IoError`, not a crash.
+//
+// `TcpConnection.write_bytes` and `read_bytes` put a failed syscall's -1
+// straight on the error side, and matching that -1 as an `IoError` tag trapped:
+// SIGILL natively on the first write after the other end closed. Found under
+// sim's fault injection; it happens the same way on real sockets.
+
+import net
+import io.IoError
+
+func write_until_it_fails() -> bool or IoError {
+    let listener = try net.tcp_listen("127.0.0.1:0")
+    let client = try net.tcp_connect(listener.local_addr())
+    let server = try listener.accept()
+    let _ = server.close()
+    let _ = listener.close()
+
+    // The first write can succeed: the kernel buffers it before the reset
+    // comes back. Some later one fails.
+    mut failed = false
+    for i in 0..200 {
+        if client.write_text("0123456789abcdef") is IoError as e {
+            failed = true
+            break
+        }
+    }
+    let _ = client.close()
+    return failed
+}
+
+test "a write to a closed peer is an error" {
+    assert try write_until_it_fails()
+}

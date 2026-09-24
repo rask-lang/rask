@@ -12,6 +12,7 @@ mod fs;
 mod io;
 mod json;
 mod math;
+mod natives;
 #[cfg(not(target_arch = "wasm32"))]
 mod net;
 mod os;
@@ -240,6 +241,11 @@ impl Interpreter {
                         if is_static && has_body {
                             return self.call_function(&method_fn, args).map_err(|diag| diag.error);
                         }
+                    }
+                }
+                if let Some(symbol) = Self::stdlib_native_symbol(type_name, method) {
+                    if let Some(result) = self.call_native_symbol(&symbol, &args) {
+                        return result;
                     }
                 }
                 Err(RuntimeError::TypeError(format!(

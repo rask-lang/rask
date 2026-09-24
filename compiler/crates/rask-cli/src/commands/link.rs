@@ -75,6 +75,8 @@ pub struct LinkOptions {
     /// test` run it and delete it. Only the first kind is worth collecting
     /// debug symbols for — see the `dsymutil` call in `link_executable_with`.
     pub keeps_binary: bool,
+    /// Link the sim runtime (sim.md): `-DRASK_SIM`, and none of green.c.
+    pub sim: bool,
 }
 
 /// Platform-specific linking configuration derived from a target triple.
@@ -85,10 +87,11 @@ struct TargetConfig {
     link_flags: Vec<String>,
     /// Mach-O output, which keeps its debug info differently from ELF.
     macho: bool,
+    sim: bool,
 }
 
 impl TargetConfig {
-    fn for_target(target: Option<&str>, runtime_dir: &Path) -> Result<Self, String> {
+    fn for_target(target: Option<&str>, runtime_dir: &Path, sim: bool) -> Result<Self, String> {
         let host_os = std::env::consts::OS;
         let host_arch = std::env::consts::ARCH;
         let host_triple = format!("{}-{}", host_arch, host_os);
@@ -140,7 +143,8 @@ impl TargetConfig {
                 // machine exercised that — which is how `spawn` came to fail
                 // at link on macOS for two releases (#1180). This is the seam
                 // that lets a Linux gate check it.
-                if !no_green() {
+                // Sim runs tasks on the one-thread-per-task path too.
+                if !no_green() && !sim {
                     sources.extend(LINUX_SOURCES.iter().map(|s| s.to_string()));
                 }
             }
@@ -160,7 +164,7 @@ impl TargetConfig {
             _ => vec![],
         };
 
-        Ok(TargetConfig { cc, cc_args, sources, link_flags, macho: target_os == "macos" })
+        Ok(TargetConfig { cc, cc_args, sources, link_flags, macho: target_os == "macos", sim })
     }
 }
 
@@ -301,10 +305,13 @@ fn profile_cflags(release: bool) -> Vec<String> {
 /// Each libc hides those behind its own macro, and each macro is inert on the
 /// other platform. `compiler/runtime/Makefile` passes the same pair — the two
 /// have to agree, or `make` builds a dialect nobody ships.
-fn feature_cflags() -> Vec<String> {
+fn feature_cflags(sim: bool) -> Vec<String> {
     let mut flags = vec!["-D_GNU_SOURCE".to_string(), "-D_DARWIN_C_SOURCE".to_string()];
     if no_green() {
         flags.push("-DRASK_NO_GREEN".to_string());
+    }
+    if sim {
+        flags.push("-DRASK_SIM".to_string());
     }
     flags
 }
@@ -360,11 +367,25 @@ fn runtime_cache_key(
     config.cc.hash(&mut hasher);
     config.cc_args.hash(&mut hasher);
     profile_cflags(release).hash(&mut hasher);
-    feature_cflags().hash(&mut hasher);
+    feature_cflags(config.sim).hash(&mut hasher);
     extra_cflags().hash(&mut hasher);
     config.link_flags.hash(&mut hasher);
 
-    for src in &config.sources {
+    // Headers too: every source includes `rask_runtime.h`, so a change to it
+    // is a change to all of them, and keying on the `.c` files alone handed
+    // back objects built against the old header.
+    let mut headers: Vec<String> = std::fs::read_dir(runtime_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| n.ends_with(".h"))
+                .collect()
+        })
+        .unwrap_or_default();
+    headers.sort();
+
+    for src in config.sources.iter().chain(headers.iter()) {
         src.hash(&mut hasher);
         let path = runtime_dir.join(src);
         if let Ok(meta) = std::fs::metadata(&path) {
@@ -392,7 +413,7 @@ fn runtime_objects(
         .map_err(|e| format!("failed to create runtime cache dir {}: {}", dir.display(), e))?;
 
     let profile = profile_cflags(release);
-    let features = feature_cflags();
+    let features = feature_cflags(config.sim);
     let extra = extra_cflags();
     let mut objects = Vec::with_capacity(config.sources.len());
 
@@ -450,7 +471,7 @@ pub fn link_executable_with(
     target: Option<&str>,
 ) -> Result<(), String> {
     let runtime_dir = find_runtime_dir()?;
-    let config = TargetConfig::for_target(target, &runtime_dir)?;
+    let config = TargetConfig::for_target(target, &runtime_dir, opts.sim)?;
 
     for src in &config.sources {
         if !runtime_dir.join(src).exists() {

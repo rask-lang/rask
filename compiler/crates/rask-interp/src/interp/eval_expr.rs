@@ -1266,6 +1266,13 @@ impl Interpreter {
                     if let Some(func) = self.functions.get(&prefixed).cloned() {
                         return self.call_function(&func, arg_vals);
                     }
+                    // A bodiless `@native` declaration in the stdlib: answered
+                    // by symbol, the way native codegen's dispatch table does.
+                    if let Some(symbol) = Self::stdlib_native_symbol(pkg_name, method) {
+                        if let Some(result) = self.call_native_symbol(&symbol, &arg_vals) {
+                            return result.map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                        }
+                    }
                     return Err(RuntimeDiagnostic::new(
                         RuntimeError::UndefinedVariable(method.clone()),
                         expr.span,

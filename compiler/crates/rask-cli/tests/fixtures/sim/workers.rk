@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `workers: 1` means one body in flight at a time, under sim as anywhere.
+import sync.Atomic
+import sync.SeqCst
+import async.spawn
+
+const IN_FLIGHT: Atomic<i64> = Atomic<i64>.new(0)
+const PEAK: Atomic<i64> = Atomic<i64>.new(0)
+
+func body() {
+    let now = IN_FLIGHT.fetch_add(1, SeqCst) + 1
+    if now > PEAK.load(SeqCst) {
+        PEAK.store(now, SeqCst)
+    }
+    IN_FLIGHT.fetch_sub(1, SeqCst)
+}
+
+test "one worker, one body" {
+    using Multitasking(workers: 1) {
+        let a = spawn(|| { body() })
+        ensure a.detach()
+        let b = spawn(|| { body() })
+        ensure b.detach()
+        let c = spawn(|| { body() })
+        ensure c.detach()
+        a.join()!
+        b.join()!
+        c.join()!
+        assert PEAK.load(SeqCst) == 1
+    }
+}

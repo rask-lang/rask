@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An HTTP server and client in one test, over sim's loopback network. The
+// test body binds and serves, and the client runs in a task, so the client
+// can't arrive at a port nobody is listening on yet. (With the server in the
+// task, the client connected first on some seeds.)
+import http
+import http.HttpError
+import http.Response
+import async.spawn
+import sim
+import sim.Fault
+
+test "a request round trip" {
+    using Multitasking {
+        let server = try http.listen("127.0.0.1:8080")
+        ensure server.close()
+        let client = spawn(|| {
+            return http.get("http://127.0.0.1:8080/items/7")
+        })
+        ensure client.detach()
+        let (req, responder) = try server.accept()
+        try responder.respond(Response.ok("you asked for {req.path()}"))
+        let resp = try client.join()!
+        assert resp.body == "you asked for /items/7"
+    }
+}
+
+test "a POST body arrives whole" {
+    let body = "a body long enough that a short read splits it somewhere in the middle"
+    using Multitasking {
+        let server = try http.listen("127.0.0.1:8081")
+        ensure server.close()
+        let client = spawn(|| {
+            return http.post("http://127.0.0.1:8081/echo", body)
+        })
+        ensure client.detach()
+        let (req, responder) = try server.accept()
+        try responder.respond(Response.ok("got {req.body}"))
+        let resp = try client.join()!
+        assert resp.body == "got {body}"
+    }
+}
+
+// A reset mid-response used to come back as a response with a shorter body:
+// the reader stopped at the first failed read and called what it had the
+// message.
+test "a cut connection is an error, never a short body" {
+    sim.require(faults: [Fault.Disconnect])
+    let full = "a response body long enough to be cut somewhere in the middle of it"
+    using Multitasking {
+        for i in 0..10 {
+            let server = try http.listen("127.0.0.1:0")
+            ensure server.close()
+            let addr = server.local_addr()
+            let client = spawn(|| {
+                return http.get("http://{addr}/")
+            })
+            ensure client.detach()
+            let (req, responder) = server.accept() catch e => {
+                continue
+            }
+            let _ = responder.respond(Response.ok(full))
+            if client.join()! is Response as resp {
+                assert resp.body == full
+            }
+        }
+    }
+}

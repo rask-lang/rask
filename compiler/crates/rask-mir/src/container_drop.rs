@@ -1603,6 +1603,8 @@ fn collect_fresh_containers_with(
                 let base = head.split('$').next().unwrap_or(head);
                 if let Some(free) = free_for(base) {
                     fresh.insert(*dst, free);
+                } else if let Some(free) = crate::elem_strs::wrapped_free_fn(base) {
+                    unwrap_for.insert(*dst, free);
                 } else if let Some(back) = handing_over.get(&fref.name) {
                     // The callee's own constructor decided which free this is.
                     if back.wrapped {

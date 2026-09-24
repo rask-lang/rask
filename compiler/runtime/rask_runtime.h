@@ -765,34 +765,24 @@ int64_t  rask_random_range(int64_t lo, int64_t hi);
 // ─── FS module ──────────────────────────────────────────────
 // Higher-level file operations. Return FILE* as i64.
 
-int8_t      rask_fs_exists(const RaskStr *path);
 
-void        rask_fwrite_vec(int64_t fptr, const RaskVec *v);
+int64_t     rask_fwrite_vec(int64_t fptr, const RaskVec *v);
 
 // Thin wrappers for libc functions whose names clash with Rask methods
 // or that access C struct fields
 int32_t     rask_libc_rename(const char *from, const char *to);
 int32_t     rask_libc_remove(const char *path);
 int32_t     rask_libc_mkdir(const char *path, uint32_t mode);
-const char *rask_dirent_name(void *entry);
+int32_t     rask_libc_access(const char *path, int32_t mode);
+void       *rask_libc_fopen(const char *path, const char *mode);
+void       *rask_libc_opendir(const char *path);
+const char *rask_libc_readdir(void *dir);
+int32_t     rask_libc_closedir(void *dir);
 int64_t     rask_stat_size(const char *path);
 int64_t     rask_stat_mtime(const char *path);
 int64_t     rask_stat_atime(const char *path);
-void        rask_fs_read_file(RaskStr *out, const RaskStr *path);
-RaskVec    *rask_fs_read_bytes(const RaskStr *path);
-void        rask_fs_write_file(const RaskStr *path, const RaskStr *content);
-void        rask_fs_write_bytes(const RaskStr *path, RaskVec *data);
-RaskVec    *rask_fs_read_lines(const RaskStr *path);
-RaskVec    *rask_fs_list_dir(const RaskStr *path);
 int64_t     rask_fs_open(const RaskStr *path);
 int64_t     rask_fs_create(const RaskStr *path);
-void        rask_fs_canonicalize(RaskStr *out, const RaskStr *path);
-int64_t     rask_fs_copy(const RaskStr *from, const RaskStr *to);
-void        rask_fs_rename(const RaskStr *from, const RaskStr *to);
-void        rask_fs_remove(const RaskStr *path);
-void        rask_fs_create_dir(const RaskStr *path);
-void        rask_fs_create_dir_all(const RaskStr *path);
-void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 
 // ─── File instance methods ──────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
@@ -803,7 +793,7 @@ int64_t     rask_file_is_null(int64_t file);
 // the absolute position, or -1 with errno set.
 int64_t     rask_file_seek(int64_t file, int64_t whence, int64_t offset);
 int64_t     rask_file_position(int64_t file);
-void        rask_file_close(int64_t file);
+int64_t     rask_file_close(int64_t file);
 // ─── String-out-param calls ────────────────────────────────
 // A call that hands a string back through an out-param says how it ended, and
 // carries the reason when it failed. It used to return a bare 0/1, and codegen
@@ -822,10 +812,11 @@ const char *rask_io_error_text(int32_t err);
 
 int64_t     rask_file_read_all(RaskStr *out, int64_t file, RaskStr *err_out);
 int64_t     rask_file_read_bytes(int64_t file);
-void        rask_file_write(int64_t file, const RaskStr *content);
-void        rask_file_write_all(int64_t file, const RaskStr *content);
+int64_t     rask_file_write(int64_t file, const RaskStr *content);
 int64_t     rask_file_write_bytes(int64_t file, int64_t vec_ptr);
-void        rask_file_write_line(int64_t file, const RaskStr *content);
+int64_t     rask_file_write_line(int64_t file, const RaskStr *content);
+int64_t     rask_fwrite_all(void *f, const char *ptr, size_t len);  // f is a FILE *
+int32_t     rask_libc_mkdir_or_dir(const char *path, uint32_t mode);
 RaskVec    *rask_file_lines(int64_t file);
 
 // ─── IO module ──────────────────────────────────────────────
@@ -875,7 +866,6 @@ int8_t  rask_net_is_invalid(int64_t handle);
 int8_t  rask_net_is_unresolved(int64_t handle);
 
 // ─── Filesystem metadata ────────────────────────────────────
-int64_t rask_fs_metadata(int64_t path_ptr);
 int64_t rask_metadata_size(int64_t meta_ptr);
 int64_t rask_metadata_accessed(int64_t meta_ptr);
 int64_t rask_metadata_modified(int64_t meta_ptr);
@@ -891,6 +881,8 @@ int64_t rask_args_program(int64_t args_ptr);
 
 // Response reading (reads until EOF for Connection: close pattern).
 void    rask_io_read_until_close(RaskStr *out, int64_t fd, int64_t max_len);
+int64_t rask_io_http_read(int64_t fd, int64_t max_len, int64_t is_response);
+void    rask_io_http_take(RaskStr *out, int64_t handle);
 
 // ─── JSON module ────────────────────────────────────────────
 // Encode helpers — used by codegen-generated struct serialization.
@@ -1134,8 +1126,9 @@ void    rask_panic_set_task_id(int64_t id);
 // two are epoll and io_uring — so off Linux there is no green scheduler and
 // nothing below this line is defined. `LINUX_SOURCES` in
 // rask-cli/src/commands/link.rs and `LINUX_ONLY` in runtime/Makefile decide the
-// same thing for the build; this is how a portable source asks.
-#if defined(__linux__) && !defined(RASK_NO_GREEN)
+// same thing for the build; this is how a portable source asks. Sim mode
+// (sim.c) builds on the one-thread-per-task path, so it leaves green.c out too.
+#if defined(__linux__) && !defined(RASK_NO_GREEN) && !defined(RASK_SIM)
 #define RASK_HAS_GREEN 1
 #else
 #define RASK_HAS_GREEN 0
@@ -1229,8 +1222,8 @@ int8_t rask_task_cancelled(void);
 // while nothing installs one. See thread.c.
 void rask_task_slots_install(int64_t n);
 void rask_task_slots_clear(void);
-void rask_task_slot_release(void);
-void rask_task_slot_retake(void);
+int  rask_task_slot_release(void);
+void rask_task_slot_retake(int released);
 
 // Raise the cancel flag without joining. `rask_task_cancel` does both, and a
 // caller that wants the outcome shape (RASK_JOIN_CANCELLED and the value) needs
@@ -1243,6 +1236,7 @@ int64_t rask_sleep_ns(int64_t ns);
 // Codegen wrapper: spawn a task from a closure pointer [func_ptr | captures...].
 // Extracts func/env, runs the task, and frees the closure allocation on completion.
 RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned);
+RaskTaskHandle *rask_thread_spawn(void *closure_ptr, int64_t result_owned);
 
 // ─── Worker pool (threadpool.c) ────────────────────────────
 // `using ThreadPool(workers: n)` brackets its block with these. Workers are

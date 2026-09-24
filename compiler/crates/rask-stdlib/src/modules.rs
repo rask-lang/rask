@@ -267,7 +267,8 @@ fn derived() -> HashMap<String, ModuleExports> {
         let Some(module) = type_module(name) else { continue };
         // A module carries a same-named namespace struct (`struct http { }`) to
         // hang its qualified functions off. That's plumbing, not an export.
-        if name == module {
+        // Nor is a type the module declares without `public`.
+        if name == module || registry.get_type(name).is_some_and(|t| t.is_private) {
             continue;
         }
         let entry = out.entry(module).or_default();

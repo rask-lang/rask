@@ -15,8 +15,13 @@
 // detach / cancel all work unchanged. The difference is that a pooled job owns
 // no thread, so join waits for the job's status rather than pthread_join'ing —
 // that's the `pooled` flag in thread.c.
+//
+// Under sim the pool is the same pool: each worker is a sim task, so the
+// worker count and the queue's order hold exactly as they do in production,
+// and a job waiting on a job still queued behind it deadlocks the same way.
 
 #include "rask_runtime.h"
+#include "sim.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -45,6 +50,9 @@ typedef struct PoolJob {
 
 static struct {
     pthread_t       *workers;
+#ifdef RASK_SIM
+    void           **sim_workers; // the workers' sim tasks, NULL outside sim
+#endif
     int              worker_count;
     pthread_mutex_t  lock;
     pthread_cond_t   work_ready;
@@ -64,17 +72,24 @@ static PoolJob *dequeue_locked(void) {
 }
 
 static void *pool_worker(void *arg) {
+#ifdef RASK_SIM
+    if (arg) rask_sim_task_enter(arg);
+#else
     (void)arg;
+#endif
     for (;;) {
         pthread_mutex_lock(&g_pool.lock);
         while (!g_pool.head && !g_pool.shutting_down) {
-            pthread_cond_wait(&g_pool.work_ready, &g_pool.lock);
+            rask_task_cond_wait(&g_pool.work_ready, &g_pool.lock, "a pool job");
         }
         // Drain the queue before exiting: shutdown runs at the end of the
         // `using` block, and a job already enqueued there still has to run.
         PoolJob *job = dequeue_locked();
         if (!job && g_pool.shutting_down) {
             pthread_mutex_unlock(&g_pool.lock);
+#ifdef RASK_SIM
+            if (arg) rask_sim_task_exit();
+#endif
             return NULL;
         }
         pthread_mutex_unlock(&g_pool.lock);
@@ -92,6 +107,12 @@ static void *pool_worker(void *arg) {
 
 void rask_threadpool_init(int64_t worker_count) {
     if (g_pool.started) return;
+#ifdef RASK_SIM
+    // A pool sized to the machine can't be replayed (determinism/D1), so a
+    // default-sized pool under sim has no bound: every job gets its own task,
+    // the same as a default `using Multitasking`.
+    if (worker_count <= 0 && rask_sim_active()) return;
+#endif
 
     if (worker_count <= 0) {
         worker_count = sysconf(_SC_NPROCESSORS_ONLN);
@@ -106,8 +127,25 @@ void rask_threadpool_init(int64_t worker_count) {
     g_pool.worker_count = (int)worker_count;
     g_pool.workers = (pthread_t *)rask_alloc(sizeof(pthread_t) * (size_t)worker_count);
 
+#ifdef RASK_SIM
+    g_pool.sim_workers = NULL;
+    if (rask_sim_active()) {
+        g_pool.sim_workers = (void **)rask_alloc(sizeof(void *) * (size_t)worker_count);
+    }
+#endif
+
     for (int i = 0; i < g_pool.worker_count; i++) {
-        if (pthread_create(&g_pool.workers[i], NULL, pool_worker, NULL) != 0) {
+        void *arg = NULL;
+#ifdef RASK_SIM
+        if (g_pool.sim_workers) {
+            arg = g_pool.sim_workers[i] = rask_sim_worker_new();
+        }
+#endif
+        if (pthread_create(&g_pool.workers[i], NULL, pool_worker, arg) != 0) {
+#ifdef RASK_SIM
+            // A worker that never started can't be left for sim to pick.
+            if (arg) rask_sim_task_abandon(arg);
+#endif
             // Fewer workers than asked for is survivable — none is not, since
             // every later spawn would enqueue into a queue nobody drains.
             g_pool.worker_count = i;
@@ -118,6 +156,10 @@ void rask_threadpool_init(int64_t worker_count) {
     if (g_pool.worker_count == 0) {
         rask_free(g_pool.workers);
         g_pool.workers = NULL;
+#ifdef RASK_SIM
+        if (g_pool.sim_workers) rask_free(g_pool.sim_workers);
+        g_pool.sim_workers = NULL;
+#endif
         pthread_cond_destroy(&g_pool.work_ready);
         pthread_mutex_destroy(&g_pool.lock);
         return;   // spawn falls back to one thread per job
@@ -131,13 +173,20 @@ void rask_threadpool_shutdown(void) {
 
     pthread_mutex_lock(&g_pool.lock);
     g_pool.shutting_down = 1;
-    pthread_cond_broadcast(&g_pool.work_ready);
+    rask_task_cond_broadcast(&g_pool.work_ready);
     pthread_mutex_unlock(&g_pool.lock);
 
     for (int i = 0; i < g_pool.worker_count; i++) {
+#ifdef RASK_SIM
+        if (g_pool.sim_workers) rask_sim_task_join(g_pool.sim_workers[i]);
+#endif
         pthread_join(g_pool.workers[i], NULL);
     }
 
+#ifdef RASK_SIM
+    if (g_pool.sim_workers) rask_free(g_pool.sim_workers);
+    g_pool.sim_workers = NULL;
+#endif
     rask_free(g_pool.workers);
     g_pool.workers = NULL;
     g_pool.worker_count = 0;
@@ -178,7 +227,7 @@ RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
         g_pool.head = job;
         g_pool.tail = job;
     }
-    pthread_cond_signal(&g_pool.work_ready);
+    rask_task_cond_signal(&g_pool.work_ready);
     pthread_mutex_unlock(&g_pool.lock);
 
     return rask_task_handle_for(state);

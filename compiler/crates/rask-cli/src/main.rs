@@ -335,7 +335,7 @@ fn main() {
             let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
-            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![], keeps_binary: false };
+            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![], keeps_binary: false, sim: false };
             let file = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj", "--profile", "--target"])
                 .unwrap_or(".");
 
@@ -384,7 +384,7 @@ fn main() {
             let target = extract_flag_value(&cmd_args, "--target");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
-            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![], keeps_binary: true };
+            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![], keeps_binary: true, sim: false };
             let dump_mir = cmd_args.contains(&"--dump-mir");
             let file_arg = find_positional_arg(&cmd_args, 2, &["-o", "--link-lib", "--link-obj", "--target"]);
             let file = match file_arg {
@@ -411,6 +411,7 @@ fn main() {
                 process::exit(1);
             }
             let filter = extract_filter(&cmd_args);
+            let sim = cmd_args.contains(&"--sim");
             // These three were accepted and did nothing — `--verbose` had
             // nothing to add (every test name is printed already), and the
             // other two are switches for features that aren't built. A flag
@@ -418,11 +419,16 @@ fn main() {
             // ignoring it is worse still: `--seed 5` would have left `5` to be
             // read as the file. They come back with T7 and T8.
             for dead in ["--verbose", "--sequential", "--seed"] {
+                // Under sim, `--seed` is the sim seed (sim/I2).
+                if sim && dead == "--seed" {
+                    continue;
+                }
                 if cmd_args.contains(&dead) {
                     let why = match dead {
                         "--verbose" => "every test name is printed already",
                         "--sequential" => "tests run sequentially; parallel execution isn't built (std.testing/T7)",
-                        _ => "random test ordering isn't built (std.testing/T8)",
+                        _ => "random test ordering isn't built (std.testing/T8); \
+                              the seed of a sim run goes with `--sim`",
                     };
                     eprintln!(
                         "{}: `rask test` has no `{}` — {}",
@@ -433,7 +439,19 @@ fn main() {
                     process::exit(1);
                 }
             }
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-f"]);
+            if !sim {
+                for flag in ["--seeds", "--keep-going", "--max-steps"] {
+                    if cmd_args.contains(&flag) {
+                        eprintln!(
+                            "{}: `{}` searches seeds, which only sim mode has — add `--sim`",
+                            output::error_label(),
+                            flag,
+                        );
+                        process::exit(1);
+                    }
+                }
+            }
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed", "--seeds", "--max-steps"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
@@ -454,6 +472,59 @@ fn main() {
                 );
             }
             let p = Path::new(file);
+            if sim {
+                if interp {
+                    eprintln!(
+                        "{}: `--sim` runs on the native runtime; the interpreter has no sim mode",
+                        output::error_label(),
+                    );
+                    process::exit(1);
+                }
+                let parse_u64 = |flag: &str| -> Option<u64> {
+                    let uses = cmd_args.iter().filter(|a| **a == flag).count();
+                    if uses == 0 {
+                        return None;
+                    }
+                    if uses > 1 {
+                        eprintln!("{}: `{}` given {} times — pass it once", output::error_label(), flag, uses);
+                        process::exit(1);
+                    }
+                    let Some(raw) = extract_flag_value(&cmd_args, flag) else {
+                        eprintln!("{}: `{}` needs a number after it", output::error_label(), flag);
+                        process::exit(1);
+                    };
+                    match raw.parse::<u64>() {
+                        Ok(v) => Some(v),
+                        Err(_) => {
+                            eprintln!(
+                                "{}: `{} {}` — expected a whole number",
+                                output::error_label(),
+                                flag,
+                                raw,
+                            );
+                            process::exit(1);
+                        }
+                    }
+                };
+                let seeds = parse_u64("--seeds").unwrap_or(1);
+                if seeds == 0 {
+                    eprintln!("{}: `--seeds 0` would run nothing", output::error_label());
+                    process::exit(1);
+                }
+                let max_steps = parse_u64("--max-steps");
+                if max_steps == Some(0) {
+                    eprintln!("{}: `--max-steps 0` would fail every test at its first step", output::error_label());
+                    process::exit(1);
+                }
+                let opts = commands::sim::SimOptions {
+                    seed: parse_u64("--seed"),
+                    seeds,
+                    keep_going: cmd_args.contains(&"--keep-going"),
+                    max_steps,
+                };
+                commands::sim::cmd_test_sim(file, filter, format, opts);
+                return;
+            }
             if interp {
                 // A package directory checks as one program — `check_file`
                 // finds the `build.rk` and merges every package's declarations

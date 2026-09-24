@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An open stream holds the file, not its name: renaming or removing the file
+// under it behaves the POSIX way. The overlay used to look the path up again
+// on every read and write.
+
+import fs
+
+test "a rename under an open writer keeps the writes" {
+    let f = try fs.create_file("sim_tmp.txt")
+    try f.write_text("hello")
+    try fs.rename("sim_tmp.txt", "sim_final.txt")
+    try f.write_text(" world")
+    try f.close()
+    assert (try fs.read_text("sim_final.txt")) == "hello world"
+    assert !fs.exists("sim_tmp.txt")
+}
+
+test "a reader keeps the old file after it is removed and recreated" {
+    try fs.write_text("sim_rm.txt", "old")
+    let r = try fs.open("sim_rm.txt")
+    try fs.remove_file("sim_rm.txt")
+    try fs.write_text("sim_rm.txt", "new")
+    assert (try r.read_text()) == "old"
+    let _ = r.close()
+    assert (try fs.read_text("sim_rm.txt")) == "new"
+}
+
+test "a reader of a real file sees a write made after it opened" {
+    let r = try fs.open("sleep.rk")
+    try fs.write_text("sleep.rk", "replaced")
+    assert (try r.read_text()) == "replaced"
+    let _ = r.close()
+}

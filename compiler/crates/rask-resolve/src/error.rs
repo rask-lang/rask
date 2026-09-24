@@ -37,6 +37,13 @@ impl ResolveError {
         }
     }
 
+    pub fn duplicate_test(kind: &'static str, name: String, span: Span, previous: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::DuplicateTest { kind, name, previous },
+            span,
+        }
+    }
+
     pub fn unknown_break_target(name: String, labels: Vec<String>, span: Span) -> Self {
         Self {
             kind: ResolveErrorKind::UnknownBreakTarget { name, labels },
@@ -177,6 +184,11 @@ pub enum ResolveErrorKind {
 
     #[error("duplicate definition: {name} (previously defined at {previous:?})")]
     DuplicateDefinition { name: String, previous: Span },
+
+    /// Two tests (or two benchmarks) in one file with one name. The name is
+    /// how a test is picked: `-f`, the runner's report, sim's replay line.
+    #[error("two {kind}s named \"{name}\"")]
+    DuplicateTest { kind: &'static str, name: String, previous: Span },
 
     /// Two `extern "C"` declarations of one C symbol that disagree. There's a
     /// single `strlen` in the linked program, so two signatures for it can't

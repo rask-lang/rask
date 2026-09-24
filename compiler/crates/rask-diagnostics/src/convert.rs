@@ -197,6 +197,18 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("each name can only be defined once in a scope")
             }
 
+            DuplicateTest { kind, name, previous } => {
+                Diagnostic::error(format!("two {kind}s named \"{name}\""))
+                    .with_code("E0217")
+                    .with_primary(self.span, "second one here")
+                    .with_secondary(*previous, "first one here")
+                    .with_help(format!("rename one of them, e.g. `{kind} \"{name} (2)\"`"))
+                    .with_why(format!(
+                        "a {kind} is picked by its name — by `-f`, in the report, and in \
+                         `rask test --sim`'s replay line — so two with one name can't be told apart"
+                    ))
+            }
+
             InvalidBreak { label } => {
                 let msg = match label {
                     Some(l) => format!("break with label `{}` outside of loop", l),
@@ -1292,12 +1304,12 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             TryOutsideFunction { span } => {
-                Diagnostic::error("`try` can only be used within a function")
+                Diagnostic::error("`try` has nowhere to send the error here")
                     .with_code("E0317")
-                    .with_primary(*span, "not inside a function")
-                    .with_help("move this into a function body")
-                    .with_fix("move this `try` expression inside a function body")
-                    .with_why("`try` needs a function to propagate errors to")
+                    .with_primary(*span, "not inside a function or test")
+                    .with_help("handle it where it happens: `?? fallback` for an optional, `catch e => …` for a result")
+                    .with_fix("const LIMIT: i64 = parse_limit() ?? 100")
+                    .with_why("`try` leaves through the enclosing function's error branch, or ends the enclosing test; a constant's initializer has neither")
             }
 
             MissingReturn {

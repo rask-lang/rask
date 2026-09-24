@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Module constants are built inside sim, before any test runs. They used to
+// be built first, so a Map made there was placed with the startup hash seed
+// and looked up with the run's (0 of 50 keys found), and a constant that
+// read `random` or the clock read the real ones.
+
+import random
+import time.Instant
+
+func build() -> Map<i64, i64> {
+    mut m = Map<i64, i64>.new()
+    for i in 0..50 {
+        m.insert(i, i * 2)
+    }
+    return m
+}
+
+func pick() -> i64 {
+    return random.range(0, 1000000)
+}
+
+const TABLE: Map<i64, i64> = build()
+const R: i64 = pick()
+const T0: Instant = Instant.now()
+
+test "a constant map finds its keys" {
+    mut hits = 0
+    for i in 0..50 {
+        if TABLE.get(i) is Some(v) {
+            hits += 1
+        }
+    }
+    assert hits == 50
+}
+
+test "constants read the simulated world" {
+    // Fails on purpose so the report shows the values.
+    let since = T0.elapsed().as_nanos()
+    assert since < 1000000
+    assert R == -1
+}

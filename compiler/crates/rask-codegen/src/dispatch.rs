@@ -818,7 +818,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I32], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::InPlaceStringMut, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::simple("fs_list_dir", "rask_fs_list_dir", &[types::I64], Some(types::I64), false),
 
         // ── Map operations ─────────────────────────────────────
         StdlibEntry::simple("Map_free", "rask_map_free", &[types::I64], None, false),
@@ -984,7 +983,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("random_range", "rask_random_range", &[types::I64, types::I64], Some(types::I64), true),
 
         // ── File instance methods ─────────────────────────────────
-        StdlibEntry::simple("File_close", "rask_file_close", &[types::I64], None, false),
+        StdlibEntry::simple("File_close_raw", "rask_file_close", &[types::I64], Some(types::I64), false),
         // `int64_t rask_file_read_all(RaskStr *out, int64_t file)` — the string
         // comes back through the out-param, the return value is the ok/err tag
         // for `string or IoError`. Declared as a 1-arg call returning i64, the
@@ -1001,10 +1000,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // negative-return-means-error convention (used elsewhere for handles
         // like TcpConnection) applies cleanly with no out-param plumbing.
         StdlibEntry::neg_err("File_read_bytes", "rask_file_read_bytes", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("File_write", "rask_file_write", &[types::I64, types::I64], None, false),
-        StdlibEntry::neg_err("File_write_bytes", "rask_file_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("File_write_text", "rask_file_write", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("File_write_line", "rask_file_write_line", &[types::I64, types::I64], None, false),
+        // The writes and close answer 0 or -1 with errno set; stdlib/io.rk
+        // turns -1 into the IoError, which the runtime can't build.
+        StdlibEntry::simple("File_write_raw", "rask_file_write", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("File_write_bytes_raw", "rask_file_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("File_write_line_raw", "rask_file_write_line", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Stdlib module calls ─────────────────────────────────
         StdlibEntry::simple("cli_args", "rask_cli_args", &[], Some(types::I64), false),
@@ -1023,7 +1023,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Args_positional", "rask_args_positional", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Args_program", "rask_args_program", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("std_exit", "rask_exit", &[types::I64], None, false),
-        StdlibEntry::simple("fs_read_lines", "rask_fs_read_lines", &[types::I64], Some(types::I64), false),
 
         // ── IO module ───────────────────────────────────────────
         StdlibEntry {
@@ -1035,8 +1034,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── FS module ───────────────────────────────────────────
         // Self-hosted from stdlib/fs.rk. Remaining C runtime stubs:
-        StdlibEntry::simple("fs_write_bytes", "rask_fs_write_bytes", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
         StdlibEntry::simple("fs_open_handle", "rask_fs_open", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("fs_create_handle", "rask_fs_create", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("File_is_null", "rask_file_is_null", &[types::I64], Some(types::I64), false),
@@ -1075,8 +1072,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
-            mir_name: "rask_io_read_string", c_name: "rask_io_read_string",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            mir_name: "rask_io_http_take", c_name: "rask_io_http_take",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
@@ -1096,6 +1093,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("net_listen_handle", "rask_net_tcp_listen", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("net_connect_handle", "rask_net_tcp_connect", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_accept_handle", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
+        // stdlib/sim.rk: turn on the faults a test asks for; false outside sim.
+        StdlibEntry::simple("sim_enable_faults", "rask_sim_enable_faults", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpConnection_is_invalid", "rask_net_is_invalid", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_is_unresolved", "rask_net_is_unresolved", &[types::I64], Some(types::I64), false),
@@ -1110,8 +1109,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // read_bytes/write_bytes hand back/take a Vec<u8> pointer directly —
         // a plain heap pointer is never negative, so the same convention used
         // for handles (TcpListener.accept, etc.) applies with no out-param.
-        StdlibEntry::neg_err("TcpConnection_read_bytes", "rask_net_read_bytes", &[types::I64], Some(types::I64), false),
-        StdlibEntry::neg_err("TcpConnection_write_bytes", "rask_net_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::neg_none("TcpConnection_read_bytes_raw", "rask_net_read_bytes", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpConnection_write_bytes_raw", "rask_net_write_bytes", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "TcpConnection_remote_addr", c_name: "rask_net_remote_addr",
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
@@ -1325,7 +1324,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── ThreadPool ─────────────────────────────────────────────
         StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Thread_spawn", "rask_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::join_outcome("ThreadHandle_join", "rask_task_join_outcome"),
         StdlibEntry::join_outcome("Thread_join", "rask_task_join_outcome"),
         StdlibEntry::simple("ThreadHandle_detach", "rask_task_detach", &[types::I64], None, false),

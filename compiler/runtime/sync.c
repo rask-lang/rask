@@ -10,6 +10,7 @@
 // Non-blocking variants (try_read/try_write/try_lock) use closures.
 
 #include "rask_runtime.h"
+#include "sim.h"
 
 #include <stdlib.h>
 #include <stdatomic.h>
@@ -73,15 +74,15 @@ void rask_mutex_free(RaskMutex *m) {
 }
 
 void rask_mutex_lock(RaskMutex *m, RaskAccessFn f, void *ctx) {
-    pthread_mutex_lock(&m->lock);
+    rask_task_mutex_lock(&m->lock, "Mutex lock");
     f(m->data, ctx);
-    pthread_mutex_unlock(&m->lock);
+    rask_task_mutex_unlock(&m->lock);
 }
 
 int64_t rask_mutex_try_lock(RaskMutex *m, RaskAccessFn f, void *ctx) {
-    if (pthread_mutex_trylock(&m->lock) == 0) {
+    if (rask_task_mutex_trylock(&m->lock) == 0) {
         f(m->data, ctx);
-        pthread_mutex_unlock(&m->lock);
+        rask_task_mutex_unlock(&m->lock);
         return 1;
     }
     return 0;
@@ -125,31 +126,31 @@ void rask_shared_free(RaskShared *s) {
 
 void rask_shared_read(RaskShared *s, RaskAccessFn f, void *ctx) {
     RASK_CHECK_NONNULL(s, "Shared.read: shared handle is null");
-    pthread_rwlock_rdlock(&s->lock);
+    rask_task_rwlock_rdlock(&s->lock, "Shared read");
     f(s->data, ctx);
-    pthread_rwlock_unlock(&s->lock);
+    rask_task_rwlock_unlock(&s->lock);
 }
 
 void rask_shared_write(RaskShared *s, RaskAccessFn f, void *ctx) {
     RASK_CHECK_NONNULL(s, "Shared.write: shared handle is null");
-    pthread_rwlock_wrlock(&s->lock);
+    rask_task_rwlock_wrlock(&s->lock, "Shared write");
     f(s->data, ctx);
-    pthread_rwlock_unlock(&s->lock);
+    rask_task_rwlock_unlock(&s->lock);
 }
 
 int64_t rask_shared_try_read(RaskShared *s, RaskAccessFn f, void *ctx) {
-    if (pthread_rwlock_tryrdlock(&s->lock) == 0) {
+    if (rask_task_rwlock_tryrdlock(&s->lock) == 0) {
         f(s->data, ctx);
-        pthread_rwlock_unlock(&s->lock);
+        rask_task_rwlock_unlock(&s->lock);
         return 1;
     }
     return 0;
 }
 
 int64_t rask_shared_try_write(RaskShared *s, RaskAccessFn f, void *ctx) {
-    if (pthread_rwlock_trywrlock(&s->lock) == 0) {
+    if (rask_task_rwlock_trywrlock(&s->lock) == 0) {
         f(s->data, ctx);
-        pthread_rwlock_unlock(&s->lock);
+        rask_task_rwlock_unlock(&s->lock);
         return 1;
     }
     return 0;
@@ -173,7 +174,7 @@ int64_t rask_shared_read_i64(int64_t shared, int64_t closure) {
     RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
     int64_t env = CLOSURE_ENV(closure);
 
-    pthread_rwlock_rdlock(&s->lock);
+    rask_task_rwlock_rdlock(&s->lock, "Shared read");
     rask_access_push(rask_shared_release, shared);   // U3/U4
     int64_t data = *(int64_t *)s->data;
     int64_t result = fn(env, data);
@@ -186,7 +187,7 @@ int64_t rask_shared_write_i64(int64_t shared, int64_t closure) {
     RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
     int64_t env = CLOSURE_ENV(closure);
 
-    pthread_rwlock_wrlock(&s->lock);
+    rask_task_rwlock_wrlock(&s->lock, "Shared write");
     rask_access_push(rask_shared_release, shared);   // U3/U4
     int64_t data = *(int64_t *)s->data;
     int64_t new_data = fn(env, data);
@@ -298,13 +299,13 @@ static int staged_abandon(int64_t handle) {
 void rask_mutex_staged_discard(int64_t mutex) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     if (staged_abandon(mutex)) {
-        pthread_mutex_unlock(&m->lock);
+        rask_task_mutex_unlock(&m->lock);
     }
 }
 
 int64_t rask_mutex_staged_acquire(int64_t mutex) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
-    pthread_mutex_lock(&m->lock);
+    rask_task_mutex_lock(&m->lock, "Mutex lock");
     return staged_begin(mutex, m->data, m->data_size, rask_mutex_staged_discard);
 }
 
@@ -323,20 +324,20 @@ int64_t rask_mutex_staged_data(int64_t mutex) {
 void rask_mutex_staged_commit(int64_t mutex) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     if (staged_commit(mutex)) {
-        pthread_mutex_unlock(&m->lock);
+        rask_task_mutex_unlock(&m->lock);
     }
 }
 
 void rask_shared_staged_discard(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     if (staged_abandon(shared)) {
-        pthread_rwlock_unlock(&s->lock);
+        rask_task_rwlock_unlock(&s->lock);
     }
 }
 
 int64_t rask_shared_staged_acquire(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
-    pthread_rwlock_wrlock(&s->lock);
+    rask_task_rwlock_wrlock(&s->lock, "Shared write");
     return staged_begin(shared, s->data, s->data_size, rask_shared_staged_discard);
 }
 
@@ -353,7 +354,7 @@ int64_t rask_shared_staged_data(int64_t shared) {
 void rask_shared_staged_commit(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     if (staged_commit(shared)) {
-        pthread_rwlock_unlock(&s->lock);
+        rask_task_rwlock_unlock(&s->lock);
     }
 }
 
@@ -382,7 +383,7 @@ int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure) {
     RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
     int64_t env = CLOSURE_ENV(closure);
 
-    pthread_mutex_lock(&m->lock);
+    rask_task_mutex_lock(&m->lock, "Mutex lock");
     rask_access_push(rask_mutex_release, mutex);   // U3/U4
     int64_t result = fn(env, (int64_t)(intptr_t)m->data);
     rask_mutex_release(mutex);
@@ -395,7 +396,7 @@ int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure) {
 // locks and hands back the data pointer; release unlocks.
 int64_t rask_mutex_acquire(int64_t mutex) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
-    pthread_mutex_lock(&m->lock);
+    rask_task_mutex_lock(&m->lock, "Mutex lock");
     // U3/U4: a panic before the inline release would leave this held forever.
     rask_access_push(rask_mutex_release, mutex);
     return (int64_t)(intptr_t)m->data;
@@ -404,7 +405,7 @@ int64_t rask_mutex_acquire(int64_t mutex) {
 void rask_mutex_release(int64_t mutex) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     rask_access_pop(mutex);
-    pthread_mutex_unlock(&m->lock);
+    rask_task_mutex_unlock(&m->lock);
 }
 
 // The payload's address without touching the lock. `with m.lock() as v { ... }`
@@ -418,7 +419,7 @@ int64_t rask_mutex_data(int64_t mutex) {
 
 int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
-    if (pthread_mutex_trylock(&m->lock) == 0) {
+    if (rask_task_mutex_trylock(&m->lock) == 0) {
         RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
         int64_t env = CLOSURE_ENV(closure);
         rask_access_push(rask_mutex_release, mutex);   // U3/U4
@@ -456,7 +457,7 @@ int64_t rask_shared_read_ptr(int64_t shared, int64_t closure) {
     RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
     int64_t env = CLOSURE_ENV(closure);
 
-    pthread_rwlock_rdlock(&s->lock);
+    rask_task_rwlock_rdlock(&s->lock, "Shared read");
     rask_access_push(rask_shared_release, shared);   // U3/U4
     int64_t result = fn(env, (int64_t)(intptr_t)s->data);
     rask_shared_release(shared);
@@ -468,7 +469,7 @@ int64_t rask_shared_write_ptr(int64_t shared, int64_t closure) {
     RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
     int64_t env = CLOSURE_ENV(closure);
 
-    pthread_rwlock_wrlock(&s->lock);
+    rask_task_rwlock_wrlock(&s->lock, "Shared write");
     rask_access_push(rask_shared_release, shared);   // U3/U4
     int64_t result = fn(env, (int64_t)(intptr_t)s->data);
     rask_shared_release(shared);
@@ -480,14 +481,14 @@ int64_t rask_shared_write_ptr(int64_t shared, int64_t closure) {
 // frame so it can return aggregates. Read takes a shared lock, write exclusive.
 int64_t rask_shared_read_acquire(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
-    pthread_rwlock_rdlock(&s->lock);
+    rask_task_rwlock_rdlock(&s->lock, "Shared read");
     rask_access_push(rask_shared_release, shared);   // U3/U4
     return (int64_t)(intptr_t)s->data;
 }
 
 int64_t rask_shared_write_acquire(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
-    pthread_rwlock_wrlock(&s->lock);
+    rask_task_rwlock_wrlock(&s->lock, "Shared write");
     rask_access_push(rask_shared_release, shared);   // U3/U4
     return (int64_t)(intptr_t)s->data;
 }
@@ -502,13 +503,13 @@ int64_t rask_shared_data(int64_t shared) {
 void rask_shared_release(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     rask_access_pop(shared);
-    pthread_rwlock_unlock(&s->lock);
+    rask_task_rwlock_unlock(&s->lock);
 }
 
 // Non-blocking read: returns 1+result on success, 0 if contended (R3)
 int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
-    if (pthread_rwlock_tryrdlock(&s->lock) == 0) {
+    if (rask_task_rwlock_tryrdlock(&s->lock) == 0) {
         RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
         int64_t env = CLOSURE_ENV(closure);
         rask_access_push(rask_shared_release, shared);   // U3/U4
@@ -524,7 +525,7 @@ int64_t rask_shared_try_read_ptr(int64_t shared, int64_t closure) {
 // Non-blocking write: returns 1+result on success, 0 if contended (R3)
 int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
-    if (pthread_rwlock_trywrlock(&s->lock) == 0) {
+    if (rask_task_rwlock_trywrlock(&s->lock) == 0) {
         RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
         int64_t env = CLOSURE_ENV(closure);
         rask_access_push(rask_shared_release, shared);   // U3/U4
@@ -642,20 +643,20 @@ void rask_shared_set(int64_t shared, int64_t data_ptr) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     RASK_CHECK_NONNULL(s, "Shared.set: box is null");
     if (!data_ptr) return;
-    pthread_rwlock_wrlock(&s->lock);
+    rask_task_rwlock_wrlock(&s->lock, "Shared write");
     memcpy(s->data, (const void *)(intptr_t)data_ptr, (size_t)s->data_size);
-    pthread_rwlock_unlock(&s->lock);
+    rask_task_rwlock_unlock(&s->lock);
 }
 
 void rask_shared_replace(int64_t shared, int64_t data_ptr, int64_t out) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
     RASK_CHECK_NONNULL(s, "Shared.replace: box is null");
-    pthread_rwlock_wrlock(&s->lock);
+    rask_task_rwlock_wrlock(&s->lock, "Shared write");
     if (out) memcpy((void *)(intptr_t)out, s->data, (size_t)s->data_size);
     if (data_ptr) {
         memcpy(s->data, (const void *)(intptr_t)data_ptr, (size_t)s->data_size);
     }
-    pthread_rwlock_unlock(&s->lock);
+    rask_task_rwlock_unlock(&s->lock);
 }
 
 int64_t rask_mutex_get(int64_t mutex) {
@@ -668,18 +669,18 @@ void rask_mutex_set(int64_t mutex, int64_t data_ptr) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     RASK_CHECK_NONNULL(m, "Shared.set: box is null");
     if (!data_ptr) return;
-    pthread_mutex_lock(&m->lock);
+    rask_task_mutex_lock(&m->lock, "Mutex lock");
     memcpy(m->data, (const void *)(intptr_t)data_ptr, (size_t)m->data_size);
-    pthread_mutex_unlock(&m->lock);
+    rask_task_mutex_unlock(&m->lock);
 }
 
 void rask_mutex_replace(int64_t mutex, int64_t data_ptr, int64_t out) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     RASK_CHECK_NONNULL(m, "Shared.replace: box is null");
-    pthread_mutex_lock(&m->lock);
+    rask_task_mutex_lock(&m->lock, "Mutex lock");
     if (out) memcpy((void *)(intptr_t)out, m->data, (size_t)m->data_size);
     if (data_ptr) {
         memcpy(m->data, (const void *)(intptr_t)data_ptr, (size_t)m->data_size);
     }
-    pthread_mutex_unlock(&m->lock);
+    rask_task_mutex_unlock(&m->lock);
 }

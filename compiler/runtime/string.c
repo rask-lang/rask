@@ -20,7 +20,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
 #include <stdatomic.h>
@@ -1564,32 +1563,6 @@ int64_t rask_char_len_utf8(int32_t c) {
 
 int64_t rask_char_eq(int32_t a, int32_t b) {
     return a == b ? 1 : 0;
-}
-
-// ─── Filesystem ─────────────────────────────────────────────
-
-RaskVec *rask_fs_list_dir(const RaskStr *path) {
-    RaskVec *v = rask_vec_new(16, rask_elem_strs_one, 1);
-    int64_t plen = str_len(path);
-    if (plen == 0) return v;
-
-    const char *pd = str_data(path);
-    // str_data returns null-terminated pointer for SSO (zeroed bytes)
-    // and for heap (explicit null). Safe to pass to opendir.
-    DIR *d = opendir(pd);
-    if (!d) return v;
-
-    struct dirent *entry;
-    while ((entry = readdir(d)) != NULL) {
-        if (entry->d_name[0] == '.' && (entry->d_name[1] == '\0' ||
-            (entry->d_name[1] == '.' && entry->d_name[2] == '\0')))
-            continue;
-        RaskStr name;
-        rask_string_from(&name, entry->d_name);
-        rask_vec_push(v, &name);
-    }
-    closedir(d);
-    return v;
 }
 
 // ─── Map iteration ──────────────────────────────────────────

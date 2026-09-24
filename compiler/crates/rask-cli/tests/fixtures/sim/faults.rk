@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Opt-in faults (sim/F2): a sick file fails some of its operations, and a
+// failure either surfaces as an error or had no effect.
+import fs
+import net
+import net.TcpListener
+import time
+import time.Duration
+import time.Instant
+import time.SystemTime
+import async.spawn
+import io.IoError
+import sim
+import sim.Fault
+
+func save_and_read(path: string, text: string) -> string or IoError {
+    try fs.write_text(path, text)
+    return try fs.read_text(path)
+}
+
+test "a write either lands or says it didn't" {
+    sim.require(faults: [Fault.IoError])
+    for i in 0..20 {
+        let path = "sim_fault_{i}.txt"
+        let got = save_and_read(path, "payload {i}") catch e => {
+            continue
+        }
+        assert got == "payload {i}"
+    }
+}
+
+test "code that ignores the error is caught" {
+    sim.require(faults: [Fault.IoError])
+    for i in 0..20 {
+        let path = "sim_ignored_{i}.txt"
+        let _ = fs.write_text(path, "payload {i}")
+        let got = fs.read_text(path) catch e => { "" }
+        assert got == "payload {i}"
+    }
+}
+
+func greet_once(listener: TcpListener) -> void or IoError {
+    let conn = try listener.accept()
+    ensure conn.close()
+    try conn.write_text("a greeting of some length")
+    return
+}
+
+// A reset reaches the reader as an error, so it can't mistake the bytes it got
+// for the whole message. (With `IoError` on, the writer's own write can fail
+// halfway and the writer then closes normally: the reader sees a short message
+// and a clean end, as it would over real TCP. Only framing catches that.)
+test "a cut connection is an error, never a short message" {
+    sim.require(faults: [Fault.Disconnect])
+    using Multitasking {
+        for i in 0..10 {
+            let listener = try net.tcp_listen("127.0.0.1:0")
+            let addr = listener.local_addr()
+            let server = spawn(|| {
+                let _ = greet_once(listener)
+                let _ = listener.close()
+            })
+            ensure server.detach()
+            let conn = net.tcp_connect(addr) catch e => {
+                server.join()!
+                continue
+            }
+            let got = conn.read_text()
+            let _ = conn.close()
+            server.join()!
+            if got is string as text {
+                assert text == "a greeting of some length"
+            }
+        }
+    }
+}
+
+test "SystemTime may leap forward; Instant never does" {
+    sim.require(faults: [Fault.ClockJump])
+    for i in 0..30 {
+        let wall = SystemTime.now()
+        let mono = Instant.now()
+        let _ = time.sleep(Duration.seconds(1))
+        let mono_gap = mono.elapsed()
+        assert mono_gap >= Duration.seconds(1)
+        assert mono_gap < Duration.seconds(2)
+        let wall_gap = wall.elapsed() catch e => { Duration.seconds(0) }
+        assert wall_gap >= mono_gap
+    }
+}

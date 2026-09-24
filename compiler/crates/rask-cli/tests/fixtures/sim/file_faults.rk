@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An injected fault had no effect (sim/F5), whichever way the write got
+// there. File-handle writes used to report success after a fault, and a
+// buffered write large enough to flush twice could fail halfway and leave
+// the first part written.
+
+import fs
+import io.IoError
+import sim
+import sim.Fault
+
+func write_via_handle(path: string, text: string) -> void or IoError {
+    let f = try fs.create_file(path)
+    try f.write_text(text)
+    try f.close()
+    return
+}
+
+test "a handle's write either lands or says it didn't" {
+    sim.require(faults: [Fault.IoError])
+    for i in 0..30 {
+        let path = "sim_fh_{i}.txt"
+        write_via_handle(path, "payload {i}") catch e => {
+            continue
+        }
+        let got = fs.read_text(path) catch e => {
+            continue
+        }
+        assert got == "payload {i}"
+    }
+}
+
+test "a large write lands whole or not at all" {
+    sim.require(faults: [Fault.IoError])
+    let text = "0123456789".repeat(3000)
+    for i in 0..30 {
+        let path = "sim_big_{i}.txt"
+        if fs.write_text(path, text) is IoError as e {
+            let got = fs.read_text(path) catch e2 => {
+                continue
+            }
+            assert got.len() == 0
+        }
+    }
+}

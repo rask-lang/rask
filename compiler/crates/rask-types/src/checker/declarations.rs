@@ -2431,6 +2431,7 @@ impl TypeChecker {
                 // what a suite file does (#1010).
                 let old_allowed =
                     std::mem::replace(&mut self.allowed_warnings, allowed_from(&t.attrs));
+                self.in_test_body = true;
                 for stmt in &t.body {
                     self.check_stmt(stmt);
                     // Solve as we go, same as check_fn — a later statement
@@ -2439,15 +2440,18 @@ impl TypeChecker {
                     // or it stays an unbound type var forever (#390).
                     self.solve_constraints();
                 }
+                self.in_test_body = false;
                 self.allowed_warnings = old_allowed;
             }
             DeclKind::Benchmark(b) => {
                 let old_allowed =
                     std::mem::replace(&mut self.allowed_warnings, allowed_from(&b.attrs));
+                self.in_test_body = true;
                 for stmt in &b.body {
                     self.check_stmt(stmt);
                     self.solve_constraints();
                 }
+                self.in_test_body = false;
                 self.allowed_warnings = old_allowed;
             }
             DeclKind::Import(imp) => {

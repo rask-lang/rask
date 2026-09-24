@@ -163,6 +163,10 @@ pub struct TypeChecker {
         std::collections::HashSet<(crate::types::TypeId, String, String)>,
     /// Current function's return type (for checking return statements).
     pub(super) current_return_type: Option<Type>,
+    /// Checking a `test` or `benchmark` body, outside any closure. It has no
+    /// return type either, but unlike a constant's initializer it has
+    /// somewhere for a `try` to go: the error ends the test (std.testing/T20).
+    pub(super) in_test_body: bool,
     /// Result type of each enclosing loop-as-expression, innermost last. A
     /// `break v` unifies `v` with the top of this; without it the loop's type
     /// was a fresh variable nothing ever wrote to, so `let found = loop { … }`
@@ -506,6 +510,7 @@ impl TypeChecker {
             symbol_types: HashMap::new(),
             errors: Vec::new(),
             current_return_type: None,
+            in_test_body: false,
             loop_value_types: Vec::new(),
             loop_forms: Vec::new(),
             current_self_type: None,

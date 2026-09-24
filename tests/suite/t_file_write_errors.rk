@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A failed write says so. The File writes and close were natives that
+// returned nothing, so on native every one of them read as a success, and
+// fs.write_bytes and fs.create_dir_all threw their errors away the same way.
+
+import fs
+
+test "writing to a file opened for reading is an error" {
+    let p = "/tmp/rask_t_file_write_errors.txt"
+    try fs.write_text(p, "abc")
+    let f = try fs.open(p)
+    let r = f.write("more")
+    assert r is IoError
+    let _ = f.close()
+    assert (try fs.read_text(p)) == "abc"
+    try fs.remove_file(p)
+}
+
+test "a write and a close that work say so" {
+    let p = "/tmp/rask_t_file_write_ok.txt"
+    let f = try fs.create_file(p)
+    try f.write_line("one")
+    try f.write_text("two")
+    try f.close()
+    assert (try fs.read_text(p)) == "one\ntwo"
+    try fs.remove_file(p)
+}
+
+test "write_bytes writes the bytes it was given" {
+    let p = "/tmp/rask_t_file_write_bytes.bin"
+    try fs.write_bytes(p, [104, 105, 0, 255])
+    let back = try fs.read_bytes(p)
+    assert back.len() == 4
+    assert back[0] == 104
+    assert back[3] == 255
+    try fs.remove_file(p)
+}
+
+test "create_dir_all makes every level, and a file in the way is an error" {
+    let root = "/tmp/rask_t_create_dir_all"
+    try fs.create_dir_all("{root}/a/b/c")
+    try fs.create_dir_all("{root}/a/b/c")
+    assert fs.exists("{root}/a/b/c")
+    try fs.write_text("{root}/file", "x")
+    assert fs.create_dir_all("{root}/file/below") is IoError
+    try fs.remove_file("{root}/file")
+}

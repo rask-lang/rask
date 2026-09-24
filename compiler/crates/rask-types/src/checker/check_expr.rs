@@ -1467,9 +1467,24 @@ impl TypeChecker {
                                     Type::Error
                                 }
                             }
-                        } else {
+                        } else if !self.in_test_body {
                             self.errors.push(TypeError::TryOutsideFunction { span: expr.span });
                             Type::Error
+                        } else {
+                            // A `test` or `benchmark` body, where the error
+                            // ends the test — the same answer the resolved
+                            // case above gives (`error_can_leave`).
+                            // A method call's result is often still a variable
+                            // here, and treating that as "outside a function"
+                            // rejected `try conn.read_text()` in a test while
+                            // accepting `try fs.read_text(p)` beside it.
+                            let ok_ty = self.ctx.fresh_var();
+                            let result_ty = Type::Result {
+                                ok: Box::new(ok_ty.clone()),
+                                err: Box::new(self.ctx.fresh_var()),
+                            };
+                            let _ = self.unify(&inner_ty, &result_ty, expr.span);
+                            ok_ty
                         }
                     }
                     // The operand's own error was already reported — saying
@@ -3527,7 +3542,26 @@ impl TypeChecker {
                 } else {
                     Type::UnresolvedNamed(name.clone())
                 };
-                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                // The slot picks an array literal's shape (std.collections/C9).
+                // The method resolves through a deferred constraint, but a
+                // stdlib type's static method has its declaration right here in
+                // the stub registry. `sim.require(faults: [Fault.IoError])`
+                // typed the literal as `[Fault; 1]` and failed against
+                // `Vec<Fault>`.
+                let slots = if name.contains('<') {
+                    Vec::new()
+                } else {
+                    let base = base_name.to_string();
+                    self.stub_static_param_types(&base, method, span)
+                };
+                let arg_types: Vec<_> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| match (&a.expr.kind, slots.get(i).cloned().flatten()) {
+                        (ExprKind::Array(_), Some(want)) => self.infer_expr_expecting(&a.expr, &want),
+                        _ => self.infer_expr(&a.expr),
+                    })
+                    .collect();
                 let ret_ty = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty: obj_ty,
@@ -3761,14 +3795,26 @@ impl TypeChecker {
         let elem_shape = self
             .first_type_arg(&self.ctx.apply(&obj_ty), "Vec")
             .filter(|t| self.collection_elem_type(t).is_some());
+        // The other case where the slot *is* known here: the receiver's type is
+        // settled — it names the type (a static call) or is a value already
+        // typed — so the method is its declared one and the parameter types can
+        // be read off the declaration. `sim.require(faults: [Fault.IoError])`
+        // and `sink.feed([1, 2])` typed the literal as an array and then failed
+        // against `Vec<…>`, while the same call to a free function worked.
+        let declared_params = self.declared_method_params(object, &obj_ty, method);
         let arg_types: Vec<_> = args
             .iter()
-            .map(|a| match (&a.expr.kind, &elem_shape) {
-                (ExprKind::Array(_), Some(want)) => {
-                    let want = want.clone();
-                    self.infer_expr_expecting(&a.expr, &want)
+            .enumerate()
+            .map(|(i, a)| {
+                let param = declared_params.as_ref().and_then(|p| p.get(i)).cloned();
+                match (&a.expr.kind, &elem_shape, param) {
+                    (ExprKind::Array(_), _, Some(want)) => self.infer_expr_expecting(&a.expr, &want),
+                    (ExprKind::Array(_), Some(want), None) => {
+                        let want = want.clone();
+                        self.infer_expr_expecting(&a.expr, &want)
+                    }
+                    _ => self.infer_expr(&a.expr),
                 }
-                _ => self.infer_expr(&a.expr),
             })
             .collect();
 
@@ -4045,7 +4091,27 @@ impl TypeChecker {
         type_args: Option<&[String]>,
         span: Span,
     ) -> Type {
-        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+        // The slot picks an array literal's shape (std.collections/C9), and a
+        // module function's slots are known before its arguments are typed.
+        let params: Vec<Type> = self
+            .types
+            .builtin_modules
+            .get_method(module, method)
+            .map(|sig| sig.params.clone())
+            .unwrap_or_default();
+        let arg_types: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| match (&a.expr.kind, params.get(i)) {
+                (ExprKind::Array(_), Some(want))
+                    if !matches!(want, Type::UnresolvedNamed(n) if n == "_Any") =>
+                {
+                    let want = want.clone();
+                    self.infer_expr_expecting(&a.expr, &want)
+                }
+                _ => self.infer_expr(&a.expr),
+            })
+            .collect();
 
         // A signature with nothing behind it. Methods on a receiver are caught
         // in resolve_method; module functions took a different route and got
@@ -5152,8 +5218,14 @@ impl TypeChecker {
 
     /// ER47: bare `try` on an optional needs a return with an absent branch.
     fn check_absence_can_leave(&mut self, span: rask_ast::Span) {
+        // No return type is a `test` or `benchmark` body, which takes either
+        // shape: a `none` ends the test the way an error does (ER47,
+        // `std.testing/T20`) — or a constant's initializer, which has nowhere
+        // to send it.
         let Some(return_ty) = &self.current_return_type else {
-            self.errors.push(TypeError::TryOutsideFunction { span });
+            if !self.in_test_body {
+                self.errors.push(TypeError::TryOutsideFunction { span });
+            }
             return;
         };
         let resolved = self.ctx.apply(return_ty);
@@ -5180,13 +5252,68 @@ impl TypeChecker {
         }
     }
 
+    /// A stdlib static method's parameter types, one per parameter, `None`
+    /// where the declared type mentions a type parameter — that needs the
+    /// instantiation, which isn't bound yet. Type parameters are the
+    /// single-letter names (E0357), so the spelling says which is which.
+    fn stub_static_param_types(&mut self, type_name: &str, method: &str, span: Span) -> Vec<Option<Type>> {
+        let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method(type_name, method) else {
+            return Vec::new();
+        };
+        if stub.takes_self {
+            return Vec::new();
+        }
+        let mentions_type_param = |ty: &str| {
+            ty.split(|c: char| !c.is_alphanumeric() && c != '_')
+                .any(|w| w.len() == 1 && w.chars().all(|c| c.is_ascii_uppercase()))
+        };
+        stub.params
+            .iter()
+            .map(|(_, ty)| (!mentions_type_param(ty)).then(|| self.resolve_type_name(ty, span)))
+            .collect()
+    }
+
+    /// The declared parameter types of `recv.method(…)`, for pushing into
+    /// array-literal arguments (std.collections/C9). `object` names either a
+    /// type (a static method) or a value whose type is already known (an
+    /// instance method). Only for a non-generic method on a non-generic type:
+    /// a parameter mentioning a type parameter needs the instantiation, which
+    /// isn't bound yet.
+    fn declared_method_params(
+        &self,
+        object: &rask_ast::expr::Expr,
+        obj_ty: &Type,
+        method: &str,
+    ) -> Option<Vec<Type>> {
+        let names_type = matches!(&object.kind, ExprKind::Ident(name) if self.lookup_local(name).is_none());
+        let Type::Named(id) = self.ctx.apply(obj_ty) else { return None };
+        if !self.declared_type_params(id).is_empty() {
+            return None;
+        }
+        let methods = match self.types.get(id) {
+            Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => methods,
+            _ => return None,
+        };
+        let sig = methods.iter().find(|m| {
+            m.name == method
+                && m.type_params.is_empty()
+                && names_type == matches!(m.self_param, crate::SelfParam::None)
+        })?;
+        Some(sig.params.iter().map(|(t, _)| t.clone()).collect())
+    }
+
     /// ER47: bare `try` on a result needs a return with an error branch. False
     /// when it reported, so the caller stops rather than piling on.
     fn error_can_leave(&mut self, span: rask_ast::Span) -> bool {
         // No return type at all is a `test` (or `benchmark`) block, which has no
         // caller to propagate to: the error ends the test instead, which is what
-        // the interpreter has always done and what native does since #932.
+        // the interpreter has always done and what native does since #932. Or
+        // it is a constant's initializer, where nothing can take the error.
         let Some(return_ty) = &self.current_return_type else {
+            if !self.in_test_body {
+                self.errors.push(TypeError::TryOutsideFunction { span });
+                return false;
+            }
             return true;
         };
         let resolved = self.ctx.apply(return_ty);

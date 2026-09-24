@@ -5,7 +5,7 @@
 
 # Sim Mode
 
-`determinism` states the promise. This spec builds the thing that keeps it: a single-threaded runtime that draws every scheduling and fault decision from one seed, runs the clock in virtual time, and prints a paste-able replay command when a test fails.
+`determinism` states the promise. This spec builds the thing that keeps it: a runtime that runs one task at a time, draws every scheduling and fault decision from one seed, runs the clock in virtual time, and prints a paste-able replay command when a test fails.
 
 Sim is a **link choice, not a dialect** (`determinism/D2`, `D3`). `rask test --sim` links the sim runtime under the same stdlib surface. User code compiles identically, and nothing in the source says which runtime it got.
 
@@ -13,12 +13,13 @@ Sim is a **link choice, not a dialect** (`determinism/D2`, `D3`). `rask test --s
 
 | Rule | Description |
 |------|-------------|
-| **I1: Test mode** | `rask test --sim` runs the selected tests on the sim runtime. v1 is test-only — `rask run --sim` is not part of it |
+| **I1: Test mode** | `rask test --sim` runs the selected tests on the sim runtime — one file, or every file in a directory of loose files. v1 is test-only — `rask run --sim` is not part of it, and neither is a package directory |
 | **I2: Run seed** | `--seed N` fixes the run seed (u64, decimal). Without it the runner draws from system entropy and prints it in the header |
-| **I3: Per-test seed** | Each test's seed derives from (run seed, test's full name). A test replays identically no matter which other tests ran, in what order, or whether they ran at all |
+| **I3: Per-test seed** | Each test's seed derives from (run seed, module name, test name), where a file's module name is its stem. A test replays identically no matter which other tests ran, in what order, or whether they ran at all |
 | **I4: Replay line** | Every failure prints the exact command that reproduces it. The printed line is the repro — that's the whole point |
 | **I5: Seed search** | `--seeds N` runs each selected test on N seeds derived from the run seed. Stops at the first failure per test; `--keep-going` runs all N. The sweep itself replays from `--seed` |
-| **I6: Sequential** | `--sim` implies `--sequential`. One sim runtime per test, installed and torn down around it (`conc.async/C1`). Parallelism belongs in seed search, across processes, not inside one |
+| **I6: Sequential** | Under `--sim`, one test runs at a time in its process. One sim runtime per test, installed and torn down around it (`conc.async/C1`). Parallelism belongs in seed search, across processes, not inside one |
+| **I7: Fresh state** | Every test starts from the program's initial state: module-level values hold their initializers, whatever earlier tests did to them. `std.testing/T6`'s carry-over between tests does not hold under sim |
 
 ```
 rask test --sim                          # whole suite, fresh seed
@@ -40,11 +41,12 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 
 | Rule | Description |
 |------|-------------|
-| **S1: One task at a time** | Sim runs single-threaded. A task runs until it parks, is preempted, or completes. No stealing, no reactor thread, no timer thread |
+| **S1: One task at a time** | Exactly one task executes Rask code at any moment. It runs until it reaches a scheduling point or completes. No stealing, no reactor thread, no timer thread |
 | **S2: Uniform among runnable** | At each scheduling point, the next task is drawn uniformly at random from the runnable set, from the scheduler stream |
-| **S3: Scheduling points** | Every park point (I/O, channel op, sleep, join, lock acquire) plus preemption after a seed-drawn budget of safe points (`conc.runtime/P2.2`). CPU-bound code gets interleaved too — sim preempts on a step count, never on wall time |
-| **S4: Step counter** | Scheduling decisions are numbered from 0. The step number is the coordinate in every failure report and the unit `--seeds` search reasons about |
-| **S5: Deadlock is a failure** | All tasks parked, no timer pending, no simulated I/O outstanding → the test fails with a deadlock report naming what each task is waiting on. Sim never hangs |
+| **S3: Scheduling points** | Every operation through which one task can observe another: channel send/receive, `with` on a `Shared`, every `Atomic` operation, spawn, join, detach, cancel, sleep, simulated I/O, and clock reads. Nothing else. There is no preemption between them |
+| **S4: Step counter** | Scheduling points are numbered from 0 as they are reached. The step number is the coordinate in every failure report and the unit `--seeds` search reasons about |
+| **S5: Deadlock is a failure** | All tasks parked, no timer pending, no simulated I/O outstanding → the test fails with a deadlock report naming what each task is waiting on. |
+| **S5a: A step budget bounds the test** | A test that spins — polling an atomic, `try_receive` or `try_lock` — never parks, so S5 can't prove it stuck. After 10 million scheduling steps it fails, with each task's state, at a step the seed decides. `--max-steps N` moves the budget, and the replay line carries it |
 | **S6: ThreadPool** | `using ThreadPool` jobs are scheduled as tasks under the same rule (`determinism/D13`) |
 
 ## Virtual clock
@@ -53,18 +55,20 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 |------|-------------|
 | **C1: Fixed start** | `Instant` starts at 0; `SystemTime` starts at 2020-01-01T00:00:00Z. Wall-clock start is not an input (`determinism/D10`) |
 | **C2: Jump when idle** | When nothing is runnable and a timer is pending, the clock jumps to the earliest deadline and wakes it. A 30-day `sleep` costs no wall time |
-| **C3: Time is charged, not free** | The clock advances at two points: every scheduling step (1 µs), and every clock read — `Instant.now()`, `elapsed()`, `SystemTime.now()` each cost 1 µs. Observing time costs time |
-| **C4: I/O latency** | Every simulated I/O completes at `now + latency`, drawn per operation class from the fault stream. Slow-peer orderings come from the seed, not from a mock |
+| **C3: Time is charged, not free** | Every scheduling step advances the clock 1 µs. Clock reads (`Instant.now()`, `elapsed()`, `SystemTime.now()`) are scheduling steps (S3), so observing time costs time |
+| **C4: I/O latency** | Every simulated I/O completes at `now + latency`, drawn per operation class from the fault stream. Slow-peer orderings come from the seed, not from a mock. |
 | **C5: No advance API** | Tests cannot advance the clock explicitly at v1. Same code in both modes (`determinism/D3`) — a test that wants time to pass sleeps |
 
 ## Faults
 
 | Rule | Description |
 |------|-------------|
-| **F1: Always on** | Adversarial scheduling (S2), short reads/writes, and I/O latency (C4). These are legal behavior, not faults — code that breaks on them was already broken |
-| **F2: Opt-in** | `Fault.IoError`, `Fault.Disconnect`, `Fault.ClockJump`. A test enables them by calling `sim.require(faults: [...])` as its first statement. `Instant` never jumps — `std.time/I1` is monotonic and stays monotonic |
+| **F1: Always on** | Adversarial scheduling (S2), short reads/writes, I/O latency (C4), and each connection end's receive window, a power of two from 1 KB to 256 KB: a write waits while the reader holds that much unread. These are legal behavior, not faults — code that breaks on them was already broken |
+| **F2: Opt-in** | `Fault.IoError`, `Fault.Disconnect`, `Fault.ClockJump`, from `import sim`. A test enables them by calling `sim.require(faults: [...])` as its first statement. `Instant` never jumps — `std.time/I1` is monotonic and stays monotonic |
 | **F3: Sim-only tests** | Outside sim, `sim.require` skips the rest of the test and says why, reusing `std.testing/T12`. A fault test never passes vacuously under a plain `rask test` |
-| **F4: Faults land on resources, not on everything** | At each open — a file, a socket, a peer — the seed decides whether *that* resource is sick for this run. A sick resource then fails at a fixed documented rate; a healthy one never fails. The report names what was sick |
+| **F4: Faults land on resources, not on everything** | At each open — a file, a socket, a peer — the seed decides whether *that* resource is sick for this run. A sick resource then fails at a fixed documented rate; a healthy one never fails. The report names what was sick. A file is one resource however many times it is opened; each end of a connection is its own |
+| **F4a: v1 rates** | A resource is sick 1 time in 4. A sick one fails 1 operation in 3. With `ClockJump`, 1 `SystemTime` read in 8 jumps forward by 1 s to 1 h |
+| **F4b: What a fault is** | `IoError`: the operation fails with `EIO`. `Disconnect`: the connection is reset — this call fails, the peer's next read fails with `ECONNRESET` rather than reading an end of stream, and every later call on it fails |
 | **F5: All-or-nothing** | An injected error means the operation had no effect. Partial effects come only from the short-read/short-write class, where partial *is* the behavior |
 | **F6: Rendered, not recorded** | The fault log in a failure report is regenerated from the seed. Nothing is stored between runs |
 
@@ -85,14 +89,29 @@ No declarative scenario layer at v1. "Partition {a,b} from {c} at step 3980" is 
 
 | Rule | Description |
 |------|-------------|
-| **B1: Threads refused** | A test whose capability metadata (`struct.build`) reaches `Thread.spawn` is refused before it runs, with the call path. A runtime panic backstops what the metadata missed (`determinism/D13`) |
-| **B2: Escaping C is refused** | C that reaches the real world through something sim cannot replace — `pthread_create`, raw sockets and file descriptors, `fork`, a `syscall` instruction written by hand — is outside the contract, so the test does not run under sim. The refusal names the symbol. `--sim-permissive` runs it anyway, marked `unsimulated: ffi` (`determinism/D14`) |
+| **B1: Threads refused** | A test whose capability metadata (`struct.build`) reaches `Thread.spawn` is refused before it runs, with the call path. A runtime panic backstops what the metadata missed (`determinism/D13`). *Only the runtime panic is built* |
+| **B2: Escaping C is refused** | C that reaches the real world through something sim cannot replace — `pthread_create`, raw sockets and file descriptors, `fork`, a `syscall` instruction written by hand — is outside the contract, so the test does not run under sim. The refusal names the symbol. `--sim-permissive` runs it anyway, marked `unsimulated: ffi` (`determinism/D14`). *Not built: linked C runs unclassified, and can reach the real world (#1343)* |
 | **B3: Unsimulated calls panic** | A stdlib call with no simulated implementation panics naming the call. It never falls through to the real thing |
 | **B4: Environment** | Sim owns the environment. It starts empty at every test, and a test that needs a variable sets it with `os.set_env` (`std.os/E3`) in its body. The real process env is never visible, and never leaks from one test to the next. `os.args()` is `["<test>"]` |
-| **B5: Filesystem** | Reads fall through to the real filesystem (a recorded input under `determinism/D10`); writes land in an in-memory overlay and are discarded at test end. The real tree is never modified |
-| **B6: Sealed C is inside the contract** | C that only computes is already deterministic — same bytes in, same bytes out. Sim classifies each linked object by its undefined symbols: if they all fall in the pure set (`memcpy`, `strlen`, libm, …), the code is sealed. No mark, full contract, nothing to simulate |
-| **B7: Reaching C is interposed** | Between sealed and escaping sits C that asks the world one question at a time: `clock_gettime`, `gettimeofday`, `getrandom`, `getpid`, `sysconf`, and `malloc`. Sim resolves those at link time to a virtual clock, seeded random, fixed answers, and a fixed-base allocator that poison-fills what it hands back. Interposed is still inside the contract |
+| **B5: Filesystem** | Reads fall through to the real filesystem (a recorded input under `determinism/D10`); writes land in an in-memory overlay and are discarded at test end. The real tree is never modified. A listing is the merged view, sorted by name: `readdir` order belongs to the filesystem, not the program |
+| **B6: Sealed C is inside the contract** | C that only computes is already deterministic — same bytes in, same bytes out. Sim classifies each linked object by its undefined symbols: if they all fall in the pure set (`memcpy`, `strlen`, libm, …), the code is sealed. No mark, full contract, nothing to simulate. *Not built, with B2* |
+| **B7: Reaching C is interposed** | Between sealed and escaping sits C that asks the world one question at a time: `clock_gettime`, `gettimeofday`, `getrandom`, `getpid`, `sysconf`, and `malloc`. Sim resolves those at link time to a virtual clock, seeded random, fixed answers, and a fixed-base allocator that poison-fills what it hands back. Interposed is still inside the contract. *Not built: the runtime's own clock, random and environment are simulated, but C calling `clock_gettime` or `malloc` directly gets the real ones* |
 | **B8: Addresses are the C-side hole** | `determinism/D11` says addresses can't leak into logic — true of Rask, not of C, which can hash or sort by a pointer freely. The fixed-base allocator (B7) is what closes it, and it is the reason `malloc` is interposed rather than treated as pure |
+
+## v1 surface
+
+What has a simulated implementation at v1. Everything else is B3: it panics naming the call.
+
+| Area | Under sim |
+|------|-----------|
+| Tasks | `spawn`, join, detach, cancel, `using Multitasking`, `using ThreadPool` (S6) |
+| Sync | Channels, `Shared` with every strategy, `Atomic<T>` |
+| Time | `Instant`, `SystemTime`, `Duration`, sleep, timers (C1–C5) |
+| Random | Every generator, from its task stream (SD3) |
+| Env and args | B4 |
+| Filesystem | Read-through, write overlay (B5) |
+| Network | In-process only: a TCP/UDP socket bound inside the test accepts or receives from tasks in the same test. Connecting anywhere else, and DNS for anything but `localhost`, is B3 |
+| Subprocesses, signals | B3 |
 
 ## Failure output
 
@@ -103,53 +122,42 @@ No declarative scenario layer at v1. "Partition {a,b} from {c} at step 3980" is 
 | **R3: Search summary** | Seed search prints how many seeds ran and one replay line per distinct failure |
 
 ```
-sim: seed 8419230744151203, 47 tests
+sim: seed 8419230744151203
 
 FAIL: replica catches up after the leader drops
-  panic at raft.rk:214:9: index 3 out of bounds (len 3)
-  step 4127, virtual time 00:00:12.400
-  sick this seed: peer c, fd 3 (data/wal.log)
-  faults: latency 210ms on peer c (step 3980), write failed on fd 3 (step 4102)
-  replay: rask test --sim --seed 8419230744151203 -f "replica catches up after the leader drops"
+  raft.rk:214: index 3 out of bounds (len 3)
+  step 4127, virtual time 00:00:00.004127
+  sick this seed: connection to :49153, file `data/wal.log`
+  faults: write failed on `data/wal.log` (step 4102)
+  replay: rask test --sim --seed 8419230744151203 -f 'replica catches up after the leader drops' raft.rk
 ```
 
-## Error messages
+A deadlock and a spent step budget are failures like any other, and say what each task was doing:
 
 ```
-ERROR [sim/B1]: test reaches Thread.spawn, which sim mode cannot schedule
-   |
-12 |  test "worker pool drains" {
-   |       ^^^^^^^^^^^^^^^^^^^ reaches Thread.spawn via pool.rk:31 -> worker.rk:8
-
-WHY: Sim runs every task on one thread so ordering comes from the seed. A raw OS
-     thread runs outside that, so its interleaving would not replay.
-
-FIX: Use `using ThreadPool { }` — sim schedules pool jobs like tasks.
-```
-
-```
-ERROR [sim/S5]: deadlock — no task can make progress
-   |
-   |  step 812, virtual time 00:00:00.812
-
-  task 0 (main)      waiting on join(task 2)
-  task 2 (fetch)     waiting on channel receive, 0 senders live
-  no timers pending
-
-WHY: Every task is parked and nothing will wake them. Under a real runtime this
-     would hang; sim can prove nothing is coming and fail instead.
-
-replay: rask test --sim --seed 4471 -f "fetch pipeline"
+FAIL: fetch pipeline
+  deadlock: no task can make progress
+    task 0 (main)      waiting on join(task 2)
+    task 2             waiting on channel receive
+    no timers pending
+  step 812, virtual time 00:00:00.000812
+  replay: rask test --sim --seed 4471 -f 'fetch pipeline' fetch.rk
 ```
 
 ```
-ERROR [sim/B3]: no simulated implementation for `os.exec`
-   |
-30 |      let out = try os.exec("git", ["rev-parse"])
-   |                    ^^^^^^^ sim has no model for subprocesses
+FAIL: waits for ready
+  the test used its 10000000 scheduling steps without finishing — a task is probably spinning on something nobody will change
+    task 0 (main)      running
+    raise the budget with `--max-steps` if the test is just long
+  step 10000001, virtual time 00:00:10.000000
+  replay: rask test --sim --seed 90 -f 'waits for ready' ready.rk
+```
 
-WHY: Falling through to the real call would make the run unreplayable without
-     saying so. Sim fails loudly instead of quietly leaving the contract.
+A call sim has no model for panics at the call (B3), so the report is the ordinary panic report:
+
+```
+FAIL: tags the build
+  no simulated implementation for `Command.run`: sim fails here instead of reaching the real machine, which the seed can't replay (sim/B3)
 ```
 
 ## Edge Cases
@@ -158,14 +166,29 @@ WHY: Falling through to the real call would make the run unreplayable without
 |------|----------|------|
 | Test passes under `rask test`, fails under `--sim` | Real ordering bug — the schedule was just never hit | S2 |
 | Test calls `random` a different number of times after an edit | Schedules from the old seeds still mean the same thing | SD2 |
-| Two tests with the same name in different modules | Seeds differ — derivation uses the full path, not the leaf name | I3 |
-| Busy-wait on `Instant.elapsed()` | Terminates; the step tick advances the clock | C3 |
+| Two tests with the same name in different modules | Seeds differ — derivation includes the module name | I3 |
+| Two tests with the same name in one file | Compile error (`std.testing/T1a`) | I3 |
+| Busy-wait on `Instant.elapsed()` | Terminates. Each read is a step: other tasks run and the clock moves | C3 |
+| Spin on an `Atomic` another task will set | Terminates. Each load is a scheduling point, so the writer gets to run | S3 |
+| Loop polling an atomic or `try_receive` that nobody will satisfy | Fails when the step budget runs out, naming each task's state | S5a |
+| CPU loop that reaches no scheduling point and never exits | Takes no steps, so the budget never runs out. The runner kills the binary after 5 minutes of real time and says so | S3 |
+| Long CPU work between two channel ops | Runs uninterrupted. No other task could have seen the difference | S3 |
 | Test spawns and never joins | `TaskHandle` drop panic (`conc.async/H1`), replayed like any panic | ctrl.panic/PD1 |
 | Detached task still running at block exit | Drain runs it to completion in virtual time | conc.async/C4 |
+| `using Multitasking` with no worker count | No bound. The production default is one worker per CPU, and a replay can't depend on the machine | determinism/D1 |
+| `using Multitasking(workers: 2)` | At most two task bodies in flight, as in production. Waiting for a slot is a scheduling point | S3 |
+| A test reads a module-level value an earlier test wrote | Sees the initializer, not the write | I7 |
 | `sim.require` test under plain `rask test` | Skipped at that line, reported as sim-only | F3 |
+| `sim.require` test under the interpreter | Skipped the same way — the interpreter has no sim mode | F3 |
+| Writer's write fails halfway under `IoError`, then it closes normally | The reader sees a short message and a clean end, as over real TCP. Only the protocol's framing can catch it | F4b |
+| Code discards a write's error, then reads the file back | Reads what the failed write didn't write. The test fails where the bug is | F5 |
 | Test reaches sealed C (a hash, a decompress) | Runs, no mark — already deterministic | B6 |
 | Test reaches `pthread_create` through C | Refused, symbol named | B2 |
 | Test writes a file, later test reads it | Second test does not see it — the overlay is per-test | B5 |
+| Test appends to a real file, then reads it | Sees the real bytes plus the append; the disk copy is untouched | B5 |
+| Test removes a real file | `exists` is false and listings leave it out for the rest of the test | B5 |
+| Test renames or removes a directory | Refused at v1 — merging a real subtree with the overlay isn't built | B3 |
+| Overlay file's `metadata().modified` | The virtual time of its last write | C1 |
 | `--seeds 1000` with a test that fails on all of them | One replay line per distinct failure signature, not 1000 | R3 |
 
 ## Non-goals
@@ -186,13 +209,21 @@ WHY: Falling through to the real call would make the run unreplayable without
 
 **I6 (sequential):** In-process parallelism buys nothing here. Sim time is virtual, so a suite that sleeps for hours finishes in milliseconds; the wall-clock cost is real CPU work, and that parallelizes across processes during seed search where it actually matters.
 
+**I7 (fresh state):** Carrying module state from one test into the next is what an ordinary run does, because the tests share a process. Under sim it would break I3 outright: `-f` replays one test alone, the tests that set the state never run, and the replay line reproduces nothing.
+
+**S3 (no preemption):** An earlier draft preempted CPU-bound code after a seeded number of function calls, like Go. It buys nothing observable. Rask tasks share no memory except through the operations S3 lists: closures move what they capture into a task (`mem.closures`), a link can't cross tasks at all (`mem.ownership/T2`), and there are no data races to interleave. Whatever a task does between two scheduling points, no other task can see it until the next one, so cutting it in half produces no ordering a program can tell apart from not cutting it.
+
+The one thing that forced care is atomics. They don't park, so under a park-points-only rule a spin on an atomic flag would never let the setter run. Making every atomic operation a scheduling point closes that, and they are all runtime calls already, so the hook exists.
+
+What it saves is large: preemption needs safe points in every function prologue, which codegen doesn't have, and a way to stop a task mid-function, which the scheduler below doesn't have either.
+
 **S2 (uniform random):** Weighted or history-guided schedulers find bugs faster in papers. Uniform is the one you can hold in your head when reading a failure report, and it composes with seed search: a schedule that needs 1-in-10,000 luck is 10,000 seeds away, and 10,000 seeds is a coffee break.
 
 **S5 (deadlock is a failure):** This is the feature people will not expect. Under a real runtime a deadlock is a hang, and a hung test is a timeout with no information. Sim knows the full set of parked tasks and pending wakeups, so it can prove nothing is coming and print who was waiting on whom.
 
 **C3 (time is charged):** Pure event-driven virtual clocks freeze when a task spins on elapsed time — the loop never parks, so the clock never advances, so the loop never exits. Tokio's paused clock has exactly this hole (auto-advance stops while the runtime has work), and madsim intercepts `clock_gettime` to return virtual time without charging for it, so it has the hole too.
 
-Two charge points close it between them, and each covers what the other misses. The scheduling-step tick means CPU work eventually lets pending timers fire, so a task burning cycles can't starve a `sleep` forever. The clock-read tick covers the case the step tick can't: a spin loop whose body inlines away has no safe points, so it produces no scheduling steps — but it must still call into the runtime to read the clock, or it has no exit condition to spin on. A loop that observes time advances time; a loop that doesn't observe time can't observe that time hasn't moved.
+Making a clock read a scheduling step closes it. A spin loop has to read the clock to have an exit condition, so every iteration moves time forward and lets other tasks run. A loop that observes time advances time; a loop that doesn't observe time can't observe that time hasn't moved.
 
 The cost is that virtual duration measures scheduling steps and clock reads, not work. Sim was never going to tell you something is slow (see non-goals), so this trades nothing anyone had.
 
@@ -248,13 +279,21 @@ The consequence is that sim is a sealed world: there is no way to read the machi
 
 ### Target
 
-Sim is built on the native runtime. Its three interposition points — scheduler, clock, reactor — are the ones `conc.runtime` already specifies, so sim replaces components that have a designed shape rather than inventing parallel ones, and what it finds is what ships.
+Sim is built on the native runtime, as a link-time swap of the runtime's C side. What it finds is what ships.
 
-The cost is order: sim lands after Phase B fibers. The interpreter would have been quicker to make deterministic, since stepping evaluation makes "pick a random runnable task" nearly free, but it spawns OS threads today and so has no seedable scheduler either — and a green scheduler built there would be one nobody ships, verifying orderings the compiled program may not have.
+**A baton over OS threads.** Each task keeps the OS thread the native runtime gives it today. Sim adds one baton: only the thread holding it runs Rask code. At a scheduling point the holder asks the seeded scheduler who is next, hands the baton over, and blocks until it comes back. Every task but one is asleep on a condition variable at all times, so the program is single-threaded in effect and ordering comes from the seed alone.
+
+An earlier draft put sim after Phase B fibers, on the grounds that a fiber scheduler is the thing to make deterministic. It isn't needed. Scheduling points (S3) are all runtime calls, so a task only ever yields at a point where it is already inside the runtime, and blocking its thread there costs a futex round trip (a few microseconds) instead of a fiber switch. Virtual time makes that cost invisible to the test. When fibers land, the scheduler and its seed draws stay; only the handover changes.
+
+The interpreter was the other option: stepping evaluation makes "pick a random runnable task" nearly free. It also spawns OS threads today, and a scheduler built there would verify orderings the compiled program may not have.
+
+**One process per test.** The runner starts the test binary once per test and seed, naming the test and handing over its seed. That is what I7 costs: nothing, since a fresh process starts from the initializers. It also gives B4 and B5 their per-test reset, lets a deadlock report and exit from whichever thread noticed it, and makes seed search's parallelism (I6) a matter of starting more processes.
+
+**Allocator.** B7's fixed-base allocator replaces `malloc` for the whole process, not just linked C. Rask's own allocations go through `malloc`, and under the baton only one thread allocates at a time, so every address is a function of the seed. Nothing in Rask can observe an address (`determinism/D11`), but thread-local arenas would still make C-side behavior differ between runs, and one allocator closes both.
 
 ### Open questions
 
-- **Sickness probability and per-class failure rates (F4).** The shape is settled; the two numbers behind it — how often a resource is picked sick, how often a sick one fails — want real tests behind them, not taste.
+- **Sickness probability and per-class failure rates (F4).** F4a picks numbers so the thing runs. They want real test suites behind them, not taste, and may change once there are some.
 - **Developer-placed fault sites.** FoundationDB's `buggify` lets the author of a subsystem mark a legal-but-rare path so the simulator can take it on purpose — the knowledge that flushing early *here* is legal lives with whoever wrote it, and no outside-in injector can guess it. A Rask `sim.rarely()` would fit the existing model exactly: false in production (`determinism/D2`), seed-driven under sim. The cost is test-only branches in shipping source, which is a visibility question worth its own discussion rather than a footnote here.
 - **Sealed-set membership (B6).** Which libc symbols count as pure is a list, and lists are where this kind of design rots. `memcpy` is obvious, `qsort` takes a comparator, `strerror` reads a locale. Needs writing down properly, once, with a rule for adding to it.
 

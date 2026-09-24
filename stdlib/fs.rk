@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-extern "C" func fopen(path: *u8, mode: *u8) -> *u8
+// fopen, access and opendir go through the runtime rather than libc, which is
+// where sim puts its filesystem overlay (sim/B5).
+extern "C" func rask_libc_fopen(path: *u8, mode: *u8) -> *u8
 
 extern "C" func fclose(f: *u8) -> i32
 
@@ -12,15 +14,17 @@ extern "C" func fseek(stream: *u8, offset: i64, whence: i32) -> i32
 
 extern "C" func ftell(stream: *u8) -> i64
 
+extern "C" func ferror(stream: *u8) -> i32
+
 extern "C" func rask_alloc(size: i64) -> *u8
 
 extern "C" func rask_free(ptr: *u8)
 
+extern "C" func rask_realloc(ptr: *u8, old_size: i64, new_size: i64) -> *u8
+
 extern "C" func rask_string_from_bytes(out: *u8, data: *u8, len: i64)
 
-extern "C" func rask_fwrite_vec(f: *u8, data: *u8)
-
-extern "C" func access(path: *u8, mode: i32) -> i32
+extern "C" func rask_libc_access(path: *u8, mode: i32) -> i32
 
 extern "C" func rask_libc_rename(from: *u8, to: *u8) -> i32
 
@@ -28,17 +32,17 @@ extern "C" func rask_libc_remove(path: *u8) -> i32
 
 extern "C" func rask_libc_mkdir(path: *u8, mode: u32) -> i32
 
+extern "C" func rask_libc_mkdir_or_dir(path: *u8, mode: u32) -> i32
+
 extern "C" func realpath(path: *u8, resolved: *u8) -> *u8
 
 extern "C" func strlen(s: *u8) -> u64
 
-extern "C" func opendir(path: *u8) -> *u8
+extern "C" func rask_libc_opendir(path: *u8) -> *u8
 
-extern "C" func readdir(dir: *u8) -> *u8
+extern "C" func rask_libc_readdir(dir: *u8) -> *u8
 
-extern "C" func closedir(dir: *u8) -> i32
-
-extern "C" func rask_dirent_name(entry: *u8) -> *u8
+extern "C" func rask_libc_closedir(dir: *u8) -> i32
 
 extern "C" func rask_stat_load(path: *u8) -> i32
 
@@ -98,76 +102,68 @@ extend fs {
 
     /// Read the entire contents of a file as a string.
     public func read_text(path: string) -> string or IoError {
-        let p = unsafe path.as_ptr()
-        let f = unsafe fopen(p, "rb\0".as_ptr())
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        unsafe fseek(f, 0, 2)
-        let size = unsafe ftell(f)
-        unsafe fseek(f, 0, 0)
-        if size <= 0 {
-            unsafe fclose(f)
-            return ""
-        }
-        let buf = unsafe rask_alloc(size + 1)
-        let n = unsafe fread(buf, 1, size.wrap<u64>(), f)
-        unsafe fclose(f)
-        let result = unsafe string.from_raw(buf, n as usize)
-        unsafe rask_free(buf)
+        let raw = try read_to_end(f)
+        let result = unsafe string.from_raw(raw.ptr, raw.len.wrap<usize>())
+        unsafe rask_free(raw.ptr)
         return result
     }
 
     /// Read the entire contents of a file as bytes.
     public func read_bytes(path: string) -> Vec<u8> or IoError {
-        let p = unsafe path.as_ptr()
-        let f = unsafe fopen(p, "rb\0".as_ptr())
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "rb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        unsafe fseek(f, 0, 2)
-        let size = unsafe ftell(f)
-        unsafe fseek(f, 0, 0)
-        mut bytes: Vec<u8> = Vec.new()
-        if size > 0 {
-            let buf = unsafe rask_alloc(size)
-            let n = unsafe fread(buf, 1, size.wrap<u64>(), f)
-            mut i: u64 = 0
-            loop {
-                if i >= n { break }
-                let b = unsafe buf.add(i as usize).read()
-                bytes.push(b as u8)
-                i = i + 1
-            }
-            unsafe rask_free(buf)
+        let raw = try read_to_end(f)
+        mut bytes: Vec<u8> = Vec.with_capacity(raw.len.wrap<usize>())
+        mut i: i64 = 0
+        loop {
+            if i >= raw.len { break }
+            bytes.push(unsafe raw.ptr.add(i.wrap<usize>()).read())
+            i = i + 1
         }
-        unsafe fclose(f)
+        unsafe rask_free(raw.ptr)
         return bytes
     }
 
     /// Write a string to a file, replacing its contents.
     public func write_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe fopen(p, "wb\0".as_ptr())
+        let f = unsafe rask_libc_fopen(p, "wb\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        let ptr = unsafe content.as_ptr()
-        let len = content.len().wrap<u64>()
-        unsafe fwrite(ptr, 1, len, f)
-        unsafe fclose(f)
-        return
+        return write_all_then_close(f, unsafe content.as_ptr(), content.len())
     }
 
     /// Write bytes to a file, replacing its contents.
-    @native("rask_fs_write_bytes")
-    public func write_bytes(path: string, data: Vec<u8>) -> void or IoError {}
+    public func write_bytes(path: string, data: Vec<u8>) -> void or IoError {
+        let f = unsafe rask_libc_fopen(path.as_ptr(), "wb\0".as_ptr())
+        if unsafe f.is_null() {
+            return IoError.last_os_error()
+        }
+        // Byte by byte into a flat buffer, the one shape `fwrite` takes.
+        let n = data.len()
+        let buf = unsafe rask_alloc(if n > 0 { n.wrap<i64>() } else { 1 })
+        mut i: usize = 0
+        for b in data {
+            unsafe buf.add(i).write(b)
+            i = i + 1
+        }
+        let result = write_all_then_close(f, buf, n)
+        unsafe rask_free(buf)
+        return result
+    }
 
     /// Check if a file or directory exists at the path.
     public func exists(path: string) -> bool {
         let p = unsafe path.as_ptr()
         return (unsafe {
-            access(p, 0)
+            rask_libc_access(p, 0)
         }) == 0
     }
 
@@ -197,11 +193,11 @@ extend fs {
 
     /// Copy a file from one path to another.
     public func copy(from: string, to: string) -> void or IoError {
-        let src = unsafe fopen(from.as_ptr(), "rb\0".as_ptr())
+        let src = unsafe rask_libc_fopen(from.as_ptr(), "rb\0".as_ptr())
         if unsafe src.is_null() {
             return IoError.last_os_error()
         }
-        let dst = unsafe fopen(to.as_ptr(), "wb\0".as_ptr())
+        let dst = unsafe rask_libc_fopen(to.as_ptr(), "wb\0".as_ptr())
         if unsafe dst.is_null() {
             unsafe fclose(src)
             return IoError.last_os_error()
@@ -209,12 +205,26 @@ extend fs {
         let buf = unsafe rask_alloc(8192)
         loop {
             let n = unsafe fread(buf, 1, 8192, src)
+            let failed = if n == 0 {
+                (unsafe ferror(src)) != 0
+            } else {
+                (unsafe fwrite(buf, 1, n, dst)) < n || (unsafe ferror(dst)) != 0
+            }
+            // errno is read before either close can touch it.
+            if failed {
+                let err = IoError.last_os_error()
+                unsafe rask_free(buf)
+                unsafe fclose(src)
+                unsafe fclose(dst)
+                return err
+            }
             if n == 0 { break }
-            unsafe fwrite(buf, 1, n, dst)
         }
         unsafe rask_free(buf)
         unsafe fclose(src)
-        unsafe fclose(dst)
+        if (unsafe fclose(dst)) != 0 {
+            return IoError.last_os_error()
+        }
         return
     }
 
@@ -245,35 +255,42 @@ extend fs {
         return
     }
 
-    /// Create a directory and all parent directories.
-    @native("rask_fs_create_dir_all")
-    public func create_dir_all(path: string) -> void or IoError {}
+    /// Create a directory and all parent directories. One that already exists
+    /// is fine; a file in the way is an error.
+    public func create_dir_all(path: string) -> void or IoError {
+        mut prefix = if path.starts_with("/") { "/" } else { "" }
+        for part in path.split("/") {
+            if part.is_empty() {
+                continue
+            }
+            prefix = if prefix.is_empty() || prefix == "/" { "{prefix}{part}" } else { "{prefix}/{part}" }
+            if (unsafe rask_libc_mkdir_or_dir(prefix.as_ptr(), 493)) != 0 {
+                return IoError.last_os_error()
+            }
+        }
+        return
+    }
 
     /// Append a string to a file.
     public func append_text(path: string, content: string) -> void or IoError {
         let p = unsafe path.as_ptr()
-        let f = unsafe fopen(p, "ab\0".as_ptr())
+        let f = unsafe rask_libc_fopen(p, "ab\0".as_ptr())
         if unsafe f.is_null() {
             return IoError.last_os_error()
         }
-        let ptr = unsafe content.as_ptr()
-        let len = content.len().wrap<u64>()
-        unsafe fwrite(ptr, 1, len, f)
-        unsafe fclose(f)
-        return
+        return write_all_then_close(f, unsafe content.as_ptr(), content.len())
     }
 
     /// List entries in a directory.
     public func list_dir(path: string) -> Vec<string> or IoError {
-        let dir = unsafe opendir(path.as_ptr())
+        let dir = unsafe rask_libc_opendir(path.as_ptr())
         if unsafe dir.is_null() {
             return IoError.last_os_error()
         }
         mut entries: Vec<string> = Vec.new()
         loop {
-            let entry = unsafe readdir(dir)
-            if unsafe entry.is_null() { break }
-            let name_ptr = unsafe rask_dirent_name(entry)
+            let name_ptr = unsafe rask_libc_readdir(dir)
+            if unsafe name_ptr.is_null() { break }
             let name_len: u64 = unsafe strlen(name_ptr)
             let name = unsafe string.from_raw(name_ptr, name_len as usize)
             // Skip . and ..
@@ -283,7 +300,7 @@ extend fs {
                 }
             }
         }
-        unsafe closedir(dir)
+        unsafe rask_libc_closedir(dir)
         return entries
     }
 
@@ -331,6 +348,64 @@ extend fs {
         let s = unsafe string.from_raw(ptr, len as usize)
         return Path.from(s)
     }
+}
+
+/// A file's bytes, in a buffer the caller frees.
+struct RawBytes {
+    ptr: *u8
+    len: i64
+}
+
+/// Read `f` to end of file and close it. The size `ftell` reports is only a
+/// first guess at the buffer: a /proc file reports 0 and a sysfs file a whole
+/// page, whatever they hold. A short `fread` is the end of the file unless
+/// `ferror` says otherwise.
+func read_to_end(f: *u8) -> RawBytes or IoError {
+    unsafe fseek(f, 0, 2)
+    let guess = unsafe ftell(f)
+    unsafe fseek(f, 0, 0)
+    mut cap: i64 = if guess > 0 { guess + 1 } else { 4096 }
+    mut buf = unsafe rask_alloc(cap)
+    mut len: i64 = 0
+    loop {
+        if len == cap {
+            buf = unsafe rask_realloc(buf, cap, cap * 2)
+            cap = cap * 2
+        }
+        let n = unsafe fread(buf.add(len.wrap<usize>()), 1, (cap - len).wrap<u64>(), f)
+        if n == 0 {
+            // errno is read before fclose can touch it.
+            if (unsafe ferror(f)) != 0 {
+                let err = IoError.last_os_error()
+                unsafe fclose(f)
+                unsafe rask_free(buf)
+                return err
+            }
+            unsafe fclose(f)
+            return RawBytes { ptr: buf, len }
+        }
+        len = len + n.wrap<i64>()
+    }
+}
+
+/// Write `len` bytes from `ptr` and close `f`, reporting either step failing.
+/// The write is buffered, so a disk that refuses the bytes usually says so at
+/// the close; a caller that only checked `fwrite` would report success for
+/// data that never arrived.
+func write_all_then_close(f: *u8, ptr: *u8, size: usize) -> void or IoError {
+    let len = size.wrap<u64>()
+    let wrote = unsafe fwrite(ptr, 1, len, f)
+    // `ferror` as well as the count: an unbuffered stream can report the
+    // whole count for a write that failed.
+    if wrote < len || (unsafe ferror(f)) != 0 {
+        let err = IoError.last_os_error()
+        unsafe fclose(f)
+        return err
+    }
+    if (unsafe fclose(f)) != 0 {
+        return IoError.last_os_error()
+    }
+    return
 }
 
 /// File metadata: size, access time, modification time.
