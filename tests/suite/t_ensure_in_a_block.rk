@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An `ensure` inside a `using` or `with` block runs when that block ends.
+//
+//     using Multitasking {
+//         ensure log.write("closing")
+//         ...
+//     }
+//
+// The interpreter walked these three block bodies statement by statement and
+// never ran their `ensure`s, so the cleanup was skipped with no error and a
+// panicking one exited 0. Native ran them. Each test counts the cleanups that
+// actually ran.
+
+import sync.Shared
+
+func note(ran: Shared<i64>) {
+    with ran.write() as n {
+        n += 1
+    }
+}
+
+test "an ensure in a using Multitasking block runs" {
+    let ran = Shared.new(0)
+    using Multitasking {
+        ensure note(ran)
+        assert ran.read() == 0
+    }
+    assert ran.read() == 1
+}
+
+test "an ensure in a using ThreadPool block runs" {
+    let ran = Shared.new(0)
+    using ThreadPool {
+        ensure note(ran)
+        assert ran.read() == 0
+    }
+    assert ran.read() == 1
+}
+
+test "an ensure in a with block runs" {
+    let ran = Shared.new(0)
+    let data = Shared.new(5)
+    with data.write() as d {
+        ensure note(ran)
+        d += 1
+    }
+    assert ran.read() == 1
+    assert data.read() == 6
+}
+
+func main() {}

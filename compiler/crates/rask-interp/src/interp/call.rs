@@ -444,7 +444,14 @@ impl Interpreter {
                             self.handle_ensure_error(val, else_handler);
                         }
                     }
-                    Err(_) => {}
+                    // Anything else is the interpreter failing, not the
+                    // program: a missing method, a type error. Dropping it made
+                    // an `ensure` that couldn't run look like one that did.
+                    Err(diag) => {
+                        if first_panic.is_none() {
+                            first_panic = Some(diag);
+                        }
+                    }
                 }
             }
         }

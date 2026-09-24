@@ -2679,20 +2679,19 @@ impl Interpreter {
                 self.env.push_scope();
                 self.env.define("__thread_pool".to_string(), Value::ThreadPool(pool.clone()));
 
-                let mut result = Value::Unit;
-                for stmt in body {
-                    match self.exec_stmt(stmt) {
-                        Ok(val) => result = val,
-                        Err(e) => {
-                            *pool.sender.lock().unwrap() = None;
-                            for w in workers {
-                                let _ = w.join();
-                            }
-                            self.env.pop_scope();
-                            return Err(e);
+                // `exec_stmts`, not a loop over `exec_stmt`: that one runs the
+                // block's `ensure`s, and a bare loop skipped every one of them.
+                let result = match self.exec_stmts(body) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        *pool.sender.lock().unwrap() = None;
+                        for w in workers {
+                            let _ = w.join();
                         }
+                        self.env.pop_scope();
+                        return Err(e);
                     }
-                }
+                };
 
                 *pool.sender.lock().unwrap() = None;
                 for w in workers {
@@ -2739,18 +2738,17 @@ impl Interpreter {
                 self.env.push_scope();
                 let scope_depth = self.env.scope_depth();
 
-                let mut result = Value::Unit;
-                for stmt in body {
-                    match self.exec_stmt(stmt) {
-                        Ok(val) => result = val,
-                        Err(e) => {
-                            runtime.shutdown();
-                            *ACTIVE_RUNTIME.write().unwrap() = None;
-                            self.env.pop_scope();
-                            return Err(e);
-                        }
+                // `exec_stmts` runs the block's `ensure`s; a bare loop over
+                // `exec_stmt` skipped them.
+                let result = match self.exec_stmts(body) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        runtime.shutdown();
+                        *ACTIVE_RUNTIME.write().unwrap() = None;
+                        self.env.pop_scope();
+                        return Err(e);
                     }
-                }
+                };
 
                 // Check for unconsumed handles (conc.async/H1)
                 if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
@@ -3014,13 +3012,8 @@ impl Interpreter {
             // Execute body. Capture the exit instead of `?`-returning: unwind
             // releases access but keeps writes (ctrl.panic/U2), so the
             // writeback and scope-pop below must run even on panic.
-            let mut body_result: Result<Value, RuntimeDiagnostic> = Ok(Value::Unit);
-            for stmt in body {
-                match self.exec_stmt(stmt) {
-                    Ok(v) => body_result = Ok(v),
-                    Err(e) => { body_result = Err(e); break; }
-                }
-            }
+            // `exec_stmts` so the body's own `ensure`s run.
+            let body_result = self.exec_stmts(body);
 
             // ST3: a staged binding's copy is discarded on unwind, so survivors
             // see the last committed state and never a torn one. Every other
