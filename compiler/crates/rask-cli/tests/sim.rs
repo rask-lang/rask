@@ -316,6 +316,12 @@ fn reading_stdin_is_refused() {
 }
 
 #[test]
+fn two_senders_on_an_unbuffered_channel_both_get_through() {
+    let (out, code) = sim(&["--seed", "1", "--seeds", "50", "unbuffered.rk"]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
 fn seed_search_flags_need_sim() {
     let out = Command::new(rask_binary())
         .args(["test", "--seeds", "5", "race.rk"])
