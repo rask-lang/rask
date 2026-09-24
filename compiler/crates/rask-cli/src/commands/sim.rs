@@ -14,8 +14,8 @@ use std::process;
 use colored::Colorize;
 
 use super::run::{
-    build_test_binary, death_description, parse_json_i64, parse_json_str, unescape_json_str,
-    TestOutcome,
+    build_test_binary, death_description, parse_json_i64, parse_json_str, split_record,
+    test_binary_command, unescape_json_str, TestOutcome,
 };
 use crate::{output, Format};
 
@@ -89,9 +89,10 @@ struct Run {
     stderr: String,
 }
 
-fn run_one(bin: &Path, name: &str, seed: u64) -> Run {
-    let out = process::Command::new(bin)
-        .env("RASK_SIM_TEST", name)
+/// Run the binary's `index`th test under `seed`.
+fn run_one(bin: &Path, index: usize, seed: u64) -> Run {
+    let out = test_binary_command(bin)
+        .env("RASK_SIM_TEST", index.to_string())
         .env("RASK_SIM_SEED", seed.to_string())
         .output();
     let out = match out {
@@ -116,10 +117,12 @@ fn run_one(bin: &Path, name: &str, seed: u64) -> Run {
     let mut output = Vec::new();
     let mut record = None;
     for line in stdout.lines() {
-        if line.trim_start().starts_with('{') && record.is_none() {
-            record = Some(line.trim().to_string());
-        } else {
-            output.push(line.to_string());
+        let (printed, rec) = split_record(line);
+        if rec.is_none() || !printed.is_empty() {
+            output.push(printed.to_string());
+        }
+        if let Some(rec) = rec {
+            record = Some(rec.to_string());
         }
     }
 
@@ -296,7 +299,7 @@ fn run_file(bin: &super::run::TestBinary, path: &str, run_seed: u64, opts: &SimO
         .unwrap_or_default();
     let batch = std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(4);
 
-    for (name, _) in &bin.tests {
+    for (index, (name, _)) in bin.tests.iter().enumerate() {
         let full_name = format!("{stem}::{name}");
         // Distinct failures by message, each with the first seed that hit it
         // (sim/R3).
@@ -312,7 +315,7 @@ fn run_file(bin: &super::run::TestBinary, path: &str, run_seed: u64, opts: &SimO
                         let sweep = sweep_seed(run_seed, i, opts.seeds);
                         let seed = test_seed(sweep, &full_name);
                         let bin_path = &bin.path;
-                        scope.spawn(move || (sweep, run_one(bin_path, name, seed)))
+                        scope.spawn(move || (sweep, run_one(bin_path, index, seed)))
                     })
                     .collect();
                 handles.into_iter().map(|h| h.join().expect("sim run thread")).collect()

@@ -170,6 +170,15 @@ fn a_directory_runs_every_file_in_it() {
 }
 
 #[test]
+fn output_that_looks_like_a_result_is_output() {
+    let (out, code) = sim(&["--seed", "1", "lookalike.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("FAIL: claims to pass, then fails"), "{out}");
+    assert!(out.contains("assertion failed: 1 == 2"), "{out}");
+    assert!(out.contains("✓ prints a JSON body and passes"), "{out}");
+}
+
+#[test]
 fn seed_search_flags_need_sim() {
     let out = Command::new(rask_binary())
         .args(["test", "--seeds", "5", "race.rk"])

@@ -197,6 +197,18 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                     .with_why("each name can only be defined once in a scope")
             }
 
+            DuplicateTest { kind, name, previous } => {
+                Diagnostic::error(format!("two {kind}s named \"{name}\""))
+                    .with_code("E0217")
+                    .with_primary(self.span, "second one here")
+                    .with_secondary(*previous, "first one here")
+                    .with_help(format!("rename one of them, e.g. `{kind} \"{name} (2)\"`"))
+                    .with_why(format!(
+                        "a {kind} is picked by its name — by `-f`, in the report, and in \
+                         `rask test --sim`'s replay line — so two with one name can't be told apart"
+                    ))
+            }
+
             InvalidBreak { label } => {
                 let msg = match label {
                     Some(l) => format!("break with label `{}` outside of loop", l),

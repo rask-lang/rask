@@ -259,7 +259,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     }
     let _ = std::fs::remove_file(&obj_path);
 
-    let run_output = process::Command::new(&bin_str).output();
+    let run_output = test_binary_command(&bin_str).output();
     let _ = std::fs::remove_file(&bin_path);
 
     match run_output {
@@ -420,18 +420,18 @@ fn run_test_file_interp(
         }
         if let Some(reason) = &r.skipped {
             json_lines.push_str(&format!(
-                "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{},\"skipped\":\"{}\"}}\n",
-                escaped_name, dur_ns, json_escape(reason),
+                "{}{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{},\"skipped\":\"{}\"}}\n",
+                record_mark(), escaped_name, dur_ns, json_escape(reason),
             ));
         } else if r.passed {
             json_lines.push_str(&format!(
-                "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{}}}\n",
-                escaped_name, dur_ns,
+                "{}{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":{}}}\n",
+                record_mark(), escaped_name, dur_ns,
             ));
         } else {
             json_lines.push_str(&format!(
-                "{{\"name\":\"{}\",\"passed\":false,\"duration_ns\":{},\"error\":\"{}\"}}\n",
-                escaped_name, dur_ns, json_escape(&r.errors.join("; ")),
+                "{}{{\"name\":\"{}\",\"passed\":false,\"duration_ns\":{},\"error\":\"{}\"}}\n",
+                record_mark(), escaped_name, dur_ns, json_escape(&r.errors.join("; ")),
             ));
         }
     }
@@ -607,7 +607,7 @@ fn run_test_file_native_inner(
         Ok(bin) => bin,
         Err(outcome) => return outcome,
     };
-    let run_output = process::Command::new(&bin.path).output();
+    let run_output = test_binary_command(&bin.path).output();
 
     match run_output {
         Ok(out) => {
@@ -790,6 +790,42 @@ pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) 
     }
 }
 
+// ─── Result records ─────────────────────────────────────────
+//
+// A test binary writes one JSON record per test to stdout, in among whatever
+// the tests print. Each record starts with a mark the runner hands the binary
+// in RASK_TEST_RECORD_MARK, fresh per `rask` process, so no output a test
+// writes can pass for a record: a test printing a JSON body used to be read as
+// its own result.
+
+const RECORD_MARK_ENV: &str = "RASK_TEST_RECORD_MARK";
+
+pub(super) fn record_mark() -> &'static str {
+    use std::hash::{BuildHasher, Hasher};
+    static MARK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    MARK.get_or_init(|| {
+        let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+        h.write_u32(process::id());
+        format!("\x1erask-test-{:016x}:", h.finish())
+    })
+}
+
+/// A command that runs a test binary with the record mark in its environment.
+pub(super) fn test_binary_command(bin: impl AsRef<std::ffi::OsStr>) -> process::Command {
+    let mut cmd = process::Command::new(bin);
+    cmd.env(RECORD_MARK_ENV, record_mark());
+    cmd
+}
+
+/// A stdout line split into what the test printed and the record after it.
+/// A `print` with no newline puts the next record on the same line.
+pub(super) fn split_record(line: &str) -> (&str, Option<&str>) {
+    match line.find(record_mark()) {
+        Some(at) => (&line[..at], Some(line[at + record_mark().len()..].trim())),
+        None => (line, None),
+    }
+}
+
 /// Parse and display test results from JSON output lines.
 /// Print the run's results. `expected` is how many tests the binary was built
 /// with; fewer results than that means it died partway and the run is a
@@ -813,7 +849,8 @@ fn comptime_test_records(decls: &[rask_ast::decl::Decl], filter: Option<&str>) -
             continue;
         }
         records.push_str(&format!(
-            "{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":0}}\n",
+            "{}{{\"name\":\"{}\",\"passed\":true,\"duration_ns\":0}}\n",
+            record_mark(),
             json_escape(&t.name),
         ));
         count += 1;
@@ -828,12 +865,22 @@ fn display_test_results(
     expected: usize,
     death: Option<&process::ExitStatus>,
 ) -> bool {
-    let reported = stdout.lines().filter(|l| l.trim().starts_with('{')).count();
+    let reported = stdout.lines().filter(|l| split_record(l).1.is_some()).count();
     let truncated = reported < expected;
 
     if format != Format::Human {
-        // JSON mode: pass through raw output
-        print!("{}", stdout);
+        // JSON mode: the records as they are, without their mark.
+        for line in stdout.lines() {
+            match split_record(line) {
+                (printed, Some(record)) => {
+                    if !printed.is_empty() {
+                        println!("{printed}");
+                    }
+                    println!("{record}");
+                }
+                (printed, None) => println!("{printed}"),
+            }
+        }
         if truncated {
             eprintln!(
                 "{}: test run stopped after {} of {} tests — the binary {}",
@@ -870,12 +917,11 @@ fn display_test_results(
     };
 
     for line in stdout.lines() {
-        let raw = line;
-        let line = line.trim();
-        if !line.starts_with('{') {
-            pending_output.push(raw);
-            continue;
+        let (printed, record) = split_record(line);
+        if record.is_none() || !printed.is_empty() {
+            pending_output.push(printed);
         }
+        let Some(line) = record else { continue };
 
         // The name is JSON-escaped on the way out, so it comes back escaped.
         // Unescaped nothing used to escape it either, and a test whose name

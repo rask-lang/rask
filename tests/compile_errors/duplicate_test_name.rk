@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: two tests in one file with one name.
+//
+// A test is picked by its name: `-f`, the report, sim's replay line. Sim used
+// to run only the first of the two and report both as passing, since the
+// second never answered to its name.
+
+test "parses" {
+    assert 1 == 1
+}
+
+// ERROR: two tests named "parses"
+test "parses" {
+    assert 1 == 2
+}
+
+benchmark "loop" {
+    mut i = 0
+    while i < 10 {
+        i = i + 1
+    }
+}
+
+// ERROR: two benchmarks named "loop"
+benchmark "loop" {
+    mut i = 0
+    while i < 10 {
+        i = i + 1
+    }
+}

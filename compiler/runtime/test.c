@@ -109,10 +109,27 @@ static void json_print_escaped(const char *s) {
     }
 }
 
+// Every result record starts with the mark the runner passed in
+// RASK_TEST_RECORD_MARK, so the runner can tell records from what the tests
+// print. It is taken out of the environment before any Rask code runs, so a
+// test can't read it, and a program the test starts doesn't inherit it. Run
+// by hand, with no mark, the records are bare JSON lines.
+static char *record_mark_value;
+
+__attribute__((constructor)) static void record_mark_take(void) {
+    const char *mark = getenv("RASK_TEST_RECORD_MARK");
+    record_mark_value = strdup(mark ? mark : "");
+    unsetenv("RASK_TEST_RECORD_MARK");
+}
+
+static const char *record_mark(void) {
+    return record_mark_value ? record_mark_value : "";
+}
+
 // ─── Sim mode ──────────────────────────────────────────────
 //
 // A sim test runs alone in its process (sim/I6): the runner starts the binary
-// once per test, naming it in RASK_SIM_TEST and handing over its seed in
+// once per test, picking it in RASK_SIM_TEST and handing over its seed in
 // RASK_SIM_SEED. Every other test is skipped without a word, and the process
 // exits as soon as the chosen one is reported, so no task, environment
 // variable or allocation outlives the test that made it.
@@ -138,7 +155,7 @@ static void sim_print_position(void) {
 // A failure that can't unwind to the test's setjmp — a deadlock is noticed on
 // whichever thread tried to schedule, not on the test's own.
 _Noreturn void rask_test_sim_fail(const char *msg) {
-    printf("{\"name\":\"");
+    printf("%s{\"name\":\"", record_mark());
     json_print_escaped(sim_current_name ? sim_current_name : "");
     printf("\",\"passed\":false,\"duration_ns\":0,\"error\":\"");
     json_print_escaped(msg);
@@ -150,8 +167,10 @@ _Noreturn void rask_test_sim_fail(const char *msg) {
 }
 
 // Returns 1 when `name` is the test this process was started for, after
-// starting the scheduler for it.
+// starting the scheduler for it. RASK_SIM_TEST is the test's position in the
+// binary, counting from 0, so two tests can never answer to one request.
 static int sim_select(const char *name) {
+    static long next_index;
     const char *want = getenv("RASK_SIM_TEST");
     const char *seed = getenv("RASK_SIM_SEED");
     if (!want || !seed) {
@@ -159,7 +178,7 @@ static int sim_select(const char *name) {
                         "run sim binaries through `rask test --sim`\n");
         _exit(2);
     }
-    if (strcmp(name, want) != 0) return 0;
+    if (next_index++ != strtol(want, NULL, 10)) return 0;
     sim_current_name = name;
     rask_sim_begin(strtoull(seed, NULL, 10));
     return 1;
@@ -199,7 +218,7 @@ static int test_run_one(test_fn fn, const char *name) {
 
     // Handle skipped tests — use panic message as skip reason
     if (was_skipped) {
-        printf("{\"name\":\"");
+        printf("%s{\"name\":\"", record_mark());
            json_print_escaped(name);
            printf("\",\"passed\":true,\"duration_ns\":%lld,\"skipped\":\"",
                (long long)elapsed_ns);
@@ -221,7 +240,7 @@ static int test_run_one(test_fn fn, const char *name) {
         if (failed) {
             // Expected failure occurred — pass
             if (error_msg) free(error_msg);
-            printf("{\"name\":\"");
+            printf("%s{\"name\":\"", record_mark());
                json_print_escaped(name);
                printf("\",\"passed\":true,\"duration_ns\":%lld}\n",
                    (long long)elapsed_ns);
@@ -229,7 +248,7 @@ static int test_run_one(test_fn fn, const char *name) {
             return 0;
         } else {
             // Expected failure but test passed — fail
-            printf("{\"name\":\"");
+            printf("%s{\"name\":\"", record_mark());
                json_print_escaped(name);
                printf("\",\"passed\":false,\"duration_ns\":%lld,\"error\":\"expected failure but test passed\"}\n",
                    (long long)elapsed_ns);
@@ -247,7 +266,7 @@ static int test_run_one(test_fn fn, const char *name) {
 
     // Normal case: escape quotes in error message for JSON
     if (failed) {
-        printf("{\"name\":\"");
+        printf("%s{\"name\":\"", record_mark());
            json_print_escaped(name);
            printf("\",\"passed\":false,\"duration_ns\":%lld,\"error\":\"",
                (long long)elapsed_ns);
@@ -268,7 +287,7 @@ static int test_run_one(test_fn fn, const char *name) {
 #endif
         printf("}\n");
     } else {
-        printf("{\"name\":\"");
+        printf("%s{\"name\":\"", record_mark());
            json_print_escaped(name);
            printf("\",\"passed\":true,\"duration_ns\":%lld}\n",
                (long long)elapsed_ns);
