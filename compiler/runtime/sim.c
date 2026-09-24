@@ -58,6 +58,8 @@ typedef enum {
     SIM_DONE,
 } SimTaskState;
 
+#define SIM_POOL_WORKER (-1)   // task_id of a ThreadPool worker
+
 typedef struct SimTask {
     int64_t          index;       // spawn order; 0 is the test body
     int64_t          task_id;     // the id panics print (ctrl.panic/F1)
@@ -78,6 +80,7 @@ static struct {
     int64_t          cap;
     SimTask         *current;
     uint64_t         seed;
+    int64_t          max_steps;   // sim/S5a
     uint64_t         sched;
     uint64_t         fault;
     int64_t          faults;      // SIM_FAULT_* bits the test asked for (F2)
@@ -113,9 +116,19 @@ static SimTask *task_alloc(int64_t task_id) {
     return t;
 }
 
-// ─── Deadlock report (sim/S5) ───────────────────────────────
+// ─── Stuck reports (sim/S5, S5a) ────────────────────────────
 
-static void deadlock_locked(void) {
+static const char *task_name(const SimTask *t, char *buf, size_t cap) {
+    if (t->index == 0) snprintf(buf, cap, "task %lld (main)", (long long)t->task_id);
+    else if (t->task_id == SIM_POOL_WORKER) snprintf(buf, cap, "pool worker");
+    else snprintf(buf, cap, "task %lld", (long long)t->task_id);
+    return buf;
+}
+
+// `headline`, then one line per task that hasn't finished: what it waits on,
+// or that it could run. Where it happened travels as the failure's step and
+// time, which the runner prints for every sim failure alike.
+_Noreturn static void stuck_locked(const char *headline, const char *tail) {
     char msg[4096];
     size_t used = 0;
 
@@ -123,25 +136,41 @@ static void deadlock_locked(void) {
         if (used < sizeof(msg)) used += (size_t)snprintf(msg + used, sizeof(msg) - used, __VA_ARGS__); \
     } while (0)
 
-    // Where it happened travels as the failure's step and time, which the
-    // runner prints for every sim failure alike.
-    APPEND("deadlock: no task can make progress");
+    APPEND("%s", headline);
     for (int64_t i = 0; i < g.count; i++) {
         SimTask *t = g.tasks[i];
-        if (t->state != SIM_PARKED) continue;
         char who[32];
-        if (t->index == 0) snprintf(who, sizeof(who), "task %lld (main)", (long long)t->task_id);
-        else snprintf(who, sizeof(who), "task %lld", (long long)t->task_id);
-        if (t->joining) {
+        task_name(t, who, sizeof(who));
+        if (t->state == SIM_PARKED && t->joining) {
             APPEND("\n  %-18s waiting on join(task %lld)", who, (long long)t->joining->task_id);
-        } else {
+        } else if (t->state == SIM_PARKED) {
             APPEND("\n  %-18s waiting on %s", who, t->what ? t->what : "a wakeup");
+        } else if (t->state == SIM_SLEEPING) {
+            APPEND("\n  %-18s sleeping", who);
+        } else if (t->state == SIM_RUNNABLE) {
+            APPEND("\n  %-18s running", who);
         }
     }
-    APPEND("\n  no timers pending");
+    if (tail) APPEND("\n  %s", tail);
 #undef APPEND
 
     rask_test_sim_fail(msg);
+}
+
+static void deadlock_locked(void) {
+    stuck_locked("deadlock: no task can make progress", "no timers pending");
+}
+
+// A test that spins — polling an atomic, `try_receive` or `try_lock` in a
+// loop — never parks, so it can never be proven stuck. The budget turns that
+// into a failure at a step the seed decides, instead of a hang.
+static void over_budget_locked(void) {
+    char headline[160];
+    snprintf(headline, sizeof(headline),
+             "the test used its %lld scheduling steps without finishing — "
+             "a task is probably spinning on something nobody will change",
+             (long long)g.max_steps);
+    stuck_locked(headline, "raise the budget with `--max-steps` if the test is just long");
 }
 
 // ─── The baton ──────────────────────────────────────────────
@@ -191,6 +220,7 @@ static SimTask *pick_locked(void) {
 // plain point, PARKED or SLEEPING when it waits, DONE when it exits.
 static void schedule_locked(SimTask *self) {
     g.step++;
+    if (g.step > g.max_steps) over_budget_locked();
     g.now_ns += 1000;
     wake_expired_locked();
 
@@ -255,6 +285,31 @@ void rask_sim_notify(const void *key) {
     if (!g.active) return;
     pthread_mutex_lock(&g.lock);
     notify_locked(key);
+    pthread_mutex_unlock(&g.lock);
+}
+
+// `pthread_cond_signal` wakes one waiter, and which one is up to the system.
+// Under sim the seed picks, so code that signals where it should broadcast —
+// two conditions sharing one variable, and the wrong waiter woken — fails on
+// some seed instead of passing every time.
+void rask_sim_notify_one(const void *key) {
+    if (!g.active) return;
+    pthread_mutex_lock(&g.lock);
+    int64_t waiting = 0;
+    for (int64_t i = 0; i < g.count; i++) {
+        if (g.tasks[i]->state == SIM_PARKED && g.tasks[i]->key == key) waiting++;
+    }
+    if (waiting > 0) {
+        int64_t n = (int64_t)(splitmix64(&g.sched) % (uint64_t)waiting);
+        for (int64_t i = 0; i < g.count; i++) {
+            SimTask *t = g.tasks[i];
+            if (t->state != SIM_PARKED || t->key != key) continue;
+            if (n-- == 0) {
+                t->state = SIM_RUNNABLE;
+                break;
+            }
+        }
+    }
     pthread_mutex_unlock(&g.lock);
 }
 
@@ -358,6 +413,21 @@ void *rask_sim_task_new(int64_t task_id) {
     return t;
 }
 
+// A pool worker runs many tasks' bodies, so it has no task id of its own.
+void *rask_sim_worker_new(void) {
+    return rask_sim_task_new(SIM_POOL_WORKER);
+}
+
+// A task whose thread couldn't be started. It is done before it began, so
+// nothing picks it and nothing waits for it.
+void rask_sim_task_abandon(void *task) {
+    SimTask *t = (SimTask *)task;
+    pthread_mutex_lock(&g.lock);
+    t->state = SIM_DONE;
+    notify_locked(t);
+    pthread_mutex_unlock(&g.lock);
+}
+
 // First thing a task thread does: wait to be picked.
 void rask_sim_task_enter(void *task) {
     SimTask *t = (SimTask *)task;
@@ -417,9 +487,10 @@ void rask_sim_unsimulated(const char *fmt, ...) {
 
 static char *sim_argv[] = { "<test>", NULL };
 
-void rask_sim_begin(uint64_t seed) {
+void rask_sim_begin(uint64_t seed, int64_t max_steps) {
     pthread_mutex_lock(&g.lock);
     g.seed = seed;
+    g.max_steps = max_steps;
     g.sched = stream_seed(seed, STREAM_SCHED);
     g.fault = stream_seed(seed, STREAM_FAULT);
     g.step = 0;

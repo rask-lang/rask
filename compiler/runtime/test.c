@@ -166,11 +166,12 @@ _Noreturn void rask_test_sim_fail(const char *msg) {
     _exit(1);
 }
 
-// Returns 1 when `name` is the test this process was started for, after
-// starting the scheduler for it. RASK_SIM_TEST is the test's position in the
-// binary, counting from 0, so two tests can never answer to one request.
-static int sim_select(const char *name) {
-    static long next_index;
+// Sim starts before module constants initialise, so a constant sees the
+// same world the tests do: a Map built there uses the run's hash seed, and a
+// constant that reads the clock or `random` reads the simulated ones.
+static long sim_want;
+
+static void sim_start(void) {
     const char *want = getenv("RASK_SIM_TEST");
     const char *seed = getenv("RASK_SIM_SEED");
     if (!want || !seed) {
@@ -178,9 +179,21 @@ static int sim_select(const char *name) {
                         "run sim binaries through `rask test --sim`\n");
         _exit(2);
     }
-    if (next_index++ != strtol(want, NULL, 10)) return 0;
+    // Set only by `--max-steps`; the default budget lives here.
+    const char *steps = getenv("RASK_SIM_MAX_STEPS");
+    long long max_steps = steps ? strtoll(steps, NULL, 10) : 0;
+    if (max_steps <= 0) max_steps = 10000000;
+    sim_want = strtol(want, NULL, 10);
+    rask_sim_begin(strtoull(seed, NULL, 10), (int64_t)max_steps);
+}
+
+// Returns 1 when `name` is the test this process was started for.
+// RASK_SIM_TEST is the test's position in the binary, counting from 0, so two
+// tests can never answer to one request.
+static int sim_select(const char *name) {
+    static long next_index;
+    if (next_index++ != sim_want) return 0;
     sim_current_name = name;
-    rask_sim_begin(strtoull(seed, NULL, 10));
     return 1;
 }
 #endif
@@ -295,6 +308,13 @@ static int test_run_one(test_fn fn, const char *name) {
     fflush(stdout);
 
     return failed;
+}
+
+// First call of the test runner's entry point, ahead of the module constants.
+void rask_test_start(void) {
+#ifdef RASK_SIM
+    sim_start();
+#endif
 }
 
 // Run a single test. Returns 0 on pass, 1 on fail.

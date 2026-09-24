@@ -45,7 +45,8 @@ SD2 is what makes seed search honest. Without split streams, adding one `random.
 | **S2: Uniform among runnable** | At each scheduling point, the next task is drawn uniformly at random from the runnable set, from the scheduler stream |
 | **S3: Scheduling points** | Every operation through which one task can observe another: channel send/receive, `with` on a `Shared`, every `Atomic` operation, spawn, join, detach, cancel, sleep, simulated I/O, and clock reads. Nothing else. There is no preemption between them |
 | **S4: Step counter** | Scheduling points are numbered from 0 as they are reached. The step number is the coordinate in every failure report and the unit `--seeds` search reasons about |
-| **S5: Deadlock is a failure** | All tasks parked, no timer pending, no simulated I/O outstanding → the test fails with a deadlock report naming what each task is waiting on. Sim never hangs |
+| **S5: Deadlock is a failure** | All tasks parked, no timer pending, no simulated I/O outstanding → the test fails with a deadlock report naming what each task is waiting on. |
+| **S5a: A step budget bounds the test** | A test that spins — polling an atomic, `try_receive` or `try_lock` — never parks, so S5 can't prove it stuck. After 10 million scheduling steps it fails, with each task's state, at a step the seed decides. `--max-steps N` moves the budget, and the replay line carries it |
 | **S6: ThreadPool** | `using ThreadPool` jobs are scheduled as tasks under the same rule (`determinism/D13`) |
 
 ## Virtual clock
@@ -179,7 +180,8 @@ WHY: Falling through to the real call would make the run unreplayable without
 | Two tests with the same name in different modules | Seeds differ — derivation uses the full path, not the leaf name | I3 |
 | Busy-wait on `Instant.elapsed()` | Terminates. Each read is a step: other tasks run and the clock moves | C3 |
 | Spin on an `Atomic` another task will set | Terminates. Each load is a scheduling point, so the writer gets to run | S3 |
-| CPU loop that reaches no scheduling point and never exits | Hangs, as it would in production. The test fails by timeout (`std.testing/T19`) | S3 |
+| Loop polling an atomic or `try_receive` that nobody will satisfy | Fails when the step budget runs out, naming each task's state | S5a |
+| CPU loop that reaches no scheduling point and never exits | Takes no steps, so the budget never runs out. The runner kills the binary after 5 minutes of real time and says so | S3 |
 | Long CPU work between two channel ops | Runs uninterrupted. No other task could have seen the difference | S3 |
 | Test spawns and never joins | `TaskHandle` drop panic (`conc.async/H1`), replayed like any panic | ctrl.panic/PD1 |
 | Detached task still running at block exit | Drain runs it to completion in virtual time | conc.async/C4 |

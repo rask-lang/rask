@@ -440,7 +440,7 @@ fn main() {
                 }
             }
             if !sim {
-                for flag in ["--seeds", "--keep-going"] {
+                for flag in ["--seeds", "--keep-going", "--max-steps"] {
                     if cmd_args.contains(&flag) {
                         eprintln!(
                             "{}: `{}` searches seeds, which only sim mode has — add `--sim`",
@@ -451,7 +451,7 @@ fn main() {
                     }
                 }
             }
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed", "--seeds"]);
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--seed", "--seeds", "--max-steps"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
@@ -481,7 +481,18 @@ fn main() {
                     process::exit(1);
                 }
                 let parse_u64 = |flag: &str| -> Option<u64> {
-                    let raw = extract_flag_value(&cmd_args, flag)?;
+                    let uses = cmd_args.iter().filter(|a| **a == flag).count();
+                    if uses == 0 {
+                        return None;
+                    }
+                    if uses > 1 {
+                        eprintln!("{}: `{}` given {} times — pass it once", output::error_label(), flag, uses);
+                        process::exit(1);
+                    }
+                    let Some(raw) = extract_flag_value(&cmd_args, flag) else {
+                        eprintln!("{}: `{}` needs a number after it", output::error_label(), flag);
+                        process::exit(1);
+                    };
                     match raw.parse::<u64>() {
                         Ok(v) => Some(v),
                         Err(_) => {
@@ -500,10 +511,16 @@ fn main() {
                     eprintln!("{}: `--seeds 0` would run nothing", output::error_label());
                     process::exit(1);
                 }
+                let max_steps = parse_u64("--max-steps");
+                if max_steps == Some(0) {
+                    eprintln!("{}: `--max-steps 0` would fail every test at its first step", output::error_label());
+                    process::exit(1);
+                }
                 let opts = commands::sim::SimOptions {
                     seed: parse_u64("--seed"),
                     seeds,
                     keep_going: cmd_args.contains(&"--keep-going"),
+                    max_steps,
                 };
                 commands::sim::cmd_test_sim(file, filter, format, opts);
                 return;

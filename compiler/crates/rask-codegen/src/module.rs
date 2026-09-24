@@ -948,6 +948,15 @@ impl CodeGenerator {
             self.func_ids.insert("rask_test_run".to_string(), id);
         }
 
+        // rask_test_start() -> void, ahead of the module constants
+        {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function("rask_test_start", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_test_start".to_string(), id);
+        }
+
         // rask_test_skip(reason: ptr) -> noreturn (unwinds via panic)
         {
             let mut sig = self.module.make_signature();
@@ -2093,6 +2102,11 @@ impl CodeGenerator {
         let entry_block = fn_builder.create_block();
         fn_builder.switch_to_block(entry_block);
         fn_builder.seal_block(entry_block);
+
+        // Sim starts here, so the constants below are built inside it.
+        let start_ref = func_refs.get("rask_test_start")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_test_start".to_string()))?;
+        fn_builder.ins().call(*start_ref, &[]);
 
         Self::emit_const_inits(&mut fn_builder, &func_refs, const_names);
 

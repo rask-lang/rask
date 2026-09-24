@@ -6,8 +6,9 @@
 // through these wrappers. In an ordinary build they are the pthread calls and
 // nothing else (determinism/D2). Built with -DRASK_SIM, the same call sites
 // become the places the seeded scheduler decides who runs next: a wait parks
-// the task on a key, a signal marks the tasks parked on that key runnable, and
-// the thread itself sleeps until the baton comes back (sim.c).
+// the task on a key, a signal marks one task parked on that key runnable (a
+// broadcast marks all of them), and the thread itself sleeps until the baton
+// comes back (sim.c).
 //
 // A lock that is only ever held for a few instructions and never across a wait
 // (a channel's own mutex, the print lock) doesn't need to be here. Under sim
@@ -27,6 +28,7 @@ int  rask_sim_active(void);
 void rask_sim_point(void);
 void rask_sim_park(const void *key, const char *what);
 void rask_sim_notify(const void *key);
+void rask_sim_notify_one(const void *key);
 void rask_sim_sleep(int64_t ns);
 int64_t rask_sim_now_ns(void);
 uint64_t rask_sim_random_seed(void);
@@ -50,10 +52,12 @@ void *rask_sim_task_new(int64_t task_id);
 void rask_sim_task_enter(void *task);
 void rask_sim_task_exit(void);
 void rask_sim_task_join(void *task);
+void *rask_sim_worker_new(void);
+void rask_sim_task_abandon(void *task);
 
 // Test lifecycle, called from test.c. A sim test runs alone in its process,
 // so the failure paths report and exit rather than unwind.
-void rask_sim_begin(uint64_t seed);
+void rask_sim_begin(uint64_t seed, int64_t max_steps);
 int64_t rask_sim_step(void);
 int64_t rask_sim_time_ns(void);
 _Noreturn void rask_test_sim_fail(const char *msg);
@@ -102,7 +106,7 @@ static inline void rask_task_cond_wait(pthread_cond_t *c, pthread_mutex_t *m,
 
 static inline void rask_task_cond_signal(pthread_cond_t *c) {
     pthread_cond_signal(c);
-    rask_sim_notify(c);
+    rask_sim_notify_one(c);
 }
 
 static inline void rask_task_cond_broadcast(pthread_cond_t *c) {

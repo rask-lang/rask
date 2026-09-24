@@ -26,6 +26,9 @@ pub struct SimOptions {
     pub seeds: u64,
     /// `--keep-going`: run every seed even after a test has failed.
     pub keep_going: bool,
+    /// `--max-steps N`: the scheduling-step budget (sim/S5a). The runtime
+    /// holds the default.
+    pub max_steps: Option<u64>,
 }
 
 // ─── Seeds ──────────────────────────────────────────────────
@@ -89,27 +92,79 @@ struct Run {
     stderr: String,
 }
 
+/// Past the step budget a test fails on its own (sim/S5a). A binary still
+/// running this long isn't taking steps: a loop with no scheduling point in
+/// it, or a block somewhere sim doesn't schedule.
+const WALL_CLOCK_LIMIT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Run the binary's `index`th test under `seed`.
-fn run_one(bin: &Path, index: usize, seed: u64) -> Run {
-    let out = test_binary_command(bin)
-        .env("RASK_SIM_TEST", index.to_string())
+fn run_one(bin: &Path, index: usize, seed: u64, max_steps: Option<u64>) -> Run {
+    let mut cmd = test_binary_command(bin);
+    cmd.env("RASK_SIM_TEST", index.to_string())
         .env("RASK_SIM_SEED", seed.to_string())
-        .output();
-    let out = match out {
-        Ok(out) => out,
-        Err(e) => {
-            return Run {
-                passed: false,
-                skipped: None,
-                error: Some(format!("could not start the test binary: {e}")),
-                step: None,
-                time_ns: None,
-                sick: None,
-                faults: None,
-                output: vec![],
-                stderr: String::new(),
+        .stdin(process::Stdio::null())
+        .stdout(process::Stdio::piped())
+        .stderr(process::Stdio::piped());
+    if let Some(n) = max_steps {
+        cmd.env("RASK_SIM_MAX_STEPS", n.to_string());
+    }
+    let failed = |error: String| Run {
+        passed: false,
+        skipped: None,
+        error: Some(error),
+        step: None,
+        time_ns: None,
+        sick: None,
+        faults: None,
+        output: vec![],
+        stderr: String::new(),
+    };
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => return failed(format!("could not start the test binary: {e}")),
+    };
+
+    // Both pipes drain while we wait, or a chatty test fills one and blocks.
+    let mut stdout_pipe = child.stdout.take().expect("piped stdout");
+    let mut stderr_pipe = child.stderr.take().expect("piped stderr");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout_pipe, &mut buf);
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stderr_pipe, &mut buf);
+        buf
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if started.elapsed() > WALL_CLOCK_LIMIT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
             }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(5)),
+            Err(e) => return failed(format!("waiting for the test binary: {e}")),
         }
+    };
+    let out = process::Output {
+        status: match status {
+            Some(s) => s,
+            None => {
+                return failed(format!(
+                    "killed after {} minutes of real time, still inside the step budget: \
+                     a loop that never reaches a scheduling point (pure computation, no \
+                     atomics, channels, locks or clock), or something blocked outside sim's \
+                     scheduler, which is a sim bug worth filing",
+                    WALL_CLOCK_LIMIT.as_secs() / 60,
+                ))
+            }
+        },
+        stdout: stdout_reader.join().unwrap_or_default(),
+        stderr: stderr_reader.join().unwrap_or_default(),
     };
 
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -165,24 +220,25 @@ fn format_virtual_time(ns: i64) -> String {
     )
 }
 
-/// Double-quoted for a POSIX shell: the replay line has to paste as-is.
+/// Quoted for a POSIX shell: the replay line has to paste as-is. Single
+/// quotes, because inside double quotes an interactive shell still expands
+/// `!`. Words that need nothing stay bare.
 fn shell_quote(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        if matches!(c, '"' | '\\' | '$' | '`') {
-            out.push('\\');
-        }
-        out.push(c);
+    let plain = !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '+' | ','));
+    if plain {
+        return s.to_string();
     }
-    out.push('"');
-    out
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn replay_line(seed: u64, name: &str, path: &str) -> String {
-    format!("rask test --sim --seed {seed} -f {} {path}", shell_quote(name))
+/// The budget decides where a spinning test fails, so a replay passes it on.
+fn replay_line(seed: u64, max_steps: Option<u64>, name: &str, path: &str) -> String {
+    let budget = max_steps.map(|n| format!(" --max-steps {n}")).unwrap_or_default();
+    format!("rask test --sim --seed {seed}{budget} -f {} {}", shell_quote(name), shell_quote(path))
 }
 
-fn print_failure(name: &str, run: &Run, seed: u64, path: &str) {
+fn print_failure(name: &str, run: &Run, seed: u64, max_steps: Option<u64>, path: &str) {
     println!("{}: {}", "FAIL".red().bold(), name);
     if let Some(err) = &run.error {
         for line in err.lines() {
@@ -211,7 +267,7 @@ fn print_failure(name: &str, run: &Run, seed: u64, path: &str) {
             println!("  {} {}", "│".dimmed(), l);
         }
     }
-    println!("  replay: {}", replay_line(seed, name, path));
+    println!("  replay: {}", replay_line(seed, max_steps, name, path));
 }
 
 #[derive(Default)]
@@ -315,7 +371,7 @@ fn run_file(bin: &super::run::TestBinary, path: &str, run_seed: u64, opts: &SimO
                         let sweep = sweep_seed(run_seed, i, opts.seeds);
                         let seed = test_seed(sweep, &full_name);
                         let bin_path = &bin.path;
-                        scope.spawn(move || (sweep, run_one(bin_path, index, seed)))
+                        scope.spawn(move || (sweep, run_one(bin_path, index, seed, opts.max_steps)))
                     })
                     .collect();
                 handles.into_iter().map(|h| h.join().expect("sim run thread")).collect()
@@ -347,7 +403,7 @@ fn run_file(bin: &super::run::TestBinary, path: &str, run_seed: u64, opts: &SimO
             tally.failed += 1;
             println!();
             for (sweep, run) in distinct.values() {
-                print_failure(name, run, *sweep, path);
+                print_failure(name, run, *sweep, opts.max_steps, path);
                 println!();
             }
         }
@@ -378,6 +434,9 @@ mod tests {
 
     #[test]
     fn replay_names_survive_a_shell() {
-        assert_eq!(shell_quote(r#"a "b" $c"#), r#""a \"b\" \$c""#);
+        assert_eq!(shell_quote(r#"a "b" $c it!s"#), r#"'a "b" $c it!s'"#);
+        assert_eq!(shell_quote("it's"), r#"'it'\''s'"#);
+        assert_eq!(shell_quote("tests/race.rk"), "tests/race.rk");
+        assert_eq!(shell_quote("sp ace/race.rk"), "'sp ace/race.rk'");
     }
 }

@@ -193,21 +193,25 @@ static void slot_take(void) {
     slot_held = 1;
 }
 
-static void slot_give(void) {
-    if (!slot_held) return;
+// Returns 1 when a slot was given back.
+static int slot_give(void) {
+    if (!slot_held) return 0;
     slot_held = 0;
     pthread_mutex_lock(&slot_lock);
     slots_free++;
     rask_task_cond_signal(&slot_freed);
     pthread_mutex_unlock(&slot_lock);
+    return 1;
 }
 
 // A task blocked in `join` isn't running anything, so it gives its slot up for
 // the duration — without which `workers: 1` could not run a task that joins
 // another. The green build answers the same case by starting a replacement
-// worker.
-void rask_task_slot_release(void) { slot_give(); }
-void rask_task_slot_retake(void) { slot_take(); }
+// worker. Only a slot that was given up is taken back: the block's own body
+// isn't a task and never held one, and taking one after its join starved a
+// task of the only slot (#1346).
+int  rask_task_slot_release(void) { return slot_give(); }
+void rask_task_slot_retake(int released) { if (released) slot_take(); }
 
 // Run one task body to completion and record how it ended. Shared by the
 // one-thread-per-spawn path below and by the pool workers in threadpool.c,
@@ -267,7 +271,7 @@ void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
     // is what "finished" means for it.
     if (state->pooled) {
         pthread_mutex_lock(&state->report_lock);
-        pthread_cond_broadcast(&state->done_cond);
+        rask_task_cond_broadcast(&state->done_cond);
         pthread_mutex_unlock(&state->report_lock);
     }
 
@@ -310,6 +314,11 @@ RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
 #endif
     int err = pthread_create(&state->thread, NULL, task_thread_entry, entry);
     if (err != 0) {
+#ifdef RASK_SIM
+        // The task was registered as runnable; with no thread behind it the
+        // baton would be handed to nobody.
+        if (state->sim) rask_sim_task_abandon(state->sim);
+#endif
         rask_free(entry);
         state_release(state);
         state_release(state); // drop both refs
@@ -330,13 +339,13 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
     RaskTaskState *state = h->state;
     // Waiting isn't running: a joiner that kept its slot would leave
     // `workers: 1` with nothing free to run the task it waits for.
-    rask_task_slot_release();
+    int released = rask_task_slot_release();
     if (state->pooled) {
         // No thread of its own — wait for the worker to finish this job.
         pthread_mutex_lock(&state->report_lock);
         while (atomic_load_explicit(&state->status, memory_order_acquire)
                == RASK_TASK_RUNNING) {
-            pthread_cond_wait(&state->done_cond, &state->report_lock);
+            rask_task_cond_wait(&state->done_cond, &state->report_lock, "a pooled job");
         }
         pthread_mutex_unlock(&state->report_lock);
     } else {
@@ -347,7 +356,7 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
 #endif
         pthread_join(state->thread, NULL);
     }
-    rask_task_slot_retake();
+    rask_task_slot_retake(released);
 
     int status = atomic_load_explicit(&state->status, memory_order_acquire);
     int64_t result;

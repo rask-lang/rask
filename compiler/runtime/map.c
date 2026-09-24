@@ -30,6 +30,10 @@ struct RaskMap {
     char      *vals;
     RaskHashFn hash_fn;
     RaskEqFn   eq_fn;
+    // The process seed when this map was made. A map places its keys with the
+    // seed it started with, so changing the process seed later can't strand
+    // them: sim sets it after the runtime has started (sim/SD1).
+    uint64_t   seed;
     // Value pointers currently lent out. Rehashing moves `vals`, so it is
     // refused while one is outstanding rather than left to dangle.
     int64_t    borrows;
@@ -48,9 +52,8 @@ struct RaskMap {
 // Mixed into bucket placement (see `map_bucket_hash`) so map layout — and
 // thus iteration order — differs run to run: an attacker can no longer
 // precompute FNV-1a collisions (HashDoS), and no program can come to depend
-// on the exact order, matching determinism/D7 for production. (sim's
-// replay-exact seeding is future work, once sim mode itself exists;
-// rask_map_set_seed is the hook for it.)
+// on the exact order, matching determinism/D7 for production. Under sim the
+// seed comes from the run's seed instead, through rask_map_set_seed.
 //
 // Not mixed into the hash *functions*: those are the public `.hash()`, which
 // has to answer the same number for the same content every run (#744).
@@ -188,7 +191,7 @@ static void map_alloc_tables(RaskMap *m, int64_t cap) {
 // has to reach the low bits, and this is the same mixer the seed itself is
 // built with.
 static uint64_t map_bucket_hash(const RaskMap *m, const void *key) {
-    return map_seed_splitmix64(m->hash_fn(key, m->key_size) ^ map_seed());
+    return map_seed_splitmix64(m->hash_fn(key, m->key_size) ^ m->seed);
 }
 
 static int64_t map_find_slot(const RaskMap *m, const void *key) {
@@ -302,6 +305,7 @@ static RaskMap *map_new_custom_cap(int64_t key_size, int64_t val_size,
         .val_size = val_size,
         .hash_fn = hash,
         .eq_fn = eq,
+        .seed = map_seed(),
         .displaced = NULL,
     };
     map_alloc_tables(m, cap > 0 ? cap : MAP_INITIAL_CAP);

@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Under sim a ThreadPool is the same pool as in production: its worker count
+// holds, and a job that waits on a job queued behind it deadlocks. Sim used
+// to give every job its own task, so `workers: 1` ran four jobs at once.
+
+import thread.ThreadPool
+import sync.Atomic
+import sync.SeqCst
+
+const IN_FLIGHT: Atomic<i64> = Atomic<i64>.new(0)
+const PEAK: Atomic<i64> = Atomic<i64>.new(0)
+
+func body() -> i64 {
+    let now = IN_FLIGHT.fetch_add(1, SeqCst) + 1
+    if now > PEAK.load(SeqCst) {
+        PEAK.store(now, SeqCst)
+    }
+    IN_FLIGHT.fetch_sub(1, SeqCst)
+    return 1
+}
+
+test "a pool of one runs one job at a time" {
+    using ThreadPool(workers: 1) {
+        mut handles = Vec.new()
+        for i in 0..4 {
+            handles.push(ThreadPool.spawn(|| { return body() }))
+        }
+        for h in handles {
+            let _ = h.join()
+        }
+        assert PEAK.load(SeqCst) == 1
+    }
+}
+
+test "a job waiting on the job behind it" {
+    using ThreadPool(workers: 1) {
+        let (tx, rx) = Channel<i64>.buffered(1)
+        let a = ThreadPool.spawn(|| { return rx.receive()! })
+        let b = ThreadPool.spawn(|| {
+            let _ = tx.send(1)
+            return 0
+        })
+        let _ = a.join()
+        let _ = b.join()
+    }
+}

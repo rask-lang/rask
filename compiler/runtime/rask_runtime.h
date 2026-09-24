@@ -1222,8 +1222,8 @@ int8_t rask_task_cancelled(void);
 // while nothing installs one. See thread.c.
 void rask_task_slots_install(int64_t n);
 void rask_task_slots_clear(void);
-void rask_task_slot_release(void);
-void rask_task_slot_retake(void);
+int  rask_task_slot_release(void);
+void rask_task_slot_retake(int released);
 
 // Raise the cancel flag without joining. `rask_task_cancel` does both, and a
 // caller that wants the outcome shape (RASK_JOIN_CANCELLED and the value) needs

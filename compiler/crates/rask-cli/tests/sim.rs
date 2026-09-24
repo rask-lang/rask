@@ -179,6 +179,42 @@ fn output_that_looks_like_a_result_is_output() {
 }
 
 #[test]
+fn module_constants_are_built_inside_sim() {
+    let (a, code) = sim(&["--seed", "3", "constants.rk"]);
+    assert_eq!(code, 1, "{a}");
+    assert!(a.contains("✓ a constant map finds its keys"), "{a}");
+    assert!(a.contains("== -1 (left: "), "{a}");
+    let (b, _) = sim(&["--seed", "3", "constants.rk"]);
+    assert_eq!(a, b, "a constant read a value the seed doesn't decide");
+}
+
+#[test]
+fn a_thread_pool_keeps_its_worker_count() {
+    let (out, code) = sim(&["--seed", "1", "--seeds", "20", "pool.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("✓ a pool of one runs one job at a time"), "{out}");
+    assert!(out.contains("FAIL: a job waiting on the job behind it"), "{out}");
+    assert!(out.contains("pool worker        waiting on channel receive"), "{out}");
+}
+
+#[test]
+fn a_join_outside_a_task_leaves_the_slots_alone() {
+    let (out, code) = sim(&["--seed", "1", "--seeds", "100", "join_slot.rk"]);
+    assert_eq!(code, 0, "{out}");
+}
+
+#[test]
+fn a_spinning_test_fails_at_its_step_budget_and_replays() {
+    let (out, code) = sim(&["--seed", "4", "--max-steps", "5000", "spin.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("the test used its 5000 scheduling steps"), "{out}");
+    assert!(out.contains("task 0 (main)      running"), "{out}");
+    assert!(out.contains("step 5001,"), "{out}");
+    let replay = line_with(&out, "replay: ").trim().trim_start_matches("replay: ");
+    assert_eq!(replay, "rask test --sim --seed 4 --max-steps 5000 -f 'spins on a flag nobody sets' spin.rk");
+}
+
+#[test]
 fn seed_search_flags_need_sim() {
     let out = Command::new(rask_binary())
         .args(["test", "--seeds", "5", "race.rk"])
