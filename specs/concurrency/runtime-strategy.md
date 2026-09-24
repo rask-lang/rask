@@ -67,11 +67,13 @@ All C files live in `compiler/runtime/`.
 
 On Linux, `using Multitasking(workers: n)` runs tasks as stackful fibers on n worker threads. A task that waits in a join, a channel operation, a `Shared` lock or a sleep parks and gives its worker to another task. `tests/soak_gate.sh` holds five programs to `workers + 1` threads, including a 2^14-task join tree and a producer/consumer pair on one worker; `tests/tsan_gate.sh` runs the concurrency suite under ThreadSanitizer with every switch annotated.
 
+Sockets park too. Every socket the runtime opens is non-blocking, and a read, write, accept or connect that would block waits in `rask_io_wait`: a task parks on the fd, one idle worker sleeps in `epoll_wait` as the poller, and a ready socket wakes its task. `tests/soak/s_idle_connections.rk` holds a hundred idle connections on two workers within budget.
+
 A deadlock ends the process instead of hanging it. Once every task is parked, nothing is queued or sleeping on a timer, and every thread outside the scheduler is itself blocked in a runtime wait, nothing can wake anyone. After a second of that, the runtime prints which task waits on what and exits 101.
 
 Not yet:
 
-- **I/O parking.** Stdlib I/O still makes the blocking syscall, so a task blocked on a socket holds its worker. The reactor engines (`io_epoll_engine.c`, `io_uring_engine.c`) exist and workers poll them; nothing submits to them yet.
+- **File and stdin parking.** Sockets park (see above); a read of a file, a pipe or stdin still makes the blocking syscall and holds its worker for as long as it takes. epoll can't watch a regular file, so this waits on io_uring, which is also what `conc.runtime/R1.1` wants for disk I/O.
 - **Worker compensation for blocking FFI** (`conc.phase-b/FFI3`) — not built, so a long C call holds its worker too.
 - **Preemption** (`conc.runtime/P1-P3`). Switching is cooperative: a task that computes without waiting keeps its worker until it finishes.
 - **macOS.** `green.c` needs a kqueue backend; until then macOS runs `green_threads.c`. The aarch64 switch is assembled for both ELF and Mach-O and has not run yet.

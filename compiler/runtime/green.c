@@ -10,7 +10,13 @@
 // means n OS threads however many tasks are waiting.
 //
 // Worker loop: resumed fibers (inbox) → own deque → steal → global queue →
-// timers and I/O → sleep.
+// timers and sockets → sleep.
+//
+// A task that waits on a socket parks the same way (`rask_io_wait`): the fd
+// goes into one epoll set, and whichever idle worker is the poller sleeps in
+// `epoll_wait` instead of on its condvar, so a ready socket wakes its task
+// without a thread of its own. The poller is woken for other work through an
+// eventfd in the same set.
 //
 // A task that has started stays on the worker that started it. Only tasks that
 // haven't run yet are stolen. Moving a running fiber to another thread would
@@ -28,9 +34,12 @@
 // Handles are refcounted: one for the handle holder, one for the scheduler.
 
 #include "fiber.h"
-#include "io_engine.h"
 #include "rask_runtime.h"
 #include "sim.h"
+
+#include <poll.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -252,6 +261,9 @@ typedef struct {
     pthread_mutex_t sleep_lock;
     pthread_cond_t  sleep_cond;
     atomic_int      sleeping;
+    // Sleeping in `epoll_wait` as the poller, not on `sleep_cond`: a wake
+    // is an eventfd write then.
+    atomic_int      polling;
     // Fibers this worker has switched to. Only its own thread writes it; the
     // deadlock check reads it to see whether anything ran.
     atomic_long     runs;
@@ -262,8 +274,15 @@ struct GreenScheduler {
     Worker          *workers;
     int              worker_count;
     TaskQueue        global;
-    RaskIoEngine    *io;
     atomic_int       active_tasks;
+
+    // Sockets tasks are parked on (edge-triggered, both directions), the
+    // eventfd that wakes the poller, whether some worker holds the poller
+    // role, and how many tasks are parked on a socket.
+    int              epfd;
+    int              wakefd;
+    atomic_int       poller_taken;
+    atomic_int       io_waiters;
     atomic_int       shutdown;
 
     // Sleeping tasks, unsorted: a wake is a scan, and a program that sleeps
@@ -310,7 +329,13 @@ static int64_t now_ns(void) {
 }
 
 static void worker_wake(Worker *w) {
-    if (!atomic_load_explicit(&w->sleeping, memory_order_acquire)) return;
+    if (!atomic_load_explicit(&w->sleeping, memory_order_seq_cst)) return;
+    if (atomic_load_explicit(&w->polling, memory_order_seq_cst)) {
+        uint64_t one = 1;
+        ssize_t ignored = write(w->sched->wakefd, &one, sizeof(one));
+        (void)ignored;
+        return;
+    }
     pthread_mutex_lock(&w->sleep_lock);
     pthread_cond_signal(&w->sleep_cond);
     pthread_mutex_unlock(&w->sleep_lock);
@@ -606,8 +631,9 @@ static void install_overflow_handler(void) {
 // CPU and comes out of `pthread_cond_wait`. On a loaded machine, or under
 // valgrind, that can take a while.
 //
-// Fibers don't park on I/O yet: a task in a blocking read keeps its worker
-// busy, so it can never be mistaken for stuck.
+// A task parked on a socket rules a deadlock out, since the other end can wake
+// it. A task in a blocking read of anything else keeps its worker busy, so it
+// can't be mistaken for stuck either.
 
 #define DEADLOCK_CONFIRM_NS (1000LL * 1000000LL)
 
@@ -616,6 +642,8 @@ static void report_waits(FILE *out);
 
 static int nothing_can_move(GreenScheduler *s, Worker *self) {
     if (atomic_load_explicit(&s->active_tasks, memory_order_seq_cst) == 0) return 0;
+    // A socket can be woken from outside the program.
+    if (atomic_load_explicit(&s->io_waiters, memory_order_seq_cst) != 0) return 0;
     if (atomic_load_explicit(&s->timer_count, memory_order_seq_cst) != 0) return 0;
     if (rask_outside_running() != 0) return 0;
     if (atomic_load_explicit(&s->global.len, memory_order_seq_cst) != 0) return 0;
@@ -669,6 +697,47 @@ static void check_deadlock(GreenScheduler *s, Worker *self) {
     }
 }
 
+// ─── Sockets ────────────────────────────────────────────────
+//
+// A task waiting on a socket parks on a key made from the fd and the
+// direction. Fds sit in one epoll set, edge-triggered for both directions, and
+// any event on one wakes both of its keys; a waiter re-checks with `poll` and
+// parks again if the event wasn't for it. Edge-triggered is safe because the
+// waiter checks readiness itself after becoming a waiter, so an edge that came
+// before it doesn't need to come again.
+
+#define WAKE_TAG UINT64_MAX
+
+// Not an address: user space never has the top bits set, so these can't
+// collide with a condvar or lock key in the wait table.
+static const void *io_key(int fd, int want_write) {
+    return (const void *)(uintptr_t)(0xF000000000000000ULL |
+                                     ((uint64_t)(uint32_t)fd << 1) |
+                                     (uint64_t)(want_write != 0));
+}
+
+// Wake whatever waits on the sockets that became ready. Returns how many
+// socket events there were.
+static int netpoll(GreenScheduler *s, int timeout_ms) {
+    if (s->epfd < 0) return 0;
+    struct epoll_event evs[64];
+    int n = epoll_wait(s->epfd, evs, 64, timeout_ms);
+    int fired = 0;
+    for (int i = 0; i < n; i++) {
+        if (evs[i].data.u64 == WAKE_TAG) {
+            uint64_t drained;
+            ssize_t ignored = read(s->wakefd, &drained, sizeof(drained));
+            (void)ignored;
+            continue;
+        }
+        int fd = (int)evs[i].data.u64;
+        rask_fiber_notify(io_key(fd, 0), 1);
+        rask_fiber_notify(io_key(fd, 1), 1);
+        fired++;
+    }
+    return fired;
+}
+
 // ─── Worker loop ────────────────────────────────────────────
 
 static GreenTask *find_work(GreenScheduler *s, Worker *w) {
@@ -714,12 +783,9 @@ static void *worker_entry(void *arg) {
 
         int64_t next_timer = fire_timers(s);
 
-        if (s->io) {
-            int fired = s->io->poll(s->io, 0);
-            if (fired > 0) {
-                idle_spins = 0;
-                continue;
-            }
+        if (netpoll(s, 0) > 0) {
+            idle_spins = 0;
+            continue;
         }
 
         // No work — spin briefly before sleeping
@@ -731,12 +797,32 @@ static void *worker_entry(void *arg) {
 
         check_deadlock(s, w);
 
-        // Sleep until woken, or at most 1ms (I/O, timers), or the next timer.
+        // Sleep until woken, or at most 1ms, or the next timer.
         int64_t wait_ns = 1000000;
         if (next_timer) {
             int64_t until = next_timer - now_ns();
             if (until < wait_ns) wait_ns = until > 0 ? until : 0;
         }
+
+        // One sleeping worker is the poller: it sleeps in epoll_wait, so a
+        // socket becoming ready wakes its task at once. `polling` goes up
+        // before `sleeping`, so a waker that sees `sleeping` knows which way
+        // to wake it.
+        if (s->epfd >= 0 && !atomic_exchange_explicit(&s->poller_taken, 1, memory_order_acq_rel)) {
+            atomic_store_explicit(&w->polling, 1, memory_order_seq_cst);
+            atomic_store_explicit(&w->sleeping, 1, memory_order_seq_cst);
+            if (atomic_load_explicit(&w->inbox.len, memory_order_seq_cst) == 0 &&
+                atomic_load_explicit(&s->global.len, memory_order_seq_cst) == 0 &&
+                !atomic_load_explicit(&s->shutdown, memory_order_acquire)) {
+                netpoll(s, (int)((wait_ns + 999999) / 1000000));
+            }
+            atomic_store_explicit(&w->sleeping, 0, memory_order_release);
+            atomic_store_explicit(&w->polling, 0, memory_order_release);
+            atomic_store_explicit(&s->poller_taken, 0, memory_order_release);
+            idle_spins = 0;
+            continue;
+        }
+
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
         ts.tv_nsec += wait_ns;
@@ -808,12 +894,26 @@ void rask_runtime_init(int64_t worker_count) {
         pthread_mutex_init(&w->sleep_lock, NULL);
         pthread_cond_init(&w->sleep_cond, NULL);
         atomic_init(&w->sleeping, 0);
+        atomic_init(&w->polling, 0);
         atomic_init(&w->runs, 0);
     }
 
-    // Create I/O engine
-    s->io = rask_io_create();
-    // NULL is acceptable — scheduler works without I/O, tasks just can't yield on I/O
+    // Without epoll (or an eventfd to wake the poller) a task waiting on a
+    // socket blocks its worker instead of parking; everything else still works.
+    atomic_init(&s->poller_taken, 0);
+    atomic_init(&s->io_waiters, 0);
+    s->epfd = epoll_create1(EPOLL_CLOEXEC);
+    s->wakefd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (s->epfd >= 0 && s->wakefd >= 0) {
+        struct epoll_event ev = { .events = EPOLLIN, .data.u64 = WAKE_TAG };
+        if (epoll_ctl(s->epfd, EPOLL_CTL_ADD, s->wakefd, &ev) < 0) {
+            close(s->epfd);
+            s->epfd = -1;
+        }
+    } else if (s->epfd >= 0) {
+        close(s->epfd);
+        s->epfd = -1;
+    }
 
     pthread_once(&overflow_once, install_overflow_handler);
 
@@ -851,8 +951,13 @@ void rask_runtime_shutdown(void) {
     pthread_mutex_unlock(&s->done_lock);
     rask_thread_wait_end();
 
-    // Signal shutdown and wake all workers
+    // Signal shutdown and wake all workers, the poller through its eventfd.
     atomic_store_explicit(&s->shutdown, 1, memory_order_release);
+    if (s->wakefd >= 0) {
+        uint64_t one = 1;
+        ssize_t ignored = write(s->wakefd, &one, sizeof(one));
+        (void)ignored;
+    }
     for (int i = 0; i < s->worker_count; i++) {
         Worker *w = &s->workers[i];
         pthread_mutex_lock(&w->sleep_lock);
@@ -864,7 +969,8 @@ void rask_runtime_shutdown(void) {
     }
 
     // Cleanup
-    if (s->io) s->io->destroy(s->io);
+    if (s->epfd >= 0) close(s->epfd);
+    if (s->wakefd >= 0) close(s->wakefd);
     for (int i = 0; i < s->worker_count; i++) {
         Worker *w = &s->workers[i];
         tq_destroy(&w->inbox);
@@ -1018,6 +1124,52 @@ void rask_fiber_rwlock_rdlock(pthread_rwlock_t *l, const char *what) {
 }
 void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l, const char *what) {
     park_until(l, try_wr, l, what);
+}
+
+// ─── Waiting on a socket ────────────────────────────────────
+
+typedef struct {
+    int   fd;
+    short events;
+} IoWait;
+
+static int io_ready(void *arg) {
+    IoWait *w = (IoWait *)arg;
+    struct pollfd p = { .fd = w->fd, .events = w->events };
+    // An error or a hang-up counts: the syscall the caller retries reports it.
+    return poll(&p, 1, 0) > 0;
+}
+
+static void block_until_ready(int fd, short events) {
+    struct pollfd p = { .fd = fd, .events = events };
+    while (poll(&p, 1, -1) < 0 && errno == EINTR) {}
+}
+
+// Wait until a non-blocking socket can be read (or accepted on) or written.
+// On a fiber this parks and gives the worker to other tasks; anywhere else it
+// blocks the thread in poll.
+void rask_io_wait(int64_t fd, int64_t want_write) {
+    GreenTask *t = tl_current_task;
+    GreenScheduler *s = g_sched;
+    short events = want_write ? POLLOUT : POLLIN;
+    if (!t || !s || s->epfd < 0) {
+        block_until_ready((int)fd, events);
+        return;
+    }
+    struct epoll_event ev = {
+        .events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET,
+        .data.u64 = (uint64_t)(uint32_t)fd,
+    };
+    if (epoll_ctl(s->epfd, EPOLL_CTL_ADD, (int)fd, &ev) < 0 && errno != EEXIST) {
+        // Not something epoll can watch.
+        block_until_ready((int)fd, events);
+        return;
+    }
+    IoWait w = { .fd = (int)fd, .events = events };
+    atomic_fetch_add_explicit(&s->io_waiters, 1, memory_order_seq_cst);
+    park_until(io_key((int)fd, (int)want_write), io_ready, &w,
+               want_write ? "a socket to take a write" : "a socket to be readable");
+    atomic_fetch_sub_explicit(&s->io_waiters, 1, memory_order_seq_cst);
 }
 
 // Every parked task and what it waits on, for the deadlock report.

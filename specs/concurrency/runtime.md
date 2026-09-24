@@ -505,50 +505,20 @@ The `Reactor` abstracts over several kernel APIs. The runtime picks the best ava
 
 ### Reactor Integration with Scheduler (R2)
 
-**Worker loop integration:**
+**Workers poll; there is no reactor thread.** When a worker runs out of work
+it checks the poller without blocking, and one sleeping worker at a time *is*
+the poller: it sleeps in `epoll_wait` instead of on its condvar, with an
+eventfd in the same set so other work can wake it. A socket that becomes ready
+wakes its task straight away, and no thread exists just to watch sockets.
 
-Workers poll reactor when no local work is available (S2 step 4). Reactor has dedicated thread OR workers poll in turns:
+A woken task goes back to the worker it lives on (S3a), like any other wake.
 
-**Option chosen: Dedicated reactor thread** for consistent I/O latency:
-
-```rust
-fn reactor_loop(reactor: Arc<Reactor>) {
-    loop {
-        // Block until I/O ready or timeout
-        let events = reactor.poller.poll(timeout: 1ms);
-
-        for event in events {
-            let fd = event.fd();
-            if let Some(waker) = reactor.registrations.get(fd) {
-                waker.wake();  // Pushes task to ready queue
-            }
-        }
-
-        if reactor.should_shutdown() {
-            break;
-        }
-    }
-}
-```
-
-**Waker implementation:**
-
-```rust
-impl Wake for TaskWaker {
-    fn wake(self: Arc<Self>) {
-        self.task.state.store(Ready, SeqCst);
-
-        // Push to random worker's queue (load balance)
-        let worker = pick_random_worker();
-        worker.local_queue.push(self.task.clone());
-
-        // Wake worker if idle (via eventfd)
-        worker.notify();
-    }
-}
-```
-
-**Cost:** ~500ns to wake task (atomic store + queue push + eventfd write)
+I first chose a dedicated reactor thread for steady latency. It costs a thread
+on top of the workers, which is the one number v0.5 holds the runtime to
+(OS threads never exceed the workers plus the thread that opened the block),
+and its waker pushed a woken task to a random worker, which S3a rules out.
+With a worker as the poller the latency is the same, because the poller is
+exactly the thread that would otherwise be asleep.
 
 ### Registration Protocol (R3)
 

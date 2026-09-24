@@ -34,12 +34,12 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 560 green, 6 registered red | `tests/differential.sh` |
+| Suite programs agreeing on both backends | 561 green, 6 registered red | `tests/differential.sh` |
 | Programs that leak | 5, holding 7 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
 | Programs memcheck finds an error in | 0 of 557 | `tests/memcheck_gate.sh` |
 | Concurrency files TSan reports a race in | 0 of 72 | `tests/tsan_gate.sh` |
-| Soak programs within their thread budget | 5 of 5 | `tests/soak_gate.sh` |
+| Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
 | Open bugs | 39 of 85 open issues | issue search |
@@ -325,13 +325,15 @@ so the deterministic tests run the code that ships.
    5 programs in budget on the thread-per-join runtime, and `tests/tsan_gate.sh`
    was clean. Both run in CI as `gates-concurrency`.
 2. Cooperative fibers. **Done on Linux:** a task parks in join, channel, lock
-   and sleep; the join helper threads are gone; the soak holds 5 of 5 and TSan
-   is clean with every switch annotated. A started fiber stays on its worker
+   and sleep, and on a socket (one idle worker sleeps in `epoll_wait` as the
+   poller); the join helper threads are gone; the soak holds 6 of 6, including
+   a hundred idle connections on two workers, and TSan is clean with every
+   switch annotated. A started fiber stays on its worker
    (`conc.runtime/S3a`). The dead poll-function path is deleted
    ([#1336](https://github.com/rask-lang/rask/issues/1336)). Still to go in
-   this step: I/O parking (stdlib I/O still blocks the worker), and macOS,
-   which needs a kqueue backend before `green_threads.c` can go. The aarch64 switch
-   is written and assembles; nothing has run it yet.
+   this step: macOS, which needs a kqueue backend before `green_threads.c` can
+   go. Files and stdin still block their worker (that waits on io_uring). The
+   aarch64 switch is written and assembles; nothing has run it yet.
 3. Sim on fibers, replacing the baton.
 4. Preemption last. Codegen puts a flag check in every function prologue, and
    a loop that never calls anything gets a signal instead (`conc.runtime/P2`),

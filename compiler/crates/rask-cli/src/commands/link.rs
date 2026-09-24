@@ -16,11 +16,9 @@ const PTHREAD_SOURCES: &[&str] = &[
     "sync.c",
 ];
 
-/// Linux-only: green scheduler + I/O backends (epoll, io_uring).
+/// Linux-only: the green scheduler, whose poller is epoll.
 const LINUX_SOURCES: &[&str] = &[
     "green.c",
-    "io_uring_engine.c",
-    "io_epoll_engine.c",
 ];
 
 /// Every other `.c` in the runtime directory — the portable set, read from the

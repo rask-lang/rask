@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A hundred open connections on two workers, every handler blocked in a read.
+//
+// Each client connects, sleeps, then writes five bytes and closes. While they
+// sleep, the server has a task per connection waiting on its socket. A read
+// that holds its worker leaves nothing to run the clients once two handlers
+// are waiting, so this hangs. A read that parks costs a task, not a thread.
+//
+// soak-expect: 500
+
+import async.{spawn, TaskGroup}
+import net
+import time
+import time.Duration
+
+func main() {
+    using Multitasking(workers: 2) {
+        let listener = net.tcp_listen("127.0.0.1:0") catch e => {
+            println("listen failed")
+            return
+        }
+        let addr = listener.local_addr()
+        let n = 100
+
+        let server = spawn(|| {
+            let handlers = TaskGroup<i64>.new()
+            ensure handlers.detach()
+            mut i = 0
+            while i < n {
+                let conn = listener.accept() catch e => { return -1 }
+                handlers.spawn(|| {
+                    let text = conn.read_text() catch e => { return -1 }
+                    return text.len().wrap<i64>()
+                })
+                i += 1
+            }
+            mut total: i64 = 0
+            for r in handlers.join_all() {
+                if r is i64 as v {
+                    total += v
+                }
+            }
+            return total
+        })
+        ensure server.detach()
+
+        let clients = TaskGroup<i64>.new()
+        ensure clients.detach()
+        mut k = 0
+        while k < n {
+            clients.spawn(|| {
+                let conn = net.tcp_connect(addr) catch e => { return -1 }
+                let _ = time.sleep(Duration.millis(50))
+                conn.write_text("hello") catch e => { return -1 }
+                let _ = conn.close()
+                return 0
+            })
+            k += 1
+        }
+        let _ = clients.join_all()
+        let total = server.join() catch e => -1
+        println("{total}")
+    }
+}

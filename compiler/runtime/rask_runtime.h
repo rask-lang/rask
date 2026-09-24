@@ -1200,6 +1200,10 @@ void    rask_outside_thread_exit(void);
 int64_t rask_outside_running(void);
 int64_t rask_outside_progress(void);
 
+// Wait until a non-blocking socket is readable (or has a connection to
+// accept), or writable. A green task parks; any other caller blocks in poll.
+void rask_io_wait(int64_t fd, int64_t want_write);
+
 // A `TaskGroup<T>`'s handle list, in spawn order (thread.c). The join and
 // detach loops are Rask, in stdlib/async.rk.
 int64_t rask_task_group_new(void);

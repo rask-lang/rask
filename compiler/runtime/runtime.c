@@ -492,18 +492,49 @@ void rask_check_fail_cmp_f32(float left, float right,
 // Every fd read, write and close goes through these rather than the syscall:
 // under sim an fd may be one of sim's in-memory sockets (sim_net.c), which the
 // kernel has never heard of.
+//
+// Sockets this runtime opens are non-blocking (`sock_nonblocking`), so a read
+// or write that would block comes back EAGAIN and waits in `rask_io_wait`: a
+// green task parks there and its worker runs another, anything else blocks in
+// poll. A file or a pipe is blocking and never says EAGAIN, so it reads as
+// before.
+static void sock_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static int would_block(void) {
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
 static ssize_t sock_read(int64_t fd, void *buf, size_t n) {
 #ifdef RASK_SIM
     if (rask_sim_net_owns(fd)) return (ssize_t)rask_sim_net_read(fd, buf, n);
 #endif
-    return read((int)fd, buf, n);
+    for (;;) {
+        ssize_t got = read((int)fd, buf, n);
+        if (got >= 0 || !would_block()) return got;
+        rask_io_wait(fd, 0);
+    }
 }
 
+// All of it, as a blocking write would: a non-blocking one can stop part way.
 static ssize_t sock_write(int64_t fd, const void *buf, size_t n) {
 #ifdef RASK_SIM
     if (rask_sim_net_owns(fd)) return (ssize_t)rask_sim_net_write(fd, buf, n);
 #endif
-    return write((int)fd, buf, n);
+    size_t done = 0;
+    while (done < n) {
+        ssize_t put = write((int)fd, (const char *)buf + done, n - done);
+        if (put >= 0) {
+            done += (size_t)put;
+        } else if (would_block()) {
+            rask_io_wait(fd, 1);
+        } else {
+            return done > 0 ? (ssize_t)done : -1;
+        }
+    }
+    return (ssize_t)done;
 }
 
 static int sock_close(int64_t fd) {
@@ -524,7 +555,16 @@ static int sock_accept(int64_t listen_fd) {
 #ifdef RASK_SIM
     if (rask_sim_net_owns(listen_fd)) return (int)rask_sim_net_accept(listen_fd);
 #endif
-    return accept((int)listen_fd, NULL, NULL);
+    for (;;) {
+        int client = accept((int)listen_fd, NULL, NULL);
+        if (client >= 0) {
+            // Linux doesn't pass O_NONBLOCK on to an accepted socket.
+            sock_nonblocking(client);
+            return client;
+        }
+        if (!would_block()) return -1;
+        rask_io_wait(listen_fd, 0);
+    }
 }
 
 int64_t rask_io_open(const char *path, int64_t flags, int64_t mode) {
@@ -1021,6 +1061,7 @@ int64_t rask_net_tcp_listen(const RaskStr *addr) {
 
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    sock_nonblocking(fd);
 
     if (bind(fd, result->ai_addr, result->ai_addrlen) < 0) {
         close(fd);
@@ -1076,10 +1117,26 @@ static int64_t net_connect_fd(const char *host, const char *port_str) {
         return -1;
     }
 
+    // Non-blocking, so a slow handshake parks a task instead of its worker:
+    // EINPROGRESS, wait for writable, then SO_ERROR says how it went.
+    sock_nonblocking(fd);
     if (connect(fd, result->ai_addr, result->ai_addrlen) < 0) {
-        close(fd);
-        freeaddrinfo(result);
-        return -1;
+        if (errno != EINPROGRESS) {
+            int saved = errno;
+            close(fd);
+            freeaddrinfo(result);
+            errno = saved;
+            return -1;
+        }
+        rask_io_wait(fd, 1);
+        int err = 0;
+        socklen_t len = sizeof(err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) {
+            close(fd);
+            freeaddrinfo(result);
+            errno = err ? err : errno;
+            return -1;
+        }
     }
 
     freeaddrinfo(result);
