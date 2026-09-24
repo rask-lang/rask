@@ -34,10 +34,12 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 539 green, 8 registered red | `tests/differential.sh` |
-| Programs that leak | 3, holding 4 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
-| Matrix cells clean on both backends | 281 of 283, 5 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 541 | `tests/memcheck_gate.sh` |
+| Suite programs agreeing on both backends | 555 green, 8 registered red | `tests/differential.sh` |
+| Programs that leak | 5, holding 8 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 0 of 557 | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 71 | `tests/tsan_gate.sh` |
+| Soak programs within their thread budget | 1 of 5 | `tests/soak_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
 | Open bugs | 39 of 85 open issues | issue search |
@@ -318,7 +320,11 @@ so the deterministic tests run the code that ships.
 
 ### Order
 
-1. Bench legs 2 and 3, failing on today's runtime.
+1. Bench legs 2 and 3, failing on today's runtime. Done: `tests/soak_gate.sh`
+   holds 1 of 5 programs in budget, the other four registered in
+   `tests/known_soak.txt`, and `tests/tsan_gate.sh` is clean on today's
+   threads. Both run in CI as `gates-concurrency`. The TSan switch
+   annotations and valgrind stack registration come with the switch itself.
 2. Cooperative fibers: a task switches only where it blocks (join, channel,
    lock, I/O). Delete the join helper threads, the unused poll-function spawn
    path ([#1336](https://github.com/rask-lang/rask/issues/1336)) and
