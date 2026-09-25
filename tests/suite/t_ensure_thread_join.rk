@@ -11,7 +11,7 @@
 // read the binding's type off the call's shape, `Type.method()`, and took the
 // handle for a `Thread`. `Thread_join` isn't a method that consumes anything,
 // so the join never told the ensure. It asks the checker for the type now,
-// which says `ThreadHandle`.
+// which says `Handle`.
 //
 // Runs many times: one double free can go unnoticed, a few hundred can't.
 

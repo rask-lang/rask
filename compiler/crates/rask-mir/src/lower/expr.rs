@@ -6214,7 +6214,7 @@ impl<'a> MirLowerer<'a> {
             // Qualified first. `Type_method` names exactly one function;
             // the bare method name is whatever else in the program shares it,
             // so consulting it first let an unrelated `join` answer for
-            // `ThreadHandle_join`.
+            // `Handle_join`.
             .sig_ret_ty(&qualified_name)
             .or_else(|| self.sig_ret_ty(&method))
             .unwrap_or_else(|| self.call_ret_ty(&qualified_name, expr.id)));

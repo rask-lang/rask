@@ -1453,8 +1453,8 @@ impl<'a> MirContext<'a> {
     /// them can (#1020).
     ///
     /// `lookup_raw_type` deliberately hands both over: reading the *head* of a
-    /// type is fine with an open argument. `TaskHandle<?>` is still a
-    /// `TaskHandle`, which is how the ownership checker knows a handle was
+    /// type is fine with an open argument. `Handle<?>` is still a
+    /// `Handle`, which is how the ownership checker knows a handle was
     /// dropped.
     pub fn lookup_node_type(&self, node_id: NodeId) -> Option<MirType> {
         let found = self.node_types.get(&node_id);
@@ -4022,7 +4022,7 @@ impl<'a> MirLowerer<'a> {
         // ensure receiver, the ensure is cancelled.
         let mut take_self_methods = std::collections::HashSet::new();
         // The stdlib's own `take self` methods, which are declarations in
-        // `stdlib/*.rk` rather than decls in this program. `TaskHandle.join`
+        // `stdlib/*.rk` rather than decls in this program. `Handle.join`
         // consumes its handle exactly the way a user method does, and not
         // knowing that let a registered `ensure h.detach()` run after it and
         // detach a handle that was already gone (#1216).
@@ -4061,9 +4061,9 @@ impl<'a> MirLowerer<'a> {
                         if m.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
                             take_self_methods
                                 .insert(format!("{}_{}", impl_decl.target_ty, m.name));
-                            // `extend TaskHandle<T>` gives a target of
-                            // `TaskHandle<T>`, and what a call site dispatches
-                            // through is `TaskHandle`. Without the base name
+                            // `extend Handle<T>` gives a target of
+                            // `Handle<T>`, and what a call site dispatches
+                            // through is `Handle`. Without the base name
                             // `join` wasn't known to consume its receiver, so a
                             // registered `ensure h.detach()` ran after it and
                             // detached a handle that was already gone (#1216).
@@ -6289,7 +6289,7 @@ pub fn builtin_method_prefix_for_name(name: &str) -> Option<&'static str> {
 /// Extract type prefix from a type annotation string.
 ///
 /// Handles generic types like "Vec<i64>" → "Vec", "Map<K,V>" → "Map",
-/// plain named types like "ThreadHandle" → "ThreadHandle",
+/// plain named types like "Handle" → "Handle",
 /// and module-qualified types like "time.Instant" → "Instant".
 /// Returns None for primitives (i64, f64, bool, string, etc.).
 pub fn type_prefix_from_str(s: &str) -> Option<String> {

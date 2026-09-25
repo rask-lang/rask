@@ -301,7 +301,7 @@ impl<'a> WarnContext<'a> {
                     }
                     self.in_thread_pool = was_in_tp;
                 } else {
-                    // `TaskGroup.spawn` — same as the free function.
+                    // `Thread.spawn` — same as the free function.
                     self.check_args_maybe_spawned(method == "spawn", args, warnings);
                 }
             }

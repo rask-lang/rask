@@ -632,14 +632,43 @@ pub const ALL_MODULE_KINDS: &[ModuleKind] = &[
     ModuleKind::Reflect,
 ];
 
-/// Inner state for a spawned thread/task handle.
-pub struct ThreadHandleInner {
-    /// OS thread join handle (used for raw thread::spawn)
+/// What every spawn form hands back (conc.async/H5).
+pub struct HandleInner {
     pub handle: Mutex<Option<std::thread::JoinHandle<Result<Value, String>>>>,
-    /// Result channel (used for tasks submitted to a thread pool)
-    pub receiver: Mutex<Option<mpsc::Receiver<Result<Value, String>>>>,
+    /// Raised by `cancel()`, read by `cancelled()` in the running body (CN1).
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
     /// ctrl.panic/F1: which task this is, for the detached-panic report.
     pub task_id: i64,
+}
+
+impl HandleInner {
+    pub fn new(
+        handle: std::thread::JoinHandle<Result<Value, String>>,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Arc<Self> {
+        Arc::new(HandleInner { handle: Mutex::new(Some(handle)), cancel, task_id: next_task_id() })
+    }
+}
+
+std::thread_local! {
+    static CURRENT_CANCEL: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run a spawned body with `flag` as what `cancelled()` reads. A pool worker
+/// runs many bodies, so the previous flag is put back after.
+pub fn with_cancel_flag<R>(flag: Arc<std::sync::atomic::AtomicBool>, f: impl FnOnce() -> R) -> R {
+    let prev = CURRENT_CANCEL.with(|c| c.replace(Some(flag)));
+    let out = f();
+    CURRENT_CANCEL.with(|c| *c.borrow_mut() = prev);
+    out
+}
+
+/// Whether whatever is running this thread has been asked to stop.
+pub fn cancel_requested() -> bool {
+    CURRENT_CANCEL.with(|c| {
+        c.borrow().as_ref().is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire))
+    })
 }
 
 /// Task ids, handed out in spawn order like the runtime's `rask_next_task_id`.
@@ -649,9 +678,9 @@ pub fn next_task_id() -> i64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-impl fmt::Debug for ThreadHandleInner {
+impl fmt::Debug for HandleInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ThreadHandleInner")
+        write!(f, "HandleInner")
     }
 }
 
@@ -970,16 +999,14 @@ pub enum Value {
         rack_id: u32,
         node: Arc<Mutex<StructData>>,
     },
-    /// Thread handle (from spawn_raw or spawn_thread)
-    ThreadHandle(Arc<ThreadHandleInner>),
+    /// From any spawn form (conc.async/H5)
+    Handle(Arc<HandleInner>),
     /// Channel sender
     Sender(Arc<Mutex<mpsc::SyncSender<Value>>>),
     /// Channel receiver
     Receiver(Arc<Mutex<mpsc::Receiver<Value>>>),
     /// Thread pool (from `using ThreadPool(workers: n) { }`)
     ThreadPool(Arc<ThreadPoolInner>),
-    /// Async task handle (from spawn() in using Multitasking)
-    TaskHandle(Arc<ThreadHandleInner>),
     /// Multitasking runtime (from `using Multitasking { }`)
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
@@ -1266,8 +1293,7 @@ impl Value {
             Value::Cell(_) => "Cell",
             Value::Rack(_) => "Rack",
             Value::Link { .. } => "Link",
-            Value::ThreadHandle(_) => "ThreadHandle",
-            Value::TaskHandle(_) => "TaskHandle",
+            Value::Handle(_) => "Handle",
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
@@ -1584,8 +1610,7 @@ impl fmt::Display for Value {
                 let guard = node.lock().unwrap();
                 write!(f, "{}", Value::Struct(Arc::new(Mutex::new(guard.clone()))))
             }
-            Value::ThreadHandle(_) => write!(f, "<ThreadHandle>"),
-            Value::TaskHandle(_) => write!(f, "<TaskHandle>"),
+            Value::Handle(_) => write!(f, "<Handle>"),
             Value::MultitaskingRuntime(r) => write!(f, "<Multitasking runtime workers={}>", r.workers),
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),

@@ -624,12 +624,11 @@ impl Interpreter {
     /// Clones function/enum/method tables and captured environment for spawned thread.
     /// Build the interpreter a task will run on, and hand it what it owns.
     ///
-    /// Six call sites make one of these — `spawn`, `spawn_raw`, the spawn
-    /// block, `Thread.spawn`, the pool submit, `TaskGroup.spawn` — and the
-    /// resource handover belongs to all of them, so it lives here rather than
-    /// at each. Patching one copy and not the others is how #882's first fix
-    /// changed nothing: two of the six looked identical and only the third
-    /// was reached.
+    /// Every spawn form makes one of these — `spawn`, `Thread.spawn`, the
+    /// pool submit — and the resource handover belongs to all of them, so it
+    /// lives here rather than at each. Patching one copy and not the others is
+    /// how #882's first fix changed nothing: two copies looked identical and
+    /// only one was reached.
     pub(crate) fn spawn_child(&mut self, captured_vars: HashMap<String, crate::env::Slot>) -> Self {
         let mut child = Interpreter::new();
         child.functions = self.functions.clone();
@@ -673,10 +672,21 @@ impl Interpreter {
         child
     }
 
+    /// Wrap a spawned body's thread as the `Handle` every spawn form returns,
+    /// tracked so an unconsumed one is reported (conc.async/H1).
+    fn hand_out_handle(
+        &mut self,
+        join_handle: std::thread::JoinHandle<Result<Value, String>>,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Value {
+        let inner = crate::value::HandleInner::new(join_handle, cancel);
+        let ptr = Arc::as_ptr(&inner) as usize;
+        self.resource_tracker.register_handle(ptr, "Handle", self.env.scope_depth());
+        Value::Handle(inner)
+    }
+
     /// Spawn an OS thread from a closure (Thread.spawn).
     pub(crate) fn spawn_os_thread(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        use crate::value::ThreadHandleInner;
-
         if args.is_empty() {
             return Err(RuntimeError::TypeError(
                 "Thread.spawn requires a closure argument".to_string(),
@@ -699,25 +709,12 @@ impl Interpreter {
                 let body = body.clone();
                 let captured = captured_env.clone();
                 let child = self.spawn_child(captured);
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let flag = cancel.clone();
                 let join_handle = crate::spawn_interp_thread(move || {
-                    let mut interp = child;
-                    match interp.eval_expr(&body) {
-                        Ok(val) => Ok(val),
-                        Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
-                            match diag.error {
-                                RuntimeError::Return(val) => Ok(val),
-                                _ => unreachable!("checked above"),
-                            }
-                        }
-                        Err(diag) => Err(interp.task_failure_message(&diag)),
-                    }
+                    crate::value::with_cancel_flag(flag, move || run_task_body(child, &body))
                 })?;
-
-                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
-                    handle: Mutex::new(Some(join_handle)),
-                    receiver: Mutex::new(None),
-                    task_id: crate::value::next_task_id(),
-                })))
+                Ok(self.hand_out_handle(join_handle, cancel))
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "Thread.spawn expects a closure, got {}",
@@ -727,10 +724,8 @@ impl Interpreter {
     }
 
     /// Spawn an async task from a closure (spawn() in using Multitasking).
-    /// In interpreter: uses OS thread but returns TaskHandle for type distinction.
+    /// In interpreter: uses OS thread.
     pub(crate) fn spawn_async_task(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        use crate::value::ThreadHandleInner;
-
         if args.is_empty() {
             return Err(RuntimeError::TypeError(
                 "spawn() requires a closure argument".to_string(),
@@ -765,34 +760,14 @@ impl Interpreter {
                 // The thread starts now; the body waits for one of the scope's
                 // task slots before running, so `workers: n` bounds how many
                 // run at once (#1111).
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let flag = cancel.clone();
                 let join_handle = crate::spawn_interp_thread(move || {
                     crate::with_task_slot(move || {
-                        let mut interp = child;
-                        match interp.eval_expr(&body) {
-                            Ok(val) => Ok(val),
-                            Err(diag) if matches!(diag.error, RuntimeError::Return(_)) => {
-                                match diag.error {
-                                    RuntimeError::Return(val) => Ok(val),
-                                    _ => unreachable!("checked above"),
-                                }
-                            }
-                            Err(diag) => Err(interp.task_failure_message(&diag)),
-                        }
+                        crate::value::with_cancel_flag(flag, move || run_task_body(child, &body))
                     })
                 })?;
-
-                // Return TaskHandle (not ThreadHandle) for type distinction
-                let handle_inner = Arc::new(ThreadHandleInner {
-                    handle: Mutex::new(Some(join_handle)),
-                    receiver: Mutex::new(None),
-                    task_id: crate::value::next_task_id(),
-                });
-
-                // Register handle for affine tracking (conc.async/H1)
-                let ptr = Arc::as_ptr(&handle_inner) as usize;
-                self.resource_tracker.register_handle(ptr, "TaskHandle", self.env.scope_depth());
-
-                Ok(Value::TaskHandle(handle_inner))
+                Ok(self.hand_out_handle(join_handle, cancel))
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "spawn() expects a closure, got {}",
@@ -803,7 +778,7 @@ impl Interpreter {
 
     /// Spawn a thread pool task from a closure (ThreadPool.spawn).
     pub(crate) fn spawn_pool_task(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        use crate::value::{PoolTask, ThreadHandleInner};
+        use crate::value::PoolTask;
 
         if args.is_empty() {
             return Err(RuntimeError::TypeError(
@@ -840,25 +815,13 @@ impl Interpreter {
                 let child = self.spawn_child(captured);
 
                 let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
+                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let flag = cancel.clone();
 
                 let task = PoolTask {
                     work: Box::new(move || {
-                        let mut interp = child;
-                        match interp.eval_expr(&body) {
-                            Ok(val) => {
-                                let _ = result_tx.send(Ok(val));
-                            }
-                            Err(diag) => match diag.error {
-                                RuntimeError::Return(val) => {
-                                    let _ = result_tx.send(Ok(val));
-                                }
-                                _ => {
-                                    let _ = result_tx.send(
-                                        Err(interp.task_failure_message(&diag)),
-                                    );
-                                }
-                            },
-                        }
+                        let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, &body));
+                        let _ = result_tx.send(ended);
                     }),
                 };
 
@@ -881,12 +844,7 @@ impl Interpreter {
                         .recv()
                         .unwrap_or(Err("thread pool task dropped".to_string()))
                 })?;
-
-                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
-                    handle: Mutex::new(Some(join_handle)),
-                    receiver: Mutex::new(None),
-                    task_id: crate::value::next_task_id(),
-                })))
+                Ok(self.hand_out_handle(join_handle, cancel))
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "ThreadPool.spawn expects a closure, got {}",
@@ -955,7 +913,7 @@ impl Interpreter {
                 let ptr = Arc::as_ptr(rc) as usize;
                 self.resource_tracker.lookup_file_id(ptr)
             }
-            Value::TaskHandle(h) | Value::ThreadHandle(h) => {
+            Value::Handle(h) => {
                 let ptr = Arc::as_ptr(h) as usize;
                 self.resource_tracker.lookup_handle_id(ptr)
             }
@@ -990,7 +948,7 @@ impl Interpreter {
                     child.resource_tracker.register_file_id(ptr, id);
                 }
             }
-            Value::TaskHandle(h) | Value::ThreadHandle(h) => {
+            Value::Handle(h) => {
                 let ptr = Arc::as_ptr(h) as usize;
                 if let Some(id) = self.resource_tracker.lookup_handle_id(ptr) {
                     move_one(self, id);
@@ -1057,7 +1015,7 @@ impl Interpreter {
                     self.resource_tracker.transfer_to_scope(id, new_depth, outward_only);
                 }
             }
-            Value::TaskHandle(h) | Value::ThreadHandle(h) => {
+            Value::Handle(h) => {
                 let ptr = Arc::as_ptr(h) as usize;
                 if let Some(id) = self.resource_tracker.lookup_handle_id(ptr) {
                     self.resource_tracker.transfer_to_scope(id, new_depth, outward_only);
@@ -1525,3 +1483,14 @@ impl std::fmt::Display for RuntimeDiagnostic {
 }
 
 impl std::error::Error for RuntimeDiagnostic {}
+
+/// Run a spawned closure's body to its result, or the message it failed with.
+fn run_task_body(mut interp: Interpreter, body: &rask_ast::expr::Expr) -> Result<Value, String> {
+    match interp.eval_expr(body) {
+        Ok(val) => Ok(val),
+        Err(diag) => match diag.error {
+            RuntimeError::Return(val) => Ok(val),
+            _ => Err(interp.task_failure_message(&diag)),
+        },
+    }
+}

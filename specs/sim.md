@@ -173,7 +173,7 @@ FAIL: tags the build
 | Loop polling an atomic or `try_receive` that nobody will satisfy | Fails when the step budget runs out, naming each task's state | S5a |
 | CPU loop that reaches no scheduling point and never exits | Takes no steps, so the budget never runs out. The runner kills the binary after 5 minutes of real time and says so | S3 |
 | Long CPU work between two channel ops | Runs uninterrupted. No other task could have seen the difference | S3 |
-| Test spawns and never joins | `TaskHandle` drop panic (`conc.async/H1`), replayed like any panic | ctrl.panic/PD1 |
+| Test spawns and never joins | `Handle` drop panic (`conc.async/H1`), replayed like any panic | ctrl.panic/PD1 |
 | Detached task still running at block exit | Drain runs it to completion in virtual time | conc.async/C4 |
 | `using Multitasking` with no worker count | No bound. The production default is one worker per CPU, and a replay can't depend on the machine | determinism/D1 |
 | `using Multitasking(workers: 2)` | At most two task bodies in flight, as in production. Waiting for a slot is a scheduling point | S3 |

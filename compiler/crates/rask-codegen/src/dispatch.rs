@@ -160,7 +160,7 @@ impl StdlibEntry {
         Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::NegErr }
     }
 
-    /// For `TaskHandle.join` / `.cancel` and their OS-thread twins: the C side
+    /// For `Handle.join` / `.cancel`: the C side
     /// hands back (outcome, value, message) and codegen assembles the
     /// `T or JoinError` from all three.
     const fn join_outcome(mir_name: &'static str, c_name: &'static str) -> Self {
@@ -1325,10 +1325,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── ThreadPool ─────────────────────────────────────────────
         StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::join_outcome("ThreadHandle_join", "rask_task_join_outcome"),
-        StdlibEntry::join_outcome("Thread_join", "rask_task_join_outcome"),
-        StdlibEntry::simple("ThreadHandle_detach", "rask_task_detach", &[types::I64], None, false),
-        StdlibEntry::simple("Thread_detach", "rask_task_detach", &[types::I64], None, false),
         StdlibEntry::simple("time_sleep", "rask_sleep_ns", &[types::I64], Some(types::I64), false),
 
         // ── Concurrency: spawn/join/detach (green scheduler) ────────
@@ -1338,14 +1334,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Two args: the closure, then whether its result is a heap box the task
         // owns and must free if no join ever comes for it (#963).
         StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::join_outcome("join", "rask_green_join_outcome"),
-        StdlibEntry::simple("detach", "rask_green_detach", &[types::I64], None, true),
-        StdlibEntry::join_outcome("cancel", "rask_green_cancel_outcome"),
-        // TaskHandle qualified names (same C functions as unqualified)
-        StdlibEntry::join_outcome("TaskHandle_join", "rask_green_join_outcome"),
-        StdlibEntry::simple("TaskHandle_detach", "rask_green_detach", &[types::I64], None, true),
-        StdlibEntry::join_outcome("TaskHandle_cancel", "rask_green_cancel_outcome"),
-        StdlibEntry::simple("rask_task_cancelled", "rask_green_task_is_cancelled", &[], Some(types::I32), false),
+        // One handle for every spawn form (conc.async/H5); the runtime reads
+        // which kind it is.
+        StdlibEntry::join_outcome("join", "rask_handle_join"),
+        StdlibEntry::simple("detach", "rask_handle_detach", &[types::I64], None, true),
+        StdlibEntry::join_outcome("cancel", "rask_handle_cancel"),
+        StdlibEntry::join_outcome("Handle_join", "rask_handle_join"),
+        StdlibEntry::simple("Handle_detach", "rask_handle_detach", &[types::I64], None, true),
+        StdlibEntry::join_outcome("Handle_cancel", "rask_handle_cancel"),
+        StdlibEntry::simple("cancelled", "rask_handle_cancelled", &[], Some(types::I8), false),
         StdlibEntry::simple("rask_sleep_ns", "rask_sleep_ns", &[types::I64], None, false),
 
         // ── Concurrency: runtime init/shutdown ───────────────────────

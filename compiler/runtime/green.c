@@ -82,7 +82,7 @@ typedef struct GreenTask {
     // task is the only party present at every ending: joined, cancelled, or
     // detached and never looked at.
     //
-    // `rask_green_join` hands ownership to the joiner by clearing `result`, so
+    // `green_join` hands ownership to the joiner by clearing `result`, so
     // exactly one of the two frees it (#963).
     int64_t         result_owned;
 
@@ -130,7 +130,9 @@ typedef struct GreenTask {
 
 // ─── Task handle (returned to user code) ────────────────────
 
+// `kind` first: `rask_handle_*` in thread.c reads it to route here.
 typedef struct GreenHandle {
+    int64_t    kind;
     GreenTask *task;
 } GreenHandle;
 
@@ -1216,7 +1218,7 @@ static void *spawn_task(GreenTask *t) {
         fprintf(stderr, "rask: green handle alloc failed\n");
         abort();
     }
-    *h = (GreenHandle){ .task = t };
+    *h = (GreenHandle){ .kind = RASK_HANDLE_GREEN, .task = t };
     atomic_fetch_add_explicit(&s->active_tasks, 1, memory_order_relaxed);
     sched_enqueue_new(s, t);
     return h;
@@ -1241,10 +1243,10 @@ void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
     return spawn_task(t);
 }
 
-int64_t rask_green_join(void *handle, char **msg_out) {
+static int64_t green_join(void *handle, char **msg_out) {
     GreenHandle *h = (GreenHandle *)handle;
     if (!h || !h->task) {
-        rask_panic("join on consumed TaskHandle");
+        rask_panic("join on a consumed Handle");
     }
 
     GreenTask *t = h->task;
@@ -1281,14 +1283,10 @@ int64_t rask_green_join(void *handle, char **msg_out) {
     return result;
 }
 
-int64_t rask_green_join_simple(void *handle) {
-    return rask_green_join(handle, NULL);
-}
-
 void rask_green_detach(void *handle) {
     GreenHandle *h = (GreenHandle *)handle;
     if (!h || !h->task) {
-        rask_panic("detach on consumed TaskHandle");
+        rask_panic("detach on a consumed Handle");
     }
     GreenTask *t = h->task;
 
@@ -1308,30 +1306,13 @@ void rask_green_detach(void *handle) {
     free(h);
 }
 
-int64_t rask_green_cancel(void *handle, char **msg_out) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("cancel on consumed TaskHandle");
-    }
-
-    // Set cancel flag
-    atomic_store_explicit(&h->task->cancel_flag, 1, memory_order_release);
-
-    // Wait for completion
-    return rask_green_join(handle, msg_out);
-}
-
-int64_t rask_green_cancel_simple(void *handle) {
-    return rask_green_cancel(handle, NULL);
-}
-
 // Shared tail for the two outcome-reporting entry points. `cancelled` says
 // whether a cancel was requested, which is what separates "the task stopped
 // early because we asked it to" from "it finished normally".
 static int64_t green_join_outcome(void *handle, int cancelled,
                                   int64_t *value_out, RaskStr *msg_out) {
     char *msg = NULL;
-    int64_t value = rask_green_join(handle, &msg);
+    int64_t value = green_join(handle, &msg);
 
     if (msg) {
         rask_string_from(msg_out, msg);
@@ -1352,7 +1333,7 @@ static int64_t green_join_outcome(void *handle, int cancelled,
 int64_t rask_green_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
     GreenHandle *h = (GreenHandle *)handle;
     if (!h || !h->task) {
-        rask_panic("join on consumed TaskHandle");
+        rask_panic("join on a consumed Handle");
     }
     int cancelled = atomic_load_explicit(&h->task->cancel_flag, memory_order_acquire);
     return green_join_outcome(handle, cancelled, value_out, msg_out);
@@ -1361,7 +1342,7 @@ int64_t rask_green_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_o
 int64_t rask_green_cancel_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
     GreenHandle *h = (GreenHandle *)handle;
     if (!h || !h->task) {
-        rask_panic("cancel on consumed TaskHandle");
+        rask_panic("cancel on a consumed Handle");
     }
     atomic_store_explicit(&h->task->cancel_flag, 1, memory_order_release);
     return green_join_outcome(handle, 1, value_out, msg_out);

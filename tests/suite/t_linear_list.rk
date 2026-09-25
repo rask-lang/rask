@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A group of linear values written in plain Rask: a list built from an enum
-// and `Heap`, drained by a loop. It's how `TaskGroup` is written, and the
+// and `Heap`, drained by a loop. It's how `Handles` is written, and the
 // shape anyone holding a run-time count of resources reaches for. Each piece
 // was broken somewhere:
 //

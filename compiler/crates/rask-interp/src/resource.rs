@@ -30,7 +30,7 @@ pub struct ResourceTracker {
     entries: HashMap<u64, ResourceEntry>,
     /// Map Arc pointer addresses to resource IDs (for Value::File).
     file_ids: HashMap<usize, u64>,
-    /// Map Arc pointer addresses to resource IDs (for TaskHandle/ThreadHandle).
+    /// Map Arc pointer addresses to resource IDs (for Handle).
     handle_ids: HashMap<usize, u64>,
     next_id: u64,
 }
@@ -132,7 +132,7 @@ impl ResourceTracker {
         }
     }
 
-    /// Register a TaskHandle/ThreadHandle using its Arc pointer address (conc.async/H1).
+    /// Register a Handle using its Arc pointer address (conc.async/H1).
     pub fn register_handle(&mut self, ptr: usize, type_name: &str, scope_depth: usize) -> u64 {
         let id = self.register(type_name, scope_depth);
         self.handle_ids.insert(ptr, id);

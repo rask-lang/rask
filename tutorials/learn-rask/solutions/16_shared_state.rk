@@ -7,6 +7,7 @@
 //   3. match h.join() { T as v => ..., JoinError as e => ... } — explicit handling
 //
 import async.spawn
+import async.Handles
 import sync.Atomic
 import sync.Relaxed
 import sync.SeqCst
@@ -67,25 +68,22 @@ func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
     using Multitasking {
         COUNTER.store(0, SeqCst)
 
-        // A `Vec` can't hold the handles — a `TaskHandle` is linear and a Vec
-        // drop can't consume its elements (mem.resource-types/RC1). So each
-        // task is detached and reports itself finished on a channel, and the
-        // count of reports is what we wait for.
-        mut (done_tx, done_rx) = Channel<bool>.buffered(num_tasks)
+        // A `Vec` can't hold the handles — a `Handle` is linear and a Vec
+        // drop can't consume its elements (mem.resource-types/RC1). A
+        // `Handles` can.
+        mut tasks = Handles<void>.new()
+        ensure tasks.detach()
         for i in 0..num_tasks {
-            let task_done = done_tx.clone()
-            spawn(|| {
+            tasks.add(spawn(|| {
                 for j in 0..count_per_task {
                     // Relaxed is enough: nothing here depends on the order of
                     // anything but the counter itself.
                     COUNTER.fetch_add(1, Relaxed)
                 }
-                task_done.send(true)
-            }).detach()
+            }))
         }
-
-        for i in 0..num_tasks {
-            done_rx.receive()!
+        for r in tasks.join_all() {
+            r!
         }
 
         return COUNTER.load(SeqCst)

@@ -1287,7 +1287,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(expr);
                 // H1/L1: a resource-typed value with nothing to bind it to is
                 // dropped the instant it's produced — e.g. `spawn(f)` used as
-                // a bare statement, with the TaskHandle never joined/detached.
+                // a bare statement, with the Handle never joined/detached.
                 // A bare `Ident` is never a *fresh* value — it names an
                 // existing binding, which the end-of-scope check (E0805)
                 // already tracks; flagging it here too would double-report
@@ -3769,7 +3769,7 @@ impl<'a> OwnershipChecker<'a> {
         matches!(base_name,
             "Vec" | "Map" | "Wide" | "Cell"
             | "Rack" | "Link"
-            | "TaskHandle" | "Sender" | "Receiver" | "ThreadHandle")
+            | "Handle" | "Sender" | "Receiver")
     }
 
     /// Map a generic struct/enum's own type parameter names to the concrete
@@ -4742,7 +4742,7 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Whether this method call starts a task: `Thread.spawn`,
-    /// `ThreadPool.spawn`, or `spawn` on a `TaskGroup`.
+    /// `ThreadPool.spawn`, or `spawn` on a `Handles`.
     ///
     /// The receiver decides, not the name. A program may have a `Runner` with a
     /// synchronous `spawn(cb)` that just calls what it was handed, and matching
@@ -4761,7 +4761,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Ident(name) if name == "Thread" || name == "ThreadPool" => true,
             _ => self
                 .receiver_type_name(object)
-                .is_some_and(|t| t == "Thread" || t == "ThreadPool" || t == "TaskGroup"),
+                .is_some_and(|t| t == "Thread" || t == "ThreadPool"),
         }
     }
 
@@ -5608,7 +5608,7 @@ impl<'a> OwnershipChecker<'a> {
     }
     /// Best-effort display name for a resource-typed value, recursing through
     /// `T or E` to name whichever side is actually linear (E0834: a bare
-    /// statement whose type is `TaskHandle<T> or E` still leaks the handle).
+    /// statement whose type is `Handle<T> or E` still leaks the handle).
     fn resource_type_display(&self, ty: &Type) -> String {
         match ty {
             Type::Named(id) | Type::Generic { base: id, .. } => self.program.types.type_name(*id),

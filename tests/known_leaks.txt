@@ -445,5 +445,5 @@ t_collection_literal_takes_its_slot.rk  # 2 allocations — a Vec behind an opti
 t_returned_closure_captures.rk  # 2 allocations — a carried Vec in a closure env, #1045
 t_fs_list_dir.rk  # 2 allocations — the IoError message in each error arm; a match over
                         # `Vec<T> or E` drops the Vec side only (#1338).
-t_task_group.rk  # 1 allocation — a panicked task's message in `Vec<T or JoinError>`; freeing
+t_handles.rk  # 1 allocation — a panicked task's message in `Vec<T or JoinError>`; freeing
                         # a Vec of results doesn't release an error element's payload (#1357).

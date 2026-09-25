@@ -42,10 +42,11 @@ func handle_connection(conn: TcpConnection) -> void or Error {
 
 | Rule | Description |
 |------|-------------|
-| **H1: Must consume** | `TaskHandle<T>` must be joined or detached — compile error if unused |
+| **H1: Must consume** | Every spawn form returns `Handle<T>`, which must be joined or detached — compile error if unused |
 | **H2: Join** | `h.join()` waits for result, returns `T or JoinError`, consumes handle |
 | **H3: Detach** | `h.detach()` opts out of tracking (fire-and-forget), consumes handle |
 | **H4: Cancel** | `h.cancel()` requests cooperative cancellation, waits for exit, returns `T or JoinError` |
+| **H5: One handle type** | A green task, a pooled job and an OS thread all hand back the same `Handle<T>`. What ran the work is the spawn call's business; the caller only ever waits, lets go, or asks it to stop |
 
 <!-- test: skip -->
 ```rask
@@ -67,16 +68,17 @@ match h.join() {
 
 spawn(|| { background_work() }).detach()
 
-spawn(|| { work() })  // ERROR [conc.async/H1]: unused TaskHandle
+spawn(|| { work() })  // ERROR [conc.async/H1]: unused Handle
 ```
 
 ### Handle API
 
 <!-- test: skip -->
 ```rask
-struct TaskHandle<T> { }
+@resource
+struct Handle<T> { }
 
-extend TaskHandle<T> {
+extend Handle<T> {
     func join(take self) -> T or JoinError
     func detach(take self)
     func cancel(take self) -> T or JoinError
@@ -88,12 +90,17 @@ enum JoinError {
 }
 ```
 
+I had `TaskHandle` and `ThreadHandle` for a long time. They did the same three
+things, and the split meant every piece of code that holds handles had to pick
+one or be written twice. So there is one.
+
 ## Multiple Tasks
 
 | Rule | Description |
 |------|-------------|
 | **M1: Join each** | A fixed set of tasks is joined handle by handle |
-| **M2: Task group** | `TaskGroup<T>` holds the tasks of a count known only at run time. `join_all` gives one `T or JoinError` per task in spawn order; `detach` lets them all run on. The group is linear like the handles it holds: joined or detached exactly once. It is plain Rask (`stdlib/async.rk`), a linked list of handles, so `spawn` mutates the group |
+| **M2: Handle group** | `Handles<T>` holds handles for a count known only at run time: `new()`, `add(h)`, `join_all()`, `detach()`. `join_all` gives one `T or JoinError` per handle in add order; `detach` lets them all run on. The group is linear like the handles it holds: joined or detached exactly once |
+| **M3: Plain Rask** | `Handles<T>` is written in Rask (`stdlib/async.rk`): a linked list built from an enum and `Heap`. A group of any other linear type is written the same way |
 
 <!-- test: skip -->
 ```rask
@@ -102,19 +109,23 @@ let h2 = spawn(|| { work2() })
 let a = try h1.join()
 let b = try h2.join()
 
-mut group = TaskGroup<Page>.new()
-ensure group.detach()
+mut pages = Handles<Page>.new()
+ensure pages.detach()
 for url in urls {
-    group.spawn(|| { return fetch(url) })
+    pages.add(spawn(|| { return fetch(url) }))
 }
-let pages = group.join_all()
+let results = pages.join_all()
 ```
+
+The group has no `spawn` of its own. `add` takes a handle from any spawn form,
+so one method covers tasks, threads and pool jobs, and the spawn stays visible
+at the call site.
 
 I dropped the free `join_all(a, b)` and `select_first(a, b)`. A call that takes
 any number of handles and hands back a tuple of their results can't be declared
-in Rask, and the `Vec<TaskHandle<T>>` version couldn't be called, since a `Vec`
+in Rask, and the `Vec<Handle<T>>` version couldn't be called, since a `Vec`
 can't hold a linear value. Joining two handles is two lines, and a loop is
-what `TaskGroup` is for. Racing tasks for the first result is still open; a
+what `Handles` is for. Racing tasks for the first result is still open; a
 channel both send to covers it today.
 
 ## Runtime Scope
@@ -212,7 +223,7 @@ match h.join() { }    // explicit handling
 
 | Rule | Description |
 |------|-------------|
-| **CN1: Cooperative** | Cancellation sets a flag; task checks `cancelled()` |
+| **CN1: Cooperative** | Cancellation sets a flag; the work checks `cancelled()`. Same for a task, a pooled job and an OS thread: `cancelled()` reads the flag of whichever one is running it |
 | **CN2: Ensure runs** | `ensure` blocks always run, even on cancellation |
 | **CN3: I/O checks** | I/O operations check cancel flag and return `Cancelled` error if set |
 | **CN4: No kill at pause points** | Cancellation never terminates a task at a suspension point. A cancelled task always resumes and exits through its own control flow — the flag check or the `Cancelled` error return. Preemption pauses tasks, never kills them |
@@ -288,10 +299,10 @@ try consumer.join()
 ## Error Messages
 
 ```
-ERROR [conc.async/H1]: unused TaskHandle
+ERROR [conc.async/H1]: unused Handle
    |
 12 |  spawn(|| { work() })
-   |  ^^^^^^^^^^^^^^^^ TaskHandle must be joined or detached
+   |  ^^^^^^^^^^^^^^^^ Handle must be joined or detached
 ```
 
 ```

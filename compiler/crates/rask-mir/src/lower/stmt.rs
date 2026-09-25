@@ -1681,7 +1681,7 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::MethodCall { object, method, .. } = &init_inner.kind {
             if let ExprKind::Ident(obj_name) = &object.kind {
                 // What `Type.method()` returns is whatever the checker says it
-                // is. `Thread.spawn` hands back a `ThreadHandle`, not a
+                // is. `Thread.spawn` hands back a `Handle`, not a
                 // `Thread`, and reading the prefix off the type name gave the
                 // handle `Thread_join`, which isn't known to consume it — so an
                 // `ensure t.detach()` ran after the join and freed the handle

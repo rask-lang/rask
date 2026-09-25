@@ -70,7 +70,7 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
 
     // `func(A, B) -> R` — a function type. Without this it came back as a *name*
     // that prints exactly like the real type, so nothing tied the parameter to
-    // the argument: `spawn(f: func() -> T) -> TaskHandle<T>` left `T` an
+    // the argument: `spawn(f: func() -> T) -> Handle<T>` left `T` an
     // inference variable, the join's payload fell back to i64, and a task
     // returning a struct segfaulted while one returning an i64 worked (#882).
     // Same shape as the `T?`, `*T`, `any Trait` and tuple cases below.
@@ -323,7 +323,7 @@ mod tests {
 
     /// A `func(...)` parameter has to come back as a real function type. As a
     /// *name* it prints exactly like one, so nothing ties the argument to it —
-    /// the shape that left `spawn(f: func() -> T) -> TaskHandle<T>` with an
+    /// the shape that left `spawn(f: func() -> T) -> Handle<T>` with an
     /// unresolved T (#882). Same family as `T?` (#696), `any Trait` (#860) and
     /// tuples (#841), each of which was found the same way.
     #[test]

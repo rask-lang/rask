@@ -7,7 +7,7 @@
 // linear-Responder demo lives in FINDINGS rather than here.
 
 import http
-import async.TaskHandle
+import async.Handle
 
 struct SeedSpec {
     title: string
@@ -38,7 +38,7 @@ func seed_store() {
     mut (tx, rx) = Channel<SeedSpec>.buffered(8)
     let total = seed_specs().len()
 
-    let producer: TaskHandle<void> = spawn(|| {
+    let producer: Handle<void> = spawn(|| {
         for spec in seed_specs() {
             let sent = tx.send(spec.clone())
             if sent? { continue }

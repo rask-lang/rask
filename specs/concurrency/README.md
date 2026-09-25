@@ -82,12 +82,12 @@ let a = try h1.join()
 let b = try h2.join()
 
 // A count known at run time
-mut group = TaskGroup<Page>.new()
-ensure group.detach()
+mut pages = Handles<Page>.new()
+ensure pages.detach()
 for url in urls {
-    group.spawn(|| { return fetch(url) })
+    pages.add(spawn(|| { return fetch(url) }))
 }
-let pages = group.join_all()      // Vec<Page or JoinError>, spawn order
+let results = pages.join_all()    // Vec<Page or JoinError>, add order
 
 // Raw OS thread (works anywhere)
 let h = Thread.spawn(|| { needs_thread_affinity() })
@@ -109,7 +109,7 @@ try h.join()
 | Spawn and wait | `try spawn(|| {}).join()` |
 | Fire-and-forget | `spawn(|| {}).detach()` |
 | Wait for a few | `try h1.join()`, `try h2.join()` |
-| Dynamic spawning | `TaskGroup` (tasks), `ThreadGroup` (threads and pool jobs) |
+| Dynamic spawning | `Handles<T>`: `add` any spawn's handle, then `join_all` |
 | CPU parallelism | `ThreadPool.spawn(|| {})` |
 | Raw OS thread | `Thread.spawn(|| {})` |
 | Unused handle | **Compile error** |

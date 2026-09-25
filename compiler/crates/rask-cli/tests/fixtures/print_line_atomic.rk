@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Four threads, each emitting its whole line in one println. Every line of
 // output must read exactly "line N from thread M" — no splicing.
-import thread.ThreadGroup
+import async.Handles
+import thread.Thread
 
 func spam(id: i64) {
     for i in 0..300 {
@@ -10,11 +11,11 @@ func spam(id: i64) {
 }
 
 func main() {
-    mut threads = ThreadGroup<void>.new()
+    mut threads = Handles<void>.new()
     ensure threads.detach()
-    threads.spawn(|| { spam(1) })
-    threads.spawn(|| { spam(2) })
-    threads.spawn(|| { spam(3) })
-    threads.spawn(|| { spam(4) })
+    threads.add(Thread.spawn(|| { spam(1) }))
+    threads.add(Thread.spawn(|| { spam(2) }))
+    threads.add(Thread.spawn(|| { spam(3) }))
+    threads.add(Thread.spawn(|| { spam(4) }))
     let _ = threads.join_all()
 }

@@ -770,8 +770,8 @@ impl TypeChecker {
         // Every recorded type, with inference's answers substituted in.
         //
         // Some still hold a variable inference never solved. They stay: a
-        // consumer reading the *head* of a type is right to — `TaskHandle<?>`
-        // is still a `TaskHandle`, and that's what the ownership checker needs
+        // consumer reading the *head* of a type is right to — `Handle<?>`
+        // is still a `Handle`, and that's what the ownership checker needs
         // to know a handle got dropped. What can't be done with one is compute
         // a layout, and that's guarded where layouts are made
         // (`MirContext::lookup_node_type`), not by throwing the type away here.

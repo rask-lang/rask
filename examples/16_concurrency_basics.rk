@@ -3,7 +3,7 @@
 
 import thread.Thread
 import thread.ThreadPool
-import thread.ThreadGroup
+import async.Handles
 
 func worker(id: i32, iterations: i32) {
     println("Worker {id} starting")
@@ -20,7 +20,7 @@ func main() -> void {
     print("=== Basic Threading ===\n\n")
 
     // Spawn a thread with Thread.spawn(|| {})
-    // Returns a ThreadHandle
+    // Returns a Handle
     let handle = Thread.spawn(|| {
         print("Hello from thread!\n")
     })
@@ -148,7 +148,7 @@ func main() -> void {
     print("=== Thread Pool ===\n\n")
 
     using ThreadPool(workers: 4) {
-        mut tasks = ThreadGroup<void>.new()
+        mut tasks = Handles<void>.new()
         ensure tasks.detach()
 
         for i in 0..8 {

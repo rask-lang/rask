@@ -37,7 +37,7 @@ func main() {
     using Multitasking {
         // Render thread gets its own graph. No link crosses the boundary.
         let frame = world.snapshot()
-        let h: TaskHandle<i32> = spawn(|| {
+        let h: Handle<i32> = spawn(|| {
             return walk(frame)
         })
 

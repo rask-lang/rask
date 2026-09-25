@@ -61,7 +61,7 @@ From `conc.io-context`:
 
 | Rule | Description |
 |------|-------------|
-| **AS1: Source functions** | `spawn()`, `sleep()`, `timeout()`, `Channel.send()`, `Channel.receive()`, `TaskHandle.join()` |
+| **AS1: Source functions** | `spawn()`, `sleep()`, `timeout()`, `Channel.send()`, `Channel.receive()`, `Handle.join()` |
 | **AS2: Transitive** | Any function that transitively calls an Async source has the Async effect |
 | **AS3: Subset of IO** | All Async source functions are also IO sources (they involve scheduler/reactor). A function with Async always has IO too |
 

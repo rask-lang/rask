@@ -279,7 +279,7 @@ The C runtime under a fiber reads `__thread` variables, and the C compiler may c
 ### Spawn Flow (S4 - realizes conc.async/S1, S4)
 
 ```rust
-func spawn<T>(closure: || -> T) -> TaskHandle<T> {
+func spawn<T>(closure: || -> T) -> Handle<T> {
     // Read process-global runtime slot. Runtime panic if no block is active
     // (CC3 fallback: most missing-scope cases are caught at compile time by
     // CC1/CC2, this panic covers the cases static analysis cannot prove).
@@ -314,7 +314,7 @@ func spawn<T>(closure: || -> T) -> TaskHandle<T> {
     }
 
     // Return must-use handle (S4, H1)
-    return TaskHandle {
+    return Handle {
         task: task,
         consumed: false,
     }
@@ -336,7 +336,7 @@ fn fiber_entry<T>(task: &Task<T>) -> ! {
 
 **Stack pool:** Per-runtime pool of freed stack regions. On fiber completion, its region returns to the pool (marked `MADV_FREE` or `madvise(DONTNEED)` so the OS can reclaim physical pages while the virtual reservation stays cheap).
 
-**Current interpreter:** Creates OS thread via `std::thread::spawn`, not a fiber. No pool, no context switching. Returns `ThreadHandle` wrapping `JoinHandle`.
+**Current interpreter:** Creates OS thread via `std::thread::spawn`, not a fiber. No pool, no context switching. Returns `Handle` wrapping `JoinHandle`.
 
 ---
 
@@ -622,18 +622,18 @@ Unchanged from before: warn on I/O in tight loops, and on long-running CPU work 
 
 ## Handle Implementation
 
-### TaskHandle Structure (H1 - realizes conc.async/H1-H4)
+### Handle Structure (H1 - realizes conc.async/H1-H4)
 
 ```rust
-TaskHandle<T> {
+Handle<T> {
     task: Arc<Task<T>>,   // Shared reference to task
     consumed: bool,       // Affine tracking
 }
 
-impl<T> Drop for TaskHandle<T> {
+impl<T> Drop for Handle<T> {
     fn drop(&mut self) {
         if !self.consumed {
-            panic!("TaskHandle dropped without join() or detach() (conc.async/H1)");
+            panic!("Handle dropped without join() or detach() (conc.async/H1)");
         }
     }
 }
@@ -646,7 +646,7 @@ impl<T> Drop for TaskHandle<T> {
 ### Join Operation (H2 - realizes conc.async/H2, J1)
 
 ```rust
-func TaskHandle::join(mut self) -> T or JoinError {
+func Handle.join(mut self) -> T or JoinError {
     self.consumed = true;  // Mark consumed
 
     // Context-dependent waiting (J1)
@@ -684,7 +684,7 @@ func TaskHandle::join(mut self) -> T or JoinError {
 ### Detach Operation (H3 - realizes conc.async/H3)
 
 ```rust
-func TaskHandle::detach(mut self) {
+func Handle.detach(mut self) {
     self.consumed = true;
     drop(self.task);  // Drop Arc, decrement ref count
     // Task continues running independently
@@ -699,7 +699,7 @@ func TaskHandle::detach(mut self) {
 ### Cancel Operation (H4 - realizes conc.async/H4, CN1-CN3)
 
 ```rust
-func TaskHandle::cancel(mut self) -> T or JoinError {
+func Handle.cancel(mut self) -> T or JoinError {
     self.consumed = true;
 
     // Set cancel flag (CN1: cooperative)
@@ -832,15 +832,15 @@ fn unwind_task(task: &Task) {
 
 ### Motivation (AC1)
 
-**Current approach:** Runtime panic in `TaskHandle::drop` if handle not consumed.
+**Current approach:** Runtime panic in `Handle.drop` if handle not consumed.
 
 **Problem:** This violates Rask's "mechanical safety" principle. Safety should be compile-time (by construction), not runtime (by detection).
 
-**Goal:** Enforce at compile time that all TaskHandles are consumed via join/detach/cancel before going out of scope.
+**Goal:** Enforce at compile time that all Handles are consumed via join/detach/cancel before going out of scope.
 
 ### Linear Type System (AC2)
 
-**Approach:** Mark `TaskHandle<T>` as a **linear type** (must be used exactly once).
+**Approach:** Mark `Handle<T>` as a **linear type** (must be used exactly once).
 
 **Type system rule:**
 ```
@@ -907,7 +907,7 @@ for item in items {
    - `h.join()` - consumes h
    - `h.detach()` - consumes h
    - `h.cancel()` - consumes h
-   - Passing to function with `take h: TaskHandle<T>` - consumes h
+   - Passing to function with `take h: Handle<T>` - consumes h
    - Returning from function - consumes h (caller's responsibility)
 
 **Complexity:**
@@ -936,8 +936,8 @@ help: add `h.detach()` before return, or move `h.join()` after if block
 // In stdlib
 trait Linear {}
 
-// TaskHandle implements Linear
-extend TaskHandle<T> : Linear {
+// Handle implements Linear
+extend Handle<T> : Linear {
     // All methods either:
     // 1. Take `self` (consuming, like join/detach/cancel), or
     // 2. Take `&self` (non-consuming, like is_complete)
@@ -1000,7 +1000,7 @@ extend TaskHandle<T> : Linear {
 
 - **Rust:** Linear types for Future (must .await)
   - Same principle: value must be consumed
-  - Rask applies to TaskHandle
+  - Rask applies to Handle
 
 - **Swift:** Definite assignment analysis
   - Same CFG-based approach
@@ -1011,7 +1011,7 @@ extend TaskHandle<T> : Linear {
   - Compiler verifies all branches covered
   - Similar flow analysis
 
-**Novelty:** Applying linear types to concurrency primitive (TaskHandle) at language level, not library level.
+**Novelty:** Applying linear types to concurrency primitive (Handle) at language level, not library level.
 
 ---
 
@@ -1429,7 +1429,7 @@ type Job = Box<dyn FnOnce() -> Value + Send>;
 ### ThreadPool Spawn Flow (TP2)
 
 ```rust
-func ThreadPool::spawn<T>(closure: || -> T) -> ThreadPoolHandle<T> {
+func ThreadPool::spawn<T>(closure: || -> T) -> Handle<T> {
     // Read from process-global ThreadPool slot (analogous to RUNTIME_SLOT).
     // Compile-time check (CC1/CC2 analog) catches most missing-scope cases;
     // this panic is the CC3 runtime fallback.
@@ -1453,7 +1453,7 @@ func ThreadPool::spawn<T>(closure: || -> T) -> ThreadPoolHandle<T> {
     pool.notify_one();
 
     // Return handle
-    return ThreadPoolHandle {
+    return Handle {
         result_slot: result_slot,
         consumed: false,
     }
@@ -1511,7 +1511,7 @@ fn thread_pool_worker(pool: Arc<ThreadPool>) {
 |-----------|---------|--------------------|-------|
 | Task struct | 150 bytes | 150 bytes | Control block (state, context, metadata) |
 | Fiber stack | 1 MiB (mmap) | ~4 KiB | Demand-paged; physical = pages actually touched |
-| TaskHandle | 16 bytes | 16 bytes | Arc + consumed bool |
+| Handle | 16 bytes | 16 bytes | Arc + consumed bool |
 | Channel | 64 bytes | 64 bytes | + capacity * sizeof(T) |
 | Sender/Receiver | 16 bytes each | 16 bytes each | Arc to channel |
 | Runtime | ~8 KiB | ~8 KiB | Workers + reactor + queues + stack pool |
@@ -1688,7 +1688,7 @@ func register_io(fd: RawFd, interest: Interest) {
 | Type | Send | Sync | Rationale |
 |------|------|------|-----------|
 | Task<T> | Yes | Yes | Arc-wrapped, atomics + mutexes internally |
-| TaskHandle<T> | Yes | Yes | Wraps Arc<Task>, safe to move/share |
+| Handle<T> | Yes | Yes | Wraps Arc<Task>, safe to move/share |
 | Sender<T> | Yes | Yes | Arc<Channel>, safe to clone and send |
 | Receiver<T> | Yes | Yes | Arc<Channel>, safe to clone and send |
 | Waker | Yes | Yes | Designed to be sent to reactor thread |
@@ -1845,9 +1845,9 @@ func main() {
 }
 ```
 
-**Error:** Runtime panic in TaskHandle::drop
+**Error:** Runtime panic in Handle.drop
 
-**Message:** `"TaskHandle dropped without join() or detach() (conc.async/H1)"`
+**Message:** `"Handle dropped without join() or detach() (conc.async/H1)"`
 
 **Fix:** Always consume handles:
 ```rask
@@ -2249,7 +2249,7 @@ This spec defines the **M:N green task runtime** that realizes Rask's async sema
 
 **New sections added (from critical review):**
 1. **Performance Roadmap** - Phase 1 (100k ops/sec prototype), Phase 2 (1M+ ops/sec production), Phase 3 (optimization)
-2. **Compile-Time Affine Checking** - Linear type system with flow analysis for TaskHandle consumption
+2. **Compile-Time Affine Checking** - Linear type system with flow analysis for Handle consumption
 3. **Hidden Parameter Debuggability** - Tooling requirements (debugger, LSP, linter) for making hidden `__ctx` parameter acceptable
 4. **Timer Support** - Full specification for sleep, timeout, and interval timers
 

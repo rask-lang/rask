@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A spawned task returning something that isn't a machine-word integer.
 //
-// #963 said no native program could reach this: `TaskHandle<T>`'s `T` never
+// #963 said no native program could reach this: `Handle<T>`'s `T` never
 // arrived at `join()`, so the destination was always typed i64 and the codegen
 // path for a wider payload could not be exercised from real source. The type
 // flows now — `t_spawn_payload_type.rk` pins that — and this is what it reaches:

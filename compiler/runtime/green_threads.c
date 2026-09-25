@@ -64,48 +64,6 @@ void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
     return rask_closure_spawn(closure_ptr, result_owned);
 }
 
-// ─── Join, detach, cancel ──────────────────────────────────
-//
-// A green handle and a thread handle are both opaque pointers at the codegen
-// boundary, so these are the thread ones under the green names.
-
-int64_t rask_green_join(void *handle, char **msg_out) {
-    return rask_task_join((RaskTaskHandle *)handle, msg_out);
-}
-
-void rask_green_detach(void *handle) {
-    rask_task_detach((RaskTaskHandle *)handle);
-}
-
-int64_t rask_green_cancel(void *handle, char **msg_out) {
-    return rask_task_cancel((RaskTaskHandle *)handle, msg_out);
-}
-
-int64_t rask_green_join_simple(void *handle) {
-    return rask_task_join_simple(handle);
-}
-
-int64_t rask_green_cancel_simple(void *handle) {
-    return rask_task_cancel((RaskTaskHandle *)handle, NULL);
-}
-
-int64_t rask_green_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
-    return rask_task_join_outcome(handle, value_out, msg_out);
-}
-
-int64_t rask_green_cancel_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
-    RaskTaskHandle *h = (RaskTaskHandle *)handle;
-    if (!h) {
-        rask_panic("cancel on consumed TaskHandle");
-    }
-    rask_task_request_cancel(h);
-    return rask_task_join_outcome(handle, value_out, msg_out);
-}
-
-int rask_green_task_is_cancelled(void) {
-    return rask_task_cancelled() ? 1 : 0;
-}
-
 // ─── Fiber waits ────────────────────────────────────────────
 //
 // sim.h asks these whether a wait is on a green fiber. Here no task is: each

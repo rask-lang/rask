@@ -2,7 +2,7 @@
 // `spawn(|| { … })` carries the closure's return type, and `join()` gives it
 // back (conc.async/H2).
 //
-// The stub said `spawn(f: func()) -> TaskHandle<void>`, so every task was
+// The stub said `spawn(f: func()) -> Handle<void>`, so every task was
 // typed as returning nothing and `let v: i64 = try h.join()` was a type
 // error. Underneath, the runtime called the closure through a void signature
 // and dropped whatever it returned, so join answered 0 either way.

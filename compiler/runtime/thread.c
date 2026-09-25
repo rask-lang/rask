@@ -5,7 +5,7 @@
 // One OS thread per spawn. Panics in spawned tasks are caught via
 // setjmp/longjmp and propagated as JoinError on join.
 //
-// TaskHandle lifecycle:
+// Handle lifecycle (a thread or pooled job):
 //   spawn → [running] → join/detach/cancel → [consumed]
 //
 // The shared TaskState is refcounted: one ref for the handle, one for
@@ -74,7 +74,9 @@ typedef struct RaskTaskState {
     void        *sim;
 } RaskTaskState;
 
+// `kind` first: `rask_handle_*` below reads it to route a handle.
 struct RaskTaskHandle {
+    int64_t        kind;
     RaskTaskState *state;
 };
 
@@ -328,14 +330,14 @@ RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
     }
 
     RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
-    *h = (RaskTaskHandle){ .state = state };
+    *h = (RaskTaskHandle){ .kind = RASK_HANDLE_THREAD, .state = state };
     RASK_SIM_POINT();
     return h;
 }
 
-int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
+static int64_t task_join(RaskTaskHandle *h, char **msg_out) {
     if (!h || !h->state) {
-        rask_panic("join on consumed TaskHandle");
+        rask_panic("join on a consumed Handle");
     }
 
     RaskTaskState *state = h->state;
@@ -386,16 +388,16 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
 // Join, splitting "how it ended" from "what it produced". The old shape folded
 // both into one int64_t, so a task returning -1 read back as a panic and a task
 // returning 42 read back as 0 (the value was never captured at all).
-int64_t rask_task_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
+static int64_t task_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
     RaskTaskHandle *h = (RaskTaskHandle *)handle;
     if (!h || !h->state) {
-        rask_panic("join on consumed TaskHandle");
+        rask_panic("join on a consumed Handle");
     }
 
     int cancelled = atomic_load_explicit(&h->state->cancel_flag, memory_order_acquire);
 
     char *msg = NULL;
-    int64_t value = rask_task_join(h, &msg);
+    int64_t value = task_join(h, &msg);
 
     if (msg) {
         rask_string_from(msg_out, msg);
@@ -413,9 +415,9 @@ int64_t rask_task_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_ou
     return RASK_JOIN_OK;
 }
 
-void rask_task_detach(RaskTaskHandle *h) {
+static void task_detach(RaskTaskHandle *h) {
     if (!h || !h->state) {
-        rask_panic("detach on consumed TaskHandle");
+        rask_panic("detach on a consumed Handle");
     }
 
     RaskTaskState *state = h->state;
@@ -447,23 +449,10 @@ void rask_task_detach(RaskTaskHandle *h) {
     rask_free(h);
 }
 
-int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out) {
-    if (!h || !h->state) {
-        rask_panic("cancel on consumed TaskHandle");
-    }
-
-    // Set cancel flag — task checks via rask_task_cancelled()
-    RASK_SIM_POINT();
-    atomic_store_explicit(&h->state->cancel_flag, 1, memory_order_release);
-
-    // Wait for completion
-    return rask_task_join(h, msg_out);
-}
-
-void rask_task_request_cancel(void *handle) {
+static void task_request_cancel(void *handle) {
     RaskTaskHandle *h = (RaskTaskHandle *)handle;
     if (!h || !h->state) {
-        rask_panic("cancel on consumed TaskHandle");
+        rask_panic("cancel on a consumed Handle");
     }
     RASK_SIM_POINT();
     atomic_store_explicit(&h->state->cancel_flag, 1, memory_order_release);
@@ -473,6 +462,56 @@ int8_t rask_task_cancelled(void) {
     RASK_SIM_POINT();
     if (!current_cancel_flag) return 0;
     return atomic_load_explicit(current_cancel_flag, memory_order_acquire) ? 1 : 0;
+}
+
+// ─── Handle (conc.async/H5) ────────────────────────────────
+//
+// Every spawn form hands back one `Handle<T>`. A green task's handle and a
+// thread's are different structs, both starting with `kind`, so these read it
+// and pass the handle on. A build with no green scheduler never makes a green
+// handle: its `spawn` starts a thread.
+
+#if RASK_HAS_GREEN
+static int64_t handle_kind(void *h, const char *op) {
+    if (!h) rask_panic_fmt("%s on a consumed Handle", op);
+    return *(int64_t *)h;
+}
+#endif
+
+int64_t rask_handle_join(void *h, int64_t *value_out, RaskStr *msg_out) {
+#if RASK_HAS_GREEN
+    if (handle_kind(h, "join") == RASK_HANDLE_GREEN) {
+        return rask_green_join_outcome(h, value_out, msg_out);
+    }
+#endif
+    return task_join_outcome(h, value_out, msg_out);
+}
+
+int64_t rask_handle_cancel(void *h, int64_t *value_out, RaskStr *msg_out) {
+#if RASK_HAS_GREEN
+    if (handle_kind(h, "cancel") == RASK_HANDLE_GREEN) {
+        return rask_green_cancel_outcome(h, value_out, msg_out);
+    }
+#endif
+    task_request_cancel(h);
+    return task_join_outcome(h, value_out, msg_out);
+}
+
+void rask_handle_detach(void *h) {
+#if RASK_HAS_GREEN
+    if (handle_kind(h, "detach") == RASK_HANDLE_GREEN) {
+        rask_green_detach(h);
+        return;
+    }
+#endif
+    task_detach((RaskTaskHandle *)h);
+}
+
+int8_t rask_handle_cancelled(void) {
+#if RASK_HAS_GREEN
+    if (rask_green_task_is_cancelled()) return 1;
+#endif
+    return rask_task_cancelled();
 }
 
 int64_t rask_sleep_ns(int64_t ns) {
@@ -578,16 +617,12 @@ RaskTaskState *rask_task_state_new_pooled(void) {
 
 RaskTaskHandle *rask_task_handle_for(RaskTaskState *state) {
     RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
-    *h = (RaskTaskHandle){ .state = state };
+    *h = (RaskTaskHandle){ .kind = RASK_HANDLE_THREAD, .state = state };
     return h;
 }
 
 void rask_task_state_release(RaskTaskState *state) {
     state_release(state);
-}
-
-int64_t rask_task_join_simple(void *h) {
-    return rask_task_join((RaskTaskHandle *)h, NULL);
 }
 
 // O4: wait for detached tasks to finish reporting. Called from `main` after

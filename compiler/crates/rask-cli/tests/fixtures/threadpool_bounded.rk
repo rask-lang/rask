@@ -2,11 +2,12 @@
 // Far more jobs than workers. One thread per job would try to have 800 live
 // at once; a bounded pool runs them four at a time and every job still runs
 // exactly once.
-import thread.{ThreadPool, ThreadGroup}
+import thread.ThreadPool
+import async.Handles
 
 func main() {
     using ThreadPool(workers: 4) {
-        mut jobs = ThreadGroup<i64>.new()
+        mut jobs = Handles<i64>.new()
         ensure jobs.detach()
         for i in 0..800 {
             jobs.add(ThreadPool.spawn(|| {

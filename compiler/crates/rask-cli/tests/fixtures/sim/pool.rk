@@ -3,7 +3,8 @@
 // holds, and a job that waits on a job queued behind it deadlocks. Sim used
 // to give every job its own task, so `workers: 1` ran four jobs at once.
 
-import thread.{ThreadPool, ThreadGroup}
+import thread.ThreadPool
+import async.Handles
 import sync.Atomic
 import sync.SeqCst
 
@@ -21,7 +22,7 @@ func body() -> i64 {
 
 test "a pool of one runs one job at a time" {
     using ThreadPool(workers: 1) {
-        mut jobs = ThreadGroup<i64>.new()
+        mut jobs = Handles<i64>.new()
         ensure jobs.detach()
         for i in 0..4 {
             jobs.add(ThreadPool.spawn(|| { return body() }))

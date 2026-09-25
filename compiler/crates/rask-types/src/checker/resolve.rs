@@ -1142,12 +1142,6 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if name == "File" => {
                 self.resolve_file_method(&method, &args, &ret, span)
             }
-            Type::UnresolvedGeneric { name, args: type_args } if name == "ThreadHandle" => {
-                self.resolve_thread_handle_method(&type_args, &method, &args, &ret, span)
-            }
-            Type::UnresolvedGeneric { name, args: type_args } if name == "TaskHandle" => {
-                self.resolve_task_handle_method(&type_args, &method, &args, &ret, span)
-            }
             // Rack<T>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Rack" => {
                 self.resolve_rack_method(type_args, &method, &args, &ret, span)
@@ -1211,17 +1205,17 @@ impl TypeChecker {
                 let payload = self.atomic_payload(&ty).expect("just checked");
                 self.resolve_atomic_method(payload, &method, &args, &ret, span)
             }
-            // Thread.spawn(closure) → ThreadHandle<T>
+            // Thread.spawn(closure) → Handle<T>
             Type::UnresolvedNamed(name) if name == "Thread" || name == "ThreadPool" => {
                 if method == "spawn" && args.len() == 1 {
-                    // Extract closure return type for ThreadHandle<T>
+                    // Extract closure return type for Handle<T>
                     let inner = if let Type::Fn { ret: fn_ret, .. } = &args[0] {
                         *fn_ret.clone()
                     } else {
                         self.ctx.fresh_var()
                     };
                     let handle_ty = Type::UnresolvedGeneric {
-                        name: "ThreadHandle".to_string(),
+                        name: "Handle".to_string(),
                         args: vec![GenericArg::Type(Box::new(inner))],
                     };
                     self.unify(&ret, &handle_ty, span)
@@ -2219,88 +2213,6 @@ impl TypeChecker {
             }
             _ => Err(TypeError::NoSuchMethod {
                 ty: Type::UnresolvedNamed("File".to_string()),
-                method: method.to_string(),
-                span,
-            }),
-        }
-    }
-
-    pub(super) fn resolve_thread_handle_method(
-        &mut self,
-        type_args: &[GenericArg],
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        // ThreadHandle<T> has two methods:
-        // - join(self) -> T or JoinError
-        // - detach(self) -> ()
-
-        match method {
-            "join" if args.is_empty() => {
-                // Extract the T type parameter
-                let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
-                    *t.clone()
-                } else {
-                    self.ctx.fresh_var()
-                };
-
-                // join returns Result<T, JoinError>
-                let result_type = Type::Result {
-                    ok: Box::new(inner_type),
-                    err: Box::new(Type::UnresolvedNamed("JoinError".to_string())),
-                };
-
-                self.unify(ret, &result_type, span)
-            }
-            "detach" if args.is_empty() => {
-                // detach returns ()
-                self.unify(ret, &Type::Unit, span)
-            }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::UnresolvedGeneric {
-                    name: "ThreadHandle".to_string(),
-                    args: type_args.to_vec(),
-                },
-                method: method.to_string(),
-                span,
-            }),
-        }
-    }
-
-    pub(super) fn resolve_task_handle_method(
-        &mut self,
-        type_args: &[GenericArg],
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        match method {
-            "join" if args.is_empty() => {
-                let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
-                    *t.clone()
-                } else {
-                    self.ctx.fresh_var()
-                };
-                let result_type = Type::Result {
-                    ok: Box::new(inner_type),
-                    err: Box::new(Type::UnresolvedNamed("JoinError".to_string())),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "detach" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            "cancel" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::UnresolvedGeneric {
-                    name: "TaskHandle".to_string(),
-                    args: type_args.to_vec(),
-                },
                 method: method.to_string(),
                 span,
             }),

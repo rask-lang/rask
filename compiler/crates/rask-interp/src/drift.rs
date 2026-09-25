@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 
 use crate::interp::Interpreter;
-use crate::value::{FloatKind, ModuleKind, ThreadHandleInner, Value};
+use crate::value::{FloatKind, ModuleKind, HandleInner, Value};
 
 /// Construct a minimal dummy value for a given type name.
 /// Only needs to route to the right dispatch — doesn't need valid data.
@@ -88,14 +88,9 @@ fn dummy_value(type_name: &str) -> Value {
             IndexMap::new(),
             None,
         ),
-        "ThreadHandle" => Value::ThreadHandle(Arc::new(ThreadHandleInner {
+        "Handle" => Value::Handle(Arc::new(HandleInner {
             handle: Mutex::new(None),
-            receiver: Mutex::new(None),
-            task_id: crate::value::next_task_id(),
-        })),
-        "TaskHandle" => Value::TaskHandle(Arc::new(ThreadHandleInner {
-            handle: Mutex::new(None),
-            receiver: Mutex::new(None),
+            cancel: Default::default(),
             task_id: crate::value::next_task_id(),
         })),
         "Sender" => {

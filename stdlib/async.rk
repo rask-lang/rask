@@ -15,34 +15,33 @@ import memory.Heap
 /// `mem.closures/SL4` reads parameter modes to decide what a returned closure
 /// still borrows, so the lie had to be worked around rather than trusted.
 @native("rask_green_closure_spawn")
-public func spawn(take f: func() -> T) -> TaskHandle<T> {}
+public func spawn(take f: func() -> T) -> Handle<T> {}
 
-/// Check if the current task has been cancelled.
-/// Returns true if cancel was requested. Use in long-running loops.
-@native
+/// Whether the task, pooled job or thread running this has been asked to stop.
+/// Use in long-running loops.
+@native("rask_handle_cancelled")
 public func cancelled() -> bool {}
 
-// --- Task handles ---
+// --- Handles ---
 
-/// Handle to a spawned task. Must be joined or detached — dropping
-/// an unconsumed handle is a compile error.
+/// What every spawn form hands back: `spawn`, `Thread.spawn` and
+/// `ThreadPool.spawn`. Must be joined or detached; dropping one is a compile
+/// error.
 @resource
-public struct TaskHandle<T> {
+public struct Handle<T> {
 }
 
-extend TaskHandle<T> {
-    /// Wait for the task to finish and return its result.
-    /// Consumes the handle.
-    @native("rask_green_join_simple")
+extend Handle<T> {
+    /// Wait for the result.
+    @native("rask_handle_join")
     public func join(take self) -> T or JoinError {}
 
-    /// Detach the task (fire-and-forget). Consumes the handle.
-    @native("rask_green_detach")
+    /// Let it run on without waiting.
+    @native("rask_handle_detach")
     public func detach(take self) -> void {}
 
-    /// Request cooperative cancellation, wait for exit.
-    /// Consumes the handle.
-    @native("rask_green_cancel_simple")
+    /// Ask it to stop, then wait. It stops only where it checks `cancelled()`.
+    @native("rask_handle_cancel")
     public func cancel(take self) -> T or JoinError {}
 }
 
@@ -60,51 +59,50 @@ extend JoinError {
     }
 }
 
-// --- Multiple tasks ---
+// --- Many handles ---
 
-/// Tasks spawned into one place, joined together. For a count known only at
-/// run time; a fixed handful is just as clear joined one by one.
+/// Handles for a count known only at run time; a fixed handful is just as
+/// clear joined one by one.
 ///
-///     mut group = TaskGroup<string>.new()
-///     ensure group.detach()
+///     mut pages = Handles<Page>.new()
+///     ensure pages.detach()
 ///     for url in urls {
-///         group.spawn(|| { return fetch(url) })
+///         pages.add(spawn(|| { return fetch(url) }))
 ///     }
-///     let pages = group.join_all()
+///     let results = pages.join_all()
 ///
 /// Must be joined or detached, like the handles it holds. Plain Rask: a
 /// linked list of handles, so a group of any other linear type is written
 /// the same way.
 @resource
-public struct TaskGroup<T> {
-    tasks: TaskList<T>
+public struct Handles<T> {
+    list: HandleList<T>
 }
 
 /// Newest first.
-enum TaskList<T> {
+enum HandleList<T> {
     Empty
-    More(TaskHandle<T>, Heap<TaskList<T>>)
+    More(Handle<T>, Heap<HandleList<T>>)
 }
 
-extend TaskGroup<T> {
-    public func new() -> TaskGroup<T> {
-        return TaskGroup { tasks: TaskList.Empty }
+extend Handles<T> {
+    public func new() -> Handles<T> {
+        return Handles { list: HandleList.Empty }
     }
 
-    /// Spawn a task in this group.
-    public func spawn(mutate self, take f: func() -> T) -> void {
-        self.tasks = TaskList.More(spawn(f), Heap(self.tasks))
+    public func add(mutate self, take h: Handle<T>) -> void {
+        self.list = HandleList.More(h, Heap(self.list))
     }
 
-    /// Wait for every task. Results come back in spawn order, one per task, so
-    /// a task that panicked doesn't cost the others theirs.
+    /// Wait for every one. Results come back in add order, one per handle, so
+    /// one that panicked doesn't cost the others theirs.
     public func join_all(take self) -> Vec<T or JoinError> {
         mut results: Vec<T or JoinError> = Vec.new()
-        mut rest = self.tasks
+        mut rest = self.list
         loop {
             match rest {
-                TaskList.Empty => break
-                TaskList.More(h, next) => {
+                HandleList.Empty => break
+                HandleList.More(h, next) => {
                     results.push(h.join())
                     rest = *next
                 }
@@ -114,13 +112,13 @@ extend TaskGroup<T> {
         return results
     }
 
-    /// Let every task run on without waiting for it. Consumes the group.
+    /// Let every one run on without waiting.
     public func detach(take self) -> void {
-        mut rest = self.tasks
+        mut rest = self.list
         loop {
             match rest {
-                TaskList.Empty => break
-                TaskList.More(h, next) => {
+                HandleList.Empty => break
+                HandleList.More(h, next) => {
                     h.detach()
                     rest = *next
                 }

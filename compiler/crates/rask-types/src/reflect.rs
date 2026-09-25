@@ -242,8 +242,7 @@ fn is_heap_backed(name: &str) -> bool {
                 | "Channel"
                 | "Sender"
                 | "Receiver"
-                | "TaskHandle"
-                | "ThreadHandle"
+                | "Handle"
                 | "ThreadPool"
                 | "StringBuilder"
                 | "Iterator"
@@ -272,7 +271,7 @@ mod tests {
                 "Boxed" => &["T"],
                 // Self-referential through a reference — the walk has to stop
                 // there (FL3) rather than recurse into `Node` again.
-                "Node" => &["i64", "Handle<Node>"],
+                "Node" => &["i64", "Link<Node>"],
                 "Conn" => &["i64"],
                 "Colour" => &[],
                 "Shape" => &["f64", "Point"],
@@ -358,8 +357,8 @@ mod tests {
         assert_eq!(ask("is_flat", "Vec<i32>"), ReflectAnswer::Bool(false));
         assert_eq!(ask("is_flat", "Map<string, i32>"), ReflectAnswer::Bool(false));
         assert_eq!(ask("is_flat", "any Shape"), ReflectAnswer::Bool(false));
-        // FL3: a handle is integers.
-        assert_eq!(ask("is_flat", "Handle<Node>"), ReflectAnswer::Bool(false));
+        // FL3: a link is an address.
+        assert_eq!(ask("is_flat", "Link<Node>"), ReflectAnswer::Bool(false));
         // FL1 recursively.
         assert_eq!(ask("is_flat", "Point"), ReflectAnswer::Bool(true));
         assert_eq!(ask("is_flat", "Named"), ReflectAnswer::Bool(false));

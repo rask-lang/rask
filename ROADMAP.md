@@ -350,8 +350,8 @@ What the bench finds joins this list. Fixed in #1344: #1311 (the closure form
 of a blocking `Shared` access is rejected, E0897), #1335 (`rask compile` hung
 on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
 its worker), #1302 (a box inside a box leaked), #830 (a link
-captured by `spawn` is rejected, E0898), #891 and #1288 (`TaskGroup` runs
-natively, and is now plain Rask: a linked list of handles, the shape anyone
+captured by `spawn` is rejected, E0898), #891 and #1288 (a group of handles
+runs natively, and is plain Rask: a linked list of handles, the shape anyone
 holding a run-time count of linear values writes; the uncallable free
 `join_all`/`select_first` are gone), #890 (its
 program is a compile error now, E0882), #1354 (a deadlock is reported instead
@@ -360,20 +360,25 @@ of hanging), and five found on the way: an
 a `join` whose result returned early; E0353 on recursion through a spawned
 closure; the interpreter skipping every `ensure` inside a `using` or `with`
 block; and a `Thread` handle freed twice by `ensure t.detach()` after its
-join. Writing `TaskGroup` in Rask turned up more: matching a borrowed value
+join. Writing the group in Rask turned up more: matching a borrowed value
 demanded its parts be consumed (E0899 now covers giving one away), `Heap(x)`
 didn't move `x`, a `break` didn't count as consuming, a generic list inside a
 generic struct got a one-word slot and freed nothing, a generic `take self`
 didn't cancel its `ensure`, `Vec.reverse` overflowed on wide elements, a
 vector returned past an `ensure` was never freed, and the interpreter lost
 track of a resource stored into `mutate self` or closed by an empty method.
+Then the handle types went from two to one: `spawn`, `Thread.spawn` and
+`ThreadPool.spawn` all return `Handle<T>`, and one `Handles<T>` (`new`, `add`,
+`join_all`, `detach`) replaces `TaskGroup` and `ThreadGroup`. `cancel` works on
+threads and pool jobs now, and `cancelled()` works at all: the interpreter
+always said false, and native couldn't compile a call to it.
 Open:
 
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
   tasks over one `Shared` plus a channel.
 - [#1357](https://github.com/rask-lang/rask/issues/1357): freeing a
   `Vec<T or E>` doesn't release an error element's payload, so each panicked
-  task in a `TaskGroup` leaks its message.
+  handle in a `Handles` leaks its message.
 - [#1356](https://github.com/rask-lang/rask/issues/1356): a closure that reaches
   `spawn` through a return or a field isn't checked for a captured link or
   `Local` box. Written in place or bound to a local, it is.

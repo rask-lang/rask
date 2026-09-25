@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-import memory.Heap
+import async.Handle
 
 // --- OS threads ---
 
@@ -12,22 +12,7 @@ extend Thread {
     ///
     /// `take f`: the thread keeps the closure past this call (PM3).
     @native("rask_closure_spawn")
-    public func spawn(take f: func() -> T) -> ThreadHandle<T> {}
-}
-
-/// Handle to a spawned OS thread. Must be joined or detached.
-@resource
-public struct ThreadHandle<T> {
-}
-
-extend ThreadHandle<T> {
-    /// Wait for the thread to finish and return its result.
-    @native("rask_task_join_simple")
-    public func join(take self) -> T or JoinError {}
-
-    /// Detach the thread (fire-and-forget).
-    @native("rask_task_detach")
-    public func detach(take self) {}
+    public func spawn(take f: func() -> T) -> Handle<T> {}
 }
 
 // --- Thread pool ---
@@ -40,78 +25,5 @@ extend ThreadPool {
     ///
     /// `take f`: the pool keeps the closure past this call (PM3).
     @native("rask_threadpool_spawn")
-    public func spawn(take f: func() -> T) -> ThreadHandle<T> {}
-}
-
-// --- Multiple threads ---
-
-/// Threads joined together, for a count known only at run time. `spawn`
-/// starts an OS thread; `add` takes a handle from anywhere else, such as
-/// `ThreadPool.spawn`.
-///
-///     mut group = ThreadGroup<i64>.new()
-///     ensure group.detach()
-///     for chunk in chunks {
-///         group.add(ThreadPool.spawn(|| { return sum(chunk) }))
-///     }
-///     let sums = group.join_all()
-///
-/// Must be joined or detached, like the handles it holds.
-@resource
-public struct ThreadGroup<T> {
-    threads: ThreadList<T>
-}
-
-/// Newest first.
-enum ThreadList<T> {
-    Empty
-    More(ThreadHandle<T>, Heap<ThreadList<T>>)
-}
-
-extend ThreadGroup<T> {
-    public func new() -> ThreadGroup<T> {
-        return ThreadGroup { threads: ThreadList.Empty }
-    }
-
-    /// Start an OS thread in this group.
-    public func spawn(mutate self, take f: func() -> T) -> void {
-        self.add(Thread.spawn(f))
-    }
-
-    /// Keep a handle started elsewhere.
-    public func add(mutate self, take handle: ThreadHandle<T>) -> void {
-        self.threads = ThreadList.More(handle, Heap(self.threads))
-    }
-
-    /// Wait for every thread. Results come back in the order they were
-    /// added, one per thread.
-    public func join_all(take self) -> Vec<T or JoinError> {
-        mut results: Vec<T or JoinError> = Vec.new()
-        mut rest = self.threads
-        loop {
-            match rest {
-                ThreadList.Empty => break
-                ThreadList.More(h, next) => {
-                    results.push(h.join())
-                    rest = *next
-                }
-            }
-        }
-        results.reverse()
-        return results
-    }
-
-    /// Let every thread run on without waiting for it. Consumes the group.
-    public func detach(take self) -> void {
-        mut rest = self.threads
-        loop {
-            match rest {
-                ThreadList.Empty => break
-                ThreadList.More(h, next) => {
-                    h.detach()
-                    rest = *next
-                }
-            }
-        }
-    }
+    public func spawn(take f: func() -> T) -> Handle<T> {}
 }

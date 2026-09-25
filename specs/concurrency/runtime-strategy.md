@@ -25,7 +25,7 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 | **A1: Thread per spawn** | `spawn(|| {})` creates an OS thread via `pthread_create` (`thread.c`) |
 | **A2: Blocking I/O** | All I/O blocks the calling thread. No reactor, no parking |
 | **A3: Real channels** | Channels use a ring buffer + mutex/condvar (`channel.c`). Blocking send/receive |
-| **A4: Affine handles** | `TaskHandle` wraps a refcounted `TaskState*`. Runtime panic on drop (same as interpreter) |
+| **A4: Linear handles** | `Handle` wraps a refcounted `TaskState*`. An unconsumed handle is a compile error |
 | **A5: Block installs process-global slot** | `using Multitasking { ... }` fills the process-global runtime slot (`conc.runtime/R1`) even in Phase A — implementations ignore the slot's contents and block threads for I/O, but the CC1/CC2 scope check and C1 single-active-block invariant are enforced |
 | **A6: ThreadPool real** | `ThreadPool` uses a real bounded thread pool |
 
@@ -42,7 +42,7 @@ Compiles to (pseudocode):
 
 ```c
 // Compiler output
-RaskTaskHandle h = rask_spawn(work_fn, arg_ptr);  // thread.c: pthread_create
+RaskHandle h = rask_spawn(work_fn, arg_ptr);  // thread.c: pthread_create
 int64_t result = rask_join(h);                     // thread.c: pthread_join
 ```
 

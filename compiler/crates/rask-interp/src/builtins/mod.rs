@@ -230,8 +230,7 @@ impl Interpreter {
             Value::Enum { name, variant, fields, .. } if name == "Option" => {
                 return self.call_option_method(variant, fields, method, args);
             }
-            Value::ThreadHandle(handle) => return self.call_thread_handle_method(handle, method),
-            Value::TaskHandle(handle) => return self.call_task_handle_method(handle, method),
+            Value::Handle(handle) => return self.call_handle_method(handle, method),
             Value::Sender(tx) => return self.call_sender_method(tx, method, args),
             Value::Receiver(rx) => return self.call_receiver_method(rx, method),
             Value::Atomic(atomic) => return self.call_atomic_method(atomic, method, args),

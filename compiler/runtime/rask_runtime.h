@@ -1143,50 +1143,29 @@ void    rask_panic_set_task_id(int64_t id);
 void      rask_runtime_init(int64_t worker_count);
 void      rask_runtime_shutdown(void);
 
-// Block until the task finishes. Returns 0 on success, -1 on panic.
-// On panic, if msg_out is non-NULL, receives a heap-allocated panic message
-// (caller must free). Consumes the handle. Never re-panics in the joining
-// context — the caller decides what to do with the error (ctrl.panic/O1).
-int64_t   rask_green_join(void *handle, char **msg_out);
-void      rask_green_detach(void *handle);
-
-// Request cooperative cancellation, then wait for the task to finish.
-// Returns 0 on success, -1 on panic. Consumes the handle.
-int64_t   rask_green_cancel(void *handle, char **msg_out);
-
-// Simplified join/cancel: no panic message output. Returns 0 on success, -1 on panic.
-int64_t   rask_green_join_simple(void *handle);
-int64_t   rask_green_cancel_simple(void *handle);
-
 // Spawn a task running the closure; its result becomes the join value.
 void     *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned);
 
-// Check cancel flag for the current green task.
+// The green scheduler's side of `rask_handle_*`; nothing else calls these.
+int64_t   rask_green_join_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+int64_t   rask_green_cancel_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+void      rask_green_detach(void *handle);
 int       rask_green_task_is_cancelled(void);
 
 
 // ─── Threads ───────────────────────────────────────────────
 // Phase A concurrency: one OS thread per spawn (conc.strategy/A1).
-// TaskHandle is affine — must be joined, detached, or cancelled.
 
 typedef struct RaskTaskHandle RaskTaskHandle;
 
 // Function signature for spawned tasks: takes environment pointer, hands back
 // the task's return value. A task body that returns nothing still matches this
 // on every ABI Rask targets — the unused return register is simply garbage,
-// and join() on a `ThreadHandle<void>` never looks at it.
+// and join() on a `Handle<void>` never looks at it.
 typedef int64_t (*RaskTaskFn)(void *env);
 
 // Spawn a new OS thread running func(env). Caller must join/detach/cancel.
 RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env);
-
-// Block until task finishes. Returns 0 on success, -1 on panic.
-// On panic, if msg_out is non-NULL, receives a heap-allocated panic message
-// (caller must free). Consumes the handle.
-int64_t rask_task_join(RaskTaskHandle *h, char **msg_out);
-
-// Detach the task (fire-and-forget). Consumes the handle.
-void rask_task_detach(RaskTaskHandle *h);
 
 // ctrl.panic/O4: block until every detached task has finished reporting, so a
 // detached panic can't be lost to process exit. Called from `main`.
@@ -1204,10 +1183,6 @@ int64_t rask_outside_progress(void);
 // accept), or writable. A green task parks; any other caller blocks in poll.
 void rask_io_wait(int64_t fd, int64_t want_write);
 
-// Request cooperative cancellation, then wait for the task to finish.
-// Returns 0 on success, -1 on panic. Consumes the handle.
-int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out);
-
 // Check if the current task has been cancelled. Returns 1 if cancelled.
 int8_t rask_task_cancelled(void);
 
@@ -1218,11 +1193,6 @@ void rask_task_slots_install(int64_t n);
 void rask_task_slots_clear(void);
 int  rask_task_slot_release(void);
 void rask_task_slot_retake(int released);
-
-// Raise the cancel flag without joining. `rask_task_cancel` does both, and a
-// caller that wants the outcome shape (RASK_JOIN_CANCELLED and the value) needs
-// the flag raised before `rask_task_join_outcome` reads it.
-void rask_task_request_cancel(void *h);
 
 // Sleep the current thread for the given number of nanoseconds.
 int64_t rask_sleep_ns(int64_t ns);
@@ -1250,9 +1220,6 @@ RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
 struct RaskTaskState;
 void rask_task_state_set_result_owned(struct RaskTaskState *state, int64_t owned);
 
-// Simplified join: no panic message output. Returns 0 on success, -1 on panic.
-int64_t rask_task_join_simple(void *h);
-
 // ─── Join outcome (T or JoinError) ─────────────────────────
 // How a joined task ended. Codegen turns this into the Result tag and, for the
 // two failure cases, the JoinError variant tag — so the numbering here is the
@@ -1261,17 +1228,27 @@ int64_t rask_task_join_simple(void *h);
 #define RASK_JOIN_PANICKED  1
 #define RASK_JOIN_CANCELLED 2
 
-// Join and report the outcome separately from the value, so a task that
+// ─── Handle (conc.async/H5) ────────────────────────────────
+// What every spawn form hands back. A green task's handle and a thread's are
+// different structs; both start with this, so one set of entry points serves
+// them.
+#define RASK_HANDLE_THREAD 1
+#define RASK_HANDLE_GREEN  2
+
+// Wait, and report how it ended separately from the value, so a task that
 // legitimately returns -1 isn't mistaken for a panic. `*value_out` gets the
-// task's return value (0 when it failed); `*msg_out` is always left a valid
-// string — the panic message, or empty. Consumes the handle.
-int64_t rask_task_join_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+// return value (0 when it failed); `*msg_out` is always left a valid string:
+// the panic message, or empty. Consumes the handle.
+int64_t rask_handle_join(void *h, int64_t *value_out, RaskStr *msg_out);
 
-// Same for the green scheduler's task handles.
-int64_t rask_green_join_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+// Raise the cancel flag, then join. CANCELLED unless it panicked on its way out.
+int64_t rask_handle_cancel(void *h, int64_t *value_out, RaskStr *msg_out);
 
-// Cancel-then-join. Reports CANCELLED unless the task panicked on its way out.
-int64_t rask_green_cancel_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+// Let it run on. Consumes the handle.
+void rask_handle_detach(void *h);
+
+// Whether whatever is running the caller has been asked to stop.
+int8_t rask_handle_cancelled(void);
 
 // ─── Channels ──────────────────────────────────────────────
 // Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).

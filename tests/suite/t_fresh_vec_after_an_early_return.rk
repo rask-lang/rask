@@ -12,7 +12,7 @@
 // A `cleanup_return` runs the ensure blocks on its way out, and the early
 // `catch` return reaches those blocks too, so they sat outside the vector's
 // region: the final return counted both as a return and as an edge out, and
-// freed the vector twice. Found as a double free in `TaskGroup.join_all` on the
+// freed the vector twice. Found as a double free in `Handles.join_all` on the
 // first program that had an early return before it.
 
 struct Closer {

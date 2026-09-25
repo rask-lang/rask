@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// One `Handle<T>` from every spawn form, and one `Handles<T>` to hold a count
+// of them known only at run time (conc.async/H5, M2).
+//
+// There used to be `TaskHandle` and `ThreadHandle`, with a `TaskGroup` and a
+// `ThreadGroup` over them. The four types did the same job twice, and a
+// thread's `cancel` didn't exist. Neither backend implemented `cancelled()`
+// either: the interpreter always said false, and native had no entry for it
+// and failed to compile any program that called it.
+
+import async.{spawn, cancelled, Handles, JoinError}
+import thread.{Thread, ThreadPool}
+
+func squares(n: i64) -> Vec<i64 or JoinError> {
+    mut group = Handles<i64>.new()
+    ensure group.detach()
+    mut i = 0
+    while i < n {
+        let k = i
+        group.add(spawn(|| { return k * k }))
+        i += 1
+    }
+    return group.join_all()
+}
+
+func total(results: Vec<i64 or JoinError>) -> i64 {
+    mut sum = 0
+    for r in results {
+        if r is i64 as v { sum += v }
+    }
+    return sum
+}
+
+// Runs until asked to stop, then says how far it got.
+func spin() -> i64 {
+    mut n = 0
+    while !cancelled() {
+        n += 1
+    }
+    return n
+}
+
+test "results come back in add order" {
+    using Multitasking(workers: 4) {
+        let results = squares(20)
+        assert results.len() == 20
+        mut i = 0
+        for r in results {
+            if r is i64 as v {
+                assert v == i * i
+            } else {
+                assert false
+            }
+            i += 1
+        }
+    }
+}
+
+test "a task that panics costs only its own result" {
+    using Multitasking(workers: 2) {
+        mut group = Handles<i64>.new()
+        ensure group.detach()
+        group.add(spawn(|| { return 1 }))
+        group.add(spawn(|| {
+            panic("boom")
+            return 2
+        }))
+        group.add(spawn(|| { return 3 }))
+        mut ok = 0
+        mut panicked = 0
+        for r in group.join_all() {
+            match r {
+                i64 as v => { ok += v },
+                JoinError.Panicked(msg) => { panicked += 1 },
+                JoinError.Cancelled => {},
+            }
+        }
+        assert ok == 4
+        assert panicked == 1
+    }
+}
+
+test "tasks, threads and pool jobs share a group" {
+    using ThreadPool(workers: 2) {
+        using Multitasking(workers: 2) {
+            mut group = Handles<i64>.new()
+            ensure group.detach()
+            group.add(spawn(|| { return 1 }))
+            group.add(Thread.spawn(|| { return 10 }))
+            group.add(ThreadPool.spawn(|| { return 100 }))
+            let results = group.join_all()
+            assert results.len() == 3
+            assert total(results) == 111
+        }
+    }
+}
+
+test "an empty group joins to nothing" {
+    let group = Handles<i64>.new()
+    assert group.join_all().len() == 0
+}
+
+test "a detached group lets its work finish" {
+    using Multitasking(workers: 2) {
+        mut group = Handles<i64>.new()
+        ensure group.detach()
+        group.add(spawn(|| { return 1 }))
+        group.add(Thread.spawn(|| { return 2 }))
+    }
+}
+
+test "many groups, many tasks" {
+    using Multitasking(workers: 4) {
+        mut sum = 0
+        mut round = 0
+        while round < 10 {
+            sum += total(squares(30))
+            round += 1
+        }
+        assert sum == 10 * 8555
+    }
+}
+
+test "cancel stops a task" {
+    using Multitasking(workers: 2) {
+        let h = spawn(|| { return spin() })
+        match h.cancel() {
+            JoinError.Cancelled => {},
+            _ => { assert false },
+        }
+    }
+}
+
+test "cancel stops a thread" {
+    let h = Thread.spawn(|| { return spin() })
+    match h.cancel() {
+        JoinError.Cancelled => {},
+        _ => { assert false },
+    }
+}
+
+test "cancel stops a pool job" {
+    using ThreadPool(workers: 1) {
+        let h = ThreadPool.spawn(|| { return spin() })
+        match h.cancel() {
+            JoinError.Cancelled => {},
+            _ => { assert false },
+        }
+        // The worker that ran it reads its own flag now, not the old one.
+        let next = ThreadPool.spawn(|| {
+            if cancelled() { return 1 }
+            return 0
+        })
+        match next.join() {
+            i64 as v => { assert v == 0 },
+            _ => { assert false },
+        }
+    }
+}
+
+test "outside any spawn, nothing is cancelled" {
+    assert !cancelled()
+}
+
+func main() {}

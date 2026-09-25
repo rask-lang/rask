@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Methods on threading types: ThreadHandle, Sender, Receiver.
+//! Methods on threading types: Handle, Sender, Receiver.
 //!
 //! Layer: RUNTIME — thread join/detach and channel ops need OS primitives.
 
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{ThreadHandleInner, Value};
+use crate::value::{HandleInner, Value};
 
 /// ctrl.panic/O4: a detached task's panic prints to stderr instead of
 /// disappearing. `detach()` can't block on the result, so a reaper thread
@@ -27,91 +28,31 @@ fn report_detached_panic(task_id: i64, jh: std::thread::JoinHandle<Result<Value,
     }
 }
 
-/// Same as `report_detached_panic`, for tasks submitted to a thread pool
-/// (result arrives over a channel instead of a JoinHandle).
-fn report_detached_panic_recv(task_id: i64, rx: mpsc::Receiver<Result<Value, String>>) {
-    if let Ok(reaper) = crate::spawn_interp_thread(move || {
-        if let Ok(Err(msg)) = rx.recv() {
-            eprintln!("task {} panic at {}", task_id, msg);
-        }
-    }) {
-        crate::register_detached_reaper(reaper);
-    }
-}
-
 impl Interpreter {
     /// Mark a handle as consumed in the resource tracker (conc.async/H1).
-    fn consume_handle(&mut self, handle: &Arc<ThreadHandleInner>) {
+    fn consume_handle(&mut self, handle: &Arc<HandleInner>) {
         let ptr = Arc::as_ptr(handle) as usize;
         if let Some(id) = self.resource_tracker.lookup_handle_id(ptr) {
             let _ = self.resource_tracker.mark_consumed(id);
         }
     }
 
-    /// Handle ThreadHandle method calls.
-    pub(crate) fn call_thread_handle_method(
+    /// `Handle` methods — the same for a task, a pooled job and a thread.
+    pub(crate) fn call_handle_method(
         &mut self,
-        handle: &Arc<ThreadHandleInner>,
+        handle: &Arc<HandleInner>,
         method: &str,
     ) -> Result<Value, RuntimeError> {
         match method {
             "join" => {
                 self.consume_handle(handle);
-                let jh = handle.handle.lock().unwrap().take();
-                match jh {
-                    // Without the slot: a joiner that kept it would leave
-                    // `using Multitasking(workers: 1)` with nothing free to
-                    // run the task it is waiting for (#1111).
-                    Some(jh) => match crate::without_task_slot(|| jh.join()) {
-                        // Thread succeeded - return Ok(value)
-                        Ok(Ok(val)) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![val],
-                            variant_index: 0, origin: None,
-                        }),
-                        // Thread returned error - wrap in JoinError::Panicked
-                        Ok(Err(msg)) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::Enum {
-                                name: "JoinError".to_string(),
-                                variant: "Panicked".to_string(),
-                                fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
-                                variant_index: 0, origin: None,
-                            }],
-                            variant_index: 0, origin: None,
-                        }),
-                        // Thread panicked - return Err(JoinError::Panicked)
-                        Err(_) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::Enum {
-                                name: "JoinError".to_string(),
-                                variant: "Panicked".to_string(),
-                                fields: vec![Value::String(Arc::new(Mutex::new(
-                                    "thread panicked".to_string(),
-                                )))],
-                                variant_index: 0, origin: None,
-                            }],
-                            variant_index: 0, origin: None,
-                        }),
-                    },
-                    // Handle already consumed - return Err(JoinError::Panicked) with message
-                    None => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::Enum {
-                            name: "JoinError".to_string(),
-                            variant: "Panicked".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(
-                                "handle already joined".to_string(),
-                            )))],
-                            variant_index: 0, origin: None,
-                        }],
-                        variant_index: 0, origin: None,
-                    }),
-                }
+                Ok(join_outcome(handle))
+            }
+            "cancel" => {
+                self.consume_handle(handle);
+                // CN1: raise the flag, then wait for the body to notice.
+                handle.cancel.store(true, Ordering::Release);
+                Ok(join_outcome(handle))
             }
             "detach" => {
                 self.consume_handle(handle);
@@ -121,161 +62,7 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
             _ => Err(RuntimeError::NoSuchMethod {
-                ty: "ThreadHandle".to_string(),
-                method: method.to_string(),
-            }),
-        }
-    }
-
-    /// Handle TaskHandle method calls.
-    /// Tasks submitted to a thread pool use the receiver channel; otherwise fall back to join handle.
-    pub(crate) fn call_task_handle_method(
-        &mut self,
-        handle: &Arc<ThreadHandleInner>,
-        method: &str,
-    ) -> Result<Value, RuntimeError> {
-        match method {
-            "join" => {
-                self.consume_handle(handle);
-                // Try receiver first (pool-submitted tasks)
-                let rx = handle.receiver.lock().unwrap().take();
-                if let Some(rx) = rx {
-                    return match crate::without_task_slot(|| rx.recv()) {
-                        Ok(Ok(val)) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![val],
-                            variant_index: 0, origin: None,
-                        }),
-                        Ok(Err(msg)) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::Enum {
-                                name: "JoinError".to_string(),
-                                variant: "Panicked".to_string(),
-                                fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
-                                variant_index: 0, origin: None,
-                            }],
-                            variant_index: 0, origin: None,
-                        }),
-                        Err(_) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::Enum {
-                                name: "JoinError".to_string(),
-                                variant: "Panicked".to_string(),
-                                fields: vec![Value::String(Arc::new(Mutex::new(
-                                    "task channel closed".to_string(),
-                                )))],
-                                variant_index: 0, origin: None,
-                            }],
-                            variant_index: 0, origin: None,
-                        }),
-                    };
-                }
-                // Fall back to OS thread handle
-                let jh = handle.handle.lock().unwrap().take();
-                match jh {
-                    // Without the slot: a joiner that kept it would leave
-                    // `using Multitasking(workers: 1)` with nothing free to
-                    // run the task it is waiting for (#1111).
-                    Some(jh) => match crate::without_task_slot(|| jh.join()) {
-                        Ok(Ok(val)) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![val],
-                            variant_index: 0, origin: None,
-                        }),
-                        Ok(Err(msg)) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::Enum {
-                                name: "JoinError".to_string(),
-                                variant: "Panicked".to_string(),
-                                fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
-                                variant_index: 0, origin: None,
-                            }],
-                            variant_index: 0, origin: None,
-                        }),
-                        Err(_) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::Enum {
-                                name: "JoinError".to_string(),
-                                variant: "Panicked".to_string(),
-                                fields: vec![Value::String(Arc::new(Mutex::new(
-                                    "task panicked".to_string(),
-                                )))],
-                                variant_index: 0, origin: None,
-                            }],
-                            variant_index: 0, origin: None,
-                        }),
-                    },
-                    None => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::Enum {
-                            name: "JoinError".to_string(),
-                            variant: "Panicked".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(
-                                "handle already joined".to_string(),
-                            )))],
-                            variant_index: 0, origin: None,
-                        }],
-                        variant_index: 0, origin: None,
-                    }),
-                }
-            }
-            "detach" => {
-                self.consume_handle(handle);
-                // O4: detach doesn't wait, but the eventual panic (if any)
-                // still has to reach stderr — hand it to a reaper thread
-                // instead of dropping the result.
-                if let Some(rx) = handle.receiver.lock().unwrap().take() {
-                    report_detached_panic_recv(handle.task_id, rx);
-                } else if let Some(jh) = handle.handle.lock().unwrap().take() {
-                    report_detached_panic(handle.task_id, jh);
-                }
-                Ok(Value::Unit)
-            }
-            "cancel" => {
-                self.consume_handle(handle);
-                // Cooperative cancellation (CN1): set flag and join.
-                // Phase A: no cancel token in interpreter yet — just join and
-                // return Cancelled. Full cancel support lives in the C runtime.
-                let jh = handle.handle.lock().unwrap().take();
-                match jh {
-                    Some(jh) => {
-                        let _ = jh.join();
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::Enum {
-                                name: "JoinError".to_string(),
-                                variant: "Cancelled".to_string(),
-                                fields: vec![],
-                                variant_index: 0, origin: None,
-                            }],
-                            variant_index: 0, origin: None,
-                        })
-                    }
-                    None => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::Enum {
-                            name: "JoinError".to_string(),
-                            variant: "Panicked".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(
-                                "handle already consumed".to_string(),
-                            )))],
-                            variant_index: 0, origin: None,
-                        }],
-                        variant_index: 0, origin: None,
-                    }),
-                }
-            }
-            _ => Err(RuntimeError::NoSuchMethod {
-                ty: "TaskHandle".to_string(),
+                ty: "Handle".to_string(),
                 method: method.to_string(),
             }),
         }
@@ -421,5 +208,41 @@ fn chan_error(ty: &str, variant: &str, index: u32, fields: Vec<Value>) -> Value 
         fields,
         variant_index: index,
         origin: None,
+    }
+}
+
+/// Wait for the body and say how it ended, as `T or JoinError`. Cancelled wins
+/// over a value, the same as native: the caller asked it to stop, so what it
+/// returned on the way out isn't the answer.
+fn join_outcome(handle: &HandleInner) -> Value {
+    let jh = handle.handle.lock().unwrap().take();
+    // Without the slot: a joiner that kept it would leave
+    // `using Multitasking(workers: 1)` with nothing free to run the task it is
+    // waiting for (#1111).
+    let ended = match jh {
+        Some(jh) => crate::without_task_slot(|| jh.join())
+            .unwrap_or_else(|_| Err("task panicked".to_string())),
+        None => Err("handle already consumed".to_string()),
+    };
+    let failed = |variant: &str, fields: Vec<Value>| Value::Enum {
+        name: "Result".to_string(),
+        variant: "Err".to_string(),
+        fields: vec![Value::Enum {
+            name: "JoinError".to_string(),
+            variant: variant.to_string(),
+            fields,
+            variant_index: 0, origin: None,
+        }],
+        variant_index: 0, origin: None,
+    };
+    match ended {
+        Err(msg) => failed("Panicked", vec![Value::String(Arc::new(Mutex::new(msg)))]),
+        Ok(_) if handle.cancel.load(Ordering::Acquire) => failed("Cancelled", vec![]),
+        Ok(val) => Value::Enum {
+            name: "Result".to_string(),
+            variant: "Ok".to_string(),
+            fields: vec![val],
+            variant_index: 0, origin: None,
+        },
     }
 }

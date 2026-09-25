@@ -34,7 +34,7 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
         | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
         | "JsonValue" | "Path" | "Args" | "Duration" => StdlibLayer::Pure,
 
-        "ThreadHandle" | "Sender" | "Receiver" | "Shared" | "Atomic"
+        "Handle" | "Sender" | "Receiver" | "Shared" | "Atomic"
         | "File" | "Metadata"
         | "TcpListener" | "TcpConnection"
         | "Instant" => StdlibLayer::Runtime,
@@ -191,8 +191,7 @@ const ARGS_METHODS: &[&str] = &[
     "flag", "option", "option_or", "positional", "program",
 ];
 
-const THREAD_HANDLE_METHODS: &[&str] = &["join", "detach"];
-const TASK_HANDLE_METHODS: &[&str] = &["join", "detach", "cancel"];
+const HANDLE_METHODS: &[&str] = &["join", "detach", "cancel"];
 const SENDER_METHODS: &[&str] = &["send", "try_send", "close"];
 const RECEIVER_METHODS: &[&str] = &["receive", "try_receive", "close"];
 /// A compiler type's methods, each with the argument counts it accepts.
@@ -317,7 +316,7 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "JsonValue",
     "Duration", "Instant",
     "Path", "Args",
-    "ThreadHandle", "TaskHandle", "Sender", "Receiver", "Shared",
+    "Handle", "Sender", "Receiver", "Shared",
     "Atomic",
     "f32x4", "f32x8", "f64x2", "f64x4", "i32x4", "i32x8",
 ];
@@ -338,7 +337,7 @@ pub const REGISTERED_MODULES: &[&str] = &[
 /// `Path` was the first: 46 lines of declarations, 192 lines of C and 184 lines
 /// of Rust, for pure string manipulation that the two backends got different
 /// answers from (#688).
-pub const RASK_IMPLEMENTED_TYPES: &[&str] = &["Path", "TaskGroup", "ThreadGroup"];
+pub const RASK_IMPLEMENTED_TYPES: &[&str] = &["Path", "Handles"];
 
 /// True when this type's methods live in Rask rather than in the backends.
 pub fn is_rask_implemented(type_name: &str) -> bool {
@@ -371,8 +370,7 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "Instant" => INSTANT_METHODS,
         "Path" => PATH_METHODS,
         "Args" => ARGS_METHODS,
-        "ThreadHandle" => THREAD_HANDLE_METHODS,
-        "TaskHandle" => TASK_HANDLE_METHODS,
+        "Handle" => HANDLE_METHODS,
         "Sender" => SENDER_METHODS,
         "Receiver" => RECEIVER_METHODS,
         "Shared" => SHARED_METHODS,

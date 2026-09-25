@@ -121,11 +121,9 @@ enum Value {
     Module(ModuleKind),
 
     // Concurrency
-    Pool(Arc<Mutex<PoolData>>),
-    Handle { pool_id, index, generation },
     Channel { sender, receiver },
     Shared(Arc<RwLock<Value>>),
-    ThreadHandle(Arc<ThreadHandleInner>),
+    Handle(Arc<HandleInner>),
     // ...
 }
 ```

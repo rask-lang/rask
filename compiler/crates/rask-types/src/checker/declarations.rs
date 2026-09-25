@@ -1639,7 +1639,7 @@ impl TypeChecker {
             // plus every single uppercase letter appearing in the signature.
             //
             // This used to read the explicit list only. A stdlib method almost
-            // never has one — `Thread.spawn(f: func() -> T) -> ThreadHandle<T>`
+            // never has one — `Thread.spawn(f: func() -> T) -> Handle<T>`
             // declares `T` by using it — so nothing gave `T` a variable, the
             // argument had nothing to bind to, and the handle's payload stayed
             // unresolved all the way to MIR (#963).

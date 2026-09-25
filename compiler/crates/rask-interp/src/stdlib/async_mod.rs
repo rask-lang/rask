@@ -19,11 +19,7 @@ impl Interpreter {
             // reached by `spawn(|| …)`, so a fix applied here did nothing
             // (#882 was landed into this copy first and changed no behaviour).
             "spawn" => self.spawn_async_task(args),
-            "cancelled" => {
-                // Phase A: cooperative cancellation not yet implemented with OS threads.
-                // Always returns false — tasks must use other mechanisms to check.
-                Ok(Value::Bool(false))
-            }
+            "cancelled" => Ok(Value::Bool(crate::value::cancel_requested())),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "async".to_string(),
                 method: method.to_string(),

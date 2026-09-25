@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
-use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
+use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadPoolInner, TypeConstructorKind, Value};
 
 use super::{AssertDetail, Interpreter, RuntimeDiagnostic, RuntimeError};
 
@@ -2539,96 +2539,6 @@ impl Interpreter {
                     }
                     _ => Ok(val),
                 }
-            }
-
-            ExprKind::BlockCall { name, body } if name == "spawn_raw" => {
-                let body = body.clone();
-                let captured = self.env.capture_snapshot();
-                let child = self.spawn_child(captured);
-                let join_handle = crate::spawn_interp_thread(move || {
-                    let mut interp = child;
-                    let mut result = Value::Unit;
-                    for stmt in &body {
-                        match interp.exec_stmt(stmt) {
-                            Ok(val) => result = val,
-                            Err(e) => return Err(interp.task_failure_message(&e)),
-                        }
-                    }
-                    Ok(result)
-                }).map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-
-                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
-                    handle: Mutex::new(Some(join_handle)),
-                    receiver: Mutex::new(None),
-                    task_id: crate::value::next_task_id(),
-                })))
-            }
-
-            ExprKind::BlockCall { name, body } if name == "spawn_thread" => {
-                let pool = self.env.get("__thread_pool");
-                let pool = match pool {
-                    Some(Value::ThreadPool(p)) => p,
-                    _ => {
-                        return Err(RuntimeDiagnostic::new(
-                            RuntimeError::TypeError(
-                                "spawn_thread requires `ThreadPool` in scope".to_string(),
-                            ),
-                            expr.span
-                        ))
-                    }
-                };
-
-                let body = body.clone();
-                let captured = self.env.capture_snapshot();
-                let child = self.spawn_child(captured);
-
-                let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
-
-                let task = PoolTask {
-                    work: Box::new(move || {
-                        let mut interp = child;
-                        let mut result = Value::Unit;
-                        for stmt in &body {
-                            match interp.exec_stmt(stmt) {
-                                Ok(val) => result = val,
-                                Err(e) => {
-                                    let _ = result_tx.send(Err(interp.task_failure_message(&e)));
-                                    return;
-                                }
-                            }
-                        }
-                        let _ = result_tx.send(Ok(result));
-                    }),
-                };
-
-                let sender = pool.sender.lock().unwrap();
-                if let Some(ref tx) = *sender {
-                    tx.send(task).map_err(|_| {
-                        RuntimeDiagnostic::new(
-                            RuntimeError::ResourceClosed { resource_type: "ThreadPool".to_string(), operation: "spawn on".to_string() },
-                            expr.span
-                        )
-                    })?;
-                } else {
-                    return Err(RuntimeDiagnostic::new(
-                        RuntimeError::TypeError(
-                            "thread pool is shut down".to_string(),
-                        ),
-                        expr.span
-                    ));
-                }
-
-                let join_handle = crate::spawn_interp_thread(move || {
-                    result_rx
-                        .recv()
-                        .unwrap_or(Err("thread pool task dropped".to_string()))
-                }).map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-
-                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
-                    handle: Mutex::new(Some(join_handle)),
-                    receiver: Mutex::new(None),
-                    task_id: crate::value::next_task_id(),
-                })))
             }
 
             ExprKind::UsingBlock { name, args, body }
