@@ -35,22 +35,25 @@ func main() -> void {
     // Spawn multiple threads
     print("=== Multiple Threads ===\n\n")
 
-    // A handle has to be joined or detached, so several go in a group.
-    // The ensure detaches them if anything fails before the join.
-    mut workers = ThreadGroup<void>.new()
-    ensure workers.detach()
-    workers.spawn(|| {
+    // A handle has to be joined or detached. The ensure detaches it if
+    // anything fails before the join; the join cancels it.
+    let h1 = Thread.spawn(|| {
         worker(1, 10)
     })
-    workers.spawn(|| {
+    ensure h1.detach()
+    let h2 = Thread.spawn(|| {
         worker(2, 20)
     })
-    workers.spawn(|| {
+    ensure h2.detach()
+    let h3 = Thread.spawn(|| {
         worker(3, 15)
     })
+    ensure h3.detach()
 
     // Wait for all threads
-    let _ = workers.join_all()
+    let _ = h1.join()
+    let _ = h2.join()
+    let _ = h3.join()
 
     print("\nAll workers done\n\n")
 
