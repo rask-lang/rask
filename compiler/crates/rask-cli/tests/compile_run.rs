@@ -4039,7 +4039,7 @@ fn thread_join_reports_value_and_panic_on_both_backends() {
         // at print time, not in a string user code prints itself. The path is
         // relative to the runner's cwd, so match the tail.
         let panicked = lines.get(2).copied().unwrap_or_default();
-        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:26: boom"),
+        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:24: boom"),
             "{}: a panicked task joins as JoinError.Panicked carrying file:line and its message: {:?}", mode, stdout);
         assert_eq!(lines.get(3), Some(&"still alive"), "{}: execution continues: {:?}", mode, stdout);
     }

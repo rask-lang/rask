@@ -47,7 +47,6 @@ func observe() {
     match h.join() {
         T as val                => process(val),
         JoinError.Panicked(msg) => log("worker died: {msg}"),  // P3: only observation point
-        JoinError.Cancelled     => {},
     }
 }
 ```

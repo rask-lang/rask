@@ -34,10 +34,9 @@ struct Tally9 {
 const SHELF: Shared<Tally9, Mutex> = Shared.mutex(Tally9 { hits: 0, misses: 0 })
 const LATER: Shared<Tally9, Mutex> = Shared.mutex(Tally9 { hits: 7, misses: 0 })
 
-// 1 = returned a value, 2 = panicked, 3 = cancelled.
+// 1 = returned a value, 2 = panicked.
 const RETURNED: i64 = 1
 const PANICKED: i64 = 2
-const CANCELLED: i64 = 3
 
 test "O1: a panicking task surfaces as JoinError.Panicked at the join" {
     mut outcome = 0
@@ -53,7 +52,6 @@ test "O1: a panicking task surfaces as JoinError.Panicked at the join" {
                 outcome = PANICKED
                 note = msg
             },
-            JoinError.Cancelled => { outcome = CANCELLED },
         }
     }
     assert outcome == PANICKED
@@ -70,7 +68,6 @@ test "O1: the message names what went wrong" {
         match h.join() {
             i64 as v => { note = "returned" },
             JoinError.Panicked(msg) => { note = msg },
-            JoinError.Cancelled => { note = "cancelled" },
         }
     }
     assert note.contains("shelf gave out")
@@ -87,7 +84,6 @@ test "P2: the survivor keeps running and joins a healthy task after" {
         match dead.join() {
             i64 as v => { first = RETURNED },
             JoinError.Panicked(msg) => { first = PANICKED },
-            JoinError.Cancelled => { first = CANCELLED },
         }
         let alive = Thread.spawn(|| {
             return 42
@@ -95,7 +91,6 @@ test "P2: the survivor keeps running and joins a healthy task after" {
         match alive.join() {
             i64 as v => { second = v },
             JoinError.Panicked(msg) => { second = -1 },
-            JoinError.Cancelled => { second = -2 },
         }
     }
     assert first == PANICKED
@@ -115,7 +110,6 @@ test "O3 + LK1-LK3: the next acquirer gets the lock and the last write" {
         match h.join() {
             i64 as v => { outcome = RETURNED },
             JoinError.Panicked(msg) => { outcome = PANICKED },
-            JoinError.Cancelled => { outcome = CANCELLED },
         }
     }
     assert outcome == PANICKED
@@ -141,7 +135,6 @@ test "ST3 across a task boundary: a staged update commits nothing on panic" {
         match h.join() {
             i64 as v => { outcome = RETURNED },
             JoinError.Panicked(msg) => { outcome = PANICKED },
-            JoinError.Cancelled => { outcome = CANCELLED },
         }
     }
     assert outcome == PANICKED
@@ -164,7 +157,6 @@ test "O2: a dying sender's buffer drains, then the receiver sees closed" {
         match h.join() {
             i64 as v => { outcome = RETURNED },
             JoinError.Panicked(msg) => { outcome = PANICKED },
-            JoinError.Cancelled => { outcome = CANCELLED },
         }
     }
     assert outcome == PANICKED

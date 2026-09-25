@@ -60,7 +60,7 @@ void rask_runtime_shutdown(void) {
 // A closure runs once, and that is exactly what `rask_closure_spawn` does — including freeing the
 // closure allocation and carrying `result_owned`, which is how a task's boxed
 // return value survives the join.
-void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
+RaskTask *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
     return rask_closure_spawn(closure_ptr, result_owned);
 }
 

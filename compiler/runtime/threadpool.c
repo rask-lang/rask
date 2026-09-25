@@ -11,10 +11,8 @@
 // threads, a thousand jobs were a thousand threads. `using ThreadPool` also
 // started the *green* scheduler, which the spawn never looked at.
 //
-// A job's handle is the same RaskTaskHandle Thread.spawn hands back, so join /
-// detach / cancel all work unchanged. The difference is that a pooled job owns
-// no thread, so join waits for the job's status rather than pthread_join'ing —
-// that's the `pooled` flag in thread.c.
+// A job is a `RaskTask` like any other, and its handle joins, detaches and
+// cancels the same way. It just has no thread of its own to join.
 //
 // Under sim the pool is the same pool: each worker is a sim task, so the
 // worker count and the queue's order hold exactly as they do in production,
@@ -29,22 +27,12 @@
 #include <stdatomic.h>
 #include <unistd.h>
 
-// ─── From thread.c ─────────────────────────────────────────
-
-typedef struct RaskTaskState RaskTaskState;
-
-extern RaskTaskState *rask_task_state_new_pooled(void);
-extern RaskTaskHandle *rask_task_handle_for(RaskTaskState *state);
-extern void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env);
-extern void rask_task_state_release(RaskTaskState *state);
-
 // ─── Job queue ─────────────────────────────────────────────
 
 typedef struct PoolJob {
     RaskTaskFn      func;
     void           *env;
-    void           *alloc_base;   // closure allocation, freed after the job
-    RaskTaskState  *state;
+    RaskTask       *task;
     struct PoolJob *next;
 } PoolJob;
 
@@ -98,9 +86,8 @@ static void *pool_worker(void *arg) {
 
         if (!job) continue;
 
-        rask_task_run_body(job->state, job->func, job->env);
-        if (job->alloc_base) rask_closure_free(job->alloc_base);
-        rask_task_state_release(job->state);   // the worker's ref
+        rask_task_run_body(job->task, job->func, job->env);
+        rask_task_release(job->task);   // the worker's ref
         rask_free(job);
     }
 }
@@ -201,7 +188,7 @@ void rask_threadpool_shutdown(void) {
 // ThreadPool.spawn. Outside a `using ThreadPool` block there is no pool, so
 // this falls back to a dedicated thread rather than enqueueing into a queue
 // nothing drains.
-RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
+RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
     if (!g_pool.started) {
         return rask_closure_spawn(closure_ptr, result_owned);
     }
@@ -209,15 +196,14 @@ RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
-    RaskTaskState *state = rask_task_state_new_pooled();
-    rask_task_state_set_result_owned(state, result_owned);
+    RaskTask *task = rask_task_new();
+    rask_task_adopt_closure(task, closure_ptr, result_owned);
 
     PoolJob *job = (PoolJob *)rask_alloc(sizeof(PoolJob));
     *job = (PoolJob){
         .func = func,
         .env = env,
-        .alloc_base = closure_ptr,
-        .state = state,
+        .task = task,
         .next = NULL,
     };
 
@@ -232,5 +218,5 @@ RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned) {
     rask_task_cond_signal(&g_pool.work_ready);
     pthread_mutex_unlock(&g_pool.lock);
 
-    return rask_task_handle_for(state);
+    return task;
 }

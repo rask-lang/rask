@@ -25,7 +25,6 @@ func main() {
         match h.join() {
             i64 as v => println("joined {v}"),
             JoinError.Panicked(msg) => println("panicked"),
-            JoinError.Cancelled => println("cancelled"),
         }
     }
     with C.read() as c {

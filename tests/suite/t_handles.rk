@@ -8,9 +8,15 @@
 // thread's `cancel` didn't exist. Neither backend implemented `cancelled()`
 // either: the interpreter always said false, and native had no entry for it
 // and failed to compile any program that called it.
+//
+// A cancelled body ends through its own code (CN4), so `cancel` hands back
+// what it returned. It used to answer `JoinError.Cancelled` and drop the value,
+// which leaks a box and loses a linear one outright.
 
 import async.{spawn, cancelled, Handles, JoinError}
 import thread.{Thread, ThreadPool}
+import time
+import time.Duration
 
 func squares(n: i64) -> Vec<i64 or JoinError> {
     mut group = Handles<i64>.new()
@@ -73,7 +79,6 @@ test "a task that panics costs only its own result" {
             match r {
                 i64 as v => { ok += v },
                 JoinError.Panicked(msg) => { panicked += 1 },
-                JoinError.Cancelled => {},
             }
         }
         assert ok == 4
@@ -126,7 +131,7 @@ test "cancel stops a task" {
     using Multitasking(workers: 2) {
         let h = spawn(|| { return spin() })
         match h.cancel() {
-            JoinError.Cancelled => {},
+            i64 as n => { assert n >= 0 },
             _ => { assert false },
         }
     }
@@ -135,7 +140,7 @@ test "cancel stops a task" {
 test "cancel stops a thread" {
     let h = Thread.spawn(|| { return spin() })
     match h.cancel() {
-        JoinError.Cancelled => {},
+        i64 as n => { assert n >= 0 },
         _ => { assert false },
     }
 }
@@ -144,7 +149,7 @@ test "cancel stops a pool job" {
     using ThreadPool(workers: 1) {
         let h = ThreadPool.spawn(|| { return spin() })
         match h.cancel() {
-            JoinError.Cancelled => {},
+            i64 as n => { assert n >= 0 },
             _ => { assert false },
         }
         // The worker that ran it reads its own flag now, not the old one.
@@ -154,6 +159,31 @@ test "cancel stops a pool job" {
         })
         match next.join() {
             i64 as v => { assert v == 0 },
+            _ => { assert false },
+        }
+    }
+}
+
+test "a cancelled task's value reaches the caller" {
+    using Multitasking(workers: 2) {
+        let h = spawn(|| {
+            while !cancelled() {}
+            return "stopped when asked"
+        })
+        match h.cancel() {
+            string as s => { assert s == "stopped when asked" },
+            _ => { assert false },
+        }
+    }
+}
+
+test "cancelling a task that already finished keeps its value" {
+    using Multitasking(workers: 2) {
+        let h = spawn(|| { return 42 })
+        ensure h.detach()
+        time.sleep(Duration.millis(20))
+        match h.cancel() {
+            i64 as v => { assert v == 42 },
             _ => { assert false },
         }
     }

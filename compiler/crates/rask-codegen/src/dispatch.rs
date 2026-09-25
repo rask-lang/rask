@@ -79,9 +79,8 @@ pub enum ArgAdapt {
     /// returning a pointer into freed storage.
     OptionOutParam,
     /// join/cancel: append two out-params — the task's value and a 16-byte
-    /// message string. The call returns how the task ended (ok/panicked/
-    /// cancelled), which becomes the `T or JoinError` tag and, when it failed,
-    /// the JoinError variant.
+    /// message string. The call returns how the task ended (ok/panicked),
+    /// which becomes the `T or JoinError` tag.
     JoinOutcomeOutParams,
     /// Complex case handled by hand-written code
     Custom,
@@ -1327,9 +1326,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("time_sleep", "rask_sleep_ns", &[types::I64], Some(types::I64), false),
 
-        // ── Concurrency: spawn/join/detach (green scheduler) ────────
-        // join/cancel report how the task ended alongside its value, same as
-        // the OS-thread path — a panicked task no longer re-panics in the
+        // ── Concurrency: spawn/join/detach ──────────────────────────
+        // join/cancel report how the task ended alongside its value — a
+        // panicked task doesn't re-panic in the
         // joiner, it comes back as Err(JoinError.Panicked(msg)) (ctrl.panic/O1).
         // Two args: the closure, then whether its result is a heap box the task
         // owns and must free if no join ever comes for it (#963).

@@ -37,7 +37,6 @@ func joined_in_a_match() -> i64 {
     match h.join() {
         i64 as v => { return v },
         JoinError.Panicked(msg) => { return -2 },
-        JoinError.Cancelled => { return -3 },
     }
 }
 

@@ -31,7 +31,9 @@
 // task switches on and off again when it switches off, since several fibers
 // take turns on one thread.
 //
-// Handles are refcounted: one for the handle holder, one for the scheduler.
+// What a task produced, and its handle, live in thread.c's `RaskTask`, shared
+// with threads and pooled jobs. This file owns only the fiber and its place in
+// the scheduler, and frees it when the body is done.
 
 #include "fiber.h"
 #include "rask_runtime.h"
@@ -73,40 +75,9 @@ typedef struct GreenTask {
     int64_t       (*body)(void *);
     void           *body_arg;
 
-    atomic_int      cancel_flag;
-    int64_t         result;
-    // Non-zero when `result` is a heap box this task owns rather than a plain
-    // value. A task's result travels as one machine word, so anything wider —
-    // and anything that comes back in a float register — is allocated by the
-    // spawn thunk and the word is its address. Somebody has to free it, and the
-    // task is the only party present at every ending: joined, cancelled, or
-    // detached and never looked at.
-    //
-    // `green_join` hands ownership to the joiner by clearing `result`, so
-    // exactly one of the two frees it (#963).
-    int64_t         result_owned;
-
-    // The closure allocation the task body runs out of. The task owns it for
-    // the same reason it owns `result_owned` above: joined, cancelled or
-    // detached, the task is present for all three endings. The body used to
-    // free it on the line after its own call, which a panicking body longjmps
-    // past (#1223).
-    void           *closure_base;
-    char           *panic_msg;
-
-    // Completion signaling
-    pthread_mutex_t done_lock;
-    pthread_cond_t  done_cond;
-    int             done;
-
-    // O4: set by detach(), checked (under done_lock) wherever the task's
-    // panic would otherwise only surface to a join() that's never coming.
-    int             detached;
-
-    int64_t         task_id;   // ctrl.panic/F1
-
-    // Refcount: handle(1) + scheduler(1)
-    atomic_int      refcount;
+    // How it ended and who waits for it (thread.c). The task holds one ref,
+    // released when the fiber is done.
+    RaskTask       *task;
 
     // ── Fiber ──
     RaskFiber       fiber;
@@ -127,14 +98,6 @@ typedef struct GreenTask {
     int64_t           wake_at_ns;
     struct GreenTask *timer_next;
 } GreenTask;
-
-// ─── Task handle (returned to user code) ────────────────────
-
-// `kind` first: `rask_handle_*` in thread.c reads it to route here.
-typedef struct GreenHandle {
-    int64_t    kind;
-    GreenTask *task;
-} GreenHandle;
 
 // ─── Chase-Lev work-stealing deque ──────────────────────────
 //
@@ -364,44 +327,15 @@ static GreenTask *task_new(void) {
         abort();
     }
     t->tls = tls;
-    atomic_init(&t->cancel_flag, 0);
     atomic_init(&t->park, PARK_RUNNING);
-    t->task_id = rask_next_task_id();
     t->home = -1;
-    atomic_init(&t->refcount, 2); // handle + scheduler
-    pthread_mutex_init(&t->done_lock, NULL);
-    pthread_cond_init(&t->done_cond, NULL);
     return t;
 }
 
-static void task_release(GreenTask *t) {
-    if (atomic_fetch_sub_explicit(&t->refcount, 1, memory_order_acq_rel) == 1) {
-        pthread_mutex_destroy(&t->done_lock);
-        pthread_cond_destroy(&t->done_cond);
-        if (t->panic_msg) free(t->panic_msg);
-        // The task body's closure allocation, whichever way the body ended.
-        if (t->closure_base) rask_closure_free(t->closure_base);
-        // Still set means nobody took it — a detached task whose value no join
-        // ever came for.
-        if (t->result_owned && t->result) rask_free((void *)(intptr_t)t->result);
-        free(t->tls);
-        free(t);
-    }
-}
-
-static void task_mark_complete(GreenTask *t) {
-    pthread_mutex_lock(&t->done_lock);
-    t->done = 1;
-    // O4: already detached — no join() is coming to read panic_msg, so
-    // report it now instead of leaking it silently.
-    if (t->detached && t->panic_msg) {
-        fprintf(stderr, "task %lld panic at %s\n",
-                (long long)t->task_id, t->panic_msg);
-        free(t->panic_msg);
-        t->panic_msg = NULL;
-    }
-    rask_task_cond_broadcast(&t->done_cond);
-    pthread_mutex_unlock(&t->done_lock);
+static void task_free(GreenTask *t) {
+    rask_task_release(t->task); // the runner's ref
+    free(t->tls);
+    free(t);
 }
 
 // A task that hasn't started: onto this worker's deque if we are one, else
@@ -475,23 +409,24 @@ static void fiber_main(void *arg) {
 
     rask_panic_install();
     jmp_buf *jb = rask_panic_jmpbuf();
-    rask_panic_set_task_id(t->task_id); // F1
+    rask_panic_set_task_id(rask_task_id(t->task)); // F1
 
+    int64_t result = 0;
+    char *panic_msg = NULL;
     if (setjmp(*jb) == 0) {
         rask_panic_activate();
-        t->result = t->body(t->body_arg);
+        result = t->body(t->body_arg);
     } else {
         // Panicked — the hooks ran before the longjmp; drain anything left.
         rask_ensure_run_all();
-        t->panic_msg = rask_panic_take_message();
-        t->result = -1;
+        panic_msg = rask_panic_take_message();
     }
     rask_panic_remove();
     rask_panic_set_task_id(0);
     // A normal return has popped its hooks; anything still here is owed.
     rask_ensure_run_all();
 
-    task_mark_complete(t);
+    rask_task_finish(t->task, result, panic_msg);
     t->switch_reason = SWITCH_DONE;
     rask_fiber_switch_final(&t->fiber, t->worker_fiber);
 }
@@ -504,9 +439,11 @@ static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
     }
     t->worker_fiber = &w->fiber;
     tl_current_task = t;
+    rask_task_set_current(t->task);
     rask_task_tls_swap(t->tls);
     rask_fiber_switch(&w->fiber, &t->fiber);
     rask_task_tls_swap(t->tls);
+    rask_task_set_current(NULL);
     tl_current_task = NULL;
 
     switch (t->switch_reason) {
@@ -517,7 +454,7 @@ static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
             pthread_cond_broadcast(&s->done_cond);
             pthread_mutex_unlock(&s->done_lock);
         }
-        task_release(t); // scheduler's ref
+        task_free(t);
         break;
     case SWITCH_PARKED: {
         int expected = PARK_PARKING;
@@ -585,7 +522,7 @@ static void overflow_handler(int sig, siginfo_t *info, void *uctx) {
         int n = snprintf(msg, sizeof(msg),
                          "task %lld overflowed its stack (1 MiB) — "
                          "unbounded recursion?\n",
-                         (long long)t->task_id);
+                         (long long)rask_task_id(t->task));
         if (n > 0) {
             ssize_t ignored = write(2, msg, (size_t)n);
             (void)ignored;
@@ -1180,7 +1117,7 @@ static void report_waits(FILE *out) {
         WaitBucket *b = &g_wait[i];
         pthread_mutex_lock(&b->lock);
         for (GreenTask *t = b->head; t; t = t->wait_next) {
-            fprintf(out, "  task %lld waiting on %s\n", (long long)t->task_id,
+            fprintf(out, "  task %lld waiting on %s\n", (long long)rask_task_id(t->task),
                     t->wait_what ? t->wait_what : "a wakeup");
         }
         pthread_mutex_unlock(&b->lock);
@@ -1208,27 +1145,12 @@ void rask_fiber_sleep_ns(int64_t ns) {
 
 // ─── Spawn / Join / Detach / Cancel ─────────────────────────
 
-static void *spawn_task(GreenTask *t) {
+// `result_owned` says the closure hands back a heap box rather than a plain
+// value — see `RaskTask::result_owned`. The compiler knows the payload type and
+// passes it; the runtime only needs to know whether to free.
+RaskTask *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
     GreenScheduler *s = g_sched;
     if (!s) {
-        rask_panic("spawn outside `using Multitasking {}` block");
-    }
-    GreenHandle *h = (GreenHandle *)malloc(sizeof(GreenHandle));
-    if (!h) {
-        fprintf(stderr, "rask: green handle alloc failed\n");
-        abort();
-    }
-    *h = (GreenHandle){ .kind = RASK_HANDLE_GREEN, .task = t };
-    atomic_fetch_add_explicit(&s->active_tasks, 1, memory_order_relaxed);
-    sched_enqueue_new(s, t);
-    return h;
-}
-
-// `result_owned` says the closure hands back a heap box rather than a plain
-// value — see `GreenTask::result_owned`. The compiler knows the payload type and
-// passes it; the runtime only needs to know whether to free.
-void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
-    if (!g_sched) {
         rask_panic("spawn outside `using Multitasking {}` block");
     }
     GreenTask *t = task_new();
@@ -1236,120 +1158,11 @@ void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
     // hands back.
     t->body = *(int64_t (**)(void *))(closure_ptr);
     t->body_arg = (char *)closure_ptr + 8;
-    t->result_owned = result_owned;
-    // The closure allocation is the task's to free — see
-    // `GreenTask::closure_base`.
-    t->closure_base = closure_ptr;
-    return spawn_task(t);
-}
-
-static int64_t green_join(void *handle, char **msg_out) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("join on a consumed Handle");
-    }
-
-    GreenTask *t = h->task;
-
-    // A task joining parks; the scope's own thread waits on the condvar.
-    pthread_mutex_lock(&t->done_lock);
-    while (!t->done) {
-        rask_task_cond_wait(&t->done_cond, &t->done_lock, "join");
-    }
-    pthread_mutex_unlock(&t->done_lock);
-
-    int64_t result = t->result;
-    // Ownership of a boxed result moves to the caller here: clearing it stops
-    // `task_release` below from freeing what the caller is about to read.
-    t->result = 0;
-
-    // If task panicked, hand the message back instead of re-panicking here —
-    // the joiner decides what to do with it (matches thread.c's convention).
-    if (t->panic_msg) {
-        if (msg_out) {
-            *msg_out = t->panic_msg;
-        } else {
-            free(t->panic_msg);
-        }
-        t->panic_msg = NULL;
-        task_release(t); // handle's ref
-        free(h);
-        return -1;
-    }
-
-    if (msg_out) *msg_out = NULL;
-    task_release(t); // handle's ref
-    free(h);
-    return result;
-}
-
-void rask_green_detach(void *handle) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("detach on a consumed Handle");
-    }
-    GreenTask *t = h->task;
-
-    pthread_mutex_lock(&t->done_lock);
-    t->detached = 1;
-    // O4: the task may have already panicked and finished before detach()
-    // ran — same "report now, nobody will join" rule applies.
-    if (t->done && t->panic_msg) {
-        fprintf(stderr, "task %lld panic at %s\n",
-                (long long)t->task_id, t->panic_msg);
-        free(t->panic_msg);
-        t->panic_msg = NULL;
-    }
-    pthread_mutex_unlock(&t->done_lock);
-
-    task_release(t); // drop handle's ref
-    free(h);
-}
-
-// Shared tail for the two outcome-reporting entry points. `cancelled` says
-// whether a cancel was requested, which is what separates "the task stopped
-// early because we asked it to" from "it finished normally".
-static int64_t green_join_outcome(void *handle, int cancelled,
-                                  int64_t *value_out, RaskStr *msg_out) {
-    char *msg = NULL;
-    int64_t value = green_join(handle, &msg);
-
-    if (msg) {
-        rask_string_from(msg_out, msg);
-        free(msg);
-        if (value_out) *value_out = 0;
-        return RASK_JOIN_PANICKED;
-    }
-
-    rask_string_new(msg_out);
-    if (cancelled) {
-        if (value_out) *value_out = 0;
-        return RASK_JOIN_CANCELLED;
-    }
-    if (value_out) *value_out = value;
-    return RASK_JOIN_OK;
-}
-
-int64_t rask_green_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("join on a consumed Handle");
-    }
-    int cancelled = atomic_load_explicit(&h->task->cancel_flag, memory_order_acquire);
-    return green_join_outcome(handle, cancelled, value_out, msg_out);
-}
-
-int64_t rask_green_cancel_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("cancel on a consumed Handle");
-    }
-    atomic_store_explicit(&h->task->cancel_flag, 1, memory_order_release);
-    return green_join_outcome(handle, 1, value_out, msg_out);
-}
-
-int rask_green_task_is_cancelled(void) {
-    GreenTask *t = tl_current_task;
-    if (!t) return 0;
-    return atomic_load_explicit(&t->cancel_flag, memory_order_acquire);
+    t->task = rask_task_new();
+    rask_task_adopt_closure(t->task, closure_ptr, result_owned);
+    // Held by the handle; the fiber keeps its own ref until it's done.
+    RaskTask *handle = t->task;
+    atomic_fetch_add_explicit(&s->active_tasks, 1, memory_order_relaxed);
+    sched_enqueue_new(s, t);
+    return handle;
 }

@@ -5,11 +5,14 @@
 // One OS thread per spawn. Panics in spawned tasks are caught via
 // setjmp/longjmp and propagated as JoinError on join.
 //
-// Handle lifecycle (a thread or pooled job):
+// Every spawn form — a green task, a thread, a pooled job — records how it
+// ended in a `RaskTask`, and the `Handle<T>` user code holds is a reference to
+// one (conc.async/H5). So join, detach and cancel are written once, here.
+//
 //   spawn → [running] → join/detach/cancel → [consumed]
 //
-// The shared TaskState is refcounted: one ref for the handle, one for
-// the running thread. Last one to drop frees it.
+// A task is refcounted: one ref for the handle, one for whatever runs the
+// body. Last one to drop frees it.
 
 #include "rask_runtime.h"
 #include "sim.h"
@@ -31,18 +34,17 @@ extern char    *rask_panic_take_message(void);
 extern int64_t  rask_next_task_id(void);
 extern void     rask_panic_set_task_id(int64_t id);
 
-// ─── Task state (shared between handle and thread) ─────────
+// ─── The task record ───────────────────────────────────────
 
 #define RASK_TASK_RUNNING   0
 #define RASK_TASK_OK        1
 #define RASK_TASK_PANICKED  2
-#define RASK_TASK_CANCELLED 3
 
-typedef struct RaskTaskState {
+struct RaskTask {
     atomic_int   refcount;
     atomic_int   status;
     atomic_int   cancel_flag;
-    char        *panic_msg;     // set on panic, owned by state
+    char        *panic_msg;     // set on panic, owned by the task
     int64_t      result;        // task body's return value, read by join
     // Non-zero when `result` is a heap box this task owns rather than a plain
     // value — a payload wider than a machine word, or one that comes back in a
@@ -53,35 +55,29 @@ typedef struct RaskTaskState {
     // present at every ending. The body used to free it on the line after its
     // own call, which a panicking body longjmps past (#1223).
     void        *closure_base;
-    pthread_t    thread;        // valid only when !pooled
 
-    // A pooled job shares a worker with other jobs, so there is no thread of
-    // its own to pthread_join. join() waits for the status to leave RUNNING
-    // instead, and the worker signals done_cond when it sets it.
-    int              pooled;
-    pthread_cond_t   done_cond;
+    // A `Thread.spawn` thread is the task's own and has to be joined or
+    // detached along with it. A green task and a pooled job run on a thread
+    // that outlives them.
+    int          own_thread;
+    pthread_t    thread;
 
-    // O4: guards `detached` and the decision to print an unjoined panic to
-    // stderr. Only the panic path and detach() ever touch this — the normal
-    // success path never contends on it. Also the mutex done_cond waits on.
+    // `done_cond` is signalled when `status` leaves RUNNING, under
+    // `report_lock`. The lock also guards `detached` and the decision to
+    // print an unjoined panic to stderr (O4).
     pthread_mutex_t report_lock;
-    int              detached;
-    int              counted_detached;  // in detached_outstanding
+    pthread_cond_t  done_cond;
+    int             detached;
+    int             counted_detached;  // in detached_outstanding
 
     int64_t      task_id;        // ctrl.panic/F1
 
     // The task's place in the sim scheduler (sim.c), or NULL outside sim.
     void        *sim;
-} RaskTaskState;
-
-// `kind` first: `rask_handle_*` below reads it to route a handle.
-struct RaskTaskHandle {
-    int64_t        kind;
-    RaskTaskState *state;
 };
 
-// Per-thread cancel flag pointer (points into the task's state).
-static __thread atomic_int *current_cancel_flag;
+// What `cancelled()` reads: the task whose body this thread is running.
+static __thread RaskTask *current_task;
 
 // O4: detached tasks still running. A detached task's panic *must* reach
 // stderr, and a task racing process exit doesn't satisfy that — the report just
@@ -89,49 +85,85 @@ static __thread atomic_int *current_cancel_flag;
 // reach zero before returning (rask_await_detached_tasks).
 static atomic_int detached_outstanding;
 
-static RaskTaskState *state_new(void) {
-    RaskTaskState *s = (RaskTaskState *)rask_alloc(sizeof(RaskTaskState));
+RaskTask *rask_task_new(void) {
+    RaskTask *t = (RaskTask *)rask_alloc(sizeof(RaskTask));
     // Assigned whole rather than field by field, which is what stops a field
     // added later from being read as whatever the allocator left there. C99
     // zero-fills every member this literal doesn't name, so "nobody wrote a
-    // line for it" means NULL and 0 instead of a pointer `state_release` would
-    // free. That is #1223: `closure_base` was added to this struct and the
-    // pooled path never set it, so the release freed garbage and ran drop glue
-    // on it. `thread` is in the same position today — only the spawn that
-    // creates a real thread writes it — and needs no line here now.
-    *s = (RaskTaskState){
-        .panic_msg = NULL,
-        .result = 0,
-        .task_id = rask_next_task_id(),
-    };
-    atomic_init(&s->refcount, 2);  // handle + thread
-    atomic_init(&s->status, RASK_TASK_RUNNING);
-    atomic_init(&s->cancel_flag, 0);
-    pthread_cond_init(&s->done_cond, NULL);
-    pthread_mutex_init(&s->report_lock, NULL);
-    return s;
+    // line for it" means NULL and 0 instead of a pointer `rask_task_release`
+    // would free. That is #1223: `closure_base` was added to this struct and
+    // the pooled path never set it, so the release freed garbage and ran drop
+    // glue on it.
+    *t = (RaskTask){ .task_id = rask_next_task_id() };
+    atomic_init(&t->refcount, 2);  // handle + runner
+    atomic_init(&t->status, RASK_TASK_RUNNING);
+    atomic_init(&t->cancel_flag, 0);
+    pthread_cond_init(&t->done_cond, NULL);
+    pthread_mutex_init(&t->report_lock, NULL);
+    return t;
 }
 
-static void state_release(RaskTaskState *s) {
-    if (atomic_fetch_sub_explicit(&s->refcount, 1, memory_order_acq_rel) == 1) {
-        if (s->panic_msg) rask_free(s->panic_msg);
+void rask_task_adopt_closure(RaskTask *t, void *closure_base, int64_t result_owned) {
+    t->closure_base = closure_base;
+    t->result_owned = result_owned;
+}
+
+int64_t rask_task_id(RaskTask *t) {
+    return t->task_id;
+}
+
+void rask_task_set_current(RaskTask *t) {
+    current_task = t;
+}
+
+void rask_task_release(RaskTask *t) {
+    if (atomic_fetch_sub_explicit(&t->refcount, 1, memory_order_acq_rel) == 1) {
+        // `strdup`'d by panic.c, so not ours to hand to `rask_free`.
+        free(t->panic_msg);
         // The task body's closure allocation, whichever way the body ended.
-        if (s->closure_base) rask_closure_free(s->closure_base);
-        // Still set means nobody took it — a detached thread whose value no
+        if (t->closure_base) rask_closure_free(t->closure_base);
+        // Still set means nobody took it — a detached task whose value no
         // join ever came for.
-        if (s->result_owned && s->result) rask_free((void *)(intptr_t)s->result);
-        pthread_cond_destroy(&s->done_cond);
-        pthread_mutex_destroy(&s->report_lock);
-        rask_free(s);
+        if (t->result_owned && t->result) rask_free((void *)(intptr_t)t->result);
+        pthread_cond_destroy(&t->done_cond);
+        pthread_mutex_destroy(&t->report_lock);
+        rask_free(t);
     }
+}
+
+// Record how the body ended and wake whoever waits for it. The one ending for
+// every kind of task.
+void rask_task_finish(RaskTask *t, int64_t result, char *panic_msg) {
+    pthread_mutex_lock(&t->report_lock);
+    t->result = result;
+    t->panic_msg = panic_msg;
+    atomic_store_explicit(&t->status, panic_msg ? RASK_TASK_PANICKED : RASK_TASK_OK,
+                          memory_order_release);
+    // O4: already detached — no join is coming to read the message, so report
+    // it now. F1: task id prefix, since a runtime task is what panicked.
+    if (t->detached && t->panic_msg) {
+        fprintf(stderr, "task %lld panic at %s\n", (long long)t->task_id, t->panic_msg);
+        free(t->panic_msg);
+        t->panic_msg = NULL;
+    }
+    // O4: done reporting either way, so `main` no longer has to wait for it.
+    if (t->counted_detached) {
+        t->counted_detached = 0;
+        atomic_fetch_sub_explicit(&detached_outstanding, 1, memory_order_release);
+#ifdef RASK_SIM
+        rask_sim_notify(&detached_outstanding);
+#endif
+    }
+    rask_task_cond_broadcast(&t->done_cond);
+    pthread_mutex_unlock(&t->report_lock);
 }
 
 // ─── Thread entry point ────────────────────────────────────
 
 typedef struct {
-    RaskTaskFn     func;
-    void          *env;
-    RaskTaskState *state;
+    RaskTaskFn  func;
+    void       *env;
+    RaskTask   *task;
 } TaskEntry;
 
 // ─── Task slots ────────────────────────────────────────────
@@ -217,65 +249,30 @@ void rask_task_slot_retake(int released) { if (released) slot_take(); }
 
 // Run one task body to completion and record how it ended. Shared by the
 // one-thread-per-spawn path below and by the pool workers in threadpool.c,
-// which run many of these back to back on the same thread.
-void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
+// which run many of these back to back on the same thread. A green task runs
+// its body in green.c, which has its own panic frame per fiber.
+void rask_task_run_body(RaskTask *t, RaskTaskFn func, void *env) {
     slot_take();
+    current_task = t;
 
-    // Set up cancel flag for this thread
-    current_cancel_flag = &state->cancel_flag;
-
-    // Install panic handler
     rask_panic_install();
     jmp_buf *jb = rask_panic_jmpbuf();
-    rask_panic_set_task_id(state->task_id); // F1
+    rask_panic_set_task_id(t->task_id); // F1
 
+    int64_t result = 0;
+    char *panic_msg = NULL;
     if (setjmp(*jb) == 0) {
         rask_panic_activate();
-        state->result = func(env);
-        atomic_store_explicit(&state->status, RASK_TASK_OK, memory_order_release);
+        result = func(env);
     } else {
         // Returned via longjmp from rask_panic
-        state->panic_msg = rask_panic_take_message();
-        atomic_store_explicit(&state->status, RASK_TASK_PANICKED,
-                              memory_order_release);
-
-        // O4: a detached task's panic must reach stderr — nobody is going to
-        // join this handle and read the message otherwise. F1: task id
-        // prefix, since a runtime task is what's panicking here.
-        pthread_mutex_lock(&state->report_lock);
-        if (state->detached && state->panic_msg) {
-            fprintf(stderr, "task %lld panic at %s\n",
-                    (long long)state->task_id, state->panic_msg);
-            rask_free(state->panic_msg);
-            state->panic_msg = NULL;
-        }
-        pthread_mutex_unlock(&state->report_lock);
+        panic_msg = rask_panic_take_message();
     }
-
-    // O4: this task is done reporting either way, so `main` no longer has to
-    // wait for it. Outside the panic branch — a detached task that returns
-    // normally has to clear its count too, or the wait never ends.
-    pthread_mutex_lock(&state->report_lock);
-    if (state->counted_detached) {
-        state->counted_detached = 0;
-        atomic_fetch_sub_explicit(&detached_outstanding, 1, memory_order_release);
-#ifdef RASK_SIM
-        rask_sim_notify(&detached_outstanding);
-#endif
-    }
-    pthread_mutex_unlock(&state->report_lock);
-
     rask_panic_set_task_id(0);
     rask_panic_remove();
-    current_cancel_flag = NULL;
+    current_task = NULL;
 
-    // A pooled job has no thread for join() to wait on, so waking the waiter
-    // is what "finished" means for it.
-    if (state->pooled) {
-        pthread_mutex_lock(&state->report_lock);
-        rask_task_cond_broadcast(&state->done_cond);
-        pthread_mutex_unlock(&state->report_lock);
-    }
+    rask_task_finish(t, result, panic_msg);
 
     // Last, so a joiner waiting for this task's slot doesn't start before the
     // task has finished reporting.
@@ -284,20 +281,20 @@ void rask_task_run_body(RaskTaskState *state, RaskTaskFn func, void *env) {
 
 static void *task_thread_entry(void *arg) {
     TaskEntry *entry = (TaskEntry *)arg;
-    RaskTaskState *state = entry->state;
+    RaskTask *t = entry->task;
     rask_outside_thread_start();
 #ifdef RASK_SIM
     // Before anything else: under sim this thread may not run until picked.
-    void *sim = state->sim;
+    void *sim = t->sim;
     if (sim) rask_sim_task_enter(sim);
 #endif
     RaskTaskFn func = entry->func;
     void *env = entry->env;
     rask_free(entry);
 
-    rask_task_run_body(state, func, env);
+    rask_task_run_body(t, func, env);
 
-    state_release(state);
+    rask_task_release(t);
 #ifdef RASK_SIM
     if (sim) rask_sim_task_exit();
 #endif
@@ -305,213 +302,132 @@ static void *task_thread_entry(void *arg) {
     return NULL;
 }
 
-// ─── Public API ────────────────────────────────────────────
+// ─── Threads ───────────────────────────────────────────────
 
-RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
-    RaskTaskState *state = state_new();
+static RaskTask *task_spawn_thread(RaskTaskFn func, void *env, void *closure_base,
+                                   int64_t result_owned) {
+    RaskTask *t = rask_task_new();
+    rask_task_adopt_closure(t, closure_base, result_owned);
+    t->own_thread = 1;
 
     TaskEntry *entry = (TaskEntry *)rask_alloc(sizeof(TaskEntry));
-    *entry = (TaskEntry){ .func = func, .env = env, .state = state };
+    *entry = (TaskEntry){ .func = func, .env = env, .task = t };
 
 #ifdef RASK_SIM
-    if (rask_sim_active()) state->sim = rask_sim_task_new(state->task_id);
+    if (rask_sim_active()) t->sim = rask_sim_task_new(t->task_id);
 #endif
-    int err = pthread_create(&state->thread, NULL, task_thread_entry, entry);
+    int err = pthread_create(&t->thread, NULL, task_thread_entry, entry);
     if (err != 0) {
 #ifdef RASK_SIM
         // The task was registered as runnable; with no thread behind it the
         // baton would be handed to nobody.
-        if (state->sim) rask_sim_task_abandon(state->sim);
+        if (t->sim) rask_sim_task_abandon(t->sim);
 #endif
         rask_free(entry);
-        state_release(state);
-        state_release(state); // drop both refs
+        // The closure was never run, and the caller still thinks it's theirs.
+        t->closure_base = NULL;
+        rask_task_release(t);
+        rask_task_release(t); // drop both refs
         rask_panic_fmt("spawn failed: pthread_create returned %d", err);
     }
-
-    RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
-    *h = (RaskTaskHandle){ .kind = RASK_HANDLE_THREAD, .state = state };
     RASK_SIM_POINT();
-    return h;
+    return t;
 }
 
-static int64_t task_join(RaskTaskHandle *h, char **msg_out) {
-    if (!h || !h->state) {
-        rask_panic("join on a consumed Handle");
-    }
+// ─── Handle (conc.async/H1–H5) ─────────────────────────────
 
-    RaskTaskState *state = h->state;
+static RaskTask *handle_task(void *h, const char *op) {
+    if (!h) rask_panic_fmt("%s on a consumed Handle", op);
+    return (RaskTask *)h;
+}
+
+// Wait for the body to finish. A green joiner parks rather than holding its
+// worker; `rask_task_cond_wait` knows which it is.
+static void wait_done(RaskTask *t) {
     // Waiting isn't running: a joiner that kept its slot would leave
     // `workers: 1` with nothing free to run the task it waits for.
     int released = rask_task_slot_release();
-    if (state->pooled) {
-        // No thread of its own — wait for the worker to finish this job.
-        pthread_mutex_lock(&state->report_lock);
-        while (atomic_load_explicit(&state->status, memory_order_acquire)
-               == RASK_TASK_RUNNING) {
-            rask_task_cond_wait(&state->done_cond, &state->report_lock, "a pooled job");
-        }
-        pthread_mutex_unlock(&state->report_lock);
-    } else {
+    // Read by the deadlock report while this waits, so it names the task.
+    char what[48];
+    snprintf(what, sizeof(what), "join(task %lld)", (long long)t->task_id);
+    pthread_mutex_lock(&t->report_lock);
+    while (atomic_load_explicit(&t->status, memory_order_acquire) == RASK_TASK_RUNNING) {
+        rask_task_cond_wait(&t->done_cond, &t->report_lock, what);
+    }
+    pthread_mutex_unlock(&t->report_lock);
+    if (t->own_thread) {
 #ifdef RASK_SIM
         // The thread is about to exit once its task is done, and holds no lock
         // on the way out, so the real join after this doesn't wait on anyone.
-        if (state->sim) rask_sim_task_join(state->sim);
+        if (t->sim) rask_sim_task_join(t->sim);
 #endif
-        pthread_join(state->thread, NULL);
+        pthread_join(t->thread, NULL);
     }
     rask_task_slot_retake(released);
-
-    int status = atomic_load_explicit(&state->status, memory_order_acquire);
-    int64_t result;
-
-    if (status == RASK_TASK_PANICKED) {
-        if (msg_out) {
-            *msg_out = state->panic_msg;
-            state->panic_msg = NULL; // transfer ownership
-        }
-        result = -1;
-    } else {
-        result = state->result;
-        // Ownership of a boxed result moves to the caller — clearing it stops
-        // `state_release` from freeing what the caller is about to read. Same
-        // handover the green path makes (#963).
-        state->result = 0;
-        if (msg_out) *msg_out = NULL;
-    }
-
-    state_release(state);
-    rask_free(h);
-    return result;
 }
 
-// Join, splitting "how it ended" from "what it produced". The old shape folded
-// both into one int64_t, so a task returning -1 read back as a panic and a task
-// returning 42 read back as 0 (the value was never captured at all).
-static int64_t task_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
-    RaskTaskHandle *h = (RaskTaskHandle *)handle;
-    if (!h || !h->state) {
-        rask_panic("join on a consumed Handle");
-    }
-
-    int cancelled = atomic_load_explicit(&h->state->cancel_flag, memory_order_acquire);
-
-    char *msg = NULL;
-    int64_t value = task_join(h, &msg);
-
-    if (msg) {
-        rask_string_from(msg_out, msg);
-        rask_free(msg);
-        if (value_out) *value_out = 0;
-        return RASK_JOIN_PANICKED;
-    }
-
-    rask_string_new(msg_out);
-    if (cancelled) {
-        if (value_out) *value_out = 0;
-        return RASK_JOIN_CANCELLED;
-    }
-    if (value_out) *value_out = value;
-    return RASK_JOIN_OK;
-}
-
-static void task_detach(RaskTaskHandle *h) {
-    if (!h || !h->state) {
-        rask_panic("detach on a consumed Handle");
-    }
-
-    RaskTaskState *state = h->state;
-
-    RASK_SIM_POINT();
-    pthread_mutex_lock(&state->report_lock);
-    state->detached = 1;
-    if (atomic_load_explicit(&state->status, memory_order_acquire) == RASK_TASK_RUNNING) {
-        atomic_fetch_add_explicit(&detached_outstanding, 1, memory_order_relaxed);
-        state->counted_detached = 1;
-    }
-    // O4: the task may have already panicked and finished before detach()
-    // ran — same "report now, nobody will join" rule applies.
-    if (atomic_load_explicit(&state->status, memory_order_acquire) == RASK_TASK_PANICKED
-        && state->panic_msg) {
-        fprintf(stderr, "task %lld panic at %s\n",
-                (long long)state->task_id, state->panic_msg);
-        rask_free(state->panic_msg);
-        state->panic_msg = NULL;
-    }
-    pthread_mutex_unlock(&state->report_lock);
-
-    // A pooled job's thread belongs to the pool and outlives the job, so there
-    // is nothing to detach — dropping the handle's ref is the whole of it.
-    if (!state->pooled) {
-        pthread_detach(state->thread);
-    }
-    state_release(state);
-    rask_free(h);
-}
-
-static void task_request_cancel(void *handle) {
-    RaskTaskHandle *h = (RaskTaskHandle *)handle;
-    if (!h || !h->state) {
-        rask_panic("cancel on a consumed Handle");
-    }
-    RASK_SIM_POINT();
-    atomic_store_explicit(&h->state->cancel_flag, 1, memory_order_release);
-}
-
-int8_t rask_task_cancelled(void) {
-    RASK_SIM_POINT();
-    if (!current_cancel_flag) return 0;
-    return atomic_load_explicit(current_cancel_flag, memory_order_acquire) ? 1 : 0;
-}
-
-// ─── Handle (conc.async/H5) ────────────────────────────────
-//
-// Every spawn form hands back one `Handle<T>`. A green task's handle and a
-// thread's are different structs, both starting with `kind`, so these read it
-// and pass the handle on. A build with no green scheduler never makes a green
-// handle: its `spawn` starts a thread.
-
-#if RASK_HAS_GREEN
-static int64_t handle_kind(void *h, const char *op) {
-    if (!h) rask_panic_fmt("%s on a consumed Handle", op);
-    return *(int64_t *)h;
-}
-#endif
-
+// Join, splitting "how it ended" from "what it produced". Folding both into one
+// int64_t read a task returning -1 back as a panic. `*msg_out` is always left a
+// valid string. Consumes the handle.
 int64_t rask_handle_join(void *h, int64_t *value_out, RaskStr *msg_out) {
-#if RASK_HAS_GREEN
-    if (handle_kind(h, "join") == RASK_HANDLE_GREEN) {
-        return rask_green_join_outcome(h, value_out, msg_out);
+    RaskTask *t = handle_task(h, "join");
+    wait_done(t);
+
+    int64_t outcome;
+    if (atomic_load_explicit(&t->status, memory_order_acquire) == RASK_TASK_PANICKED) {
+        rask_string_from(msg_out, t->panic_msg ? t->panic_msg : "");
+        if (value_out) *value_out = 0;
+        outcome = RASK_JOIN_PANICKED;
+    } else {
+        rask_string_new(msg_out);
+        if (value_out) *value_out = t->result;
+        // Ownership of a boxed result moves to the caller — clearing it stops
+        // `rask_task_release` from freeing what the caller is about to read.
+        t->result = 0;
+        outcome = RASK_JOIN_OK;
     }
-#endif
-    return task_join_outcome(h, value_out, msg_out);
+    rask_task_release(t);
+    return outcome;
 }
 
+// CN1: raise the flag, then wait. What the body returned is the answer, even
+// if it stopped early because it was asked to: it may be holding a value only
+// the caller can consume (CN4).
 int64_t rask_handle_cancel(void *h, int64_t *value_out, RaskStr *msg_out) {
-#if RASK_HAS_GREEN
-    if (handle_kind(h, "cancel") == RASK_HANDLE_GREEN) {
-        return rask_green_cancel_outcome(h, value_out, msg_out);
-    }
-#endif
-    task_request_cancel(h);
-    return task_join_outcome(h, value_out, msg_out);
+    RaskTask *t = handle_task(h, "cancel");
+    RASK_SIM_POINT();
+    atomic_store_explicit(&t->cancel_flag, 1, memory_order_release);
+    return rask_handle_join(h, value_out, msg_out);
 }
 
 void rask_handle_detach(void *h) {
-#if RASK_HAS_GREEN
-    if (handle_kind(h, "detach") == RASK_HANDLE_GREEN) {
-        rask_green_detach(h);
-        return;
+    RaskTask *t = handle_task(h, "detach");
+    RASK_SIM_POINT();
+    pthread_mutex_lock(&t->report_lock);
+    t->detached = 1;
+    int status = atomic_load_explicit(&t->status, memory_order_acquire);
+    if (status == RASK_TASK_RUNNING) {
+        atomic_fetch_add_explicit(&detached_outstanding, 1, memory_order_relaxed);
+        t->counted_detached = 1;
     }
-#endif
-    task_detach((RaskTaskHandle *)h);
+    // O4: the task may have already panicked and finished before detach()
+    // ran — same "report now, nobody will join" rule applies.
+    if (status == RASK_TASK_PANICKED && t->panic_msg) {
+        fprintf(stderr, "task %lld panic at %s\n", (long long)t->task_id, t->panic_msg);
+        free(t->panic_msg);
+        t->panic_msg = NULL;
+    }
+    pthread_mutex_unlock(&t->report_lock);
+
+    if (t->own_thread) pthread_detach(t->thread);
+    rask_task_release(t);
 }
 
 int8_t rask_handle_cancelled(void) {
-#if RASK_HAS_GREEN
-    if (rask_green_task_is_cancelled()) return 1;
-#endif
-    return rask_task_cancelled();
+    RASK_SIM_POINT();
+    RaskTask *t = current_task;
+    if (!t) return 0;
+    return atomic_load_explicit(&t->cancel_flag, memory_order_acquire) ? 1 : 0;
 }
 
 int64_t rask_sleep_ns(int64_t ns) {
@@ -567,26 +483,20 @@ static int64_t closure_spawn_entry(void *arg) {
 }
 
 // `result_owned`: the closure hands back a heap box rather than a plain value.
-// See `RaskTaskState::result_owned`.
-RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned) {
+// See `RaskTask::result_owned`.
+RaskTask *rask_closure_spawn(void *closure_ptr, int64_t result_owned) {
     RaskTaskFn func = *(RaskTaskFn *)(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
     RaskSpawnCtx *ctx = (RaskSpawnCtx *)rask_alloc(sizeof(RaskSpawnCtx));
     *ctx = (RaskSpawnCtx){ .func = func, .env = env };
-
-    RaskTaskHandle *h = rask_task_spawn(closure_spawn_entry, ctx);
-    if (h && h->state) {
-        h->state->result_owned = result_owned;
-        h->state->closure_base = closure_ptr;
-    }
-    return h;
+    return task_spawn_thread(closure_spawn_entry, ctx, closure_ptr, result_owned);
 }
 
 // `Thread.spawn` — a raw OS thread, which sim can't schedule (sim/B1). Task
 // spawns reach `rask_closure_spawn` directly, so this is the only entry that
 // refuses.
-RaskTaskHandle *rask_thread_spawn(void *closure_ptr, int64_t result_owned) {
+RaskTask *rask_thread_spawn(void *closure_ptr, int64_t result_owned) {
 #ifdef RASK_SIM
     if (rask_sim_active()) {
         rask_panic("Thread.spawn is not simulated: sim picks which task runs "
@@ -596,33 +506,6 @@ RaskTaskHandle *rask_thread_spawn(void *closure_ptr, int64_t result_owned) {
     }
 #endif
     return rask_closure_spawn(closure_ptr, result_owned);
-}
-
-// ─── Hooks for the worker pool (threadpool.c) ──────────────
-// A pooled job needs a task state and a handle without a thread behind them.
-// These keep RaskTaskState private to this file while letting the pool build
-// jobs whose handles join/detach/cancel like any other.
-
-// The pool builds its own states, so it needs a way to say the same thing
-// `rask_closure_spawn` says — keeps `RaskTaskState` private to this file.
-void rask_task_state_set_result_owned(struct RaskTaskState *state, int64_t owned) {
-    if (state) state->result_owned = owned;
-}
-
-RaskTaskState *rask_task_state_new_pooled(void) {
-    RaskTaskState *s = state_new();
-    s->pooled = 1;
-    return s;
-}
-
-RaskTaskHandle *rask_task_handle_for(RaskTaskState *state) {
-    RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
-    *h = (RaskTaskHandle){ .kind = RASK_HANDLE_THREAD, .state = state };
-    return h;
-}
-
-void rask_task_state_release(RaskTaskState *state) {
-    state_release(state);
 }
 
 // O4: wait for detached tasks to finish reporting. Called from `main` after

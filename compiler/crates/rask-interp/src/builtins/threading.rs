@@ -211,9 +211,9 @@ fn chan_error(ty: &str, variant: &str, index: u32, fields: Vec<Value>) -> Value 
     }
 }
 
-/// Wait for the body and say how it ended, as `T or JoinError`. Cancelled wins
-/// over a value, the same as native: the caller asked it to stop, so what it
-/// returned on the way out isn't the answer.
+/// Wait for the body and say how it ended, as `T or JoinError`. A cancelled
+/// body still ends through its own code (CN4), so what it returned is the
+/// answer.
 fn join_outcome(handle: &HandleInner) -> Value {
     let jh = handle.handle.lock().unwrap().take();
     // Without the slot: a joiner that kept it would leave
@@ -224,20 +224,18 @@ fn join_outcome(handle: &HandleInner) -> Value {
             .unwrap_or_else(|_| Err("task panicked".to_string())),
         None => Err("handle already consumed".to_string()),
     };
-    let failed = |variant: &str, fields: Vec<Value>| Value::Enum {
-        name: "Result".to_string(),
-        variant: "Err".to_string(),
-        fields: vec![Value::Enum {
-            name: "JoinError".to_string(),
-            variant: variant.to_string(),
-            fields,
-            variant_index: 0, origin: None,
-        }],
-        variant_index: 0, origin: None,
-    };
     match ended {
-        Err(msg) => failed("Panicked", vec![Value::String(Arc::new(Mutex::new(msg)))]),
-        Ok(_) if handle.cancel.load(Ordering::Acquire) => failed("Cancelled", vec![]),
+        Err(msg) => Value::Enum {
+            name: "Result".to_string(),
+            variant: "Err".to_string(),
+            fields: vec![Value::Enum {
+                name: "JoinError".to_string(),
+                variant: "Panicked".to_string(),
+                fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                variant_index: 0, origin: None,
+            }],
+            variant_index: 0, origin: None,
+        },
         Ok(val) => Value::Enum {
             name: "Result".to_string(),
             variant: "Ok".to_string(),

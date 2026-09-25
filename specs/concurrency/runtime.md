@@ -735,7 +735,7 @@ func File::read(self, buf: &mut [u8]) -> usize or Error {
     if let Some(runtime) = RUNTIME_SLOT.read() {
         // Check cancel flag before I/O
         if runtime.current_task().cancel_flag.load(Relaxed) {
-            return Err(JoinError::Cancelled)
+            return Err(IoError.Cancelled)
         }
         // Proceed with I/O...
     }
@@ -745,7 +745,7 @@ func File::read(self, buf: &mut [u8]) -> usize or Error {
 func Channel::send<T>(self, value: T) -> void or Error {
     if let Some(runtime) = RUNTIME_SLOT.read() {
         if runtime.current_task().cancel_flag.load(Relaxed) {
-            return Err(JoinError::Cancelled)
+            return Err(SendError.Cancelled)
         }
     }
     // Proceed with send...

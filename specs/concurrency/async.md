@@ -45,7 +45,7 @@ func handle_connection(conn: TcpConnection) -> void or Error {
 | **H1: Must consume** | Every spawn form returns `Handle<T>`, which must be joined or detached — compile error if unused |
 | **H2: Join** | `h.join()` waits for result, returns `T or JoinError`, consumes handle |
 | **H3: Detach** | `h.detach()` opts out of tracking (fire-and-forget), consumes handle |
-| **H4: Cancel** | `h.cancel()` requests cooperative cancellation, waits for exit, returns `T or JoinError` |
+| **H4: Cancel** | `h.cancel()` requests cooperative cancellation, waits for exit, returns `T or JoinError`: what the body returned, or its panic |
 | **H5: One handle type** | A green task, a pooled job and an OS thread all hand back the same `Handle<T>`. What ran the work is the spawn call's business; the caller only ever waits, lets go, or asks it to stop |
 
 <!-- test: skip -->
@@ -63,7 +63,6 @@ let h = spawn(|| { fallible_work() })
 match h.join() {
     T as val                   => process(val),
     JoinError.Panicked(msg)    => println("task panicked: {msg}"),
-    JoinError.Cancelled        => println("task was cancelled"),
 }
 
 spawn(|| { background_work() }).detach()
@@ -86,7 +85,6 @@ extend Handle<T> {
 
 enum JoinError {
     Panicked(string),  // task panicked with message
-    Cancelled,         // task was cancelled
 }
 ```
 
@@ -227,6 +225,7 @@ match h.join() { }    // explicit handling
 | **CN2: Ensure runs** | `ensure` blocks always run, even on cancellation |
 | **CN3: I/O checks** | I/O operations check cancel flag and return `Cancelled` error if set |
 | **CN4: No kill at pause points** | Cancellation never terminates a task at a suspension point. A cancelled task always resumes and exits through its own control flow — the flag check or the `Cancelled` error return. Preemption pauses tasks, never kills them |
+| **CN5: The body's ending is the answer** | `cancel()` and `join()` return what the body returned, or its panic. Cancellation is not a third way to end: a body that stops early says so in its own return type |
 
 CN4 is what keeps invisible suspension safe around locks: a lock held across a pause is released only by the holder's own block exit or panic unwind — there is no third "died while suspended" path (`ctrl.panic/LK4`).
 
@@ -236,15 +235,23 @@ let h = spawn(|| {
     let file = try File.open("data.txt")
     ensure file.close()
 
-    loop {
-        if cancelled() { break })
+    mut done = 0
+    while !cancelled() {
         do_work()
+        done += 1
     }
-}
+    return done
+})
 
 sleep(5.seconds)
-try h.cancel()
+let finished = try h.cancel()   // how far it got
 ```
+
+`JoinError.Cancelled` used to exist, and `cancel()` answered with it whatever
+the body did. That threw away a value the task had already produced, and when
+that value is linear (a `File`, a `Handle`), nothing could close it. A body
+that sees `cancelled()` returns like any other; if the caller needs to tell
+"stopped early" from "finished", the body's return type says so.
 
 ## Channels
 
@@ -350,7 +357,7 @@ Install a `using Multitasking { ... }` block that encloses the call.
 | Direct `spawn` in an ordinary function | CC2 | No error here — reported at each call site outside a block |
 | Call to function transitively reaching `spawn`, outside any block | CC2 | Compile error at the call |
 | Closure stored / trait object dispatch reaches `spawn` outside a block | CC3 | Runtime panic — target not statically known |
-| `.join()` on cancelled task | H2, CN1 | Returns `Cancelled` error |
+| `.join()` on cancelled task | H2, CN5 | Returns what the body returned when it stopped, or its panic |
 | Cancelled while parked on I/O | CN3, CN4 | Task resumes; the pending operation returns `Cancelled`; task exits via its own control flow, ensures run |
 | Cancelled while holding a lock | CN4 | No forced release — the lock releases when the task's own exit path leaves the block (`ctrl.panic/LK4`) |
 | Panic-unwind of `using` block with tasks still pending | C4 | Cancellation signalled, no drain. A task that never reaches another check point never runs again — its ensures are skipped and locks it held stay held. Teardown of a dying runtime, not a state the program continues from |

@@ -31,7 +31,6 @@ func main() {
         match a.join() {
             i64 as v => println("joined"),
             JoinError.Panicked(msg) => println("write panicked"),
-            JoinError.Cancelled => println("cancelled"),
         }
 
         let b = Thread.spawn(|| {
@@ -44,7 +43,6 @@ func main() {
         match b.join() {
             i64 as v => println("joined"),
             JoinError.Panicked(msg) => println("try_write panicked"),
-            JoinError.Cancelled => println("cancelled"),
         }
     }
     with BLOCKING.write() as w {

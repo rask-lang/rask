@@ -40,21 +40,22 @@ extend Handle<T> {
     @native("rask_handle_detach")
     public func detach(take self) -> void {}
 
-    /// Ask it to stop, then wait. It stops only where it checks `cancelled()`.
+    /// Ask it to stop, then wait. It stops only where it checks `cancelled()`,
+    /// and whatever it returns then is the result.
     @native("rask_handle_cancel")
     public func cancel(take self) -> T or JoinError {}
 }
 
+/// Why a join has no value. A cancelled task still ends through its own code,
+/// so what it returned is the answer; the only way to have none is to panic.
 public enum JoinError {
     Panicked(string)
-    Cancelled
 }
 
 extend JoinError {
     public func message(self) -> string {
         match self {
             JoinError.Panicked(msg) => return "task panicked: {msg}"
-            JoinError.Cancelled => return "task was cancelled"
         }
     }
 }

@@ -7001,7 +7001,7 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Assemble a `T or JoinError` from what the runtime reported.
     ///
-    /// `outcome` is RASK_JOIN_OK / _PANICKED / _CANCELLED; `value_ss` holds the
+    /// `outcome` is RASK_JOIN_OK / _PANICKED; `value_ss` holds the
     /// task's return value and `msg_ss` a 16-byte RaskStr (empty unless it
     /// panicked). The JoinError variant tags and its message field's offset come
     /// from the destination's own error layout, so renaming or reordering the
@@ -7673,12 +7673,9 @@ impl<'a> FunctionBuilder<'a> {
                 .unwrap_or((fallback, 8))
         };
         let (panicked_tag, msg_offset) = variant("Panicked", 0);
-        let (cancelled_tag, _) = variant("Cancelled", 1);
 
         let ok_block = builder.create_block();
         let fail_block = builder.create_block();
-        let panicked_block = builder.create_block();
-        let cancelled_block = builder.create_block();
         let merge_block = builder.create_block();
 
         let ok_code = builder.ins().iconst(types::I64, RASK_JOIN_OK);
@@ -7701,7 +7698,7 @@ impl<'a> FunctionBuilder<'a> {
         if boxed {
             // The task handed back an address. Copy through it — nothing in the
             // slot survives the callee otherwise — and then free it: joining
-            // takes ownership of the box, which `rask_green_join` transfers by
+            // takes ownership of the box, which `rask_handle_join` transfers by
             // clearing the task's own reference. Without the free this leaked
             // one allocation per task, about 80 bytes, which no assertion can
             // see (#963).
@@ -7725,9 +7722,9 @@ impl<'a> FunctionBuilder<'a> {
         let err_tag = builder.ins().iconst(types::I64, 1);
         builder.ins().stack_store(err_tag, dst_ss, crate::layouts::TAG_OFFSET);
         Self::zero_result_origin(builder, dst_ss);
-        // The message slot is a valid string either way — empty for Cancelled —
-        // so copy it before the split. A Cancelled left with an uninitialized
-        // 16 bytes there would be freed as if it were a heap string.
+        // The only way a join fails is a panic: JoinError.Panicked(msg).
+        let v = builder.ins().iconst(types::I64, panicked_tag);
+        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
         let src = builder.ins().stack_addr(types::I64, msg_ss, 0);
         let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
         Self::copy_bytes(
@@ -7735,20 +7732,6 @@ impl<'a> FunctionBuilder<'a> {
             crate::layouts::RESULT_PAYLOAD_OFFSET + msg_offset,
             crate::layouts::STRING_SIZE as u32,
         );
-        let panicked_code = builder.ins().iconst(types::I64, RASK_JOIN_PANICKED);
-        let is_panicked = builder.ins().icmp(IntCC::Equal, outcome, panicked_code);
-        builder.ins().brif(is_panicked, panicked_block, &[], cancelled_block, &[]);
-
-        builder.switch_to_block(panicked_block);
-        builder.seal_block(panicked_block);
-        let v = builder.ins().iconst(types::I64, panicked_tag);
-        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
-        builder.ins().jump(merge_block, &[]);
-
-        builder.switch_to_block(cancelled_block);
-        builder.seal_block(cancelled_block);
-        let v = builder.ins().iconst(types::I64, cancelled_tag);
-        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
         builder.ins().jump(merge_block, &[]);
 
         builder.switch_to_block(merge_block);
