@@ -236,7 +236,7 @@ fn sequence_surface(decls: &[Decl]) -> Vec<FnDecl> {
             DeclKind::Impl(i)
                 if i.target_ty == "Sequence<T>"
                     && i.where_bounds.is_empty()
-                    && i.trait_names.is_empty()
+                    && i.trait_name.is_none()
                     && !i.is_scoped =>
             {
                 Some(i.methods.clone())

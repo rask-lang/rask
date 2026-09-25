@@ -105,9 +105,9 @@ extend Vec3 {
 }
 
 // `+` resolves against a declared conformance, so this is where `a + b` on a
-// Vec3 comes from — and `extend Vec3 with Add` means `Add<Vec3>` answering in
+// Vec3 comes from — and `extend Vec3 implements Add` means `Add<Vec3>` answering in
 // `Vec3`, since both default to Self.
-extend Vec3 with Add {
+extend Vec3 implements Add {
     // Component-wise addition: (x₁+x₂, y₁+y₂, z₁+z₂)
     func add(self, other: Vec3) -> Vec3 {
         todo()

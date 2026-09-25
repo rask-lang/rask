@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Learn: Traits and polymorphism
+// Learn: Interfaces and polymorphism
 
-// Define a trait - a shared behavior that types can implement
-trait Describable {
+// Define an interface - a shared behavior that types can implement
+interface Describable {
     func describe(self) -> string
 }
 
@@ -22,21 +22,21 @@ struct Person {
 }
 
 // Implement Describable for Point
-extend Point with Describable {
+extend Point implements Describable {
     func describe(self) -> string {
         return "Point({self.x}, {self.y})"
     }
 }
 
 // Implement Describable for Circle
-extend Circle with Describable {
+extend Circle implements Describable {
     func describe(self) -> string {
         return "Circle with radius {self.radius}"
     }
 }
 
 // Implement Describable for Person
-extend Person with Describable {
+extend Person implements Describable {
     func describe(self) -> string {
         return "{self.name}, age {self.age}"
     }

@@ -4,7 +4,7 @@
 // Two things to watch:
 //
 // 1. `head`/`tail` are ROOT EDGES — link fields on the struct that owns the
-//    rack, not inside a node. Deleting the last node has to null them, so the
+//    rack, not inside a node. Deleting the last node has to nullptr them, so the
 //    delete's fixup walk must reach outside the rack. That is the one piece
 //    the sketch had to add after this program was written down.
 //

@@ -1,11 +1,11 @@
 <!-- id: compiler.layout -->
 <!-- status: decided -->
-<!-- summary: ABI-level memory layout for enums, closures, trait objects -->
-<!-- depends: types/enums.md, types/traits.md, memory/closures.md, memory/value-semantics.md -->
+<!-- summary: ABI-level memory layout for enums, closures, interface objects -->
+<!-- depends: types/enums.md, types/interfaces.md, memory/closures.md, memory/value-semantics.md -->
 
 # Memory Layout
 
-Precise memory layout for enums, closures, trait objects, and other compound types. Defines field ordering, alignment, padding, and size calculations for compiler codegen.
+Precise memory layout for enums, closures, interface objects, and other compound types. Defines field ordering, alignment, padding, and size calculations for compiler codegen.
 
 ## Alignment and Padding Rules
 
@@ -189,9 +189,9 @@ No memory allocation. Closure accesses stack frame directly. Codegen inlines the
 
 Same as storable closures, but type system prevents escape. Memory layout identical.
 
-## Trait Objects (`any Trait`)
+## Interface Objects (`any Interface`)
 
-Trait objects are fat pointers: data pointer + vtable pointer.
+Interface objects are fat pointers: data pointer + vtable pointer.
 
 ```rask
 let w: any Widget = button
@@ -232,14 +232,14 @@ struct VTable {
 |------|-------------|
 | **V1: Type info first** | Size and alignment at fixed offsets (0, 8) |
 | **V2: Drop function** | Drop function at offset 16 (null if type has trivial drop) |
-| **V3: Method order** | Compatible methods stored in trait declaration order; incompatible methods (`Self` return, generic) have no slot |
-| **V4: Per-type vtable** | One vtable per (trait, concrete type) pair |
+| **V3: Method order** | Compatible methods stored in interface declaration order; incompatible methods (`Self` return, generic) have no slot |
+| **V4: Per-type vtable** | One vtable per (interface, concrete type) pair |
 | **V5: Static lifetime** | Vtables stored in read-only data section |
 
 Example vtable for `Button: Widget`:
 
 ```rask
-trait Widget {
+interface Widget {
     func draw(self, canvas: Canvas)
     func size(self) -> (i32, i32)
     func click(self, x: i32, y: i32)
@@ -268,7 +268,7 @@ fn_ptr(widget.data, canvas)
 
 ### Heap Layout and Collection Thinning
 
-Owned `any Trait` values heap-allocate with the vtable pointer as a header:
+Owned `any Interface` values heap-allocate with the vtable pointer as a header:
 
 ```
 Heap block:  [vtable_ptr | concrete_data...]
@@ -410,7 +410,7 @@ A reference is ephemeral (expression-scoped) and never stored in a struct, but
 its layout matters for the calling convention: a single pointer, 8 bytes.
 
 There is no slice type — a run of elements is a `Vec<T>`, which is one pointer
-to its header — so nothing here is a fat pointer except a trait object.
+to its header — so nothing here is a fat pointer except an interface object.
 
 ## Zero-Sized Types (ZST)
 
@@ -493,7 +493,7 @@ Function calls follow System V AMD64 ABI on Linux, Windows x64 calling conventio
 
 **Fat pointer calling convention:**
 
-A trait object is the one fat pointer, and it is passed as two consecutive
+An interface object is the one fat pointer, and it is passed as two consecutive
 register arguments — data pointer first, vtable pointer second:
 ```rask
 func f(w: any Widget)
@@ -533,6 +533,6 @@ FIX: Use heap indirection or split into smaller chunks.
 ## See Also
 
 - `type.enums` — Enum semantics and discriminant rules
-- `type.traits` — Trait objects and `any` compatibility
+- `type.interfaces` — Interface objects and `any` compatibility
 - `mem.closures` — Closure capture semantics
 - `mem.value` — Copy vs move threshold (16 bytes)

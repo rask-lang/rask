@@ -1,11 +1,11 @@
 <!-- id: type.operators -->
 <!-- status: decided -->
-<!-- summary: Operator precedence, Equal/Comparable traits, operator trait list -->
-<!-- depends: types/primitives.md, types/traits.md -->
+<!-- summary: Operator precedence, Equal/Comparable interfaces, operator interface list -->
+<!-- depends: types/primitives.md, types/interfaces.md -->
 
 # Operators
 
-Operators follow standard precedence. Equality and ordering are trait-based. Comparison chaining disallowed.
+Operators follow standard precedence. Equality and ordering are interface-based. Comparison chaining disallowed.
 
 ## Precedence
 
@@ -127,35 +127,35 @@ JavaScript's automatic semicolon insertion, which guesses from the previous line
 |------|-------------|
 | **CA1: Evaluates to void** | `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` evaluate to `void` |
 
-## Equality Trait
+## Equality Interface
 
 | Rule | Description |
 |------|-------------|
-| **EQ1: Equal trait** | `==` calls `eq()`; `!=` is `!eq()` |
+| **EQ1: Equal interface** | `==` calls `eq()`; `!=` is `!eq()` |
 | **EQ2: Derivable** | Structs and enums can derive if all fields implement `Equal` |
 | **EQ3: Float semantics** | `f32`/`f64` use IEEE 754: `NaN == NaN` is `false`; use `.total_eq()` for reflexive equality |
 
 <!-- test: skip -->
 ```rask
-trait Equal {
+interface Equal {
     func eq(self, other: Self) -> bool
 }
 ```
 
 **Programmer must ensure:** reflexive (`a == a`), symmetric (`a == b` implies `b == a`), transitive.
 
-## Comparable Trait
+## Comparable Interface
 
 | Rule | Description |
 |------|-------------|
-| **ORD1: Comparable trait** | `<`, `>`, `<=`, `>=` derived from `compare()` returning `Ordering` |
-| **ORD2: Derivable** | Structs and enums auto-derive lexicographic ordering (first field, then second, etc.). Override with explicit `extend Type with Comparable` |
+| **ORD1: Comparable interface** | `<`, `>`, `<=`, `>=` derived from `compare()` returning `Ordering` |
+| **ORD2: Derivable** | Structs and enums auto-derive lexicographic ordering (first field, then second, etc.). Override with explicit `extend Type implements Comparable` |
 | **ORD4: Mixed-signedness comparison** | `==`, `!=`, `<`, `<=`, `>`, `>=` work between any two integer primitives, answered by **value** — a negative signed operand is below every unsigned one, so `5u64 > -1i32` is true and `u64::MAX > 1i32` is true. Comparison operators only: mixed-type *arithmetic* is a type error, because `u64 + i32` has no obviously-correct result type while the comparison has an obviously-correct answer. The bitwise operators and the shifts go with arithmetic, not with comparison. Integer primitives only — not floats, not user types — and `Comparable` itself is unchanged and stays same-type |
 | **ORD3: Float ordering** | `f32`/`f64` implement `Comparable`. `compare()` is a **total** order so sorting is well-defined; the operators `<`, `>`, `<=`, `>=` stay IEEE, so every comparison against `NaN` is `false` |
 
 <!-- test: skip -->
 ```rask
-trait Comparable: Equal {
+interface Comparable: Equal {
     func compare(self, other: Self) -> Ordering
 }
 
@@ -175,22 +175,22 @@ enum Ordering { Less, Equal, Greater }
 | Structs | Derive | Derive | All fields must implement |
 | Enums | Derive | Derive | Variant order, then payload |
 
-## Arithmetic Traits
+## Arithmetic Interfaces
 
-Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr`. They are declared in [`stdlib/ops.rk`](../../stdlib/ops.rk), each one `<Rhs = Self>` with a `type Out = Self`:
+Operator interfaces: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `BitXor`, `BitNot`, `Shl`, `Shr`. They are declared in [`stdlib/ops.rk`](../../stdlib/ops.rk), each one `<Rhs = Self>` with a `type Out = Self`:
 
 <!-- test: skip -->
 ```rask
-public trait Mul<Rhs = Self> {
+public interface Mul<Rhs = Self> {
     type Out = Self
 
     func mul(self, rhs: Rhs) -> Self.Out
 }
 ```
 
-`a * b` resolves on the ordered pair `(typeof a, typeof b)` against those traits, not as a method lookup on `a` — so `2.0 * meters` is writable, and so is a `Meters * Meters` that answers in `SquareMeters`. The rules are `type.operator-resolution`; this table is just the roster.
+`a * b` resolves on the ordered pair `(typeof a, typeof b)` against those interfaces, not as a method lookup on `a` — so `2.0 * meters` is writable, and so is a `Meters * Meters` that answers in `SquareMeters`. The rules are `type.operator-resolution`; this table is just the roster.
 
-The line above used to describe nothing: no such trait existed anywhere, and operators were duck-typed on the method name.
+The line above used to describe nothing: no such interface existed anywhere, and operators were duck-typed on the method name.
 
 ## Division and Remainder
 
@@ -268,4 +268,4 @@ One idiom loses its short spelling. `if a < 0 != b < 0` — "do these differ in 
 - `type.operator-resolution` — how `a OP b` picks a conformance from both operand types
 - `type.overflow` — Integer overflow behavior
 - `type.primitives` — Primitive types
-- `type.traits` — Trait system
+- `type.interfaces` — Interface system

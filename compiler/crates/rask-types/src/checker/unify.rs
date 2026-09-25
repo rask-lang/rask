@@ -1158,7 +1158,7 @@ impl TypeChecker {
                     }
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
-                        // ER32: `any Trait` error — concrete types implementing the trait go to err
+                        // ER32: `any Interface` error — concrete types implementing the trait go to err
                         Type::TraitObject { trait_name } => {
                             crate::traits::implements_trait(&self.types, &resolved_ret, trait_name)
                         }
@@ -1648,7 +1648,7 @@ impl TypeChecker {
                 Ok(false)
             }
 
-            // Trait object coercion: concrete → any Trait (TR5)
+            // Trait object coercion: concrete → any Interface (TR5)
             (concrete, Type::TraitObject { ref trait_name })
             | (Type::TraitObject { ref trait_name }, concrete)
                 if !matches!(concrete, Type::TraitObject { .. }) =>

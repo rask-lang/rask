@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// A trait object handed to a function that only reads it is still the caller's.
+// An interface object handed to a function that only reads it is still the caller's.
 //
 // Passing a box as an argument counted as handing it over, so the frame that
 // built it stopped dropping it — and the callee, which only reads through it
@@ -23,9 +23,9 @@
 // happen exactly once, and which side owns it is a design question. A string
 // survives that because a decrement is right whoever holds one.
 //
-// Spec: specs/types/traits.md, specs/memory/parameters.md.
+// Spec: specs/types/interfaces.md, specs/memory/parameters.md.
 
-trait Named {
+interface Named {
     func label(self) -> string
 }
 
@@ -34,7 +34,7 @@ struct Crate {
     public note: string
 }
 
-extend Crate with Named {
+extend Crate implements Named {
     public func label(self) -> string {
         return self.name
     }
@@ -44,7 +44,7 @@ struct Bin {
     public id: i64
 }
 
-extend Bin with Named {
+extend Bin implements Named {
     public func label(self) -> string {
         return "bin {self.id}"
     }
@@ -60,7 +60,7 @@ func describe_both(a: any Named, b: any Named) -> string {
     return "{a.label()}/{b.label()}"
 }
 
-test "type.traits — a box passed to a borrowing callee is dropped by the caller" {
+test "type.interfaces — a box passed to a borrowing callee is dropped by the caller" {
     let c = Crate {
         name: "a crate name long enough to allocate",
         note: "and a note that is also long enough",
@@ -68,7 +68,7 @@ test "type.traits — a box passed to a borrowing callee is dropped by the calle
     assert describe(c) == "a crate name long enough to allocate"
 }
 
-test "type.traits — two call sites, so the callee is a real call" {
+test "type.interfaces — two call sites, so the callee is a real call" {
     let one = Crate {
         name: "the first crate has a long name",
         note: "and the first crate's note is long",
@@ -83,7 +83,7 @@ test "type.traits — two call sites, so the callee is a real call" {
 
 // A value with nothing to release, so the box allocation itself is the only
 // thing in question.
-test "type.traits — and a boxed value that holds nothing" {
+test "type.interfaces — and a boxed value that holds nothing" {
     let b = Bin { id: 7 }
     assert describe(b) == "bin 7"
     let other = Bin { id: 8 }
@@ -92,7 +92,7 @@ test "type.traits — and a boxed value that holds nothing" {
 
 // Mixed concrete types through one parameter, so each gets its own vtable and
 // its own drop glue.
-test "type.traits — two concrete types through the same parameter" {
+test "type.interfaces — two concrete types through the same parameter" {
     let c = Crate {
         name: "a crate with a name long enough",
         note: "and a note long enough as well",
@@ -104,7 +104,7 @@ test "type.traits — two concrete types through the same parameter" {
 // Repeatedly, straight-line rather than in a loop: a box built *inside* a loop
 // loses one release per turn on a heap string in the value it copied (#1145),
 // which is a different bug and would be the only thing this test measured.
-test "type.traits — the same value boxed again and again" {
+test "type.interfaces — the same value boxed again and again" {
     let c = Crate {
         name: "a crate name long enough to allocate",
         note: "and a note that is also long enough",

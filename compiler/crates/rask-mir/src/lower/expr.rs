@@ -867,7 +867,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Emit a TraitBox instruction: heap-allocate `value` and produce a trait object.
-    /// Used for both explicit `as any Trait` casts and implicit TR5 coercions.
+    /// Used for both explicit `as any Interface` casts and implicit TR5 coercions.
     pub(super) fn emit_trait_box(
         &mut self,
         val: MirOperand,
@@ -1335,7 +1335,7 @@ impl<'a> MirLowerer<'a> {
             ty
         };
         // TR5: a concrete value the checker flagged as flowing into an
-        // `any Trait` position gets its vtable here — at the value, so every
+        // `any Interface` position gets its vtable here — at the value, so every
         // use site is covered by one rule. Boxing at the call argument alone
         // left an annotated binding, a struct field and a collection element
         // holding a bare struct pointer that the first method call dispatched
@@ -1890,7 +1890,7 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_cast(&mut self, expr: &Expr, ty: &str) -> Result<TypedOperand, LoweringError> {
-            // Trait object boxing: `value as any Trait`
+            // Trait object boxing: `value as any Interface`
             if let Some(trait_name) = rask_ast::traits::trait_object_name(ty) {
                 let trait_name = trait_name.to_string();
                 let (val, concrete_mir_ty) = self.lower_expr(expr)?;
@@ -7526,14 +7526,14 @@ impl<'a> MirLowerer<'a> {
             overload_names.push(name);
         }
         // XC5: an operator method is a conformance method like any other —
-        // `extend Doc with Equal` in two packages puts two `eq`s on one type.
+        // `extend Doc implements Equal` in two packages puts two `eq`s on one type.
         let method = &overload_names
             .first()
             .map(|p| self.dispatch_method_name(call, p, method))
             .unwrap_or_else(|| method.clone());
         // A nominal newtype has no layout of its own (type.aliases/T3), so it
         // isn't an aggregate by `obj_ty` even when it wraps a struct — and an
-        // `extend Counted with Equal` block is exactly the overload this gate
+        // `extend Counted implements Equal` block is exactly the overload this gate
         // is here to find.
         let has_operator_overload = (aggregate_receiver
             || self.expr_is_transparent_newtype(object))
@@ -7950,7 +7950,7 @@ impl<'a> MirLowerer<'a> {
     /// worked — the match lowering special-cased `Ordering` against a raw tag —
     /// but nothing downstream knew the value was an enum, so `{a.compare(b)}`
     /// formatted it as the integer it claimed to be and printed `0` for Less,
-    /// and a user's `extend Ordering with Displayable` was never consulted
+    /// and a user's `extend Ordering implements Displayable` was never consulted
     /// (#729). Storing the tag into a properly laid out slot makes it the same
     /// shape as any other fieldless enum value.
     fn wrap_ordering(&mut self, tag: MirOperand) -> TypedOperand {
@@ -9789,7 +9789,7 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Method call on `any Trait` -> vtable dispatch.
+    /// Method call on `any Interface` -> vtable dispatch.
     fn try_lower_trait_object(
         &mut self,
         expr: &Expr,
@@ -9798,7 +9798,7 @@ impl<'a> MirLowerer<'a> {
         obj_op: &MirOperand,
         obj_ty: &MirType,
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        // Trait object dispatch: method call on `any Trait`
+        // Trait object dispatch: method call on `any Interface`
         if let MirType::TraitObject { ref trait_name } = obj_ty {
             if let Some(methods) = self.ctx.trait_methods.get(trait_name) {
                 if let Some(idx) = methods.iter().position(|m| m == method) {
@@ -9818,7 +9818,7 @@ impl<'a> MirLowerer<'a> {
                         trait_object: match obj_op {
                             MirOperand::Local(id) => *id,
                             _ => return Err(LoweringError::InvalidConstruct(
-                                "trait object must be a local variable".to_string()
+                                "interface object must be a local variable".to_string()
                             )),
                         },
                         method_name: method.clone(),

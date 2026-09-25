@@ -9,7 +9,7 @@ enum ConfigError {
     NotANumber(key: string, text: string)
 }
 
-extend ConfigError with Error {
+extend ConfigError implements Error {
     func message(self) -> string
 }
 

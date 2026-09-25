@@ -7,7 +7,7 @@ import traitpkg.Doc
 // own conformance and shares the layout.
 public type Tagged = Doc
 
-public extend Tagged with Hashable {
+public extend Tagged implements Hashable {
     public func hash(self) -> u64 {
         return 42
     }

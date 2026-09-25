@@ -1232,7 +1232,7 @@ impl<'a> FunctionBuilder<'a> {
             MirStmtKind::TraitDrop { trait_object } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "TraitDrop: trait object variable not found".to_string()
+                        "TraitDrop: interface object variable not found".to_string()
                     ))?);
                 let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
                 let none = builder.ins().iconst(types::I64, 0);
@@ -3067,7 +3067,7 @@ impl<'a> FunctionBuilder<'a> {
         // Load fat pointer components from trait object stack slot
         let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
             .ok_or_else(|| CodegenError::UnsupportedFeature(
-                "TraitCall: trait object variable not found".to_string()
+                "TraitCall: interface object variable not found".to_string()
             ))?);
         let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
         let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_VTABLE_OFFSET);
@@ -7151,7 +7151,7 @@ impl<'a> FunctionBuilder<'a> {
             MirType::Heap(_) => true,
             // A box moved into a field is the aggregate's: the block, and the
             // value's own contents through the vtable. Left out, a struct whose
-            // only owning field was an `any Trait` was skipped by the whole
+            // only owning field was an `any Interface` was skipped by the whole
             // walk and the box leaked (#1149's field case).
             MirType::TraitObject { .. } => true,
             // A closure in a slot is the aggregate's too. The frame frees one
@@ -7396,7 +7396,7 @@ impl<'a> FunctionBuilder<'a> {
         // Same shape as the MIR-typed arm: the slot *is* the fat pointer, and
         // the runtime's own entry walker reads both words and the vtable's
         // release hook. Before the match for the reason `holds_string_ty` asks
-        // it early — a field's `any Trait` is a name, not a parsed form.
+        // it early — a field's `any Interface` is a name, not a parsed form.
         if crate::drop_fields::is_trait_object(ty) {
             return Self::emit_boxed_field_release(builder, base, offset, ctx);
         }

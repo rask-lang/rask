@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: `Error` is a trait, so it has no variants to pick (#1095, E0863).
+// Compile Error: `Error` is an interface, so it has no variants to pick (#1095, E0863).
 //
-// `Error` is the trait every error type implements, and `any Error` — which the
+// `Error` is the interface every error type implements, and `any Error` — which the
 // bare name is short for — is the erased box that holds one. Neither declares
 // variants; those belong to the concrete error enum.
 //
@@ -22,7 +22,7 @@ extend LookupError {
 }
 
 func by_name(n: i64) -> i64 or Error {
-    // ERROR: `Error` is a trait, not an enum — `NotFound` is not one of its variants
+    // ERROR: `Error` is an interface, not an enum — `NotFound` is not one of its variants
     if n < 0 { return Error.NotFound }
     return n
 }

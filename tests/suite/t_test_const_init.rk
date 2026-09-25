@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A test binary replaces main, and main is where module-level let init
 // thunks used to be called from — so a `const` holding a box stayed a zero
-// slot and the first read through it dereferenced null. The runner runs the
+// slot and the first read through it dereferenced nullptr. The runner runs the
 // thunks itself now.
 import sync.Shared
 

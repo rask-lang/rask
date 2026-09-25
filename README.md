@@ -93,7 +93,7 @@ That's most of the cost. What you get back: no lifetime annotations in signature
 ## What works today
 
 - Memory model: ownership, moves, borrows, linearity
-- Type system: primitives, structs, enums, generics, traits
+- Type system: primitives, structs, enums, generics, interfaces
 - Control flow: if/match/loops
 - Concurrency: spawn/join, channels, thread pools
 - Error handling: `T or E` with `try` to propagate and `catch e =>` to handle; optionals (`T?`, `??`, `!`, `is none`)

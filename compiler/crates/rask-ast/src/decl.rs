@@ -73,7 +73,7 @@ pub struct TypeAliasDecl {
     pub is_pub: bool,
     /// True for `type alias X = Y` (transparent). False for `type X = Y` (nominal).
     pub is_transparent: bool,
-    /// Traits inherited from underlying type: `type X = Y with (Equal, Hashable)`
+    /// Traits inherited from underlying type: `type X = Y implements Equal, Hashable`
     pub with_traits: Vec<String>,
 }
 
@@ -214,7 +214,7 @@ pub struct AssocTypeDecl {
     pub span: Span,
 }
 
-/// AT2: `type Out = Meters` inside an `extend T with Trait` block.
+/// AT2: `type Out = Meters` inside an `extend T implements Trait` block.
 #[derive(Debug, Clone)]
 pub struct AssocTypeBinding {
     pub name: String,
@@ -471,7 +471,7 @@ pub struct TraitDecl {
     pub is_pub: bool,
     /// Whether this is an `unsafe trait`.
     pub is_unsafe: bool,
-    /// `duck trait` — shape-matched (structural) instead of nominal (G1).
+    /// `duck interface` — shape-matched (structural) instead of nominal (G1).
     pub is_duck: bool,
     /// Attributes (`@allow(...)`, …)
     pub attrs: Vec<String>,
@@ -479,11 +479,12 @@ pub struct TraitDecl {
     pub doc: Option<String>,
 }
 
-/// An impl block (`extend T`, `extend T with Trait`, `extend T with A, B, C`).
+/// An extend block (`extend T`, `extend T implements I`).
 #[derive(Debug, Clone)]
 pub struct ImplDecl {
-    /// Declared trait conformances (CD1). Empty for a plain `extend T` block.
-    pub trait_names: Vec<String>,
+    /// The one interface this block conforms to (CD1). None for a plain
+    /// `extend T` block.
+    pub trait_name: Option<String>,
     pub target_ty: String,
     pub methods: Vec<FnDecl>,
     /// Whether this is an `unsafe extend`.
@@ -491,7 +492,7 @@ pub struct ImplDecl {
     /// `scoped extend` — methods stay out of the type's inherent namespace (MN4).
     pub is_scoped: bool,
     /// CC1/CC2: `where` condition for conditional conformance on a generic
-    /// target (`extend Ring<T> with Displayable where T: Displayable`). Each
+    /// target (`extend Ring<T> implements Displayable where T: Displayable`). Each
     /// entry is a type param and its required trait bounds.
     pub where_bounds: Vec<TypeParam>,
     /// AT2: `type Out = Meters` lines in the block.
@@ -500,12 +501,6 @@ pub struct ImplDecl {
     pub doc: Option<String>,
 }
 
-impl ImplDecl {
-    /// The first declared trait, if any (for single-trait consumers/formatting).
-    pub fn trait_name(&self) -> Option<&String> {
-        self.trait_names.first()
-    }
-}
 
 /// An import declaration.
 ///

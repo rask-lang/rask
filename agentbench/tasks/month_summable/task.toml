@@ -1,6 +1,6 @@
-title = "A trait bound and the operator that comes with it"
+title = "An interface bound and the operator that comes with it"
 horizon = "month"
-concepts = ["generics", "traits", "operators", "bounds"]
+concepts = ["generics", "interfaces", "operators", "bounds"]
 issues = []
 
 contract = """
@@ -15,12 +15,12 @@ prompt = """
 One operator, two conforming types, and two generic functions over the bound.
 
 `Money` counts whole cents; `Meters` is a float. Both conform to `Add`, the
-stdlib trait `+` resolves against.
+stdlib interface `+` resolves against.
 
 `total` folds a list down to one value, starting from the `zero` it is handed;
 an empty list totals to that `zero`. `doubled` adds a value to itself.
 
 `+` resolves on the pair of operand types against a declared conformance, so
-`extend Money with Add` is what makes `a + b` work — and it is the same
+`extend Money implements Add` is what makes `a + b` work — and it is the same
 conformance `a.add(b)` and the `T: Add` bound reach.
 """

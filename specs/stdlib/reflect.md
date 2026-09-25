@@ -45,7 +45,7 @@ const FIELD_COUNT = comptime reflect.fields<MyStruct>().len
 | `is_map<T>()` | `-> bool` | Whether T is `Map<K, V>` for some K, V |
 | `is_integer<T>()` | `-> bool` | Whether T is an integer type (`i8`–`i64`, `u8`–`u64`, `usize`) |
 | `is_float<T>()` | `-> bool` | Whether T is `f32` or `f64` |
-| `is_flat<T>()` | `-> bool` | Whether T has no heap-backed fields recursively (no `string`, `Vec`, `Map`, `Shared`, `any Trait`, closures, resources) |
+| `is_flat<T>()` | `-> bool` | Whether T has no heap-backed fields recursively (no `string`, `Vec`, `Map`, `Shared`, `any Interface`, closures, resources) |
 
 These enable comptime type dispatch without string-comparing type names. Primary use cases: format libraries (`std.encoding`), relocatable memory (`mem.relocatable`).
 
@@ -123,12 +123,12 @@ struct MethodInfo {
 }
 ```
 
-## Trait Checking
+## Interface Checking
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `implements<T, Trait>()` | `-> bool` | Whether T satisfies Trait (structural or explicit) |
-| `trait_names<T>()` | `-> Vec<string>` | Names of traits T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
+| `implements<T, Interface>()` | `-> bool` | Whether T satisfies Interface (structural or explicit) |
+| `trait_names<T>()` | `-> Vec<string>` | Names of interfaces T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
 
 `implements` checks whether T has the required methods. Does NOT scan the codebase for all implementors (R2).
 
@@ -182,7 +182,7 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 | Private fields in `fields<T>()` | R4 | Visible in metadata, access respects visibility; `serialized == false` |
 | `fields<T>()` from an external format library | R4 | Sees the full `serialized` set — auto-derive acts as-if in the defining module |
 | Generic type `T` in comptime func | R5 | Reflects concrete monomorphized type |
-| `implements<T, Trait>()` | R2 | Checks T's methods, not codebase-wide |
+| `implements<T, Interface>()` | R2 | Checks T's methods, not codebase-wide |
 
 ---
 
@@ -192,7 +192,7 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 
 **R1 (comptime only):** No runtime reflection keeps binaries small and avoids the metadata bloat of languages like Java/C#.
 
-**R2 (local analysis):** I chose a stdlib module over language-level syntax because it keeps the language small. The compiler provides the intrinsics; the stdlib wraps them in a stable API. "Find all types implementing Trait X" would require whole-program knowledge, breaking local analysis (`CORE_DESIGN.md` Principle 5).
+**R2 (local analysis):** I chose a stdlib module over language-level syntax because it keeps the language small. The compiler provides the intrinsics; the stdlib wraps them in a stable API. "Find all types implementing Interface X" would require whole-program knowledge, breaking local analysis (`CORE_DESIGN.md` Principle 5).
 
 ### Patterns & Guidance
 
@@ -248,6 +248,6 @@ Ghost annotations show reflected values on hover (e.g., hovering `reflect.fields
 
 - `ctrl.comptime` — Compile-time execution context
 - `std.encoding` — Comptime field iteration and serialization
-- `type.traits` — Trait definitions and structural typing
+- `type.interfaces` — Interface definitions and structural typing
 - `type.structs` — Struct field layout and visibility
 - `mem.relocatable` — Flat type constraint, `is_flat<T>()` usage (`mem.relocatable/FL4`)

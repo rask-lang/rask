@@ -98,7 +98,7 @@ test "std.encoding — @no_serialize keeps a field out of the encoded object" {
 }
 
 // A skipped field still has to hold something usable — zeroed bytes are not an
-// empty string, and a null pointer is not an empty Vec. E13a says where the
+// empty string, and a nullptr pointer is not an empty Vec. E13a says where the
 // value comes from: the field's declared default.
 test "std.encoding — a skipped field decodes to its declared default" {
     let s = json.decode<Skipped>("{{\"id\":5}}") catch e => {
@@ -115,7 +115,7 @@ test "std.encoding — a skipped field decodes to its declared default" {
 // E19 again, from the type-system side: a field that can't be serialized would
 // disqualify the whole struct, but a skipped one never reaches the wire, so it
 // doesn't get a vote. Without this, `@no_serialize` was advice the checker ignored.
-trait Opaque {
+interface Opaque {
     func tag(self) -> i64
 }
 
@@ -123,7 +123,7 @@ struct Marker {
     public v: i64
 }
 
-extend Marker with Opaque {
+extend Marker implements Opaque {
     func tag(self) -> i64 { return self.v }
 }
 

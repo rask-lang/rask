@@ -47,7 +47,7 @@ Not every ghost earns a place in a diff. The cut:
 |------|-------------|
 | **TR1: Review tier (default)** | Information where a wrong assumption changes what the code does to data or when it runs: mutation, consumption, suspension, I/O, hidden dependencies |
 | **TR2: Full tier (`--all`)** | Everything the IDE ghosts, including pure comprehension aids — types, scopes, optimizer decisions |
-| **TR3: Proved only** | Annotate shows what the compiler proved, never what it guessed. `type.gradual/IS3` applies verbatim: propagated nominal bounds render as `T: Comparable`, raw shape requirements as `T: {frobnicate}` — never a trait name inferred from shape |
+| **TR3: Proved only** | Annotate shows what the compiler proved, never what it guessed. `type.gradual/IS3` applies verbatim: propagated nominal bounds render as `T: Comparable`, raw shape requirements as `T: {frobnicate}` — never an interface name inferred from shape |
 
 | Information | Rendering (source spec) | Tier |
 |-------------|------------------------|------|

@@ -11,7 +11,7 @@ use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
-/// MN3/XC3: an `extend T with Trait` block, as the conformance table remembers
+/// MN3/XC3: an `extend T implements Trait` block, as the conformance table remembers
 /// it. Auto-derive records no site at all, so having one means it was written.
 ///
 /// `from_stdlib` is what XC3 turns on. It has to be the *first* registration's,
@@ -117,7 +117,7 @@ pub struct TypeTable {
     /// apart. Binding happens here, where the TypeId is still known.
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
     /// G1: declared/derived trait conformances (nominal). TypeId → trait base
-    /// names the type conforms to, from `extend T with Trait` and auto-derive.
+    /// names the type conforms to, from `extend T implements Trait` and auto-derive.
     pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
     /// AT2/AT8: `(type, applied trait) → associated type → what it answers with`.
     pub(super) assoc_bindings: HashMap<(TypeId, String), HashMap<String, Type>>,
@@ -503,7 +503,7 @@ impl TypeTable {
     /// arguments*, so `Mul<f64>` and `Mul<Meters>` on one type stay apart.
     ///
     /// Written-out defaults are filled in and `Self` becomes the conforming
-    /// type's name, so `extend Meters with Mul` and `extend Meters with
+    /// type's name, so `extend Meters implements Mul` and `extend Meters with
     /// Mul<Meters>` land on the same key when `Rhs` defaults to `Self`.
     /// A trait with no parameters keys on its bare name, exactly as before.
     pub fn applied_conformance_key(&self, trait_name: &str, self_name: &str) -> String {
@@ -793,7 +793,7 @@ impl TypeTable {
     ///
     /// TD3: a sub-trait requires everything its super-traits require, so
     /// declaring the sub-trait declares the parents too. Without that,
-    /// `extend Horn with Shouty` — where `trait Shouty: Speak` — left
+    /// `extend Horn implements Shouty` — where `trait Shouty: Speak` — left
     /// `horn as any Speak` refused for a trait the type demonstrably implements,
     /// and pushing one into a `Vec<any Speak>` was a type error (#873).
     pub fn declares_conformance(&self, type_id: TypeId, trait_name: &str) -> bool {

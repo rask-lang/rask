@@ -1,24 +1,24 @@
-// === Lesson 12: Traits ===
+// === Lesson 12: Interfaces ===
 //
 // In Python, if an object has a .fly() method, you can call it.
 // That's "duck typing" — if it quacks like a duck, it's a duck.
 //
-// Rask does something similar with traits — but the compiler checks
+// Rask does something similar with interfaces — but the compiler checks
 // at compile time, not at runtime:
 //
-//   trait HasArea {
+//   interface HasArea {
 //       func area(self) -> f64
 //   }
 //
 // Having the right methods isn't enough on its own: the type says which
-// trait it's conforming to, in the header of the block that implements it.
+// interface it's conforming to, in the header of the block that implements it.
 //
-//   extend Circle with HasArea {
+//   extend Circle implements HasArea {
 //       func area(self) -> f64 { return 3.14159 * self.r * self.r }
 //   }
 //
 // That's one word more than duck typing, and it buys two things: a type
-// can't satisfy a trait it never meant to just because a name collided,
+// can't satisfy an interface it never meant to just because a name collided,
 // and the error when a method is missing points at the extend block that
 // promised it rather than at the call site three files away.
 //
@@ -35,7 +35,7 @@
 
 // --- Example ---
 
-trait Describable {
+interface Describable {
     func describe(self) -> string
 }
 
@@ -44,7 +44,7 @@ struct Star {
     mass_solar: f64
 }
 
-extend Star with Describable {
+extend Star implements Describable {
     func describe(self) -> string {
         return "{self.name}: {self.mass_solar} solar masses"
     }
@@ -59,7 +59,7 @@ func print_description<T: Describable>(thing: T) {
 // PUZZLES
 // ============================================================
 
-// --- Puzzle 1: Aircraft trait ---
+// --- Puzzle 1: Aircraft interface ---
 // Two very different aircraft. Same interface.
 //
 // Fun fact: the Boeing 737 first flew in 1967 and is still in production.
@@ -67,7 +67,7 @@ func print_description<T: Describable>(thing: T) {
 // jet in history. The Cessna 172 holds a different record: most produced
 // aircraft of any kind, with over 44,000 built since 1956.
 
-trait Aircraft {
+interface Aircraft {
     func max_speed_knots(self) -> f64
     func range_nm(self) -> f64
     func designation(self) -> string
@@ -86,7 +86,7 @@ struct Cessna172 {
 //   max_speed_knots → 453.0
 //   range_nm → 3500.0
 //   designation → "Boeing 737-{variant}" (use self.variant)
-extend Boeing737 with Aircraft {
+extend Boeing737 implements Aircraft {
     func max_speed_knots(self) -> f64 {
         todo()
     }
@@ -102,7 +102,7 @@ extend Boeing737 with Aircraft {
 //   max_speed_knots → 124.0
 //   range_nm → 640.0
 //   designation → "Cessna 172 ({registration})" (use self.registration)
-extend Cessna172 with Aircraft {
+extend Cessna172 implements Aircraft {
     func max_speed_knots(self) -> f64 {
         todo()
     }
@@ -114,16 +114,16 @@ extend Cessna172 with Aircraft {
     }
 }
 
-// --- Puzzle 2: Use the trait generically ---
+// --- Puzzle 2: Use the interface generically ---
 // Given two Aircraft, return the designation of the one with longer range.
 func longer_range<T: Aircraft, U: Aircraft>(a: T, b: U) -> string {
     todo()
 }
 
-// --- Puzzle 3: Summable trait ---
-// A trait for types that can contribute a numeric value.
+// --- Puzzle 3: Summable interface ---
+// An interface for types that can contribute a numeric value.
 
-trait Summable {
+interface Summable {
     func value(self) -> f64
 }
 
@@ -133,7 +133,7 @@ struct Measurement {
 }
 
 // Implement Summable for Measurement — return self.reading
-extend Measurement with Summable {
+extend Measurement implements Summable {
     func value(self) -> f64 {
         todo()
     }

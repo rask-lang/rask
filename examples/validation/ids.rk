@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Id newtypes and the two closed enums (Priority, Status).
 //
-// The ids are `type X = u64 with (...)` nominal newtypes: distinct types (a
+// The ids are `type X = u64 implements ...` nominal newtypes: distinct types (a
 // TaskId can't be passed where a ProjectId is expected) that inherit
 // Equal/Hashable/Comparable through the `with` clause (T11) and carry `next()`
 // via `extend` (T13). Construction is `TaskId(n)`, extraction `.value` (T7/T8).
 
-type TaskId = u64 with (Equal, Hashable, Comparable, Debug)
+type TaskId = u64 implements Equal, Hashable, Comparable, Debug
 
-type ProjectId = u64 with (Equal, Hashable, Comparable, Debug)
+type ProjectId = u64 implements Equal, Hashable, Comparable, Debug
 
-type UserId = u64 with (Equal, Hashable, Comparable, Debug)
+type UserId = u64 implements Equal, Hashable, Comparable, Debug
 
 extend TaskId {
     func next(self) -> TaskId {
@@ -31,7 +31,7 @@ extend UserId {
 }
 
 // ─── Email ───────────────────────────────────────────────────────────
-// A struct starts with the four core traits auto-derived — the setup OC1
+// A struct starts with the four core interfaces auto-derived — the setup OC1
 // needs. Equality is case-insensitive: "Bo@x.io" and "bo@x.io" are the same
 // account. That's a real semantic override, not field-wise equality.
 
@@ -46,7 +46,7 @@ extend EmailAddress {
 }
 
 // Custom Equal (EQ2).
-extend EmailAddress with Equal {
+extend EmailAddress implements Equal {
     func eq(self, other: EmailAddress) -> bool {
         return self.raw.to_lowercase() == other.raw.to_lowercase()
     }
@@ -56,9 +56,9 @@ extend EmailAddress with Equal {
 // Hashable is redeclared here, consistent with the case-insensitive equality,
 // so a Map keyed by EmailAddress stays correct. Comparable isn't redeclared:
 // a hand-written conformance must supply all five of compare/lt/le/gt/ge (the
-// trait doesn't derive the four booleans from compare), and EmailAddress is
+// interface doesn't derive the four booleans from compare), and EmailAddress is
 // never sorted, so it stays non-Comparable. See FINDINGS.
-extend EmailAddress with Hashable {
+extend EmailAddress implements Hashable {
     func hash(self) -> u64 {
         return self.raw.to_lowercase().hash()
     }
@@ -66,7 +66,7 @@ extend EmailAddress with Hashable {
 
 // ─── Priority ────────────────────────────────────────────────────────
 // Variant order IS the ordering (CO1): Low < Medium < High < Urgent.
-// Enums auto-derive the core traits; the list handler sorts by this directly.
+// Enums auto-derive the core interfaces; the list handler sorts by this directly.
 
 enum Priority {
     Low

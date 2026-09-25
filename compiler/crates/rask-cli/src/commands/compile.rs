@@ -49,7 +49,7 @@ pub(super) fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask
 
 /// Nominal newtype name → the type string it wraps.
 ///
-/// `type Id = u64 with (…)` has no layout: it *is* a u64 with its own
+/// `type Id = u64 implements …` has no layout: it *is* a u64 with its own
 /// identity, so MIR treats it as transparent (#445).
 pub(super) fn build_nominal_underlying(
     typed: &rask_types::TypedProgram,

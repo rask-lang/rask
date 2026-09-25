@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Reading a trait object back out of a `T?` payload. A trait object is two
+// Reading an interface object back out of a `T?` payload. An interface object is two
 // words — data pointer plus vtable — so the payload read has to hand back its
 // address like any other aggregate. Natively it was loaded as a scalar, which
 // kept the data half and dropped the vtable, and the call through it jumped
 // through the concrete value's first field. Non-optional reads (for-loop,
 // direct index) were always fine, which is what made this look like a Map bug.
 
-trait Shape {
+interface Shape {
     func area(self) -> f64
 }
 
@@ -14,7 +14,7 @@ struct Circle {
     r: f64
 }
 
-extend Circle with Shape {
+extend Circle implements Shape {
     func area(self) -> f64 {
         return 3.14159 * self.r * self.r
     }
@@ -24,13 +24,13 @@ struct Square {
     side: f64
 }
 
-extend Square with Shape {
+extend Square implements Shape {
     func area(self) -> f64 {
         return self.side * self.side
     }
 }
 
-test "a trait object survives a Vec.get optional binding" {
+test "an interface object survives a Vec.get optional binding" {
     mut v: Vec<any Shape> = Vec.new()
     v.push(Square { side: 3.0 })
     let g = v.get(0)
@@ -41,7 +41,7 @@ test "a trait object survives a Vec.get optional binding" {
     }
 }
 
-test "a trait object survives a Map.get optional binding" {
+test "an interface object survives a Map.get optional binding" {
     mut m: Map<string, any Shape> = Map.new()
     m.insert("square", Square { side: 4.0 })
     let g = m.get("square")
@@ -61,7 +61,7 @@ test "the non-optional reads still agree" {
     }
 }
 
-test "a missing key gives none, not a bad trait object" {
+test "a missing key gives none, not a bad interface object" {
     mut m: Map<string, any Shape> = Map.new()
     m.insert("square", Square { side: 5.0 })
     let g = m.get("circle")

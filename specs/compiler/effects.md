@@ -238,7 +238,7 @@ Effect tracking produces no errors — only warnings and IDE annotations. Effect
 | `comptime func` | PU2 | Pure once CT60 has checked it — inference measures the body, and a `comptime func` reaching I/O, `spawn` or a rack insert is rejected at its definition |
 | Cross-module call | INF2, INF3 | Read effects from compiled metadata |
 | `extern` function | INF5 | Conservative IO unless `@no_io` annotated |
-| Function pointer / `any Trait` call | INF1 | Conservative: assumed IO + Async (dynamic dispatch prevents static analysis) |
+| Function pointer / `any Interface` call | INF1 | Conservative: assumed IO + Async (dynamic dispatch prevents static analysis) |
 
 ---
 

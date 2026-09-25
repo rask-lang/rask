@@ -12,7 +12,7 @@ enum ConfigError {
     Missing(string)
 }
 
-extend ConfigError with Error {
+extend ConfigError implements Error {
     func message(self) -> string {
         return "nothing set"
     }

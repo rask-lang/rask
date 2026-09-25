@@ -46,10 +46,10 @@ impl TraitBound {
 /// Errors during trait checking.
 #[derive(Debug, Error)]
 pub enum TraitError {
-    #[error("Type {ty} does not satisfy trait {trait_name}")]
+    #[error("Type {ty} does not satisfy interface {trait_name}")]
     NotSatisfied { ty: String, trait_name: String, span: Span },
 
-    #[error("Missing method '{method}' required by trait {trait_name}")]
+    #[error("Missing method '{method}' required by interface {trait_name}")]
     MissingMethod {
         ty: String,
         trait_name: String,
@@ -69,10 +69,10 @@ pub enum TraitError {
         span: Span,
     },
 
-    #[error("Unknown trait: {0}")]
+    #[error("Unknown interface: {0}")]
     UnknownTrait(String),
 
-    #[error("Conflicting method signatures in composed traits: {method}")]
+    #[error("Conflicting method signatures in composed interfaces: {method}")]
     ConflictingMethods { method: String, trait1: String, trait2: String },
 }
 
@@ -138,7 +138,7 @@ impl<'a> TraitChecker<'a> {
     /// G1: is this a nominal user-declared trait (registered, not `duck`)?
     /// Builtin/auto-derived traits (Equal, Comparable, …) are handled by
     /// eligibility and keep structural matching; only user-declared traits
-    /// require an explicit `extend T with Trait` conformance.
+    /// require an explicit `extend T implements Trait` conformance.
     fn is_nominal_user_trait(&self, trait_name: &str) -> bool {
         let base = trait_name.split('<').next().unwrap_or(trait_name);
         // A compiler-provided trait is satisfied by shape, whether or not
@@ -147,7 +147,7 @@ impl<'a> TraitChecker<'a> {
         // alone — and `Error`, `Debug` and `Hashable` are the same kind of rule.
         //
         // The G1 gate below is for a trait a program *declares*, where a
-        // matching shape without `extend T with Trait` is deliberately rejected.
+        // matching shape without `extend T implements Trait` is deliberately rejected.
         // Reading the name off a declaration alone conflated the two: putting
         // `fmt.rk` in the stub set gave `Displayable` a declaration and every
         // inherent `to_string` in the stdlib stopped counting — `StringView`
@@ -213,7 +213,7 @@ impl<'a> TraitChecker<'a> {
         // OP1 says generic operator use goes through it "like any other
         // generic call" — so a type that declares the conformance has to count
         // too. Short-circuiting to a membership test alone would have made
-        // `extend MyDecimal with Numeric` unusable as a bound.
+        // `extend MyDecimal implements Numeric` unusable as a bound.
         //
         // Unregistered, these names failed at every call site: `func
         // narrow<T: Integer>` reported "`_` does not implement `Integer`" —
@@ -301,7 +301,7 @@ impl<'a> TraitChecker<'a> {
         }
 
         // G1 nominal gate: a user struct/enum satisfies a user-declared trait
-        // only through a declared `extend T with Trait` (or auto-derive). A
+        // only through a declared `extend T implements Trait` (or auto-derive). A
         // matching shape without the declaration is rejected — the flip.
         if self.is_nominal_user_trait(trait_name) {
             if let Some(type_id) = self.user_type_id(ty) {
@@ -1097,7 +1097,7 @@ impl<'a> TraitChecker<'a> {
             Some(TypeDef::Trait { methods, .. }) => methods.clone(),
             // T13: an `extend` block on a nominal type puts its methods on the
             // nominal type, which is where `register_impl_methods` writes them.
-            // Left out here, `extend MyDoc with Labeled { func label … }` came
+            // Left out here, `extend MyDoc implements Labeled { func label … }` came
             // back methodless and G1 reported every trait method missing on a
             // block that had them all — so the newtype, which is the way out of
             // both XC1 and XC3, couldn't carry a conformance at all.
@@ -1588,7 +1588,7 @@ mod tests {
         assert!(implements_trait(&types, &Type::I32, "Comparable"));
     }
 
-    // CC1: `extend Ring<T> with Show where T: Show` — the conformance holds for
+    // CC1: `extend Ring<T> implements Show where T: Show` — the conformance holds for
     // Ring<Coin> (Coin: Show) and fails for Ring<Blob> (Blob not Show).
     #[test]
     fn conditional_conformance_checks_argument() {
@@ -1662,10 +1662,10 @@ mod tests {
             no_decode: false,
         });
 
-        // extend Ring<T> with Show where T: Show
+        // extend Ring<T> implements Show where T: Show
         types.record_conformance(ring, "Show");
         types.record_conformance_condition(ring, "Show", vec![("T".to_string(), vec!["Show".to_string()])]);
-        // extend Coin with Show
+        // extend Coin implements Show
         types.record_conformance(coin, "Show");
 
         let ring_of = |arg: crate::types::TypeId| Type::Generic {

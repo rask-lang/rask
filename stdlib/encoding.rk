@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// Encoding: marker traits for format-agnostic serialization.
+// Encoding: marker interfaces for format-agnostic serialization.
 //
-// Encode and Decode are marker traits with no methods (E11). They signal
+// Encode and Decode are marker interfaces with no methods (E11). They signal
 // that a type's structure is serialization-compatible. Format libraries
 // (JSON, TOML, MessagePack) use comptime for + reflect to serialize any
 // compatible struct with zero user ceremony.
@@ -22,14 +22,14 @@
 //   @no_encode           — opt out of auto-derive for Encode (E16)
 //   @no_decode           — opt out of auto-derive for Decode (E16)
 
-// ─── Marker Traits ──────────────────────────────────────────────
+// ─── Marker Interfaces ──────────────────────────────────────────────
 
 /// Type is serialization-compatible. Auto-derived for structs with all
 /// public fields Encode, unless @no_encode.
-public trait Encode {
+public interface Encode {
 }
 
 /// Type can be deserialized. Auto-derived for structs with all public
 /// fields Decode, unless @no_decode.
-public trait Decode {
+public interface Decode {
 }

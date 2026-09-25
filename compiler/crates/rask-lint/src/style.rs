@@ -74,7 +74,7 @@ pub fn check_pascal_case_type(decls: &[Decl], source: &str) -> Vec<LintDiagnosti
             DeclKind::Struct(s) if s.fields.is_empty() => continue,
             DeclKind::Struct(s) => (&s.name, "struct"),
             DeclKind::Enum(e) => (&e.name, "enum"),
-            DeclKind::Trait(t) => (&t.name, "trait"),
+            DeclKind::Trait(t) => (&t.name, "interface"),
             _ => continue,
         };
 

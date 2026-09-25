@@ -3,14 +3,14 @@
 //
 // The key bound used to be a hand-written "is it f32 or f64" test, so it caught
 // the type that motivated it and nothing else. Making it a real `Hashable` check
-// turned up two types the trait checker had no answer for: a nominal newtype (its
-// `with (…)` clause was recorded but never consulted) and a tuple (element-wise
+// turned up two types the interface checker had no answer for: a nominal newtype (its
+// `implements …` clause was recorded but never consulted) and a tuple (element-wise
 // value semantics, but no way to spell an `extend` block for one).
 //
 // The rejections live in `tests/compile_errors/map_key_hashable.rk`. This is the
 // other half — every shape that *is* a key, working on both backends.
 
-type Tag = u64 with (Equal, Hashable)
+type Tag = u64 implements Equal, Hashable
 
 struct Pair {
     public a: i64

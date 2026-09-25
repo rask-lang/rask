@@ -154,8 +154,8 @@ impl Hasher {
             }
             DeclKind::Impl(i) => {
                 self.feed_tag(5);
-                self.feed_u32(i.trait_names.len() as u32);
-                for tn in &i.trait_names {
+                self.feed_u32(i.trait_name.is_some() as u32);
+                if let Some(tn) = &i.trait_name {
                     self.feed_str(tn);
                 }
                 self.feed_str(&i.target_ty);

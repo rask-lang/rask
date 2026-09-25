@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// type.aliases/T10–T12 — a nominal newtype inherits the traits its `with (…)`
+// type.aliases/T10–T12 — a nominal newtype inherits the interfaces its `with (…)`
 // clause lists, and only those, and they delegate to the value it wraps.
 
-type UserId = u64 with (Equal, Hashable, Comparable, Displayable)
-type Weight = f64 with (Equal, Comparable)
-type Tag = string with (Equal, Hashable, Displayable)
+type UserId = u64 implements Equal, Hashable, Comparable, Displayable
+type Weight = f64 implements Equal, Comparable
+type Tag = string implements Equal, Hashable, Displayable
 
 // T13: an extend block adds behaviour of the type's own.
 extend UserId {
@@ -40,7 +40,7 @@ test "T11 — Hashable is inherited, so it works as a Map key" {
     assert tags.get(Tag("x")) ?? 0 == 1
 }
 
-test "T12 — an inherited trait delegates to the underlying value" {
+test "T12 — an inherited interface delegates to the underlying value" {
     // Not `UserId(42)` — the rendering is the value's, not the wrapper's.
     assert "{UserId(42)}" == "42"
     assert format("{}", Tag("hello")) == "hello"

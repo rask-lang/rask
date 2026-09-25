@@ -94,15 +94,15 @@ These features resolve in the frontend or lower to existing MIR constructs. They
 
 ---
 
-## Trait Objects and Dynamic Dispatch
+## Interface Objects and Dynamic Dispatch
 
 | Rule | Description |
 |------|-------------|
-| **TD1: Heap-allocated fat pointer** | `any Trait` values are heap-allocated. `TraitBox` MIR statement packages a concrete value into a fat pointer (data pointer + vtable pointer). Already implemented |
-| **TD2: Vtable layout** | Fixed layout: `[size: i64, align: i64, drop: fn_ptr, methods...]`. One static vtable per (concrete_type, trait) pair. Codegen emits vtable data sections with function address relocations |
+| **TD1: Heap-allocated fat pointer** | `any Interface` values are heap-allocated. `TraitBox` MIR statement packages a concrete value into a fat pointer (data pointer + vtable pointer). Already implemented |
+| **TD2: Vtable layout** | Fixed layout: `[size: i64, align: i64, drop: fn_ptr, methods...]`. One static vtable per (concrete_type, interface) pair. Codegen emits vtable data sections with function address relocations |
 | **TD3: Indirect dispatch** | `TraitCall` loads the method pointer from the vtable at a known offset, then emits an indirect call. Already implemented |
-| **TD4: Move-only** | `any Trait` is move-only, not refcounted. Trait objects can have `mutate self` methods — shared RC ownership would create data race risk. Single owner, explicit `.clone()` for copies |
-| **TD5: Devirtualization** | Future optimization: when the concrete type behind `any Trait` is statically known (e.g., created and called in the same function), replace indirect call with direct call. Enables subsequent inlining. Not implemented — requires escape analysis + type propagation |
+| **TD4: Move-only** | `any Interface` is move-only, not refcounted. Interface objects can have `mutate self` methods — shared RC ownership would create data race risk. Single owner, explicit `.clone()` for copies |
+| **TD5: Devirtualization** | Future optimization: when the concrete type behind `any Interface` is statically known (e.g., created and called in the same function), replace indirect call with direct call. Enables subsequent inlining. Not implemented — requires escape analysis + type propagation |
 
 ---
 
@@ -267,7 +267,7 @@ pub struct MirProgram {
 ### Framework Interface
 
 ```rust
-pub trait DataflowAnalysis {
+pub interface DataflowAnalysis {
     type Domain: Clone + Eq;
     fn direction() -> Direction;        // Forward or Backward
     fn bottom() -> Self::Domain;        // lattice bottom
@@ -293,7 +293,7 @@ pub fn solve<A: DataflowAnalysis>(func: &MirFunction, analysis: &A) -> DataflowR
 | **Escape analysis** | Forward | `Map<LocalId, {Local,MayEscape,Escaped}>` | String refcount elision (`comp.string-refcount-elision/RE2`) |
 | **Interval analysis** | Forward (demand-driven) | `Map<LocalId, [lo, hi]>` | Bounds check elimination (`comp.advanced/BE1`, BE2, BE4) |
 
-All five share the same solver. Adding a new analysis means implementing the trait — the iteration, caching, and invalidation are free.
+All five share the same solver. Adding a new analysis means implementing the interface — the iteration, caching, and invalidation are free.
 
 ---
 
@@ -375,7 +375,7 @@ All four are useful for other purposes too. The string RC pass is a client of th
 |------|-------------|
 | **CT1: MIR interpreter** | Comptime evaluation runs on MIR, not AST. Same semantics as compiled code, guaranteed |
 | **CT2: Virtual memory model** | The interpreter simulates a stack + heap. Allocations are tracked, freed on scope exit |
-| **CT3: Stdlib dispatch** | Stdlib calls route through a trait — comptime uses pure implementations (no I/O), runtime uses real implementations |
+| **CT3: Stdlib dispatch** | Stdlib calls route through an interface — comptime uses pure implementations (no I/O), runtime uses real implementations |
 | **CT4: Step limit** | Backwards branch quota (`ctrl.comptime/CT7`) enforced by counting executed terminators |
 | **CT5: Debug stepping** | Each MIR statement is a step. Comptime debugger hooks in here (post-v1.0) |
 | **CT6: Replaces AST interpreter for comptime** | `rask-interp` stays for `rask run` scripting mode. Comptime switches to MIR interpreter |
@@ -396,7 +396,7 @@ rask-miri/src/
   memory.rs       — virtual heap + stack frames, allocation tracking
   eval.rs         — statement/terminator execution loop
   intrinsics.rs   — arithmetic, comparisons, casts
-  stdlib.rs       — StdlibProvider trait for I/O dispatch
+  stdlib.rs       — StdlibProvider interface for I/O dispatch
 ```
 
 Comptime uses `MiriEngine` with a `PureStdlib` provider (no I/O, errors on syscalls). Future `rask run` migration would use `RealStdlib` provider.
@@ -608,7 +608,7 @@ Phase A is prerequisite for B, C, G. Phases D, E, F are independent of each othe
 - [String Refcount Elision](string-refcount-elision.md) — atomic op elision (`comp.string-refcount-elision`)
 - [Incremental Compilation](incremental.md) — caching strategy (`comp.incremental`)
 - [Effects](effects.md) — effect tracking (`comp.effects`)
-- [Traits](../types/traits.md) — trait objects, dynamic dispatch (`type.traits`)
+- [Interfaces](../types/interfaces.md) — interface objects, dynamic dispatch (`type.interfaces`)
 - [Compile-Time Execution](../control/comptime.md) — comptime rules (`ctrl.comptime`)
 - [Ensure](../control/ensure.md) — deferred cleanup (`ctrl.ensure`)
 - [Resource Types](../memory/resource-types.md) — must-consume types (`mem.resources`)

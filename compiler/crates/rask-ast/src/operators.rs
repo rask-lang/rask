@@ -60,26 +60,24 @@ pub fn is_unary_operator_trait(trait_base: &str) -> bool {
 /// isn't an operator conformance supplying that method.
 ///
 /// `target_ty` is the `extend` header's type, which is what `Rhs` defaults to
-/// (`type.generics/GT4`): `extend Point with Add` is `Add<Point>`.
+/// (`type.generics/GT4`): `extend Point implements Add` is `Add<Point>`.
 pub fn conformance_method_name(
     target_ty: &str,
-    trait_refs: &[String],
+    trait_ref: Option<&str>,
     method: &str,
 ) -> Option<String> {
     let self_base = base_name(target_ty);
-    for trait_ref in trait_refs {
-        let base = base_name(trait_ref);
-        if operator_trait_method(base) != Some(method) {
-            continue;
-        }
-        if is_unary_operator_trait(base) {
-            return None;
-        }
-        let rhs = trait_ref_arg(trait_ref).unwrap_or(self_base);
-        let rhs = if rhs == "Self" { self_base } else { rhs };
-        return Some(format!("{}${}", method, base_name(rhs)));
+    let trait_ref = trait_ref?;
+    let base = base_name(trait_ref);
+    if operator_trait_method(base) != Some(method) {
+        return None;
     }
-    None
+    if is_unary_operator_trait(base) {
+        return None;
+    }
+    let rhs = trait_ref_arg(trait_ref).unwrap_or(self_base);
+    let rhs = if rhs == "Self" { self_base } else { rhs };
+    Some(format!("{}${}", method, base_name(rhs)))
 }
 
 /// The operator method a filed name stands for: `mul$f64` → `mul`.
@@ -120,32 +118,32 @@ mod tests {
 
     #[test]
     fn the_applied_argument_goes_into_the_name() {
-        let traits = vec!["Mul<f64>".to_string()];
+        let iface = Some("Mul<f64>");
         assert_eq!(
-            conformance_method_name("Meters", &traits, "mul").as_deref(),
+            conformance_method_name("Meters", iface, "mul").as_deref(),
             Some("mul$f64")
         );
     }
 
     #[test]
     fn a_bare_header_means_the_receiver() {
-        let traits = vec!["Add".to_string()];
+        let iface = Some("Add");
         assert_eq!(
-            conformance_method_name("Point", &traits, "add").as_deref(),
+            conformance_method_name("Point", iface, "add").as_deref(),
             Some("add$Point")
         );
     }
 
     #[test]
     fn a_unary_operator_keeps_its_name() {
-        let traits = vec!["Neg".to_string()];
-        assert_eq!(conformance_method_name("Point", &traits, "neg"), None);
+        let iface = Some("Neg");
+        assert_eq!(conformance_method_name("Point", iface, "neg"), None);
     }
 
     #[test]
     fn a_method_the_trait_did_not_ask_for_keeps_its_name() {
-        let traits = vec!["Mul<f64>".to_string()];
-        assert_eq!(conformance_method_name("Meters", &traits, "scaled"), None);
+        let iface = Some("Mul<f64>");
+        assert_eq!(conformance_method_name("Meters", iface, "scaled"), None);
     }
 
     #[test]

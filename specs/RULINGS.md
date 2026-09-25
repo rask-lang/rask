@@ -15,8 +15,8 @@ Use them when someone proposes a feature, or when two specs seem to disagree.
 ## 1. Cost is visible in source; only the compiler may hide it
 
 Generates: the 16-byte copy threshold (`mem.value/VS6`), `.clone()` being
-explicit, mandatory `value as any Trait` because it allocates
-(`type.traits/TR5`), `with` blocks making lock duration visible,
+explicit, mandatory `value as any Interface` because it allocates
+(`type.interfaces/TR5`), `with` blocks making lock duration visible,
 `Wrapping<T>` living in `num` rather than the prelude (`type.overflow/W1`).
 
 The sharp corner is who's allowed to hide a cost. `string`'s refcount bump is

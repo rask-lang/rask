@@ -163,7 +163,7 @@ pub enum TypeDef {
         /// These can't be dispatched through `any` — no vtable slot.
         generic_methods: Vec<String>,
         is_unsafe: bool,
-        /// G1: `duck trait` — satisfied by shape, no declaration needed.
+        /// G1: `duck interface` — satisfied by shape, no declaration needed.
         is_duck: bool,
     },
     Union {
@@ -174,7 +174,7 @@ pub enum TypeDef {
     /// methods that come with them.
     ///
     /// `extend f64 { … }` — an inherent method on a primitive — stays illegal.
-    /// What lands here is `extend f64 with Mul<Meters>`: the conformance tables
+    /// What lands here is `extend f64 implements Mul<Meters>`: the conformance tables
     /// are keyed by `TypeId`, and without an entry a primitive had none to be
     /// keyed by, which is why the right-hand direction of every unit and vector
     /// operator was unwritable.

@@ -4,7 +4,7 @@
 // error type bridging through `message()` (D5), and a narrowed optional payload.
 struct Point { x: i64, y: i64 }
 
-extend Point with Displayable {
+extend Point implements Displayable {
     func to_string(self) -> string {
         return "({self.x}, {self.y})"
     }

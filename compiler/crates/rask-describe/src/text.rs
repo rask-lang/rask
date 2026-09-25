@@ -155,9 +155,9 @@ fn format_enum(out: &mut String, e: &EnumDesc) {
 fn format_trait(out: &mut String, t: &TraitDesc) {
     format_doc(out, &t.doc, "  ");
     if t.public {
-        out.push_str("  public trait ");
+        out.push_str("  public interface ");
     } else {
-        out.push_str("  trait ");
+        out.push_str("  interface ");
     }
     out.push_str(&t.name);
     out.push('\n');

@@ -3,7 +3,7 @@
 //! Trait-object drop insertion.
 //!
 //! `TraitBox` heap-allocates and copies a concrete value once to build an
-//! `any Trait` fat pointer; `TraitCall` reads through it without consuming.
+//! `any Interface` fat pointer; `TraitCall` reads through it without consuming.
 //! Nothing else in the pipeline ever dropped it (#366) — every trait object
 //! leaked its heap allocation unconditionally.
 //!
@@ -907,7 +907,7 @@ mod tests {
             ],
         );
         insert_trait_drops(std::slice::from_mut(&mut f));
-        assert!(has_trait_drop(&f.blocks[2].statements, local(1)), "back-edge block should drop the loop-local trait object");
+        assert!(has_trait_drop(&f.blocks[2].statements, local(1)), "back-edge block should drop the loop-local interface object");
         assert!(!has_trait_drop(&f.blocks[2].statements, local(0)), "moved-from name should not be dropped");
     }
 

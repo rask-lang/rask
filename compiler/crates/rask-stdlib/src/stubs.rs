@@ -414,7 +414,7 @@ impl StubRegistry {
                     // definitions — types must be visible for resolution even when
                     // their methods aren't implemented yet. Traits are the same:
                     // no body to strip, but the type checker still needs them to
-                    // validate `extend T with Trait` conformance (#320).
+                    // validate `extend T implements Trait` conformance (#320).
                     matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Trait(_))
                 };
                 if dominated {
@@ -560,7 +560,7 @@ impl StubRegistry {
             }
             DeclKind::Impl(i) => {
                 let base_name = strip_type_params(&i.target_ty);
-                // OR6: `extend i64 with Mul<Duration>` is a conformance, not a
+                // OR6: `extend i64 implements Mul<Duration>` is a conformance, not a
                 // declaration that `i64` is a stdlib type. Filing it as one made
                 // `i64.MAX` a member of a type rather than a numeric constant,
                 // and the assert compiled to a call to `MAX_eq`.
@@ -569,7 +569,7 @@ impl StubRegistry {
                 // stdlib-implemented — `extend char { … }` in char.rk is where
                 // their methods come from — so an inherent block on a primitive
                 // still files the type it's written on.
-                if !i.trait_names.is_empty() && rask_ast::primitives::is_scalar(&base_name) {
+                if i.trait_name.is_some() && rask_ast::primitives::is_scalar(&base_name) {
                     if let Some(entry) = self.types.get_mut(&base_name) {
                         for m in &i.methods {
                             entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
@@ -689,7 +689,7 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
             id: decl.id,
             span: decl.span,
             kind: DeclKind::Impl(rask_ast::decl::ImplDecl {
-                trait_names: Vec::new(),
+                trait_name: None,
                 target_ty,
                 methods,
                 assoc_bindings: Vec::new(),
@@ -1151,7 +1151,7 @@ mod boundary_tests {
         // Empty, and the last two entries are worth the note: `fmt.rk` and
         // `encoding.rk` were out because they declare a trait the compiler
         // already provides, and a declaration made `Displayable` look like a
-        // trait a program had written — which is gated on `extend T with Trait`,
+        // trait a program had written — which is gated on `extend T implements Trait`,
         // so every inherent `to_string` in the stdlib stopped counting. The gate
         // asks what kind of trait it is now rather than whether a declaration
         // exists, so `stdlib/` is the source of truth for all 29 files (#990).

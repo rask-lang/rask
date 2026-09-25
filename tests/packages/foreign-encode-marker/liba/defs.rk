@@ -5,5 +5,5 @@ import traitpkg.Secret
 // std.encoding/E11 makes `Encode` a marker with no methods, so there is no
 // second encoding to conflict with — what this block does is overrule
 // `traitpkg`'s `@no_encode`, from a package that never wrote the type.
-public extend Secret with Encode {
+public extend Secret implements Encode {
 }

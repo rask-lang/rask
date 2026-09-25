@@ -168,7 +168,7 @@ test "try-else multiline with method call — error transforms" {
     assert result is OuterError
 }
 
-// ─── try-else with trait objects ────────────────────────────────
+// ─── try-else with interface objects ────────────────────────────────
 
 enum ParseError {
     InvalidFormat(string)
@@ -196,13 +196,13 @@ extend ProcessError {
     }
 }
 
-trait Parser {
+interface Parser {
     func parse(self, input: string) -> i32 or ParseError
 }
 
 struct StrictParser { }
 
-extend StrictParser with Parser {
+extend StrictParser implements Parser {
     func parse(self, input: string) -> i32 or ParseError {
         if input == "42" {
             return 42
@@ -218,14 +218,14 @@ func process_with_parser(p: any Parser, input: string) -> i32 or ProcessError {
     return val * 2
 }
 
-test "try-else with trait object — success" {
+test "try-else with interface object — success" {
     let p = StrictParser {}
     let result = process_with_parser(p, "42")
     assert result is i32
     assert result! == 84
 }
 
-test "try-else with trait object — error transforms" {
+test "try-else with interface object — error transforms" {
     let p = StrictParser {}
     let result = process_with_parser(p, "bad")
     assert result is ProcessError

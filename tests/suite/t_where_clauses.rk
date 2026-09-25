@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // `where` clauses parse and their bounds attach to the type parameter,
 // identically to inline `<T: Bound>` (#313). Enforcement that bounds grant
-// trait-method access is tracked separately (#314), so these bodies don't
-// call trait methods on the generic — they exercise parsing + signature
+// interface-method access is tracked separately (#314), so these bodies don't
+// call interface methods on the generic — they exercise parsing + signature
 // handling only.
 
 // Single bound on an implicit single-letter generic.

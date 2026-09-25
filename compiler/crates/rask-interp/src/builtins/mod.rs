@@ -461,7 +461,7 @@ impl Interpreter {
             return answer;
         }
 
-        // `type Id = u64 with (Hashable)` delegates whatever it doesn't define
+        // `type Id = u64 implements Hashable` delegates whatever it doesn't define
         // itself to the underlying value, so anything the newtype doesn't
         // answer is asked of what it wraps.
         if let Value::Nominal { inner, .. } = &receiver {

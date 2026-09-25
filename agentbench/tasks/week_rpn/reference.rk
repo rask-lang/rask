@@ -12,7 +12,7 @@ enum RpnError {
     Empty
 }
 
-extend RpnError with Error {
+extend RpnError implements Error {
     func message(self) -> string {
         return match self {
             RpnError.NotEnoughOperands => "not enough operands"

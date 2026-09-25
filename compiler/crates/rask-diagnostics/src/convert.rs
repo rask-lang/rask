@@ -964,10 +964,10 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_code("E0301")
                 .with_primary(*span, "method not found")
                 .with_help(format!(
-                    "add a trait bound that declares `{}`, e.g. `where {}: SomeTrait`",
+                    "add an interface bound that declares `{}`, e.g. `where {}: SomeTrait`",
                     method, param
                 ))
-                .with_fix(format!("where {}: /* trait declaring `{}` */", param, method))
+                .with_fix(format!("where {}: /* interface declaring `{}` */", param, method))
                 .with_why(format!(
                     "a type parameter only has the methods its bounds bring into scope ({})",
                     bound_list
@@ -1886,12 +1886,12 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(format!("method `{}` returns Self — cannot be called through `any {}`", method, trait_name))
                     .with_code("E0332")
                     .with_primary(*span, "Self-returning method")
-                    .with_help("Self-returning methods are incompatible with trait objects because the concrete type is erased (TR2)")
+                    .with_help("Self-returning methods are incompatible with interface objects because the concrete type is erased (TR2)")
             }
 
             ErrorTraitMember { member, span } => {
                 Diagnostic::error(format!(
-                    "`Error` is a trait, not an enum — `{}` is not one of its variants",
+                    "`Error` is an interface, not an enum — `{}` is not one of its variants",
                     member
                 ))
                 .with_code("E0863")
@@ -1900,14 +1900,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     "declare the error you mean — `enum MyError {{ {} }}` — and return `MyError.{}`",
                     member, member
                 ))
-                .with_why("`Error` is the trait every error type implements, and `any Error` is the erased form holding one. Neither has variants of its own — the variants belong to the concrete error enum")
+                .with_why("`Error` is the interface every error type implements, and `any Error` is the erased form holding one. Neither has variants of its own — the variants belong to the concrete error enum")
             }
 
             TraitObjectGenericMethod { trait_name, method, span } => {
                 Diagnostic::error(format!("generic method `{}` — cannot be called through `any {}`", method, trait_name))
                     .with_code("E0852")
                     .with_primary(*span, "generic method")
-                    .with_help("generic methods can't be dispatched dynamically: each instantiation needs its own code, but a trait object erases the concrete type. Call it on the concrete type instead (TR3)")
+                    .with_help("generic methods can't be dispatched dynamically: each instantiation needs its own code, but an interface object erases the concrete type. Call it on the concrete type instead (TR3)")
             }
 
             // Encode/Decode are shape markers, not method sets — you can't write
@@ -1977,7 +1977,7 @@ impl ToDiagnostic for rask_types::TypeError {
                             "pass one of the types `{}` covers:\n    Integer  → i8 i16 i32 i64 i128 u8 u16 u32 u64 u128\n    Float    → f32 f64\n    Numeric  → either",
                             trait_name
                         ))
-                        .with_why("the numeric traits are membership, not conformance: their contents are constants like MIN, MAX and BITS, and a type is a member because of what it is [type.primitives/NT1-NT3]"),
+                        .with_why("the numeric interfaces are membership, not conformance: their contents are constants like MIN, MAX and BITS, and a type is a member because of what it is [type.primitives/NT1-NT3]"),
                     Ctx::GenericBound => d
                         .with_fix(format!(
                             "pass a type that implements `{0}`, or declare the conformance:\n    extend {1} with {0} {{ … }}",
@@ -1999,10 +1999,10 @@ impl ToDiagnostic for rask_types::TypeError {
                         .with_why("the header is the claim and the block is the evidence — a conformance is only declared once the methods are there [type.generics/G1]"),
                     Ctx::TraitObjectCast => d
                         .with_fix(format!(
-                            "implement the trait before boxing:\n    extend {} with {} {{ … }}",
+                            "implement the interface before boxing:\n    extend {} with {} {{ … }}",
                             ty, trait_name
                         ))
-                        .with_why("`as any Trait` builds a vtable from the concrete type's methods, so every method the trait declares has to be there [type.generics/G7]"),
+                        .with_why("`as any Interface` builds a vtable from the concrete type's methods, so every method the interface declares has to be there [type.generics/G7]"),
                 }
             }
 
@@ -2010,8 +2010,8 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(format!("`{}.{}` doesn't match what `{}` requires", ty, method, trait_name))
                     .with_code("E0888")
                     .with_primary(*span, format!("this is `{}`", found))
-                    .with_fix(format!("the trait asks for `{}`", expected))
-                    .with_why("the header is the claim and the block is the evidence — a signature that differs answers a different question than the one the trait asked [type.generics/G1]")
+                    .with_fix(format!("the interface asks for `{}`", expected))
+                    .with_why("the header is the claim and the block is the evidence — a signature that differs answers a different question than the one the interface asked [type.generics/G1]")
             }
 
             OverlappingTraitConformance { ty, first, second, method, span } => {
@@ -2022,7 +2022,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_code("E0889")
                 .with_primary(*span, format!("the second `{}` has nowhere to live", method))
                 .with_fix(format!(
-                    "keep one of them — or give this one its own trait, so the two `{}`s have different names to answer to",
+                    "keep one of them — or give this one its own interface, so the two `{}`s have different names to answer to",
                     method
                 ))
                 .with_why("a type has one method per name (type.generics/MN1), so two conformances asking for different `{method}`s leave `x.{method}(…)` with no answer. Choosing from the argument's type is operator resolution's job, and that isn't built yet [type.generics/MN3]".replace("{method}", method))
@@ -2039,7 +2039,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_primary(*span, if found < expected { "not enough here" } else { "too many here" });
                 let shown = format!("{}<{}>", base, params.join(", "));
                 d.with_fix(format!("write it out: `{}` — the conformance decides what each one is", shown))
-                    .with_why("a trait's type parameter is substituted through every signature it requires, so the conformance has to say what it is before anything can be checked against it [type.generics/GT2]")
+                    .with_why("an interface's type parameter is substituted through every signature it requires, so the conformance has to say what it is before anything can be checked against it [type.generics/GT2]")
             }
 
             MissingAssocType { ty, trait_name, assoc, span } => {
@@ -2110,7 +2110,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     "write it as a conformance:\n    extend {} with SomeTrait {{ func {}(…) }}",
                     ty, method
                 ))
-                .with_why("a primitive's own methods are the compiler's, so an `extend` block on one adds nothing anyone can call — the method silently didn't exist. A conformance is different: it registers against a trait, which is how `2.0 * meters` becomes writable [type.operator-resolution/OR6]")
+                .with_why("a primitive's own methods are the compiler's, so an `extend` block on one adds nothing anyone can call — the method silently didn't exist. A conformance is different: it registers against an interface, which is how `2.0 * meters` becomes writable [type.operator-resolution/OR6]")
             }
 
             UnknownAssocType { assoc, trait_name, known, span } => {
@@ -2119,7 +2119,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     assoc, trait_name
                 ))
                 .with_code("E0887")
-                .with_primary(*span, "this isn't one of the trait's members");
+                .with_primary(*span, "this isn't one of the interface's members");
                 let refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
                 match crate::suggestions::did_you_mean(assoc, refs) {
                     Some(hint) => d.with_fix(hint),
@@ -2129,30 +2129,30 @@ impl ToDiagnostic for rask_types::TypeError {
                     )),
                     None => d.with_fix(format!("`{}` declares: {}", trait_name, known.join(", "))),
                 }
-                .with_why("a conformance answers exactly what the trait asked for [type.associated-types/AT1]")
+                .with_why("a conformance answers exactly what the interface asked for [type.associated-types/AT1]")
             }
 
             NoSuchTrait { trait_name, known, span } => {
-                let d = Diagnostic::error(format!("no trait named `{}`", trait_name))
+                let d = Diagnostic::error(format!("no interface named `{}`", trait_name))
                     .with_code("E0833")
-                    .with_primary(*span, "this name isn't a trait");
+                    .with_primary(*span, "this name isn't an interface");
                 let refs: Vec<&str> = known.iter().map(|s| s.as_str()).collect();
                 match crate::suggestions::did_you_mean(trait_name, refs) {
                     Some(hint) => d.with_fix(hint),
                     None => d.with_fix(format!(
-                        "declare it, or drop the bound:\n    trait {} {{ … }}",
+                        "declare it, or drop the bound:\n    interface {} {{ … }}",
                         trait_name
                     )),
                 }
-                .with_why("a bound has to name a trait that exists — nothing can satisfy one that doesn't, so every call site would fail [type.generics/G1]")
+                .with_why("a bound has to name an interface that exists — nothing can satisfy one that doesn't, so every call site would fail [type.generics/G1]")
             }
 
             PublicDuckTrait { name, span } => {
-                Diagnostic::error(format!("`duck trait {}` cannot be public", name))
+                Diagnostic::error(format!("`duck interface {}` cannot be public", name))
                     .with_code("E0824")
                     .with_primary(*span, "shape-matching can't cross a package boundary")
-                    .with_fix(format!("drop `duck` to harden it — `public trait {}`, then declare conformance with `extend Type with {} {{}}` on each matching type. Or drop `public` to keep it a package-internal sketch", name, name))
-                    .with_why("a duck trait matches by shape, so an external type could start or stop satisfying it without either author changing a line they'd notice — a break semver can't describe. Duck traits stay package-internal (DT1)")
+                    .with_fix(format!("drop `duck` to harden it — `public interface {}`, then declare conformance with `extend Type implements {} {{}}` on each matching type. Or drop `public` to keep it a package-internal sketch", name, name))
+                    .with_why("a duck interface matches by shape, so an external type could start or stop satisfying it without either author changing a line they'd notice — a break semver can't describe. Duck interfaces stay package-internal (DT1)")
             }
 
             // The fix used to name `string.concat(a, b)`, which has never
@@ -2299,7 +2299,7 @@ impl ToDiagnostic for rask_types::TypeError {
                         "read it first, then call it: `let f = <receiver>.{}` and `f(…)`", field
                     ))
                     .with_fix(format!("`(<receiver>.{})(…)`, or bind it to a name first", field))
-                    .with_why("method calls resolve against the type's extend blocks, and a field isn't in one. A single swappable behaviour is usually a trait — `any Handler` — which gives the call the spelling it wants [type.structs/M6]")
+                    .with_why("method calls resolve against the type's extend blocks, and a field isn't in one. A single swappable behaviour is usually an interface — `any Handler` — which gives the call the spelling it wants [type.structs/M6]")
             }
 
             TakeOnCopyType { param, ty, span } => {
@@ -2758,8 +2758,8 @@ impl ToDiagnostic for rask_types::TypeError {
                         t = target_name,
                     ))
                     .with_why(
-                        "`as` converts between numbers and boxes a trait object \
-                         (`as any Trait`); to any other target it is a bit \
+                        "`as` converts between numbers and boxes an interface object \
+                         (`as any Interface`); to any other target it is a bit \
                          reinterpretation, which is unsafe [type.primitives/CV1–CV4, \
                          mem.unsafe]",
                     )
@@ -2823,7 +2823,7 @@ impl ToDiagnostic for rask_types::TypeError {
                             "list it where the type is declared: `type {key} = … with (Equal, Hashable)`"
                         ))
                         .with_why(
-                            "a nominal newtype inherits exactly the traits its `with (…)` clause names — it deliberately doesn't pick up the wrapped type's, so a Map key has to be asked for [type.aliases/T11, type.generics/HA1]"
+                            "a nominal newtype inherits exactly the interfaces its `with (…)` clause names — it deliberately doesn't pick up the wrapped type's, so a Map key has to be asked for [type.aliases/T11, type.generics/HA1]"
                                 .to_string(),
                         ),
                     MapKeyFix::ExtendBlock => d
@@ -2955,14 +2955,14 @@ impl ToDiagnostic for rask_types::TraitError {
                 trait_name,
                 span,
             } => Diagnostic::error(format!(
-                "type `{}` does not satisfy trait `{}`",
+                "type `{}` does not satisfy interface `{}`",
                 ty, trait_name
             ))
             .with_code("E0700")
-            .with_primary(*span, format!("trait `{}` not implemented", trait_name))
+            .with_primary(*span, format!("interface `{}` not implemented", trait_name))
             .with_help(format!("add `extend {} : {} {{ ... }}`", ty, trait_name))
             .with_fix(format!("add `extend {} : {} {{ ... }}`", ty, trait_name))
-            .with_why("trait bounds require the type to provide all methods declared by the trait"),
+            .with_why("interface bounds require the type to provide all methods declared by the interface"),
 
             MissingMethod {
                 ty,
@@ -2982,7 +2982,7 @@ impl ToDiagnostic for rask_types::TraitError {
                 trait_name,
                 if signature.is_empty() { format!("func {}(…) {{ … }}", method) } else { signature.clone() }
             ))
-            .with_why("the header is the claim and the block is the evidence — a conformance is only declared once every method the trait names is there [type.generics/G1]"),
+            .with_why("the header is the claim and the block is the evidence — a conformance is only declared once every method the interface names is there [type.generics/G1]"),
 
             SignatureMismatch {
                 method,
@@ -2993,30 +2993,30 @@ impl ToDiagnostic for rask_types::TraitError {
             } => Diagnostic::error(format!("method `{}` has wrong signature", method))
                 .with_code("E0702")
                 .with_primary(*span, format!("expected `{}`, found `{}`", expected, found))
-                .with_help(format!("change `{}` signature to match the trait", method))
-                .with_fix(format!("change `{}` signature to match the trait", method))
-                .with_why("trait method signatures are contracts — implementations must match exactly"),
+                .with_help(format!("change `{}` signature to match the interface", method))
+                .with_fix(format!("change `{}` signature to match the interface", method))
+                .with_why("interface method signatures are contracts — implementations must match exactly"),
 
-            UnknownTrait(name) => Diagnostic::error(format!("unknown trait: `{}`", name))
+            UnknownTrait(name) => Diagnostic::error(format!("unknown interface: `{}`", name))
                 .with_code("E0703")
-                .with_primary(Span::new(0, 0), "trait not found")
-                .with_help("check spelling or add an import for this trait")
-                .with_fix("check spelling or add an import for this trait")
-                .with_why("traits must be defined or imported before use in bounds"),
+                .with_primary(Span::new(0, 0), "interface not found")
+                .with_help("check spelling or add an import for this interface")
+                .with_fix("check spelling or add an import for this interface")
+                .with_why("interfaces must be defined or imported before use in bounds"),
 
             ConflictingMethods {
                 method,
                 trait1,
                 trait2,
             } => Diagnostic::error(format!(
-                "conflicting method `{}` from traits `{}` and `{}`",
+                "conflicting method `{}` from interfaces `{}` and `{}`",
                 method, trait1, trait2
             ))
             .with_code("E0704")
             .with_primary(Span::new(0, 0), "conflicting definitions")
-            .with_help(format!("rename or disambiguate `{}` in one of the trait implementations", method))
-            .with_fix(format!("disambiguate `{}` in one of the trait implementations", method))
-            .with_why("when two traits provide the same method name, the compiler can't determine which to call"),
+            .with_help(format!("rename or disambiguate `{}` in one of the interface implementations", method))
+            .with_fix(format!("disambiguate `{}` in one of the interface implementations", method))
+            .with_why("when two interfaces provide the same method name, the compiler can't determine which to call"),
         }
     }
 }

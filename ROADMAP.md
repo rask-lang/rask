@@ -253,7 +253,7 @@ matrix work, rather than left to stall it:
 
 - **#1152** — is `h.run(5)` on a function-typed field a call? No
   (`type.structs/M6`). A struct of functions is a shape Rask answers with a
-  trait, and it appears in no spec, no validation program and no stdlib module;
+  interface, and it appears in no spec, no validation program and no stdlib module;
   the error says the name is a field and how to call it instead. `M7` — one
   name per member — is separate and did land, and found three collisions on its
   first run (`Range.step`, `Command.args`, `Session.id`).

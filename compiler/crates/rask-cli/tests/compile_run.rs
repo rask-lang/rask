@@ -1109,9 +1109,9 @@ fn an_optional_trait_object_is_rejected_with_its_own_reason() {
     // refused, but with a message about the feature rather than the old
     // "Expected ')', found '?'".
     let (failed, out) = compile_error_output("optional_trait_object.rk");
-    assert!(failed, "`any Trait?` must be rejected: {}", out);
+    assert!(failed, "`any Interface?` must be rejected: {}", out);
     assert!(
-        out.contains("an optional trait object isn't built yet"),
+        out.contains("an optional interface object isn't built yet"),
         "should name the feature, not the punctuation: {}", out,
     );
     assert!(
@@ -1314,14 +1314,14 @@ fn error_keyword_fn_name() {
 #[test]
 fn error_trait_bound_messages() {
     let (failed, out) = compile_error_output("trait_bound_messages.rk");
-    assert!(failed, "unsatisfied trait requirements must be rejected: {}", out);
+    assert!(failed, "unsatisfied interface requirements must be rejected: {}", out);
     assert!(
         !out.contains("`_` does not implement"),
-        "an unknown trait is a name problem, not a mystery type: {}", out,
+        "an unknown interface is a name problem, not a mystery type: {}", out,
     );
     assert!(
         out.contains("did you mean `Integer`?"),
-        "a misspelt trait should suggest the real one: {}", out,
+        "a misspelt interface should suggest the real one: {}", out,
     );
     // The numeric bound explains membership and lists the members.
     assert!(
@@ -1330,7 +1330,7 @@ fn error_trait_bound_messages() {
     );
     assert!(
         !out.contains("implement `Integer` for"),
-        "nothing can implement a numeric trait, so that must not be the fix: {}", out,
+        "nothing can implement a numeric interface, so that must not be the fix: {}", out,
     );
     // The other three keep their own advice, each naming what to do where.
     // The conformance header names the method that is absent and the signature
@@ -1339,13 +1339,13 @@ fn error_trait_bound_messages() {
         "`Silent` has no `greet`, which `Greeter` requires",
         "func greet(self) -> string",
         "pass a type that implements `Greeter`",
-        "implement the trait before boxing",
+        "implement the interface before boxing",
     ] {
         assert!(out.contains(expected), "missing advice {:?}: {}", expected, out);
     }
     assert!(
-        !out.contains("casting to a trait object requires"),
-        "the trait-object wording belongs to the cast alone: {}", out,
+        !out.contains("casting to an interface object requires"),
+        "the interface-object wording belongs to the cast alone: {}", out,
     );
 }
 
@@ -1499,7 +1499,7 @@ fn error_bad_interpolation() {
 #[test]
 fn error_nominal_trait_not_listed() {
     let (failed, out) = compile_error_output("nominal_trait_not_listed.rk");
-    assert!(failed, "an unlisted trait must not be inherited: {}", out);
+    assert!(failed, "an unlisted interface must not be inherited: {}", out);
     // The arithmetic is named by its operator rather than by the method
     // desugaring produced: `+` resolves against a declared `Add`, and the
     // newtype's `with (…)` list doesn't have one.
@@ -2581,7 +2581,7 @@ fn error_nonexhaustive_match() {
 
 #[test]
 fn error_trait_bound_unsatisfied() {
-    assert!(compile_error("trait_bound_unsatisfied.rk"), "should reject a type that doesn't implement the bound's trait (#314)");
+    assert!(compile_error("trait_bound_unsatisfied.rk"), "should reject a type that doesn't implement the bound's interface (#314)");
 }
 
 #[test]
@@ -2596,7 +2596,7 @@ fn error_nominal_conformance_required() {
 
 #[test]
 fn error_conformance_missing_method() {
-    assert!(compile_error("conformance_missing_method.rk"), "should reject `extend T with Trait` when the type lacks the trait's method (G1)");
+    assert!(compile_error("conformance_missing_method.rk"), "should reject `extend T implements Interface` when the type lacks the interface's method (G1)");
 }
 
 #[test]
@@ -2793,9 +2793,9 @@ fn error_cross_task_ownership() {
 #[test]
 fn error_trait_object_generic() {
     // TR3: a generic trait method has no vtable slot; calling it through
-    // `any Trait` must be rejected at the call site.
+    // `any Interface` must be rejected at the call site.
     assert!(compile_error("trait_object_generic.rk"),
-        "should reject calling a generic method through `any Trait` (TR3)");
+        "should reject calling a generic method through `any Interface` (TR3)");
 }
 
 #[test]
@@ -5111,7 +5111,7 @@ fn newtype_value_survives_cross_module_mutex_method() {
 package "nt" "0.1.0" { description: "newtype through a mutex global" }
 "#),
         ("ids.rk", r#"
-type UserId = u64 with (Equal, Hashable, Comparable, Debug)
+type UserId = u64 implements Equal, Hashable, Comparable, Debug
 "#),
         // `main.rk` sorts before `store.rk`, so the body is reached first.
         ("main.rk", r#"
@@ -6136,7 +6136,7 @@ fn a_map_key_that_is_not_hashable_is_rejected_per_kind() {
     assert!(out.contains("`f64` is not Hashable"), "{}", out);
     assert!(out.contains("`map.insert(x.to_bits(), v)`"), "{}", out);
     assert!(out.contains("`Floaty` is not Hashable"), "{}", out);
-    assert!(out.contains("extend Floaty with Hashable"), "{}", out);
+    assert!(out.contains("extend Floaty implements Hashable"), "{}", out);
     // The two good keys stay good.
     assert!(!out.contains("`Plain`"), "an all-Hashable struct is a key: {}", out);
     assert!(!out.contains("`Tag`"), "a newtype that lists Hashable is a key: {}", out);
@@ -6406,7 +6406,7 @@ msg3: over 10
     }
 }
 
-// Three native `any Trait` bugs in one program (#764 and neighbours):
+// Three native `any Interface` bugs in one program (#764 and neighbours):
 // `let a: (any Shape)? = c as any Shape` read back as `none` because MIR's type
 // resolver made a trait object named "Shape?" instead of an Option; `return none`
 // from a `-> (any Shape)?` (and `return Nope {}` from a `-> (any Shape) or Nope`)
@@ -6911,7 +6911,7 @@ fn run_rask_test_source(src: &str, interp: bool) -> String {
 
 const TRY_IN_TEST_SRC: &str = r#"
 enum OpenErr { Denied }
-extend OpenErr with Error {
+extend OpenErr implements Error {
     func message(self) -> string { return "denied" }
 }
 func might_fail(ok: bool) -> i64 or OpenErr {

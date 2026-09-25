@@ -32,7 +32,7 @@ test "email equality is case-insensitive (custom Equal)" {
 }
 
 test "ids are distinct values, stepped through .value" {
-    // TaskId is a nominal newtype (`type TaskId = u64 with (...)`): construct
+    // TaskId is a nominal newtype (`type TaskId = u64 implements ...`): construct
     // with `TaskId(n)` (T7), unwrap with `.value` (T8).
     let a = TaskId(1)
     let b = a.next()

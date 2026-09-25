@@ -75,7 +75,7 @@ See [protocol.md](protocol.md) for full specification of each layer.
 | Packaging | Separate crate (`leden`) | Standalone. No runtime dependency. |
 | Trust model | Object capabilities | Proven. Fine-grained. Composes across trust boundaries. |
 | Protocol | Binary, versioned, length-prefixed | Compact. No parsing ambiguity. Forward-compatible. |
-| Transport | Pluggable (trait-based) | Same protocol over Unix sockets, TCP, shared memory, or in-process. |
+| Transport | Pluggable (interface-based) | Same protocol over Unix sockets, TCP, shared memory, or in-process. |
 | Session-capability coupling | **Decoupled** | Unlike CapTP. Network failure ≠ authority loss. Sturdy references for recovery. |
 | Backpressure | Built-in | Senders block (or get errors) when receivers are slow. |
 | Encryption | Optional TLS layer | Not forced. In-process and localhost don't need it. |

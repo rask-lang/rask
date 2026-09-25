@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Week one: traits, and `any Trait` for runtime dispatch.
+// Week one: interfaces, and `any Interface` for runtime dispatch.
 //
-// Conformance is declared with `extend Type with Trait` — nothing matches a
-// trait by accident. Covers a one-method trait on two types, static dispatch
-// through a `T: Trait` bound, `any Trait` in a binding, a parameter, a return,
-// and a Vec, default methods, a trait with several methods, and one type
-// conforming to two traits from a single extend block.
+// Conformance is declared with `extend Type implements Interface` — nothing matches a
+// interface by accident. Covers a one-method interface on two types, static dispatch
+// through a `T: Interface` bound, `any Interface` in a binding, a parameter, a return,
+// and a Vec, default methods, an interface with several methods, and one type
+// conforming to two interfaces from a single extend block.
 
-trait Shape {
+interface Shape {
     func area(self) -> f64
 }
 
-trait Named {
+interface Named {
     func name(self) -> string
 }
 
-trait Describable {
+interface Describable {
     func label(self) -> string
 
     // A default method — a conformer gets it without writing it.
@@ -36,24 +36,26 @@ struct Tag {
     text: string
 }
 
-extend Circle with Shape {
+extend Circle implements Shape {
     func area(self) -> f64 {
         return 3.0 * self.r * self.r
     }
 }
 
-extend Square with Shape {
+extend Square implements Shape {
     func area(self) -> f64 {
         return self.side * self.side
     }
 }
 
-// Two traits from one extend block.
-extend Tag with Named, Describable {
+// One block per interface.
+extend Tag implements Named {
     func name(self) -> string {
         return self.text
     }
+}
 
+extend Tag implements Describable {
     func label(self) -> string {
         return "tag:{self.text}"
     }
@@ -68,7 +70,7 @@ func double_area<T>(s: T) -> f64 where T: Shape {
     return area_of(s) * 2.0
 }
 
-// Runtime dispatch through a trait object.
+// Runtime dispatch through an interface object.
 func area_of_any(s: any Shape) -> f64 {
     return s.area()
 }
@@ -85,39 +87,39 @@ func as_any_shape(c: Circle) -> any Shape {
     return c as any Shape
 }
 
-test "type.traits — a trait method on two conforming types" {
+test "type.interfaces — an interface method on two conforming types" {
     let c = Circle { r: 2.0 }
     assert c.area() == 12.0
     let s = Square { side: 3.0 }
     assert s.area() == 9.0
 }
 
-test "type.traits — static dispatch through a bound" {
+test "type.interfaces — static dispatch through a bound" {
     assert area_of(Circle { r: 1.0 }) == 3.0
     assert area_of(Square { side: 4.0 }) == 16.0
 }
 
-test "type.traits — a bound function calling another bound function" {
+test "type.interfaces — a bound function calling another bound function" {
     assert double_area(Square { side: 2.0 }) == 8.0
     assert double_area(Circle { r: 1.0 }) == 6.0
 }
 
-test "type.traits — any Trait as a parameter" {
+test "type.interfaces — any Interface as a parameter" {
     assert area_of_any(Circle { r: 2.0 } as any Shape) == 12.0
     assert area_of_any(Square { side: 5.0 } as any Shape) == 25.0
 }
 
-test "type.traits — any Trait in a binding" {
+test "type.interfaces — any Interface in a binding" {
     let s: any Shape = Circle { r: 3.0 } as any Shape
     assert s.area() == 27.0
 }
 
-test "type.traits — any Trait as a return type" {
+test "type.interfaces — any Interface as a return type" {
     let s = as_any_shape(Circle { r: 1.0 })
     assert s.area() == 3.0
 }
 
-test "type.traits — a Vec of trait objects dispatches per element" {
+test "type.interfaces — a Vec of interface objects dispatches per element" {
     let shapes: Vec<any Shape> = [
         Circle { r: 1.0 } as any Shape,
         Square { side: 4.0 } as any Shape,
@@ -132,24 +134,24 @@ test "type.traits — a Vec of trait objects dispatches per element" {
     assert biggest(shapes) == 16.0
 }
 
-test "type.traits — a default method comes along with the conformance" {
+test "type.interfaces — a default method comes along with the conformance" {
     let t = Tag { text: "x" }
     assert t.label() == "tag:x"
     assert t.shout() == "tag:x!"
 }
 
-test "type.traits — one extend block, two conformances" {
+test "type.interfaces — one extend block, two conformances" {
     let t = Tag { text: "hello" }
     assert t.name() == "hello"
     assert t.label() == "tag:hello"
 }
 
-test "type.traits — a trait object of the second trait" {
+test "type.interfaces — an interface object of the second interface" {
     let n: any Named = Tag { text: "abc" } as any Named
     assert n.name() == "abc"
 }
 
-test "type.traits — dispatch inside a loop over mixed concrete types" {
+test "type.interfaces — dispatch inside a loop over mixed concrete types" {
     mut areas = Vec.new()
     let shapes: Vec<any Shape> = [
         Square { side: 1.0 } as any Shape,

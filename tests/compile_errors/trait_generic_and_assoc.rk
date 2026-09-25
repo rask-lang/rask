@@ -1,26 +1,26 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Rejects: the ways a generic trait or an associated type can be got wrong
+// Rejects: the ways a generic interface or an associated type can be got wrong
 //
 // Both features used to be refused outright (#1164, #1165). What replaced the
 // refusal has four ways to be wrong, and each one used to come out as "this
-// type is missing methods the trait requires" pointing at a block that had
+// type is missing methods the interface requires" pointing at a block that had
 // them — because a parameter nothing bound, or an `Out` nothing answered, makes
 // every required signature unmatchable at once.
 
 struct Meters { v: f64 }
 
 
-trait Scale<Rhs> {
+interface Scale<Rhs> {
     func scale(self, k: Rhs) -> Self
 }
 
-trait Mul<Rhs> {
+interface Mul<Rhs> {
     type Out
     func mul(self, rhs: Rhs) -> Self.Out
 }
 
 // ERROR: the header leaves `Rhs` unbound, and `Scale` declares no default for it
-extend Meters with Scale {
+extend Meters implements Scale {
     func scale(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
     }
@@ -30,7 +30,7 @@ struct Feet { v: f64 }
 
 // ERROR: `k: i64` isn't what `Scale<f64>` asks for — the method is there, the
 // ERROR: signature answers a different question
-extend Feet with Scale<f64> {
+extend Feet implements Scale<f64> {
     func scale(self, k: i64) -> Feet {
         return Feet { v: self.v }
     }
@@ -39,7 +39,7 @@ extend Feet with Scale<f64> {
 struct Yards { v: f64 }
 
 // ERROR: nothing says what `Out` is, and `Mul` gives it no default
-extend Yards with Mul<f64> {
+extend Yards implements Mul<f64> {
     func mul(self, k: f64) -> Yards {
         return Yards { v: self.v * k }
     }
@@ -47,7 +47,7 @@ extend Yards with Mul<f64> {
 
 struct Chains { v: f64 }
 
-extend Chains with Mul<f64> {
+extend Chains implements Mul<f64> {
     // ERROR: `Ouput` is not a member `Mul` declares
     type Ouput = Chains
     func mul(self, k: f64) -> Chains {
@@ -55,18 +55,18 @@ extend Chains with Mul<f64> {
     }
 }
 
-// ERROR: `Self.Oot` names an associated type the trait never declared
-trait Div<Rhs> {
+// ERROR: `Self.Oot` names an associated type the interface never declared
+interface Div<Rhs> {
     type Out
     func div(self, rhs: Rhs) -> Self.Oot
 }
 
-trait Ordered<Rhs> {
+interface Ordered<Rhs> {
     type Out: Comparable
     func pick(self, rhs: Rhs) -> Self.Out
 }
 
-extend Meters with Mul<f64> {
+extend Meters implements Mul<f64> {
     type Out = Meters
     func mul(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
@@ -81,7 +81,7 @@ extend Meters with Mul<f64> {
 
 struct Blob { bytes: Vec<u8> }
 
-extend Meters with Ordered<f64> {
+extend Meters implements Ordered<f64> {
     // ERROR: `Blob` isn't Comparable, and `Ordered` requires its `Out` to be
     type Out = Blob
     func pick(self, k: f64) -> Blob {

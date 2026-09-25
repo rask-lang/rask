@@ -36,7 +36,7 @@ enum StoreError {
     FlushFailed(usize, DiskError)
 }
 
-extend StoreError with Error {
+extend StoreError implements Error {
     func message(self) -> string {
         match self {
             StoreError.Corrupt(path, row) => return "corrupt table {path}: bad row {row}"

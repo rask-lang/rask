@@ -519,7 +519,7 @@ impl TypeChecker {
             return false;
         }
 
-        // `any Trait` values: the trait's own declared self mode is known —
+        // `any Interface` values: the trait's own declared self mode is known —
         // no need for the unresolved-type name heuristic below, which would
         // flag every trait's `write`/`read` as mutating regardless of how it
         // was actually declared.

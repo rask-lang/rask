@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// #335 — a Vec holding trait objects. Elements are 16-byte fat pointers, so
+// #335 — a Vec holding interface objects. Elements are 16-byte fat pointers, so
 // pushing one has to box it; pushing the bare struct left every element to be
 // read back through whichever vtable was written last, so a heterogeneous
 // vector reported all of its elements as the last type pushed.
 
-trait Shape {
+interface Shape {
     func area(self) -> i64
     func name(self) -> string
 }
@@ -12,12 +12,12 @@ trait Shape {
 struct Circle { public r: i64 }
 struct Square { public s: i64 }
 
-extend Circle with Shape {
+extend Circle implements Shape {
     public func area(self) -> i64 { return self.r * self.r * 3 }
     public func name(self) -> string { return "circle" }
 }
 
-extend Square with Shape {
+extend Square implements Shape {
     public func area(self) -> i64 { return self.s * self.s }
     public func name(self) -> string { return "square" }
 }
@@ -71,7 +71,7 @@ test "Vec.from with casts, and indexed reads" {
     assert shapes[1].name() == "square"
 }
 
-test "a Vec of trait objects passed to a function" {
+test "a Vec of interface objects passed to a function" {
     mut shapes: Vec<any Shape> = Vec.new()
     shapes.push(Circle { r: 2 })
     shapes.push(Square { s: 3 })

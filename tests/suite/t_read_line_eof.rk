@@ -7,7 +7,7 @@
 // which is indistinguishable from a blank line — every `loop { read_line() }`
 // spun until killed. Both now answer IoError.UnexpectedEof.
 //
-// Runs with stdin at /dev/null under `rask test`, so the first read is EOF.
+// Runs with stdin at /dev/nullptr under `rask test`, so the first read is EOF.
 
 import io
 

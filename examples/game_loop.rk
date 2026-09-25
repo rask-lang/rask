@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Game Loop with Entities
-// Demonstrates: Rack + Link for entities, traits, threading, time/delta, game systems
+// Demonstrates: Rack + Link for entities, interfaces, threading, time/delta, game systems
 
 import time
 import random
@@ -9,13 +9,13 @@ import memory.Rack
 import memory.Link
 import random.Random
 
-// Trait for updatable components
-trait Updatable {
+// Interface for updatable components
+interface Updatable {
     func update(self, dt: f32)
 }
 
 // Position implements Updatable (applies velocity)
-extend Position with Updatable {
+extend Position implements Updatable {
     func update(self, dt: f32) {
         // Position updated by movement system
     }

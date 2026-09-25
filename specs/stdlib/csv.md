@@ -75,7 +75,7 @@ with a different character — a parameter, not a `csv.Tsv` type or a builder ch
 
 | Rule | Description |
 |------|-------------|
-| **C1: Typed first** | `decode<T>`/`encode` are the primary API and use the derived `Encode`/`Decode` traits. `rows` exists for data that has no shape to decode into |
+| **C1: Typed first** | `decode<T>`/`encode` are the primary API and use the derived `Encode`/`Decode` interfaces. `rows` exists for data that has no shape to decode into |
 | **C2: Headers by name** | With `headers: true` (the default), columns map to fields by name and file column order is irrelevant. With `headers: false`, they map by position |
 | **C3: Quoting is automatic on write** | A field containing the delimiter, a quote, or a newline is quoted; nothing else is. The caller never asks for quoting |
 | **C4: Rows are validated against the header** | A row with a different column count than the header is an error, not a silently short record. Ragged files are what `rows` is for |
@@ -142,7 +142,7 @@ FIX 2: Make it optional if the column is sometimes absent:
 **C1 (typed first):** the earlier sketch was a `Reader`/`Writer` class pair with
 `row["name"]` string lookups — a transliteration of what CSV libraries look like in
 languages that can't derive a decoder. Rask can (`std.encoding`), which is the whole
-reason those traits exist. The guess test settles it: someone who has used
+reason those interfaces exist. The guess test settles it: someone who has used
 `json.decode<T>()` will type `csv.decode<Sale>(text)`, and getting a
 `Vec<string>` with stringly-typed lookups instead would be the stdlib being wrong,
 not the guess.

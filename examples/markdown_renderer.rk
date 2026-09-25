@@ -2,11 +2,11 @@
 // Markdown-to-HTML Renderer — Stress Test Application
 //
 // Converts a subset of CommonMark to HTML. Exercises recursive ASTs via
-// Heap<T>, string for output assembly, trait composition (Renderable),
+// Heap<T>, string for output assembly, interface composition (Renderable),
 // user-defined generics, closures, iterator adapters, and layered error types.
 //
 // Complements package_manager.rk: that stress test covers Pool/Handle graphs
-// and trait-based registry dispatch; this one covers recursive data structures,
+// and interface-based registry dispatch; this one covers recursive data structures,
 // heavy string manipulation, and character-level parsing.
 
 import fs
@@ -730,10 +730,10 @@ func join_lines(lines: Vec<string>) -> string {
 
 // ─── Renderer ───────────────────────────────────────────────────────
 //
-// Trait-based rendering: both Block and Inline implement Renderable.
+// Interface-based rendering: both Block and Inline implement Renderable.
 // Uses string throughout for efficient HTML assembly.
 
-trait Renderable {
+interface Renderable {
     func render(self, mutate builder: StringBuilder, refs: Map<string, string>)
 }
 
@@ -745,7 +745,7 @@ func render_children<T: Renderable>(children: Vec<T>, mutate builder: StringBuil
     }
 }
 
-extend Inline with Renderable {
+extend Inline implements Renderable {
     func render(self, mutate builder: StringBuilder, refs: Map<string, string>) {
         match self {
             Text(s) => builder.push(html_escape(s))
@@ -807,7 +807,7 @@ func render_list_item(item: ListItem, mutate builder: StringBuilder, refs: Map<s
     builder.push("</li>\n")
 }
 
-extend Block with Renderable {
+extend Block implements Renderable {
     func render(self, mutate builder: StringBuilder, refs: Map<string, string>) {
         match self {
             Heading(level, inlines) => {

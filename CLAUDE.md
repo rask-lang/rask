@@ -260,7 +260,7 @@ For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
 | Operator desugaring | `rask-desugar/src/lib.rs` |
 | Name resolution | `rask-resolve/src/resolver.rs`, `scope.rs` |
 | Type error / inference | `rask-types/src/checker/{check_expr,check_stmt,inference,unify}.rs` |
-| Trait / generics | `rask-types/src/checker/{generics,resolve}.rs` |
+| Interface / generics | `rask-types/src/checker/{generics,resolve}.rs` |
 | Borrow checking | `rask-types/src/checker/borrow.rs`, `rask-ownership/` |
 | Monomorphization | `rask-mono/src/{reachability,instantiate,layout}.rs` |
 | MIR lowering | `rask-mir/src/lower/{mod,expr,stmt}.rs` |
@@ -331,8 +331,8 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Scoped access | A value held elsewhere, reached through `with` — `Shared<T, S>`, Rack+Link, Heap. `Cell` and `Mutex<T>` are gone; `Local`/`Readers`/`Mutex` are strategies on `Shared` | [shared-rack-heap.md](specs/memory/shared-rack-heap.md) |
 | Collections | Vec, Map, Rack+Link for graphs | [collections.md](specs/stdlib/collections.md), [racks.md](specs/memory/racks.md) |
 | Resource types | `@resource` annotation for I/O handles, transactions; `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
-| Types | Primitives, structs, enums, generics, traits, unions, tuples, nominal types, type aliases | [types/](specs/types/) |
-| Operators | Resolved on the ordered pair of operand types, against the traits in `stdlib/ops.rk` | [operator-resolution.md](specs/types/operator-resolution.md) |
+| Types | Primitives, structs, enums, generics, interfaces, unions, tuples, nominal types, type aliases | [types/](specs/types/) |
+| Operators | Resolved on the ordered pair of operand types, against the interfaces in `stdlib/ops.rk` | [operator-resolution.md](specs/types/operator-resolution.md) |
 | Errors | `T or E` result, `try` propagation, `T?` optionals, `todo()`/`unreachable()` | [error-types.md](specs/types/error-types.md) |
 | Panics | Task-kill + unwind, ensures run, locks release without poisoning, opt-in `staged()` | [panics.md](specs/control/panics.md) |
 | Concurrency | spawn(\|\| {})/join/detach (functions), channels, no function coloring | [concurrency/](specs/concurrency/) |

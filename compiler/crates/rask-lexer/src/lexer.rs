@@ -22,8 +22,10 @@ enum RawToken {
     Struct,
     #[token("enum")]
     Enum,
-    #[token("trait")]
-    Trait,
+    #[token("interface")]
+    Interface,
+    #[token("implements")]
+    Implements,
     #[token("extend")]
     Extend,
     #[token("public")]
@@ -83,8 +85,8 @@ enum RawToken {
     Type,
     #[token("none")]
     None,
-    #[token("null")]
-    Null,
+    #[token("nullptr")]
+    Nullptr,
     #[token("using")]
     Using,
     #[token("export")]
@@ -631,7 +633,8 @@ impl<'a> Lexer<'a> {
             RawToken::Const => TokenKind::Const,
             RawToken::Struct => TokenKind::Struct,
             RawToken::Enum => TokenKind::Enum,
-            RawToken::Trait => TokenKind::Trait,
+            RawToken::Interface => TokenKind::Interface,
+            RawToken::Implements => TokenKind::Implements,
             RawToken::Extend => TokenKind::Extend,
             RawToken::Public => TokenKind::Public,
             RawToken::Import => TokenKind::Import,
@@ -661,7 +664,7 @@ impl<'a> Lexer<'a> {
             RawToken::Comptime => TokenKind::Comptime,
             RawToken::Type => TokenKind::Type,
             RawToken::None => TokenKind::None,
-            RawToken::Null => TokenKind::Null,
+            RawToken::Nullptr => TokenKind::Nullptr,
             RawToken::Using => TokenKind::Using,
             RawToken::Export => TokenKind::Export,
             RawToken::Lazy => TokenKind::Lazy,

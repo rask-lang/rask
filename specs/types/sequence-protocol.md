@@ -5,7 +5,7 @@
 
 # Sequence Protocol
 
-Iteration in Rask is **push**: the source owns the loop and hands you each item. A `Sequence<T>` wraps a function that takes a yield closure and calls it per item. `for x in seq` desugars to a call with the loop body as that closure. Adapters are methods. No stored references, no state machines, no `Iterator` trait, no generators.
+Iteration in Rask is **push**: the source owns the loop and hands you each item. A `Sequence<T>` wraps a function that takes a yield closure and calls it per item. `for x in seq` desugars to a call with the loop body as that closure. Adapters are methods. No stored references, no state machines, no `Iterator` interface, no generators.
 
 ## The Type
 
@@ -346,7 +346,7 @@ Every terminal that builds a collection names the collection it builds. There is
 | **SEQ28: `to_vec()` builds a `Vec<T>`** | The target is fixed. No type parameter, no annotation, no inference from later use. `seq.to_vec()` on a `Sequence<T>` is `Vec<T>` and nothing else |
 | **SEQ29: `to_map()` builds a `Map<K, V>`** | Defined only on `Sequence<(K, V)>`. Later keys overwrite earlier ones — identical to repeated `insert`. A sequence of non-pairs is a type error at the call, not a silent tuple coercion |
 | **SEQ30: `join(sep)` builds a `string`** | Defined only on `Sequence<string>`. This is the third materializing target and it does not read as a "collect" at all — evidence that the polymorphic version was never the right shape |
-| **SEQ31: No generic target** | There is no `collect()`, no `collect<C>()`, no `FromSequence` trait, no turbofish. Adding a materializing target means adding a named terminal to this table |
+| **SEQ31: No generic target** | There is no `collect()`, no `collect<C>()`, no `FromSequence` interface, no turbofish. Adding a materializing target means adding a named terminal to this table |
 | **SEQ47: `to_vec` never clones for you** | `to_vec` copies a `Copy` element and moves an element the chain owns. It does **not** deep-clone: a chain that only lends non-`Copy` items has nothing it may give away, and asking for a `Vec` of them is a compile error telling you to clone. `map` is the ownership boundary — the values a `map` closure returns belong to the chain, so `.map(\|u\| u.clone()).to_vec()` clones exactly once, where you wrote it |
 | **SEQ32: Terminals borrow, they don't consume** | `to_*`, never `into_*`. A `Sequence<T>` is a function value and survives the call, so `to_vec()` twice runs the traversal twice (SEQ11). The `to_*` prefix already means "non-consuming, allocates" (`canonical-patterns`) |
 | **SEQ33: `Vec.from` / `Map.from` stay array-only** | The static constructors take array literals (`std.collections`). They do not take a `Sequence<T>`. One operation, one spelling (`std.api/SD5`) |
@@ -434,7 +434,7 @@ So SEQ17–SEQ19 are the target, not the present state, and this section says so
 
 | Rule | Description |
 |------|-------------|
-| **SEQ20: No Iterator trait** | There is no user-facing `Iterator<Item>` trait. Types do not implement a "is an iterator" contract — they expose methods that return `Sequence<T>` |
+| **SEQ20: No Iterator interface** | There is no user-facing `Iterator<Item>` interface. Types do not implement a "is an iterator" contract — they expose methods that return `Sequence<T>` |
 | **SEQ21: No lending iterators** | Per-call mutable yields are expressed via `SequenceMut<T>`. Rask does not have GATs or lifetime-parameterized Item types |
 | **SEQ22: No generators** | Rask does not have a `yield` keyword in regular functions. Sequences are closure-based; traversal state lives on the real call stack or in explicit struct fields |
 | **SEQ23: No zip adapter** | See SEQ14. Use indices or explicit buffer |
@@ -732,7 +732,7 @@ Go reached the same shape in 1.23 — `func(yield func(V) bool)`, same `bool`, s
 
 **Why there's no `collect` (SEQ28–SEQ33).** `collect` is polymorphic in its result, and a result-polymorphic function has to get its answer from somewhere the call site doesn't say. Rust's somewhere is the annotation or the turbofish. I don't want either on a line this common, so I looked at what the polymorphism was actually buying.
 
-It was buying almost nothing. Rask has three collection types — `Vec`, `Map`, `Pool` — and `Pool` isn't a materializing target, because what comes out of a Pool is handles. Across every `.collect()` in `examples/`, the spec corpus and the test suite, the answer was `Vec` in *every single case*. Not "mostly Vec, with an escape hatch" — Vec, always. A trait, a type argument and an inference story, to serve a choice nobody was making. That's `FromIterator` imported by reflex (`std.api/SD4`), and the give-away is `join`: the string target already had a better name than "collect into a string" and nobody ever missed it.
+It was buying almost nothing. Rask has three collection types — `Vec`, `Map`, `Pool` — and `Pool` isn't a materializing target, because what comes out of a Pool is handles. Across every `.collect()` in `examples/`, the spec corpus and the test suite, the answer was `Vec` in *every single case*. Not "mostly Vec, with an escape hatch" — Vec, always. An interface, a type argument and an inference story, to serve a choice nobody was making. That's `FromIterator` imported by reflex (`std.api/SD4`), and the give-away is `join`: the string target already had a better name than "collect into a string" and nobody ever missed it.
 
 So each target gets a name, and the name is the one the naming table already assigns: `to_*` is "non-consuming conversion, allocates" (`canonical-patterns`), which is exactly what a terminal on a re-runnable sequence is. `to_vec` isn't borrowed from `slice::to_vec` — it falls out of Rask's own vocabulary, and `into_vec` would be wrong here for a real reason (SEQ32: the sequence survives).
 
@@ -753,11 +753,11 @@ This also settles the note in `rejected-features.md` about associated types bein
 
 ### Migration from `type.iterators`
 
-The retired `Iterator<Item>` trait mapped to these patterns:
+The retired `Iterator<Item>` interface mapped to these patterns:
 
 | Old | New |
 |-----|-----|
-| `extend MyType with Iterator<T> { func next(...) }` | `public func walk(self) -> Sequence<T> { return \|yield\| { ... } }` — any method name, the return type is what makes it iterable (SEQ6) |
+| `extend MyType implements Iterator<T> { func next(...) }` | `public func walk(self) -> Sequence<T> { return \|yield\| { ... } }` — any method name, the return type is what makes it iterable (SEQ6) |
 | `collection.iterate()` (returned `VecRefIterator<T>` etc.) | the collection *is* the chain head — `collection.filter(p)`, `for x in collection` (SEQ48) |
 | `iter.collect()` | `iter.to_vec()` (SEQ28) — or `.to_map()` / `.join(sep)` |
 | `.take_all()` returning consuming iterator struct | `.take_all()` returns the drained `Vec<T>` (SEQ35) — not a Sequence |

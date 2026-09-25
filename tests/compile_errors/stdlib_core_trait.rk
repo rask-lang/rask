@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Rejects: giving a stdlib type one of the six conformances its owner keeps
 //
-// `type.generics/XC1` says the six auto-derived traits belong to the package
+// `type.generics/XC1` says the six auto-derived interfaces belong to the package
 // that declares the type. A builtin has a declarer too — the standard library
 // — and the first cut of the check read "no package" as "nothing to compare",
 // so this compiled and linked clean:
 //
-//     extend Vec<i64> with Hashable { func hash(self) -> u64 { return 99 } }
+//     extend Vec<i64> implements Hashable { func hash(self) -> u64 { return 99 } }
 //
 // Every `Map` and `Set` keyed on a `Vec<i64>` in the program then used that
 // hash, which is precisely the "lookups miss entries the container holds"
@@ -24,7 +24,7 @@ struct Doc {
 // Ours, so ours to answer for.
 type Counted = Doc
 
-extend Counted with Hashable {
+extend Counted implements Hashable {
     public func hash(self) -> u64 {
         return 7
     }
@@ -34,7 +34,7 @@ extend Counted with Hashable {
 }
 
 // ERROR: `Vec` is the standard library's (E0409)
-extend Vec<i64> with Hashable {
+extend Vec<i64> implements Hashable {
     public func hash(self) -> u64 {
         return 99
     }
@@ -44,7 +44,7 @@ extend Vec<i64> with Hashable {
 }
 
 // ERROR: so is `string` (E0409)
-extend string with Comparable {
+extend string implements Comparable {
     public func compare(self, other: string) -> i64 {
         return 0
     }

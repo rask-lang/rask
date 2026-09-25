@@ -3,7 +3,7 @@
 //!
 //! - unwrap-production: Flag .unwrap() outside test blocks
 //! - missing-ensure: Flag @resource creation without ensure
-//! - duck-trait: Flag `duck trait` declarations — sketching tool, nudge to harden
+//! - duck-trait: Flag `duck interface` declarations — sketching tool, nudge to harden
 
 use rask_ast::decl::*;
 use rask_ast::expr::{BinOp, Expr, ExprKind};
@@ -248,7 +248,7 @@ fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mu
     }
 }
 
-/// idiom/duck-trait: Flag `duck trait` declarations (DT3).
+/// idiom/duck-trait: Flag `duck interface` declarations (DT3).
 ///
 /// Shape-matching is for code you're still sketching: nothing states the
 /// contract, so a type can start or stop matching silently. A warning, not a
@@ -264,10 +264,10 @@ pub fn check_duck_trait(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
         let (line, col) = util::line_col(source, decl.span.start);
         let source_line = util::get_source_line(source, line);
         diags.push(LintDiagnostic {
-            rule: "idiom/duck-trait".to_string(),
+            rule: "idiom/duck-interface".to_string(),
             severity: Severity::Warning,
             message: format!(
-                "`{}` is a duck trait — matched by shape, with no conformance declared anywhere",
+                "`{}` is a duck interface — matched by shape, with no conformance declared anywhere",
                 t.name
             ),
             location: LintLocation {
@@ -276,7 +276,7 @@ pub fn check_duck_trait(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
                 source_line,
             },
             fix: format!(
-                "delete `duck` and declare conformance (`extend Type with {} {{}}`) on each matching type, or `@allow(idiom/duck-trait)` to keep the sketch",
+                "delete `duck` and declare conformance (`extend Type implements {} {{}}`) on each matching type, or `@allow(idiom/duck-interface)` to keep the sketch",
                 t.name
             ),
         });

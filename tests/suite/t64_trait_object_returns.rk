@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A trait method's return value survives the vtable call, whatever its shape.
+// An interface method's return value survives the vtable call, whatever its shape.
 //
 // A Rask function returning an aggregate that fits in a word returns the value;
 // a bigger one returns a pointer into its own frame for the caller to copy.
@@ -12,7 +12,7 @@ struct Pair { public a: i64, public b: i64 }
 
 struct Big { public one: i64, public two: i64, public three: i64, public four: i64 }
 
-trait Handler {
+interface Handler {
     func code(self) -> Status
     func pair(self) -> Pair
     func big(self) -> Big
@@ -24,7 +24,7 @@ trait Handler {
 
 struct Echo { public n: i64 }
 
-extend Echo with Handler {
+extend Echo implements Handler {
     public func code(self) -> Status { return Status.NotFound }
     public func pair(self) -> Pair { return Pair { a: self.n, b: self.n * 2 } }
     public func big(self) -> Big {

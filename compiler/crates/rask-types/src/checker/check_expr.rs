@@ -336,7 +336,7 @@ impl TypeChecker {
         }
     }
 
-    /// The `any Trait` type arguments a container was instantiated with.
+    /// The `any Interface` type arguments a container was instantiated with.
     fn trait_object_type_args(ty: &Type) -> Vec<Type> {
         let args = match ty {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
@@ -352,7 +352,7 @@ impl TypeChecker {
             .collect()
     }
 
-    /// TR5: a concrete value flowing into an `any Trait` position gets boxed
+    /// TR5: a concrete value flowing into an `any Interface` position gets boxed
     /// with a vtable. The site has to be recorded by NodeId or MIR emits the
     /// bare value and the first method call dispatches through whatever
     /// happened to be in memory.
@@ -361,7 +361,7 @@ impl TypeChecker {
     /// that knows its expected type — an annotated binding, a struct field, a
     /// collection element, a return value — type-checked and then segfaulted
     /// at the first method call (#335, #474, #481).
-    /// An explicit `x as any Trait` boxes itself, so it needs no second box.
+    /// An explicit `x as any Interface` boxes itself, so it needs no second box.
     fn is_any_cast(expr: &Expr) -> bool {
         matches!(&expr.kind, ExprKind::Cast { ty, .. } if ty.starts_with("any "))
     }
@@ -403,7 +403,7 @@ impl TypeChecker {
         // Only a value that actually implements the trait gets a vtable for it.
         //
         // The expected type arrives here already peeled of its wrappers, so a
-        // value that isn't destined for the `any Trait` side looks like one that
+        // value that isn't destined for the `any Interface` side looks like one that
         // is. Two ways that went wrong, both ending in a vtable that can't be
         // built:
         //
@@ -1814,7 +1814,7 @@ impl TypeChecker {
                 let inner_ty = self.infer_expr(inner);
                 let target = parse_type_string(ty, &self.types).unwrap_or(Type::Error);
 
-                // Validate trait satisfaction for `as any Trait` casts
+                // Validate trait satisfaction for `as any Interface` casts
                 if let Type::TraitObject { ref trait_name } = target {
                     if !matches!(inner_ty, Type::Var(_) | Type::Error) {
                         if !crate::traits::implements_trait(&self.types, &inner_ty, trait_name) {
@@ -3821,7 +3821,7 @@ impl TypeChecker {
         // TR5 for a collection element. `Vec<any Shape>.push(Circle { … })` has
         // to box, but the parameter type here is the container's element
         // variable, so the expected type isn't known at the argument. The
-        // receiver's own type argument is: if it's `any Trait`, a concrete
+        // receiver's own type argument is: if it's `any Interface`, a concrete
         // argument can only be that element. Without this, push stored a bare
         // struct pointer into a 16-byte element slot and every element read
         // back through whichever vtable was written last (#335).
@@ -4148,7 +4148,7 @@ impl TypeChecker {
                 for ((param_ty, arg_ty), arg) in
                     sig.params.iter().zip(arg_types.iter()).zip(args.iter())
                 {
-                    // TR5: a concrete value flowing into an `any Trait`
+                    // TR5: a concrete value flowing into an `any Interface`
                     // parameter needs a vtable, and MIR builds it from this
                     // note. A module function's arguments were the one call
                     // position that never recorded it — `io.copy(buf, out)`

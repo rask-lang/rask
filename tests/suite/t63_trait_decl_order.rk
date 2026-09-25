@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A conformance holds or doesn't on its own terms — not on where in the file
-// the types it mentions happen to be declared. A trait method naming a type
+// the types it mentions happen to be declared. An interface method naming a type
 // declared further down used to reject every implementation of it, because the
 // name hadn't been registered when the signature was read.
 
-trait Reporter {
+interface Reporter {
     func status(self) -> Level
     func tags(self) -> Vec<Label>
 }
 
-// Both of these are declared *after* the trait that mentions them.
+// Both of these are declared *after* the interface that mentions them.
 enum Level { Low, High }
 
 struct Label { public text: string }
 
 struct Probe { public hot: bool }
 
-extend Probe with Reporter {
+extend Probe implements Reporter {
     public func status(self) -> Level {
         if self.hot {
             return Level.High

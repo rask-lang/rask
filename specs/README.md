@@ -52,7 +52,7 @@ Quick navigation by task or concept:
 | Define custom types | [types/structs.md](types/structs.md), [types/enums.md](types/enums.md) |
 | Write generic functions | [types/generics.md](types/generics.md) |
 | Omit types in private functions (while sketching) | [types/gradual-constraints.md](types/gradual-constraints.md) |
-| Define interfaces/contracts | [types/traits.md](types/traits.md) |
+| Define interfaces/contracts | [types/interfaces.md](types/interfaces.md) |
 | Create a type alias | [types/type-aliases.md](types/type-aliases.md) |
 | Work with tuples | [types/tuples.md](types/tuples.md) |
 | Iterate over things | [types/sequence-protocol.md](types/sequence-protocol.md) |
@@ -96,12 +96,12 @@ Quick navigation by task or concept:
 | [structs.md](types/structs.md) | Struct definition, methods, visibility |
 | [enums.md](types/enums.md) | Sum types, pattern matching |
 | [optionals.md](types/optionals.md) | `T?` (sugar for `T or none`), `?`-family operators |
-| [error-types.md](types/error-types.md) | `T or E`, `Error` trait, union composition |
+| [error-types.md](types/error-types.md) | `T or E`, `Error` interface, union composition |
 | [generics.md](types/generics.md) | Parametric polymorphism, constraints |
 | [gradual-constraints.md](types/gradual-constraints.md) | Type/bound inference for private functions — sketching only |
-| [associated-types.md](types/associated-types.md) | `type Out` on a trait, `Self.Out`/`T.Out` projections |
+| [associated-types.md](types/associated-types.md) | `type Out` on an interface, `Self.Out`/`T.Out` projections |
 | [operator-resolution.md](types/operator-resolution.md) | `a OP b` resolved on the ordered pair of operand types |
-| [traits.md](types/traits.md) | Trait objects, dynamic dispatch |
+| [interfaces.md](types/interfaces.md) | Interface objects, dynamic dispatch |
 | [sequence-protocol.md](types/sequence-protocol.md) | Sequence<T> type, adapters, terminals |
 | [integer-overflow.md](types/integer-overflow.md) | Overflow semantics |
 | [binary.md](types/binary.md) | Binary structs, bit-level layouts |

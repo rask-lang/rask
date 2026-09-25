@@ -5,7 +5,7 @@ import traitpkg.Doc
 // type.generics/XC1: `Hashable` is one answer per type, and `Doc` is not ours
 // to answer for. A second hash doesn't conflict loudly — it makes a `Map` miss
 // entries it holds.
-public extend Doc with Hashable {
+public extend Doc implements Hashable {
     public func hash(self) -> u64 {
         return 42
     }

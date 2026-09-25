@@ -327,9 +327,9 @@ fn wrap_in_main(code: &str) -> String {
     }
 
     let decl_keywords = [
-        "enum ", "struct ", "func ", "extend ", "trait ", "type ",
+        "enum ", "struct ", "func ", "extend ", "interface ", "type ",
         "import ", "export ", "public enum ", "public struct ",
-        "public func ", "public trait ", "public type ",
+        "public func ", "public interface ", "public type ",
     ];
 
     let mut decls = String::new();

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Domain entities and the Validate trait.
+// Domain entities and the Validate interface.
 //
 // Tasks form a dependency DAG: `deps` holds Link<Task> into the store's
 // rack, not ids to look up. That's the rack-shaped design from
@@ -12,11 +12,11 @@ const MAX_TITLE_LEN: usize = 200
 const MAX_NAME_LEN: usize = 80
 
 // ─── Validate ────────────────────────────────────────────────────────
-// Nominal: a DTO is only validatable if it declares `extend T with Validate`.
+// Nominal: a DTO is only validatable if it declares `extend T implements Validate`.
 // A stray validate() method matching by shape is not enough (G1), and the
 // compiler now enforces this at the `extend` site.
 
-trait Validate {
+interface Validate {
     func validate(self) -> void or ValidationError
 }
 

@@ -29,7 +29,7 @@ pub(crate) fn inject(decls: &mut [Decl]) -> Injected {
     let mut traits: HashMap<String, (Vec<String>, Vec<FnDecl>)> = HashMap::new();
     for decl in decls.iter() {
         if let DeclKind::Trait(t) = &decl.kind {
-            // A `duck trait` is satisfied by shape, so there's no `extend` block
+            // A `duck interface` is satisfied by shape, so there's no `extend` block
             // to put a copy in.
             if t.is_duck {
                 continue;
@@ -68,7 +68,7 @@ pub(crate) fn inject(decls: &mut [Decl]) -> Injected {
     let mut injected = Injected::new();
     for (decl_index, decl) in decls.iter_mut().enumerate() {
         let DeclKind::Impl(block) = &mut decl.kind else { continue };
-        if block.trait_names.is_empty() {
+        if block.trait_name.is_none() {
             continue;
         }
         let target = bare(&block.target_ty);
@@ -76,7 +76,7 @@ pub(crate) fn inject(decls: &mut [Decl]) -> Injected {
         // The header's traits and everything above them: a default declared two
         // levels up is still part of what this block promises.
         let mut claimed: Vec<String> = Vec::new();
-        let mut queue: Vec<String> = block.trait_names.iter().map(|n| bare(n)).collect();
+        let mut queue: Vec<String> = block.trait_name.iter().map(|n| bare(n)).collect();
         while let Some(name) = queue.pop() {
             if claimed.contains(&name) {
                 continue;

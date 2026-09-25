@@ -185,15 +185,15 @@ func record_altitude(mutate log: Vec<i32>, altitude: i32) {
     todo()
 }
 
-// `null` is deliberately typed `*_`; the comparison says what it's compared
+// `nullptr` is deliberately typed `*_`; the comparison says what it's compared
 // against. Only the deferred path tied the two, so a comparison against an
-// already-known pointer left the `null` with a pointee nothing bound.
+// already-known pointer left the `nullptr` with a pointee nothing bound.
 extern "C" func allocate(size: usize) -> *u8
 
 func allocated() -> bool {
     unsafe {
         let p = allocate(16)
-        if p == null {
+        if p == nullptr {
             return false
         }
         return true

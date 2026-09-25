@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// TR5 — a concrete value gets its vtable wherever it flows into an `any Trait`
+// TR5 — a concrete value gets its vtable wherever it flows into an `any Interface`
 // position, not only as a call argument. Each of these used to compile and then
 // dispatch through whatever was in memory.
 
-trait Handler {
+interface Handler {
     func handle(self) -> string
 }
 
 struct Echo { public msg: string }
 struct Fail { public reason: string }
 
-extend Echo with Handler {
+extend Echo implements Handler {
     public func handle(self) -> string { return "echo: {self.msg}" }
 }
 
-extend Fail with Handler {
+extend Fail implements Handler {
     public func handle(self) -> string { return "fail: {self.reason}" }
 }
 
-// A trait object as a struct field — the field is a fat pointer, so the layout
+// An interface object as a struct field — the field is a fat pointer, so the layout
 // has to give it 16 bytes.
 struct Router { public inner: any Handler }
 
@@ -63,7 +63,7 @@ test "TR5 — an explicit `as any` is not boxed twice" {
     assert run(Echo { msg: "seven" } as any Handler) == "echo: seven"
 }
 
-test "two concrete types behind one trait object keep their own methods" {
+test "two concrete types behind one interface object keep their own methods" {
     let a: any Handler = Echo { msg: "a" }
     let b: any Handler = Fail { reason: "b" }
     assert a.handle() == "echo: a"

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-trait Shape {
+interface Shape {
     func area(self) -> f64
     func name(self) -> string
 }
@@ -10,7 +10,7 @@ struct Rectangle { width: f64, height: f64 }
 
 struct Triangle { base: f64, height: f64 }
 
-extend Circle with Shape {
+extend Circle implements Shape {
     func area(self) -> f64 {
         return 3.14159 * self.radius * self.radius
     }
@@ -19,7 +19,7 @@ extend Circle with Shape {
     }
 }
 
-extend Rectangle with Shape {
+extend Rectangle implements Shape {
     func area(self) -> f64 {
         return self.width * self.height
     }
@@ -28,7 +28,7 @@ extend Rectangle with Shape {
     }
 }
 
-extend Triangle with Shape {
+extend Triangle implements Shape {
     func area(self) -> f64 {
         return self.base * self.height / 2.0
     }

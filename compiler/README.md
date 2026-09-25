@@ -76,7 +76,7 @@ rask run examples/hello_world.rk --json
 
 ## What Works
 
-Interpreter runs grep, game loop, text editor, HTTP server. Core language features: ownership, generics, traits, channels, linear resources, concurrency.
+Interpreter runs grep, game loop, text editor, HTTP server. Core language features: ownership, generics, interfaces, channels, linear resources, concurrency.
 
 ## What Doesn't
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A trait object in a struct field, called through, and who frees the block.
+// An interface object in a struct field, called through, and who frees the block.
 //
 // Storing a box in a struct field moves it in, and the struct's release gives
 // it back — through the vtable's `owned_release`, so the containers and strings
@@ -23,7 +23,7 @@
 // else releases it, so the frame still owns a box on the error side.
 // `t_any_error_boxing.rk` and `t_bare_error_type.rk` are that half.
 
-trait Describes {
+interface Describes {
     func describe(self) -> string
 }
 
@@ -32,7 +32,7 @@ struct Holder {
     public counts: Vec<i64>
 }
 
-extend Holder with Describes {
+extend Holder implements Describes {
     public func describe(self) -> string {
         return "{self.label}:{self.counts.len()}"
     }

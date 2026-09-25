@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Native trait-object dispatch (task 1.4, issue #194).
+// Native interface-object dispatch (task 1.4, issue #194).
 //
 // `Shape` declares an incompatible method (`duplicate` returns Self, TR2)
 // BEFORE the compatible ones. The vtable holds slots for compatible methods
@@ -8,7 +8,7 @@
 // slot and this miscompiles. The interpreter's by-name dispatch masks the bug,
 // so this has to run as a compiled binary.
 
-trait Shape {
+interface Shape {
     func duplicate(self) -> Self       // TR2-incompatible, declared first
     func area(self) -> i64
     func name(self) -> string
@@ -22,7 +22,7 @@ struct Circle {
     radius: i64
 }
 
-extend Square with Shape {
+extend Square implements Shape {
     func duplicate(self) -> Square {
         return Square { side: self.side }
     }
@@ -34,7 +34,7 @@ extend Square with Shape {
     }
 }
 
-extend Circle with Shape {
+extend Circle implements Shape {
     func duplicate(self) -> Circle {
         return Circle { radius: self.radius }
     }

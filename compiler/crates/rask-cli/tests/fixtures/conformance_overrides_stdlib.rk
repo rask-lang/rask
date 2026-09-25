@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// XC2: a program may declare a non-core trait for a type it doesn't own. The
+// XC2: a program may declare a non-core interface for a type it doesn't own. The
 // stdlib hand-writes `Displayable` for both of these, so the program's block
 // lands on an existing declaration — legal, and the program's wins.
 //
@@ -13,13 +13,13 @@
 import http.Method
 import json.JsonValue
 
-extend Method with Displayable {
+extend Method implements Displayable {
     public func to_string(self) -> string {
         return "method"
     }
 }
 
-extend JsonValue with Displayable {
+extend JsonValue implements Displayable {
     public func to_string(self) -> string {
         return "json"
     }

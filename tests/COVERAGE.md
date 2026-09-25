@@ -60,7 +60,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | `T?`, `??`, `!`, `is … as`, `?.` | `t_week_optionals.rk` | 14/14 | 14/14 | |
 | `T or E`, `try`, `catch` | `t_week_results.rk` | 13/13 | 13/13 | |
 | methods via `extend` | `t_week_methods.rk` | 13/13 | 13/13 | |
-| traits, `any Trait` dispatch | `t_week_traits.rk` | 11/11 | 11/11 | |
+| interfaces, `any Interface` dispatch | `t_week_traits.rk` | 11/11 | 11/11 | |
 | generic functions and types | `t_week_generics.rk` | 11/11 | 11/11 | |
 | closures, higher-order collection methods | `t_week_closures.rk` | 16/16 | 16/16 | |
 | tuples | `t_week_tuples.rk` | 14/14 | 14/14 | #914 |
@@ -141,7 +141,7 @@ C toolchain and a companion object file. The raw-pointer half turns out to be
 perfectly testable in one file, and doing so found #935 — the interpreter treated a
 raw pointer as a plain i64, so `*p` silently yielded 0 while native read the byte.
 Fixed; `t_month_unsafe.rk` now covers dereference, `read()`, `write()`, the
-arithmetic and alignment methods, pointer identity, `cast`, `null`, Vec pointers,
+arithmetic and alignment methods, pointer identity, `cast`, `nullptr`, Vec pointers,
 `string.from_raw`/`from_c`, and the U3 and UF1 forms — 16 tests, green on both
 backends. Widening it past the original six found two more native bugs: #985
 (pointer stride disagrees with the Vec's slot width for elements under 8 bytes)

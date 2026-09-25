@@ -1089,7 +1089,7 @@ impl<'a> Printer<'a> {
         self.emit_indent();
 
         // Attributes, `unsafe`, `duck` and super-traits were all dropped. Losing
-        // `duck` is the one that changes the program: a duck trait matches by
+        // `duck` is the one that changes the program: a duck interface matches by
         // shape and a plain one has to be declared, so the conformance the
         // source relied on stopped existing (#805).
         for attr in &t.attrs {
@@ -1107,7 +1107,7 @@ impl<'a> Printer<'a> {
         if t.is_duck {
             self.emit("duck ");
         }
-        self.emit("trait ");
+        self.emit("interface ");
         self.emit(&t.name);
         // GT1: the parameter list. Dropping it changes the program the same way
         // dropping `duck` does — the conformance the source declared stops
@@ -1179,9 +1179,9 @@ impl<'a> Printer<'a> {
         }
         self.emit("extend ");
         self.emit(&imp.target_ty);
-        if !imp.trait_names.is_empty() {
-            self.emit(" with ");
-            self.emit(&imp.trait_names.join(", "));
+        if let Some(name) = &imp.trait_name {
+            self.emit(" implements ");
+            self.emit(name);
         }
         if !imp.where_bounds.is_empty() {
             let clause: Vec<String> = imp.where_bounds.iter()
@@ -1284,14 +1284,8 @@ impl<'a> Printer<'a> {
         let target = self.format_type(&t.target);
         self.emit(&target);
         if !t.with_traits.is_empty() {
-            self.emit(" with (");
-            for (i, trait_name) in t.with_traits.iter().enumerate() {
-                if i > 0 {
-                    self.emit(", ");
-                }
-                self.emit(trait_name);
-            }
-            self.emit(")");
+            self.emit(" implements ");
+            self.emit(&t.with_traits.join(", "));
         }
     }
 

@@ -92,7 +92,7 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 
 ### Rask vs. Rust
 
-Rask shares a lot of surface with Rust: move semantics, `T or E`, `try`, structural traits, explicit ownership. The thing I hear most often is "this is just Rust with syntax sugar and no lifetimes — which makes it less powerful." The syntax similarity is real. The underlying mechanics are not.
+Rask shares a lot of surface with Rust: move semantics, `T or E`, `try`, nominal interfaces, explicit ownership. The thing I hear most often is "this is just Rust with syntax sugar and no lifetimes — which makes it less powerful." The syntax similarity is real. The underlying mechanics are not.
 
 **Errors don't use wrappers.** Rust forces `Ok(x)` / `Err(e)` because `Result` is an ordinary enum. Rask made `T or E` a builtin specifically to drop the wrappers — you return bare values, the compiler picks the branch by type.
 
@@ -117,7 +117,7 @@ This is closer to Kotlin's `T?` or TypeScript's `T | undefined` than Rust's `Opt
 
 **Binding, not flow typing.** `x?` is a plain boolean; getting at the payload is always the `as v` bind (`if x? as v { use(v) }`) or an operator. There is no in-place narrowing to remember and no destructuring pattern — one binding habit, `as name` after whatever proved a value exists, shared with `is` tests and match arms.
 
-**Errors are bounded.** Every `E` in `T or E` must implement `Error` — a nominal trait requiring `func message(self) -> string`. Primitives can't be errors. `r!` always produces a useful panic message. Rust has no equivalent constraint; any type can be a `Result` error.
+**Errors are bounded.** Every `E` in `T or E` must implement `Error` — a nominal interface requiring `func message(self) -> string`. Primitives can't be errors. `r!` always produces a useful panic message. Rust has no equivalent constraint; any type can be a `Result` error.
 
 **`@message` is builtin.** Rask generates the `message()` method from per-variant templates:
 

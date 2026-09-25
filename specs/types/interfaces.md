@@ -1,27 +1,27 @@
-<!-- id: type.traits -->
+<!-- id: type.interfaces -->
 <!-- status: decided -->
-<!-- summary: Opt-in runtime polymorphism via `any Trait` with function pointer dispatch -->
+<!-- summary: Opt-in runtime polymorphism via `any Interface` with function pointer dispatch -->
 <!-- depends: types/structs.md, types/generics.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
-# Traits
+# Interfaces
 
-Code specialization by default — each type gets its own optimized copy. Use `any Trait` for explicit runtime polymorphism when different types need to share a collection.
+Code specialization by default — each type gets its own optimized copy. Use `any Interface` for explicit runtime polymorphism when different types need to share a collection.
 
 ## Which Methods Work Through `any`
 
-Any trait can be used with `any`. Individual methods that depend on the concrete type can't be called through `any` — the compiler rejects them at the call site, not when creating the `any` value.
+Any interface can be used with `any`. Individual methods that depend on the concrete type can't be called through `any` — the compiler rejects them at the call site, not when creating the `any` value.
 
 | Rule | Description |
 |------|-------------|
-| **TR1: Per-method restriction** | Methods are checked individually; incompatible methods can't be called through `any`, but don't prevent using the trait with `any` |
+| **TR1: Per-method restriction** | Methods are checked individually; incompatible methods can't be called through `any`, but don't prevent using the interface with `any` |
 | **TR2: No Self return** | Methods returning `Self` can't be called through `any` |
 | **TR3: No generic methods** | Generic methods can't be called through `any` |
 | **TR4: No associated types** | Methods using associated types can't be called through `any` — no vtable slot, rejected at the call site. The "(MVP)" hedge is gone: `type.associated-types/AT9` revisited this and kept it, because a projection has no one answer across the types behind an `any` |
 
 <!-- test: parse -->
 ```rask
-trait Clonable {
+interface Clonable {
     func clone(self) -> Self       // can't call through any (returns Self)
     func name(self) -> string      // fine — concrete return type
 }
@@ -36,7 +36,7 @@ The vtable only contains slots for compatible methods. Incompatible methods have
 
 | Rule | Description |
 |------|-------------|
-| **TR5: Explicit conversion** | Converting a concrete value to `any Trait` requires `value as any Trait` — at assignment, function arguments, collection elements, and struct fields alike. No implicit boxing |
+| **TR5: Explicit conversion** | Converting a concrete value to `any Interface` requires `value as any Interface` — at assignment, function arguments, collection elements, and struct fields alike. No implicit boxing |
 | **TR6: Cast form** | `let w = button as any Widget` — the one conversion syntax, whether or not the target type is otherwise known |
 | **TR7: Collection type** | `Vec<any Widget>`, `Map<string, any Handler>` — heterogeneous collections; each element is converted explicitly |
 
@@ -51,7 +51,7 @@ func render_all(widgets: Vec<any Widget>) {
 }
 ```
 
-The `as any Trait` cast is the cost signal — each conversion heap-allocates (TR9), and the allocation is visible exactly where it happens:
+The `as any Interface` cast is the cost signal — each conversion heap-allocates (TR9), and the allocation is visible exactly where it happens:
 
 <!-- test: parse -->
 ```rask
@@ -69,34 +69,34 @@ router.add("/home", handler as any Handler)
 
 ## Boxing
 
-Creating an `any Trait` value heap-allocates the concrete data.
+Creating an `any Interface` value heap-allocates the concrete data.
 
 | Rule | Description |
 |------|-------------|
-| **TR9: Heap allocation** | `any Trait` heap-allocates the concrete value and constructs a fat pointer (data pointer + vtable pointer) |
-| **TR10: Owned data** | `any Trait` owns its heap data — same ownership model as Vec or string |
-| **TR11: Move-only** | `any Trait` is never Copy; assignment moves. Cloneable only if the trait provides a clone method |
+| **TR9: Heap allocation** | `any Interface` heap-allocates the concrete value and constructs a fat pointer (data pointer + vtable pointer) |
+| **TR10: Owned data** | `any Interface` owns its heap data — same ownership model as Vec or string |
+| **TR11: Move-only** | `any Interface` is never Copy; assignment moves. Cloneable only if the interface provides a clone method |
 
-The `as any Trait` cast marks the allocation site (TR5).
+The `as any Interface` cast marks the allocation site (TR5).
 
 ## Dispatch
 
 | Rule | Description |
 |------|-------------|
-| **TR12: Vtable dispatch** | `any Trait` method calls go through a vtable — a table of function pointers, one per compatible method |
-| **TR13: Two-word value** | `any Trait` is a fat pointer: data pointer and vtable pointer (16 bytes) |
+| **TR12: Vtable dispatch** | `any Interface` method calls go through a vtable — a table of function pointers, one per compatible method |
+| **TR13: Two-word value** | `any Interface` is a fat pointer: data pointer and vtable pointer (16 bytes) |
 
 ## Drop
 
 | Rule | Description |
 |------|-------------|
-| **TR14: Scope cleanup** | When `any Trait` goes out of scope: call the vtable's `drop_fn(data_ptr)` if non-null, then free the heap allocation |
-| **TR15: discard** | `discard` on `any Trait` triggers the same cleanup as scope exit |
-| **TR16: Collection cleanup** | Dropping a collection of `any Trait` values drops each element individually through its vtable before freeing the collection |
+| **TR14: Scope cleanup** | When `any Interface` goes out of scope: call the vtable's `drop_fn(data_ptr)` if non-null, then free the heap allocation |
+| **TR15: discard** | `discard` on `any Interface` triggers the same cleanup as scope exit |
+| **TR16: Collection cleanup** | Dropping a collection of `any Interface` values drops each element individually through its vtable before freeing the collection |
 
 ## Cost
 
-| Aspect | Specialized code | `any Trait` |
+| Aspect | Specialized code | `any Interface` |
 |--------|------------------|-------------|
 | Method call | Direct call | Indirect (vtable lookup) |
 | Inlining | Yes | No |
@@ -112,16 +112,16 @@ Overhead is one pointer indirection per call plus a heap allocation per value. N
 |------|------|----------|
 | Method returns `Self` | TR2 | Can't call through `any`; other methods still work |
 | Generic method | TR3 | Can't call through `any`; other methods still work |
-| Clone of `any` value | TR11 | Not automatic; requires explicit Cloneable trait method |
+| Clone of `any` value | TR11 | Not automatic; requires explicit Cloneable interface method |
 | Assignment | TR11 | Moves (never copies) |
 | Concurrency | — | `any` values sendable if underlying type is sendable |
-| Pool element | — | Not supported; use `Vec<any Trait>` for heterogeneous collections |
+| Pool element | — | Not supported; use `Vec<any Interface>` for heterogeneous collections |
 
 ## Error Messages
 
 **Calling incompatible method through `any` [TR2]:**
 ```
-ERROR [type.traits/TR2]: `clone` can't be called through `any`
+ERROR [type.interfaces/TR2]: `clone` can't be called through `any`
    |
 8  |  c.clone()
    |    ^^^^^ returns `Self`, which is erased by `any`
@@ -138,7 +138,7 @@ FIX: Use a generic function for type-preserving operations:
 
 **Missing conversion to `any` [TR5]:**
 ```
-ERROR [type.traits/TR5]: expected `any Widget`, found `Button`
+ERROR [type.interfaces/TR5]: expected `any Widget`, found `Button`
    |
 5  |  render(button)
    |         ^^^^^^ converting to `any Widget` heap-allocates — write it explicitly
@@ -154,7 +154,7 @@ FIX: Convert at the call site:
 
 <!-- test: parse -->
 ```rask
-trait Handler {
+interface Handler {
     func handle(self, req: Request) -> Response
 }
 
@@ -180,7 +180,7 @@ extend Router {
 
 <!-- test: parse -->
 ```rask
-trait Widget {
+interface Widget {
     func draw(self, canvas: Canvas)
     func size(self) -> (i32, i32)
 }
@@ -204,25 +204,25 @@ extend Container {
 
 ### Rationale
 
-**TR1–TR4 (per-method restrictions):** Rust rejects entire traits from `dyn` if any method is incompatible — "trait is not object-safe." I think that's too coarse. A trait with nine compatible methods and one `Self`-returning method should work with `any` — you just can't call that one method. The error appears at the call site where the problem is, not at the coercion site where it isn't.
+**TR1–TR4 (per-method restrictions):** Rust rejects entire traits from `dyn` if any method is incompatible — "trait is not object-safe." I think that's too coarse. An interface with nine compatible methods and one `Self`-returning method should work with `any` — you just can't call that one method. The error appears at the call site where the problem is, not at the coercion site where it isn't.
 
-**TR5 (explicit conversion):** This flipped. The original design converted implicitly whenever the target type was `any Trait`, arguing the `any` in the type was signal enough. But the type can sit far from the conversion — a struct field in another file, a parameter in a signature you're not looking at — so the allocation happened at lines that showed nothing. That's a straight violation of transparency-of-cost: allocations are supposed to be visible in code where they occur. The cast is ceremony, and it's ceremony at exactly the sites where N allocations are happening — the place paying attention is the point. If the full requirement proves too heavy in real code, the candidate relaxation is narrow: implicit conversion only when the annotation is on the same line (`let w: any Widget = button`), explicit everywhere else. Decide from usage, not in the abstract.
+**TR5 (explicit conversion):** This flipped. The original design converted implicitly whenever the target type was `any Interface`, arguing the `any` in the type was signal enough. But the type can sit far from the conversion — a struct field in another file, a parameter in a signature you're not looking at — so the allocation happened at lines that showed nothing. That's a straight violation of transparency-of-cost: allocations are supposed to be visible in code where they occur. The cast is ceremony, and it's ceremony at exactly the sites where N allocations are happening — the place paying attention is the point. If the full requirement proves too heavy in real code, the candidate relaxation is narrow: implicit conversion only when the annotation is on the same line (`let w: any Widget = button`), explicit everywhere else. Decide from usage, not in the abstract.
 
 **TR9 (heap allocation):** I chose owned heap allocation over alternatives. The `any` keyword is the cost signal — you see it in the type, you know there's indirection and allocation. This is a deliberate tradeoff: ergonomic for the use cases where you need it (handlers, plugins, UI), explicit enough that you won't accidentally use it in hot paths.
 
-**TR12 (vtable dispatch):** The cost is explicit. You write `any Trait`, you get indirection. No hidden polymorphism, no surprise performance cliffs. Specialized code generation remains the default for zero-overhead generics.
+**TR12 (vtable dispatch):** The cost is explicit. You write `any Interface`, you get indirection. No hidden polymorphism, no surprise performance cliffs. Specialized code generation remains the default for zero-overhead generics.
 
 ### Patterns & Guidance
 
-**Prefer enums and closures before reaching for `any Trait`:**
+**Prefer enums and closures before reaching for `any Interface`:**
 
 | Need | Use | Why |
 |------|-----|-----|
 | Known set of types | Enum | Zero overhead, pattern matching, field access |
 | Single shared method | `Func(Args) -> Ret` | No vtable, just a function pointer |
-| Open set, multi-method | `any Trait` | When enums and closures don't fit |
+| Open set, multi-method | `any Interface` | When enums and closures don't fit |
 
-**When to use `any Trait`:**
+**When to use `any Interface`:**
 
 | Use Case | Example | Why `any` |
 |----------|---------|-----------|
@@ -232,7 +232,7 @@ extend Container {
 | Event listeners | `Vec<any Listener>` | Different callbacks for same event |
 | Heterogeneous caches | `Map<Key, any Value>` | Store different value types |
 
-**When NOT to use `any Trait`:**
+**When NOT to use `any Interface`:**
 
 | Situation | Use Instead |
 |-----------|-------------|
@@ -244,11 +244,11 @@ extend Container {
 
 **Comparison with enums:**
 
-| | `any Trait` | Enum |
+| | `any Interface` | Enum |
 |---|-------------|------|
 | Open/extensible | Yes — add new types anytime | No — fixed set of variants |
-| Pattern matching | No — only trait methods | Yes — full pattern matching |
-| Access fields | No — only trait methods | Yes — direct field access |
+| Pattern matching | No — only interface methods | Yes — full pattern matching |
+| Access fields | No — only interface methods | Yes — direct field access |
 | External types | Yes — works with any type | No — must be defined in enum |
 | Memory | Heap allocation per value | Inline (tag + union) |
 
@@ -265,12 +265,12 @@ match shape {
 
 // any: open set, methods only
 mut shapes: Vec<any Drawable> = [circle, rect, custom_shape]
-for s in shapes { s.draw() }  // Only trait methods
+for s in shapes { s.draw() }  // Only interface methods
 ```
 
 **How vtable dispatch works:**
 
-An `any Trait` value has two parts:
+An `any Interface` value has two parts:
 1. **Data**: Pointer to heap-allocated concrete value
 2. **Vtable**: Pointer to static function pointer table
 
@@ -287,7 +287,7 @@ When you call `w.draw()`, the runtime loads the `draw` function pointer from the
 
 ### Collection Thinning (implementation note)
 
-Collections of `any Trait` values can use a thin pointer optimization. Owned `any Trait` values heap-allocate with the vtable pointer as a header:
+Collections of `any Interface` values can use a thin pointer optimization. Owned `any Interface` values heap-allocate with the vtable pointer as a header:
 
 ```
 Heap block:  [vtable_ptr | concrete_data...]
@@ -303,7 +303,7 @@ Borrowed fat pointers (function parameters where data_ptr points to stack data) 
 
 <!-- test: parse -->
 ```rask
-trait Plugin {
+interface Plugin {
     func name(self) -> string
     func init(self)
     func run(self, ctx: Context)
@@ -324,14 +324,14 @@ extend App {
 ### Integration Notes
 
 - **Ownership**: `any` values own their heap data — the data pointer is owned, not a reference (`mem.ownership`)
-- **Cloneable**: `any Trait` is NOT automatically cloneable — requires an explicit trait method
+- **Cloneable**: `any Interface` is NOT automatically cloneable — requires an explicit interface method
 - **Drop**: scope exit calls vtable `drop_fn` then frees the heap allocation (`TR14`)
 - **Concurrency**: `any` values can be sent between tasks if the underlying type is sendable (`conc.tasks`)
 
 ### See Also
 
 - [Structs](structs.md) — Method syntax, `extend` blocks (`type.structs`)
-- [Generics](generics.md) — Code specialization, trait bounds (`type.generics`)
+- [Generics](generics.md) — Code specialization, interface bounds (`type.generics`)
 - [Enums](enums.md) — Closed-set alternative (`type.enums`)
 - [Ownership](../memory/ownership.md) — Value ownership model (`mem.ownership`)
 - [Value Semantics](../memory/value-semantics.md) — Copy vs move, 16-byte threshold (`mem.value`)

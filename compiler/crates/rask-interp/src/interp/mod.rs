@@ -204,7 +204,7 @@ pub struct Interpreter {
     /// The package whose function is running, innermost last.
     pub(crate) package_stack: Vec<Option<String>>,
     /// OR1: operator calls the checker resolved to a conformance, so `2.0 * m`
-    /// runs the `extend f64 with Mul<Meters>` body instead of asking the float
+    /// runs the `extend f64 implements Mul<Meters>` body instead of asking the float
     /// layer to multiply a struct.
     pub(crate) operator_targets: HashMap<rask_ast::NodeId, rask_types::OperatorTarget>,
     /// What each generic function's type parameters resolved to for the call

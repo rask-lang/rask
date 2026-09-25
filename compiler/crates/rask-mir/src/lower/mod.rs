@@ -496,7 +496,7 @@ pub struct MirContext<'a> {
     pub resource_types: &'a std::collections::HashSet<String>,
     /// Nominal newtype name → the type it wraps, as a type string.
     ///
-    /// `type Id = u64 with (…)` has no layout of its own: it *is* a u64 with a
+    /// `type Id = u64 implements …` has no layout of its own: it *is* a u64 with a
     /// distinct identity, so it's transparent in MIR. Without this the name
     /// resolved to a bare `Ptr` with nothing allocated behind it, and
     /// construction stored through an uninitialised pointer (#445).
@@ -1517,7 +1517,7 @@ impl<'a> MirContext<'a> {
     /// OR6: the prefix a *conformance* method's symbol carries.
     ///
     /// Not `builtin_method_prefix`: that collapses widths, so every float
-    /// receiver answers `f64` and an `extend f32 with Mul<…>` body would be
+    /// receiver answers `f64` and an `extend f32 implements Mul<…>` body would be
     /// called under someone else's name. A conformance is filed on the type as
     /// written.
     pub fn conformance_prefix(
@@ -4509,7 +4509,7 @@ impl<'a> MirLowerer<'a> {
             Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
             // `type_names` stores the declaration name with its parameter list
             // attached ("Vec<T>"), not the bare "Vec" — an exact match here
-            // never fired, so a `Vec<any Trait>` field (which resolves to this
+            // never fired, so a `Vec<any Interface>` field (which resolves to this
             // form through the checker's `HasField` constraint) lost its
             // trait-object element type and segfaulted iterating natively.
             Type::Generic { base, args }
@@ -4542,7 +4542,7 @@ impl<'a> MirLowerer<'a> {
                     })
                 }
                 Type::Array { elem, .. } => return Some(self.ctx.type_to_mir(elem)),
-                // Vec<any Trait> yields fat-pointer elements. Only the trait-object
+                // Vec<any Interface> yields fat-pointer elements. Only the trait-object
                 // case is taken from the checker here: concrete element types are
                 // already covered by the tracked elem_type below, but a trait object
                 // carries a vtable half that nothing downstream can recover once the

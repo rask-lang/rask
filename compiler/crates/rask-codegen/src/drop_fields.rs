@@ -86,7 +86,7 @@ pub fn owned_fields(
 
 /// Is this a trait object, however the type happens to be spelled?
 ///
-/// A field written `any Trait` reaches the layout as a *name* rather than a
+/// A field written `any Interface` reaches the layout as a *name* rather than a
 /// parsed `TraitObject` (#474), so asking for the parsed form alone answers no
 /// for every field — which is exactly where the question matters.
 pub fn is_trait_object(ty: &RaskType) -> bool {

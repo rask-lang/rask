@@ -53,7 +53,7 @@
 # `try` on a `Container or E` inside a function that returns `_ or E` reads the
 # error out of the wrapper and stores it into the Result going back, and the
 # container on the wrapper's *ok* side went with it (`t_io_seek.rk` 21 → 0), and
-# 343 once passing a trait object to a function that borrows it stopped counting
+# 343 once passing a interface object to a function that borrows it stopped counting
 # as handing it over (`t_io_buffer.rk` 21 → 17; covering the containers inside a
 # boxed value as well was tried, double-freed, and backed out — #1144), and 322
 # once a `Random` had a free at all: it is a heap block behind an opaque handle
@@ -64,11 +64,11 @@
 # the payload kind travels to the constructor and lives on the box (four more
 # files clean), and 287 once `Rack.snapshot()` stopped cloning a node's
 # `Vec`/`Map` field twice and dropping the first copy (`p13_rack_snapshot.rk`
-# 10 → 0), and 279 once a function that hands back a fresh trait box made its
+# 10 → 0), and 279 once a function that hands back a fresh interface box made its
 # caller the owner — `return Boom.Bad` in a `-> i64 or Error` boxes the enum,
 # and every failing `or Error` call leaked the box (four files improved).
 #
-# The rest of that one was #1147, and it is closed: 274 once a trait box got
+# The rest of that one was #1147, and it is closed: 274 once a interface box got
 # dropped where control leaves the region its definition rules, the same rule
 # `container_drop` already uses — `classify(-1) catch e => -1` binds the error,
 # so a name did own the box, but a definition inside a `catch` dominates no
@@ -78,7 +78,7 @@
 # its own wrapper, and once that function is inlined the whole trip is one
 # frame's: stored into an aggregate, moved with it, read out again under a new
 # name. That last name owns the box (`t_any_error_boxing.rk` 4 → 2,
-# `t_bare_error_type.rk` 3 → 1), and 268 once a string handed back by a trait
+# `t_bare_error_type.rk` 3 → 1), and 268 once a string handed back by a interface
 # call got released. MIR has three kinds of call — direct, through a closure,
 # through a vtable — and the elision pass's test for "did this frame take this
 # reference itself" listed only the direct one, so `n.label()` on a boxed value
@@ -194,7 +194,7 @@
 # Every predecessor having it live on the way in is the same rule stated
 # properly. `t_collection_api_gaps.rk` 8 → clean.
 #
-# Thirty-two more when a container started freeing the `data` half of a trait
+# Thirty-two more when a container started freeing the `data` half of a interface
 # box element's fat pointer (#1149). Nine files' leaks were nothing but those
 # blocks — `RASK_LEAK_TRACE` put every one at a boxing site in the test's own
 # source, eight bytes apiece, which is `max(concrete_size, 8)`. The block's size
@@ -346,12 +346,12 @@
 #
 # And a box in a struct field. `Router { inner: Fail { … } }` moves the box in,
 # so the block and the value's own contents are the struct's — but the release
-# walk had no case for a trait object and skipped a struct whose only owning
+# walk had no case for a interface object and skipped a struct whose only owning
 # field was one. Two things were in the way: a field written `any Trait` reaches
 # the layout as a *name* rather than a parsed TraitObject (#474), so asking for
 # the parsed form answered no exactly where it mattered; and the release landed
 # before the box's last use, because a field read only delayed it for a `T?` or
-# a `T or E`. A trait object is the same shape as those — sixteen bytes read out
+# a `T or E`. A interface object is the same shape as those — sixteen bytes read out
 # of the struct's own storage, not a scalar copied out of it — and `r.inner`
 # passed on to something else is read long after the read that produced it
 # (`t62_trait_object_positions.rk` clean). The release goes through the
@@ -367,7 +367,7 @@
 # release for, read once before it starts adding its own
 # (`t_heap_dropped.rk` clean).
 #
-# And 37 once the trait-drop pass followed a box as far as the frame carries it.
+# And 37 once the interface-drop pass followed a box as far as the frame carries it.
 # Two gaps, both about a box that arrived from *somewhere else* rather than
 # being made here. `describe(e)` inlined writes the box into the callee's
 # parameter local, and only locally-made boxes were being carried through moves

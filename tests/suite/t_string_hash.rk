@@ -3,7 +3,7 @@
 //
 // `string.hash()` was declared in the stdlib but implemented in neither backend,
 // so a custom Hashable that delegated to it failed to compile. The integer widths,
-// `bool` and `char` were the other half: the trait table listed them as Hashable —
+// `bool` and `char` were the other half: the interface table listed them as Hashable —
 // so the conformance held — while the *call* was rejected with "no method `hash`",
 // and a nominal newtype listing `Hashable` type-checked and then failed at codegen
 // (#813).
@@ -40,7 +40,7 @@ struct EmailAddress {
     public raw: string
 }
 
-extend EmailAddress with Equal {
+extend EmailAddress implements Equal {
     func eq(self, other: EmailAddress) -> bool {
         return self.raw.to_lowercase() == other.raw.to_lowercase()
     }
@@ -48,7 +48,7 @@ extend EmailAddress with Equal {
 
 // OC1: overriding Equal cancels the derived Hashable, so it's redeclared to
 // agree with the case-insensitive equality.
-extend EmailAddress with Hashable {
+extend EmailAddress implements Hashable {
     func hash(self) -> u64 { return self.raw.to_lowercase().hash() }
 }
 
@@ -61,7 +61,7 @@ test "a custom Hashable can delegate to string.hash()" {
 
 // ── The scalar types (#813) ─────────────────────────────────────────
 
-type Id = u64 with (Equal, Hashable)
+type Id = u64 implements Equal, Hashable
 
 test "type.generics/HA1 — every integer width hashes" {
     let a: u64 = 5
@@ -125,13 +125,13 @@ struct Version {
     public minor: u32
 }
 
-extend Version with Equal {
+extend Version implements Equal {
     func eq(self, other: Version) -> bool {
         return self.major == other.major
     }
 }
 
-extend Version with Hashable {
+extend Version implements Hashable {
     func hash(self) -> u64 { return self.major.hash() }
 }
 

@@ -397,7 +397,7 @@ The shorthand is the struct literal only. A call has no equivalent: `f(x)` is
 positional and `f(x: x)` is a named argument, so there's nothing for `f(x)` to be
 short for.
 
-**Field defaults:** a field may declare a default (compile-time constant, same rule as default arguments). Defaulted fields can be omitted at construction; if every field has a default, `Config {}` constructs the default value — there is no `Default` trait or `.default()` method. A struct with any defaultless field has no empty construction; the compiler names the missing field.
+**Field defaults:** a field may declare a default (compile-time constant, same rule as default arguments). Defaulted fields can be omitted at construction; if every field has a default, `Config {}` constructs the default value — there is no `Default` interface or `.default()` method. A struct with any defaultless field has no empty construction; the compiler names the missing field.
 
 ```rask
 struct Config {
@@ -486,44 +486,50 @@ extend Shape {
 }
 ```
 
-### Traits
+### Interfaces
 
 ```rask
-trait Displayable {
+interface Displayable {
     func display(self) -> string
 }
 
-trait Comparable {
+interface Comparable {
     func compare(self, other: Self) -> Ordering
 }
 ```
 
-**Conformance is declared:** a type satisfies a trait through `extend Type with Trait` (`type.generics/G1`):
+**Conformance is declared:** a type satisfies an interface through `extend Type implements Interface` (`type.generics/G1`):
 ```rask
-extend Point with Displayable {
+extend Point implements Displayable {
     func display(self) -> string {
         return "({self.x}, {self.y})"
     }
 }
 ```
 
-If the type already has the methods, an empty declaration suffices: `extend Point with Displayable {}`.
+If the type already has the methods, an empty declaration suffices: `extend Point implements Displayable {}`.
 
-**Duck traits (scratchpad only):** a trait marked `duck` matches by shape — any type with the right methods satisfies it, no declaration. Sketch with it, then delete the keyword to harden (the compiler generates the missing conformance declarations). It can't leave the package: `public duck trait` is an error (`type.generics/DT1`). Inside the package it's allowed but nudged — lint and `rask publish` report it, neither blocks. The stdlib ships none.
+**Duck interfaces (scratchpad only):** an interface marked `duck` matches by shape — any type with the right methods satisfies it, no declaration. Sketch with it, then delete the keyword to harden (the compiler generates the missing conformance declarations). It can't leave the package: `public duck interface` is an error (`type.generics/DT1`). Inside the package it's allowed but nudged — lint and `rask publish` report it, neither blocks. The stdlib ships none.
 
-**Several conformances, one block:** the `with` list is a header on a normal extend block — methods for any listed trait plus plain methods, together:
+**One interface per block:** a block names exactly one interface, so the block is the whole contract. A type with three conformances writes three blocks; plain methods may sit in any of them (`type.generics/CD1`, `CD2`):
 
 ```rask
-extend LogSource with Reader, Displayable, Error {
+extend LogSource implements Reader {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
+}
+
+extend LogSource implements Displayable {
     func display(self) -> string { ... }
+}
+
+extend LogSource implements Error {
     func message(self) -> string { ... }
 }
 ```
 
-**Name collisions:** two traits demanding the same method name with the same signature share one implementation. Different signatures: declare the second conformance `scoped` — its methods stay out of the type's namespace, reachable via trait-qualified calls (`Announcer.greet(dog, 5)`, mirroring `Type.method()` statics).
+**Name collisions:** two interfaces demanding the same method name with the same signature share one implementation. Different signatures: declare the second conformance `scoped` — its methods stay out of the type's namespace, reachable via interface-qualified calls (`Announcer.greet(dog, 5)`, mirroring `Type.method()` statics).
 
-**Runtime polymorphism:** Use `any Trait` for heterogeneous collections. Conversion is explicit — it heap-allocates, and the cast marks where (`type.traits/TR5`):
+**Runtime polymorphism:** Use `any Interface` for heterogeneous collections. Conversion is explicit — it heap-allocates, and the cast marks where (`type.interfaces/TR5`):
 ```rask
 let widgets: Vec<any Widget> = [
     button as any Widget,
@@ -654,8 +660,8 @@ The ambiguous case `f(a<b, c>(d))` parses as a generic call `a<b, c>(d)`. To exp
 `type` creates a nominal type — same layout, no implicit conversion. This is the default because when you name a type, you usually want it distinct.
 
 ```rask
-type UserId = u64 with (Equal, Hashable)
-type Email = string with (Equal, Debug)
+type UserId = u64 implements Equal, Hashable
+type Email = string implements Equal, Debug
 
 let id = UserId(42)           // explicit construction
 let raw: u64 = id.value       // explicit extraction

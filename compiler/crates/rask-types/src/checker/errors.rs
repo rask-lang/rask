@@ -15,7 +15,7 @@ pub enum MapKeyFix {
     /// A nominal newtype — the traits it inherits are the ones its `with (…)`
     /// clause names.
     NominalClause,
-    /// Anything else — an `extend T with Hashable` block declares it.
+    /// Anything else — an `extend T implements Hashable` block declares it.
     ExtendBlock,
 }
 
@@ -498,7 +498,7 @@ pub enum TypeError {
     /// whatever the surrounding code expected. `Error.CompletelyMadeUp` passed
     /// the checker, ran to `0` natively and died on the interpreter with
     /// "undefined variable `Error`" (#1095).
-    #[error("`Error` is a trait, not an enum — `{member}` is not one of its variants")]
+    #[error("`Error` is an interface, not an enum — `{member}` is not one of its variants")]
     ErrorTraitMember {
         member: String,
         span: Span,
@@ -542,7 +542,7 @@ pub enum TypeError {
         ty: String,
         trait_name: String,
         /// Where the requirement came from. The advice differs completely: a
-        /// failed `as any Trait` is fixed by implementing the trait, a failed
+        /// failed `as any Interface` is fixed by implementing the trait, a failed
         /// generic bound is usually fixed by passing a different type, and a
         /// `Numeric`/`Integer` bound can't be implemented at all. One message
         /// for all three told everyone to "implement `Integer` for `Marker`"
@@ -562,7 +562,7 @@ pub enum TypeError {
     /// type, because an unknown trait has no type to blame — so a typo in a
     /// bound read as a mysterious failure of the type system rather than as a
     /// name nobody had declared.
-    #[error("no trait named `{trait_name}`")]
+    #[error("no interface named `{trait_name}`")]
     NoSuchTrait {
         trait_name: String,
         /// Declared trait names, for a did-you-mean.
@@ -693,8 +693,8 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// type.generics/DT1: `duck trait` is scratchpad-only — it can't be public.
-    #[error("`duck trait {name}` cannot be public")]
+    /// type.generics/DT1: `duck interface` is scratchpad-only — it can't be public.
+    #[error("`duck interface {name}` cannot be public")]
     PublicDuckTrait {
         name: String,
         span: Span,
@@ -1165,7 +1165,7 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// type.generics/XC3: a second `extend T with Trait` for a pair that
+    /// type.generics/XC3: a second `extend T implements Trait` for a pair that
     /// already has one. The set this used to be filed in absorbed the second
     /// declaration, so the last block parsed silently supplied the methods.
     #[error("`{ty}` already declares conformance to `{trait_name}`")]
@@ -1274,12 +1274,12 @@ pub enum IndexErrorKind {
 /// Where a trait requirement came from — drives the advice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TraitBoundContext {
-    /// `value as any Trait` — the box needs a vtable, so the concrete type has
+    /// `value as any Interface` — the box needs a vtable, so the concrete type has
     /// to have the methods.
     TraitObjectCast,
     /// `f<T: Trait>(…)` at a call site — the type argument doesn't qualify.
     GenericBound,
-    /// `extend T with Trait { … }` — the block claims a conformance it doesn't
+    /// `extend T implements Trait { … }` — the block claims a conformance it doesn't
     /// deliver.
     ConformanceHeader,
     /// A bound on one of the numeric traits (NT1–NT3). These are sets of

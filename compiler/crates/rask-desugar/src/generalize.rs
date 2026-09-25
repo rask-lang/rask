@@ -34,7 +34,7 @@
 //! `func count(items) { items.len() }` is not this, and it isn't a fix either.
 //! The spec's example table wants `<T>(items: Vec<T>) -> usize` and GC3 wants a
 //! structural requirement, and neither can be written from here: `.len()` names
-//! no trait to read a nominal type out of, and a synthesized `duck trait` would
+//! no trait to read a nominal type out of, and a synthesized `duck interface` would
 //! need `len`'s return type, which this pass runs too early to know. #1141 has
 //! the options.
 

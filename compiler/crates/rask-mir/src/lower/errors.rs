@@ -175,7 +175,7 @@ impl<'a> MirLowerer<'a> {
             Some(_) => None,
             None => self.error_wrap_target(try_id),
         };
-        // ER32: the enclosing function's error side is `any Trait`, so the
+        // ER32: the enclosing function's error side is `any Interface`, so the
         // concrete error acquires a vtable on its way out. Same trigger as
         // ER31a's enum wrap and mutually exclusive with it — an error is either
         // named by a boundary enum or type-erased, not both.

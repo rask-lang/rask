@@ -106,7 +106,7 @@ The effect map is where "which calls can move the buffer under a borrow" is answ
 |-----------|--------------|------|----------------|
 | Borrow checking | O(n²) worst case (NLL) | Syntactic scopes, no inference | 10-100× faster |
 | Lifetime inference | Region inference + NLL | Not needed (no lifetimes) | ∞ (eliminated) |
-| Trait coherence | Global analysis | Local only | 5-10× faster |
+| Interface coherence | Global analysis | Local only | 5-10× faster |
 | Monomorphization | Same | Same | 1× (same) |
 | **Overall** | 100K LOC/sec | **500K LOC/sec** | **5× faster** |
 
@@ -120,7 +120,7 @@ I achieve 5× faster compilation by eliminating the most expensive Rust analyses
 |------|------|----------|
 | Range analysis timeout | BE2 | Conservative: keep the check |
 | Effect through a closure | EF3 | The closure's body contributes to the enclosing function's effects |
-| Effect through a trait object | EF3 | Conservative: assume both Grow and Shrink |
+| Effect through an interface object | EF3 | Conservative: assume both Grow and Shrink |
 
 ---
 

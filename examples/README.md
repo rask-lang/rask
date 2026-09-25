@@ -24,7 +24,7 @@ These examples parse and run with the current interpreter:
 | 05 | `05_loops.rk` | For and while loops | ✅ Runnable |
 | 06 | `06_structs.rk` | Structs and methods | ✅ Runnable |
 | 07 | `07_error_handling.rk` | `T or E`, `try` | ✅ Runnable |
-| 08 | `08_traits.rk` | Traits and polymorphism | ✅ Runnable |
+| 08 | `08_interfaces.rk` | Interfaces and polymorphism | ✅ Runnable |
 | 13 | `13_string_operations.rk` | String methods | ✅ Runnable |
 | 16 | `16_concurrency_basics.rk` | Threads and channels | ✅ Runnable |
 | 17 | `17_comptime.rk` | Compile-time execution | ✅ Runnable |
@@ -41,7 +41,7 @@ These examples demonstrate **intended syntax** but require features not yet in t
 | # | Example | Topic | Missing Features |
 |---|---------|-------|------------------|
 | 09 | `09_generics.rk` | Generic types | Generic `extend`, full closure types |
-| 12 | `12_iterators.rk` | Iterator patterns | Iterator trait, method chaining |
+| 12 | `12_iterators.rk` | Iterator patterns | Iterator interface, method chaining |
 | 19 | `19_unsafe.rk` | Unsafe blocks, FFI | Pointer dereference, `extern "C"` |
 
 **Note:** These are valuable learning resources showing Rask's design goals. They will become runnable as the compiler matures.
@@ -110,7 +110,7 @@ Moved to `tests/compile_errors/` — these demonstrate what the type system **pr
 - Master variables, functions, collections, control flow, error handling
 
 **Intermediate** (08-14):
-- Traits for polymorphism (08)
+- Interfaces for polymorphism (08)
 - String operations for text processing (13)
 - Read spec examples 09-12, 14 to understand design goals
 

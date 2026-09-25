@@ -17,19 +17,19 @@ public func Wrapping<T: Integer>(value: T) -> Wrapping<T> {
     return Wrapping { value }
 }
 
-extend Wrapping<T> with Add where T: Integer {
+extend Wrapping<T> implements Add where T: Integer {
     public func add(self, other: Wrapping<T>) -> Wrapping<T> {
         return Wrapping { value: self.value.wrapping_add(other.value) }
     }
 }
 
-extend Wrapping<T> with Sub where T: Integer {
+extend Wrapping<T> implements Sub where T: Integer {
     public func sub(self, other: Wrapping<T>) -> Wrapping<T> {
         return Wrapping { value: self.value.wrapping_sub(other.value) }
     }
 }
 
-extend Wrapping<T> with Mul where T: Integer {
+extend Wrapping<T> implements Mul where T: Integer {
     public func mul(self, other: Wrapping<T>) -> Wrapping<T> {
         return Wrapping { value: self.value.wrapping_mul(other.value) }
     }
@@ -44,19 +44,19 @@ public func Saturating<T: Integer>(value: T) -> Saturating<T> {
     return Saturating { value }
 }
 
-extend Saturating<T> with Add where T: Integer {
+extend Saturating<T> implements Add where T: Integer {
     public func add(self, other: Saturating<T>) -> Saturating<T> {
         return Saturating { value: self.value.saturating_add(other.value) }
     }
 }
 
-extend Saturating<T> with Sub where T: Integer {
+extend Saturating<T> implements Sub where T: Integer {
     public func sub(self, other: Saturating<T>) -> Saturating<T> {
         return Saturating { value: self.value.saturating_sub(other.value) }
     }
 }
 
-extend Saturating<T> with Mul where T: Integer {
+extend Saturating<T> implements Mul where T: Integer {
     public func mul(self, other: Saturating<T>) -> Saturating<T> {
         return Saturating { value: self.value.saturating_mul(other.value) }
     }

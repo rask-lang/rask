@@ -20,7 +20,7 @@ enum MwOutcome {
     Short(Response)
 }
 
-trait Middleware {
+interface Middleware {
     func name(self) -> string
     func before(self, req: Request) -> MwOutcome
 }
@@ -29,7 +29,7 @@ trait Middleware {
 
 struct RequestLogger { }
 
-extend RequestLogger with Middleware {
+extend RequestLogger implements Middleware {
     func name(self) -> string {
         return "logger"
     }
@@ -49,7 +49,7 @@ struct AuthGuard {
     required_token: string
 }
 
-extend AuthGuard with Middleware {
+extend AuthGuard implements Middleware {
     func name(self) -> string {
         return "auth"
     }
@@ -91,7 +91,7 @@ extend RateLimiter {
     }
 }
 
-extend RateLimiter with Middleware {
+extend RateLimiter implements Middleware {
     func name(self) -> string {
         return "rate_limiter"
     }

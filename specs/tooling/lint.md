@@ -50,7 +50,7 @@ Common mistakes the canonical patterns address.
 |------|-------|----------|
 | **I1: force-unwrap-production** | `x!` force unwrap outside `test` blocks | warning |
 | **I2: missing-ensure** | `@resource` type created without matching `ensure` in same scope | warning |
-| **I3: duck-trait** | Any `duck trait` declaration (`type.generics/DT3`) — names the harden step and the types that already match | warning |
+| **I3: duck-interface** | Any `duck interface` declaration (`type.generics/DT3`) — names the harden step and the types that already match | warning |
 | **I4: inferred-signature** | Non-public function omitting a parameter type, return type, or bound, in a package that declares publish metadata (`type.gradual/GC11`) | warning |
 | **I5: equality-absent-check** | `x == none` / `x != none` on an optional — the branch test is `x is none`, presence is `x?` (`type.optionals/OPT15`) | warning |
 
@@ -105,7 +105,7 @@ func bad_pure(path: string) -> Config or Error {
 | Rule | Check | Severity |
 |------|-------|----------|
 | **ST1: snake-case-func** | Function names are `snake_case` | warning |
-| **ST2: pascal-case-type** | Type/enum/trait names are `PascalCase`. An empty struct is exempt — it declares no data, so it's a namespace (`struct net { }`, which `extend net { … }` hangs off) or a compiler-provided type spelled to match a builtin (`cstring`) | warning |
+| **ST2: pascal-case-type** | Type/enum/interface names are `PascalCase`. An empty struct is exempt — it declares no data, so it's a namespace (`struct net { }`, which `extend net { … }` hangs off) or a compiler-provided type spelled to match a builtin (`cstring`) | warning |
 | **ST3: public-return-type** | Public functions have explicit return type annotations | error |
 
 ## Suppression
@@ -175,17 +175,17 @@ FIX: remove @pure, or restructure to accept data as a parameter:
 ```
 
 ```
-WARNING [tool.lint/I3]: `Frobber` is a duck trait
+WARNING [tool.lint/I3]: `Frobber` is a duck interface
    |
-12 |  duck trait Frobber {
+12 |  duck interface Frobber {
    |  ^^^^ matched by shape — no conformance declarations anywhere
    |
-WHY: duck traits are for sketching — nothing states this contract, so a
+WHY: duck interfaces are for sketching — nothing states this contract, so a
      type can start or stop matching it silently.
 
-FIX: delete `duck`. 3 types already match by shape; the "harden duck trait"
+FIX: delete `duck`. 3 types already match by shape; the "harden duck interface"
      quick action generates their conformance declarations. Or keep the
-     sketch — `@allow(idiom/duck-trait)` silences this.
+     sketch — `@allow(idiom/duck-interface)` silences this.
 ```
 
 ## JSON Output

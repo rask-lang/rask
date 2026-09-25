@@ -107,7 +107,7 @@ f(5)              // 6
 
 **Why M6 isn't the other way.** Making `h.run(5)` call the field is two lines of
 resolution, and the argument against it is what a struct of functions *is*. Rask
-has a better answer for one swappable behaviour — a trait, and `any Handler` for
+has a better answer for one swappable behaviour — an interface, and `any Handler` for
 the case where it varies — and the shape the field spelling is for appears
 nowhere: not in `stdlib/`, not in a validation program, not in a spec. The text
 editor is the tell. It is the program that most obviously wants a stack of
@@ -245,7 +245,7 @@ let p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
 |------|-------------|
 | **FD1: Declared defaults** | A field may declare a default: `port: i32 = 8080`. Compile-time constants only — same rule as default arguments |
 | **FD2: Omittable at construction** | Defaulted fields may be omitted in a struct literal; the declared value fills in |
-| **FD3: Zero-field construction** | If every field has a default, `Config {}` constructs the default value. There is no `Default` trait and no `.default()` method — this is it |
+| **FD3: Zero-field construction** | If every field has a default, `Config {}` constructs the default value. There is no `Default` interface and no `.default()` method — this is it |
 | **FD4: Missing field is an error** | A field with no default and no value is a compile error naming the field. Never silently zero |
 | **FD5: Spread wins** | `Config { x: v, ..base }` — explicit fields, then spread, then defaults for anything neither covers |
 | **FD6: Decode unification** | The declared default is the decode-missing-field default (`std.encoding/E20`); `@default(expr)` remains for decode-only overrides. It is also the value a field excluded from the wire form takes on decode (`std.encoding/E13a`) — a `private` or `@no_serialize` field with no default means the type is not auto-`Decode` |
@@ -294,7 +294,7 @@ Bounds checked at instantiation site. See `type.generics`.
 | Property | Value |
 |----------|-------|
 | Size | 0 bytes |
-| Use cases | Type-level markers, phantom types, trait carriers |
+| Use cases | Type-level markers, phantom types, interface carriers |
 
 <!-- test: parse -->
 ```rask
@@ -483,7 +483,7 @@ extend FileHandle {
 
 **M3 (same module):** Methods in separate `extend` blocks keep data and behavior distinct, but requiring same-module keeps the type's behavior discoverable.
 
-**Field defaults (FD1–FD6):** This flipped — the original design rejected default field values in favor of factory functions. Declared defaults won because they're author-chosen values visible in the declaration (transparency preserved), they kill the factory boilerplate, and one mechanism feeds construction, decode-missing-fields, and "give me a fresh value" — which also eliminated the `Default` trait (`type.generics`). The line held: zero-initialization is still not automatic. A defaultless field must be provided, and the compiler names it — universal zeros are Go's silent-wrong design.
+**Field defaults (FD1–FD6):** This flipped — the original design rejected default field values in favor of factory functions. Declared defaults won because they're author-chosen values visible in the declaration (transparency preserved), they kill the factory boilerplate, and one mechanism feeds construction, decode-missing-fields, and "give me a fresh value" — which also eliminated the `Default` interface (`type.generics`). The line held: zero-initialization is still not automatic. A defaultless field must be provided, and the compiler names it — universal zeros are Go's silent-wrong design.
 
 ### Patterns & Guidance
 

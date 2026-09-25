@@ -188,7 +188,7 @@ impl TypeChecker {
                     self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
                 }
                 DeclKind::Trait(t) => {
-                    self.check_declared_type_name(&t.name, "trait", decl.span);
+                    self.check_declared_type_name(&t.name, "interface", decl.span);
                     // DT1: shape-matching stops at the package boundary
                     if t.is_pub && t.is_duck {
                         self.errors.push(TypeError::PublicDuckTrait {
@@ -477,7 +477,7 @@ impl TypeChecker {
     /// symbols. Every other generic trait still has only the name to go on.
     /// OR6: the table entry an `extend` block's methods and conformances go
     /// under. A struct or enum answers with its own id, a primitive with its
-    /// stand-in — `extend f64 with Mul<Meters>` has to land somewhere.
+    /// stand-in — `extend f64 implements Mul<Meters>` has to land somewhere.
     pub(super) fn impl_target_id(&self, target_ty: &str) -> Option<crate::types::TypeId> {
         let base = target_ty.split('<').next().unwrap_or(target_ty).trim();
         self.types
@@ -497,52 +497,51 @@ impl TypeChecker {
             Some(t) => t,
             None => return,
         };
-        for trait_ref in &i.trait_names {
-            let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim().to_string();
-            if rask_ast::operators::operator_trait_method(&base).is_some() {
-                continue;
-            }
-            let siblings: Vec<String> = self
-                .types
-                .applied_conformances(type_id, &base)
-                .into_iter()
-                .filter(|k| !self.same_applied_trait(k, trait_ref, &i.target_ty))
-                .collect();
-            for other in siblings {
-                // Report once, on whichever block comes later — the first one
-                // was fine on its own, the second is what made the name
-                // ambiguous.
-                let mine = self.types.conformance_span(type_id, trait_ref);
-                let theirs = self.types.conformance_span(type_id, &other);
-                if let (Some(mine), Some(theirs)) = (mine, theirs) {
-                    if mine.start < theirs.start {
-                        continue;
-                    }
+        let Some(trait_ref) = &i.trait_name else { return };
+        let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim().to_string();
+        if rask_ast::operators::operator_trait_method(&base).is_some() {
+            return;
+        }
+        let siblings: Vec<String> = self
+            .types
+            .applied_conformances(type_id, &base)
+            .into_iter()
+            .filter(|k| !self.same_applied_trait(k, trait_ref, &i.target_ty))
+            .collect();
+        for other in siblings {
+            // Report once, on whichever block comes later — the first one
+            // was fine on its own, the second is what made the name
+            // ambiguous.
+            let mine = self.types.conformance_span(type_id, trait_ref);
+            let theirs = self.types.conformance_span(type_id, &other);
+            if let (Some(mine), Some(theirs)) = (mine, theirs) {
+                if mine.start < theirs.start {
+                    return;
                 }
-                let mut clash = None;
-                {
-                    let checker = crate::traits::TraitChecker::new(&self.types);
-                    let mine = checker.required_signatures(&self_ty, trait_ref);
-                    let theirs = checker.required_signatures(&self_ty, &other);
-                    for a in &mine {
-                        if let Some(b) = theirs.iter().find(|b| b.name == a.name) {
-                            if !checker.signatures_agree(a, b) {
-                                clash = Some(a.name.clone());
-                                break;
-                            }
+            }
+            let mut clash = None;
+            {
+                let checker = crate::traits::TraitChecker::new(&self.types);
+                let mine = checker.required_signatures(&self_ty, trait_ref);
+                let theirs = checker.required_signatures(&self_ty, &other);
+                for a in &mine {
+                    if let Some(b) = theirs.iter().find(|b| b.name == a.name) {
+                        if !checker.signatures_agree(a, b) {
+                            clash = Some(a.name.clone());
+                            break;
                         }
                     }
                 }
-                if let Some(method) = clash {
-                    self.errors.push(TypeError::OverlappingTraitConformance {
-                        ty: i.target_ty.clone(),
-                        first: other,
-                        second: trait_ref.clone(),
-                        method,
-                        span,
-                    });
-                    return;
-                }
+            }
+            if let Some(method) = clash {
+                self.errors.push(TypeError::OverlappingTraitConformance {
+                    ty: i.target_ty.clone(),
+                    first: other,
+                    second: trait_ref.clone(),
+                    method,
+                    span,
+                });
+                return;
             }
         }
     }
@@ -560,12 +559,12 @@ impl TypeChecker {
         let before = self.errors.len();
         let mut misspelled = false;
         for b in &i.assoc_bindings {
-            if i.trait_names.iter().any(|t| self.trait_declares_assoc(t, &b.name)) {
+            if i.trait_name.iter().any(|t| self.trait_declares_assoc(t, &b.name)) {
                 continue;
             }
             // Name the trait the author most likely meant: the first listed one
             // (or the block itself when it declares no conformance at all).
-            let (trait_name, known) = match i.trait_names.first() {
+            let (trait_name, known) = match i.trait_name.as_ref() {
                 Some(t) => {
                     let base = t.split('<').next().unwrap_or(t).trim().to_string();
                     let known = match self.types.get_type_id(&base).and_then(|id| self.types.get(id)) {
@@ -593,57 +592,56 @@ impl TypeChecker {
             return false;
         }
 
-        for trait_ref in &i.trait_names {
+        if let Some(trait_ref) = &i.trait_name {
             let base = trait_ref.split('<').next().unwrap_or(trait_ref).trim().to_string();
-            let Some(TypeDef::Trait { assoc_types, .. }) =
+            if let Some(TypeDef::Trait { assoc_types, .. }) =
                 self.types.get_type_id(&base).and_then(|id| self.types.get(id))
-            else {
-                continue;
-            };
-            let assoc_types = assoc_types.clone();
-            for a in &assoc_types {
-                let written = i.assoc_bindings.iter().find(|b| b.name == a.name);
-                if written.is_none() && a.default.is_none() {
-                    self.errors.push(TypeError::MissingAssocType {
-                        ty: i.target_ty.clone(),
-                        trait_name: trait_ref.clone(),
-                        assoc: a.name.clone(),
-                        span,
-                    });
-                    continue;
-                }
-                // AT5: whatever it answers with has to satisfy the bounds the
-                // trait put on it. One check against a named type — no search.
-                if a.bounds.is_empty() {
-                    continue;
-                }
-                let (bound_str, bound_span) = match written {
-                    Some(b) => (b.ty.clone(), b.span),
-                    None => (a.default.clone().unwrap_or_default(), span),
-                };
-                let resolved = if bound_str == "Self" {
-                    self.resolve_impl_self_type(&i.target_ty)
-                } else {
-                    parse_type_string(&bound_str, &self.types).ok()
-                };
-                let Some(bound_ty) = resolved else { continue };
-                let mut failed = Vec::new();
-                {
-                    let mut checker = crate::traits::TraitChecker::new(&self.types);
-                    for want in &a.bounds {
-                        if checker.check_satisfies(&bound_ty, want, bound_span).is_err() {
-                            failed.push(want.clone());
+            {
+                let assoc_types = assoc_types.clone();
+                for a in &assoc_types {
+                    let written = i.assoc_bindings.iter().find(|b| b.name == a.name);
+                    if written.is_none() && a.default.is_none() {
+                        self.errors.push(TypeError::MissingAssocType {
+                            ty: i.target_ty.clone(),
+                            trait_name: trait_ref.clone(),
+                            assoc: a.name.clone(),
+                            span,
+                        });
+                        continue;
+                    }
+                    // AT5: whatever it answers with has to satisfy the bounds the
+                    // trait put on it. One check against a named type — no search.
+                    if a.bounds.is_empty() {
+                        continue;
+                    }
+                    let (bound_str, bound_span) = match written {
+                        Some(b) => (b.ty.clone(), b.span),
+                        None => (a.default.clone().unwrap_or_default(), span),
+                    };
+                    let resolved = if bound_str == "Self" {
+                        self.resolve_impl_self_type(&i.target_ty)
+                    } else {
+                        parse_type_string(&bound_str, &self.types).ok()
+                    };
+                    let Some(bound_ty) = resolved else { continue };
+                    let mut failed = Vec::new();
+                    {
+                        let mut checker = crate::traits::TraitChecker::new(&self.types);
+                        for want in &a.bounds {
+                            if checker.check_satisfies(&bound_ty, want, bound_span).is_err() {
+                                failed.push(want.clone());
+                            }
                         }
                     }
-                }
-                for want in failed {
-                    self.errors.push(TypeError::TraitNotSatisfied {
-                        ty: bound_str.clone(),
-                        trait_name: want,
-                        context: super::TraitBoundContext::ConformanceHeader,
-                        missing: None,
-                        span: bound_span,
-                    });
+                    for want in failed {
+                        self.errors.push(TypeError::TraitNotSatisfied {
+                            ty: bound_str.clone(),
+                            trait_name: want,
+                            context: super::TraitBoundContext::ConformanceHeader,
+                            missing: None,
+                            span: bound_span,
+                        });
+                    }
                 }
             }
         }
@@ -808,21 +806,20 @@ impl TypeChecker {
         if here == TypeOwner::Stdlib {
             return;
         }
-        for trait_name in &i.trait_names {
-            let Some(encoding) = Self::core_trait(trait_name) else { continue };
-            self.errors.push(TypeError::ForeignCoreConformance {
-                ty: i.target_ty.clone(),
-                trait_name: TypeTable::conformance_display(trait_name),
-                owner: None,
-                here: match &here {
-                    TypeOwner::Package(p) => Some(p.clone()),
-                    _ => None,
-                },
-                encoding,
-                span,
-                declared_at: None,
-            });
-        }
+        let Some(trait_name) = &i.trait_name else { return };
+        let Some(encoding) = Self::core_trait(trait_name) else { return };
+        self.errors.push(TypeError::ForeignCoreConformance {
+            ty: i.target_ty.clone(),
+            trait_name: TypeTable::conformance_display(trait_name),
+            owner: None,
+            here: match &here {
+                TypeOwner::Package(p) => Some(p.clone()),
+                _ => None,
+            },
+            encoding,
+            span,
+            declared_at: None,
+        });
     }
 
     /// XC5: the package whose `extend` block this is, when the block is on a
@@ -887,7 +884,7 @@ impl TypeChecker {
         // for real, so those keep working; a conformance on any primitive is
         // how a program adds to one.
         if !self.types.stdlib_mode
-            && i.trait_names.is_empty()
+            && i.trait_name.is_none()
             && rask_ast::primitives::is_scalar(base_name)
         {
             for m in &i.methods {
@@ -905,7 +902,7 @@ impl TypeChecker {
                 // XC1 still applies to a primitive. `string` and the integer
                 // types aren't `Named`, so they have no entry in the table and
                 // the lookup above misses — the block registered unchecked, and
-                // a program's `extend string with Hashable` made `"abc".hash()`
+                // a program's `extend string implements Hashable` made `"abc".hash()`
                 // answer 4242 while every `Map` went on using the real one. One
                 // answer per type is exactly what that isn't.
                 if rask_resolve::is_builtin_type(base_name) {
@@ -922,7 +919,7 @@ impl TypeChecker {
         let condition: Vec<(String, Vec<String>)> = i.where_bounds.iter()
             .map(|tp| (tp.name.clone(), tp.bounds.clone()))
             .collect();
-        for trait_name in &i.trait_names {
+        if let Some(trait_name) = &i.trait_name {
             self.types.record_conformance(type_id, trait_name);
             // XC1: six traits belong to the package that declares the type.
             // Checked before the duplicate rule below, because a foreign block
@@ -981,7 +978,7 @@ impl TypeChecker {
         // pass, where the block's span is available.
         for b in &i.assoc_bindings {
             let Ok(bound_ty) = parse_type_string(&b.ty, &self.types) else { continue };
-            for trait_name in &i.trait_names {
+            if let Some(trait_name) = &i.trait_name {
                 if self.trait_declares_assoc(trait_name, &b.name) {
                     self.types.record_assoc_binding(type_id, trait_name, &b.name, bound_ty.clone());
                 }
@@ -990,30 +987,29 @@ impl TypeChecker {
         // AT4: a declared default is as much this conformance's answer as a
         // written binding, and everything reading one goes through the same
         // lookup — so fill it in here rather than making every reader know
-        // about defaults. Without this `extend Meters with Mul<f64>` under a
+        // about defaults. Without this `extend Meters implements Mul<f64>` under a
         // `type Out = Self` default had no `Out` at all, and `T.Out` in generic
         // code came back unresolved.
         let self_ty = self.resolve_impl_self_type(&i.target_ty);
-        for trait_name in &i.trait_names {
+        if let Some(trait_name) = &i.trait_name {
             let base = trait_name.split('<').next().unwrap_or(trait_name).trim().to_string();
-            let Some(TypeDef::Trait { assoc_types, .. }) =
+            if let Some(TypeDef::Trait { assoc_types, .. }) =
                 self.types.get_type_id(&base).and_then(|id| self.types.get(id))
-            else {
-                continue;
-            };
-            let defaults: Vec<(String, String)> = assoc_types
-                .iter()
-                .filter(|a| !i.assoc_bindings.iter().any(|b| b.name == a.name))
-                .filter_map(|a| a.default.clone().map(|d| (a.name.clone(), d)))
-                .collect();
-            for (name, default) in defaults {
-                let resolved = if default == "Self" {
-                    self_ty.clone()
-                } else {
-                    parse_type_string(&default, &self.types).ok()
-                };
-                if let Some(ty) = resolved {
-                    self.types.record_assoc_binding(type_id, trait_name, &name, ty);
+            {
+                let defaults: Vec<(String, String)> = assoc_types
+                    .iter()
+                    .filter(|a| !i.assoc_bindings.iter().any(|b| b.name == a.name))
+                    .filter_map(|a| a.default.clone().map(|d| (a.name.clone(), d)))
+                    .collect();
+                for (name, default) in defaults {
+                    let resolved = if default == "Self" {
+                        self_ty.clone()
+                    } else {
+                        parse_type_string(&default, &self.types).ok()
+                    };
+                    if let Some(ty) = resolved {
+                        self.types.record_assoc_binding(type_id, trait_name, &name, ty);
+                    }
                 }
             }
         }
@@ -1059,7 +1055,7 @@ impl TypeChecker {
                 let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
                 if let Some(filed) = rask_ast::operators::conformance_method_name(
                     &i.target_ty,
-                    &i.trait_names,
+                    i.trait_name.as_deref(),
                     &m.name,
                 ) {
                     sig.name = filed;
@@ -2290,13 +2286,13 @@ impl TypeChecker {
             }
             DeclKind::Impl(i) => {
                 // UT1: implementing an unsafe trait requires `unsafe extend`
-                for trait_name in &i.trait_names {
+                if let Some(trait_name) = &i.trait_name {
                     let base = trait_name.split('<').next().unwrap_or(trait_name);
                     if let Some(type_id) = self.types.get_type_id(base) {
                         if let Some(TypeDef::Trait { is_unsafe: true, .. }) = self.types.get(type_id) {
                             if !i.is_unsafe {
                                 self.errors.push(TypeError::UnsafeRequired {
-                                    operation: format!("implementing unsafe trait `{}`", trait_name),
+                                    operation: format!("implementing unsafe interface `{}`", trait_name),
                                     span: decl.span,
                                 });
                             }
@@ -2307,7 +2303,7 @@ impl TypeChecker {
 
                 // G1: verify the declared conformance at the extend site — the
                 // type must have each trait method with a matching signature.
-                // Generic targets (`extend Ring<T> with ...`) are checked per
+                // Generic targets (`extend Ring<T> implements ...`) are checked per
                 // instantiation (CC1), so skip them here.
                 // GT2/AT2/AT5: the header gives every trait parameter an
                 // argument and the block answers every associated type. Both
@@ -2315,18 +2311,18 @@ impl TypeChecker {
                 // unanswered `Self.Out` makes every signature unmatchable, and
                 // reporting that as "missing methods" is what #1164 was.
                 let arity_ok = i
-                    .trait_names
+                    .trait_name
                     .iter()
                     .fold(true, |ok, t| self.check_trait_arity(t, decl.span) && ok);
                 self.check_overlapping_conformances(i, decl.span);
                 let assoc_ok = self.check_conformance_assoc_types(i, decl.span);
 
-                if arity_ok && assoc_ok && !i.trait_names.is_empty() && !i.target_ty.contains('<') {
+                if arity_ok && assoc_ok && i.trait_name.is_some() && !i.target_ty.contains('<') {
                     if let Some(target_ty) = self.current_self_type.clone() {
                         let mut trait_errors = Vec::new();
                         {
                             let mut checker = crate::traits::TraitChecker::new(&self.types);
-                            for trait_name in &i.trait_names {
+                            if let Some(trait_name) = &i.trait_name {
                                 if let Err(e) = checker.check_satisfies(&target_ty, trait_name, decl.span) {
                                     trait_errors.push((trait_name.clone(), e));
                                 }

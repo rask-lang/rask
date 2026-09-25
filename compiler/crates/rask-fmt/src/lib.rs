@@ -531,8 +531,8 @@ func main() {
             "a variant attribute",
         );
         keeps(
-            "@allow(idiom/duck-trait)\nduck trait Frobber {\n    func frob(self) -> i64\n}\n",
-            "duck trait Frobber",
+            "@allow(idiom/duck-interface)\nduck interface Frobber {\n    func frob(self) -> i64\n}\n",
+            "duck interface Frobber",
             "the duck modifier",
         );
     }

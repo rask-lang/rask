@@ -85,7 +85,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
             }
         }
         DeclKind::Impl(i) => {
-            for t in &mut i.trait_names {
+            if let Some(t) = &mut i.trait_name {
                 r.ty(t);
             }
             r.ty(&mut i.target_ty);

@@ -913,7 +913,7 @@ impl TypeChecker {
                         // T11/T12: a nominal newtype inherits the traits its
                         // `with (…)` clause lists, and they delegate to the
                         // value underneath. The list was recorded and never
-                        // read, so `type Id = u64 with (Equal)` gave `Id` no
+                        // read, so `type Id = u64 implements Equal` gave `Id` no
                         // `eq` at all and `a == b` didn't compile (#551).
                         let own = methods.iter().any(|m| m.name == method);
                         let inherited = (!own)
@@ -1636,7 +1636,7 @@ impl TypeChecker {
             {
                 if let Some(filed) = rask_ast::operators::conformance_method_name(
                     &param,
-                    std::slice::from_ref(&applied),
+                    Some(applied.as_str()),
                     &method,
                 ) {
                     // CALL6: dispatch keys on this, and mono carries it into

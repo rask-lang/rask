@@ -32,7 +32,7 @@ enum Slot<T> {
     Filled(T)
 }
 
-trait Sized2 {
+interface Sized2 {
     func measure(self) -> i64
 }
 
@@ -40,7 +40,7 @@ struct Line {
     len: i64
 }
 
-extend Line with Sized2 {
+extend Line implements Sized2 {
     func measure(self) -> i64 {
         return self.len
     }

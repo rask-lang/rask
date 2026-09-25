@@ -6,19 +6,19 @@
 // them on the constructor and annotating the binding used to take different paths,
 // and only one of them resolved the argument names.
 
-type TaskId = u64 with (Equal, Hashable)
+type TaskId = u64 implements Equal, Hashable
 
 struct Key {
     public n: i64
 }
 
-extend Key with Equal {
+extend Key implements Equal {
     func eq(self, other: Key) -> bool {
         return self.n == other.n
     }
 }
 
-extend Key with Hashable {
+extend Key implements Hashable {
     func hash(self) -> u64 {
         return self.n.clamp<u64>()
     }

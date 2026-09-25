@@ -151,11 +151,11 @@ pub struct Monomorphizer<'a> {
     instantiated_call_type_args: HashMap<NodeId, Vec<TypeBinding>>,
     /// Trait name → object-compatible method names (TR1–TR3).
     /// A vtable references a slot per compatible method, so boxing a value as
-    /// `any Trait` makes every such method of the concrete type reachable even
+    /// `any Interface` makes every such method of the concrete type reachable even
     /// if it's never called explicitly.
     trait_methods: HashMap<String, Vec<String>>,
     /// Expression NodeId → trait name, for implicit TR5 coercion sites (a value
-    /// passed where `any Trait` is expected, with no written-out cast).
+    /// passed where `any Interface` is expected, with no written-out cast).
     trait_coercions: HashMap<NodeId, String>,
     /// All declarations, for roots that don't come from a function body
     /// (module-level `const` initializers).
@@ -579,7 +579,7 @@ impl<'a> Monomorphizer<'a> {
                         // same rule the checker files them under.
                         let filed;
                         let method = match rask_ast::operators::conformance_method_name(
-                            &i.target_ty, &i.trait_names, &method.name,
+                            &i.target_ty, i.trait_name.as_deref(), &method.name,
                         ) {
                             Some(name) => {
                                 filed = FnDecl { name, ..method.clone() };
@@ -967,7 +967,7 @@ impl<'a> Monomorphizer<'a> {
                             span: decl.span,
                         };
                         if suffix.is_some() {
-                            // Boxing as `any Trait` enqueues by bare method
+                            // Boxing as `any Interface` enqueues by bare method
                             // name, and the disambiguated symbol is the only
                             // one either body now answers to.
                             self.method_by_bare_name
@@ -1001,7 +1001,7 @@ impl<'a> Monomorphizer<'a> {
         self.trait_coercions = coercions.clone();
     }
 
-    /// Boxing a value as `any Trait` needs every object-compatible method of
+    /// Boxing a value as `any Interface` needs every object-compatible method of
     /// the concrete type in the vtable. The receiver type isn't resolved here,
     /// so enqueue every implementation of each compatible method name — the
     /// same conservative widening used for ordinary instance calls.
@@ -1124,7 +1124,7 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
-    /// ER32: a function whose error side is `any Trait` boxes every error that
+    /// ER32: a function whose error side is `any Interface` boxes every error that
     /// leaves it, and the box needs a vtable whether or not anyone calls
     /// through it.
     ///
@@ -1647,7 +1647,7 @@ impl<'a> Monomorphizer<'a> {
     }
 
     fn visit_expr(&mut self, expr: &Expr) {
-        // TR5: implicit coercion to `any Trait` (function arg, field, element)
+        // TR5: implicit coercion to `any Interface` (function arg, field, element)
         // with no written-out cast — the checker flags these by NodeId.
         if let Some(trait_name) = self.trait_coercions.get(&expr.id).cloned() {
             self.mark_trait_object_methods(&trait_name);
@@ -2133,7 +2133,7 @@ impl<'a> Monomorphizer<'a> {
                 self.visit_expr(body);
             }
             ExprKind::Cast { expr: inner, ty } => {
-                // TR5: `value as any Trait` boxes `value` — pull in the vtable's methods.
+                // TR5: `value as any Interface` boxes `value` — pull in the vtable's methods.
                 if let Some(trait_name) = rask_ast::traits::trait_object_name(ty) {
                     self.mark_trait_object_methods(trait_name);
                 }

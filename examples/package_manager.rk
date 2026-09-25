@@ -5,8 +5,8 @@
 // dependency graph construction, lock file generation, and parallel package
 // fetching from a local or HTTP registry.
 //
-// Demonstrates: Rack<T>/Link<T> for dependency graphs, trait-based registry
-// dispatch with implicit `any Trait` coercion, concurrent fetching with
+// Demonstrates: Rack<T>/Link<T> for dependency graphs, interface-based registry
+// dispatch with implicit `any Interface` coercion, concurrent fetching with
 // spawn/channels/Shared, ensure cleanup, closures in sort/join,
 // enum-based CLI dispatch, try/else error context, pattern matching at scale.
 
@@ -392,10 +392,10 @@ func parse_dep_line(line: string, line_num: i32) -> Dependency or ManifestError 
 
 // ─── Registry ───────────────────────────────────────────────────────
 //
-// Trait-based dispatch with implicit coercion (TR5). Functions accept
+// Interface-based dispatch with implicit coercion (TR5). Functions accept
 // `any Registry`; concrete types coerce automatically at call sites.
 
-trait Registry {
+interface Registry {
     func available(self, name: string) -> Vec<PackageMeta> or RegistryError
     func fetch_package(self, name: string, version: Version) -> string or RegistryError
 }
@@ -410,7 +410,7 @@ struct LocalRegistry {
     root: string
 }
 
-extend LocalRegistry with Registry {
+extend LocalRegistry implements Registry {
     func available(self, name: string) -> Vec<PackageMeta> or RegistryError {
         return local_available(self.root, name)
     }
@@ -537,7 +537,7 @@ struct HttpRegistry {
     base_url: string
 }
 
-extend HttpRegistry with Registry {
+extend HttpRegistry implements Registry {
     func available(self, name: string) -> Vec<PackageMeta> or RegistryError {
         return http_available(self.base_url, name)
     }

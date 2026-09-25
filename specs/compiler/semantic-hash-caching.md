@@ -98,7 +98,7 @@ If `compare()` changes: `compare()` hash changes, `swap()` hash changes, `sort<T
 | **IV2: Body logic change** | Invalidates that function's fingerprint + all callers (propagates up the tree) |
 | **IV3: Signature change** | Public signature change forces downstream recompile |
 | **IV4: Type definition change** | Struct field added/removed invalidates all specializations using that type |
-| **IV5: Trait change** | Trait method added/changed invalidates all generic functions bounded by that trait |
+| **IV5: Interface change** | Interface method added/changed invalidates all generic functions bounded by that interface |
 | **IV6: Compiler version** | Entire cache invalidated on version mismatch |
 | **IV7: Build profile** | Debug/release does not invalidate instantiation tier (profile-independent) |
 
@@ -143,8 +143,8 @@ If `compare()` changes: `compare()` hash changes, `swap()` hash changes, `sort<T
 | Generic calls another generic | Hash includes callee's generic body hash (not instantiated hash) | MK1 |
 | Closure captures | Capture list part of AST structure, included in hash | H2 |
 | Default parameter values | Default expression hashed as part of function signature | H2 |
-| Trait default methods | Hashed separately; override produces different hash than default | IV5 |
-| `any Trait` dispatch | Not specialized per type, not cached at specialization tier | CK2 |
+| Interface default methods | Hashed separately; override produces different hash than default | IV5 |
+| `any Interface` dispatch | Not specialized per type, not cached at specialization tier | CK2 |
 | `comptime if` branches | Both branches hashed (dead branch elimination is codegen concern) | H2 |
 | `unsafe` blocks | Hashed normally (semantically meaningful) | H2 |
 | Cross-package private function | Not exported in metadata | CP1 |

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Traits, trait objects, and dispatch.
+// Interfaces, interface objects, and dispatch.
 
-trait Describable {
+interface Describable {
     func describe(self) -> string
 }
 
@@ -13,13 +13,13 @@ struct Cat {
     name: string
 }
 
-extend Dog with Describable {
+extend Dog implements Describable {
     func describe(self) -> string {
         return "Dog: {self.name}"
     }
 }
 
-extend Cat with Describable {
+extend Cat implements Describable {
     func describe(self) -> string {
         return "Cat: {self.name}"
     }
@@ -29,32 +29,32 @@ func print_description(item: any Describable) -> string {
     return item.describe()
 }
 
-test "trait method on concrete type" {
+test "interface method on concrete type" {
     let d = Dog { name: "Rex" }
     assert d.describe() == "Dog: Rex"
 }
 
-test "trait method on different type" {
+test "interface method on different type" {
     let c = Cat { name: "Whiskers" }
     assert c.describe() == "Cat: Whiskers"
 }
 
-test "trait object dispatch" {
+test "interface object dispatch" {
     let d = Dog { name: "Buddy" }
     assert print_description(d) == "Dog: Buddy"
 }
 
-test "trait object dispatch different type" {
+test "interface object dispatch different type" {
     let c = Cat { name: "Luna" }
     assert print_description(c) == "Cat: Luna"
 }
 
-// A trait whose first method is object-incompatible (returns Self, TR2).
+// An interface whose first method is object-incompatible (returns Self, TR2).
 // The vtable holds slots for compatible methods only, so `area`/`kind` land at
 // slots 0/1 — the dispatch offset must index the same compatible-only list or
 // calls hit the wrong slot. Native codegen exercises the real vtable; the
 // interpreter dispatches by name.
-trait Shape {
+interface Shape {
     func scaled(self, factor: i64) -> Self   // TR2: incompatible, declared first
     func area(self) -> i64
     func kind(self) -> string
@@ -69,7 +69,7 @@ struct Rect {
     h: i64
 }
 
-extend Square with Shape {
+extend Square implements Shape {
     func scaled(self, factor: i64) -> Square {
         return Square { side: self.side * factor }
     }
@@ -81,7 +81,7 @@ extend Square with Shape {
     }
 }
 
-extend Rect with Shape {
+extend Rect implements Shape {
     func scaled(self, factor: i64) -> Rect {
         return Rect { w: self.w * factor, h: self.h * factor }
     }

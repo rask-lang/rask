@@ -7,7 +7,7 @@ How the Rask type checker works internally. This is `rask-types/src/checker/`—
 
 The type checker does three things:
 
-1. **Register type definitions** — Walk all struct/enum/trait declarations,
+1. **Register type definitions** — Walk all struct/enum/interface declarations,
    build a `TypeTable` so we know what types exist and what fields/variants
    they have.
 2. **Check and infer** — Walk every expression and statement, assigning a type
@@ -52,7 +52,7 @@ it creates a fresh variable. Later, unification figures out what it should be.
 ```rust
 pub struct TypeChecker {
     resolved: ResolvedProgram,          // from name resolution
-    types: TypeTable,                   // struct/enum/trait definitions
+    types: TypeTable,                   // struct/enum/interface definitions
     ctx: InferenceContext,              // type variable + constraint state
     node_types: HashMap<NodeId, Type>,  // result: type of each node
     symbol_types: HashMap<SymbolId, Type>,
@@ -249,7 +249,7 @@ rask-types/src/checker/
 ├── check_stmt.rs     Statement type checking
 ├── check_fn.rs       Function checking
 ├── check_pattern.rs  Pattern matching validation
-├── declarations.rs   Register structs, enums, traits, impls
+├── declarations.rs   Register structs, enums, interfaces, impls
 ├── type_defs.rs      TypeDef, MethodSig, TypedProgram definitions
 ├── type_table.rs     TypeTable storage and lookup
 ├── inference.rs      InferenceContext, TypeConstraint, fresh vars

@@ -3320,7 +3320,7 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    trait_names: vec![],
+                    trait_name: None,
                     target_ty: "Job".to_string(),
                     methods: vec![method],
                     is_unsafe: false,

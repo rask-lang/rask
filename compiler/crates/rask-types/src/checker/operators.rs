@@ -192,7 +192,7 @@ impl TypeChecker {
         let right = args
             .first()
             .map(|a| self.render_type(&self.resolve_named(&self.ctx.apply(a))));
-        // `extend Meters with Mul<f64>` — the argument's own type is the `Rhs`
+        // `extend Meters implements Mul<f64>` — the argument's own type is the `Rhs`
         // the author wants, and when it's the receiver's the default covers it.
         let header = match &right {
             Some(r) if *r != left => format!("{}<{}>", trait_name, r),
@@ -337,7 +337,7 @@ impl TypeChecker {
         // OR4: the conformance's method is filed under the applied argument.
         let filed = rask_ast::operators::conformance_method_name(
             &self.types.type_name(self_id),
-            std::slice::from_ref(&applied.to_string()),
+            Some(applied),
             method,
         )
         .unwrap_or_else(|| method.to_string());
@@ -432,7 +432,7 @@ impl TypeChecker {
         call_node: Option<NodeId>,
     ) -> Result<bool, super::TypeError> {
         // AT10: a conditional conformance's `Out` and parameters are written in
-        // the receiver's own parameters — `extend Wrapping<T> with Add` answers
+        // the receiver's own parameters — `extend Wrapping<T> implements Add` answers
         // in `Wrapping<T>`. Bind them to what this receiver actually is, or
         // `(a + b).value` comes back as the literal `T` and every use of it is
         // a method call on a type parameter.
@@ -467,7 +467,7 @@ impl TypeChecker {
             self.call_targets.insert(
                 node,
                 // XC5: an operator method is a conformance method, so it takes
-                // the calling package like any other — `extend Doc with Equal`
+                // the calling package like any other — `extend Doc implements Equal`
                 // in two packages puts two `eq`s on one type.
                 crate::Callee::Method {
                     recv: recv.clone(),

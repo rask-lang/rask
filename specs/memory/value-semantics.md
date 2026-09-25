@@ -21,7 +21,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 | **VS1: Copy eligibility** | Copy if all fields are Copy AND total size ≤16 bytes |
 | **VS2: Primitives always Copy** | Primitives are always Copy |
 | **VS3: Collections never Copy** | Vec, Pool, Map are never Copy (heap memory, mutable). `string` is not a collection — it's a language primitive with compiler-special refcount semantics. No user-defined type can replicate string's refcounted Copy behavior. This is a deliberate exception, not a pattern |
-| **VS3.1: Trait objects never Copy** | `any Trait` is never Copy (owns heap data; copying would create two owners) |
+| **VS3.1: Interface objects never Copy** | `any Interface` is never Copy (owns heap data; copying would create two owners) |
 | **VS4: Sync types never Copy** | Shared, Mutex, Atomic are never Copy |
 | **VS5: Automatic derivation** | Copy is structural — no `extend Copy` needed |
 
@@ -107,12 +107,12 @@ struct Point3D {
 
 Use it where staying small is API: math primitives, IDs, anything callers pass around freely and cheaply. Unannotated types keep the automatic behavior — `@small` adds a fence, not a requirement.
 
-## Copy Trait and Generics
+## Copy Interface and Generics
 
 | Rule | Description |
 |------|-------------|
 | **VS8: Copy is structural** | Satisfied automatically if structure matches — no explicit `extend Copy` |
-| **VS9: Copy is special** | Compiler-known trait that affects codegen and assignment semantics |
+| **VS9: Copy is special** | Compiler-known interface that affects codegen and assignment semantics |
 | **VS10: Unique overrides** | `@unique` overrides structural satisfaction |
 
 <!-- test: skip -->
@@ -135,11 +135,11 @@ func try_duplicate<T>(value: T) -> (T, T) {
 | `string` | Yes | 16 bytes, immutable refcounted (see `std.strings/S1`) |
 | `StringView` | Yes | 16 bytes, refcounted view into a string (see `std.strings/V1`) |
 | `Vec<i32>` | No | Collection type, never Copy |
-| `any Widget` | No | Trait object, owns heap data |
+| `any Widget` | No | Interface object, owns heap data |
 
 **Copy vs Clone:**
 
-| Trait | Operation | When available | Cost |
+| Interface | Operation | When available | Cost |
 |-------|-----------|----------------|------|
 | `Copy` | Implicit copy on assign/pass | Structural: ≤16 bytes, no `@unique` | Bitwise copy (cheap) |
 | `Cloneable` | Explicit `.clone()` call | If all fields are Cloneable | May allocate (visible cost) |

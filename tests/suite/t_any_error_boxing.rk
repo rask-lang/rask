@@ -3,14 +3,14 @@
 // function returns. Application code declares one error type at the boundary
 // and stops threading unions through every layer.
 //
-// None of this worked. The trait was registered under a different name than the
-// one every code sample writes, so `any Error` was a trait object over a trait
+// None of this worked. The interface was registered under a different name than the
+// one every code sample writes, so `any Error` was an interface object over an interface
 // nobody had heard of: it failed ER4's own error bound, `try` refused to
 // propagate into it, and `.message()` on the box wasn't found. Spelling it the
 // registered way got past the checker and then segfaulted natively, because a
-// compiler-provided trait has no declaration for the vtable builders to read,
+// compiler-provided interface has no declaration for the vtable builders to read,
 // and because `try`'s propagation stored the bare concrete error where a fat
-// pointer belonged (#708). The trait is now called `Error`, the one name.
+// pointer belonged (#708). The interface is now called `Error`, the one name.
 //
 // Spec: type.errors (ER4, ER32), type.generics (G1)
 
@@ -100,7 +100,7 @@ test "type.errors — an explicit box reads the same as an inferred one" {
 }
 
 // ER9 picks the branch by type, and with an erased error side that means "does
-// this type implement the trait". Deciding it is only half the job: the value
+// this type implement the interface". Deciding it is only half the job: the value
 // still has to acquire a vtable on the way out. It didn't, so MIR built a
 // Result tagged Ok around the bare concrete error and native reported a
 // *success* holding 0 where the interpreter reported the error.

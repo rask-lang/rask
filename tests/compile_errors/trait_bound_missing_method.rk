@@ -2,7 +2,7 @@
 // Rejects: calling a method the type param's bounds don't provide (#314)
 // Expected: typecheck error E0301 — no method `bark` provided by the bounds on `T`
 
-trait Greeter {
+interface Greeter {
     func greet(self) -> string
 }
 

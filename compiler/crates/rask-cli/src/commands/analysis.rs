@@ -77,7 +77,7 @@ fn typecheck_single(path: &str, format: Format, multi: bool, verbose: bool) {
                     println!("  }}");
                 }
                 rask_types::TypeDef::Trait { name, .. } => {
-                    println!("  trait {}", name);
+                    println!("  interface {}", name);
                 }
                 rask_types::TypeDef::Union { name, fields, .. } => {
                     println!("  union {} {{", name);
@@ -90,7 +90,7 @@ fn typecheck_single(path: &str, format: Format, multi: bool, verbose: bool) {
                     if with_traits.is_empty() {
                         println!("  type {} = {:?}", name, underlying);
                     } else {
-                        println!("  type {} = {:?} with ({})", name, underlying, with_traits.join(", "));
+                        println!("  type {} = {:?} implements {}", name, underlying, with_traits.join(", "));
                     }
                 }
                 // A primitive's entry exists to carry conformances (OR6); it

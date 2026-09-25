@@ -12,7 +12,7 @@ Two tiers: convenience functions (open/close internally) and `File` handles with
 | Rule | Description |
 |------|-------------|
 | **F1: Linear resource** | `File` is `@resource`. `file.close()` (takes ownership) is the only way to consume it |
-| **F2: Reader/Writer** | `File` implements `Reader` and `Writer` traits |
+| **F2: Reader/Writer** | `File` implements `Reader` and `Writer` interfaces |
 
 <!-- test: skip -->
 ```rask
@@ -21,13 +21,13 @@ struct File {
     // Opaque — wraps OS file descriptor
 }
 
-extend File with Reader {
+extend File implements Reader {
     func read(self, buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
 }
 
-extend File with Writer {
+extend File implements Writer {
     func write(self, data: Vec<u8>) -> usize or IoError
     func write_bytes(self, data: Vec<u8>) -> void or IoError
     func write_text(self, data: string) -> void or IoError
@@ -220,6 +220,6 @@ try fs.rename("data.tmp", "data.json")
 
 ### See Also
 
-- `std.io` — `Reader`/`Writer` traits, `IoError` enum
+- `std.io` — `Reader`/`Writer` interfaces, `IoError` enum
 - `mem.resource-types` — `@resource` and `ensure` semantics
 - `type.errors` — `T or E` result pattern

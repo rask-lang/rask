@@ -1,14 +1,14 @@
 <!-- id: type.operator-resolution -->
 <!-- status: decided -->
-<!-- summary: Operators resolve on the ordered pair of operand types against declared operator traits, instead of as a method lookup on the left operand -->
-<!-- depends: types/operators.md, types/traits.md, types/generics.md, types/associated-types.md -->
+<!-- summary: Operators resolve on the ordered pair of operand types against declared operator interfaces, instead of as a method lookup on the left operand -->
+<!-- depends: types/operators.md, types/interfaces.md, types/generics.md, types/associated-types.md -->
 <!-- implemented-by: compiler/crates/rask-types/, stdlib/ops.rk -->
 
 # Operator Resolution
 
 `a + b` used to be rewritten to `a.add(b)` and resolved as an ordinary method call on `a`. The right operand never participated in choosing what ran — it was only checked against whatever signature the left operand happened to offer.
 
-Resolution is on the **ordered pair** `(typeof a, typeof b)` against declared operator traits. It stays entirely a compile-time question: the pair is known when the program is built, nothing is looked up at runtime, and nothing lands in the binary.
+Resolution is on the **ordered pair** `(typeof a, typeof b)` against declared operator interfaces. It stays entirely a compile-time question: the pair is known when the program is built, nothing is looked up at runtime, and nothing lands in the binary.
 
 ## Motivation
 
@@ -31,10 +31,10 @@ That comment is two-argument resolution, hand-written for one type because the l
 
 ## Design
 
-### Operator traits are real, and take both sides
+### Operator interfaces are real, and take both sides
 
 ```rask
-public trait Mul<Rhs = Self> {
+public interface Mul<Rhs = Self> {
     type Out = Self
 
     func mul(self, rhs: Rhs) -> Self.Out
@@ -45,12 +45,12 @@ public trait Mul<Rhs = Self> {
 
 | Rule | Description |
 |------|-------------|
-| **OR1: Resolution on the ordered pair** | `a OP b` selects the operator-trait conformance registered for `(typeof a, typeof b)`, in that order. It is not a method lookup on `a` |
-| **OR2: Declared operator traits** | `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` are declared traits taking `<Rhs>` and carrying an associated `Out`. `Neg` and `BitNot` are unary — no `Rhs`, `Out` only. They live in [`stdlib/ops.rk`](../../stdlib/ops.rk) |
-| **OR3: Both default to `Self`** | The operator traits are declared `trait Mul<Rhs = Self> { type Out = Self … }`, so this is `type.generics/GT4` and `type.associated-types/AT4` rather than an operator rule. `extend Point with Add` is `Add<Point>` answering in `Point`; `extend Meters with Mul<f64>` answers in `Meters` |
-| **OR4: One conformance per pair** | At most one conformance of a given operator trait for a given `(Self, Rhs)` in a build. A second is a use-site error naming both packages — the same collision rule retroactive conformance already carries (#312). Two conformances of one operator to *different* pairs are fine and are what OR1 tells apart |
+| **OR1: Resolution on the ordered pair** | `a OP b` selects the operator-interface conformance registered for `(typeof a, typeof b)`, in that order. It is not a method lookup on `a` |
+| **OR2: Declared operator interfaces** | `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` are declared interfaces taking `<Rhs>` and carrying an associated `Out`. `Neg` and `BitNot` are unary — no `Rhs`, `Out` only. They live in [`stdlib/ops.rk`](../../stdlib/ops.rk) |
+| **OR3: Both default to `Self`** | The operator interfaces are declared `interface Mul<Rhs = Self> { type Out = Self … }`, so this is `type.generics/GT4` and `type.associated-types/AT4` rather than an operator rule. `extend Point implements Add` is `Add<Point>` answering in `Point`; `extend Meters implements Mul<f64>` answers in `Meters` |
+| **OR4: One conformance per pair** | At most one conformance of a given operator interface for a given `(Self, Rhs)` in a build. A second is a use-site error naming both packages — the same collision rule retroactive conformance already carries (#312). Two conformances of one operator to *different* pairs are fine and are what OR1 tells apart |
 | **OR5: `Out` is read, not inferred** | OR4 makes the conformance unique, so `Out` is read off it — `type.associated-types/AT6`, which holds for every associated type for the same reason. No inference search and no ambiguity |
-| **OR6: Primitives take conformances only** | `extend f64 with Mul<Meters>` is legal. `extend f64 { … }` — an inherent method on a primitive — remains illegal |
+| **OR6: Primitives take conformances only** | `extend f64 implements Mul<Meters>` is legal. `extend f64 { … }` — an inherent method on a primitive — remains illegal |
 | **OR7: No implicit symmetry, pending `@commutative`** | Defining `Meters * f64` does not by itself generate `f64 * Meters`. Whether `@commutative` may generate the flip is open — see below |
 | **OR8: A missing pair is a compile error** | Naming both operand types and the operator as it was written, at check time. The left operand having a method of that name is not a conformance — `extend Meters { func mul(…) }` leaves `m * 2.0` undefined, and the error says the header is what's missing |
 | **OR8a: Method syntax is not the operator** | `a.mul(b)` written out is an ordinary method call. It reaches the conformance when there is one, and an inherent `mul` when there isn't — so a type is free to have a `mul`, an `add` or a `div` that means something else. Only the operator requires the conformance |
@@ -64,13 +64,13 @@ public trait Mul<Rhs = Self> {
 ```rask
 struct Meters { v: f64 }
 
-extend Meters with Mul<f64> {          // Out defaults to Meters
+extend Meters implements Mul<f64> {          // Out defaults to Meters
     func mul(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
     }
 }
 
-extend f64 with Mul<Meters> {          // the direction that was impossible
+extend f64 implements Mul<Meters> {          // the direction that was impossible
     type Out = Meters
 
     func mul(self, m: Meters) -> Meters {
@@ -84,7 +84,7 @@ Both may be written by a third package that owns neither `f64` nor `Meters`, bec
 `Out` differing from `Self` is expressible, and so is a second conformance on the same type:
 
 ```rask
-extend Meters with Mul<Meters> {
+extend Meters implements Mul<Meters> {
     type Out = SquareMeters
 
     func mul(self, other: Meters) -> SquareMeters {
@@ -105,13 +105,13 @@ An unsuffixed literal has no type until defaulting runs, and a conformance is ch
 
 - **One conformance is not a choice.** `meters * 2.0` where `Meters` carries only `Mul<f64>` types the call against it, and that is what settles the literal.
 - **A literal still says something.** `2` can only be an integer and `2.0` only a float, so against `Div<i64>` and `Div<Duration>` a `duration / 2` has one candidate of the right kind.
-- **A literal on the *left* takes the type that forms a pair.** `3 * duration` has nothing tying the `3` to anything — the right operand isn't a number — so it takes the type that conforms to `Mul<Duration>`. That is one lookup: the conformance table is indexed by applied trait as well as by `Self`. When more than one primitive answers, the literal is ambiguous and says so; a suffix settles it.
+- **A literal on the *left* takes the type that forms a pair.** `3 * duration` has nothing tying the `3` to anything — the right operand isn't a number — so it takes the type that conforms to `Mul<Duration>`. That is one lookup: the conformance table is indexed by applied interface as well as by `Self`. When more than one primitive answers, the literal is ambiguous and says so; a suffix settles it.
 
 Anything still ambiguous waits for literal defaulting rather than picking.
 
 ## What doesn't change
 
-- Source for the common case. `extend Point with Add` reads the same as `extend Point { func add(…) }` did and means the same thing, because of OR3.
+- Source for the common case. `extend Point implements Add` reads the same as `extend Point { func add(…) }` did and means the same thing, because of OR3.
 - Precedence, associativity, newline continuation, `try`/`??`/`catch` placement — all of `type.operators` P1–P4 is untouched.
 - Indexing, `Equal`, `Comparable`, division and remainder semantics, overflow.
 - Method-call syntax. `a.mul(b)` still works and resolves the same conformance.
@@ -123,7 +123,7 @@ Anything still ambiguous waits for literal defaulting rather than picking.
 - **Primitives gained a conformance surface.** Their method tables are still closed to inherent methods (OR6), but a conformance can be written on one.
 - **Existing inherent operator methods stopped serving operators.** `extend Meters { func mul(…) }` is still a method and `m.mul(2.0)` still calls it; what it no longer does is answer `*`. The rewrite is mechanical and the compiler prints the header (E0894).
 - **A type can carry two conformances of one operator.** Each one's method is filed under the applied argument, so the two keep separate symbols.
-- **`operators.md`'s "Operator traits: `Add`, `Sub`, …" line describes something that exists.**
+- **`operators.md`'s "Operator interfaces: `Add`, `Sub`, …" line describes something that exists.**
 
 ## Error messages
 
@@ -135,7 +135,7 @@ error[E0382]: cannot apply `*` to `f64` and `Meters`
     |
   6 |     let r = 2.0 * d
     |             ^^^^^^^ `f64` on the left, `Meters` on the right
-    = fix: extend f64 with Mul<Meters> { type Out = Meters … }
+    = fix: extend f64 implements Mul<Meters> { type Out = Meters … }
     = why: an operator is resolved from both operand types, in order
 ```
 
@@ -161,7 +161,7 @@ Both are the messages that decide whether the feature is trusted, so they are no
 
 | Case | Rule | Behavior |
 |------|------|----------|
-| `2.0 * meters`, with `extend f64 with Mul<Meters>` | OR1, OR6 | `Meters` |
+| `2.0 * meters`, with `extend f64 implements Mul<Meters>` | OR1, OR6 | `Meters` |
 | `2.0 * meters`, without it | OR8 | Compile error naming both operands |
 | `meters * meters` and `meters * 2.0` on one type | OR4 | Two conformances, told apart by the argument |
 | `f64 * f64` where `f64` also carries `Mul<Meters>` | OR12 | The builtin pair — a conformance doesn't take it away |
@@ -188,7 +188,7 @@ The finding was that "multiple dispatch" bundles three separable things:
 2. Letting anyone define a method for a combination of types they do not own.
 3. Choosing from the types the arguments turn out to have *while the program runs*, over a set that is never finished.
 
-Only the third requires a compiler inside the running program — and it is the third that makes Julia unshippable as a static binary, that makes its cost model invisible, and that makes traits unanswerable (you cannot check a promise about a list that never ends).
+Only the third requires a compiler inside the running program — and it is the third that makes Julia unshippable as a static binary, that makes its cost model invisible, and that makes interfaces unanswerable (you cannot check a promise about a list that never ends).
 
 The first two are ordinary compile-time work. Rask already had the second: #312 allows a third package to write a conformance for types it does not own, with collisions caught at the use site. This adds the first. There is no reason the two need the third.
 
@@ -210,7 +210,7 @@ It's the same shape as every other thing the front end knows and the back end wo
 
 **Julia's model wholesale.** Runtime pair selection over an open set. Rejected — it is exactly the third item above, and it costs a compiler in the process, unpredictable pauses mid-run, and any hope of a small static binary.
 
-**Leaving it alone and correcting `operators.md` instead.** A real option: delete the sentence claiming operator traits exist, keep left-operand method lookup, and accept that `f64 * Meters` is not expressible. It is less work and it is honest. Rejected because the `("Instant", "sub")` special cases showed the limit was already being hit inside the stdlib, and each future library that hits it has no recourse.
+**Leaving it alone and correcting `operators.md` instead.** A real option: delete the sentence claiming operator interfaces exist, keep left-operand method lookup, and accept that `f64 * Meters` is not expressible. It is less work and it is honest. Rejected because the `("Instant", "sub")` special cases showed the limit was already being hit inside the stdlib, and each future library that hits it has no recourse.
 
 ### Open questions
 
@@ -219,7 +219,7 @@ It's the same shape as every other thing the front end knows and the back end wo
 <!-- test: skip -->
 ```rask
 @commutative
-extend Meters with Mul<f64> { … }        // and f64 * Meters, for free
+extend Meters implements Mul<f64> { … }        // and f64 * Meters, for free
 ```
 
 against roughly five for the hand-written flip. Rask has user annotations already, so this is not new machinery.
@@ -235,7 +235,7 @@ Leaning yes. Scope note if it lands: `Add` and `Mul` are the commutative cases w
 
 ### See Also
 
-- `type.operators` — precedence, `Equal`/`Comparable`, the operator trait list this makes real
+- `type.operators` — precedence, `Equal`/`Comparable`, the operator interface list this makes real
 - `type.associated-types` — `Out`, and AT8's two-conformances case that OR4 answers
 - `type.generics` — conformance rules, MN3 conflict scoping, the #312 retroactive-conformance design
 - [#978](https://github.com/rask-lang/rask/issues/978) — the discarded unification, the prerequisite that landed first

@@ -59,17 +59,17 @@ loop {
 
 | Rule | Description |
 |------|-------------|
-| **N6: Reader/Writer** | `TcpConnection` implements `Reader` and `Writer` (see `std.io`) — TCP is a byte transport. `read_text`/`write_text` (from the traits) cover text protocols |
+| **N6: Reader/Writer** | `TcpConnection` implements `Reader` and `Writer` (see `std.io`) — TCP is a byte transport. `read_text`/`write_text` (from the interfaces) cover text protocols |
 
 <!-- test: skip -->
 ```rask
-extend TcpConnection with Reader {
+extend TcpConnection implements Reader {
     func read(self, buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
 }
 
-extend TcpConnection with Writer {
+extend TcpConnection implements Writer {
     func write(self, data: Vec<u8>) -> usize or IoError
     func write_bytes(self, data: Vec<u8>) -> void or IoError
     func write_text(self, data: string) -> void or IoError
@@ -211,7 +211,7 @@ WHY: Another process is already listening on this address.
 
 ### Rationale
 
-**N6 (byte transport):** `string` is UTF-8 by construction — binary protocols (TLS records, file transfer) would fail validation or corrupt. Byte signatures match the `Reader`/`Writer` traits; `read_text`/`write_text` (`std.io/R3`, `W4`) cover text-protocol call sites.
+**N6 (byte transport):** `string` is UTF-8 by construction — binary protocols (TLS records, file transfer) would fail validation or corrupt. Byte signatures match the `Reader`/`Writer` interfaces; `read_text`/`write_text` (`std.io/R3`, `W4`) cover text-protocol call sites.
 
 **N3 (string addresses):** No `SocketAddr` or `IpAddr` types. Simpler API, and parsing can be added later without breaking changes.
 
@@ -230,5 +230,5 @@ WHY: Another process is already listening on this address.
 ### See Also
 
 - `std.http` — HTTP/1.1 client and server (application layer)
-- `std.io` — `IoError`, `Reader`/`Writer` traits
+- `std.io` — `IoError`, `Reader`/`Writer` interfaces
 - `mem.resource-types` — `@resource` and `ensure` semantics

@@ -27,7 +27,7 @@ pub const LINT_RULES: &[&str] = &[
     "idiom/unwrap-production",
     "idiom/missing-ensure",
     "idiom/large-unsafe-block",
-    "idiom/duck-trait",
+    "idiom/duck-interface",
     "idiom/equality-absent-check",
     "idiom/match-on-optional",
     "idiom/mod-for-index",

@@ -29,7 +29,7 @@ Every spec file should have these HTML comment headers at the top:
 | Prefix | Directory | Examples |
 |--------|-----------|----------|
 | `mem` | memory/ | `mem.ownership`, `mem.borrowing`, `mem.racks` |
-| `type` | types/ | `type.structs`, `type.enums`, `type.traits` |
+| `type` | types/ | `type.structs`, `type.enums`, `type.interfaces` |
 | `ctrl` | control/ | `ctrl.flow`, `ctrl.loops`, `ctrl.comptime` |
 | `conc` | concurrency/ | `conc.async`, `conc.sync`, `conc.channels` |
 | `std` | stdlib/ | `std.collections`, `std.strings`, `std.json` |

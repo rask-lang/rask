@@ -232,7 +232,7 @@ pub struct TypeChecker {
     /// and ran the float parse (#1029).
     pub(super) written_method_type_args: HashMap<NodeId, Vec<Type>>,
     /// TR5 checks whose container hadn't resolved yet when the call was walked
-    /// — `(argument node, was it an `as any Trait`, receiver, argument)`.
+    /// — `(argument node, was it an `as any Interface`, receiver, argument)`.
     pub(super) pending_trait_elem_coercions:
         Vec<(NodeId, bool, Type, Type)>,
     /// ER18: the error a `try { … } catch e =>` handler is waiting for. Inner
@@ -475,7 +475,7 @@ impl TypeChecker {
     /// `coerce_into`, naming the expression being coerced.
     ///
     /// Worth the extra argument only where the decision has to reach a backend:
-    /// ER32's error branch erases a concrete error into `any Trait`, and MIR
+    /// ER32's error branch erases a concrete error into `any Interface`, and MIR
     /// boxes at the value, keyed by its node.
     pub(super) fn coerce_into_node(
         &mut self,
@@ -738,7 +738,7 @@ impl TypeChecker {
         self.validate_pending_linear_containers();
 
         // TR5: an element pushed into a container the checker only resolved
-        // later. A concrete value going into an `any Trait` slot has to be boxed
+        // later. A concrete value going into an `any Interface` slot has to be boxed
         // with a vtable, and the container reached through a field wasn't known
         // when the push was walked (#955).
         self.validate_pending_trait_elem_coercions();

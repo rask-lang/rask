@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Three native bugs around `any Trait`, all in the same program.
+// Three native bugs around `any Interface`, all in the same program.
 //
 // 1. `let a: (any Shape)? = c as any Shape` read back as `none` (#764). MIR's
-//    type-string resolver checked `any Trait` before the wrapper suffixes, so
-//    `any Shape?` — how the parser spells `(any Shape)?` — made a trait object
+//    type-string resolver checked `any Interface` before the wrapper suffixes, so
+//    `any Shape?` — how the parser spells `(any Shape)?` — made an interface object
 //    whose *name* was "Shape?" rather than an Option. Nothing then saw a depth
 //    mismatch to wrap, the bare fat pointer landed in the slot, and the read took
 //    the data pointer's low bits for a tag. The checker has the two checks the
@@ -14,27 +14,27 @@
 //    coercion check already peeled to `any Shape`, so a value that isn't destined
 //    for that side looks like one that is. Same shape one layer over: `return
 //    Nope {}` from `-> (any Shape) or Nope` asked for "vtable method Nope.area".
-//    The check now boxes only a value that actually implements the trait.
+//    The check now boxes only a value that actually implements the interface.
 //
-// 3. A trait object declared *after* a loop was dropped on the loop's back-edge,
+// 3. An interface object declared *after* a loop was dropped on the loop's back-edge,
 //    freeing whatever its uninitialised slot held — the second iteration
 //    double-freed and the process segfaulted. The back-edge test asked only
 //    whether the loop header dominated the definition, and the loop's exit block
 //    is dominated by the header too.
 
-trait Shape {
+interface Shape {
     func area(self) -> f64
     func message(self) -> string
 }
 
 struct Circle { r: f64 }
-extend Circle with Shape {
+extend Circle implements Shape {
     func area(self) -> f64 { return 3.14 * self.r * self.r }
     func message(self) -> string { return "circle" }
 }
 
 struct Square { s: f64 }
-extend Square with Shape {
+extend Square implements Shape {
     func area(self) -> f64 { return self.s * self.s }
     func message(self) -> string { return "square" }
 }
@@ -83,7 +83,7 @@ func main() {
         i = i + 1
     }
 
-    // 3: a trait object declared after the loop above.
+    // 3: an interface object declared after the loop above.
     let c: any Shape = Square { s: 4.0 } as any Shape
     println("c = {c.message()} {c.area()}")
 

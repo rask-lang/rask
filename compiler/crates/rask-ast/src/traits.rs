@@ -2,13 +2,13 @@
 
 //! Reading a trait name out of a type.
 //!
-//! `any Trait` is trait-object syntax (`type.generics/G7`), so the trait's name
+//! `any Interface` is trait-object syntax (`type.generics/G7`), so the trait's name
 //! lands inside the type — and four passes read it back out: the checker's type
 //! parser, MIR's vtable mangling, monomorphization's reachability, and the
 //! trait-box cast. They have to agree on what the name is, which is the whole
 //! reason this is one function rather than four `strip_prefix` calls.
 
-/// Split `any Trait` into its trait name, or `None` if `s` isn't a
+/// Split `any Interface` into its trait name, or `None` if `s` isn't a
 /// trait-object type.
 pub fn trait_object_name(s: &str) -> Option<&str> {
     s.trim().strip_prefix("any ").map(str::trim)
@@ -24,7 +24,7 @@ pub fn trait_object_name(s: &str) -> Option<&str> {
 /// The checker and MIR each parse type strings on their own and ask this at
 /// different points, so it lives here rather than as a `== "Error"` in each:
 /// the checker asks after a type parameter of the same name has had its chance,
-/// MIR asks alongside `any Trait` (nothing named `Error` survives
+/// MIR asks alongside `any Interface` (nothing named `Error` survives
 /// monomorphization). Only the checker knowing it left the error side of
 /// `i64 or Error` a bare pointer in MIR, with a 16-byte fat pointer written
 /// into it (#1095).

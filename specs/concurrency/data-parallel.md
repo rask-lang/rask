@@ -187,7 +187,7 @@ ERROR [conc.data-parallel/D4]: `render` can't be compiled for the device
 14 |     pixels.map(|p| render(p))
    |                    ^^^^^^ called inside a staged `map`, but `render` dispatches dynamically
    |
-NOTE: device code is resolved by reachability; a trait-object call at ui.rk:88 can't be resolved
+NOTE: device code is resolved by reachability; an interface-object call at ui.rk:88 can't be resolved
 FIX: monomorphize the call, or move it out of the plan (run it on the host before `.to(dev)`)
 ```
 

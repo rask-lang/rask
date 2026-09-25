@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// `any module.Trait` (#1159).
+// `any module.Interface` (#1159).
 //
 // A module-qualified name was fine in every type position but this one:
 //
@@ -10,18 +10,18 @@
 //
 // The parse after `any` was a copy of the type-name parse that handled a name
 // and its generic arguments and stopped, so it never reached the qualification
-// the real one does two lines further down. The trait's own name reads exactly
+// the real one does two lines further down. The interface's own name reads exactly
 // like any other type name, so the same code reads it now.
 //
 // It cost more than the one spelling: with `any io.Reader` refused, writing a
-// trait object of another module's trait meant importing the trait under a name
+// interface object of another module's interface meant importing the interface under a name
 // of its own first, and for `io` that is its own maze — `import io.Writer`
 // reports no such symbol, a bare `Writer` beside `import io` collides and asks
 // for an alias. The error hinted at none of it.
 
 import io
 
-trait Greeter {
+interface Greeter {
     func greet(self) -> string
 }
 
@@ -29,7 +29,7 @@ struct Loud {
     name: string
 }
 
-extend Loud with Greeter {
+extend Loud implements Greeter {
     func greet(self) -> string {
         return "HI {self.name}"
     }
@@ -41,10 +41,10 @@ func hail(g: any Greeter) -> string {
     return g.greet()
 }
 
-// A qualified trait in a parameter, which is what the issue is about. It parses
+// A qualified interface in a parameter, which is what the issue is about. It parses
 // and it checks — `io.Buffer` conforms — and it stops there for now: the rest of
 // the spelling isn't built. Calling it fails to lower natively (#1309), and
-// declaring conformance with a qualified name (`extend Counter with io.Writer`)
+// declaring conformance with a qualified name (`extend Counter implements io.Writer`)
 // is refused outright (#1310). So this is a signature that has to compile, not
 // a call.
 func sink(w: any io.Writer, data: string) -> bool {

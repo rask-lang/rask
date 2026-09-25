@@ -1,7 +1,7 @@
 <!-- id: type.aliases -->
 <!-- status: decided -->
 <!-- summary: type is nominal by default; type alias for transparent shorthand -->
-<!-- depends: types/primitives.md, types/generics.md, types/traits.md -->
+<!-- depends: types/primitives.md, types/generics.md, types/interfaces.md -->
 
 # Type Declarations
 
@@ -31,20 +31,20 @@ let id = UserId(42)          // explicit construction
 let raw: u64 = id.value      // explicit extraction
 ```
 
-## Trait Inheritance
+## Interface Inheritance
 
-Nominal types don't automatically inherit traits from the underlying type. Declare which traits carry over with `with`.
+Nominal types don't automatically inherit interfaces from the underlying type. Declare which interfaces carry over with `with`.
 
 | Rule | Description |
 |------|-------------|
-| **T10: No auto-inherit** | Traits from underlying type are NOT inherited by default |
-| **T11: Explicit with** | `type Name = Type with (Trait1, Trait2)` inherits listed traits |
-| **T12: Delegated impl** | Inherited traits delegate to underlying value — no manual impl needed |
+| **T10: No auto-inherit** | Interfaces from underlying type are NOT inherited by default |
+| **T11: Explicit with** | `type Name = Type implements Trait1, Trait2` inherits listed interfaces |
+| **T12: Delegated impl** | Inherited interfaces delegate to underlying value — no manual impl needed |
 | **T13: Manual extend** | `extend` blocks work normally for adding custom behavior |
 
 <!-- test: skip -->
 ```rask
-type UserId = u64 with (Equal, Hashable, Comparable, Debug)
+type UserId = u64 implements Equal, Hashable, Comparable, Debug
 
 let ids = Map<UserId, User>.new()             // ✓ Hashable inherited
 let bad = UserId(1) + UserId(2)               // ❌ Numeric not inherited
@@ -97,9 +97,9 @@ type alias Handler = func(i32) -> string
 | Copy semantics | T3 | Follows underlying: if `u64` copies, `UserId` copies (unless `@unique`) |
 | `@unique` on type | T3 | `@unique type Token = u64` — move-only even though u64 copies |
 | `@resource` on type | T3 | `@resource type FileHandle = i32` — must consume |
-| `with` empty list | T11 | `type X = T with ()` — same as no `with` clause |
+| `with` empty list | T11 | `type X = T implements ` — same as no `with` clause |
 | Comptime | T7 | Constructor and extraction work in comptime context |
-| Generic bounds | T4 | `type Wrapper<T: Clone> = T with (Clone)` — bounds propagate |
+| Generic bounds | T4 | `type Wrapper<T: Clone> = T implements Clone` — bounds propagate |
 | Alias to alias | A2 | Chains resolve: `type alias A = B`, `type alias B = i32` → A is i32 |
 | Cyclic alias | T6 | Compile error with cycle path |
 | Shadowing builtin | — | `type string = i32` — error: cannot shadow builtin type |
@@ -116,15 +116,15 @@ ERROR [type.aliases/T9]: type mismatch — expected Email, got string
 FIX: send_email(Email("alice@example.com"))
 ```
 
-**Missing trait [T10]:**
+**Missing interface [T10]:**
 ```
 ERROR [type.aliases/T10]: UserId does not implement Numeric
    |
 3  |  let next = id + 1
    |                  ^ no method 'add' on UserId
    |
-WHY: Nominal types don't inherit traits automatically.
-FIX: Add 'Numeric' to the with clause: type UserId = u64 with (..., Numeric)
+WHY: Nominal types don't inherit interfaces automatically.
+FIX: Add 'Numeric' to the with clause: type UserId = u64 implements ..., Numeric
      Or use id.value + 1 to operate on the underlying u64.
 ```
 
@@ -162,9 +162,9 @@ The most common use case — preventing ID mixups:
 
 <!-- test: skip -->
 ```rask
-type UserId = u64 with (Equal, Hashable, Debug)
-type OrderId = u64 with (Equal, Hashable, Debug)
-type ProductId = u64 with (Equal, Hashable, Debug)
+type UserId = u64 implements Equal, Hashable, Debug
+type OrderId = u64 implements Equal, Hashable, Debug
+type ProductId = u64 implements Equal, Hashable, Debug
 
 func lookup_order(user: UserId, order: OrderId) -> Order? {
     return db.orders.get(user.value, order.value)
@@ -180,8 +180,8 @@ Prevent unit confusion (the Mars Climate Orbiter problem):
 
 <!-- test: skip -->
 ```rask
-type Meters = f64 with (Debug)
-type Feet = f64 with (Debug)
+type Meters = f64 implements Debug
+type Feet = f64 implements Debug
 
 extend Meters {
     func to_feet(self) -> Feet {
@@ -202,7 +202,7 @@ extend Feet {
 
 <!-- test: skip -->
 ```rask
-type Email = string with (Equal, Hashable, Debug)
+type Email = string implements Equal, Hashable, Debug
 
 extend Email {
     func parse(raw: string) -> Email or ValidationError {

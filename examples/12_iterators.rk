@@ -2,7 +2,7 @@
 // Learn: Iterator patterns and functional chains
 //
 // NOTE: This is a SPEC EXAMPLE showing intended syntax.
-// Iterator trait and method chaining not fully implemented yet.
+// Iterator interface and method chaining not fully implemented yet.
 // See examples/README.md for status.
 
 func main() {

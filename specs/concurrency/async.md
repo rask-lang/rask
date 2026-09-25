@@ -158,11 +158,11 @@ The static path works from inference: the compiler figures out which functions t
 |------|-------------|
 | **CC1: Direct spawn check** | A lexical `spawn()` call outside any `using Multitasking` block, in a function nothing calls — the entry point, a `test` block, a `@test` function → compile error at the `spawn` |
 | **CC2: Inferred-requirement check** | A call to any function inferred as requiring the runtime, lexically outside any block → compile error at the call |
-| **CC3: Runtime check** | The check the other two are an optimization of. Where the call target isn't statically known — a closure stored and called across block boundaries, trait-object dispatch, FFI calling in — `spawn` finds the slot empty and panics with a clear message |
+| **CC3: Runtime check** | The check the other two are an optimization of. Where the call target isn't statically known — a closure stored and called across block boundaries, interface-object dispatch, FFI calling in — `spawn` finds the slot empty and panics with a clear message |
 
 CC1 and CC2 split by *who has to open the block*, not by how far away the `spawn` is. A function that spawns and leaves the scope to its caller is the normal shape — `http.serve` spawns per connection — so blaming its definition would make it unwritable. The error goes to the call site, which is where the block belongs. CC1 is what's left: a root nothing calls, so there is no call site to point at.
 
-So the honest summary: direct calls and ordinary call chains are caught at compile time; anything reached through a stored closure, an `any Trait`, or an FFI entry point is caught on the first `spawn`, at runtime. A program can't spawn without a runtime either way — what varies is whether you find out before or after you run it.
+So the honest summary: direct calls and ordinary call chains are caught at compile time; anything reached through a stored closure, an `any Interface`, or an FFI entry point is caught on the first `spawn`, at runtime. A program can't spawn without a runtime either way — what varies is whether you find out before or after you run it.
 
 Inference is invisible in source: writing or reading a function's body never involves Multitasking annotations. Users see the compile error at the **call site** ("calling `X` requires a `using Multitasking` scope; `X` needs it because it calls `spawn` at `f.rk:42`"), not at the definition.
 
@@ -317,7 +317,7 @@ RUNTIME PANIC: spawn() called with no active `using Multitasking` scope
 
 This can happen when:
   - A closure containing spawn is stored and called outside a block
-  - A trait object dispatches to an impl that spawns
+  - An interface object dispatches to an impl that spawns
   - FFI calls back into Rask outside any scope
 
 Install a `using Multitasking { ... }` block that encloses the call.
@@ -330,7 +330,7 @@ Install a `using Multitasking { ... }` block that encloses the call.
 | Direct `spawn` in a root (entry point, `test` block, `@test` function) outside any block | CC1 | Compile error at the `spawn` |
 | Direct `spawn` in an ordinary function | CC2 | No error here — reported at each call site outside a block |
 | Call to function transitively reaching `spawn`, outside any block | CC2 | Compile error at the call |
-| Closure stored / trait object dispatch reaches `spawn` outside a block | CC3 | Runtime panic — target not statically known |
+| Closure stored / interface object dispatch reaches `spawn` outside a block | CC3 | Runtime panic — target not statically known |
 | `.join()` on cancelled task | H2, CN1 | Returns `Cancelled` error |
 | Cancelled while parked on I/O | CN3, CN4 | Task resumes; the pending operation returns `Cancelled`; task exits via its own control flow, ensures run |
 | Cancelled while holding a lock | CN4 | No forced release — the lock releases when the task's own exit path leaves the block (`ctrl.panic/LK4`) |

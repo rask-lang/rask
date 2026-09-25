@@ -8,7 +8,7 @@ The formal language specifications are maintained in the repository's `specs/` d
 
 Specs are organized by topic:
 
-- **[Types](https://github.com/rask-lang/rask/tree/main/specs/types)** - Type system, generics, traits
+- **[Types](https://github.com/rask-lang/rask/tree/main/specs/types)** - Type system, generics, interfaces
 - **[Memory](https://github.com/rask-lang/rask/tree/main/specs/memory)** - Ownership, borrowing, resources
 - **[Control](https://github.com/rask-lang/rask/tree/main/specs/control)** - Loops, match, comptime
 - **[Concurrency](https://github.com/rask-lang/rask/tree/main/specs/concurrency)** - Tasks, threads, channels

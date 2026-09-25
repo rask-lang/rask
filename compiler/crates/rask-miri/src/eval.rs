@@ -296,7 +296,7 @@ impl MiriEngine {
             | MirStmtKind::TraitCall { .. }
             | MirStmtKind::TraitDrop { .. } => {
                 return Err(MiriError::UnsupportedOperation(
-                    "trait objects are not yet supported in compile-time evaluation".to_string(),
+                    "interface objects are not yet supported in compile-time evaluation".to_string(),
                 ));
             }
 

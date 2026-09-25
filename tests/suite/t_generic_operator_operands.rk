@@ -17,7 +17,7 @@ struct Money {
     cents: i64
 }
 
-extend Money with Add {
+extend Money implements Add {
     public func add(self, other: Money) -> Money {
         return Money { cents: self.cents + other.cents }
     }

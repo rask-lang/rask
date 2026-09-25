@@ -7,8 +7,8 @@ contract = """
 enum ReadError { Empty, TooShort(saw: i64) }
 enum ParseError { NotANumber(text: string) }
 
-extend ReadError with Error { func message(self) -> string }
-extend ParseError with Error { func message(self) -> string }
+extend ReadError implements Error { func message(self) -> string }
+extend ParseError implements Error { func message(self) -> string }
 
 func first_line(text: string) -> string or ReadError
 func to_number(text: string) -> i64 or ParseError
@@ -27,7 +27,7 @@ one-line input is `TooShort(saw: 1)`.)
 `to_number` parses an integer and fails with `NotANumber` carrying the text.
 
 `first_number` does both, and its error type is the union of the two. `try` is
-what widens each error into that union — no conversion trait, no wrapper.
+what widens each error into that union — no conversion interface, no wrapper.
 
 `first_number_or` swallows either failure and gives the fallback.
 

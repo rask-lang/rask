@@ -356,7 +356,7 @@ mod generic_name_tests {
         assert_eq!(substitute_type_params("Vec<T>", &subst), "Vec<i64>");
         assert_eq!(substitute_type_params("T", &subst), "i64");
         // `T` inside a longer name is part of that name.
-        assert_eq!(substitute_type_params("Trait", &subst), "Trait");
+        assert_eq!(substitute_type_params("Interface", &subst), "Interface");
         assert_eq!(substitute_type_params("Map<T, T>", &subst), "Map<i64, i64>");
     }
 

@@ -130,7 +130,7 @@ struct SavedContext {
 
 ### Fiber Execution Model (T3)
 
-**No closure transformation.** Spawned closures run directly on the fiber's stack. When the fiber hits an I/O call or channel op that would block, the I/O function parks the fiber via a context switch — no compile-time rewriting, no state-machine enum, no `Pin`, no `Future` trait.
+**No closure transformation.** Spawned closures run directly on the fiber's stack. When the fiber hits an I/O call or channel op that would block, the I/O function parks the fiber via a context switch — no compile-time rewriting, no state-machine enum, no `Pin`, no `Future` interface.
 
 **Example:**
 ```rask
@@ -147,7 +147,7 @@ spawn(|| {
 
 **Why this is simpler than state machines:**
 - No per-function codegen variation — `File.open` compiles the same way whether called from inside a fiber or from sync code.
-- No ABI implications — function pointers, trait objects, and closures all have their declared signatures.
+- No ABI implications — function pointers, interface objects, and closures all have their declared signatures.
 - Recursion, deeply nested calls, and higher-order dispatch all work without special handling.
 - Stack traces are real stack traces.
 - No need to track pause points at compile time — any function call site is potentially a park point, but the runtime handles it transparently.
@@ -495,7 +495,7 @@ The `Reactor` abstracts over several kernel APIs. The runtime picks the best ava
 
 **Backend selection:** probe at startup via `uname`/`getpid` + feature check. Prefer io_uring on Linux if the running kernel supports `IORING_OP_CLOSE` (indicates 5.11+, the practical "io_uring is stable" floor). Otherwise epoll.
 
-**Interface:** each backend implements a common `Poller` trait with `register(fd, interest, waker)`, `poll(timeout) -> Events`, and `submit(op) -> CompletionFuture` (for completion-based backends). Completion-based backends expose the same readiness-style API for code that doesn't need the completion semantics.
+**Interface:** each backend implements a common `Poller` interface with `register(fd, interest, waker)`, `poll(timeout) -> Events`, and `submit(op) -> CompletionFuture` (for completion-based backends). Completion-based backends expose the same readiness-style API for code that doesn't need the completion semantics.
 
 **Tradeoff:** completion-based backends let us avoid the EAGAIN dance (R3) entirely for file I/O. Readiness-based backends keep the existing protocol. Stdlib I/O functions branch on the backend type, but the user-visible API is identical.
 
@@ -957,10 +957,10 @@ help: add `h.detach()` before return, or move `h.join()` after if block
 
 ### Integration with Type System (AC5)
 
-**Marker trait:**
+**Marker interface:**
 ```rask
 // In stdlib
-trait Linear {}
+interface Linear {}
 
 // TaskHandle implements Linear
 extend TaskHandle<T> : Linear {
@@ -970,7 +970,7 @@ extend TaskHandle<T> : Linear {
 }
 ```
 
-**Compiler recognizes `Linear` trait:**
+**Compiler recognizes `Linear` interface:**
 - Values of Linear types tracked through control flow
 - Compiler errors if Linear value dropped without consuming
 
@@ -2136,7 +2136,7 @@ Interpreter remains as-is (OS threads) for semantics validation and examples.
 **Stackful fibers over stackless state machines:**
 - Stackless state machines are cheaper per-task (~120 bytes vs ~1 MiB virtual), but force:
   - Compile-time state-machine transform on every spawn closure
-  - Wide ABI for trait objects, fn pointers, stored closures
+  - Wide ABI for interface objects, fn pointers, stored closures
   - Cross-crate "reaches spawn" metadata + the CC2 reachability check
   - User-visible coloring pressure that chronically leaks through libraries
 - Stackful fibers avoid all of that. The per-task memory arithmetic is "bad" only if you use fixed physical stacks. With mmap'd virtual reservations + demand paging, 100 k fibers averaging 4 KiB deep cost ~400 MiB physical (fine), ~100 GiB virtual (fine on 64-bit).

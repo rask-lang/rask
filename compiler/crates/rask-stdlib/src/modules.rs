@@ -86,7 +86,7 @@ const COMPILER_MODULES: &[&str] = &[
     //
     // `fmt` and `encoding` declare traits the compiler provides, and giving
     // `Displayable` a declaration made it look like a trait a program had
-    // written — which G1 gates on `extend T with Trait`, so every inherent
+    // written — which G1 gates on `extend T implements Trait`, so every inherent
     // `to_string` in the stdlib stopped counting. The gate asks what kind of
     // trait it is now, not whether a declaration exists.
 ];

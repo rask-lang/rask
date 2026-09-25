@@ -2,7 +2,7 @@
 //
 // The frame owns a boxed value's contents; the box borrows them.
 //
-// A `Vec`, `Map` or box field inside a value boxed as `any Trait` was freed by
+// A `Vec`, `Map` or box field inside a value boxed as `any Interface` was freed by
 // nobody. `io.copy(src, dst)` on two `io.Buffer`s leaked both buffers' vectors
 // and both of their read positions — `t_io_buffer.rk` was 17 allocations and
 // this is most of them.
@@ -36,9 +36,9 @@
 // `two.counts.len()` came back 12209367259287946116 on the way here, and every
 // assertion below would have caught it.
 //
-// Spec: type.traits — a box's contents belong to whoever outlives it.
+// Spec: type.interfaces — a box's contents belong to whoever outlives it.
 
-trait Describes {
+interface Describes {
     func describe(self) -> string
 }
 
@@ -49,7 +49,7 @@ struct Holder {
     public counts: Vec<i64>
 }
 
-extend Holder with Describes {
+extend Holder implements Describes {
     public func describe(self) -> string {
         return "{self.label}:{self.counts.len()}"
     }
@@ -62,7 +62,7 @@ struct Ledger {
     public tags: Vec<string>
 }
 
-extend Ledger with Describes {
+extend Ledger implements Describes {
     public func describe(self) -> string {
         return "{self.name}:{self.amounts.len()}:{self.tags.len()}"
     }
@@ -76,7 +76,7 @@ func two_boxes(a: any Describes, b: any Describes) -> string {
     return "{a.describe()}|{b.describe()}"
 }
 
-test "type.traits — a container field read through a box" {
+test "type.interfaces — a container field read through a box" {
     let n = 1
     let h = Holder {
         label: "label {n}, long enough to allocate its own buffer",
@@ -89,7 +89,7 @@ test "type.traits — a container field read through a box" {
 }
 
 // The shape that double-freed. One value, two boxes alive at once.
-test "type.traits — one value in two boxes at once" {
+test "type.interfaces — one value in two boxes at once" {
     let n = 2
     let h = Holder {
         label: "shared label {n}, long enough to allocate",
@@ -101,7 +101,7 @@ test "type.traits — one value in two boxes at once" {
 
 // Boxed again after a box of it has already died. A release that ran at the
 // first drop makes this one read freed bytes.
-test "type.traits — boxed again after the first box died" {
+test "type.interfaces — boxed again after the first box died" {
     let n = 3
     let h = Holder {
         label: "reused label {n}, long enough to allocate",
@@ -119,7 +119,7 @@ test "type.traits — boxed again after the first box died" {
 
 // Two different values, one box each, so the releases don't get confused about
 // which group they belong to.
-test "type.traits — two values, a box each" {
+test "type.interfaces — two values, a box each" {
     let n = 4
     let a = Holder { label: "a label {n}, long enough to allocate", counts: [1] }
     let b = Holder { label: "b label {n}, long enough to allocate", counts: [2, 3] }
@@ -128,7 +128,7 @@ test "type.traits — two values, a box each" {
     assert b.counts.len() == 2
 }
 
-test "type.traits — two container fields behind one box" {
+test "type.interfaces — two container fields behind one box" {
     let n = 5
     let l = Ledger {
         name: "ledger {n}, with a name long enough to allocate",
@@ -142,7 +142,7 @@ test "type.traits — two container fields behind one box" {
 }
 
 // In a loop, so a value released twice lands on one the next turn has reused.
-test "type.traits — a boxed value per turn" {
+test "type.interfaces — a boxed value per turn" {
     mut total: usize = 0
     for i in 1..5 {
         let h = Holder { label: "turn {i}, long enough to allocate a buffer", counts: [i, i * 2] }

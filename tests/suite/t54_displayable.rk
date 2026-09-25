@@ -3,7 +3,7 @@
 
 struct Point { x: i64, y: i64 }
 
-extend Point with Displayable {
+extend Point implements Displayable {
     public func to_string(self) -> string {
         return "({self.x}, {self.y})"
     }
@@ -28,8 +28,8 @@ extend AppError {
 // method, not about writing `with Displayable` next to it. That is what lets a
 // stdlib type like `StringView` render without a conformance declaration, and
 // what broke when `stdlib/fmt.rk` joined the stub set: a declaration for
-// `Displayable` made it look like a trait a program had written, and G1 gates
-// those on `extend T with Trait` (#990).
+// `Displayable` made it look like an interface a program had written, and G1 gates
+// those on `extend T implements Interface` (#990).
 struct Tally { hits: i64 }
 
 extend Tally {

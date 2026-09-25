@@ -2,7 +2,7 @@
 
 import traitpkg.Labeled
 
-public extend traitpkg.Doc with Labeled {
+public extend traitpkg.Doc implements Labeled {
     public func label(self) -> string {
         return "a:{self.n}"
     }
