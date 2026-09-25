@@ -878,7 +878,13 @@ fn functions_that_hand_a_container_back(
             let mut wrapped = false;
             let mut any = false;
             for b in &func.blocks {
-                let MirTerminatorKind::Return { value: Some(v), .. } = &b.terminator.kind else {
+                // A function with an `ensure` returns through the cleanup chain.
+                // Reading only `Return` left every such function handing nothing
+                // back, so `ensure g.detach(); return g.join_all()` gave its
+                // caller a vector nobody freed.
+                let (MirTerminatorKind::Return { value: Some(v), .. }
+                | MirTerminatorKind::CleanupReturn { value: Some(v), .. }) = &b.terminator.kind
+                else {
                     continue;
                 };
                 any = true;

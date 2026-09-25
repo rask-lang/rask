@@ -4088,16 +4088,29 @@ impl<'a> MirLowerer<'a> {
                 }
                 DeclKind::Fn(f) => {
                     // After monomorphization, impl methods become standalone functions
-                    // named "Type_method" with a `take self` first parameter.
-                    if f.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
-                        take_self_methods.insert(f.name.clone());
-                    }
+                    // named "Type_method" with a `take self` first parameter. An
+                    // instance is `Group_join_all$i64`, and a call site asks with
+                    // the receiver's type name — `Group_join_all` — so both go in,
+                    // or `join_all` wasn't known to consume a `Group<i64>` and its
+                    // `ensure g.detach()` ran after it.
+                    let names: Vec<&str> = match f.name.split_once('$') {
+                        Some((base, _)) => vec![f.name.as_str(), base],
+                        None => vec![f.name.as_str()],
+                    };
+                    let take_self =
+                        f.params.first().map_or(false, |p| p.name == "self" && p.is_take);
                     let takes = take_positions(&f.params);
-                    if !takes.is_empty() {
-                        take_param_positions.insert(f.name.clone(), takes);
-                    }
-                    if method_mutates_self(f, ctx) {
-                        mutate_self_methods.insert(f.name.clone());
+                    let mutates = method_mutates_self(f, ctx);
+                    for name in names {
+                        if take_self {
+                            take_self_methods.insert(name.to_string());
+                        }
+                        if !takes.is_empty() {
+                            take_param_positions.insert(name.to_string(), takes.clone());
+                        }
+                        if mutates {
+                            mutate_self_methods.insert(name.to_string());
+                        }
                     }
                 }
                 _ => {}

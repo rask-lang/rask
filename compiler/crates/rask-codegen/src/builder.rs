@@ -7224,6 +7224,11 @@ impl<'a> FunctionBuilder<'a> {
         if crate::elem_offsets::is_heap_field(ty) {
             return true;
         }
+        if let Some(named) =
+            crate::elem_offsets::generic_as_layout(ty, ctx.struct_layouts, ctx.enum_layouts)
+        {
+            return Self::holds_string_ty(&named, ctx, depth);
+        }
         match ty {
             RaskType::String => true,
 
@@ -7400,6 +7405,11 @@ impl<'a> FunctionBuilder<'a> {
         // as a name, and what is inside the block is the runtime's to walk.
         if crate::elem_offsets::is_heap_field(ty) {
             return Self::emit_heap_field_release(builder, base, offset, ty, ctx);
+        }
+        if let Some(named) =
+            crate::elem_offsets::generic_as_layout(ty, ctx.struct_layouts, ctx.enum_layouts)
+        {
+            return Self::release_strings_ty(builder, base, offset, &named, ctx, depth);
         }
         match ty {
             RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
