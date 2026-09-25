@@ -7,8 +7,8 @@
 //
 // and the free `join_all(Vec<TaskHandle<T>>)` it was meant to stand beside
 // couldn't be called at all, since a `Vec` can't hold a linear handle. The
-// group keeps its handles in the runtime and does the joining in Rask, so both
-// backends run the same loop.
+// group is plain Rask now, a linked list of handles, so both backends run the
+// same code.
 
 import async.{spawn, TaskGroup, JoinError}
 
