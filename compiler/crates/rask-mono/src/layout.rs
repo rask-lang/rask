@@ -123,6 +123,10 @@ fn scalar_by_name(ty: &Type) -> (u32, u32) {
 /// A user generic's size: its instance layout when one was made, else the
 /// shared one. Both are in the cache by the time a type holding one is laid
 /// out, since declarations go in dependency order.
+///
+/// Not a zero. A stdlib generic like `Sequence<T>` is an empty struct standing
+/// in for a runtime value, so the cache says it's nothing at all, and taking
+/// that gave `Holder { inner: Sequence<i64> }` a field with no room in it.
 fn cached_generic_layout(
     name: &str,
     args: &[rask_types::GenericArg],
@@ -138,6 +142,7 @@ fn cached_generic_layout(
     crate::generic_instance_name(name, &arg_tys, &HashMap::new())
         .and_then(|n| cache.get(&n).copied())
         .or_else(|| cache.get(name).copied())
+        .filter(|(size, _)| *size > 0)
 }
 
 /// Get size and alignment for a type (after monomorphization).
