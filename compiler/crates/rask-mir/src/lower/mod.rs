@@ -3831,6 +3831,7 @@ impl<'a> MirLowerer<'a> {
                 attrs: Vec::new(),
                 doc: None,
                 span: Span::new(0, 0),
+                decl_start: 0,
             }),
         };
         Self::lower_function_inner(
@@ -6648,6 +6649,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: sp(),
+                decl_start: sp().start,
             }),
             span: sp(),
         }

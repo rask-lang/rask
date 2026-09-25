@@ -1111,6 +1111,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: sp(),
+                decl_start: sp().start,
             }),
             span: sp(),
         }
@@ -1158,6 +1159,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: sp(),
+                decl_start: sp().start,
             }),
             span: sp(),
         }
@@ -1618,6 +1620,7 @@ mod tests {
             attrs: vec![],
             doc: None,
             span: sp(),
+            decl_start: 0,
         }
     }
 

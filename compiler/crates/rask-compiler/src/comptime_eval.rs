@@ -438,6 +438,7 @@ fn try_eval_comptime_mir(
             attrs: vec![],
             doc: None,
             span: Span::new(0, 0),
+            decl_start: 0,
         }),
         span: Span::new(0, 0),
     };

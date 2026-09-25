@@ -195,5 +195,6 @@ fn gen_struct_compare(
         attrs: vec![],
         doc: None,
         span: DUMMY,
+        decl_start: DUMMY.start,
     })
 }

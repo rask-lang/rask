@@ -168,6 +168,10 @@ pub struct FnDecl {
     pub doc: Option<String>,
     /// Span covering `func` keyword through closing `}`
     pub span: Span,
+    /// Where the declaration's text begins: its first attribute or modifier,
+    /// else `span.start`. Only the formatter needs it — the blank line and the
+    /// comments before a method belong before its `@attr` or `public`.
+    pub decl_start: usize,
 }
 
 impl FnDecl {

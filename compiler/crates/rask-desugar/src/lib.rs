@@ -440,6 +440,7 @@ impl Desugarer {
             attrs: vec![],
             doc: None,
             span: sp,
+            decl_start: sp.start,
         })
     }
 

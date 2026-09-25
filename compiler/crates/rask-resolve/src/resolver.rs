@@ -3278,6 +3278,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: Span::new(0, 10),
+                decl_start: 0,
             }),
             span: Span::new(0, 10),
         }
@@ -3622,6 +3623,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: Span::new(0, 10),
+                decl_start: 0,
             }),
             span: Span::new(0, 10),
         }
@@ -4117,6 +4119,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: Span::new(0, 20),
+                decl_start: 0,
             }),
             span: Span::new(0, 20),
         };

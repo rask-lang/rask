@@ -457,6 +457,7 @@ fn empty_main() -> Decl {
             attrs: vec![],
             doc: None,
             span,
+            decl_start: span.start,
         }),
         span,
     }
@@ -505,6 +506,7 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
                         attrs: vec!["test_body".to_string()],
                         doc: None,
                         span: decl.span,
+                        decl_start: decl.span.start,
                     }),
                     span: decl.span,
                 });
@@ -594,6 +596,7 @@ pub fn extract_tests(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(String
                 attrs: vec![],
                 doc: None,
                 span: dummy_span,
+                decl_start: dummy_span.start,
             }),
             span: dummy_span,
         });
@@ -734,6 +737,7 @@ pub fn extract_benchmarks(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(S
                     attrs: vec![],
                     doc: None,
                     span: decl.span,
+                    decl_start: decl.span.start,
                 }),
                 span: decl.span,
             });
@@ -796,6 +800,7 @@ pub fn extract_benchmarks(decls: &mut Vec<Decl>, filter: Option<&str>) -> Vec<(S
                 attrs: vec![],
                 doc: None,
                 span: dummy_span,
+                decl_start: dummy_span.start,
             }),
             span: dummy_span,
         });
