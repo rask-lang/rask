@@ -4920,12 +4920,28 @@ impl TypeChecker {
 
             let mut has_wildcard = false;
             let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut variants_hit: std::collections::HashMap<String, std::collections::HashSet<String>> =
+                std::collections::HashMap::new();
             for arm in arms {
-                self.collect_result_covered(&arm.pattern, &required, &mut covered, &mut has_wildcard);
+                self.collect_result_covered(
+                    &arm.pattern, &required, &mut covered, &mut variants_hit, &mut has_wildcard,
+                );
             }
 
             if has_wildcard {
                 return;
+            }
+
+            // An error enum is covered by an arm per variant as well as by
+            // naming it: `JoinError.Panicked(msg)` covers a `JoinError` that
+            // has no other variant.
+            for (leaf, name) in leaves.iter().zip(required.iter()) {
+                let Type::Named(id) = leaf else { continue };
+                let Some(TypeDef::Enum { variants, .. }) = self.types.get(*id) else { continue };
+                let Some(hit) = variants_hit.get(self.types.type_name(*id).as_str()) else { continue };
+                if variants.iter().all(|(v, _)| hit.contains(v)) {
+                    covered.insert(name.clone());
+                }
             }
 
             // A generic branch named without its arguments covers it —
@@ -5097,24 +5113,36 @@ impl TypeChecker {
         pattern: &Pattern,
         required: &[String],
         covered: &mut std::collections::HashSet<String>,
+        variants_hit: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
         has_wildcard: &mut bool,
     ) {
+        let mut hit = |qualified: &str| {
+            if let Some((enum_name, variant)) = qualified.rsplit_once('.') {
+                variants_hit.entry(enum_name.to_string()).or_default().insert(variant.to_string());
+            }
+        };
         match pattern {
             Pattern::Wildcard => *has_wildcard = true,
             Pattern::Ident(name) => {
-                // Bare ident that doesn't match a required type name → catch-all
                 if required.contains(name) {
                     covered.insert(name.clone());
+                } else if name.contains('.') {
+                    // `Fault.Timeout`: a fieldless variant, not a binding. It
+                    // used to read as a catch-all, so one such arm made any
+                    // match look exhaustive.
+                    hit(name);
                 } else {
+                    // A bare name that isn't a branch type binds everything.
                     *has_wildcard = true;
                 }
             }
             Pattern::TypePat { ty_name, .. } => {
                 covered.insert(ty_name.clone());
             }
+            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => hit(name),
             Pattern::Or(alts) => {
                 for alt in alts {
-                    self.collect_result_covered(alt, required, covered, has_wildcard);
+                    self.collect_result_covered(alt, required, covered, variants_hit, has_wildcard);
                 }
             }
             _ => {}

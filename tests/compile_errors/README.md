@@ -129,6 +129,7 @@ go down.
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |
 | [resource_leak.rk](resource_leak.rk) | Resource type not consumed |
+| [result_match_by_variant.rk](result_match_by_variant.rk) | A `T or E` match covers `E` with an arm per variant; a fieldless variant arm is not a catch-all |
 | [optional_resource.rk](optional_resource.rk) | A `@resource` inside an optional is still linear — the binding, the `? as` payload, and a `none` that gets filled (E0805, mem.linear/L1, #827) |
 | [resource_field_debts.rk](resource_field_debts.rk) | A holder owes each resource field separately — closing one leaves the others, reported by field path (E0805, mem.linear/L1, #828) |
 | [context_missing.rk](context_missing.rk) | Missing pool context clause |
