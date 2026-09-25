@@ -48,12 +48,6 @@ impl Interpreter {
             (ModuleKind::Async, "cancelled") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::Cancelled));
             }
-            (ModuleKind::Async, "TaskGroup") => {
-                self.env.define(alias.to_string(), Value::TypeConstructor {
-                    kind: TypeConstructorKind::TaskGroup,
-                    type_param: None,
-                });
-            }
             // Any exported type: `import http.Response`, `import time.Instant`.
             _ if module.exports_type(member) => {
                 self.env.define(alias.to_string(), Value::Type(member.to_string()));

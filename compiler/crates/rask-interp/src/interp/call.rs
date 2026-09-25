@@ -190,6 +190,11 @@ impl Interpreter {
             }
             _ => {}
         }
+        for param in func.params.iter().filter(|p| p.is_mutate) {
+            if let Some(v) = self.env.get(&param.name) {
+                self.hand_resources_to_caller(&v, caller_depth);
+            }
+        }
 
         if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
             let guard_diag = RuntimeDiagnostic::new(RuntimeError::Panic(msg), Span::new(0, 0));

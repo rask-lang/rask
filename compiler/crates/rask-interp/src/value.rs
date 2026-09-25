@@ -540,7 +540,6 @@ pub enum TypeConstructorKind {
     Mutex,
     Atomic,
     Ordering,
-    TaskGroup,
 }
 
 /// Module kinds for stdlib modules.
@@ -981,8 +980,6 @@ pub enum Value {
     ThreadPool(Arc<ThreadPoolInner>),
     /// Async task handle (from spawn() in using Multitasking)
     TaskHandle(Arc<ThreadHandleInner>),
-    /// TaskGroup for dynamic task spawning (M3)
-    TaskGroup(Arc<Mutex<Vec<Value>>>),
     /// Multitasking runtime (from `using Multitasking { }`)
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
@@ -1271,7 +1268,6 @@ impl Value {
             Value::Link { .. } => "Link",
             Value::ThreadHandle(_) => "ThreadHandle",
             Value::TaskHandle(_) => "TaskHandle",
-            Value::TaskGroup(_) => "TaskGroup",
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
@@ -1535,7 +1531,6 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Mutex => "Mutex",
                     TypeConstructorKind::Atomic => "Atomic",
                     TypeConstructorKind::Ordering => "Ordering",
-                    TypeConstructorKind::TaskGroup => "TaskGroup",
                 };
                 if let Some(param) = type_param {
                     write!(f, "{}<{}>", base_name, param)
@@ -1591,7 +1586,6 @@ impl fmt::Display for Value {
             }
             Value::ThreadHandle(_) => write!(f, "<ThreadHandle>"),
             Value::TaskHandle(_) => write!(f, "<TaskHandle>"),
-            Value::TaskGroup(tasks) => write!(f, "<TaskGroup len={}>", tasks.lock().unwrap().len()),
             Value::MultitaskingRuntime(r) => write!(f, "<Multitasking runtime workers={}>", r.workers),
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),

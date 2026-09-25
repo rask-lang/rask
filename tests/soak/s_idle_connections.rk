@@ -24,7 +24,7 @@ func main() {
         let n = 100
 
         let server = spawn(|| {
-            let handlers = TaskGroup<i64>.new()
+            mut handlers = TaskGroup<i64>.new()
             ensure handlers.detach()
             mut i = 0
             while i < n {
@@ -45,7 +45,7 @@ func main() {
         })
         ensure server.detach()
 
-        let clients = TaskGroup<i64>.new()
+        mut clients = TaskGroup<i64>.new()
         ensure clients.detach()
         mut k = 0
         while k < n {

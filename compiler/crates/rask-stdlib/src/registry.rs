@@ -338,7 +338,7 @@ pub const REGISTERED_MODULES: &[&str] = &[
 /// `Path` was the first: 46 lines of declarations, 192 lines of C and 184 lines
 /// of Rust, for pure string manipulation that the two backends got different
 /// answers from (#688).
-pub const RASK_IMPLEMENTED_TYPES: &[&str] = &["Path"];
+pub const RASK_IMPLEMENTED_TYPES: &[&str] = &["Path", "TaskGroup"];
 
 /// True when this type's methods live in Rask rather than in the backends.
 pub fn is_rask_implemented(type_name: &str) -> bool {

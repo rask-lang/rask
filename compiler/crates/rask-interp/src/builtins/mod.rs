@@ -74,7 +74,7 @@ impl Interpreter {
                 let base = type_name.split('.').next()?;
                 self.methods.get(base).and_then(&lookup)
             })
-            .filter(|f| !f.body.is_empty())
+            .filter(|f| !f.body_lives_elsewhere())
     }
 
     /// `__fmt(type, width, precision, align, fill)` — the desugared form of a
@@ -232,7 +232,6 @@ impl Interpreter {
             }
             Value::ThreadHandle(handle) => return self.call_thread_handle_method(handle, method),
             Value::TaskHandle(handle) => return self.call_task_handle_method(handle, method),
-            Value::TaskGroup(tasks) => return self.call_task_group_method(tasks, method, args),
             Value::Sender(tx) => return self.call_sender_method(tx, method, args),
             Value::Receiver(rx) => return self.call_receiver_method(rx, method),
             Value::Atomic(atomic) => return self.call_atomic_method(atomic, method, args),
@@ -384,14 +383,14 @@ impl Interpreter {
                 let has_to_string = self.methods.get(tn)
                     .and_then(|m| m.get("to_string"))
                     .or_else(|| self.methods.get(base_name).and_then(|m| m.get("to_string")));
-                if let Some(method_fn) = has_to_string.filter(|f| !f.body.is_empty()) {
+                if let Some(method_fn) = has_to_string.filter(|f| !f.body_lives_elsewhere()) {
                     let method_fn = method_fn.clone();
                     return self.call_function(&method_fn, vec![receiver]).map_err(|diag| diag.error);
                 }
                 let has_message = self.methods.get(tn)
                     .and_then(|m| m.get("message"))
                     .or_else(|| self.methods.get(base_name).and_then(|m| m.get("message")));
-                if let Some(method_fn) = has_message.filter(|f| !f.body.is_empty()) {
+                if let Some(method_fn) = has_message.filter(|f| !f.body_lives_elsewhere()) {
                     let method_fn = method_fn.clone();
                     return self.call_function(&method_fn, vec![receiver]).map_err(|diag| diag.error);
                 }
@@ -434,7 +433,7 @@ impl Interpreter {
                 })
             });
 
-        if let Some(method_fn) = resolved_method.filter(|f| !f.body.is_empty()) {
+        if let Some(method_fn) = resolved_method.filter(|f| !f.body_lives_elsewhere()) {
             let consumes_self = method_fn.params.first()
                 .map(|p| p.name == "self" && p.is_take)
                 .unwrap_or(false);

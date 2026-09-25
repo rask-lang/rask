@@ -499,7 +499,7 @@ impl Interpreter {
                         .filter(|ty| {
                             self.methods.get(ty)
                                 .and_then(|ms| ms.get("compare"))
-                                .is_some_and(|f| !f.body.is_empty())
+                                .is_some_and(|f| !f.body_lives_elsewhere())
                         })
                 };
                 let items: Vec<Value> = v.lock().unwrap().items.clone();
@@ -1382,9 +1382,6 @@ impl Interpreter {
                     fields: vec![],
                     variant_index: 0, origin: None,
                 })
-            }
-            (TypeConstructorKind::TaskGroup, "new") => {
-                Ok(Value::TaskGroup(Arc::new(Mutex::new(Vec::new()))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: format!("{:?}", kind),

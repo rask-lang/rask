@@ -93,7 +93,7 @@ enum JoinError {
 | Rule | Description |
 |------|-------------|
 | **M1: Join each** | A fixed set of tasks is joined handle by handle |
-| **M2: Task group** | `TaskGroup<T>` holds the tasks of a count known only at run time. `join_all` gives one `T or JoinError` per task in spawn order; `detach` lets them all run on. The group is linear like the handles it holds: joined or detached exactly once |
+| **M2: Task group** | `TaskGroup<T>` holds the tasks of a count known only at run time. `join_all` gives one `T or JoinError` per task in spawn order; `detach` lets them all run on. The group is linear like the handles it holds: joined or detached exactly once. It is plain Rask (`stdlib/async.rk`), a linked list of handles, so `spawn` mutates the group |
 
 <!-- test: skip -->
 ```rask
@@ -102,7 +102,7 @@ let h2 = spawn(|| { work2() })
 let a = try h1.join()
 let b = try h2.join()
 
-let group = TaskGroup<Page>.new()
+mut group = TaskGroup<Page>.new()
 ensure group.detach()
 for url in urls {
     group.spawn(|| { return fetch(url) })

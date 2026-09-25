@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A vector returned from a function that has an `ensure` is the caller's.
+//
+// A function with an `ensure` returns through its cleanup chain, and the pass
+// that decides "this function hands its caller a fresh vector" only read plain
+// returns. So `ensure g.detach(); return g.join_all()` gave the caller a vector
+// nobody freed — every call to `squares` in t_task_group leaked its results.
+// The leak gate runs this file.
+//
+// `close` has an empty body on purpose: the interpreter took "no statements"
+// for "implemented natively" in six places, so calling it consumed nothing
+// and the early return reported `c` leaked.
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) {}
+
+    func ids(take self) -> Vec<i64> {
+        mut out: Vec<i64> = Vec.new()
+        out.push(self.id)
+        out.push(self.id * 2)
+        return out
+    }
+}
+
+func collect(id: i64) -> Vec<i64> {
+    let c = Conn { id }
+    ensure c.close()
+    if id < 0 {
+        return Vec.new()
+    }
+    return c.ids()
+}
+
+test "the caller frees what came back past an ensure" {
+    mut total = 0
+    mut i = 0
+    while i < 50 {
+        let got = collect(i)
+        for v in got {
+            total += v
+        }
+        i += 1
+    }
+    assert total == 3 * (49 * 50 / 2)
+}
+
+test "the early return hands back its own vector" {
+    let got = collect(-1)
+    assert got.len() == 0
+}

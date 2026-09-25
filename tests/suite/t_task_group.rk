@@ -13,7 +13,7 @@
 import async.{spawn, TaskGroup, JoinError}
 
 func squares(n: i64) -> Vec<i64 or JoinError> {
-    let group = TaskGroup<i64>.new()
+    mut group = TaskGroup<i64>.new()
     ensure group.detach()
     mut i = 0
     while i < n {
@@ -42,7 +42,7 @@ test "results come back in spawn order" {
 
 test "a task that panics costs only its own result" {
     using Multitasking(workers: 2) {
-        let group = TaskGroup<i64>.new()
+        mut group = TaskGroup<i64>.new()
         ensure group.detach()
         group.spawn(|| { return 1 })
         group.spawn(|| {
@@ -67,7 +67,7 @@ test "a task that panics costs only its own result" {
 
 test "an empty group joins to nothing" {
     using Multitasking {
-        let group = TaskGroup<i64>.new()
+        mut group = TaskGroup<i64>.new()
         let results = group.join_all()
         assert results.len() == 0
     }
@@ -75,7 +75,7 @@ test "an empty group joins to nothing" {
 
 test "a detached group lets its tasks finish" {
     using Multitasking(workers: 2) {
-        let group = TaskGroup<i64>.new()
+        mut group = TaskGroup<i64>.new()
         ensure group.detach()
         group.spawn(|| { return 1 })
         group.spawn(|| { return 2 })

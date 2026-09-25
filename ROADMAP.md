@@ -351,14 +351,23 @@ of a blocking `Shared` access is rejected, E0897), #1335 (`rask compile` hung
 on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
 its worker), #1302 (a box inside a box leaked), #830 (a link
 captured by `spawn` is rejected, E0898), #891 and #1288 (`TaskGroup` runs
-natively; the uncallable free `join_all`/`select_first` are gone), #890 (its
+natively, and is now plain Rask: a linked list of handles, the shape anyone
+holding a run-time count of linear values writes; the uncallable free
+`join_all`/`select_first` are gone), #890 (its
 program is a compile error now, E0882), #1354 (a deadlock is reported instead
 of hanging), and five found on the way: an
 `ensure` running after its value was consumed, past the 256th ensure and after
 a `join` whose result returned early; E0353 on recursion through a spawned
 closure; the interpreter skipping every `ensure` inside a `using` or `with`
 block; and a `Thread` handle freed twice by `ensure t.detach()` after its
-join. Open:
+join. Writing `TaskGroup` in Rask turned up more: matching a borrowed value
+demanded its parts be consumed (E0899 now covers giving one away), `Heap(x)`
+didn't move `x`, a `break` didn't count as consuming, a generic list inside a
+generic struct got a one-word slot and freed nothing, a generic `take self`
+didn't cancel its `ensure`, `Vec.reverse` overflowed on wide elements, a
+vector returned past an `ensure` was never freed, and the interpreter lost
+track of a resource stored into `mutate self` or closed by an empty method.
+Open:
 
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
   tasks over one `Shared` plus a channel.

@@ -232,7 +232,7 @@ impl Interpreter {
                 // User-defined static methods from extend blocks
                 if let Some(type_methods) = self.methods.get(type_name).cloned() {
                     if let Some(method_fn) = type_methods.get(method) {
-                        let has_body = !method_fn.body.is_empty();
+                        let has_body = !method_fn.body_lives_elsewhere();
                         let is_static = method_fn
                             .params
                             .first()

@@ -371,7 +371,6 @@ impl Interpreter {
             Value::File(_) => "File".to_string(),
             Value::TcpListener(_) => "TcpListener".to_string(),
             Value::TcpConnection(_) => "TcpConnection".to_string(),
-            Value::TaskGroup(_) => "TaskGroup".to_string(),
             _ => return None,
         })
     }

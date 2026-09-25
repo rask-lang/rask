@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
+import memory.Heap
+
 // --- Task spawning ---
 
 /// Spawn a green task on the current scheduler.
@@ -36,7 +38,7 @@ extend TaskHandle<T> {
 
     /// Detach the task (fire-and-forget). Consumes the handle.
     @native("rask_green_detach")
-    public func detach(take self) {}
+    public func detach(take self) -> void {}
 
     /// Request cooperative cancellation, wait for exit.
     /// Consumes the handle.
@@ -63,65 +65,68 @@ extend JoinError {
 /// Tasks spawned into one place, joined together. For a count known only at
 /// run time; a fixed handful is just as clear joined one by one.
 ///
-///     let group = TaskGroup<string>.new()
+///     mut group = TaskGroup<string>.new()
 ///     ensure group.detach()
 ///     for url in urls {
 ///         group.spawn(|| { return fetch(url) })
 ///     }
 ///     let pages = group.join_all()
 ///
-/// Must be joined or detached, like the handles it holds.
+/// Must be joined or detached, like the handles it holds. Plain Rask: a
+/// linked list of handles, so a group of any other linear type is written
+/// the same way.
 @resource
 public struct TaskGroup<T> {
+    tasks: TaskList<T>
+}
+
+/// Newest first.
+enum TaskList<T> {
+    Empty
+    More(TaskHandle<T>, Heap<TaskList<T>>)
 }
 
 extend TaskGroup<T> {
-    @native("rask_task_group_new")
-    public func new() -> TaskGroup<T> {}
+    public func new() -> TaskGroup<T> {
+        return TaskGroup { tasks: TaskList.Empty }
+    }
 
     /// Spawn a task in this group.
-    public func spawn(self, take f: func() -> T) -> void {
-        self.adopt(spawn(f))
+    public func spawn(mutate self, take f: func() -> T) -> void {
+        self.tasks = TaskList.More(spawn(f), Heap(self.tasks))
     }
 
     /// Wait for every task. Results come back in spawn order, one per task, so
     /// a task that panicked doesn't cost the others theirs.
     public func join_all(take self) -> Vec<T or JoinError> {
         mut results: Vec<T or JoinError> = Vec.new()
-        mut i = 0
-        while i < self.len() {
-            results.push(self.at(i).join())
-            i += 1
+        mut rest = self.tasks
+        loop {
+            match rest {
+                TaskList.Empty => break
+                TaskList.More(h, next) => {
+                    results.push(h.join())
+                    rest = *next
+                }
+            }
         }
-        self.release()
+        results.reverse()
         return results
     }
 
     /// Let every task run on without waiting for it. Consumes the group.
     public func detach(take self) -> void {
-        mut i = 0
-        while i < self.len() {
-            self.at(i).detach()
-            i += 1
+        mut rest = self.tasks
+        loop {
+            match rest {
+                TaskList.Empty => break
+                TaskList.More(h, next) => {
+                    h.detach()
+                    rest = *next
+                }
+            }
         }
-        self.release()
     }
-
-    /// Keep a handle for the join or detach.
-    @native("rask_task_group_adopt")
-    func adopt(self, take handle: TaskHandle<T>) {}
-
-    /// How many tasks were spawned into the group.
-    @native("rask_task_group_len")
-    func len(self) -> i64 {}
-
-    /// The i-th handle. `join_all` and `detach` take each exactly once.
-    @native("rask_task_group_at")
-    func at(self, i: i64) -> TaskHandle<T> {}
-
-    /// Free the list. Every handle in it was taken by then.
-    @native("rask_task_group_free")
-    func release(take self) {}
 }
 
 // --- Channels ---

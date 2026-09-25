@@ -1031,6 +1031,20 @@ impl Interpreter {
 
     /// Handles nested values like Result.Ok(file) or Result.Err(FileError{file}).
     fn transfer_resource_to_scope(&mut self, value: &Value, new_depth: usize) {
+        self.move_resources_to_scope(value, new_depth, false);
+    }
+
+    /// Hand what a call stored into a `mutate` argument to the caller.
+    ///
+    /// `self.tasks = Tasks.More(spawn(f), …)` puts a handle made in this call
+    /// into the caller's value, and the return value is not the only way out
+    /// of a call. Outward only: an entry already owned further out stays
+    /// where it is.
+    pub(crate) fn hand_resources_to_caller(&mut self, value: &Value, caller_depth: usize) {
+        self.move_resources_to_scope(value, caller_depth, true);
+    }
+
+    fn move_resources_to_scope(&mut self, value: &Value, new_depth: usize, outward_only: bool) {
         // A program with no live resources has nothing to hand over, and this
         // walks aggregates — so the common case doesn't pay for the search.
         if self.resource_tracker.is_empty() {
@@ -1040,13 +1054,13 @@ impl Interpreter {
             Value::File(rc) => {
                 let ptr = Arc::as_ptr(rc) as usize;
                 if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
-                    self.resource_tracker.transfer_to_scope(id, new_depth);
+                    self.resource_tracker.transfer_to_scope(id, new_depth, outward_only);
                 }
             }
             Value::TaskHandle(h) | Value::ThreadHandle(h) => {
                 let ptr = Arc::as_ptr(h) as usize;
                 if let Some(id) = self.resource_tracker.lookup_handle_id(ptr) {
-                    self.resource_tracker.transfer_to_scope(id, new_depth);
+                    self.resource_tracker.transfer_to_scope(id, new_depth, outward_only);
                 }
             }
             Value::Struct(ref s) => {
@@ -1055,17 +1069,17 @@ impl Interpreter {
                     (data.resource_id, data.fields.values().cloned().collect::<Vec<_>>())
                 };
                 if let Some(id) = id {
-                    self.resource_tracker.transfer_to_scope(id, new_depth);
+                    self.resource_tracker.transfer_to_scope(id, new_depth, outward_only);
                 }
                 // A struct that isn't itself a resource can still hold one —
                 // `return Wrap { conn: conn }` hands it over just as directly.
                 for field in &fields {
-                    self.transfer_resource_to_scope(field, new_depth);
+                    self.move_resources_to_scope(field, new_depth, outward_only);
                 }
             }
             Value::Enum { fields, .. } => {
                 for field in fields {
-                    self.transfer_resource_to_scope(field, new_depth);
+                    self.move_resources_to_scope(field, new_depth, outward_only);
                 }
             }
             // `return (request, responder)` hands the resource to the caller
@@ -1076,13 +1090,13 @@ impl Interpreter {
             // nothing.
             Value::Tuple(items) => {
                 for item in items.iter() {
-                    self.transfer_resource_to_scope(item, new_depth);
+                    self.move_resources_to_scope(item, new_depth, outward_only);
                 }
             }
             Value::Vec(items) => {
                 let snapshot: Vec<Value> = items.lock().unwrap().items.clone();
                 for item in &snapshot {
-                    self.transfer_resource_to_scope(item, new_depth);
+                    self.move_resources_to_scope(item, new_depth, outward_only);
                 }
             }
             _ => {}

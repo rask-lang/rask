@@ -82,7 +82,7 @@ let a = try h1.join()
 let b = try h2.join()
 
 // A count known at run time
-let group = TaskGroup<Page>.new()
+mut group = TaskGroup<Page>.new()
 ensure group.detach()
 for url in urls {
     group.spawn(|| { return fetch(url) })

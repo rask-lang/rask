@@ -123,9 +123,12 @@ impl ResourceTracker {
     }
 
     /// Transfer a resource to a different scope depth (for returns/moves).
-    pub fn transfer_to_scope(&mut self, id: u64, new_scope_depth: usize) {
+    /// `outward_only` leaves an entry already owned further out alone.
+    pub fn transfer_to_scope(&mut self, id: u64, new_scope_depth: usize, outward_only: bool) {
         if let Some(entry) = self.entries.get_mut(&id) {
-            entry.scope_depth = new_scope_depth;
+            if !outward_only || new_scope_depth < entry.scope_depth {
+                entry.scope_depth = new_scope_depth;
+            }
         }
     }
 

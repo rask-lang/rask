@@ -1204,14 +1204,6 @@ int64_t rask_outside_progress(void);
 // accept), or writable. A green task parks; any other caller blocks in poll.
 void rask_io_wait(int64_t fd, int64_t want_write);
 
-// A `TaskGroup<T>`'s handle list, in spawn order (thread.c). The join and
-// detach loops are Rask, in stdlib/async.rk.
-int64_t rask_task_group_new(void);
-void    rask_task_group_adopt(int64_t group, int64_t handle);
-int64_t rask_task_group_len(int64_t group);
-int64_t rask_task_group_at(int64_t group, int64_t i);
-void    rask_task_group_free(int64_t group);
-
 // Request cooperative cancellation, then wait for the task to finish.
 // Returns 0 on success, -1 on panic. Consumes the handle.
 int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out);

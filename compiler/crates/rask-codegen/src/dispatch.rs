@@ -1346,12 +1346,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("TaskHandle_detach", "rask_green_detach", &[types::I64], None, true),
         StdlibEntry::join_outcome("TaskHandle_cancel", "rask_green_cancel_outcome"),
         StdlibEntry::simple("rask_task_cancelled", "rask_green_task_is_cancelled", &[], Some(types::I32), false),
-        // TaskGroup: the runtime keeps the handle list; the loops are Rask.
-        StdlibEntry::simple("TaskGroup_new", "rask_task_group_new", &[], Some(types::I64), false),
-        StdlibEntry::simple("TaskGroup_adopt", "rask_task_group_adopt", &[types::I64, types::I64], None, false),
-        StdlibEntry::simple("TaskGroup_len", "rask_task_group_len", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("TaskGroup_at", "rask_task_group_at", &[types::I64, types::I64], Some(types::I64), true),
-        StdlibEntry::simple("TaskGroup_release", "rask_task_group_free", &[types::I64], None, false),
         StdlibEntry::simple("rask_sleep_ns", "rask_sleep_ns", &[types::I64], None, false),
 
         // ── Concurrency: runtime init/shutdown ───────────────────────
