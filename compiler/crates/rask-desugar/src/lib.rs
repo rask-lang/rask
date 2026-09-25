@@ -206,13 +206,6 @@ struct Desugarer {
     /// is the override, so generating one alongside it would shadow the prose
     /// the author wrote.
     hand_written_message: std::collections::HashSet<String>,
-    /// `@resource` type names, so ER6's derive can stand aside for an enum
-    /// carrying one. A generated `message()` has to match every variant, and a
-    /// payload variant's pattern must bind its payload — which for a resource
-    /// is a use the derived body can't consume (mem.linear/L2, ER42).
-    /// A payload variant has no bindingless pattern to reach for, so the whole
-    /// enum's derive is skipped rather than one arm's.
-    resource_types: std::collections::HashSet<String>,
 }
 
 impl Desugarer {
@@ -225,7 +218,6 @@ impl Desugarer {
             operator_calls: std::collections::HashSet::new(),
             error_message_types: std::collections::HashSet::new(),
             hand_written_message: std::collections::HashSet::new(),
-            resource_types: std::collections::HashSet::new(),
         }
     }
 
@@ -247,17 +239,11 @@ impl Desugarer {
                     if has_message(&e.methods) {
                         self.hand_written_message.insert(e.name.clone());
                     }
-                    if e.attrs.iter().any(|a| a == "resource") {
-                        self.resource_types.insert(e.name.clone());
-                    }
                 }
                 DeclKind::Struct(s) => {
                     if has_message(&s.methods) {
                         self.error_message_types.insert(s.name.clone());
                         self.hand_written_message.insert(s.name.clone());
-                    }
-                    if s.attrs.iter().any(|a| a == "resource") {
-                        self.resource_types.insert(s.name.clone());
                     }
                 }
                 DeclKind::Impl(i) => {
@@ -272,7 +258,7 @@ impl Desugarer {
 
         // Second pass: an enum gets a `message()` if it wrote one, or if the
         // derive will run for it. `derives_message` needs `hand_written_message`
-        // and `resource_types` filled, which is why it isn't the loop above.
+        // filled, which is why it isn't the loop above.
         for decl in decls {
             if let DeclKind::Enum(e) = &decl.kind {
                 if self.hand_written_message.contains(&e.name) || self.derives_message(e) {
@@ -291,13 +277,12 @@ impl Desugarer {
     /// it or to test it compiled or didn't depending on whether a never-called
     /// function mentioned the type (#1249).
     ///
-    /// Two ways out. A hand-written `message()` is the override, so the derive
-    /// stands aside rather than shadowing it. And an enum carrying a
-    /// `@resource` payload can't have one at all: every arm of the generated
-    /// match has to bind its payload, and a bound resource is a use the derived
-    /// body has no way to consume (mem.linear/L2, ER42).
+    /// One way out: a hand-written `message()` is the override, so the derive
+    /// stands aside rather than shadowing it. An enum carrying a `@resource` is
+    /// no exception — the derived method borrows `self`, so what its arms bind
+    /// are views the body doesn't owe anything for.
     fn derives_message(&self, e: &EnumDecl) -> bool {
-        !self.hand_written_message.contains(&e.name) && !self.carries_a_resource(e)
+        !self.hand_written_message.contains(&e.name)
     }
 
     fn fresh_id(&mut self) -> NodeId {
@@ -359,14 +344,6 @@ impl Desugarer {
         for method in &mut e.methods {
             self.desugar_fn(method);
         }
-    }
-
-    /// Does any variant carry a `@resource` payload? See `resource_types`.
-    fn carries_a_resource(&self, e: &EnumDecl) -> bool {
-        e.variants
-            .iter()
-            .flat_map(|v| v.fields.iter())
-            .any(|f| self.resource_types.contains(f.ty.trim()))
     }
 
     /// Generate `func message(self) -> string` from @message annotations.

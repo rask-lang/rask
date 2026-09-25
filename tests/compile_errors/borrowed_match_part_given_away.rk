@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A part matched out of a borrowed value given away (E0899).
+//
+// Matching a value you only borrowed doesn't take it apart: the bindings are
+// the caller's too. The checker used to read them as owned, so `peek` below
+// was told to consume `c` (E0805), and a derived `message()` on any enum
+// carrying a resource failed the same way at line 1. Now they're views, and
+// giving one away is the error.
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) -> i64 {
+        return self.id
+    }
+}
+
+enum Slot {
+    Empty
+    Full(Conn)
+}
+
+// Fine: reading a part of a borrowed value.
+func peek(s: Slot) -> i64 {
+    match s {
+        Slot.Empty => {
+            return 0
+        }
+        Slot.Full(c) => {
+            return c.id
+        }
+    }
+}
+
+func close_borrowed(s: Slot) -> i64 {
+    match s {
+        Slot.Empty => {
+            return 0
+        }
+        Slot.Full(c) => {
+            // ERROR: E0899
+            return c.close()
+        }
+    }
+}
+
+// Fine: taken, so the parts are ours and each is consumed.
+func finish(take s: Slot) -> i64 {
+    match s {
+        Slot.Empty => {
+            return 0
+        }
+        Slot.Full(c) => {
+            return c.close()
+        }
+    }
+}
+
+func main() {
+    let s = Slot.Full(Conn { id: 7 })
+    ensure finish(s)
+    println("{peek(s)} {close_borrowed(s)}")
+}

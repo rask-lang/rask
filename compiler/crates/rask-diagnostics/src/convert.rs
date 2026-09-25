@@ -3843,6 +3843,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("resource types must be consumed exactly once — a closure/spawn that captures a resource takes ownership and must consume it")
             }
 
+            ConsumeBorrowedPart { name, from, matched_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` isn't yours to give", s, name),
+                    None => format!("this takes ownership, and `{}` isn't yours to give", name),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — it's part of `{}`, which is borrowed",
+                    name, from
+                ))
+                .with_code("E0899")
+                .with_primary(self.span, label)
+                .with_secondary(*matched_at, format!("`{}` comes out of `{}` here", name, from))
+                .with_fix(format!("take `{}` in the signature: `take {}: …`", from, from))
+                .with_why(format!(
+                    "matching a borrowed value doesn't take it apart — the caller still holds `{}`, `{}` included, so giving `{}` away would leave them holding something that's gone. [mem.parameters/PM1, mem.linear/L1]",
+                    from, name, name
+                ))
+            }
+
             ConsumeBorrowedCapture { name, closure_at } => {
                 Diagnostic::error(format!(
                     "cannot consume `{}` — the closure borrowed it",
