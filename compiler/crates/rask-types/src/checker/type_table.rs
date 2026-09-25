@@ -503,7 +503,7 @@ impl TypeTable {
     /// arguments*, so `Mul<f64>` and `Mul<Meters>` on one type stay apart.
     ///
     /// Written-out defaults are filled in and `Self` becomes the conforming
-    /// type's name, so `extend Meters implements Mul` and `extend Meters with
+    /// type's name, so `extend Meters implements Mul` and `extend Meters implements
     /// Mul<Meters>` land on the same key when `Rhs` defaults to `Self`.
     /// A trait with no parameters keys on its bare name, exactly as before.
     pub fn applied_conformance_key(&self, trait_name: &str, self_name: &str) -> String {

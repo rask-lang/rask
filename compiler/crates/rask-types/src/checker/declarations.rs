@@ -1901,7 +1901,7 @@ impl TypeChecker {
                     }
 
                     // G1: mark auto-derived conformances so the nominal check
-                    // accepts eligible types without an explicit `extend ... with`.
+                    // accepts eligible types without an explicit `extend ... implements`.
                     let eq_ok = field_types.iter().all(|ty| self.type_has_method(ty, "eq"));
                     let hash_ok = eq_ok && field_types.iter().all(|ty| self.type_has_method(ty, "hash"));
                     let clone_ok = field_types.iter().all(|ty| self.type_has_method(ty, "clone"))

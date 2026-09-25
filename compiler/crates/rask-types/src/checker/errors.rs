@@ -1191,7 +1191,7 @@ pub enum TypeError {
         /// The trait, spelled as the block writes it.
         trait_name: String,
         /// The package that declares the type. `None` is the standard library,
-        /// which owns every builtin — that is what makes `extend Vec<i64> with
+        /// which owns every builtin — that is what makes `extend Vec<i64> implements
         /// Hashable` in a program an error rather than a shrug.
         owner: Option<String>,
         /// The package the block is in. `None` is the program itself, in a
