@@ -108,6 +108,21 @@ mod tests {
         assert_eq!(format_source(input), input);
     }
 
+    /// A method's span started at `func`, so looking back for a blank line
+    /// met `public` or an attribute and found none: two undocumented public
+    /// methods came out glued together.
+    #[test]
+    fn keeps_the_blank_line_between_public_methods() {
+        let input = "extend A<T> {\n    public func a() -> i64 {\n        return 1\n    }\n\n    @inline\n    public func b() -> i64 {\n        return 2\n    }\n\n    private func c() -> i64 {\n        return 3\n    }\n}\n";
+        assert_eq!(format_source(input), input);
+    }
+
+    #[test]
+    fn keeps_a_comment_between_an_attribute_and_its_method() {
+        let input = "extend A {\n    @inline\n    // why it's inline\n    public func a() -> i64 {\n        return 1\n    }\n}\n";
+        assert_eq!(format_source(input), input);
+    }
+
     #[test]
     fn idempotent_on_clean_code() {
         let clean = "func main() {\n    let x = 42\n    println(x.to_string())\n}\n";
@@ -584,10 +599,10 @@ func main() {
     #[test]
     fn converts_the_unit_type_in_a_type_used_as_a_value() {
         // A type in expression position is an identifier holding the parsed
-        // spelling, so `ThreadGroup<void>.new()` printed as `ThreadGroup<()>`.
+        // spelling, so `Handles<void>.new()` printed as `Handles<()>`.
         keeps(
-            "func f() {\n    mut g = ThreadGroup<void>.new()\n}\n",
-            "ThreadGroup<void>.new()",
+            "func f() {\n    mut g = Handles<void>.new()\n}\n",
+            "Handles<void>.new()",
             "a type used as a value",
         );
         keeps(

@@ -611,10 +611,12 @@ impl<'a> Printer<'a> {
             self.emit_indent();
         }
 
-        for attr in &f.attrs {
+        for (i, attr) in f.attrs.iter().enumerate() {
+            if i > 0 {
+                self.emit_indent();
+            }
             self.emit(&format!("@{attr}"));
             self.emit_newline();
-            self.emit_indent();
         }
 
         // A comment written between the attributes and `func`. The
@@ -625,6 +627,7 @@ impl<'a> Printer<'a> {
         // keeps it where it was written.
         if !f.attrs.is_empty() {
             self.emit_standalone_comments_before(f.span.start);
+            self.emit_indent();
         }
 
         if f.is_private {
@@ -1153,11 +1156,65 @@ impl<'a> Printer<'a> {
     /// statement picked it up — and the doc comment ended up *inside* the method
     /// it documented. Blank lines follow the source too, instead of one being
     /// inserted between every pair of members (#805).
+    /// Where a method's text begins: its attributes and modifiers, not the
+    /// `func` its span starts at. Looking back for a blank line from `func`
+    /// met `public` and found none, gluing undocumented methods together.
+    fn member_start(&self, f: &FnDecl) -> usize {
+        let src = self.source.as_bytes();
+        let mut pos = f.span.start;
+        loop {
+            let mut p = pos;
+            while p > 0 && matches!(src[p - 1], b' ' | b'\t') {
+                p -= 1;
+            }
+            let word_end = p;
+            while p > 0 && src[p - 1].is_ascii_alphabetic() {
+                p -= 1;
+            }
+            if matches!(&self.source[p..word_end], "public" | "private" | "comptime" | "unsafe") {
+                pos = p;
+                continue;
+            }
+            let line_start = self.source[..pos].rfind('\n').map_or(0, |i| i + 1);
+            if line_start == 0 {
+                return pos;
+            }
+            // An attribute on a line above, past any comments written between.
+            if self.source[line_start..pos].trim().is_empty() {
+                let mut end = line_start;
+                let mut found = None;
+                while end > 0 {
+                    let prev_start = self.source[..end - 1].rfind('\n').map_or(0, |i| i + 1);
+                    let prev = self.source[prev_start..end - 1].trim_start();
+                    if prev.starts_with('@') {
+                        found = Some(end - 1 - prev.len());
+                        break;
+                    }
+                    if !prev.starts_with("//") || prev.starts_with("///") {
+                        break;
+                    }
+                    end = prev_start;
+                }
+                if let Some(at) = found {
+                    pos = at;
+                    continue;
+                }
+            }
+            // An attribute earlier on the same line: `@inline public func`.
+            let before = self.source[line_start..pos].trim_start();
+            if before.starts_with('@') {
+                return line_start + (pos - line_start - before.len());
+            }
+            return pos;
+        }
+    }
+
     fn format_block_members(&mut self, methods: &[FnDecl], is_trait_decl: bool) {
         let mut is_first = true;
         for method in methods {
-            let comments = self.emit_comments_before(method.span.start, !is_first);
-            let blank_in_source = self.has_blank_line_before(method.span.start);
+            let start = self.member_start(method);
+            let comments = self.emit_comments_before(start, !is_first);
+            let blank_in_source = self.has_blank_line_before(start);
             if comments.is_empty() {
                 if !is_first && blank_in_source {
                     self.emit_blank_line();
@@ -2051,8 +2108,8 @@ impl<'a> Printer<'a> {
             ExprKind::Bool(b) => {
                 self.emit(if *b { "true" } else { "false" });
             }
-            // A type named in expression position (`ThreadGroup<void>.new()`)
-            // is stored as its parsed spelling, `ThreadGroup<()>`, which
+            // A type named in expression position (`Handles<void>.new()`)
+            // is stored as its parsed spelling, `Handles<()>`, which
             // doesn't parse back.
             ExprKind::Ident(name) if name.contains('<') => {
                 let spelled = self.format_type(name);
