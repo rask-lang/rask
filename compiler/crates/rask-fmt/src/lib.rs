@@ -582,6 +582,22 @@ func main() {
     }
 
     #[test]
+    fn converts_the_unit_type_in_a_type_used_as_a_value() {
+        // A type in expression position is an identifier holding the parsed
+        // spelling, so `ThreadGroup<void>.new()` printed as `ThreadGroup<()>`.
+        keeps(
+            "func f() {\n    mut g = ThreadGroup<void>.new()\n}\n",
+            "ThreadGroup<void>.new()",
+            "a type used as a value",
+        );
+        keeps(
+            "func f() {\n    let v = parse<void>(x)\n}\n",
+            "parse<void>",
+            "a call's type argument",
+        );
+    }
+
+    #[test]
     fn compound_assignment_keeps_its_operator() {
         // `i += 1` is stored as `i = i + 1`, so writing the value out expanded
         // every compound assignment in the tree.

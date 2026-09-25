@@ -2051,6 +2051,13 @@ impl<'a> Printer<'a> {
             ExprKind::Bool(b) => {
                 self.emit(if *b { "true" } else { "false" });
             }
+            // A type named in expression position (`ThreadGroup<void>.new()`)
+            // is stored as its parsed spelling, `ThreadGroup<()>`, which
+            // doesn't parse back.
+            ExprKind::Ident(name) if name.contains('<') => {
+                let spelled = self.format_type(name);
+                self.emit(&spelled);
+            }
             ExprKind::Ident(name) => {
                 self.emit(name);
             }
@@ -2132,8 +2139,9 @@ impl<'a> Printer<'a> {
                 self.emit(".");
                 self.emit(method);
                 if let Some(ref targs) = type_args {
+                    let spelled: Vec<String> = targs.iter().map(|t| self.format_type(t)).collect();
                     self.emit("<");
-                    self.emit(&targs.join(", "));
+                    self.emit(&spelled.join(", "));
                     self.emit(">");
                 }
                 self.emit("(");
