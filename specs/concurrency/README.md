@@ -109,7 +109,7 @@ try h.join()
 | Spawn and wait | `try spawn(|| {}).join()` |
 | Fire-and-forget | `spawn(|| {}).detach()` |
 | Wait for a few | `try h1.join()`, `try h2.join()` |
-| Dynamic spawning | `TaskGroup` |
+| Dynamic spawning | `TaskGroup` (tasks), `ThreadGroup` (threads and pool jobs) |
 | CPU parallelism | `ThreadPool.spawn(|| {})` |
 | Raw OS thread | `Thread.spawn(|| {})` |
 | Unused handle | **Compile error** |

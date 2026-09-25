@@ -3,6 +3,7 @@
 
 import thread.Thread
 import thread.ThreadPool
+import thread.ThreadGroup
 
 func worker(id: i32, iterations: i32) {
     println("Worker {id} starting")
@@ -23,6 +24,7 @@ func main() -> void {
     let handle = Thread.spawn(|| {
         print("Hello from thread!\n")
     })
+    ensure handle.detach()
 
     print("Main thread continues...\n")
 
@@ -33,20 +35,22 @@ func main() -> void {
     // Spawn multiple threads
     print("=== Multiple Threads ===\n\n")
 
-    let h1 = Thread.spawn(|| {
+    // A handle has to be joined or detached, so several go in a group.
+    // The ensure detaches them if anything fails before the join.
+    mut workers = ThreadGroup<void>.new()
+    ensure workers.detach()
+    workers.spawn(|| {
         worker(1, 10)
     })
-    let h2 = Thread.spawn(|| {
+    workers.spawn(|| {
         worker(2, 20)
     })
-    let h3 = Thread.spawn(|| {
+    workers.spawn(|| {
         worker(3, 15)
     })
 
     // Wait for all threads
-    let _ = h1.join()
-    let _ = h2.join()
-    let _ = h3.join()
+    let _ = workers.join_all()
 
     print("\nAll workers done\n\n")
 
@@ -73,6 +77,7 @@ func main() -> void {
         let _ = tx.send("Message 3")
         print("Producer sent 3 messages\n")
     })
+    ensure producer.detach()
 
     // Spawn consumer thread - `own` moves the Receiver into the closure
     let consumer = Thread.spawn(|| {
@@ -82,6 +87,7 @@ func main() -> void {
             }
         }
     })
+    ensure consumer.detach()
 
     let _ = producer.join()
     let _ = consumer.join()
@@ -97,6 +103,7 @@ func main() -> void {
         let _ = sync_tx.send(100)  // Blocks until received
         print("Send complete\n")
     })
+    ensure sender_thread.detach()
 
     let receiver_thread = Thread.spawn(|| {
         print("Waiting to receive...\n")
@@ -104,6 +111,7 @@ func main() -> void {
             println("Received: {value}")
         }
     })
+    ensure receiver_thread.detach()
 
     let _ = sender_thread.join()
     let _ = receiver_thread.join()
@@ -137,20 +145,17 @@ func main() -> void {
     print("=== Thread Pool ===\n\n")
 
     using ThreadPool(workers: 4) {
-        mut handles = Vec.new()
+        mut tasks = ThreadGroup<void>.new()
+        ensure tasks.detach()
 
         for i in 0..8 {
-            let h = ThreadPool.spawn(|| {
+            tasks.add(ThreadPool.spawn(|| {
                 println("Pool task {i} running")
-            })
-            handles.push(h)
+            }))
         }
 
         print("\nWaiting for all pool tasks...\n")
-
-        for h in handles {
-            let _ = h.join()
-        }
+        let _ = tasks.join_all()
     }
 
     print("\n=== Key Points ===\n")

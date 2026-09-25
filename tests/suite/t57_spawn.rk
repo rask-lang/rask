@@ -34,8 +34,11 @@ test "conc.async/S4 — spawn multiple threads and join each" {
     let txb = tx.clone()
     let txc = tx.clone()
     let h1 = Thread.spawn(|| { let _ = txa.send(100); return })
+    ensure h1.detach()
     let h2 = Thread.spawn(|| { let _ = txb.send(200); return })
+    ensure h2.detach()
     let h3 = Thread.spawn(|| { let _ = txc.send(300); return })
+    ensure h3.detach()
     h1.join()
     h2.join()
     h3.join()
@@ -84,6 +87,7 @@ test "conc.async/H2 — join happens-before the reader" {
         let _ = tx.send(42)
         return
     })
+    ensure h.detach()
     h.join()
     mut seen = -1
     if rx.try_receive() is i64 as v {
