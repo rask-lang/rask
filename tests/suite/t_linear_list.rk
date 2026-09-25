@@ -187,3 +187,37 @@ test "an enum carrying a resource gets a message" {
     ensure finish(s)
     assert s.message().starts_with("full: Conn")
 }
+
+// A consuming call that loops over a `match`, run by an `ensure` at scope
+// exit. Inlined into the cleanup path, the `match`'s switch was lowered as a
+// return, so the drain stopped at its first node: nothing closed, every node
+// leaked, and the scope exited quietly.
+extend Pool {
+    func close_into(take self, mutate ids: Vec<i64>) {
+        mut rest = self.conns
+        loop {
+            match rest {
+                Conns.Empty => break
+                Conns.More(c, next) => {
+                    ids.push(c.close())
+                    rest = *next
+                }
+            }
+        }
+    }
+}
+
+func fill_and_leave(mutate ids: Vec<i64>) {
+    mut p = Pool.new()
+    ensure p.close_into(mutate ids)
+    p.open(1)
+    p.open(2)
+}
+
+test "an ensure drains the pool at scope exit" {
+    mut ids: Vec<i64> = Vec.new()
+    fill_and_leave(mutate ids)
+    assert ids.len() == 2
+    assert ids[0] == 2
+    assert ids[1] == 1
+}

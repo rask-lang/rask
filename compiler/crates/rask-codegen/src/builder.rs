@@ -764,12 +764,18 @@ impl<'a> FunctionBuilder<'a> {
                 None
             };
 
+            // Targets resolve to this chain's copies first. A cleanup block's
+            // terminator goes through the same lowering as any other block's,
+            // so a `switch` in an inlined `match` is a switch here too.
+            let mut cleanup_targets = self.block_map.clone();
+            cleanup_targets.extend(cleanup_block_map.iter().map(|(k, v)| (*k, *v)));
             let cleanup_ctx = CodegenCtx {
                 source_file: None,
                 line_map: None,
                 current_line: 0,
                 current_col: 0,
                 current_span_start: 0,
+                block_map: &cleanup_targets,
                 ..ctx
             };
 
@@ -786,102 +792,20 @@ impl<'a> FunctionBuilder<'a> {
                 continue;
             }
 
-            // Process each cleanup block in the chain as a real CFG.
-            // Unreachable sentinels → jump to next chain block or return.
-            for (i, block_id) in chain.iter().enumerate() {
-                let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == *block_id) else {
-                    continue;
-                };
-                let Some(&cl_block) = cleanup_block_map.get(block_id) else {
-                    continue;
-                };
-
-                builder.switch_to_block(cl_block);
-
-                // Lower statements
-                for stmt in &mir_block.statements {
-                    Self::lower_stmt(&mut builder, stmt, &cleanup_ctx)?;
-                }
-
-                // Lower terminator — Unreachable means "continue chain or return"
-                match &mir_block.terminator.kind {
-                    MirTerminatorKind::Unreachable => {
-                        // End of this ensure's sub-CFG. Jump to next chain block or return.
-                        if let Some(next_bid) = chain.get(i + 1) {
-                            if let Some(&next_cl) = cleanup_block_map.get(next_bid) {
-                                builder.ins().jump(next_cl, &[]);
-                            } else if let Some(val) = ret_param {
-                                builder.ins().return_(&[val]);
-                            } else {
-                                builder.ins().return_(&[]);
-                            }
-                        } else if let Some(val) = ret_param {
-                            builder.ins().return_(&[val]);
-                        } else {
-                            builder.ins().return_(&[]);
-                        }
-                    }
-                    MirTerminatorKind::Branch { cond, then_block, else_block } => {
-                        let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;
-                        let actual_ty = builder.func.dfg.value_type(cond_val);
-                        let cond_final = if actual_ty != types::I8 {
-                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8, None)
-                        } else {
-                            cond_val
-                        };
-                        let then_cl = cleanup_block_map.get(then_block).copied()
-                            .unwrap_or_else(|| builder.create_block());
-                        let else_cl = cleanup_block_map.get(else_block).copied()
-                            .unwrap_or_else(|| builder.create_block());
-                        builder.ins().brif(cond_final, then_cl, &[], else_cl, &[]);
-                    }
-                    MirTerminatorKind::Goto { target } => {
-                        // Cleanup blocks first, then the main map. A target in
-                        // neither would leave this block with no terminator,
-                        // which Cranelift rejects with a message that says
-                        // nothing about where it came from — so say it here.
-                        let tgt = cleanup_block_map.get(target)
-                            .or_else(|| self.block_map.get(target))
-                            .copied()
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(format!(
-                                "cleanup block jumps to {:?}, which has no Cranelift block",
-                                target,
-                            )))?;
-                        builder.ins().jump(tgt, &[]);
-                    }
-                    _ => {
-                        // Other terminators in cleanup blocks: treat as return
-                        if let Some(val) = ret_param {
-                            builder.ins().return_(&[val]);
-                        } else {
-                            builder.ins().return_(&[]);
-                        }
-                    }
-                }
-            }
-
-            // Process sub-blocks (handler blocks, done blocks) that aren't
-            // in the chain but are reachable from chain blocks.
-            let chain_set: HashSet<BlockId> = chain.iter().copied().collect();
-            for &bid in &used {
-                if chain_set.contains(&bid) {
-                    continue; // Already processed above
-                }
-                // Only process sub-blocks reachable from THIS chain's blocks
-                let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == bid) else {
-                    continue;
-                };
-                let Some(&cl_block) = cleanup_block_map.get(&bid) else {
-                    continue;
-                };
-
-                // Check if this sub-block is reachable from any block in THIS chain
-                let reachable = chain.iter().any(|chain_bid| {
+            // Which chain member each used block hangs off: the member itself,
+            // or the first one it's reachable from. An `Unreachable` ends that
+            // member's sub-CFG and continues with the next member.
+            let owner_of = |bid: BlockId| -> Option<usize> {
+                chain.iter().position(|cid| {
                     let mut visited = HashSet::new();
-                    let mut queue = vec![*chain_bid];
+                    let mut queue = vec![*cid];
                     while let Some(qid) = queue.pop() {
-                        if qid == bid { return true; }
-                        if !visited.insert(qid) { continue; }
+                        if qid == bid {
+                            return true;
+                        }
+                        if !visited.insert(qid) {
+                            continue;
+                        }
                         if let Some(qb) = self.mir_fn.blocks.iter().find(|b| b.id == qid) {
                             for succ in rask_mir::analysis::cfg::successors(&qb.terminator) {
                                 if cleanup_only.contains(&succ) {
@@ -891,8 +815,31 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                     false
-                });
-                if !reachable { continue; }
+                })
+            };
+
+            // Chain members in order, then the sub-blocks hanging off them.
+            let chain_set: HashSet<BlockId> = chain.iter().copied().collect();
+            let mut order: Vec<BlockId> = chain.clone();
+            let mut rest: Vec<BlockId> =
+                used.iter().copied().filter(|b| !chain_set.contains(b)).collect();
+            rest.sort_by_key(|b| b.0);
+            order.extend(rest);
+
+            for bid in order {
+                let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == bid) else {
+                    continue;
+                };
+                let Some(&cl_block) = cleanup_block_map.get(&bid) else {
+                    continue;
+                };
+                let owner = match chain.iter().position(|c| *c == bid) {
+                    Some(i) => i,
+                    None => match owner_of(bid) {
+                        Some(i) => i,
+                        None => continue,
+                    },
+                };
 
                 builder.switch_to_block(cl_block);
                 for stmt in &mir_block.statements {
@@ -900,74 +847,39 @@ impl<'a> FunctionBuilder<'a> {
                 }
 
                 match &mir_block.terminator.kind {
+                    // End of this ensure's sub-CFG: the next chain member, or
+                    // the function's own return once the chain is done.
                     MirTerminatorKind::Unreachable => {
-                        // End of sub-CFG — jump to next chain block or return.
-                        // Find which chain block this sub-block belongs to.
-                        let chain_idx = chain.iter().position(|cid| {
-                            let mut visited = HashSet::new();
-                            let mut queue = vec![*cid];
-                            while let Some(qid) = queue.pop() {
-                                if qid == bid { return true; }
-                                if !visited.insert(qid) { continue; }
-                                if let Some(qb) = self.mir_fn.blocks.iter().find(|b| b.id == qid) {
-                                    for succ in rask_mir::analysis::cfg::successors(&qb.terminator) {
-                                        if cleanup_only.contains(&succ) {
-                                            queue.push(succ);
-                                        }
-                                    }
-                                }
-                            }
-                            false
-                        });
-                        let next_chain_idx = chain_idx.map(|i| i + 1);
-                        if let Some(next_bid) = next_chain_idx.and_then(|i| chain.get(i)) {
-                            if let Some(&next_cl) = cleanup_block_map.get(next_bid) {
+                        match chain.get(owner + 1).and_then(|n| cleanup_block_map.get(n)) {
+                            Some(&next_cl) => {
                                 builder.ins().jump(next_cl, &[]);
-                            } else if let Some(val) = ret_param {
+                            }
+                            None => match ret_param {
+                                Some(val) => {
+                                    builder.ins().return_(&[val]);
+                                }
+                                None => {
+                                    builder.ins().return_(&[]);
+                                }
+                            },
+                        }
+                    }
+                    // Leaving from inside a cleanup returns what the function
+                    // was already returning.
+                    MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => {
+                        match ret_param {
+                            Some(val) => {
                                 builder.ins().return_(&[val]);
-                            } else {
+                            }
+                            None => {
                                 builder.ins().return_(&[]);
                             }
-                        } else if let Some(val) = ret_param {
-                            builder.ins().return_(&[val]);
-                        } else {
-                            builder.ins().return_(&[]);
                         }
-                    }
-                    MirTerminatorKind::Goto { target } => {
-                        // Cleanup blocks first, then the main map. A target in
-                        // neither would leave this block with no terminator,
-                        // which Cranelift rejects with a message that says
-                        // nothing about where it came from — so say it here.
-                        let tgt = cleanup_block_map.get(target)
-                            .or_else(|| self.block_map.get(target))
-                            .copied()
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(format!(
-                                "cleanup block jumps to {:?}, which has no Cranelift block",
-                                target,
-                            )))?;
-                        builder.ins().jump(tgt, &[]);
-                    }
-                    MirTerminatorKind::Branch { cond, then_block, else_block } => {
-                        let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;
-                        let actual_ty = builder.func.dfg.value_type(cond_val);
-                        let cond_final = if actual_ty != types::I8 {
-                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8, None)
-                        } else {
-                            cond_val
-                        };
-                        let then_cl = cleanup_block_map.get(then_block).copied()
-                            .unwrap_or_else(|| builder.create_block());
-                        let else_cl = cleanup_block_map.get(else_block).copied()
-                            .unwrap_or_else(|| builder.create_block());
-                        builder.ins().brif(cond_final, then_cl, &[], else_cl, &[]);
                     }
                     _ => {
-                        if let Some(val) = ret_param {
-                            builder.ins().return_(&[val]);
-                        } else {
-                            builder.ins().return_(&[]);
-                        }
+                        Self::lower_terminator(
+                            &mut builder, &mir_block.terminator, &cleanup_ctx, &cleanup_chain_blocks,
+                        )?;
                     }
                 }
             }
