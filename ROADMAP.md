@@ -347,10 +347,10 @@ so the deterministic tests run the code that ships.
 ### Bugs in the theme
 
 What the bench finds joins this list. Fixed in #1344: #1311 (the closure form
-of a blocking `Shared` access is rejected, E0897), #1335 (`rask compile` hung
+of a blocking `Shared` access is rejected, E0900), #1335 (`rask compile` hung
 on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
 its worker), #1302 (a box inside a box leaked), #830 (a link
-captured by `spawn` is rejected, E0898), #891 and #1288 (a group of handles
+captured by `spawn` is rejected, E0901), #891 and #1288 (a group of handles
 runs natively, and is plain Rask: a linked list of handles, the shape anyone
 holding a run-time count of linear values writes; the uncallable free
 `join_all`/`select_first` are gone), #890 (its

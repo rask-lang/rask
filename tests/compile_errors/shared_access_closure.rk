@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A blocking `Shared` access handed a closure (E0897, #1311).
+// A blocking `Shared` access handed a closure (E0900, #1311).
 //
 // Blocking access is a `with` block or one expression; a closure is the shape
 // of the non-blocking `try_read`/`try_write`, which can come back without the
@@ -14,11 +14,11 @@ func main() {
     let mutexed = Shared<i64>.mutex(5)
     let local = Shared<i64>.local(5)
 
-    // ERROR: E0897 — `read` takes no closure
+    // ERROR: E0900 — `read` takes no closure
     let a: i64 = readers.read(|v| { return v * 2 })
-    // ERROR: E0897 — nor does `write`
+    // ERROR: E0900 — nor does `write`
     let b: i64 = mutexed.write(|v| { return v * 3 })
-    // ERROR: E0897 — whatever the strategy
+    // ERROR: E0900 — whatever the strategy
     let c: i64 = local.read(|v| { return v * 4 })
 
     // The forms that exist, which must still compile:

@@ -1421,7 +1421,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     format!("`{}` is a `{}`, which holds a link", name, rendered)
                 };
                 Diagnostic::error(format!("`{}` holds a link, which can't go to another task", name))
-                    .with_code("E0898")
+                    .with_code("E0901")
                     .with_primary(*span, label)
                     .with_fix(
                         "copy out what the task needs before the spawn — `let id = n.id` — \
@@ -1467,7 +1467,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             SharedAccessClosure { method, span } => {
                 Diagnostic::error(format!("`{}` on a `Shared` doesn't take a closure", method))
-                    .with_code("E0897")
+                    .with_code("E0900")
                     .with_primary(*span, format!("`.{}(…)` with an argument", method))
                     .with_fix(format!(
                         "open a `with` block, whose value is the block's last expression:\n    \

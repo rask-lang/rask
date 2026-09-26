@@ -4258,7 +4258,7 @@ fn panic_in_a_lock_closure_releases_the_lock() {
     // closure, then unlocks — and a panic longjmps over that unlock. Nothing
     // had registered the lock, so the unwind had nothing to release and the
     // next acquirer blocked forever. The `with` case beside it is the blocking
-    // form, which the closure spelling used to stand in for (E0897).
+    // form, which the closure spelling used to stand in for (E0900).
     for mode in ["--interp", "--native"] {
         let (stdout, stderr, code) = run_capture(mode, "panic_closure_releases_lock.rk");
         assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);

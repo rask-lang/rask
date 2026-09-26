@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A link captured by `spawn` (E0898, #830).
+// A link captured by `spawn` (E0901, #830).
 //
 // A link is its node's address and every link can write the node, so a task
 // handed one writes the same memory as the task that kept it, with nothing
@@ -31,15 +31,15 @@ func main() {
         let (tx, rx) = Channel<Link<Node>>.buffered(1)
 
         let h = spawn(|| {
-            // ERROR: E0898 — a link on its own
+            // ERROR: E0901 — a link on its own
             a.id += 1
-            // ERROR: E0898 — optional
+            // ERROR: E0901 — optional
             if maybe? as m { a.id += m.id }
-            // ERROR: E0898 — in a struct field
+            // ERROR: E0901 — in a struct field
             mut t = cur.steps
-            // ERROR: E0898 — in a Vec
+            // ERROR: E0901 — in a Vec
             if links.is_empty() { t += 1 }
-            // ERROR: E0898 — as what a channel carries
+            // ERROR: E0901 — as what a channel carries
             let _ = tx.send(a)
             return t
         })
@@ -47,7 +47,7 @@ func main() {
 
         // A closure named first is checked the same as one written in place.
         let bump = || {
-            // ERROR: E0898 — captured by a closure that is then spawned
+            // ERROR: E0901 — captured by a closure that is then spawned
             a.id += 1
             return a.id
         }

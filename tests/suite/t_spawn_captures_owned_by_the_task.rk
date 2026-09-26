@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
 // A spawned closure is checked for what it *captures*: a `Local` box or a link
-// it reaches from outside can't go to another task (E0346, E0898). What the
+// it reaches from outside can't go to another task (E0346, E0901). What the
 // task makes for itself is its own.
 //
 //     spawn(|| {

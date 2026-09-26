@@ -10,7 +10,7 @@
 // dies; before the fix each hung the process.
 //
 // The first case was the blocking `write(|v| …)` until that spelling went
-// (E0897, #1311); blocking access is a `with` block, so that's what it tests.
+// (E0900, #1311); blocking access is a `with` block, so that's what it tests.
 
 import sync.Shared
 import sync.Mutex
