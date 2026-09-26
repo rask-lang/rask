@@ -37,7 +37,7 @@ const TERMINAL_WIDTH: usize = 80;
 ///
 /// Words, except that anything in backticks is one piece however many spaces
 /// it contains. A diagnostic's backticks hold the code you are being told to
-/// write — `type Id = … with (Equal, Hashable)` — and a suggestion broken
+/// write — `type Id = … implements Equal, Hashable` — and a suggestion broken
 /// across a line break is one you can't read off and can't copy. Whole or on
 /// its own line.
 ///

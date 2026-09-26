@@ -441,11 +441,11 @@ This means Rask can't express `vec![1, 2, 3]`—you write `Vec.from([1, 2, 3])`.
 
 ---
 
-## Default Trait
+## Default Interface
 
 Removed (it existed briefly with auto-derived universal zeros: `0` for ints, `false` for bool, `""` for string). Universal zeros are Go zero-values by another name — a back door around all-fields-required construction, handing out values nobody chose. Declared field defaults replaced it (`type.structs/FD1–FD6`): defaulted fields are omittable at construction, `Config {}` constructs the default when every field declares one, and a defaultless field is a compile error naming the field. One mechanism feeds construction, decode-missing-fields, and fresh values. No API ever used `T: Default` as a generic bound; if a constructible-empty bound is needed someday, it can return from usage evidence.
 
-## From/Into Conversion Traits
+## From/Into Conversion Interfaces
 
 Rust's most hand-implemented trait, deliberately absent. Its three jobs dissolve at the language level: error conversion for `?` (Rask's `try` widens error *unions* structurally — the `impl From<LibError> for MyError` ceremony class never exists), flexible string parameters (one `string` type — no `String`/`&str`/`Cow` to abstract over), and general conversion (the residue, covered by opt-in `Convert<From, To>`). Rust immigrants will ask; this is the answer.
 
@@ -460,7 +460,7 @@ The felt value splits in two, and only one half is expensive. Consistency — `m
 Where a real "write it once" need shows up, the Rask-shaped tools are:
 
 - **Specialize the monads that earn it into first-order syntax.** `try` *is* the error/option monad's bind, baked into a keyword. `Sequence` *is* the list monad, specialized to a fusing function type. When a third instance pays its rent, it gets its own specialization — the general `Monad` never gets a name.
-- **Associated types** ([types/associated-types.md](types/associated-types.md)) cover most of the "powerful function, fewer lines" cases at `*`-level, with no kind polymorphism and no inference blowup. That was the borrow worth promoting off the deferred list, not HKT — and it was promoted, on exactly that argument: the version that landed is a lookup, and equality constraints between projections, which are the whole inference cost, stayed out (AT7). (This used to cite a result-polymorphic `collect` as the motivating case. It isn't one any more — sequence terminals name what they build, `to_vec` / `to_map` / `join`, and the trait went away with them: `type.sequence/SEQ31`.)
+- **Associated types** ([types/associated-types.md](types/associated-types.md)) cover most of the "powerful function, fewer lines" cases at `*`-level, with no kind polymorphism and no inference blowup. That was the borrow worth promoting off the deferred list, not HKT — and it was promoted, on exactly that argument: the version that landed is a lookup, and equality constraints between projections, which are the whole inference cost, stayed out (AT7). (This used to cite a result-polymorphic `collect` as the motivating case. It isn't one any more — sequence terminals name what they build, `to_vec` / `to_map` / `join`, and the interface went away with them: `type.sequence/SEQ31`.)
 
 What stays out is user-declarable Functor/Monad. A `where F: Monad` bound in a diagnostic is exactly the abstract spec-speak Rask is built against, and Monad-as-effect is the function coloring I already deleted (see Algebraic Effects, above). So: borrow the data-container ergonomics, refuse the effect-abstraction machinery. If Rask grew the kind of functional tower that truly needs HKT, it stopped being Rask somewhere earlier.
 

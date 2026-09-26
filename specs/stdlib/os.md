@@ -337,6 +337,6 @@ spawn(|| {
 ### See Also
 
 - `std.cli` — Structured argument parsing (builds on `os.args()`)
-- `std.io` — `IoError`, `Reader`/`Writer` traits
+- `std.io` — `IoError`, `Reader`/`Writer` interfaces
 - `conc.async` — Channels for signal delivery, `select_first` for shutdown
 - `mem.resource-types` — `@resource` and `ensure` semantics

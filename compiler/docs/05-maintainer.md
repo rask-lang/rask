@@ -155,9 +155,9 @@ Quick reference for non-Rust developers reading the code:
 | `Option<T>` | `Some(value)` or `None` |
 | `Result<T, E>` | `Ok(value)` or `Err(error)` |
 | `?` | Return early if error (unwraps Ok, propagates Err) |
-| `trait Foo { fn bar(&self); }` | Interface definition |
+| `interface Foo { fn bar(&self); }` | Interface definition |
 | `impl Foo for Bar` | Implementing an interface for a type |
-| `#[derive(Debug, Clone)]` | Auto-generate common trait impls |
+| `#[derive(Debug, Clone)]` | Auto-generate common interface impls |
 | `mod foo;` | Include `foo.rs` (or `foo/mod.rs`) as a submodule |
 | `use crate::foo::Bar` | Import from within the same crate |
 | `pub use foo::Bar` | Re-export |

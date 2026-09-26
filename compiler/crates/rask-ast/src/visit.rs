@@ -289,7 +289,7 @@ pub fn walk_body_pruned<'a>(body: &'a [Stmt], f: &mut impl FnMut(&'a Expr) -> bo
 }
 
 /// Every expression in whatever bodies a declaration carries — a function's,
-/// the methods on a struct or enum, a trait's defaults, an `extend` block's, a
+/// the methods on a struct or enum, an interface's defaults, an `extend` block's, a
 /// `const`'s initializer, a `test`'s, a `benchmark`'s.
 ///
 /// A declaration that carries none — an import, a type alias, a union — walks
@@ -307,7 +307,7 @@ pub fn walk_decl<'a>(decl: &'a Decl, f: &mut impl FnMut(&'a Expr)) {
                 walk_body(&m.body, f);
             }
         }
-        DeclKind::Trait(t) => {
+        DeclKind::Interface(t) => {
             for m in &t.methods {
                 walk_body(&m.body, f);
             }

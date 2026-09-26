@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: passing a type that doesn't implement the bound's interface (#314)
+// Expected: typecheck error E0333 — `Fish` does not implement `Greeter`
+
+interface Greeter {
+    func greet(self) -> string
+}
+
+struct Fish { name: string }
+
+func announce(g: T) -> string where T: Greeter {
+    return g.greet()
+}
+
+func main() {
+    // Fish has no `Fish implements Greeter`, so it can't satisfy `T: Greeter`.
+    println("{announce(Fish { name: \"Nemo\" })}")
+}

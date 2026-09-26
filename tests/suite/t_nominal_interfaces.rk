@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Nominal interface conformance (G1/#283): a type satisfies a user interface through a
+// declared `T implements Interface`. `duck interface` opts back into shape-matching.
+// CD1: one `extend` header can declare several conformances at once.
+
+interface Greeter {
+    func greet(self) -> string
+}
+
+// duck interface — satisfied by shape, no declaration needed. Package-internal by
+// rule (DT1); the lint nudge is what this test is deliberately exercising.
+@allow(idiom/duck-interface)
+duck interface Frobber {
+    func frob(self) -> i64
+}
+
+interface Countable { func count(self) -> i64 }
+interface Sizable { func size(self) -> i64 }
+
+struct Dog { name: string }
+Dog implements Greeter {
+    func greet(self) -> string { return "woof:{self.name}" }
+}
+
+struct Widget { v: i64 }
+// No `with Frobber` — a duck interface matches by shape.
+extend Widget {
+    func frob(self) -> i64 { return self.v }
+}
+
+struct Bag { n: i64 }
+// CD1: one block per conformance.
+Bag implements Countable {
+    func count(self) -> i64 { return self.n }
+}
+Bag implements Sizable {
+    func size(self) -> i64 { return self.n * 2 }
+}
+
+func announce(g: T) -> string where T: Greeter { return g.greet() }
+func frob_it(f: T) -> i64 where T: Frobber { return f.frob() }
+func total(c: T) -> i64 where T: Countable + Sizable { return c.count() + c.size() }
+
+test "nominal user interface via declared conformance" {
+    assert announce(Dog { name: "Rex" }) == "woof:Rex"
+}
+
+test "duck interface matches by shape" {
+    assert frob_it(Widget { v: 42 }) == 42
+}
+
+test "two conformances satisfy both bounds" {
+    assert total(Bag { n: 5 }) == 15
+}
+
+func main() {}

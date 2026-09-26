@@ -74,7 +74,7 @@ pub fn mir_to_cranelift_type(ty: &MirType) -> CodegenResult<Type> {
         MirType::Result { .. } => Ok(types::I64), // Pointer to tagged union
         MirType::Union(_) => Ok(types::I64),   // Pointer to union
         MirType::SimdVector { .. } => Ok(types::I64), // Pointer to SIMD buffer
-        MirType::TraitObject { .. } => Ok(types::I64), // Pointer to fat pointer (data_ptr + vtable_ptr)
+        MirType::InterfaceObject { .. } => Ok(types::I64), // Pointer to fat pointer (data_ptr + vtable_ptr)
     }
 }
 

@@ -571,7 +571,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_fn(method);
                 }
             }
-            DeclKind::Trait(_) => {}
+            DeclKind::Interface(_) => {}
             DeclKind::Extern(_) => {}
             DeclKind::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
@@ -3324,7 +3324,7 @@ impl<'a> OwnershipChecker<'a> {
     ///
     /// Containers only, deliberately. A `Vec` is one handle onto one buffer and
     /// there is no second owner to be had, so a lookup's result can only be the
-    /// holder's. A string or a trait box out of the same lookup is a different
+    /// holder's. A string or an interface box out of the same lookup is a different
     /// question with a different answer — those carry a count, and the fix for
     /// them is to take a reference on the read (#1035), not to reject the
     /// program.
@@ -3759,7 +3759,7 @@ impl<'a> OwnershipChecker<'a> {
                         // A primitive is always Copy; it never reaches here as
                         // a `Named` anyway.
                         rask_types::TypeDef::Primitive { .. } => true,
-                        rask_types::TypeDef::Trait { .. } => false,
+                        rask_types::TypeDef::Interface { .. } => false,
                         rask_types::TypeDef::Union { fields, .. } => {
                             fields.iter().all(|(_, t)| self.is_copy(t))
                                 && self.type_size(ty) <= 16
@@ -3810,7 +3810,7 @@ impl<'a> OwnershipChecker<'a> {
                         // A primitive is always Copy; it never reaches here as
                         // a `Named` anyway.
                         rask_types::TypeDef::Primitive { .. } => true,
-                        rask_types::TypeDef::Trait { .. } => false,
+                        rask_types::TypeDef::Interface { .. } => false,
                         // Unions aren't generic (no type_params to substitute) —
                         // reaching this arm through a `Type::Generic` would mean
                         // a union name got parsed with type arguments, which
@@ -3850,8 +3850,8 @@ impl<'a> OwnershipChecker<'a> {
             }
             Type::UnresolvedNamed(_) => false,
 
-            // Trait objects: never Copy (TR11 — owns heap data)
-            Type::TraitObject { .. } => false,
+            // Interface objects: never Copy (TR11 — owns heap data)
+            Type::InterfaceObject { .. } => false,
 
             // Error: don't report more errors
             Type::Error => true,
@@ -3925,8 +3925,8 @@ impl<'a> OwnershipChecker<'a> {
                     8
                 }
             }
-            // Strings, closures and trait objects: fat pointer
-            Type::String | Type::Fn { .. } | Type::TraitObject { .. } => 16,
+            // Strings, closures and interface objects: fat pointer
+            Type::String | Type::Fn { .. } | Type::InterfaceObject { .. } => 16,
             _ => 8,
         }
     }
@@ -5897,7 +5897,7 @@ impl<'a> OwnershipChecker<'a> {
         match self.program.types.get(id)? {
             rask_types::TypeDef::Struct { name, .. }
             | rask_types::TypeDef::Enum { name, .. }
-            | rask_types::TypeDef::Trait { name, .. }
+            | rask_types::TypeDef::Interface { name, .. }
             | rask_types::TypeDef::Union { name, .. }
             | rask_types::TypeDef::NominalAlias { name, .. }
             | rask_types::TypeDef::Primitive { name, .. } => {

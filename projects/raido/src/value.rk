@@ -98,21 +98,21 @@ extend Number {
 // through generic stdlib math, which is the whole point of a number type that
 // isn't the compiler's (std.api-design/SD7-SD9).
 
-extend Number with Add {
+Number implements Add {
     func add(self, other: Number) -> Number {
         // Addition: just add the raw values
         return Number { raw: self.raw + other.raw }
     }
 }
 
-extend Number with Sub {
+Number implements Sub {
     func sub(self, other: Number) -> Number {
         // Subtraction: just subtract
         return Number { raw: self.raw - other.raw }
     }
 }
 
-extend Number with Mul {
+Number implements Mul {
     func mul(self, other: Number) -> Number {
         // Multiplication: multiply raw values, shift right by 32 to correct the fixed-point scaling
         let a = self.raw as i128
@@ -134,7 +134,7 @@ extend Number with Mul {
     }
 }
 
-extend Number with Div {
+Number implements Div {
     func div(self, other: Number) -> Number {
         // Division: shift left by 32, then divide
         // Same split trick as multiplication
@@ -164,7 +164,7 @@ extend Number with Div {
     }
 }
 
-extend Number with Neg {
+Number implements Neg {
     func neg(self) -> Number {
         // Negation
         return Number { raw: -self.raw }

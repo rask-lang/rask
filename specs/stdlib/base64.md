@@ -77,7 +77,7 @@ FIX: Strip them first:
 ### Rationale
 
 **Why its own module, not `std.encoding`:** `std.encoding` is the `Encode`/`Decode`
-trait system — turning a struct into some format. Base64 turns bytes into text.
+interface system — turning a struct into some format. Base64 turns bytes into text.
 Filing both under "encoding" would mean the module name says nothing about which
 one you get, and `encoding.base64.encode(x)` says "encode" twice to reach an
 operation neither module is really about.
@@ -95,5 +95,5 @@ are disjoint and a wrong guess just fails.
 ### See Also
 
 - `std.hex` — the other binary-to-text encoding, same shape
-- `std.encoding` — `Encode`/`Decode` traits, a different job that shares a word
+- `std.encoding` — `Encode`/`Decode` interfaces, a different job that shares a word
 - `std.url` — percent-encoding, which is URL syntax rather than a byte encoding

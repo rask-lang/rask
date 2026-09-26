@@ -41,13 +41,13 @@ Source → Lexer → Tokens → Parser → AST
 // MonoFunction { name: "process$Player", type_args: [Player], body: ... }
 ```
 
-## Vtable Dispatch (`any Trait`)
+## Vtable Dispatch (`any Interface`)
 
 | Rule | Description |
 |------|-------------|
-| **V1: Fat pointer** | `any Trait` values are `(data_ptr, vtable_ptr)` at runtime |
-| **V2: Vtable per type** | For each concrete type satisfying a trait, generate vtable with method pointers, drop fn, size, align |
-| **V3: No monomorphization** | `any Trait` uses vtable dispatch, not monomorphization |
+| **V1: Fat pointer** | `any Interface` values are `(data_ptr, vtable_ptr)` at runtime |
+| **V2: Vtable per type** | For each concrete type satisfying an interface, generate vtable with method pointers, drop fn, size, align |
+| **V3: No monomorphization** | `any Interface` uses vtable dispatch, not monomorphization |
 
 ## MIR Types
 
@@ -270,7 +270,7 @@ FIX: Ensure all call sites provide concrete type arguments.
 | 3. Structs + Enums | Layout, field access, tags, pattern matching, moves | — |
 | 4. Collections | String runtime, Vec, Map, Rack + Link | — |
 | 5. Errors + Resources | Result, `try`, ensure blocks, linear resource tracking | — |
-| 6. Generics + Traits | Monomorphization, semantic hash cache, `any Trait` vtables | — |
+| 6. Generics + Interfaces | Monomorphization, semantic hash cache, `any Interface` vtables | — |
 | 7. Concurrency | Thread spawn, channels, thread pools | — |
 | 8. LLVM Backend | `rask build --release` uses LLVM | `rask-codegen-llvm` (optional) |
 

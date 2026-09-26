@@ -6,9 +6,9 @@
 //
 // Spec: type.aliases T7 (construction), T8 (`.value`), T13 (`extend` works).
 
-type Id = u64 with (Equal, Hashable, Comparable, Debug)
-type Meters = f64 with (Equal, Comparable)
-type Name = string with (Equal, Hashable)
+type Id = u64 implements Equal, Hashable, Comparable, Debug
+type Meters = f64 implements Equal, Comparable
+type Name = string implements Equal, Hashable
 
 extend Id {
     func doubled(self) -> u64 { return self.value * 2 }

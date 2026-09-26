@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-import traitpkg
+import interfacepkg
 import liba
 
 func main() {
-    let s = traitpkg.make_secret("hunter2")
+    let s = interfacepkg.make_secret("hunter2")
     println(s.token)
     return
 }

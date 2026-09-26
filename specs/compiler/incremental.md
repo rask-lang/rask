@@ -184,7 +184,7 @@ The `.rask_meta` section is the patcher's state. It persists across builds insid
 | Rule | Description |
 |------|-------------|
 | **DT1: String accumulation** | New string literals appended to `.rodata`. Never removed within a session. |
-| **DT2: Vtable fixed size** | Vtables have known size from trait definition (8 bytes per method + 24 bytes header). Overwritten in place when method implementations change. |
+| **DT2: Vtable fixed size** | Vtables have known size from interface definition (8 bytes per method + 24 bytes header). Overwritten in place when method implementations change. |
 | **DT3: Comptime overwrite** | Comptime globals have fixed allocated size. Overwritten in place on recompute. Size increase triggers full rebuild. |
 | **DT4: Layout change cascade** | Struct/enum layout size change invalidates all functions using that type (per `comp.semantic-hash/IV4`) AND all vtables for that type |
 

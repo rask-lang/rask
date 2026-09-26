@@ -1650,7 +1650,7 @@ impl fmt::Display for Value {
             // differs between runs there too, so nothing can depend on it —
             // what matters is that it reads as an address and not as `0`.
             Value::RawPtr(p) => write!(f, "{}", p.addr()),
-            // A nominal newtype's inherited traits delegate to the value it
+            // A nominal newtype's inherited interfaces delegate to the value it
             // wraps (type.aliases/T12), so rendering one shows the value. The
             // wrapper form printed `Id(42)` where native — which carries no
             // wrapper at runtime — printed `42`.

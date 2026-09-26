@@ -866,31 +866,31 @@ impl<'a> MirLowerer<'a> {
         Some((MirOperand::Local(result_local), enum_ty))
     }
 
-    /// Emit a TraitBox instruction: heap-allocate `value` and produce a trait object.
-    /// Used for both explicit `as any Trait` casts and implicit TR5 coercions.
-    pub(super) fn emit_trait_box(
+    /// Emit a InterfaceBox instruction: heap-allocate `value` and produce an interface object.
+    /// Used for both explicit `as any Interface` casts and implicit TR5 coercions.
+    pub(super) fn emit_interface_box(
         &mut self,
         val: MirOperand,
         concrete_mir_ty: &MirType,
-        trait_name: &str,
+        interface_name: &str,
     ) -> (MirOperand, MirType) {
         let concrete_type = self.mir_type_name(concrete_mir_ty)
             .unwrap_or_else(|| "unknown".to_string());
         let concrete_size = self.elem_size_for_type(concrete_mir_ty) as u32;
-        let vtable_name = format!(".vtable.{}__{}", concrete_type, trait_name);
-        let trait_obj_ty = MirType::TraitObject { trait_name: trait_name.to_string() };
-        let result_local = self.builder.alloc_temp(trait_obj_ty.clone());
+        let vtable_name = format!(".vtable.{}__{}", concrete_type, interface_name);
+        let interface_obj_ty = MirType::InterfaceObject { interface_name: interface_name.to_string() };
+        let result_local = self.builder.alloc_temp(interface_obj_ty.clone());
 
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::TraitBox {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::InterfaceBox {
             dst: result_local,
             value: val,
             concrete_type,
-            trait_name: trait_name.to_string(),
+            interface_name: interface_name.to_string(),
             concrete_size,
             vtable_name,
         }));
 
-        (MirOperand::Local(result_local), trait_obj_ty)
+        (MirOperand::Local(result_local), interface_obj_ty)
     }
 
     /// Wrap a lowered closure into the layers its parameter declares.
@@ -1335,14 +1335,14 @@ impl<'a> MirLowerer<'a> {
             ty
         };
         // TR5: a concrete value the checker flagged as flowing into an
-        // `any Trait` position gets its vtable here — at the value, so every
+        // `any Interface` position gets its vtable here — at the value, so every
         // use site is covered by one rule. Boxing at the call argument alone
         // left an annotated binding, a struct field and a collection element
         // holding a bare struct pointer that the first method call dispatched
         // through (#335, #474, #481).
-        if !matches!(ty, MirType::TraitObject { .. }) {
-            if let Some(trait_name) = self.ctx.trait_coercions.get(&expr.id).cloned() {
-                return Ok(self.emit_trait_box(op, &ty, &trait_name));
+        if !matches!(ty, MirType::InterfaceObject { .. }) {
+            if let Some(interface_name) = self.ctx.interface_coercions.get(&expr.id).cloned() {
+                return Ok(self.emit_interface_box(op, &ty, &interface_name));
             }
         }
         Ok((op, ty))
@@ -1890,11 +1890,11 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_cast(&mut self, expr: &Expr, ty: &str) -> Result<TypedOperand, LoweringError> {
-            // Trait object boxing: `value as any Trait`
-            if let Some(trait_name) = rask_ast::traits::trait_object_name(ty) {
-                let trait_name = trait_name.to_string();
+            // Interface object boxing: `value as any Interface`
+            if let Some(interface_name) = rask_ast::interfaces::interface_object_name(ty) {
+                let interface_name = interface_name.to_string();
                 let (val, concrete_mir_ty) = self.lower_expr(expr)?;
-                return Ok(self.emit_trait_box(val, &concrete_mir_ty, &trait_name));
+                return Ok(self.emit_interface_box(val, &concrete_mir_ty, &interface_name));
             }
 
             let (val, source_ty) = self.lower_expr(expr)?;
@@ -4948,7 +4948,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        if let Some(r) = self.try_lower_trait_object(expr, method, args, &obj_op, &obj_ty)? {
+        if let Some(r) = self.try_lower_interface_object(expr, method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
 
@@ -5723,7 +5723,7 @@ impl<'a> MirLowerer<'a> {
         //   callee:  Word_render(self, b: ptr) { _2 = _1.0 }
         //
         // which read the handle as the address of one. Natively that was a
-        // segfault as soon as any trait rendered into a builder (#693).
+        // segfault as soon as any interface rendered into a builder (#693).
         //
         // The qualified name isn't resolved until after the arguments are
         // lowered, so rebuild the candidate keys in the same priority order the
@@ -6945,7 +6945,7 @@ impl<'a> MirLowerer<'a> {
                         Some(fields.iter().map(|(_, t)| spell(t)).collect())
                     }
                     rask_types::TypeDef::NominalAlias { underlying, .. } => Some(vec![spell(underlying)]),
-                    rask_types::TypeDef::Trait { .. }
+                    rask_types::TypeDef::Interface { .. }
                     | rask_types::TypeDef::Primitive { .. } => None,
                 }
             }
@@ -7526,14 +7526,14 @@ impl<'a> MirLowerer<'a> {
             overload_names.push(name);
         }
         // XC5: an operator method is a conformance method like any other —
-        // `extend Doc with Equal` in two packages puts two `eq`s on one type.
+        // `Doc implements Equal` in two packages puts two `eq`s on one type.
         let method = &overload_names
             .first()
             .map(|p| self.dispatch_method_name(call, p, method))
             .unwrap_or_else(|| method.clone());
         // A nominal newtype has no layout of its own (type.aliases/T3), so it
         // isn't an aggregate by `obj_ty` even when it wraps a struct — and an
-        // `extend Counted with Equal` block is exactly the overload this gate
+        // `Counted implements Equal` block is exactly the overload this gate
         // is here to find.
         let has_operator_overload = (aggregate_receiver
             || self.expr_is_transparent_newtype(object))
@@ -7950,7 +7950,7 @@ impl<'a> MirLowerer<'a> {
     /// worked — the match lowering special-cased `Ordering` against a raw tag —
     /// but nothing downstream knew the value was an enum, so `{a.compare(b)}`
     /// formatted it as the integer it claimed to be and printed `0` for Less,
-    /// and a user's `extend Ordering with Displayable` was never consulted
+    /// and a user's `Ordering implements Displayable` was never consulted
     /// (#729). Storing the tag into a properly laid out slot makes it the same
     /// shape as any other fieldless enum value.
     fn wrap_ordering(&mut self, tag: MirOperand) -> TypedOperand {
@@ -8668,7 +8668,7 @@ impl<'a> MirLowerer<'a> {
             MirType::F64 => Ok(call(self, "f64_to_string", vec![op.clone()])),
             MirType::F32 => Ok(call(self, "f32_to_string", vec![op.clone()])),
             MirType::Bool => Ok(call(self, "bool_to_string", vec![op.clone()])),
-            // Handles, links, slices, trait objects, function pointers, SIMD
+            // Handles, links, slices, interface objects, function pointers, SIMD
             // lanes. Each is a machine word or a fat pointer with no rendering
             // of its own; printing the word was the bug, so say nothing instead.
             _ => Ok(elided(self)),
@@ -9789,8 +9789,8 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Method call on `any Trait` -> vtable dispatch.
-    fn try_lower_trait_object(
+    /// Method call on `any Interface` -> vtable dispatch.
+    fn try_lower_interface_object(
         &mut self,
         expr: &Expr,
         method: &String,
@@ -9798,9 +9798,9 @@ impl<'a> MirLowerer<'a> {
         obj_op: &MirOperand,
         obj_ty: &MirType,
     ) -> Result<Option<TypedOperand>, LoweringError> {
-        // Trait object dispatch: method call on `any Trait`
-        if let MirType::TraitObject { ref trait_name } = obj_ty {
-            if let Some(methods) = self.ctx.trait_methods.get(trait_name) {
+        // Interface object dispatch: method call on `any Interface`
+        if let MirType::InterfaceObject { ref interface_name } = obj_ty {
+            if let Some(methods) = self.ctx.interface_methods.get(interface_name) {
                 if let Some(idx) = methods.iter().position(|m| m == method) {
                     let vtable_offset = crate::vtable_layout::method_offset(idx);
                     let mut arg_operands = Vec::new();
@@ -9813,12 +9813,12 @@ impl<'a> MirLowerer<'a> {
                         .map(|t| self.ctx.type_to_mir(t))
                         .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:4989"));
                     let result_local = self.builder.alloc_temp(ret_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::TraitCall {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::InterfaceCall {
                         dst: Some(result_local),
-                        trait_object: match obj_op {
+                        interface_object: match obj_op {
                             MirOperand::Local(id) => *id,
                             _ => return Err(LoweringError::InvalidConstruct(
-                                "trait object must be a local variable".to_string()
+                                "interface object must be a local variable".to_string()
                             )),
                         },
                         method_name: method.clone(),

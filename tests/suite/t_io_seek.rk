@@ -8,14 +8,14 @@
 // implemented either, so neither spelling worked. So `reset` is gone and this
 // is the spelling.
 //
-// The `SeekFrom` is taken apart in Rask, once, in the trait bodies. A buffer's
+// The `SeekFrom` is taken apart in Rask, once, in the interface bodies. A buffer's
 // seek is then arithmetic on the cursor it already keeps; a file's is two
 // natives that hand back a position or -1. Neither backend repeats the enum
 // walk, which is what keeps them from disagreeing about it.
 //
 // One thing had to be decided rather than left to the backends: a negative
 // absolute position. C's `fseek` fails on it and Rust's `SeekFrom::Start` takes
-// a `u64` and would clamp, so the trait body rejects it and both agree.
+// a `u64` and would clamp, so the interface body rejects it and both agree.
 //
 // Past the end is a different case and legal — the position moves, and reading
 // from there gives nothing.

@@ -1,7 +1,7 @@
 <!-- id: type.gradual -->
 <!-- status: decided -->
 <!-- summary: Non-public functions may omit types and bounds while sketching; compiler infers from body, explicit signatures are the steady state -->
-<!-- depends: types/traits.md, types/generics.md -->
+<!-- depends: types/interfaces.md, types/generics.md -->
 
 # Gradual Constraints
 
@@ -11,25 +11,25 @@ Non-public functions may omit parameter types, return types, and bounds. Compile
 
 The reason is the tradeoff inference actually makes. A private function's signature is derived from its body, so editing the body can change the signature, which can break callers — a break at a distance from the line you touched. That's a fine price while you're exploring, when the "callers" are three functions you wrote ten minutes ago and the compiler tells you exactly which ones shifted. It's a bad price in code you're maintaining, which is why ML-family languages ended up requiring signatures at module boundaries even though they can infer everything. Rask takes both positions, at different times in a module's life: infer while sketching, write it down to harden.
 
-Two things bound the damage in the meantime. Inference never crosses a package (GC12), and it never looks at callers (GC6) — so the blast radius of an inferred signature is the package it lives in, and the compiler can name every caller that breaks. `duck trait` (`type.generics/DT1–DT4`) is the same story with the same enforcement line: a hard error where the looseness could reach someone else's code (`public duck trait`), a warning where it can only affect you (GC11, DT2, DT3).
+Two things bound the damage in the meantime. Inference never crosses a package (GC12), and it never looks at callers (GC6) — so the blast radius of an inferred signature is the package it lives in, and the compiler can name every caller that breaks. `duck interface` (`type.generics/DT1–DT4`) is the same story with the same enforcement line: a hard error where the looseness could reach someone else's code (`public duck interface`), a warning where it can only affect you (GC11, DT2, DT3).
 
 ## Core Rules
 
 | Rule | Description |
 |------|-------------|
-| **GC1: Parameter inference** | Compiler examines all parameter uses; single concrete type inferred as concrete, only trait constraints inferred as generic with bounds |
+| **GC1: Parameter inference** | Compiler examines all parameter uses; single concrete type inferred as concrete, only interface constraints inferred as generic with bounds |
 | **GC2: Return inference** | Return type is unified type of all return expressions; incompatible types are a compile error |
 | **GC3: Bound inference (mixed)** | Inferred bounds are the union of (a) nominal bounds propagated from called functions and (b) structural method-requirements from direct method/operator use. A nominal bound subsumes the methods it provides |
 | **GC4: Additive annotations** | Explicit types/bounds merge with inferred; conflict is a compile error |
-| **GC5: Public enforcement** | `public` functions must have full type annotations and trait bounds |
+| **GC5: Public enforcement** | `public` functions must have full type annotations and interface bounds |
 | **GC6: Module-local scope** | Inference examines only function body — no callers, no cross-module analysis |
 | **GC11: Explicit is the steady state** | Inferred signatures are a sketching affordance. `rask lint` flags them in a package that carries publish metadata (`tool.lint/I4`) and `rask publish` reports a count (`struct.build/PB9`). Never a hard error — the code is fully checked either way, and a package may legitimately ship with inferred internals |
 | **GC12: Invalidation stops at the package** | A shifted inferred signature can only break callers in the same package — non-public items don't cross package boundaries (`struct.modules/CM3`) — and propagates further only while each hop's own signature keeps shifting. No external consumer can be affected, ever |
-| **GC13: A bare method call pins the parameter** | A direct method call that names no trait — `items.len()` — is a shape requirement GC3(b) can state and nothing can yet solve, so the parameter takes one concrete type: the first call site's. Two element types is an error, not two instantiations. This is a limit of what's built, not a claim about what the shape means; the structural bound is where this is going, and `duck trait` is the spelling it will use |
+| **GC13: A bare method call pins the parameter** | A direct method call that names no interface — `items.len()` — is a shape requirement GC3(b) can state and nothing can yet solve, so the parameter takes one concrete type: the first call site's. Two element types is an error, not two instantiations. This is a limit of what's built, not a claim about what the shape means; the structural bound is where this is going, and `duck interface` is the spelling it will use |
 
 | Principle | Rule |
 |-----------|------|
-| Public = explicit | `public` functions MUST have full type annotations and trait bounds |
+| Public = explicit | `public` functions MUST have full type annotations and interface bounds |
 | Private = flexible *while sketching* | Non-public functions MAY omit parameter types, return types, and/or bounds. Writing them out is what "done" looks like (GC11) |
 | Annotations are additive | Explicit types/bounds merge with inferred ones |
 | Inferred bounds are mixed | Direct method calls produce shape requirements; calls into bounded functions propagate their nominal bounds outward (GC3), so errors land at the outermost call site naming the real requirement. Named bounds appear when the signature is written out — see below |
@@ -92,11 +92,11 @@ Nothing about hardening is manual archaeology — the compiler already knows eve
 
 | Step | What it does |
 |------|--------------|
-| "Make signature explicit" (per function) | Fills in inferred parameter types, return type, bounds, error union, and self mode. Named traits appear where a bound is nominal; residual shape requirements go through the promotion rules (IS2) |
+| "Make signature explicit" (per function) | Fills in inferred parameter types, return type, bounds, error union, and self mode. Named interfaces appear where a bound is nominal; residual shape requirements go through the promotion rules (IS2) |
 | `rask lint --rule idiom/inferred-signature` | Lists every non-public function still relying on inference |
 | `rask publish` | Reports the remaining count (`struct.build/PB9`) — informational, never blocking |
 
-Promotion is where the sketch actually gets pinned down, and it can surface a decision you'd been deferring: a shape requirement (`T: {frobnicate}`) becomes a named trait only when exactly one visible trait covers it, otherwise you pick or define one (IS2). That's the point. The trait name is the contract; inference was carrying a shape instead.
+Promotion is where the sketch actually gets pinned down, and it can surface a decision you'd been deferring: a shape requirement (`T: {frobnicate}`) becomes a named interface only when exactly one visible interface covers it, otherwise you pick or define one (IS2). That's the point. The interface name is the contract; inference was carrying a shape instead.
 
 ### Blast radius (GC12)
 
@@ -114,15 +114,15 @@ An inferred private signature is not an unbounded hazard, and the spec shouldn't
 | Rule | Description |
 |------|-------------|
 | **IN1: Generic preference** | Compiler infers most general type satisfying constraints |
-| **IN2: Literal default** | If only info is literal default with no trait-method usage, infer concrete |
-| **IN3: Trait triggers generic** | Constraints from trait methods, operators, or calls needing bounds produce generic |
+| **IN2: Literal default** | If only info is literal default with no interface-method usage, infer concrete |
+| **IN3: Interface triggers generic** | Constraints from interface methods, operators, or calls needing bounds produce generic |
 
 | Example | Inferred As | Why |
 |---------|-------------|-----|
 | `func double(x) { x * 2 }` | `<T: Numeric>(x: T) -> T` | `*` desugars to `.mul()` |
-| `func get_port() { 8080 }` | `() -> i32` | Literal default, no trait usage |
+| `func get_port() { 8080 }` | `() -> i32` | Literal default, no interface usage |
 | `func greet(name) { println("Hi, {name}") }` | `(name: string)` | String interpolation constrains type |
-| `func len(items) { items.len() }` | `(items: Vec<i64>) -> usize`, at the first call site | `.len()` names no trait, so nothing solves the shape — GC13 |
+| `func len(items) { items.len() }` | `(items: Vec<i64>) -> usize`, at the first call site | `.len()` names no interface, so nothing solves the shape — GC13 |
 
 ## Auto-Generics: Single Letters Only
 
@@ -130,7 +130,7 @@ An inferred private signature is not an unbounded hazard, and the spec shouldn't
 |------|-------------|
 | **PC1: Single letters are type params** | A single uppercase letter in a signature type position (`T`, `U`, `K`, `V`, …) is always a type parameter — resolved without scope lookup, so imports can never change a signature's meaning. Explicit `<T>` stays optional |
 | **PC2: Other names must resolve** | Any name longer than one letter in a signature must name a declared type. Unknown name is an immediate error with a "did you mean" suggestion — a typo never silently becomes a generic, and never silently becomes nothing |
-| **PC3: Single letters reserved** | Declaring a struct, enum, trait, union, or type alias with a single-letter name is a compile error |
+| **PC3: Single letters reserved** | Declaring a struct, enum, interface, union, or type alias with a single-letter name is a compile error |
 
 Signature positions: function parameters, return types, struct fields, enum payloads.
 
@@ -291,7 +291,7 @@ Inference rules:
 | Recursive functions | GC2 | Inferred from base case + recursive structure; ambiguous requires return type annotation |
 | Mutual recursion | GC6 | Both analyzed together (SCC); unresolvable requires annotation on at least one |
 | Closures | GC1 | Closure params already inferred from context; gradual applies to enclosing function |
-| `any Trait` | GC3 | Cannot be inferred — dynamic dispatch must be explicit |
+| `any Interface` | GC3 | Cannot be inferred — dynamic dispatch must be explicit |
 | `comptime` parameters | GC5 | Must be explicit — compilation requires them upfront |
 | Empty function body | GC1 | Parameters are unconstrained generics, return type is `()` |
 | Multiple return types | GC2 | Incompatible branch types produce compile error |
@@ -318,7 +318,7 @@ Inference rules:
 
 **GC11 (why a lint and not a rule):** The honest objection to gradual constraints is that a private function's signature living in its body means a body edit is an API edit — action at a distance, in a language whose fifth principle is local analysis. The answer isn't that the objection is wrong; it's that inference is scoped to where the tradeoff is worth taking. While you're sketching, "the signature follows the code" is the feature. Once the code stops moving, it's a liability, so hardening means writing the signatures down, and the ladder's endpoint (Level 3) is the framing rather than a footnote on a progression.
 
-Why a warning rather than a gate: an inferred private signature cannot break anyone outside the package (GC12), so there's nothing for a publish check to protect. Gating it would be ceremony without a victim, and would forbid a legitimate shape — a small published package whose internals are genuinely still in flux. The same test applied to `duck trait` puts the hard error at `public` (`type.generics/DT1`), where a stranger's code is genuinely at risk, and leaves package-internal duck traits reported rather than blocked (`type.generics/DT2`). One rule for both: enforce where it protects someone else, inform where it doesn't.
+Why a warning rather than a gate: an inferred private signature cannot break anyone outside the package (GC12), so there's nothing for a publish check to protect. Gating it would be ceremony without a victim, and would forbid a legitimate shape — a small published package whose internals are genuinely still in flux. The same test applied to `duck interface` puts the hard error at `public` (`type.generics/DT1`), where a stranger's code is genuinely at risk, and leaves package-internal duck interfaces reported rather than blocked (`type.generics/DT2`). One rule for both: enforce where it protects someone else, inform where it doesn't.
 
 The trigger is publish metadata (`description` + `license`, which `struct.build/PB2` requires to publish at all) rather than a new "is this a scratchpad" manifest key. Those fields are already the signal that you consider the package something other people will use, and reusing them means one less knob.
 
@@ -348,17 +348,17 @@ type parameter (PC1), anything longer must resolve.
 
 Fully statically checked at every stage — not dynamic typing. Step 3 isn't only about going public; it's what a private function in finished code looks like too.
 
-**Interaction with nominal traits:** Direct method calls infer shape requirements — deliberately looser than nominal conformance: private-only sketching glue, invisible in any API. The moment the signature is written out (and always at `public`), bounds are named traits and nominal conformance applies (`type.generics/G1`). The seam has three rules:
+**Interaction with nominal interfaces:** Direct method calls infer shape requirements — deliberately looser than nominal conformance: private-only sketching glue, invisible in any API. The moment the signature is written out (and always at `public`), bounds are named interfaces and nominal conformance applies (`type.generics/G1`). The seam has three rules:
 
 | Rule | Description |
 |------|-------------|
-| **IS1: Mixed inference** | Per GC3, nominal bounds propagate up from callees; only direct method use stays shape-based. The propagating half is what works today — an operator names its trait, so `x * 2` gives `T: Numeric`. A method that names none pins instead (GC13) |
-| **IS2: Promotion is exact** | "Make explicit"/"make public" fills in a named trait only when exactly one visible trait covers the residual method-requirements. Zero matches: report the methods and offer to generate a trait definition plus conformance declarations. Two or more: list candidates, the user picks — never auto-pick a semantic claim |
-| **IS3: Honest ghost text** | Display distinguishes propagated nominal bounds from raw shape requirements: `T: Comparable` vs `T: {frobnicate}`. Never show a trait name that was merely guessed from shape |
+| **IS1: Mixed inference** | Per GC3, nominal bounds propagate up from callees; only direct method use stays shape-based. The propagating half is what works today — an operator names its interface, so `x * 2` gives `T: Numeric`. A method that names none pins instead (GC13) |
+| **IS2: Promotion is exact** | "Make explicit"/"make public" fills in a named interface only when exactly one visible interface covers the residual method-requirements. Zero matches: report the methods and offer to generate an interface definition plus conformance declarations. Two or more: list candidates, the user picks — never auto-pick a semantic claim |
+| **IS3: Honest ghost text** | Display distinguishes propagated nominal bounds from raw shape requirements: `T: Comparable` vs `T: {frobnicate}`. Never show an interface name that was merely guessed from shape |
 
 **Gotcha (by design):** annotating a working private function can make a working call fail — the bound's meaning flips from shape to declaration when written down. A callee type that had the methods but never declared conformance passes inference and fails the explicit bound. This is the publish step doing its job: naming the contract.
 
-**Prototyping with traits:** traits belong to the hardening phase; the sketching phase needs none (inference carries shapes). When a trait is wanted while sketching, `duck trait` is the scratchpad form — no conformance declarations, methods move freely. Harden by deleting the `duck` keyword: the compiler lists every shape-matching type and quick-fixes insert the declarations (`type.generics/DT4`). The one place duck traits are gated harder than inferred signatures: a duck trait may never be `public` (`type.generics/DT1`), because shape-matching that crosses a package boundary can break code its author never sees. Neither is gated inside a package — GC12 and DT1 both mean the looseness stays with the author who wrote it.
+**Prototyping with interfaces:** interfaces belong to the hardening phase; the sketching phase needs none (inference carries shapes). When an interface is wanted while sketching, `duck interface` is the scratchpad form — no conformance declarations, methods move freely. Harden by deleting the `duck` keyword: the compiler lists every shape-matching type and quick-fixes insert the declarations (`type.generics/DT4`). The one place duck interfaces are gated harder than inferred signatures: a duck interface may never be `public` (`type.generics/DT1`), because shape-matching that crosses a package boundary can break code its author never sees. Neither is gated inside a package — GC12 and DT1 both mean the looseness stays with the author who wrote it.
 
 **Monomorphization:** Inference doesn't change monomorphization. Compiler infers bounds, then monomorphization proceeds as with explicit: each call site generates specialized code. Inferred signature is semantically identical to equivalent explicit.
 
@@ -384,6 +384,6 @@ Hover on a parameter shows its full inferred type. Hover on the function name sh
 
 ### See Also
 
-- `type.traits` — Trait definitions and structural matching
+- `type.interfaces` — Interface definitions and structural matching
 - `type.generics` — Generic type parameters and bounds
 - `ctrl.comptime` — Compile-time parameters

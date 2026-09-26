@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// One definition per name (type.generics/MN2). Two blocks each defining a
+// method on one type used to be accepted, with the block read last winning
+// silently, so reordering two files changed what a program did.
+//
+// The way out for two interfaces that want different `label`s is a nominal
+// type of its own (MN3). Not an orphan rule: who owns the type never matters.
+
+interface Labeled {
+    func label(self) -> string
+}
+
+interface Tagged {
+    func label(self) -> i64
+}
+
+struct Doc {
+    n: i64
+}
+
+Doc implements Labeled {
+    func label(self) -> string {
+        return "doc {self.n}"
+    }
+}
+
+Doc implements Tagged {
+    // ERROR: `Doc` already defines `label` (E0898)
+    func label(self) -> i64 {
+        return self.n
+    }
+}
+
+// Two plain blocks, same rule.
+struct Counter {
+    n: i64
+}
+
+extend Counter {
+    func bump(mutate self) {
+        self.n = self.n + 1
+    }
+}
+
+extend Counter {
+    // ERROR: `Counter` already defines `bump` (E0898)
+    func bump(mutate self) {
+        self.n = self.n + 2
+    }
+}
+
+func main() {
+    let d = Doc { n: 1 }
+    println(d.label())
+}

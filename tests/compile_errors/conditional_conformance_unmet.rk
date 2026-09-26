@@ -2,14 +2,14 @@
 // Rejects: a conditional conformance whose `where` condition isn't met (CC1)
 // Expected: typecheck error E0333 — `Blob` does not implement `Show`
 
-trait Show {
+interface Show {
     func show(self) -> string
 }
 
 struct Blob { v: i64 }   // does NOT conform to Show
 
 struct Ring<T> { items: Vec<T> }
-extend Ring<T> with Show where T: Show {
+Ring<T> implements Show where T: Show {
     func show(self) -> string { return "ring" }
 }
 

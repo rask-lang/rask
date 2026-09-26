@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
 
-use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl};
+use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, InterfaceDecl, ImplDecl};
 use rask_ast::Span;
 
 use crate::backend::CompilationResult;
@@ -68,9 +68,9 @@ fn decl_to_symbol(decl: &Decl, source: &str, idx: &LineIndex) -> Option<Document
             &e.name, None, SymbolKind::ENUM, range,
             Some(enum_children(e, source, idx)),
         )),
-        DeclKind::Trait(t) => Some(symbol(
+        DeclKind::Interface(t) => Some(symbol(
             &t.name, None, SymbolKind::INTERFACE, range,
-            Some(trait_children(t, source, idx)),
+            Some(interface_children(t, source, idx)),
         )),
         DeclKind::Impl(i) => Some(symbol(
             &impl_name(i), None, SymbolKind::NAMESPACE, range,
@@ -87,10 +87,9 @@ fn decl_to_symbol(decl: &Decl, source: &str, idx: &LineIndex) -> Option<Document
 }
 
 fn impl_name(i: &ImplDecl) -> String {
-    if i.trait_names.is_empty() {
-        i.target_ty.clone()
-    } else {
-        format!("{} for {}", i.trait_names.join(", "), i.target_ty)
+    match &i.interface_name {
+        None => i.target_ty.clone(),
+        Some(t) => format!("{} implements {}", i.target_ty, t),
     }
 }
 
@@ -121,7 +120,7 @@ fn enum_children(e: &EnumDecl, source: &str, idx: &LineIndex) -> Vec<DocumentSym
     children
 }
 
-fn trait_children(t: &TraitDecl, source: &str, idx: &LineIndex) -> Vec<DocumentSymbol> {
+fn interface_children(t: &InterfaceDecl, source: &str, idx: &LineIndex) -> Vec<DocumentSymbol> {
     t.methods.iter().map(|m| {
         let range = idx.span_to_range(source, m.span);
         symbol(&m.name, f_detail(m), SymbolKind::METHOD, range, None)
@@ -180,7 +179,7 @@ fn push_matching(
         DeclKind::Fn(f) => (&f.name, SymbolKind::FUNCTION, None),
         DeclKind::Struct(s) => (&s.name, SymbolKind::STRUCT, None),
         DeclKind::Enum(e) => (&e.name, SymbolKind::ENUM, None),
-        DeclKind::Trait(t) => (&t.name, SymbolKind::INTERFACE, None),
+        DeclKind::Interface(t) => (&t.name, SymbolKind::INTERFACE, None),
         DeclKind::Const(c) => (&c.name, SymbolKind::CONSTANT, None),
         DeclKind::Union(u) => (&u.name, SymbolKind::STRUCT, None),
         DeclKind::Extern(e) => (&e.name, SymbolKind::FUNCTION, None),
@@ -201,11 +200,11 @@ fn push_matching(
         location: Location { uri: uri.clone(), range },
         container_name: container,
     });
-    // Also include children (struct/enum/trait methods) for completeness.
+    // Also include children (struct/enum/interface methods) for completeness.
     match &decl.kind {
         DeclKind::Struct(s) => push_methods(&s.methods, &s.name, query_lc, source, idx, uri, out),
         DeclKind::Enum(e) => push_methods(&e.methods, &e.name, query_lc, source, idx, uri, out),
-        DeclKind::Trait(t) => push_methods(&t.methods, &t.name, query_lc, source, idx, uri, out),
+        DeclKind::Interface(t) => push_methods(&t.methods, &t.name, query_lc, source, idx, uri, out),
         DeclKind::Impl(i) => push_methods(&i.methods, &impl_name(i), query_lc, source, idx, uri, out),
         _ => {}
     }

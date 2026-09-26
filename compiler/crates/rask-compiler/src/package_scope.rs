@@ -333,8 +333,8 @@ pub fn unqualify_diagnostics(
             // Where the name sits inside a longer identifier, the compiler
             // built that identifier from it — a duplicate conformance suggests
             // `type MyDoc = …` and an opted-out encoding suggests
-            // `struct DocWire { … }`, which are `MyDoc_traitpkg` and
-            // `Doc_traitpkgWire` at this point. A dotted path can't go in the
+            // `struct DocWire { … }`, which are `MyDoc_interfacepkg` and
+            // `Doc_interfacepkgWire` at this point. A dotted path can't go in the
             // middle of an identifier, so those get the bare name; anywhere
             // else gets the spelling the program uses.
             let ident_char = |c: char| c.is_alphanumeric() || c == '_';

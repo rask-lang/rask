@@ -93,7 +93,7 @@ That's most of the cost. What you get back: no lifetime annotations in signature
 ## What works today
 
 - Memory model: ownership, moves, borrows, linearity
-- Type system: primitives, structs, enums, generics, traits
+- Type system: primitives, structs, enums, generics, interfaces
 - Control flow: if/match/loops
 - Concurrency: spawn/join, channels, thread pools
 - Error handling: `T or E` with `try` to propagate and `catch e =>` to handle; optionals (`T?`, `??`, `!`, `is none`)
@@ -108,7 +108,7 @@ That's most of the cost. What you get back: no lifetime annotations in signature
 
 ## Inspiration
 
-Rust for ownership, Results, traits. Go for simplicity (if Rask needs three lines where Go needs one, I've probably designed it wrong). Zig for `comptime` and cost transparency. Jai for build scripts as real code. Swift's `defer` is where `ensure` came from. Kotlin for `extend` blocks and `T?`. Hylo for value semantics. Vale for generational references. Erlang for bitmatch.
+Rust for ownership, Results, interfaces. Go for simplicity (if Rask needs three lines where Go needs one, I've probably designed it wrong). Zig for `comptime` and cost transparency. Jai for build scripts as real code. Swift's `defer` is where `ensure` came from. Kotlin for `extend` blocks and `T?`. Hylo for value semantics. Vale for generational references. Erlang for bitmatch.
 
 ---
 

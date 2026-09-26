@@ -1343,7 +1343,7 @@ no generations, so there is no link analogue of that property.
 
 **But how much did that tier actually cover?** Less than "graphs," which is the
 correction. `mem.relocatable`'s tier-A is *Flat*, and FL1 excludes `string`, `Vec`,
-`Map`, `Cell`, `Shared`, `Mutex`, trait objects and closures — recursively. So of
+`Map`, `Cell`, `Shared`, `Mutex`, interface objects and closures — recursively. So of
 the litmus programs:
 
 | Node type | Flat? |

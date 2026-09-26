@@ -73,7 +73,7 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
     // the argument: `spawn(f: func() -> T) -> TaskHandle<T>` left `T` an
     // inference variable, the join's payload fell back to i64, and a task
     // returning a struct segfaulted while one returning an i64 worked (#882).
-    // Same shape as the `T?`, `*T`, `any Trait` and tuple cases below.
+    // Same shape as the `T?`, `*T`, `any Interface` and tuple cases below.
     //
     // First, before the `or` split and the generic handling: `func() -> i64 or
     // MyErr` would split at the ` or ` and `func() -> Vec<i64>` ends in `>`, so
@@ -146,16 +146,16 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         }
     }
 
-    // `any Trait` — a trait object. Without this it came back as the *name*
+    // `any Interface` — an interface object. Without this it came back as the *name*
     // "any Reader", which prints exactly like the real type, so a module
-    // function's `any Trait` parameter looked perfectly fine and nothing
+    // function's `any Interface` parameter looked perfectly fine and nothing
     // recorded the TR5 coercion its argument needed. `io.copy(buf, out)` handed
     // over a raw struct pointer, and the first dispatch through it jumped to
     // address zero (#860). Same shape as the `*T` case above (#696).
-    if let Some(trait_name) = s.strip_prefix("any ") {
-        let trait_name = trait_name.trim();
-        if !trait_name.is_empty() {
-            return Type::TraitObject { trait_name: trait_name.to_string() };
+    if let Some(interface_name) = s.strip_prefix("any ") {
+        let interface_name = interface_name.trim();
+        if !interface_name.is_empty() {
+            return Type::InterfaceObject { interface_name: interface_name.to_string() };
         }
     }
 
@@ -324,7 +324,7 @@ mod tests {
     /// A `func(...)` parameter has to come back as a real function type. As a
     /// *name* it prints exactly like one, so nothing ties the argument to it —
     /// the shape that left `spawn(f: func() -> T) -> TaskHandle<T>` with an
-    /// unresolved T (#882). Same family as `T?` (#696), `any Trait` (#860) and
+    /// unresolved T (#882). Same family as `T?` (#696), `any Interface` (#860) and
     /// tuples (#841), each of which was found the same way.
     #[test]
     fn a_function_parameter_parses_as_a_function_type() {

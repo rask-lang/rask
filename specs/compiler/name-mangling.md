@@ -42,7 +42,7 @@ _R<len><pkg_path>_<type><len><name>[_G<generic_args>][_H<hash>]
 | Method | `M` | `_R4core_M3Vec4push_Gi32` |
 | Struct | `S` | `_R4core_S3Vec_Gi32` |
 | Enum | `E` | `_R4core_E6Option_Gi32` |
-| Trait | `T` | `_R4core_T5Clone` |
+| Interface | `T` | `_R4core_T5Clone` |
 | Const | `C` | `_R4core_C3MAX` |
 | Static | `V` | `_R4core_V5CACHE` |
 | Test | `Test` | `_R4core_Test9parse_url` |
@@ -228,7 +228,7 @@ C-compatible types:
 - `T or E` (use return codes + out params)
 - `T?` (use nullable pointers or sentinel values)
 - `Vec<T>`, `Map<K,V>` (use `*T` + `usize`)
-- Trait objects `any Trait`
+- Interface objects `any Interface`
 
 Example error:
 ```rask

@@ -171,9 +171,9 @@ pub enum MirType {
         elem: Box<MirType>,
         lanes: u32,
     },
-    /// Trait object: fat pointer (data_ptr + vtable_ptr). 16 bytes.
-    TraitObject {
-        trait_name: String,
+    /// Interface object: fat pointer (data_ptr + vtable_ptr). 16 bytes.
+    InterfaceObject {
+        interface_name: String,
     },
 }
 
@@ -209,14 +209,14 @@ impl MirType {
                 | MirType::Result { .. }
                 | MirType::Union(_)
                 | MirType::SimdVector { .. }
-                // A trait object is a 16-byte fat pointer in a stack slot, with
+                // An interface object is a 16-byte fat pointer in a stack slot, with
                 // the local holding the slot's address — the same convention as
                 // a struct. Leaving it out here while `is_aggregate_dst` in
                 // codegen counted it as an aggregate is what broke reading one
                 // back out of a `T?`: the payload copy sized itself for a
                 // scalar and dropped the vtable half, so the call through it
                 // segfaulted (#552).
-                | MirType::TraitObject { .. }
+                | MirType::InterfaceObject { .. }
         )
     }
 
@@ -291,7 +291,7 @@ impl MirType {
                 let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
                 (offset + max_align - 1) & !(max_align - 1)
             }
-            MirType::TraitObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
+            MirType::InterfaceObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
             MirType::Option(inner) => {
                 // The niche is one word: the value *is* the option, and `none`
                 // is the null address. Everything else is tag (8 bytes,

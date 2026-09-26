@@ -1,13 +1,13 @@
 <!-- id: std.io -->
 <!-- status: decided -->
-<!-- summary: Reader/Writer traits, buffered wrappers, standard streams, IoError -->
+<!-- summary: Reader/Writer interfaces, buffered wrappers, standard streams, IoError -->
 <!-- depends: memory/resource-types.md, types/error-types.md -->
 
 # I/O
 
-Trait-based I/O: `Reader` and `Writer` as foundation, buffered wrappers for efficiency, linear standard stream handles, single `IoError` enum.
+Interface-based I/O: `Reader` and `Writer` as foundation, buffered wrappers for efficiency, linear standard stream handles, single `IoError` enum.
 
-One vocabulary for whole-stream I/O, everywhere (traits, `File`, `TcpConnection`, and the `fs.*` convenience functions): `read_text`/`write_text` for strings, `read_bytes`/`write_bytes` for bytes, `read_lines` for line vectors. Bare `read`/`write` are the low-level partial operations. If you guess a name from this grid, it exists.
+One vocabulary for whole-stream I/O, everywhere (interfaces, `File`, `TcpConnection`, and the `fs.*` convenience functions): `read_text`/`write_text` for strings, `read_bytes`/`write_bytes` for bytes, `read_lines` for line vectors. Bare `read`/`write` are the low-level partial operations. If you guess a name from this grid, it exists.
 
 ## IoError
 
@@ -30,7 +30,7 @@ enum IoError {
 }
 ```
 
-## Reader Trait
+## Reader Interface
 
 | Rule | Description |
 |------|-------------|
@@ -41,7 +41,7 @@ enum IoError {
 
 <!-- test: skip -->
 ```rask
-trait Reader {
+interface Reader {
     func read(self, mutate buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
@@ -51,12 +51,12 @@ trait Reader {
 
 `buf` is `mutate` because filling it is the whole point — a parameter is
 read-only unless it says so (`mem.parameters/PM2`), and without the marker the
-trait couldn't be implemented at all: every body that wrote into `buf` was
+interface couldn't be implemented at all: every body that wrote into `buf` was
 rejected.
 
 Owned byte results are `Vec<u8>`; byte inputs are `Vec<u8>` views — everywhere in the I/O surface.
 
-## Writer Trait
+## Writer Interface
 
 | Rule | Description |
 |------|-------------|
@@ -67,7 +67,7 @@ Owned byte results are `Vec<u8>`; byte inputs are `Vec<u8>` views — everywhere
 
 <!-- test: parse -->
 ```rask
-trait Writer {
+interface Writer {
     func write(self, data: Vec<u8>) -> usize or IoError
     func write_bytes(self, data: Vec<u8>) -> void or IoError
     func write_text(self, data: string) -> void or IoError
@@ -75,7 +75,7 @@ trait Writer {
 }
 ```
 
-## Seek Trait
+## Seek Interface
 
 | Rule | Description |
 |------|-------------|
@@ -91,7 +91,7 @@ enum SeekFrom {
     Current(i64)
 }
 
-trait Seeker {
+interface Seeker {
     func seek(self, pos: SeekFrom) -> i64 or IoError
     func position(self) -> i64 or IoError
 }
@@ -99,7 +99,7 @@ trait Seeker {
 
 `File` and `Buffer` implement `Seeker`. Standard streams do not — they are sequential.
 
-Past the end is legal — the position moves and a read from there gives nothing. A negative *absolute* position is not, and the trait bodies reject it rather than leaving it to the backends: C's `fseek` fails on one and Rust's `SeekFrom::Start` takes a `u64` and would clamp.
+Past the end is legal — the position moves and a read from there gives nothing. A negative *absolute* position is not, and the interface bodies reject it rather than leaving it to the backends: C's `fseek` fails on one and Rust's `SeekFrom::Start` takes a `u64` and would clamp.
 
 ## Buffered Wrappers
 
@@ -190,7 +190,7 @@ No `reset` — `buf.seek(SeekFrom.Start(0))` is the one way to rewind.
 | `io.read_line()` | `-> string or IoError` | Read one line from stdin (strips newline) |
 | `io.copy(reader, writer)` | `-> u64 or IoError` | Copy all bytes, returns total copied |
 
-## Trait Implementations Summary
+## Interface Implementations Summary
 
 | Type | Reader | Writer | Seeker | Linear |
 |------|--------|--------|--------|--------|

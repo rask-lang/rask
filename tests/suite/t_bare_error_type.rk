@@ -19,7 +19,7 @@
 // handing a returned error back as the *ok* branch.
 //
 // Boxing a second time is #1106: `try` through two functions that both return
-// `… or Error` used to ask for the concrete type's name twice, and a trait
+// `… or Error` used to ask for the concrete type's name twice, and an interface
 // object hasn't got one — the vtable came out `.vtable.unknown__Error`.
 
 enum Boom {

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-import traitpkg
-import traitpkg.Labeled
+import interfacepkg
+import interfacepkg.Labeled
 
-public extend traitpkg.Doc with traitpkg.Labeled {
+public interfacepkg.Doc implements interfacepkg.Labeled {
     public func label(self) -> string {
         return "b:{self.n}"
     }
 }
 
-public func describe(d: traitpkg.Doc) -> string {
+public func describe(d: interfacepkg.Doc) -> string {
     return d.label()
 }
 
@@ -21,6 +21,6 @@ func shown_b<T: Labeled>(x: T) -> string {
     return x.label()
 }
 
-public func describe_generic(d: traitpkg.Doc) -> string {
+public func describe_generic(d: interfacepkg.Doc) -> string {
     return shown_b(d)
 }

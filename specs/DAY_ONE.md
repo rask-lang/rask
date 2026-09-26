@@ -30,7 +30,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 10. **Pattern matching.** `match` for branches, `if x is Pattern` for one check.
 
-11. **Traits.** `extend Type with Trait` declares conformance. `any Trait` holds mixed types — the cast allocates, and writing it is the marker.
+11. **Interfaces.** `Type implements Interface` declares conformance. `any Interface` holds mixed types — the cast allocates, and writing it is the marker.
 
 12. **Concurrency.** `using Multitasking { }` once, near the top of `main`. `spawn(|| { ... })` returns a handle you must `.join()` or `.detach()`. Channels move values between tasks. No `async`/`await` — calls look like calls.
 
@@ -58,7 +58,7 @@ thirteen chapters hasn't been done.
 
 **The compiler teaches these when you meet them** — each arrives as an error that explains the rule: linear resources (`@resource`, consume-exactly-once), stale pool handles, disjoint field borrows, borrow escapes, `staged()` lock updates, runtime-scope errors.
 
-**Opt-in, announced by the code that uses them:** `Rack<T>` + `Link<T>`, `Atomic<T>`, `comptime`, `unsafe`/FFI, duck traits and inferred signatures (sketch mode, lint-fenced).
+**Opt-in, announced by the code that uses them:** `Rack<T>` + `Link<T>`, `Atomic<T>`, `comptime`, `unsafe`/FFI, duck interfaces and inferred signatures (sketch mode, lint-fenced).
 
 ## The budget rule
 

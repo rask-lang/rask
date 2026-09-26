@@ -12,7 +12,7 @@ Pipeline: `.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Co
 - Precedence: check `parse_expr_bp()` (Pratt parsing with binding power)
 
 ### rask-ast — Shared AST node types
-- `src/decl.rs` — declarations: functions, structs, enums, traits, impls
+- `src/decl.rs` — declarations: functions, structs, enums, interfaces, impls
 - `src/expr.rs` — expressions, patterns, match arms, operators (`BinOp`/`UnaryOp`)
 - `src/stmt.rs` — statements
 - `src/token.rs` — token types (shared with lexer)
@@ -37,7 +37,7 @@ Pipeline: `.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Co
 - `src/checker/inference.rs` — type variable creation and constraint generation
 - `src/checker/unify.rs` — type unification (constraint solving)
 - `src/checker/generics.rs` — generic instantiation and bounds checking
-- `src/checker/resolve.rs` — type name resolution (traits, methods)
+- `src/checker/resolve.rs` — type name resolution (interfaces, methods)
 - `src/checker/borrow.rs` — borrow scope tracking during type check
 - `src/checker/errors.rs` — TypeError definitions
 - `src/checker/type_defs.rs` — TypeDef, MethodSig, TypedProgram
@@ -77,7 +77,7 @@ Pipeline: `.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Co
 - `src/types.rs` — MirType→Cranelift type mapping
 - `src/layouts.rs` — struct/enum memory layout for Cranelift
 - `src/closures.rs` — closure codegen
-- `src/dispatch.rs` — trait dispatch, `src/vtable.rs` — vtable layout
+- `src/dispatch.rs` — interface dispatch, `src/vtable.rs` — vtable layout
 - `src/debug_info.rs` — DWARF debug info
 - Struct layout bug: check `layouts.rs` and `rask-mono` layout computation
 

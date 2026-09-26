@@ -9,7 +9,7 @@ struct Top { public mid: Mid? }
 struct Wrapper<T> { public item: T }
 struct Pair<A, B> { public left: A, public right: B }
 
-type Id = u64 with (Equal, Hashable, Displayable)
+type Id = u64 implements Equal, Hashable, Displayable
 
 struct Holder { public id: Id }
 

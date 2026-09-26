@@ -16,8 +16,8 @@ The stdlib is where language size actually hits people. Nobody reads the grammar
 | **SD3: The guess test** | Before designing a function, write the call site you'd *guess* — the line you'd type before opening any docs. If the guess is reasonable and the stdlib differs, the stdlib is wrong, not the guess. Names come from [canonical-patterns.md](../canonical-patterns.md)'s vocabulary so guesses transfer between modules |
 | **SD4: No Rust legacy by reflex** | Every name and shape is justified from how the Rask call site reads, never from what `std` calls it. Rask has `T or E`, `T?`, `Heap`, `Shared<T, S>` — so `Result`, `Option`, `Box`, `Rc`, `RefCell`, `Arc<Mutex<T>>` never appear, and neither do their method idioms (`unwrap`, `expect`, `ok_or`, `and_then`). `Vec`/`Map` survive because they read right in Rask, not because Rust has them |
 | **SD5: One way** | No convenience aliases, no two spellings for one operation (`mem.atomics/GA1` is the precedent). If two functions do the same thing, one of them is deprecated the day the second lands |
-| **SD7: Weakest bound** | A generic function asks for the least trait that lets one body serve every `T`. Generic when the algorithm doesn't care which type it got; concrete when a type parameter would only absorb a conversion. A conversion belongs at the call site, written, with its policy visible |
-| **SD8: Canonical protocols** | The stdlib speaks a closed set of protocols: `Sequence`, `Comparable`, `Equal`, `Hashable`, `Displayable`, `Debug`, `Reader`/`Writer`, `Encode`/`Decode`, and the operator traits (`type.operator-resolution`). No module invents a parallel interface for something this set covers. Growing the set is a change to this spec, not a module-level decision |
+| **SD7: Weakest bound** | A generic function asks for the least interface that lets one body serve every `T`. Generic when the algorithm doesn't care which type it got; concrete when a type parameter would only absorb a conversion. A conversion belongs at the call site, written, with its policy visible |
+| **SD8: Canonical protocols** | The stdlib speaks a closed set of protocols: `Sequence`, `Comparable`, `Equal`, `Hashable`, `Displayable`, `Debug`, `Reader`/`Writer`, `Encode`/`Decode`, and the operator interfaces (`type.operator-resolution`). No module invents a parallel interface for something this set covers. Growing the set is a change to this spec, not a module-level decision |
 | **SD9: Laws, not just signatures** | Every canonical protocol states its contract in its spec (`Equal` is reflexive and symmetric, `Comparable` is a total order, `Sequence` yields each element once). Conforming means meeting the laws. A signature match without the laws is how independently-written pieces compose into bugs |
 
 ## One word per question (SD6)
@@ -94,13 +94,13 @@ This is `CLAUDE.md`'s "sketch how the call site reads first" made into a gate ra
 
 ## Composability (SD7–SD9)
 
-The goal is Julia's property: two pieces of code that have never heard of each other work together, because the algorithm asked for the least it needed and the type answered. A user's number type flows through generic stdlib math; a user's container flows through everything written against `Sequence`. Rask gets this statically: the "multiple dispatch" question was settled in `type.operator-resolution`'s rationale — choosing a method from several argument types and third-party conformances (#312) are compile-time features Rask takes; the runtime open-set version is the part rejected. Both halves are in: generic trait parameters (#1164), associated types (#1165), and the operator resolution built on them.
+The goal is Julia's property: two pieces of code that have never heard of each other work together, because the algorithm asked for the least it needed and the type answered. A user's number type flows through generic stdlib math; a user's container flows through everything written against `Sequence`. Rask gets this statically: the "multiple dispatch" question was settled in `type.operator-resolution`'s rationale — choosing a method from several argument types and third-party conformances (#312) are compile-time features Rask takes; the runtime open-set version is the part rejected. Both halves are in: generic interface parameters (#1164), associated types (#1165), and the operator resolution built on them.
 
 SD7 delivers the generics half, SD8 the conventions half. They only work together: a weakest-bound function over a protocol nobody shares composes with nothing.
 
 ### The litmus: Raido's fixed-point
 
-Raido's 32.32 fixed-point number is the in-house test that the property exists. Conforming to the operator traits and `Comparable`, this works with **zero stdlib changes** — it runs on both backends as `tests/suite/t_fixed_point_litmus.rk`:
+Raido's 32.32 fixed-point number is the in-house test that the property exists. Conforming to the operator interfaces and `Comparable`, this works with **zero stdlib changes** — it runs on both backends as `tests/suite/t_fixed_point_litmus.rk`:
 
 <!-- test: skip -->
 ```rask
@@ -108,7 +108,7 @@ let readings: Vec<Fixed> = sensor.window()
 let smallest = min(readings[0], readings[1])   // std.math/G1, T: Comparable
 mut total = Fixed.zero()
 for r in readings {
-    total = total + r                          // operator trait, not a Fixed method
+    total = total + r                          // operator interface, not a Fixed method
     if r > alarm_level { alert(r) }            // Comparable again
 }
 ```
@@ -146,7 +146,7 @@ Julia composes so well partly because nothing can reject you — and it pays in 
 
 **SD4 (Rust legacy):** Rask's early stdlib sketches leaned on Rust names because that's what the hands knew. Some survived scrutiny (`Vec`, `Map`), most didn't (`Result` → `T or E`). The rule exists so the scrutiny happens per-name instead of per-habit.
 
-**SD7/SD8 (composability):** I want Julia's composability, by generics and by conventions. The halves only work together. Generics without agreed protocols puts the flexibility at parameter positions (`impl AsRef`-style bounds), where it hides conversions and turns errors into trait-bound walls. Protocols without generics means writing the same loop per type. Both halves, statically checked, is the target. `min<T: Comparable>` with no `math.min` and no `.min()` method is the existing model case.
+**SD7/SD8 (composability):** I want Julia's composability, by generics and by conventions. The halves only work together. Generics without agreed protocols puts the flexibility at parameter positions (`impl AsRef`-style bounds), where it hides conversions and turns errors into interface-bound walls. Protocols without generics means writing the same loop per type. Both halves, statically checked, is the target. `min<T: Comparable>` with no `math.min` and no `.min()` method is the existing model case.
 
 **SD9 (laws):** Composability means combinations nobody tested. The only way those are correct is if each side conforms to a stated contract rather than a shape. Laws live in the protocol's own spec and are cited from conformance docs; a comptime-checkable subset can come later without changing what the rule asks.
 

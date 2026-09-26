@@ -29,7 +29,7 @@ fn all_rules() -> Vec<Rule> {
         Rule { id: "idiom/unwrap-production", check: idiom::check_unwrap_production },
         Rule { id: "idiom/missing-ensure", check: idiom::check_missing_ensure },
         Rule { id: "idiom/large-unsafe-block", check: idiom::check_large_unsafe_blocks },
-        Rule { id: "idiom/duck-trait", check: idiom::check_duck_trait },
+        Rule { id: "idiom/duck-interface", check: idiom::check_duck_interface },
         Rule { id: "idiom/equality-absent-check", check: idiom::check_equality_absent_check },
         Rule { id: "idiom/match-on-optional", check: idiom::check_match_on_optional },
         Rule { id: "idiom/mod-for-index", check: idiom::check_mod_for_index },
@@ -110,7 +110,7 @@ fn allow_scopes(decls: &[Decl], source: &str) -> Vec<AllowScope> {
                     add(m.span, &m.attrs);
                 }
             }
-            DeclKind::Trait(t) => add(decl.span, &t.attrs),
+            DeclKind::Interface(t) => add(decl.span, &t.attrs),
             DeclKind::Test(t) => add(decl.span, &t.attrs),
             DeclKind::Benchmark(b) => add(decl.span, &b.attrs),
             _ => {}

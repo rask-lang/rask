@@ -21,7 +21,7 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
 
     let mut types: Vec<StructDesc> = Vec::new();
     let mut enums: Vec<EnumDesc> = Vec::new();
-    let mut traits: Vec<TraitDesc> = Vec::new();
+    let mut interfaces: Vec<InterfaceDesc> = Vec::new();
     let mut functions: Vec<FunctionDesc> = Vec::new();
     let mut constants: Vec<ConstantDesc> = Vec::new();
     let mut imports: Vec<ImportDesc> = Vec::new();
@@ -56,11 +56,11 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
     for decl in decls {
         match &decl.kind {
             DeclKind::Struct(_) | DeclKind::Enum(_) => {}
-            DeclKind::Trait(t) => {
+            DeclKind::Interface(t) => {
                 if !opts.show_all && !t.is_pub {
                     continue;
                 }
-                traits.push(extract_trait(t));
+                interfaces.push(extract_interface(t));
             }
             DeclKind::Fn(f) => {
                 if !opts.show_all && !f.is_pub {
@@ -139,7 +139,7 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
         imports,
         types,
         enums,
-        traits,
+        interfaces,
         functions,
         constants,
         externs,
@@ -237,10 +237,10 @@ fn extract_enum(e: &EnumDecl, opts: &DescribeOpts) -> EnumDesc {
     }
 }
 
-fn extract_trait(t: &TraitDecl) -> TraitDesc {
+fn extract_interface(t: &InterfaceDecl) -> InterfaceDesc {
     let methods: Vec<FunctionDesc> = t.methods.iter().map(extract_function).collect();
 
-    TraitDesc {
+    InterfaceDesc {
         name: t.name.clone(),
         doc: t.doc.clone(),
         public: t.is_pub,

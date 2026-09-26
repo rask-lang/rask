@@ -19,9 +19,9 @@ pub enum Direction {
     Backward,
 }
 
-/// Trait for defining a dataflow analysis.
+/// Interface for defining a dataflow analysis.
 ///
-/// Implement this trait to define what information flows through the CFG.
+/// Implement this interface to define what information flows through the CFG.
 /// The framework handles worklist iteration and convergence.
 pub trait DataflowAnalysis {
     /// The lattice domain — must support equality checks for convergence.

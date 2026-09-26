@@ -13,7 +13,7 @@ Emit DWARF sections from Cranelift so GDB/LLDB/codelldb work out of the box.
 
 **What's needed:**
 - `gimli::write` builds DWARF sections (`.debug_info`, `.debug_line`, `.debug_abbrev`)
-- `cranelift-object`'s `WriteDebugInfo` trait bridges gimli sections into object files
+- `cranelift-object`'s `WriteDebugInfo` interface bridges gimli sections into object files
 - Map each MIR instruction back to a `.rk` source span
 - Emit type DIEs (`DW_TAG_base_type`, `DW_TAG_structure_type`) for Rask types
 

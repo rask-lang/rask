@@ -95,7 +95,7 @@ fn identifier_completion(source: &str, offset: usize, cached: &CompilationResult
             rask_resolve::SymbolKind::Function { .. } => (CompletionItemKind::FUNCTION, "func".to_string()),
             rask_resolve::SymbolKind::Struct { .. } => (CompletionItemKind::STRUCT, "struct".to_string()),
             rask_resolve::SymbolKind::Enum { .. } => (CompletionItemKind::ENUM, "enum".to_string()),
-            rask_resolve::SymbolKind::Trait { .. } => (CompletionItemKind::INTERFACE, "trait".to_string()),
+            rask_resolve::SymbolKind::Interface { .. } => (CompletionItemKind::INTERFACE, "interface".to_string()),
             rask_resolve::SymbolKind::Variable { mutable } => {
                 let kw = if *mutable { "mut" } else { "let" };
                 (CompletionItemKind::VARIABLE, kw.to_string())
@@ -121,7 +121,7 @@ fn identifier_completion(source: &str, offset: usize, cached: &CompilationResult
     }
 
     let keywords = [
-        "let", "mut", "const", "func", "struct", "enum", "trait", "extend",
+        "let", "mut", "const", "func", "struct", "enum", "interface", "extend",
         "if", "else", "match", "for", "while", "loop", "return",
         "try", "ensure", "import", "public", "spawn", "with",
     ];
@@ -207,7 +207,7 @@ fn add_typedef(def: &TypeDef, formatter: &TypeFormatter, items: &mut Vec<Complet
                 }
             }
         }
-        TypeDef::Trait { methods, .. } => {
+        TypeDef::Interface { methods, .. } => {
             for method in methods {
                 items.push(method_to_completion(method, formatter));
             }

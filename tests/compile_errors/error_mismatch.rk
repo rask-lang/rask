@@ -61,7 +61,7 @@ func load_config_v1(path: string) -> Config or ConfigError {
     return config
 }
 
-// Option 2: Implement From traits for automatic conversion
+// Option 2: Implement From interfaces for automatic conversion
 extend ConfigError {
     func from(e: IoError) -> ConfigError {
         ConfigError.Io(e)

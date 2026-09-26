@@ -102,7 +102,7 @@ FIX: Use sha256 unless an existing format requires MD5:
 in a `Map`. It is allowed to be fast, weak, and randomly seeded per process. A
 `digest` is stable across runs and machines and is what you compare to decide two
 files are the same. Both are "hashing" in English, which is exactly the problem —
-one module named `hash` containing `hash.sha256` next to a `Hashable.hash` trait
+one module named `hash` containing `hash.sha256` next to a `Hashable.hash` interface
 invites using one where the other belongs.
 
 **Why one-shot functions and builders both (D2):** these are the fallible-pair
@@ -125,5 +125,5 @@ worse than not shipping them (`std.stdlib` README, out of scope).
 ### See Also
 
 - `std.hex` / `std.base64` — rendering a digest as text
-- `type.traits` — `Hashable`, the other kind of hashing
+- `type.interfaces` — `Hashable`, the other kind of hashing
 - `std.fs` — streaming a file into an incremental digest

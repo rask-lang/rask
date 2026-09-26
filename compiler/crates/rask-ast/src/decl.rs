@@ -22,8 +22,8 @@ pub enum DeclKind {
     Struct(StructDecl),
     /// Enum declaration
     Enum(EnumDecl),
-    /// Trait declaration
-    Trait(TraitDecl),
+    /// Interface declaration
+    Interface(InterfaceDecl),
     /// Impl block
     Impl(ImplDecl),
     /// Import declaration
@@ -73,8 +73,8 @@ pub struct TypeAliasDecl {
     pub is_pub: bool,
     /// True for `type alias X = Y` (transparent). False for `type X = Y` (nominal).
     pub is_transparent: bool,
-    /// Traits inherited from underlying type: `type X = Y with (Equal, Hashable)`
-    pub with_traits: Vec<String>,
+    /// Interfaces inherited from underlying type: `type X = Y implements Equal, Hashable`
+    pub with_interfaces: Vec<String>,
 }
 
 /// A top-level constant declaration.
@@ -194,14 +194,14 @@ pub struct TypeParam {
     pub is_comptime: bool,
     /// Type for comptime parameters (e.g., "usize" for `comptime N: usize`)
     pub comptime_type: Option<String>,
-    /// Trait bounds (for regular type parameters)
+    /// Interface bounds (for regular type parameters)
     pub bounds: Vec<String>,
-    /// GT4: `trait Mul<Rhs = Self>` — what the parameter means when a bound or
-    /// conformance header writes the trait bare. Only traits declare these.
+    /// GT4: `interface Mul<Rhs = Self>` — what the parameter means when a bound or
+    /// conformance header writes the interface bare. Only interfaces declare these.
     pub default: Option<String>,
 }
 
-/// GT1/AT1: a trait member the conformance supplies, not a method.
+/// GT1/AT1: an interface member the conformance supplies, not a method.
 ///
 /// `type Out`, `type Out: Comparable`, `type Out = Self`.
 #[derive(Debug, Clone)]
@@ -214,7 +214,7 @@ pub struct AssocTypeDecl {
     pub span: Span,
 }
 
-/// AT2: `type Out = Meters` inside an `extend T with Trait` block.
+/// AT2: `type Out = Meters` inside an `T implements Interface` block.
 #[derive(Debug, Clone)]
 pub struct AssocTypeBinding {
     pub name: String,
@@ -456,22 +456,22 @@ pub struct UnionDecl {
     pub doc: Option<String>,
 }
 
-/// A trait declaration.
+/// An interface declaration.
 #[derive(Debug, Clone)]
-pub struct TraitDecl {
+pub struct InterfaceDecl {
     pub name: String,
-    /// GT1: `trait Scale<Rhs>` — bound by the conformance header, substituted
+    /// GT1: `interface Scale<Rhs>` — bound by the conformance header, substituted
     /// through every required signature before it's checked.
     pub type_params: Vec<TypeParam>,
-    /// Super-traits: `trait Display: ToString, Debug`
-    pub super_traits: Vec<String>,
+    /// Super-interfaces: `interface Display: ToString, Debug`
+    pub super_interfaces: Vec<String>,
     pub methods: Vec<FnDecl>,
     /// AT1: associated types the conformance supplies.
     pub assoc_types: Vec<AssocTypeDecl>,
     pub is_pub: bool,
-    /// Whether this is an `unsafe trait`.
+    /// Whether this is an `unsafe interface`.
     pub is_unsafe: bool,
-    /// `duck trait` — shape-matched (structural) instead of nominal (G1).
+    /// `duck interface` — shape-matched (structural) instead of nominal (G1).
     pub is_duck: bool,
     /// Attributes (`@allow(...)`, …)
     pub attrs: Vec<String>,
@@ -479,20 +479,22 @@ pub struct TraitDecl {
     pub doc: Option<String>,
 }
 
-/// An impl block (`extend T`, `extend T with Trait`, `extend T with A, B, C`).
+/// An extend block (`extend T`, `T implements I`).
 #[derive(Debug, Clone)]
 pub struct ImplDecl {
-    /// Declared trait conformances (CD1). Empty for a plain `extend T` block.
-    pub trait_names: Vec<String>,
+    /// The one interface this block conforms to (CD1). None for a plain
+    /// `extend T` block.
+    pub interface_name: Option<String>,
     pub target_ty: String,
     pub methods: Vec<FnDecl>,
     /// Whether this is an `unsafe extend`.
     pub is_unsafe: bool,
-    /// `scoped extend` — methods stay out of the type's inherent namespace (MN4).
-    pub is_scoped: bool,
+    /// `public` in front of the block. Parsed and printed back; the checker
+    /// treats every conformance as declared, public or not.
+    pub is_pub: bool,
     /// CC1/CC2: `where` condition for conditional conformance on a generic
-    /// target (`extend Ring<T> with Displayable where T: Displayable`). Each
-    /// entry is a type param and its required trait bounds.
+    /// target (`Ring<T> implements Displayable where T: Displayable`). Each
+    /// entry is a type param and its required interface bounds.
     pub where_bounds: Vec<TypeParam>,
     /// AT2: `type Out = Meters` lines in the block.
     pub assoc_bindings: Vec<AssocTypeBinding>,
@@ -500,12 +502,6 @@ pub struct ImplDecl {
     pub doc: Option<String>,
 }
 
-impl ImplDecl {
-    /// The first declared trait, if any (for single-trait consumers/formatting).
-    pub fn trait_name(&self) -> Option<&String> {
-        self.trait_names.first()
-    }
-}
 
 /// An import declaration.
 ///

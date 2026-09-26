@@ -15,10 +15,10 @@
 mod annotation_defaults;
 mod defaults;
 mod generalize;
-mod trait_defaults;
+mod interface_defaults;
 pub use defaults::is_valid_default_expr;
 
-use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, TraitDecl, ImplDecl};
+use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, InterfaceDecl, ImplDecl};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
@@ -136,11 +136,11 @@ fn desugar_inner_from(
     id_base: u32,
     default_args_id_base: u32,
 ) -> DesugarOutput {
-    // TD2: a trait method with a body becomes a real method on every conformer
+    // TD2: an interface method with a body becomes a real method on every conformer
     // that doesn't write its own. Before anything else walks the tree, so the
     // copies get desugared with everything else — and so `scan_error_message_types`
-    // sees a `message()` a trait supplied by default.
-    let injected = trait_defaults::inject(decls);
+    // sees a `message()` an interface supplied by default.
+    let injected = interface_defaults::inject(decls);
 
     // Before anything rewrites an operator: this reads the body's operators as
     // written, and turns an inferred parameter that is only ever an operand
@@ -182,7 +182,7 @@ enum TemplatePiece {
 struct Desugarer {
     next_id: u32,
     /// Positions in the current `extend` block whose method body was copied out
-    /// of a trait's default (TD2). Those bodies carry the trait's own NodeIds,
+    /// of an interface's default (TD2). Those bodies carry the interface's own NodeIds,
     /// and `node_types` is keyed by id — two conformers sharing them would
     /// overwrite each other's inferred types — so the traversal hands out fresh
     /// ones on the way through.
@@ -311,7 +311,7 @@ impl Desugarer {
             DeclKind::Fn(f) => self.desugar_fn(f),
             DeclKind::Struct(s) => self.desugar_struct(s),
             DeclKind::Enum(e) => self.desugar_enum(e),
-            DeclKind::Trait(t) => self.desugar_trait(t),
+            DeclKind::Interface(t) => self.desugar_interface(t),
             DeclKind::Impl(i) => self.desugar_impl(i),
             DeclKind::Const(c) => {
                 self.desugar_expr(&mut c.init);
@@ -491,7 +491,7 @@ impl Desugarer {
         MessageTemplate::Format(humanize_variant(&variant.name, &variant.fields))
     }
 
-    fn desugar_trait(&mut self, t: &mut TraitDecl) {
+    fn desugar_interface(&mut self, t: &mut InterfaceDecl) {
         for method in &mut t.methods {
             self.desugar_fn(method);
         }

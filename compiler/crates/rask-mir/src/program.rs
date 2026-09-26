@@ -28,8 +28,8 @@ pub struct MirProgram {
     /// Compile-time evaluated global data sections.
     pub comptime_globals: HashMap<String, ComptimeGlobalMeta>,
 
-    /// Trait name → method names, for vtable construction.
-    pub trait_methods: HashMap<String, Vec<String>>,
+    /// Interface name → method names, for vtable construction.
+    pub interface_methods: HashMap<String, Vec<String>>,
 
     /// Source file path (for error messages in generated code).
     pub source_file: Option<String>,
@@ -68,7 +68,7 @@ mod tests {
             struct_layouts: vec![],
             enum_layouts: vec![],
             comptime_globals: HashMap::new(),
-            trait_methods: HashMap::new(),
+            interface_methods: HashMap::new(),
             source_file: None,
         }
     }

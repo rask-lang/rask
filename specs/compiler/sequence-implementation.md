@@ -7,15 +7,15 @@
 
 ## Context
 
-The spec [types/sequence-protocol.md](../types/sequence-protocol.md) retires `Iterator<Item>` in favor of `Sequence<T>` — a function-type alias: `func(yield: |T| -> bool)`. For-loops over custom types desugar to yield-closure calls. No stored references, no state machines, no trait. Zero-cost enforced by closure inlining.
+The spec [types/sequence-protocol.md](../types/sequence-protocol.md) retires `Iterator<Item>` in favor of `Sequence<T>` — a function-type alias: `func(yield: |T| -> bool)`. For-loops over custom types desugar to yield-closure calls. No stored references, no state machines, no interface. Zero-cost enforced by closure inlining.
 
-Most infrastructure is already present: `Type::Fn` exists, closures lower fine, `ClosureCall` MIR stmt exists, generic substitution handles function types. The work is (1) one parser extension, (2) new for-loop lowering branch, (3) stdlib migration from trait methods to closure-returning functions, (4) retire the hardcoded Iterator trait, (5) update tests.
+Most infrastructure is already present: `Type::Fn` exists, closures lower fine, `ClosureCall` MIR stmt exists, generic substitution handles function types. The work is (1) one parser extension, (2) new for-loop lowering branch, (3) stdlib migration from interface methods to closure-returning functions, (4) retire the hardcoded Iterator interface, (5) update tests.
 
 ## Scope
 
 **Unchanged**: built-in `for x in vec` (inline-alias desugar, `ctrl.loops/LP17`); `Type::Fn`; `ClosureCall` MIR stmt; closure lowering; generic substitution; existing iterator-chain fusion for built-in collections (`try_parse_iter_chain`).
 
-**Changed**: closure parser gains `|mutate x: T|`; new for-loop path for Sequence values; stdlib collection methods return `Sequence<T>` instead of `Iterator<T>`; adapters become extension methods on `Sequence<T>`; `Iterator<Item>` trait removed; tests updated.
+**Changed**: closure parser gains `|mutate x: T|`; new for-loop path for Sequence values; stdlib collection methods return `Sequence<T>` instead of `Iterator<T>`; adapters become extension methods on `Sequence<T>`; `Iterator<Item>` interface removed; tests updated.
 
 ## Status
 
@@ -32,7 +32,7 @@ Most infrastructure is already present: `Type::Fn` exists, closures lower fine, 
 | — **#1047: a Vec passed by value to a function is never freed** | **the real next thing** | — |
 | 7 — `Range<T>` as one nominal type yielding a `Sequence<T>` (#920) | ✓ one stdlib struct, the whole surface forwarding to `as_sequence()` | `t_week_range_adapters` |
 | 8 — Channel `stream()` method | pending | — |
-| 9 — Retire `Iterator<Item>` trait | pending | — |
+| 9 — Retire `Iterator<Item>` interface | pending | — |
 | 10 — Test suite migration | pending | — |
 | 11 — Closure devirtualization pass (`SEQ17`–`SEQ19`) | pending | — |
 | 12 — Zero-cost fusion test | pending | — |
@@ -398,7 +398,7 @@ Each stage is independently shippable and testable.
 - **`stdlib/string.rk`** — `chars()`, `bytes()`, `char_indices()`, `split()`, `split_whitespace()`, `lines()` (lines 102–117)
 - **Runtime** (`compiler/crates/rask-interp/src/builtins/collections.rs`): rewrite `take_all()`, `keys()`, `values()` to return `Value::Closure` driving the underlying data
 - **Type checker** (`compiler/crates/rask-types/src/checker/resolve.rs`): remove the Iterator-return references for `drain()`/`take_all()` (lines 1365, 1746–1748)
-- The existing chain fusion (`rask-mir/src/lower/iterators.rs`) for `vec.filter(...).map(...)` remains — it operates on the AST chain pattern, not on the runtime Iterator trait
+- The existing chain fusion (`rask-mir/src/lower/iterators.rs`) for `vec.filter(...).map(...)` remains — it operates on the AST chain pattern, not on the runtime Iterator interface
 
 ### Stage 7 — Channel `stream()` method
 
@@ -419,9 +419,9 @@ Each stage is independently shippable and testable.
 - **Test 1**: `for msg in rx.stream().take(10) { ... }` — channel close terminates the sequence
 - **Test 2**: build a channel, call `rx.stream()`, drop the Sequence without iterating. Verify the Receiver drops with it and senders see the channel-closed path.
 
-### Stage 8 — Retire `Iterator<Item>` trait
+### Stage 8 — Retire `Iterator<Item>` interface
 
-- **File**: `compiler/crates/rask-types/src/traits.rs` — delete the `"Iterator" =>` arm at lines 330–336
+- **File**: `compiler/crates/rask-types/src/interfaces.rs` — delete the `"Iterator" =>` arm at lines 330–336
 - **File**: `rask-interp/src/builtins/iterators.rs` — the pull-based `IteratorState` and `iter_next()` may stay as internal-only or be removed. Remove if Stage 6 rewrote all builtins
 - `Value::Iterator` variant in `rask-interp/src/value.rs:396` — remove if no runtime uses it
 - Update remaining error messages mentioning `Iterator<T>` to reference `Sequence<T>`
@@ -452,7 +452,7 @@ Each stage is independently shippable and testable.
 | Closure lowering | `compiler/crates/rask-mir/src/lower/closures.rs:18` | `lower_closure()` |
 | ClosureCall MIR | `compiler/crates/rask-mir/src/stmt.rs:59` | MIR opcode |
 | Iterator-chain fusion | `compiler/crates/rask-mir/src/lower/iterators.rs` | built-in fusion |
-| Iterator trait | `compiler/crates/rask-types/src/traits.rs:330-336` | delete in Stage 8 |
+| Iterator interface | `compiler/crates/rask-types/src/interfaces.rs:330-336` | delete in Stage 8 |
 | Function type parsing | `compiler/crates/rask-types/src/checker/parse_type.rs:247` | `parse_fn_type()` |
 | Generic substitution | `compiler/crates/rask-mono/src/instantiate.rs:70` | `substitute_type_string()` |
 | Stdlib Vec methods | `stdlib/collections.rk:80,83` | return types |

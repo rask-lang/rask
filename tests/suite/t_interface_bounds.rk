@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #314: an explicit interface bound brings the interface's methods into scope on the
+// bounded type param for static dispatch. Both `<T: Interface>` and `where` forms.
+// Monomorphization resolves each call to the concrete type's conformance.
+
+interface Greeter {
+    func greet(self) -> string
+}
+
+struct Dog { name: string }
+Dog implements Greeter {
+    func greet(self) -> string { return "woof:{self.name}" }
+}
+
+struct Robot { id: i64 }
+Robot implements Greeter {
+    func greet(self) -> string { return "beep:{self.id}" }
+}
+
+// `where` form, user interface.
+func announce(g: T) -> string where T: Greeter {
+    return g.greet()
+}
+
+// Inline form, user interface.
+func announce_inline<T: Greeter>(g: T) -> string {
+    return g.greet()
+}
+
+// Builtin operator interface: `>` desugars to `.gt()`, provided by Comparable.
+func largest(a: T, b: T) -> T where T: Comparable {
+    if a > b: return a
+    return b
+}
+
+test "user interface method via where bound" {
+    assert announce(Dog { name: "Rex" }) == "woof:Rex"
+    assert announce(Robot { id: 7 }) == "beep:7"
+}
+
+test "user interface method via inline bound" {
+    assert announce_inline(Dog { name: "Fido" }) == "woof:Fido"
+}
+
+test "comparable bound grants the > operator" {
+    assert largest(3, 7) == 7
+    assert largest(10, 2) == 10
+}
+
+func main() {}

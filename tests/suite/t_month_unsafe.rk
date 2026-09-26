@@ -13,7 +13,7 @@
 // Two things deliberately aren't here, both for the same reason: a test that
 // panics fails, so neither can be asserted on.
 //
-//   - Reading past the end of a buffer, and dereferencing null. mem.unsafe's
+//   - Reading past the end of a buffer, and dereferencing nullptr. mem.unsafe's
 //     debug-mode table says both panic with a location in debug and are UB in
 //     release. The interpreter is a debug environment by construction and always
 //     panics; native reads whatever is there (or takes a SIGSEGV, which
@@ -148,7 +148,7 @@ test "mem.unsafe — eq/ne ask about the address, not the byte there" {
 
 test "mem.unsafe — is_null separates null from a real pointer" {
     let s = "abc"
-    let nothing: *u8 = null
+    let nothing: *u8 = nullptr
     assert nothing.is_null()
     unsafe {
         assert !s.as_ptr().is_null()

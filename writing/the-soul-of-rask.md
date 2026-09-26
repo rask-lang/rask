@@ -4,7 +4,7 @@
 
 Every language has a personality. Go is pragmatic. Rust is principled. C is honest. You feel it in the syntax, in the error messages, in what the language makes easy and what it makes hard.
 
-Rask exists because I got frustrated. Rust has genuinely great ideas—ownership, traits, pattern matching, functional programming, zero-cost abstractions. But using it for everyday work feels like using a cannon to shoot a bird. Yes, it's compile-time safe. Yes, it's zero-cost. But at what cost for the programmer who just needs stuff to work? Half the time I'm satisfying the borrow checker instead of solving my actual problem.
+Rask exists because I got frustrated. Rust has genuinely great ideas—ownership, interfaces, pattern matching, functional programming, zero-cost abstractions. But using it for everyday work feels like using a cannon to shoot a bird. Yes, it's compile-time safe. Yes, it's zero-cost. But at what cost for the programmer who just needs stuff to work? Half the time I'm satisfying the borrow checker instead of solving my actual problem.
 
 And the alternative is... Go? C#? Languages with garbage collectors where you trade control for convenience? There's this gap between "fight the compiler for safety" and "give up and let the GC handle it." I wanted something in that gap.
 

@@ -33,7 +33,7 @@ Half-open (`0..n`) and inclusive (`0..=n`) ranges with step, reverse, and infini
 | `0..` | `Range<T>` (no end) | Unbounded (panics on overflow per OV2) |
 | `..n`, `..` | — | Index syntax only (R7) — not a value |
 
-**Why one type.** Four shapes of range times a 28-method sequence surface is either four copies of that surface or a trait to unify them, and the difference between them is two fields. Step and inclusivity are runtime state on one type. The common `0..n` — step 1, end excluded, both literal at the loop head — constant-folds back to the same loop it always was, and the uncommon ones stop being separate types nobody implemented.
+**Why one type.** Four shapes of range times a 28-method sequence surface is either four copies of that surface or an interface to unify them, and the difference between them is two fields. Step and inclusivity are runtime state on one type. The common `0..n` — step 1, end excluded, both literal at the loop head — constant-folds back to the same loop it always was, and the uncommon ones stop being separate types nobody implemented.
 
 **Terminals may be computed** (`type.sequence/SEQ42`): a range knows its length without walking, so `count()` and `sum()` *could* be arithmetic. They aren't yet — the closed form needs `T` as a `usize`, and a body generic in `T` can't spell that conversion — so both walk the values. `stdlib/range.rk` says so where the next person will be looking.
 

@@ -307,8 +307,8 @@ extend fs {
     /// Get metadata for a file or directory.
     ///
     /// Written here rather than left to `rask_fs_metadata`, which signalled
-    /// failure by returning a null pointer that codegen handed back as a
-    /// `Metadata` — so the `catch` never ran and `meta.size` read through null.
+    /// failure by returning a nullptr pointer that codegen handed back as a
+    /// `Metadata` — so the `catch` never ran and `meta.size` read through nullptr.
     /// A `T or E` needs the error built on this side (#674).
     public func metadata(path: string) -> Metadata or IoError {
         let p = unsafe path.as_ptr()

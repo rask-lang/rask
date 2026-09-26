@@ -272,7 +272,7 @@ to one answer:
 ```
 
 `self` and `other` in equal pairs is a binary method's shape, and every named function is a
-`<Type>_compare`. `auto_derive_traits` (`declarations.rs:830`) registers a `MethodSig` and no
+`<Type>_compare`. `auto_derive_interfaces` (`declarations.rs:830`) registers a `MethodSig` and no
 body; the body is synthesized after checking, so the checker never visits it and none of its
 nodes get an entry. A user's own derived compare misses exactly like the stdlib's.
 

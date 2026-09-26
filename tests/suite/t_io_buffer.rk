@@ -13,10 +13,10 @@
 // Two things had to be fixed to get here:
 //   - `Reader.read(self, buf)` couldn't be implemented at all. Filling `buf` is
 //     the whole point of `read`, and a parameter is read-only unless it says
-//     `mutate`, so every possible body was rejected. The trait says
+//     `mutate`, so every possible body was rejected. The interface says
 //     `mutate buf` now.
-//   - `io.copy(reader, writer)` segfaulted on native. A stub's `any Trait`
-//     parameter parsed as the *name* "any Reader" rather than a trait object,
+//   - `io.copy(reader, writer)` segfaulted on native. A stub's `any Interface`
+//     parameter parsed as the *name* "any Reader" rather than an interface object,
 //     so nothing recorded the coercion the argument needed and the raw struct
 //     pointer went in. The first dispatch through it jumped to address zero.
 

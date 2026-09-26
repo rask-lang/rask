@@ -4,7 +4,7 @@
 //!
 //! These must match the C runtime definitions (vec.c, string.c, etc.).
 
-// ── Fat pointer (trait object) ───────────────────────────────────
+// ── Fat pointer (interface object) ───────────────────────────────────
 pub const FAT_PTR_DATA_OFFSET: i32 = 0;
 pub const FAT_PTR_VTABLE_OFFSET: i32 = 8;
 

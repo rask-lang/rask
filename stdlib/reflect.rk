@@ -95,9 +95,9 @@ extend reflect {
     @unimplemented
     public func has_method<T>(name: string) -> bool {}
     @unimplemented
-    public func implements<T, Trait>() -> bool {}
+    public func implements<T, Interface>() -> bool {}
     @unimplemented
-    public func traits<T>() -> Vec<string> {}
+    public func interfaces<T>() -> Vec<string> {}
     @unimplemented
     public func variants<T>() -> Vec<VariantInfo> {}
 }

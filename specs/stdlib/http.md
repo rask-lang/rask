@@ -381,7 +381,7 @@ func handle(req: Request) -> Response {
 ### See Also
 
 - `std.net` — TCP/UDP transport layer
-- `std.io` — `IoError`, `Reader`/`Writer` traits
+- `std.io` — `IoError`, `Reader`/`Writer` interfaces
 - `std.json` — JSON encoding/decoding for request/response bodies
 - `std.time` — `Duration` for timeouts
 - `mem.resource-types` — `@resource` and `ensure` semantics

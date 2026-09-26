@@ -36,7 +36,7 @@ func swap(pair: Pair<T, U>) -> Pair<U, T> {
 }
 
 // Generic function that finds the larger of two values
-// Note: In real Rask, would need Comparable trait constraint
+// Note: In real Rask, would need Comparable interface constraint
 func max_value(a: T, b: T, compare: func(T, T) -> bool) -> T {
     if compare(a, b) {
         return a

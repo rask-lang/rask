@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Synthetic function body generation for auto-derived trait methods.
+//! Synthetic function body generation for auto-derived interface methods.
 //!
 //! After typechecking confirms which methods are auto-derived (compare, eq,
 //! hash, clone), this pass generates actual AST function bodies so they
@@ -66,11 +66,11 @@ pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
                         new_impls.push(Decl {
                             id: NodeId(0),
                             kind: DeclKind::Impl(ImplDecl {
-                                trait_names: vec![],
+                                interface_name: None,
                                 target_ty: name.clone(),
                                 methods: vec![fn_decl],
                                 is_unsafe: false,
-                                is_scoped: false,
+                                is_pub: false,
                                 where_bounds: vec![],
                                 doc: None,
                                 assoc_bindings: Vec::new(),

@@ -60,7 +60,7 @@ func res(x: i64) -> i64 or MyErr {
     return x
 }
 
-trait Sized2 {
+interface Sized2 {
     func width(self) -> i64
 }
 
@@ -68,7 +68,7 @@ struct Wide {
     w: i64
 }
 
-extend Wide with Sized2 {
+Wide implements Sized2 {
     func width(self) -> i64 {
         return self.w
     }

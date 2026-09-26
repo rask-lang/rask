@@ -669,11 +669,11 @@ func flush_lines(lines: Vec<string>) -> Vec<string> {
 }
 ```
 
-**Rendering trait pattern:**
+**Rendering interface pattern:**
 
 <!-- test: skip -->
 ```rask
-trait Renderable {
+interface Renderable {
     func render(self, mutate builder: StringBuilder)
 }
 
@@ -760,7 +760,7 @@ for (i, c) in text.char_indices() {
 
 ### Integration
 
-- `string` and `StringView` implement `Displayable`, `Hashable`, `Comparable` traits. Copy is structural (S1, V1)
+- `string` and `StringView` implement `Displayable`, `Hashable`, `Comparable` interfaces. Copy is structural (S1, V1)
 - All types (`string`, `StringView`, `Span`, `StringBuilder`) are in core prelude
 - String builders can contain linear resources; `build()` consumes builder to preserve linearity
 - String literals ≤ 15 bytes produce SSO values (inline, no allocation). Longer literals use static storage with sentinel refcount. Comptime interpolation follows the same rule based on result length

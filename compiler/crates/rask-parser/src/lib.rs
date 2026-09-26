@@ -329,13 +329,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_optional_trait_object_in_parens() {
+    fn parse_optional_interface_object_in_parens() {
         // `(any Shape)?` — the parenthesized form must parse (#606); the ambiguous
         // bare `any Shape?` stays rejected on purpose.
-        let result = parse("trait Shape { func area(self) -> f64 }\nfunc f() -> (any Shape)? { return none }");
+        let result = parse("interface Shape { func area(self) -> f64 }\nfunc f() -> (any Shape)? { return none }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
 
-        let result = parse("trait Shape { func area(self) -> f64 }\nfunc f() -> any Shape? { return none }");
+        let result = parse("interface Shape { func area(self) -> f64 }\nfunc f() -> any Shape? { return none }");
         assert!(!result.errors.is_empty(), "Expected bare `any Shape?` to stay ambiguous");
     }
 
@@ -1459,7 +1459,7 @@ mod tests {
         assert_eq!(v.bounds, vec!["Clone".to_string()]);
     }
 
-    // Generic trait bound inside a where clause: `where T: Iterator<Item>`.
+    // Generic interface bound inside a where clause: `where T: Iterator<Item>`.
     #[test]
     fn where_clause_generic_bound() {
         let f = parse_fn("func run(x: T) where T: Iterator<Item> { }");
@@ -1467,18 +1467,26 @@ mod tests {
         assert_eq!(t.bounds, vec!["Iterator<Item>".to_string()]);
     }
 
-    // CD1: `extend T with A, B, C` records every listed conformance.
+    // CD1: one interface per block. A second name after `implements` is a
+    // parse error that says how to split it.
     #[test]
-    fn extend_conformance_list() {
-        let result = parse("extend Bag with Countable, Sizable { }");
+    fn extend_conformance_list_rejected() {
+        let result = parse("Bag implements Countable, Sizable { }");
+        assert!(!result.is_ok(), "a comma list of interfaces should not parse");
+        let msg = &result.errors[0].message;
+        assert!(msg.contains("second interface"), "got: {msg}");
+    }
+
+    #[test]
+    fn extend_single_conformance() {
+        let result = parse("Bag implements Countable { }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
-                assert_eq!(i.trait_names, vec!["Countable".to_string(), "Sizable".to_string()]);
+                assert_eq!(i.interface_name.as_deref(), Some("Countable"));
                 assert_eq!(i.target_ty, "Bag");
-                assert!(!i.is_scoped);
             }
-            _ => panic!("expected impl"),
+            _ => panic!("expected extend block"),
         }
     }
 
@@ -1488,16 +1496,16 @@ mod tests {
         let result = parse("extend Bag { }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Impl(ref i) => assert!(i.trait_names.is_empty()),
+            DeclKind::Impl(ref i) => assert!(i.interface_name.is_none()),
             _ => panic!("expected impl"),
         }
     }
 
-    // A non-method member in a trait body used to spin the body loop forever —
+    // A non-method member in an interface body used to spin the body loop forever —
     // nothing consumed the token and the loop condition stayed true (#1164).
     // Each of these has to report and then recover onto the method below it.
     #[test]
-    fn trait_body_member_errors_instead_of_hanging() {
+    fn interface_body_member_errors_instead_of_hanging() {
         // Each case is one bad member followed by one real method. The method
         // list matters as much as the error count: recovery that stops mid-way
         // through the bad member parses its remainder as another signature and
@@ -1506,37 +1514,37 @@ mod tests {
         // ["allow", "go"] with a single error, and an error count alone said
         // the case passed.
         for src in [
-            "trait Thing {\n    const N = 3\n    func go(self) -> i64\n}",
-            "trait Thing {\n    struct Nested { a: i64 }\n    func go(self) -> i64\n}",
-            "trait Thing {\n    public\n    func go(self) -> i64\n}",
-            "trait Thing {\n    @allow(dead_code)\n    func go(self) -> i64\n}",
-            "trait Thing {\n    @allow(dead_code)\n    go(self) -> i64\n}",
+            "interface Thing {\n    const N = 3\n    func go(self) -> i64\n}",
+            "interface Thing {\n    struct Nested { a: i64 }\n    func go(self) -> i64\n}",
+            "interface Thing {\n    public\n    func go(self) -> i64\n}",
+            "interface Thing {\n    @allow(dead_code)\n    func go(self) -> i64\n}",
+            "interface Thing {\n    @allow(dead_code)\n    go(self) -> i64\n}",
         ] {
             let result = parse(src);
             assert!(!result.is_ok(), "expected an error for:\n{src}");
             assert_eq!(result.errors.len(), 1, "expected one error for:\n{src}\ngot {:?}", result.errors);
             match result.decls[0].kind {
-                DeclKind::Trait(ref t) => {
+                DeclKind::Interface(ref t) => {
                     let names: Vec<&str> = t.methods.iter().map(|m| m.name.as_str()).collect();
                     assert_eq!(names.len(), 1, "invented a method for:\n{src}\ngot {names:?}");
                 }
-                _ => panic!("expected trait for:\n{src}"),
+                _ => panic!("expected interface for:\n{src}"),
             }
         }
     }
 
-    // AT1/AT4/AT5: `type Out`, with its bound and its default, is a trait
+    // AT1/AT4/AT5: `type Out`, with its bound and its default, is an interface
     // member the parser keeps. It used to hang the body loop, then (once that
     // was guarded) report as unimplemented.
     #[test]
-    fn trait_body_holds_associated_types() {
+    fn interface_body_holds_associated_types() {
         let result = parse(
-            "trait Mul {\n    type Out\n    type Key: Comparable\n    type Same = Self\n\
+            "interface Mul {\n    type Out\n    type Key: Comparable\n    type Same = Self\n\
              \n    func mul(self, rhs: f64) -> Self.Out\n}",
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Trait(ref t) => {
+            DeclKind::Interface(ref t) => {
                 let names: Vec<&str> = t.assoc_types.iter().map(|a| a.name.as_str()).collect();
                 assert_eq!(names, ["Out", "Key", "Same"]);
                 assert_eq!(t.assoc_types[1].bounds, ["Comparable"]);
@@ -1544,20 +1552,20 @@ mod tests {
                 assert_eq!(t.methods.len(), 1);
                 assert_eq!(t.methods[0].ret_ty.as_deref(), Some("Self.Out"));
             }
-            _ => panic!("expected trait"),
+            _ => panic!("expected interface"),
         }
     }
 
-    // GT1/GT4/GT5: a trait's type parameters, with bounds and defaults. These
+    // GT1/GT4/GT5: an interface's type parameters, with bounds and defaults. These
     // used to be skipped without being recorded, so the name resolved to
     // nothing in the signatures and every conformance failed claiming a missing
     // method the block plainly had (#1164).
     #[test]
-    fn trait_records_its_type_params() {
-        let result = parse("trait Mul<Rhs = Self, K: Comparable> {\n    func mul(self, rhs: Rhs) -> Self\n}");
+    fn interface_records_its_type_params() {
+        let result = parse("interface Mul<Rhs = Self, K: Comparable> {\n    func mul(self, rhs: Rhs) -> Self\n}");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Trait(ref t) => {
+            DeclKind::Interface(ref t) => {
                 assert_eq!(t.name, "Mul");
                 let names: Vec<&str> = t.type_params.iter().map(|p| p.name.as_str()).collect();
                 assert_eq!(names, ["Rhs", "K"]);
@@ -1565,7 +1573,7 @@ mod tests {
                 assert_eq!(t.type_params[1].bounds, ["Comparable"]);
                 assert_eq!(t.methods.len(), 1);
             }
-            _ => panic!("expected trait"),
+            _ => panic!("expected interface"),
         }
     }
 
@@ -1574,13 +1582,13 @@ mod tests {
     #[test]
     fn extend_block_records_assoc_bindings() {
         let result = parse(
-            "extend Meters with Mul<f64> {\n    type Out = Meters\n\
+            "Meters implements Mul<f64> {\n    type Out = Meters\n\
              \n    func mul(self, k: f64) -> Meters { return self }\n}",
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
-                assert_eq!(i.trait_names, ["Mul<f64>"]);
+                assert_eq!(i.interface_name.as_deref(), Some("Mul<f64>"));
                 assert_eq!(i.assoc_bindings.len(), 1);
                 assert_eq!(i.assoc_bindings[0].name, "Out");
                 assert_eq!(i.assoc_bindings[0].ty, "Meters");
@@ -1590,46 +1598,32 @@ mod tests {
         }
     }
 
-    // `duck trait` sets the structural flag.
+    // `duck interface` sets the structural flag.
     #[test]
-    fn duck_trait_flag() {
-        let result = parse("duck trait Frobber { func frob(self) -> i64 }");
+    fn duck_interface_flag() {
+        let result = parse("duck interface Frobber { func frob(self) -> i64 }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Trait(ref t) => {
+            DeclKind::Interface(ref t) => {
                 assert!(t.is_duck);
                 assert_eq!(t.name, "Frobber");
             }
-            _ => panic!("expected trait"),
+            _ => panic!("expected interface"),
         }
     }
 
-    // A plain trait is not duck.
+    // A plain interface is not duck.
     #[test]
-    fn plain_trait_not_duck() {
-        let result = parse("trait Greeter { func greet(self) -> string }");
+    fn plain_interface_not_duck() {
+        let result = parse("interface Greeter { func greet(self) -> string }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Trait(ref t) => assert!(!t.is_duck),
-            _ => panic!("expected trait"),
+            DeclKind::Interface(ref t) => assert!(!t.is_duck),
+            _ => panic!("expected interface"),
         }
     }
 
-    // MN4: `scoped extend T with Trait` sets the scoped flag.
-    #[test]
-    fn scoped_extend_flag() {
-        let result = parse("scoped extend Dog with Announcer { func greet(self, v: i32) -> string { return \"x\" } }");
-        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
-        match result.decls[0].kind {
-            DeclKind::Impl(ref i) => {
-                assert!(i.is_scoped);
-                assert_eq!(i.trait_names, vec!["Announcer".to_string()]);
-            }
-            _ => panic!("expected impl"),
-        }
-    }
-
-    // `duck` and `scoped` stay usable as ordinary identifiers.
+    // `duck` is an ordinary identifier anywhere but in front of `interface`.
     #[test]
     fn duck_scoped_still_identifiers() {
         let stmts = parse_body("let duck = 3\nlet scoped = duck + 1");
@@ -1674,14 +1668,14 @@ mod tests {
         }
     }
 
-    // CC2: `extend Ring<T> with Show where T: Show` captures the condition.
+    // CC2: `Ring<T> implements Show where T: Show` captures the condition.
     #[test]
     fn extend_conditional_conformance() {
-        let result = parse("extend Ring<T> with Show where T: Show { func show(self) -> string { return \"r\" } }");
+        let result = parse("Ring<T> implements Show where T: Show { func show(self) -> string { return \"r\" } }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
-                assert_eq!(i.trait_names, vec!["Show".to_string()]);
+                assert_eq!(i.interface_name.as_deref(), Some("Show"));
                 let t = i.where_bounds.iter().find(|tp| tp.name == "T").expect("T bound");
                 assert_eq!(t.bounds, vec!["Show".to_string()]);
             }

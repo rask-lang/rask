@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
@@ -190,7 +190,7 @@ impl Parser {
                     }
                 }
                 TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
-                TokenKind::Trait | TokenKind::Extend | TokenKind::Import |
+                TokenKind::Interface | TokenKind::Extend | TokenKind::Import |
                 TokenKind::Extern | TokenKind::Public | TokenKind::Private | TokenKind::Package if brace_depth == 0 => {
                     return;
                 }
@@ -530,9 +530,13 @@ impl Parser {
                     let is_annotation_decl =
                         matches!(self.current_kind(), TokenKind::Ident(s) if s == "annotation")
                             && matches!(self.peek(1), TokenKind::At | TokenKind::Ident(_));
-                    if is_annotation_decl || matches!(self.current_kind(),
+                    // `T implements I` starts with a plain identifier too, and its
+                    // errors (a second interface after the comma) are the ones
+                    // worth keeping over the statement retry's generic line.
+                    let is_conformance = self.at_conformance_header();
+                    if is_annotation_decl || is_conformance || matches!(self.current_kind(),
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
-                        TokenKind::Union | TokenKind::Trait | TokenKind::Extend |
+                        TokenKind::Union | TokenKind::Interface | TokenKind::Extend |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
                         TokenKind::Test | TokenKind::Benchmark | TokenKind::Package |
                         TokenKind::Public | TokenKind::Private
@@ -690,17 +694,11 @@ impl Parser {
 
         let doc = self.take_doc();
 
-        // Contextual modifiers: `duck trait` (G1 shape-matched) and
-        // `scoped extend` (MN4). Both are plain identifiers followed by the
-        // real keyword, so no lexer keyword is needed.
+        // Contextual modifier: `duck interface` (G1 shape-matched). A plain
+        // identifier followed by the real keyword, so no lexer keyword is needed.
         let is_duck = matches!(self.current_kind(), TokenKind::Ident(s) if s == "duck")
-            && matches!(self.peek(1), TokenKind::Trait);
+            && matches!(self.peek(1), TokenKind::Interface);
         if is_duck {
-            self.advance();
-        }
-        let is_scoped = matches!(self.current_kind(), TokenKind::Ident(s) if s == "scoped")
-            && matches!(self.peek(1), TokenKind::Extend);
-        if is_scoped {
             self.advance();
         }
 
@@ -744,7 +742,10 @@ impl Parser {
             }
         }
 
-        let kind = match self.current_kind() {
+        let is_conformance = self.at_conformance_header();
+        let kind = if is_conformance {
+            self.parse_conformance_decl(is_pub, is_unsafe, doc)?
+        } else { match self.current_kind() {
             TokenKind::Func => {
                 self.reject_keyword_fn_name()?;
                 self.parse_fn_decl(is_pub, false, is_comptime, is_unsafe, attrs, doc)?
@@ -752,8 +753,8 @@ impl Parser {
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
-            TokenKind::Trait => self.parse_trait_decl(is_pub, is_unsafe, is_duck, attrs, doc)?,
-            TokenKind::Extend => self.parse_impl_decl(is_unsafe, is_scoped, doc)?,
+            TokenKind::Interface => self.parse_interface_decl(is_pub, is_unsafe, is_duck, attrs, doc)?,
+            TokenKind::Extend => self.parse_extend_decl(is_pub, is_unsafe, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub, attrs, doc)?,
@@ -800,12 +801,12 @@ impl Parser {
             }
             _ => {
                 return Err(ParseError::expected(
-                    "declaration (func, struct, enum, union, trait, extend, import, export, const, type, test, benchmark, extern, package)",
+                    "declaration (func, struct, enum, union, interface, extend, `T implements I`, import, export, const, type, test, benchmark, extern, package)",
                     self.current_kind(),
                     self.current().span,
                 ));
             }
-        };
+        } };
 
         if let Some(span) = extern_first_span {
             return Ok(Decl { id: self.next_id(), kind, span });
@@ -845,8 +846,8 @@ impl Parser {
                         // Keywords, operators, and delimiters keep their source
                         // text. Debug output here would mangle anything with
                         // punctuation — a lint rule id like
-                        // `@allow(idiom/duck-trait)` came out as
-                        // `allow(idiomSlashduck-Trait)` and matched nothing,
+                        // `@allow(idiom/duck-interface)` came out as
+                        // `allow(idiomSlashduck-Interface)` and matched nothing,
                         // breaking per-rule suppression (tool.lint/SU1).
                         //
                         // Literals must be listed above, not left to this arm:
@@ -1355,18 +1356,18 @@ impl Parser {
 
         let mut name = self.expect_ident()?;
 
-        // `any Trait` — the trait's own name reads exactly like any other, so
+        // `any Interface` — the interface's own name reads exactly like any other, so
         // the same code reads it.
         //
         // It used to be a copy that handled a name and its generic arguments
         // and stopped, which left out the qualification below: `any io.Reader`
         // stopped at the dot with "Expected ')'" and no hint that the spelling
         // was the problem rather than the signature (#1159). Every other type
-        // position took a qualified name, so the only way to write a trait
-        // object of another module's trait was to import the trait under a name
+        // position took a qualified name, so the only way to write an interface
+        // object of another module's interface was to import the interface under a name
         // of its own first.
         //
-        // The optional suffix is deliberately *not* shared. `any Trait?`
+        // The optional suffix is deliberately *not* shared. `any Interface?`
         // type-checks and the interpreter runs it, but native never boxes the
         // value into the option's payload and reads an uninitialised slot —
         // SIGSEGV in every position (#1308). Letting it parse here would turn a
@@ -1374,18 +1375,18 @@ impl Parser {
         // has it, with a message that says which of the two it is.
         if name == "any" {
             if let TokenKind::Ident(_) = self.current_kind() {
-                let trait_name = self.parse_type_body()?;
+                let interface_name = self.parse_type_body()?;
                 if self.check(&TokenKind::Question) || self.check(&TokenKind::QuestionQuestion) {
                     return Err(ParseError {
                         span: self.current().span,
-                        message: "an optional trait object isn't built yet".to_string(),
+                        message: "an optional interface object isn't built yet".to_string(),
                         hint: Some(format!(
                             "take `any {}` and use a sentinel, or wrap it in a struct field \
                              you can leave unset",
-                            trait_name
+                            interface_name
                         )),
                         why: Some(
-                            "`any Trait?` checks, and the interpreter runs it — native never \
+                            "`any Interface?` checks, and the interpreter runs it — native never \
                              boxes the value into the option's payload, so it reads an \
                              uninitialised slot and crashes. Rejected here rather than \
                              at run time [#1308]"
@@ -1393,7 +1394,7 @@ impl Parser {
                         ),
                     });
                 }
-                return Ok(format!("any {}", trait_name));
+                return Ok(format!("any {}", interface_name));
             }
         }
 
@@ -1487,13 +1488,13 @@ impl Parser {
                 name_suffix.push_str(": ");
                 name_suffix.push_str(&comptime_type);
             } else {
-                // Regular type parameter: `T` or `T: Trait` or `T: A + B`
+                // Regular type parameter: `T` or `T: Interface` or `T: A + B`
                 let mut bounds = vec![];
                 if self.match_token(&TokenKind::Colon) {
-                    bounds = self.parse_trait_bounds()?;
+                    bounds = self.parse_interface_bounds()?;
                 }
 
-                // GT4: `<Rhs = Self>` — the meaning of the bare trait name.
+                // GT4: `<Rhs = Self>` — the meaning of the bare interface name.
                 let default = if self.match_token(&TokenKind::Eq) {
                     Some(self.parse_type_name()?)
                 } else {
@@ -1536,10 +1537,10 @@ impl Parser {
         Ok((type_params, name_suffix))
     }
 
-    /// Parse a single trait bound, e.g. `Comparable` or `Iterator<Item>`.
+    /// Parse a single interface bound, e.g. `Comparable` or `Iterator<Item>`.
     fn parse_one_bound(&mut self) -> Result<String, ParseError> {
         let mut bound = self.expect_ident()?;
-        // Generic trait bound: `Iterator<Item>`
+        // Generic interface bound: `Iterator<Item>`
         if self.match_token(&TokenKind::Lt) {
             bound.push('<');
             bound.push_str(&self.parse_type_name()?);
@@ -1553,8 +1554,8 @@ impl Parser {
         Ok(bound)
     }
 
-    /// Parse `+`-separated trait bounds: `A + B<X> + C`.
-    fn parse_trait_bounds(&mut self) -> Result<Vec<String>, ParseError> {
+    /// Parse `+`-separated interface bounds: `A + B<X> + C`.
+    fn parse_interface_bounds(&mut self) -> Result<Vec<String>, ParseError> {
         let mut bounds = vec![self.parse_one_bound()?];
         while self.match_token(&TokenKind::Plus) {
             bounds.push(self.parse_one_bound()?);
@@ -1590,7 +1591,7 @@ impl Parser {
             self.skip_newlines();
             let name = self.expect_ident()?;
             self.expect(&TokenKind::Colon)?;
-            let bounds = self.parse_trait_bounds()?;
+            let bounds = self.parse_interface_bounds()?;
 
             match type_params.iter_mut().find(|tp| tp.name == name) {
                 Some(tp) => tp.bounds.extend(bounds),
@@ -1941,11 +1942,11 @@ impl Parser {
         }))
     }
 
-    fn parse_trait_decl(&mut self, is_pub: bool, is_unsafe: bool, is_duck: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
-        self.expect(&TokenKind::Trait)?;
+    fn parse_interface_decl(&mut self, is_pub: bool, is_unsafe: bool, is_duck: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
+        self.expect(&TokenKind::Interface)?;
         let name = self.expect_ident()?;
 
-        // GT1: `trait Scale<Rhs>`. The parameter is bound by the conformance
+        // GT1: `interface Scale<Rhs>`. The parameter is bound by the conformance
         // header and substituted through every required signature before it's
         // checked. It used to be skipped without being recorded, so the name
         // resolved to nothing and every conformance failed claiming a missing
@@ -1957,12 +1958,12 @@ impl Parser {
             Vec::new()
         };
 
-        // Super-traits: trait Display: ToString, Debug { ... }
-        let mut super_traits = Vec::new();
+        // Super-interfaces: interface Display: ToString, Debug { ... }
+        let mut super_interfaces = Vec::new();
         if self.match_token(&TokenKind::Colon) {
             loop {
                 self.skip_newlines();
-                super_traits.push(self.parse_type_name()?);
+                super_interfaces.push(self.parse_type_name()?);
                 if !self.match_token(&TokenKind::Comma) {
                     break;
                 }
@@ -1985,13 +1986,13 @@ impl Parser {
             } else if self.check(&TokenKind::Type) {
                 assoc_types.push(self.parse_assoc_type_decl()?);
             } else if let TokenKind::Ident(_) = self.current_kind() {
-                let mut fn_decl = self.parse_trait_method_shorthand()?;
+                let mut fn_decl = self.parse_interface_method_shorthand()?;
                 fn_decl.doc = method_doc;
                 methods.push(fn_decl);
             } else {
-                let err = self.trait_body_error();
+                let err = self.interface_body_error();
                 if !self.record_error(err) { break; }
-                self.synchronize_to_next_trait_member();
+                self.synchronize_to_next_interface_member();
             }
             self.skip_newlines();
             // Backstop against a hang: nothing above consumed a token. The
@@ -2004,7 +2005,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Trait(TraitDecl { name, type_params, super_traits, methods, assoc_types, is_pub, is_unsafe, is_duck, attrs, doc }))
+        Ok(DeclKind::Interface(InterfaceDecl { name, type_params, super_interfaces, methods, assoc_types, is_pub, is_unsafe, is_duck, attrs, doc }))
 
     }
 
@@ -2014,7 +2015,7 @@ impl Parser {
         self.expect(&TokenKind::Type)?;
         let name = self.expect_ident()?;
         let bounds = if self.match_token(&TokenKind::Colon) {
-            self.parse_trait_bounds()?
+            self.parse_interface_bounds()?
         } else {
             Vec::new()
         };
@@ -2032,15 +2033,15 @@ impl Parser {
         })
     }
 
-    /// Skip the rest of a malformed trait-body member: to the newline that ends
+    /// Skip the rest of a malformed interface-body member: to the newline that ends
     /// it, or to the closing brace.
     ///
     /// `synchronize_to_next_method` can't do this job. It stops on `@`, `public`
     /// and friends without moving, because in an impl block those legitimately
-    /// start the next method — a trait body allows none of them. So recovery
+    /// start the next method — an interface body allows none of them. So recovery
     /// from `@allow(dead_code)` advanced a single token, landed on `allow`, and
     /// the shorthand branch parsed `allow(dead_code)` as a method signature:
-    /// untyped params are legal (GC1), so it succeeded and invented a trait
+    /// untyped params are legal (GC1), so it succeeded and invented an interface
     /// method nobody wrote. A conformer providing exactly the real methods was
     /// then told it was missing `allow` — the same wrong-blame this whole change
     /// set is about.
@@ -2048,7 +2049,7 @@ impl Parser {
     /// A member is one line, or one braced block, so the line is the unit to
     /// skip. Brace depth carries `struct Nested { a: i64 }` past its own
     /// newlines.
-    fn synchronize_to_next_trait_member(&mut self) {
+    fn synchronize_to_next_interface_member(&mut self) {
         let mut brace_depth: i32 = 0;
         while !self.at_end() {
             match self.current_kind() {
@@ -2071,18 +2072,18 @@ impl Parser {
         }
     }
 
-    /// TD4: a trait body holds method signatures and associated types.
-    fn trait_body_error(&self) -> ParseError {
+    /// TD4: an interface body holds method signatures and associated types.
+    fn interface_body_error(&self) -> ParseError {
         let span = self.current().span;
         ParseError {
             span,
-            message: format!("a trait body holds methods and associated types, found {}", self.current_kind().display_name()),
-            hint: Some("move the declaration out of the trait".to_string()),
-            why: Some("a trait states what conformers must provide: method signatures and the types they name".to_string()),
+            message: format!("an interface body holds methods and associated types, found {}", self.current_kind().display_name()),
+            hint: Some("move the declaration out of the interface".to_string()),
+            why: Some("an interface states what conformers must provide: method signatures and the types they name".to_string()),
         }
     }
 
-    fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
+    fn parse_interface_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
         let fn_start = self.current().span.start;
         let mut name = self.expect_ident()?;
 
@@ -2137,21 +2138,52 @@ impl Parser {
         })
     }
 
-    fn parse_impl_decl(&mut self, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    /// `extend T { … }`: the type's own methods.
+    fn parse_extend_decl(&mut self, is_pub: bool, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Extend)?;
         let target_ty = self.parse_type_name()?;
+        self.parse_impl_body(target_ty, None, is_pub, is_unsafe, doc)
+    }
 
-        // CD1: `extend T with A, B, C` — comma-separated conformance list.
-        let mut trait_names = Vec::new();
-        if self.match_token(&TokenKind::With) {
-            loop {
-                self.skip_newlines();
-                trait_names.push(self.parse_type_name()?);
-                if !self.match_token(&TokenKind::Comma) {
-                    break;
-                }
-            }
+    /// `T implements I { … }`: one interface per block (CD1), so the block is
+    /// exactly that interface's contract.
+    fn parse_conformance_decl(&mut self, is_pub: bool, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+        let target_ty = self.parse_type_name()?;
+        self.expect(&TokenKind::Implements)?;
+        self.skip_newlines();
+        let name = self.parse_type_name()?;
+        if self.check(&TokenKind::Comma) {
+            let span = self.current().span;
+            return Err(ParseError {
+                message: format!("`{} implements {}` names a second interface", target_ty, name),
+                span,
+                hint: Some("one interface per block: write a second block for the other one".to_string()),
+                why: Some("the block is the interface's contract, so a reader can see which methods belong to it".to_string()),
+            });
         }
+        self.parse_impl_body(target_ty, Some(name), is_pub, is_unsafe, doc)
+    }
+
+    /// Does a `T implements I` header start here? Reads a type name and looks
+    /// at the token after it, then puts the position back.
+    fn at_conformance_header(&mut self) -> bool {
+        if !matches!(self.current_kind(), TokenKind::Ident(_)) {
+            return false;
+        }
+        let saved = self.pos;
+        let hit = self.parse_type_name().is_ok() && self.check(&TokenKind::Implements);
+        self.pos = saved;
+        hit
+    }
+
+    fn parse_impl_body(
+        &mut self,
+        target_ty: String,
+        interface_name: Option<String>,
+        is_pub: bool,
+        is_unsafe: bool,
+        doc: Option<String>,
+    ) -> Result<DeclKind, ParseError> {
 
         // CC2: conditional conformance condition — `where T: Displayable`.
         let mut where_bounds = Vec::new();
@@ -2214,10 +2246,10 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Impl(ImplDecl { trait_names, target_ty, methods, is_unsafe, is_scoped, where_bounds, assoc_bindings, doc }))
+        Ok(DeclKind::Impl(ImplDecl { interface_name, target_ty, methods, is_unsafe, is_pub, where_bounds, assoc_bindings, doc }))
     }
 
-    /// AT2: `type Out = Meters` inside an `extend ... with Trait` block.
+    /// AT2: `type Out = Meters` inside a `T implements I` block.
     fn parse_assoc_type_binding(&mut self) -> Result<AssocTypeBinding, ParseError> {
         let start = self.current().span;
         self.expect(&TokenKind::Type)?;
@@ -2432,7 +2464,7 @@ impl Parser {
 
     /// Parse type declaration:
     /// - `type Name = TargetType` (nominal, default)
-    /// - `type Name = TargetType with (Trait1, Trait2)` (nominal with traits)
+    /// - `type Name = TargetType implements Interface1, Interface2` (nominal with interfaces)
     /// - `type alias Name = TargetType` (transparent)
     fn parse_type_alias_decl(&mut self, is_pub: bool) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Type)?;
@@ -2456,25 +2488,23 @@ impl Parser {
         self.expect(&TokenKind::Eq)?;
         let target = self.parse_type_name()?;
 
-        // Parse optional `with (Trait1, Trait2)` clause (nominal types only)
-        let with_traits = if !is_transparent && self.check(&TokenKind::With) {
+        // Optional `implements A, B` clause (nominal types only): the
+        // interfaces the newtype takes over from its underlying type.
+        let with_interfaces = if !is_transparent && self.check(&TokenKind::Implements) {
             self.advance();
-            self.expect(&TokenKind::LParen)?;
-            let mut traits = Vec::new();
+            let mut interfaces = Vec::new();
             loop {
-                if self.check(&TokenKind::RParen) { break; }
-                traits.push(self.expect_ident()?);
+                interfaces.push(self.expect_ident()?);
                 if !self.match_token(&TokenKind::Comma) { break; }
             }
-            self.expect(&TokenKind::RParen)?;
-            traits
+            interfaces
         } else {
             Vec::new()
         };
 
         self.expect_terminator()?;
         Ok(DeclKind::TypeAlias(TypeAliasDecl {
-            name, type_params, target, is_pub, is_transparent, with_traits,
+            name, type_params, target, is_pub, is_transparent, with_interfaces,
         }))
     }
 
@@ -3402,7 +3432,7 @@ impl Parser {
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
                 | TokenKind::Take
                 | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
-                | TokenKind::None | TokenKind::Null
+                | TokenKind::None | TokenKind::Nullptr
         )
     }
 
@@ -3942,7 +3972,7 @@ impl Parser {
                 // OPT3: dedicated absent literal, not the `None` enum variant.
                 Ok(Expr { id: self.next_id(), kind: ExprKind::None, span: self.span(start, end) })
             }
-            TokenKind::Null => {
+            TokenKind::Nullptr => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Null, span: self.span(start, end) })
@@ -5994,7 +6024,7 @@ fn format_expected_message(expected: &str, found: &TokenKind) -> String {
         "expression" => format!("Expected expression, found {}", found.display_name()),
         "type" => format!("Expected type, found {}", found.display_name()),
         "pattern" => format!("Expected pattern, found {}", found.display_name()),
-        "declaration (func, struct, enum, trait, extend, import, const)" => {
+        "declaration (func, struct, enum, interface, extend, import, const)" => {
             format!("Expected declaration, found {}", found.display_name())
         }
         _ => format!("Expected {}, found {}", expected, found.display_name()),
@@ -6016,7 +6046,7 @@ fn starts_an_expression(kind: &TokenKind) -> bool {
             | TokenKind::Loop
             | TokenKind::Match
             | TokenKind::None
-            | TokenKind::Null
+            | TokenKind::Nullptr
             | TokenKind::Select
             | TokenKind::SelectPriority
             | TokenKind::Try
@@ -6053,7 +6083,8 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Const => "const",
         TokenKind::Struct => "struct",
         TokenKind::Enum => "enum",
-        TokenKind::Trait => "trait",
+        TokenKind::Interface => "interface",
+        TokenKind::Implements => "implements",
         TokenKind::Extend => "extend",
         TokenKind::Import => "import",
         TokenKind::Type => "type",
@@ -6089,7 +6120,7 @@ fn keyword_spelling(kind: &TokenKind) -> Option<&'static str> {
         TokenKind::Bool(true) => "true",
         TokenKind::Bool(false) => "false",
         TokenKind::None => "none",
-        TokenKind::Null => "null",
+        TokenKind::Nullptr => "nullptr",
         // Other
         TokenKind::Extern => "extern",
         TokenKind::Asm => "asm",

@@ -71,16 +71,16 @@ impl TypeChecker {
         self.errors.extend(errs);
     }
 
-    /// #314: verify each generic call's type argument satisfies the trait
+    /// #314: verify each generic call's type argument satisfies the interface
     /// bounds declared on the callee. Runs after constraint solving so the
     /// type-arg vars are resolved. Type args that are still generic (a bound
     /// param forwarded to another generic call) or unresolved are skipped —
     /// they're checked at the outermost concrete call site.
     pub(super) fn validate_pending_bound_checks(&mut self) {
         let pending = std::mem::take(&mut self.pending_bound_checks);
-        // Dedup identical (type, trait, span) reports.
+        // Dedup identical (type, interface, span) reports.
         let mut reported: Vec<(String, String, Span)> = Vec::new();
-        for (var, traits, span) in pending {
+        for (var, interfaces, span) in pending {
             // Resolve `UnresolvedNamed("Foo")` to `Named(id)` so `check_satisfies`
             // can find the type's methods (an unresolved name reports none).
             let ty = self.resolve_named(&self.ctx.apply(&var));
@@ -95,30 +95,30 @@ impl TypeChecker {
             // place two of them collide. Checked before satisfaction — with two
             // declarations in scope the type does satisfy the bound, it just
             // isn't said which way.
-            for t in &traits {
+            for t in &interfaces {
                 self.check_bound_conformance_ambiguity(&ty, t, span);
             }
-            let bound = crate::traits::TraitBound::new("_", traits);
-            if let Err(errs) = crate::traits::verify_instantiation(&self.types, &ty, std::slice::from_ref(&bound), span) {
+            let bound = crate::interfaces::InterfaceBound::new("_", interfaces);
+            if let Err(errs) = crate::interfaces::verify_instantiation(&self.types, &ty, std::slice::from_ref(&bound), span) {
                 for e in errs {
-                    let (ty_name, trait_name) = trait_error_parts(&e);
-                    let key = (ty_name.clone(), trait_name.clone(), span);
+                    let (ty_name, interface_name) = interface_error_parts(&e);
+                    let key = (ty_name.clone(), interface_name.clone(), span);
                     if reported.contains(&key) {
                         continue;
                     }
                     reported.push(key);
-                    // An unknown trait has no type to blame, so reporting it as
+                    // An unknown interface has no type to blame, so reporting it as
                     // "`_` does not implement X" pointed at the wrong thing
                     // entirely — the name is the problem (#713).
-                    if matches!(e, crate::traits::TraitError::UnknownTrait(_)) {
-                        self.errors.push(TypeError::NoSuchTrait {
-                            trait_name,
-                            known: self.declared_trait_names(),
+                    if matches!(e, crate::interfaces::InterfaceError::UnknownInterface(_)) {
+                        self.errors.push(TypeError::NoSuchInterface {
+                            interface_name,
+                            known: self.declared_interface_names(),
                             span,
                         });
                         continue;
                     }
-                    let err = self.bound_error(&ty, ty_name, trait_name, span);
+                    let err = self.bound_error(&ty, ty_name, interface_name, span);
                     self.errors.push(err);
                 }
             }
@@ -397,12 +397,12 @@ fn validate_single_result(
         if matches!(comp, Type::None) {
             continue;
         }
-        // `any Error` is the trait itself — no need to check it satisfies itself
-        if matches!(comp, Type::TraitObject { trait_name } if trait_name == "Error") {
+        // `any Error` is the interface itself — no need to check it satisfies itself
+        if matches!(comp, Type::InterfaceObject { interface_name } if interface_name == "Error") {
             continue;
         }
         if !implements_error_message(comp, checker) {
-            errs.push(TypeError::ErrorTraitMissing {
+            errs.push(TypeError::ErrorInterfaceMissing {
                 ty: (*comp).clone(),
                 span,
             });
@@ -450,13 +450,13 @@ fn implements_error_message(ty: &Type, checker: &TypeChecker) -> bool {
 impl TypeChecker {
     /// The right error for a failed bound. `Encode`/`Decode` aren't method sets,
     /// so they get their own shape of message — one that names the field that
-    /// blocked it rather than telling you to implement a trait you can't.
-    /// Every trait the program declares, for a did-you-mean on a misspelt one.
-    pub(super) fn declared_trait_names(&self) -> Vec<String> {
+    /// blocked it rather than telling you to implement an interface you can't.
+    /// Every interface the program declares, for a did-you-mean on a misspelt one.
+    pub(super) fn declared_interface_names(&self) -> Vec<String> {
         self.types
             .iter()
             .filter_map(|def| match def {
-                crate::TypeDef::Trait { name, .. } => Some(name.clone()),
+                crate::TypeDef::Interface { name, .. } => Some(name.clone()),
                 _ => None,
             })
             .chain(
@@ -472,30 +472,30 @@ impl TypeChecker {
         &self,
         ty: &Type,
         ty_name: String,
-        trait_name: String,
+        interface_name: String,
         span: Span,
     ) -> TypeError {
-        if trait_name != "Encode" && trait_name != "Decode" {
-            let context = if matches!(trait_name.as_str(), "Numeric" | "Integer" | "Float") {
-                super::TraitBoundContext::NumericBound
+        if interface_name != "Encode" && interface_name != "Decode" {
+            let context = if matches!(interface_name.as_str(), "Numeric" | "Integer" | "Float") {
+                super::InterfaceBoundContext::NumericBound
             } else {
-                super::TraitBoundContext::GenericBound
+                super::InterfaceBoundContext::GenericBound
             };
-            return TypeError::TraitNotSatisfied {
-                ty: ty_name, trait_name, context, missing: None, span,
+            return TypeError::InterfaceNotSatisfied {
+                ty: ty_name, interface_name, context, missing: None, span,
             };
         }
-        let verb = if trait_name == "Encode" { "encoded" } else { "decoded" };
-        let checker = crate::traits::TraitChecker::new(&self.types);
+        let verb = if interface_name == "Encode" { "encoded" } else { "decoded" };
+        let checker = crate::interfaces::InterfaceChecker::new(&self.types);
         // E16: the declaration refused. Reported before the field hunt, because
         // the fields are usually fine — `@no_encode` goes on a credential whose
         // `string` would serialize perfectly well, and that's the problem. The
         // old message named an "offending field" there was none of.
-        if checker.opts_out_of(ty, &trait_name) {
-            let attr = if trait_name == "Encode" { "no_encode" } else { "no_decode" };
+        if checker.opts_out_of(ty, &interface_name) {
+            let attr = if interface_name == "Encode" { "no_encode" } else { "no_decode" };
             return TypeError::SerializationOptedOut {
                 ty: ty_name,
-                trait_name,
+                interface_name,
                 attr: attr.to_string(),
                 span,
             };
@@ -504,7 +504,7 @@ impl TypeChecker {
         // different problem with a different fix — the field's type is fine, it
         // just has nothing to be built from. Report that first, since when both
         // are true the structural one is the one the reader can't act on.
-        if trait_name == "Decode" && checker.first_unencodable_field(ty).is_none() {
+        if interface_name == "Decode" && checker.first_unencodable_field(ty).is_none() {
             if let Some(field) = checker.first_defaultless_excluded_field(ty) {
                 return TypeError::ExcludedFieldNeedsDefault {
                     ty: ty_name,
@@ -519,7 +519,7 @@ impl TypeChecker {
         };
         TypeError::NotSerializable {
             ty: ty_name,
-            trait_name,
+            interface_name,
             verb: verb.to_string(),
             field,
             field_ty,
@@ -528,14 +528,14 @@ impl TypeChecker {
     }
 }
 
-/// Best-effort `(type name, trait name)` for reporting a failed bound.
-pub(super) fn trait_error_parts(e: &crate::traits::TraitError) -> (String, String) {
-    use crate::traits::TraitError::*;
+/// Best-effort `(type name, interface name)` for reporting a failed bound.
+pub(super) fn interface_error_parts(e: &crate::interfaces::InterfaceError) -> (String, String) {
+    use crate::interfaces::InterfaceError::*;
     match e {
-        NotSatisfied { ty, trait_name, .. } => (ty.clone(), trait_name.clone()),
-        MissingMethod { ty, trait_name, .. } => (ty.clone(), trait_name.clone()),
+        NotSatisfied { ty, interface_name, .. } => (ty.clone(), interface_name.clone()),
+        MissingMethod { ty, interface_name, .. } => (ty.clone(), interface_name.clone()),
         SignatureMismatch { ty, method, .. } => (ty.clone(), method.clone()),
-        UnknownTrait(name) => (String::from("_"), name.clone()),
-        ConflictingMethods { trait1, .. } => (String::from("_"), trait1.clone()),
+        UnknownInterface(name) => (String::from("_"), name.clone()),
+        ConflictingMethods { interface1, .. } => (String::from("_"), interface1.clone()),
     }
 }

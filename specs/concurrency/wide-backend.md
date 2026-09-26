@@ -16,7 +16,7 @@ Overview and the decisions behind this contract: **`conc.heterogeneous`** (read 
 | Layer | Who owns it | Stability |
 |-------|-------------|-----------|
 | The `Wide` algebra + the **plan** it produces | Core | The stable currency (shape not frozen — pre-v1) |
-| This contract (the trait below) | Core | Deliberately still moving |
+| This contract (the interface below) | Core | Deliberately still moving |
 | Kernel IR format (SPIR-V today) | Negotiated | A slot, swappable per backend |
 | Device drivers, memory tech, transport | Backend library | Free to change entirely |
 
@@ -44,7 +44,7 @@ These are the point of the spec. Everything below is in service of them.
 // A Plan is the staged algebra (primitives + their pure-function bodies in a
 // negotiated kernel IR). Its shape is versioned and additive.
 
-trait Backend {
+interface Backend {
     // Identity and abilities. Read this before anything else.
     func info() -> BackendInfo
 
@@ -59,7 +59,7 @@ trait Backend {
     func prepare(plan: Plan, device: DeviceId, config: RunConfig) -> Session or BackendError
 }
 
-trait Session {
+interface Session {
     // Enqueue with these inputs. Non-blocking — returns a must-use completion
     // handle. The device starts here. This is what `Wide.submit` calls.
     func submit(inputs: Vec<Input>) -> Submission or BackendError
@@ -70,7 +70,7 @@ trait Session {
     func release(take self)
 }
 
-trait Submission {
+interface Submission {
     // Block until this submission's fence passes, then hand back the outputs.
     // This is what `Wide.await` / `.read()` calls. Failure surfaces here (N5).
     func await(take self) -> Vec<Output> or BackendError
@@ -106,7 +106,7 @@ struct Capabilities {
 }
 ```
 
-Capabilities are data, not a zoo of optional traits, precisely so the set can grow without breaking existing backends (N1). The core reads flags and opportunistically uses what's there. `multi_queue` is the queue decision (`conc.heterogeneous` D10): a v1 backend reports `false` (one serialized queue — simple, correct, no overlap); a growth-path backend reports `true` (many queues, each owned by one task, buffer bound to its queue). The core assumes one serialized queue unless `multi_queue` is set.
+Capabilities are data, not a zoo of optional interfaces, precisely so the set can grow without breaking existing backends (N1). The core reads flags and opportunistically uses what's there. `multi_queue` is the queue decision (`conc.heterogeneous` D10): a v1 backend reports `false` (one serialized queue — simple, correct, no overlap); a growth-path backend reports `true` (many queues, each owned by one task, buffer bound to its queue). The core assumes one serialized queue unless `multi_queue` is set.
 
 ## Kernel format — a slot, not a commitment
 
@@ -200,9 +200,9 @@ The whole point of the boundary: an HPC or remote-GPU backend can be written, sh
 
 ## Appendix (non-normative)
 
-### Why data-driven capabilities beat optional traits
+### Why data-driven capabilities beat optional interfaces
 
-A tempting alternative is many optional traits (`AsyncBackend`, `PersistentBackend`, …) that a backend implements à la carte. Capabilities-as-data (N1) win for evolvability: adding a `bool` field is additive and needs no new trait and no downcasting. The core reads a flag; a backend that predates the flag reports its default and stays valid. Traits are harder to grow.
+A tempting alternative is many optional interfaces (`AsyncBackend`, `PersistentBackend`, …) that a backend implements à la carte. Capabilities-as-data (N1) win for evolvability: adding a `bool` field is additive and needs no new interface and no downcasting. The core reads a flag; a backend that predates the flag reports its default and stays valid. Interfaces are harder to grow.
 
 ### The real cost of this design
 

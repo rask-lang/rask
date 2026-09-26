@@ -16,7 +16,7 @@ pub struct ModuleDescription {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub enums: Vec<EnumDesc>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub traits: Vec<TraitDesc>,
+    pub interfaces: Vec<InterfaceDesc>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub functions: Vec<FunctionDesc>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -118,9 +118,9 @@ pub struct VariantDesc {
     pub fields: Vec<FieldDesc>,
 }
 
-/// Trait description.
+/// Interface description.
 #[derive(Debug, Serialize)]
-pub struct TraitDesc {
+pub struct InterfaceDesc {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,

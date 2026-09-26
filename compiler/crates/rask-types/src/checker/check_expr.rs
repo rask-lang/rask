@@ -247,7 +247,7 @@ impl TypeChecker {
                 {
                     let _ = self.unify(&got, &want, expr.span);
                 }
-                self.note_trait_coercion(expr, expected, &got);
+                self.note_interface_coercion(expr, expected, &got);
                 return got;
             }
             // std.collections: `[1, 2, 3]` is a collection literal, and the slot
@@ -284,7 +284,7 @@ impl TypeChecker {
             _ => {}
         }
         let ty = self.infer_expr(expr);
-        self.note_trait_coercion(expr, expected, &ty);
+        self.note_interface_coercion(expr, expected, &ty);
         ty
     }
 
@@ -336,15 +336,15 @@ impl TypeChecker {
         }
     }
 
-    /// The `any Trait` type arguments a container was instantiated with.
-    fn trait_object_type_args(ty: &Type) -> Vec<Type> {
+    /// The `any Interface` type arguments a container was instantiated with.
+    fn interface_object_type_args(ty: &Type) -> Vec<Type> {
         let args = match ty {
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
             _ => return Vec::new(),
         };
         args.iter()
             .filter_map(|a| match a {
-                GenericArg::Type(t) if matches!(**t, Type::TraitObject { .. }) => {
+                GenericArg::Type(t) if matches!(**t, Type::InterfaceObject { .. }) => {
                     Some((**t).clone())
                 }
                 _ => None,
@@ -352,7 +352,7 @@ impl TypeChecker {
             .collect()
     }
 
-    /// TR5: a concrete value flowing into an `any Trait` position gets boxed
+    /// TR5: a concrete value flowing into an `any Interface` position gets boxed
     /// with a vtable. The site has to be recorded by NodeId or MIR emits the
     /// bare value and the first method call dispatches through whatever
     /// happened to be in memory.
@@ -361,7 +361,7 @@ impl TypeChecker {
     /// that knows its expected type — an annotated binding, a struct field, a
     /// collection element, a return value — type-checked and then segfaulted
     /// at the first method call (#335, #474, #481).
-    /// An explicit `x as any Trait` boxes itself, so it needs no second box.
+    /// An explicit `x as any Interface` boxes itself, so it needs no second box.
     fn is_any_cast(expr: &Expr) -> bool {
         matches!(&expr.kind, ExprKind::Cast { ty, .. } if ty.starts_with("any "))
     }
@@ -369,41 +369,41 @@ impl TypeChecker {
     /// The same question for a collection element whose container only settled
     /// after the call was walked. Runs after solving, from the same list of
     /// deferred checks as the rest.
-    pub(super) fn validate_pending_trait_elem_coercions(&mut self) {
-        let pending = std::mem::take(&mut self.pending_trait_elem_coercions);
+    pub(super) fn validate_pending_interface_elem_coercions(&mut self) {
+        let pending = std::mem::take(&mut self.pending_interface_elem_coercions);
         for (node, is_any_cast, recv_ty, arg_ty) in pending {
             let applied = self.ctx.apply(&arg_ty);
-            for elem in Self::trait_object_type_args(&self.ctx.apply(&recv_ty)) {
-                let Type::TraitObject { ref trait_name } = elem else { continue };
-                if crate::traits::implements_trait(&self.types, &applied, trait_name) {
-                    self.note_trait_coercion_node(node, is_any_cast, &elem, &arg_ty);
+            for elem in Self::interface_object_type_args(&self.ctx.apply(&recv_ty)) {
+                let Type::InterfaceObject { ref interface_name } = elem else { continue };
+                if crate::interfaces::implements_interface(&self.types, &applied, interface_name) {
+                    self.note_interface_coercion_node(node, is_any_cast, &elem, &arg_ty);
                 }
             }
         }
     }
 
-    pub(super) fn note_trait_coercion(&mut self, expr: &Expr, expected: &Type, found: &Type) {
-        self.note_trait_coercion_node(expr.id, Self::is_any_cast(expr), expected, found)
+    pub(super) fn note_interface_coercion(&mut self, expr: &Expr, expected: &Type, found: &Type) {
+        self.note_interface_coercion_node(expr.id, Self::is_any_cast(expr), expected, found)
     }
 
-    fn note_trait_coercion_node(
+    fn note_interface_coercion_node(
         &mut self,
         node: rask_ast::NodeId,
         is_any_cast: bool,
         expected: &Type,
         found: &Type,
     ) {
-        let Type::TraitObject { trait_name } = expected else { return };
+        let Type::InterfaceObject { interface_name } = expected else { return };
         if is_any_cast {
             return;
         }
-        if matches!(self.ctx.apply(found), Type::TraitObject { .. } | Type::Error) {
+        if matches!(self.ctx.apply(found), Type::InterfaceObject { .. } | Type::Error) {
             return;
         }
-        // Only a value that actually implements the trait gets a vtable for it.
+        // Only a value that actually implements the interface gets a vtable for it.
         //
         // The expected type arrives here already peeled of its wrappers, so a
-        // value that isn't destined for the `any Trait` side looks like one that
+        // value that isn't destined for the `any Interface` side looks like one that
         // is. Two ways that went wrong, both ending in a vtable that can't be
         // built:
         //
@@ -415,9 +415,9 @@ impl TypeChecker {
         //   `-> (any Shape) or Nope` with `return Nope {}` — the err branch, but
         //   expected peels to the ok side: "vtable method Nope.area".
         //
-        // A value that doesn't implement the trait is either the other branch or
+        // A value that doesn't implement the interface is either the other branch or
         // a type error reported elsewhere; boxing it is wrong either way (#764).
-        // Anything still unresolved keeps the old behaviour — `implements_trait`
+        // Anything still unresolved keeps the old behaviour — `implements_interface`
         // can't answer for a variable, and refusing on "don't know" would drop
         // boxes the checker had accepted.
         let resolved = self.ctx.apply(found);
@@ -425,10 +425,10 @@ impl TypeChecker {
             resolved,
             Type::Var(_) | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }
         );
-        if !undecided && !crate::traits::implements_trait(&self.types, &resolved, trait_name) {
+        if !undecided && !crate::interfaces::implements_interface(&self.types, &resolved, interface_name) {
             return;
         }
-        self.trait_coercions.insert(node, trait_name.clone());
+        self.interface_coercions.insert(node, interface_name.clone());
     }
 
     /// True when the literal's own spelling doesn't pin a type, so the slot it
@@ -1814,18 +1814,18 @@ impl TypeChecker {
                 let inner_ty = self.infer_expr(inner);
                 let target = parse_type_string(ty, &self.types).unwrap_or(Type::Error);
 
-                // Validate trait satisfaction for `as any Trait` casts
-                if let Type::TraitObject { ref trait_name } = target {
+                // Validate interface satisfaction for `as any Interface` casts
+                if let Type::InterfaceObject { ref interface_name } = target {
                     if !matches!(inner_ty, Type::Var(_) | Type::Error) {
-                        if !crate::traits::implements_trait(&self.types, &inner_ty, trait_name) {
+                        if !crate::interfaces::implements_interface(&self.types, &inner_ty, interface_name) {
                             let ty_desc = match &inner_ty {
                                 Type::Named(id) => self.types.type_name(*id),
                                 other => format!("{}", other),
                             };
-                            self.errors.push(TypeError::TraitNotSatisfied {
+                            self.errors.push(TypeError::InterfaceNotSatisfied {
                                 ty: ty_desc,
-                                trait_name: trait_name.clone(),
-                                context: super::TraitBoundContext::TraitObjectCast,
+                                interface_name: interface_name.clone(),
+                                context: super::InterfaceBoundContext::InterfaceObjectCast,
                                 missing: None,
                                 span: expr.span,
                             });
@@ -1845,7 +1845,7 @@ impl TypeChecker {
                     && !matches!(inner_ty, Type::Var(_) | Type::Error)
                     && inner_ty != target
                 {
-                    // A number or a trait object are the only two things `as`
+                    // A number or an interface object are the only two things `as`
                     // converts to. To anything else it reinterprets the bits,
                     // which is what `transmute` needs `unsafe` for.
                     //
@@ -2777,18 +2777,18 @@ impl TypeChecker {
                 // Propagate expected param types to arguments
                 let ret = *ret.clone();
                 for (param, arg) in params.clone().iter().zip(args.iter()) {
-                    // TR5: record implicit trait coercion for MIR boxing
-                    if let Type::TraitObject { ref trait_name } = param {
+                    // TR5: record implicit interface coercion for MIR boxing
+                    if let Type::InterfaceObject { ref interface_name } = param {
                         let is_explicit_cast = matches!(
                             &arg.expr.kind,
                             ExprKind::Cast { ty, .. } if ty.starts_with("any ")
                         );
                         if !is_explicit_cast {
                             let arg_ty = self.infer_expr(&arg.expr);
-                            if !matches!(arg_ty, Type::TraitObject { .. } | Type::Error) {
-                                self.trait_coercions.insert(
+                            if !matches!(arg_ty, Type::InterfaceObject { .. } | Type::Error) {
+                                self.interface_coercions.insert(
                                     arg.expr.id,
-                                    trait_name.clone(),
+                                    interface_name.clone(),
                                 );
                             }
                         }
@@ -3485,6 +3485,23 @@ impl TypeChecker {
             }
         }
 
+        // MN1: `Labeled.label(d)` names the interface where a value belongs.
+        // Without this it type-checked as a static call and died in lowering.
+        if let ExprKind::Ident(name) = &object.kind {
+            let spelled = name.split('<').next().unwrap_or(name);
+            if self.lookup_local(spelled).is_none() {
+                if let Some(id) = self.types.get_type_id(spelled) {
+                    if matches!(self.types.get(id), Some(TypeDef::Interface { .. })) {
+                        self.errors.push(TypeError::StaticCallOnInterface {
+                            interface_name: spelled.to_string(),
+                            method: method.to_string(),
+                            span: object.span,
+                        });
+                        return Type::Error;
+                    }
+                }
+            }
+        }
         // Type-level namespaces: Vec.new(), Map.new(), Rng.new(), Pool.new()
         // These are type names, not variables — skip ESAD borrow check and
         // emit UnresolvedNamed directly instead of calling infer_expr
@@ -3821,7 +3838,7 @@ impl TypeChecker {
         // TR5 for a collection element. `Vec<any Shape>.push(Circle { … })` has
         // to box, but the parameter type here is the container's element
         // variable, so the expected type isn't known at the argument. The
-        // receiver's own type argument is: if it's `any Trait`, a concrete
+        // receiver's own type argument is: if it's `any Interface`, a concrete
         // argument can only be that element. Without this, push stored a bare
         // struct pointer into a 16-byte element slot and every element read
         // back through whichever vtable was written last (#335).
@@ -3834,7 +3851,7 @@ impl TypeChecker {
         // interpreter (#955). Ask again once the receiver has settled.
         if matches!(self.ctx.apply(&obj_ty), Type::Var(_)) {
             for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
-                self.pending_trait_elem_coercions.push((
+                self.pending_interface_elem_coercions.push((
                     arg.expr.id,
                     Self::is_any_cast(&arg.expr),
                     obj_ty.clone(),
@@ -3844,13 +3861,13 @@ impl TypeChecker {
         }
         for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
             let applied = self.ctx.apply(arg_ty);
-            for elem in Self::trait_object_type_args(&self.ctx.apply(&obj_ty)) {
-                // Only an argument that satisfies the trait can be the element.
+            for elem in Self::interface_object_type_args(&self.ctx.apply(&obj_ty)) {
+                // Only an argument that satisfies the interface can be the element.
                 // Without this a `Map<string, any Shape>`'s key was flagged too,
                 // and codegen went looking for `string_area`.
-                let Type::TraitObject { ref trait_name } = elem else { continue };
-                if crate::traits::implements_trait(&self.types, &applied, trait_name) {
-                    self.note_trait_coercion(&arg.expr, &elem, arg_ty);
+                let Type::InterfaceObject { ref interface_name } = elem else { continue };
+                if crate::interfaces::implements_interface(&self.types, &applied, interface_name) {
+                    self.note_interface_coercion(&arg.expr, &elem, arg_ty);
                 }
             }
         }
@@ -4126,10 +4143,10 @@ impl TypeChecker {
             return Type::Error;
         }
 
-        // Cloned rather than borrowed: recording a trait coercion below mutates
+        // Cloned rather than borrowed: recording an interface coercion below mutates
         // the checker, and the borrow would outlive the whole body.
         if let Some(sig) = self.types.builtin_modules.get_method(module, method).cloned() {
-            let mut trait_params: Vec<(Expr, Type, Type)> = Vec::new();
+            let mut interface_params: Vec<(Expr, Type, Type)> = Vec::new();
             // Check parameter count — skip for wildcard params (_Any accepts anything)
             let has_wildcard = sig.params.iter().any(|p| {
                 matches!(p, Type::UnresolvedNamed(n) if n == "_Any")
@@ -4148,13 +4165,13 @@ impl TypeChecker {
                 for ((param_ty, arg_ty), arg) in
                     sig.params.iter().zip(arg_types.iter()).zip(args.iter())
                 {
-                    // TR5: a concrete value flowing into an `any Trait`
+                    // TR5: a concrete value flowing into an `any Interface`
                     // parameter needs a vtable, and MIR builds it from this
                     // note. A module function's arguments were the one call
                     // position that never recorded it — `io.copy(buf, out)`
                     // passed the raw struct pointer, and the first dispatch
                     // through it jumped to address zero (#860).
-                    trait_params.push((arg.expr.clone(), param_ty.clone(), arg_ty.clone()));
+                    interface_params.push((arg.expr.clone(), param_ty.clone(), arg_ty.clone()));
                     self.ctx.add_constraint(TypeConstraint::Equal(
                         param_ty.clone(),
                         arg_ty.clone(),
@@ -4162,8 +4179,8 @@ impl TypeChecker {
                     ));
                 }
             }
-            for (arg_expr, param_ty, arg_ty) in trait_params {
-                self.note_trait_coercion(&arg_expr, &param_ty, &arg_ty);
+            for (arg_expr, param_ty, arg_ty) in interface_params {
+                self.note_interface_coercion(&arg_expr, &param_ty, &arg_ty);
             }
 
             // If explicit type args provided (e.g., json.decode<Foo>),
@@ -4260,16 +4277,16 @@ impl TypeChecker {
         // XC3: the bound is a place that needs the conformance, so it's a place
         // two of them collide.
         self.check_bound_conformance_ambiguity(&resolved, bound, span);
-        let trait_bound = crate::traits::TraitBound::new("_", vec![bound.to_string()]);
-        if let Err(errs) = crate::traits::verify_instantiation(
+        let interface_bound = crate::interfaces::InterfaceBound::new("_", vec![bound.to_string()]);
+        if let Err(errs) = crate::interfaces::verify_instantiation(
             &self.types,
             &resolved,
-            std::slice::from_ref(&trait_bound),
+            std::slice::from_ref(&interface_bound),
             span,
         ) {
             for e in errs {
-                let (ty_name, trait_name) = super::validate::trait_error_parts(&e);
-                let err = self.bound_error(&resolved, ty_name, trait_name, span);
+                let (ty_name, interface_name) = super::validate::interface_error_parts(&e);
+                let err = self.bound_error(&resolved, ty_name, interface_name, span);
                 self.errors.push(err);
             }
         }
@@ -4574,13 +4591,13 @@ impl TypeChecker {
                 }
             }
 
-            // `Error.NotFound` — the trait has no variants (#1095). Without
+            // `Error.NotFound` — the interface has no variants (#1095). Without
             // this the name handed back an open type variable, which then
             // unified with whatever the surrounding code wanted, so any
             // spelling at all type-checked and the two backends disagreed
             // about what it meant at runtime.
             if name == "Error" && self.types.get_type_id("Error").is_none() {
-                self.errors.push(TypeError::ErrorTraitMember {
+                self.errors.push(TypeError::ErrorInterfaceMember {
                     member: field.to_string(),
                     span,
                 });

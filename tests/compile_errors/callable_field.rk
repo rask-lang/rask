@@ -7,7 +7,7 @@
 // reading it works. E0405 says that, and names the two ways to call it.
 //
 // It stays an error rather than becoming a call. The shape it would serve — a
-// struct of functions — is one Rask answers with a trait, and it appears
+// struct of functions — is one Rask answers with an interface, and it appears
 // nowhere in the tree: not in `stdlib/`, not in a validation program, not in a
 // spec. The text editor is the tell, keeping an enum of commands where the
 // classic design keeps a stack of closures.
@@ -50,6 +50,6 @@ func main() {
 //
 // or, when the behaviour is the point rather than the storage:
 //
-//   trait Handles {
+//   interface Handles {
 //       func run(self, x: i64) -> i64
 //   }

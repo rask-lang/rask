@@ -53,10 +53,10 @@ const EXTRA_NAMES: &[(&str, &[&str])] = &[
     // to read them off — but `import sync.Relaxed` is the spelling the corpus
     // uses and it has to name something.
     ("sync", &["Ordering", "Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"]),
-    // The traits fmt.rk and encoding.rk declare. Compiler-provided, so always in
+    // The interfaces fmt.rk and encoding.rk declare. Compiler-provided, so always in
     // scope and satisfied by shape — the declarations are read for their method
     // lists, not to gate conformance. Listed here because a selective import
-    // has to name something and a trait isn't a type the stub walk registers.
+    // has to name something and an interface isn't a type the stub walk registers.
     ("fmt", &["Displayable", "Debug"]),
     ("encoding", &["Encode", "Decode"]),
 ];
@@ -84,11 +84,11 @@ const COMPILER_MODULES: &[&str] = &[
     // so `print_fields` was filed as a `fields` method and swept up by an
     // unresolved-receiver call, carrying that call's type arguments.
     //
-    // `fmt` and `encoding` declare traits the compiler provides, and giving
-    // `Displayable` a declaration made it look like a trait a program had
-    // written — which G1 gates on `extend T with Trait`, so every inherent
+    // `fmt` and `encoding` declare interfaces the compiler provides, and giving
+    // `Displayable` a declaration made it look like an interface a program had
+    // written — which G1 gates on `T implements Interface`, so every inherent
     // `to_string` in the stdlib stopped counting. The gate asks what kind of
-    // trait it is now, not whether a declaration exists.
+    // interface it is now, not whether a declaration exists.
 ];
 
 static MODULE_NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();

@@ -227,11 +227,11 @@ benchmark "vec push" {
 
 | Rule | Description |
 |------|-------------|
-| **T16: Trait injection** | Mocking via trait-based dependency injection — no magic frameworks |
+| **T16: Interface injection** | Mocking via interface-based dependency injection — no magic frameworks |
 
 <!-- test: skip -->
 ```rask
-trait Clock { func now() -> Timestamp }
+interface Clock { func now() -> Timestamp }
 
 test "schedule" {
     let fake = FakeClock { current: Timestamp(1000) }
@@ -298,7 +298,7 @@ WHY: Comptime tests run during compilation; failures are compile errors.
 
 **A1 vs A2:** `assert` for invariants that make the rest of the test meaningless. `check` for collecting multiple failures in one run (especially table-driven tests).
 
-**T16 (trait injection):** No runtime mocking or monkey-patching. Dependency injection through traits keeps tests explicit and avoids hidden magic.
+**T16 (interface injection):** No runtime mocking or monkey-patching. Dependency injection through interfaces keeps tests explicit and avoids hidden magic.
 
 **T17–T19 (no harness runtime):** Two alternatives were considered and rejected ([#519](https://github.com/rask-lang/rask/issues/519)). A harness-provided per-test runtime (wrap every spawning test in an implicit block) fails the same test as auto-installing a runtime in binaries: a runtime you didn't write is a cost you didn't see, and the explicit block is precisely how you find out that your code — or a dependency you just added — wants a scheduler. Banning tasks in tests outright fails harder: the concurrency model's own semantics (join, cancel, panic-in-task) need test coverage more than most code. The explicit block costs one line, gives each test its own drain point (T19) and config site (`using Multitasking(workers: 1)` for deterministic scheduling), and keeps the reading rule uniform: anywhere you see a runtime, someone wrote it.
 

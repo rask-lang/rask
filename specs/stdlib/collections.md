@@ -286,7 +286,7 @@ users.sort_by(|a, b| b.score.compare(a.score))  // descending
 
 ## Vec Convenience Methods
 
-| Method | Signature | Trait Required | Notes |
+| Method | Signature | Interface Required | Notes |
 |--------|-----------|----------------|-------|
 | `vec.contains(item)` | `(T) -> bool` | `T: Equal` | Linear scan |
 | `vec.first()` | `() -> T?` | `T: Copy` | First element or `none`. On a `Vec<T?>` the result is `T??` — outer layer says "vec was empty", inner says "slot was empty" (`type.optionals/OPT28`) |

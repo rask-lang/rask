@@ -34,7 +34,7 @@ let value = unsafe { *ptr }
 | Raw pointer to reference | `&*ptr` creates reference from potentially invalid pointer |
 | Calling C functions | C cannot provide Rask's safety guarantees |
 | Calling unsafe Rask functions | Function declares it requires caller verification |
-| Implementing unsafe traits | Trait contract cannot be verified by compiler |
+| Implementing unsafe interfaces | Interface contract cannot be verified by compiler |
 | Transmute | Reinterprets bytes as different type |
 | Inline assembly | Arbitrary machine code |
 | Union field access | Reading wrong variant is undefined |
@@ -67,7 +67,7 @@ let value = unsafe { *ptr }
 // Creating raw pointers (safe)
 let x = 42
 mut ptr: *i32 = &x as *i32
-mut null_ptr: *i32 = null
+mut null_ptr: *i32 = nullptr
 
 // Using raw pointers (unsafe)
 unsafe {
@@ -123,30 +123,30 @@ func caller() {
 }
 ```
 
-## Unsafe Traits
+## Unsafe Interfaces
 
 | Rule | Description |
 |------|-------------|
-| **UT1: Explicit unsafe extend** | Implementing unsafe trait requires `unsafe extend` |
-| **UT2: Contract obligation** | Implementer guarantees trait's safety contract |
+| **UT1: Explicit unsafe conformance** | Implementing an unsafe interface requires `unsafe T implements I` |
+| **UT2: Contract obligation** | Implementer guarantees interface's safety contract |
 | **UT3: Compiler trust** | Compiler trusts extend; soundness is implementer's responsibility |
 
-**Built-in unsafe traits:**
+**Built-in unsafe interfaces:**
 
-| Trait | Contract |
+| Interface | Contract |
 |-------|----------|
 | `Send` | Type can be transferred to another thread |
 | `Sync` | Type can be shared (via &T) between threads |
 
 <!-- test: parse -->
 ```rask
-unsafe trait Send {}
-unsafe trait Sync {}
+unsafe interface Send {}
+unsafe interface Sync {}
 
 struct MyType { ptr: *i32 }
 
 // Implementer asserts: MyType can safely cross thread boundaries
-unsafe extend MyType with Send {}
+unsafe MyType implements Send {}
 ```
 
 ## Safe/Unsafe Boundary
@@ -403,7 +403,7 @@ FIX: Add to clobber list or declare as output:
 | Use-after-free | U1 | UB in release; panic if detectable in debug |
 | Data race | — | UB even in unsafe; use atomics |
 | Calling unsafe func without unsafe block | U1 | Compile error |
-| Implementing safe trait unsafely | UT1 | Compile error (use `unsafe extend`) |
+| Implementing an unsafe interface without `unsafe` | UT1 | Compile error (write `unsafe T implements I`) |
 | Nested unsafe blocks | U2 | Redundant but allowed |
 | Unsafe in comptime | U1 | Not allowed (no pointers at compile time) |
 

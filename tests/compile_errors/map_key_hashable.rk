@@ -8,11 +8,11 @@
 //
 // Three kinds of key, three different ways out, so the message differs per kind.
 
-// No `with (…)` clause, so it inherits nothing — not even u64's Hashable.
+// No `implements …` clause, so it inherits nothing — not even u64's Hashable.
 type Id = u64
 
 // The clause is how you ask.
-type Tag = u64 with (Equal, Hashable)
+type Tag = u64 implements Equal, Hashable
 
 struct Plain {
     public n: i64

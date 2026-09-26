@@ -16,7 +16,7 @@ extend Point {
     }
 }
 
-extend Point with Add {
+Point implements Add {
     func add(self, other: Point) -> Point {
         return Point { x: self.x + other.x, y: self.y + other.y }
     }

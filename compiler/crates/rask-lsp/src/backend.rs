@@ -445,7 +445,7 @@ fn build_sibling_names(uri: &Url, ctx: &rask_compiler::PackageContext) -> HashMa
                 DeclKind::Fn(f) => Some(f.name.clone()),
                 DeclKind::Struct(s) => Some(s.name.clone()),
                 DeclKind::Enum(e) => Some(e.name.clone()),
-                DeclKind::Trait(t) => Some(t.name.clone()),
+                DeclKind::Interface(t) => Some(t.name.clone()),
                 DeclKind::Const(c) => Some(c.name.clone()),
                 DeclKind::Union(u) => Some(u.name.clone()),
                 _ => None,

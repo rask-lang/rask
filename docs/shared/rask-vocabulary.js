@@ -20,12 +20,12 @@ window.RASK_VOCAB = {
     keywords: (
         'as asm assert benchmark break catch check comptime const continue dep ' +
         'discard else ensure enum exclusive export extend extern feature for func ' +
-        'if import in is lazy let loop match mut mutate native or own package ' +
+        'if implements import in is lazy let loop match mut mutate native or own package ' +
         'private profile public read return scope select select_priority struct ' +
-        'take test trait try type union unsafe using where while with'
+        'take test interface try type union unsafe using where while with'
     ).split(' '),
 
-    literals: 'true false none null'.split(' '),
+    literals: 'true false none nullptr'.split(' '),
 
     types: (
         'string i8 i16 i32 i64 u8 u16 u32 u64 usize isize f32 f64 bool char void ' +

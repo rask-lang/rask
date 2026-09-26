@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Rejects: declared `extend T with Trait` but the type lacks the trait's method
+// Rejects: declared `T implements Interface` but the type lacks the interface's method
 // Expected: typecheck error E0333 at the extend — `Dog` does not implement `Greeter`
 
-trait Greeter {
+interface Greeter {
     func greet(self) -> string
 }
 
 struct Dog { name: string }
 
 // Declares conformance but provides `bark`, not `greet`.
-extend Dog with Greeter {
+Dog implements Greeter {
     func bark(self) -> string { return "woof" }
 }
 

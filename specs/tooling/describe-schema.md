@@ -37,7 +37,7 @@
   "imports": [],
   "types": [],
   "enums": [],
-  "traits": [],
+  "interfaces": [],
   "functions": [],
   "constants": [],
   "externs": []
@@ -52,7 +52,7 @@
 | `imports` | `Import[]` | Module imports |
 | `types` | `StructType[]` | Struct definitions |
 | `enums` | `EnumType[]` | Enum definitions |
-| `traits` | `TraitType[]` | Trait definitions |
+| `interfaces` | `InterfaceType[]` | Interface definitions |
 | `functions` | `Function[]` | Top-level functions |
 | `constants` | `Constant[]` | Top-level constants |
 | `externs` | `ExternFunc[]` | External function declarations |
@@ -174,7 +174,7 @@
 | `variants` | `Variant[]` | Enum variants |
 | `methods` | `Function[]` | Methods from extend blocks |
 
-## TraitType
+## InterfaceType
 
 ```json
 {
@@ -320,7 +320,7 @@ extend Server {
       "methods": []
     }
   ],
-  "traits": [],
+  "interfaces": [],
   "functions": [],
   "constants": [],
   "externs": []

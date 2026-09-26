@@ -9,7 +9,7 @@ backends and diffs what it prints. A program listed here works, or the build is 
 |---|---|
 | [grep_clone.rk](https://github.com/rask-lang/rask/blob/main/examples/grep_clone.rk) | CLI flags, file reads, `catch` on the error branch, string scanning |
 | [file_copy.rk](https://github.com/rask-lang/rask/blob/main/examples/file_copy.rk) | Error enums with `message()`, optionals, `own` at a call site |
-| [game_loop.rk](https://github.com/rask-lang/rask/blob/main/examples/game_loop.rk) | Frame update, traits, worker threads. Read it for the loop, not the storage (see below) |
+| [game_loop.rk](https://github.com/rask-lang/rask/blob/main/examples/game_loop.rk) | Frame update, interfaces, worker threads. Read it for the loop, not the storage (see below) |
 | [text_editor.rk](https://github.com/rask-lang/rask/blob/main/examples/text_editor.rk) | Undo stack, `ensure` cleanup, linear resources. Same storage caveat |
 | [parameter_modes.rk](https://github.com/rask-lang/rask/blob/main/examples/parameter_modes.rk) | Borrow, `mutate`, `take`. The subject of [Passing Values](../guide/passing-values.md) |
 

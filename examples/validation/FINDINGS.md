@@ -44,13 +44,13 @@ Last pass, five spec constructs didn't parse. Now:
 
 | Construct | Before | Now |
 |-----------|--------|-----|
-| `duck trait` | ✗ | **✓ parses + checks** |
-| `scoped extend` | ✗ | **✓ parses + checks** |
-| comma-list `extend T with A, B` | ✗ | **✓ parses + checks** |
+| `duck interface` | ✗ | **✓ parses + checks** |
+| `scoped extend` | ✗ | removed: a name clash gets a newtype (MN3) |
+| comma-list `T implements A, B` | ✗ | **✓ parses + checks** |
 | struct field defaults `f: T = expr` | ✗ | **✓ parses + runs** |
 | field annotations `@rename/@no_serialize/@default` | ✗ | ✗ still unimplemented |
 
-Nominal trait conformance is **enforced** (G1) — a good change; the program
+Nominal interface conformance is **enforced** (G1) — a good change; the program
 relies on it. Field defaults now land: `Config {}` is the fully-defaulted value
 (FD3), and `Task`/`TaskPatch`/`ListFilter` name only the fields that vary. The
 one remaining parser gap is field annotations:
@@ -67,7 +67,7 @@ have since been fixed and the program now uses the real form; one (B3) is still
 open. These were the highest-value findings — where spec-correct Rask hit a wall.
 
 ### B1 — `extend` on a nominal newtype — [#445], **fixed**
-`type TaskId = u64 with (...)` then `extend TaskId { func next(...) }` used to
+`type TaskId = u64 implements ...` then `extend TaskId { func next(...) }` used to
 give `no method next found`. Fixed. The ids are nominal newtypes again —
 distinct types that inherit Equal/Hashable/Comparable via `with` and carry
 `next()` via `extend`, built `TaskId(n)`, unwrapped `.value`.
@@ -82,7 +82,7 @@ stays non-Comparable. That's the reason now, not "Ordering unnameable".)
 ### B3 — `Error` auto-derive (ER6) — [#1001], **fixed**
 A bare error enum used to get no `message()` and couldn't be an error type
 (`does not implement Error`), so every error enum here needed `@message` or a
-hand-written `extend … with Error`. An enum a signature names as an error type
+hand-written `… implements Error`. An enum a signature names as an error type
 now gets `message()` derived from its variant names and payloads, with nothing
 written. `@message` is still how you supply prose per variant, which is why the
 enums here keep it.
@@ -183,10 +183,10 @@ Still valid against `main`:
 - ~~**#337** `using` clause vs return-type ordering~~ — dead. The signature
   `using` clause only ever named a pool, and both went out together
   (rask-lang/rask#908), so there is no ordering left to disagree about.
-- **#338** LANGUAGE_CARD omits `with (...)` on nominal newtypes — a doc gap.
+- **#338** LANGUAGE_CARD omits `implements ...` on nominal newtypes — a doc gap.
   Now that nominal `extend` works (B1) and the ids use it, the card is the one
   place a reader wouldn't learn the form the program relies on.
-- **#340** OC1 × nominal `with (...)` delegation — unspecified. The ids are
+- **#340** OC1 × nominal `implements ...` delegation — unspecified. The ids are
   nominal now (B1 fixed); EmailAddress stays a struct with a custom `Equal`, so
   the interaction still isn't exercised, but the spec ambiguity stands.
 - **#341** typed domain error → boundary enum has no `try` sugar — **fixed**
@@ -221,7 +221,7 @@ by `T or E` + `try`.
 |------|-------|
 | conformance declarations (`extend … with`) | 13 |
 | `catch _ => …` decode guards | 7 |
-| `as any Trait` casts | 6 |
+| `as any Interface` casts | 6 |
 | `ensure` | 1 |
 
 Everything the design makes deliberately visible (conformances, casts, `ensure`)
@@ -233,8 +233,8 @@ remain each write down a discard the old `else |e|` form hid (§F).
 
 ## What worked well on `main`
 
-- **Nominal conformance enforcement + comma-lists + `duck trait`** — the trait
-  surface is solid, and nominal newtype ids now carry traits + methods (B1).
+- **Nominal conformance enforcement + comma-lists + `duck interface`** — the interface
+  surface is solid, and nominal newtype ids now carry interfaces + methods (B1).
 - **Pools**: `Pool<T>` + `Handle<T>` and their context clauses ran natively and
   the store read beautifully. Written before the migration — the store is a
   `Rack<Task>` now, and the sweep that nulled every other task's `deps` on delete
