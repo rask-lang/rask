@@ -25,6 +25,9 @@
 #include <stdatomic.h>
 #include <setjmp.h>
 #include <unistd.h>
+#include <poll.h>
+#include <errno.h>
+#include <fcntl.h>
 
 // ─── Internal declarations from panic.c ────────────────────
 
@@ -74,7 +77,24 @@ struct RaskTask {
 
     // The task's place in the sim scheduler (sim.c), or NULL outside sim.
     void        *sim;
+
+    // How to wake the body out of the wait it is in, so a cancel reaches a
+    // task parked in a receive, a sleep or a socket (conc.async/CN3). Set and
+    // cleared by the body around the wait; `waking` is the canceller using
+    // it, and the body doesn't leave the wait until it's done.
+    pthread_mutex_t   wait_lock;
+    pthread_cond_t    wait_idle;
+    RaskCancelWake   *wake;
+    int               waking;
+    // A thread blocked in poll can't be woken through a condvar, so it polls
+    // this pipe too. Made the first time one is needed.
+    int               wake_pipe[2];
 };
+
+// A thread blocking in the runtime says so, for the green scheduler's deadlock
+// check (defined at the end of this file).
+void rask_thread_wait_begin(const char *what);
+void rask_thread_wait_end(void);
 
 // What `cancelled()` reads: the task whose body this thread is running.
 static __thread RaskTask *current_task;
@@ -94,12 +114,14 @@ RaskTask *rask_task_new(void) {
     // would free. That is #1223: `closure_base` was added to this struct and
     // the pooled path never set it, so the release freed garbage and ran drop
     // glue on it.
-    *t = (RaskTask){ .task_id = rask_next_task_id() };
+    *t = (RaskTask){ .task_id = rask_next_task_id(), .wake_pipe = { -1, -1 } };
     atomic_init(&t->refcount, 2);  // handle + runner
     atomic_init(&t->status, RASK_TASK_RUNNING);
     atomic_init(&t->cancel_flag, 0);
     pthread_cond_init(&t->done_cond, NULL);
     pthread_mutex_init(&t->report_lock, NULL);
+    pthread_mutex_init(&t->wait_lock, NULL);
+    pthread_cond_init(&t->wait_idle, NULL);
     return t;
 }
 
@@ -127,6 +149,12 @@ void rask_task_release(RaskTask *t) {
         if (t->result_owned && t->result) rask_free((void *)(intptr_t)t->result);
         pthread_cond_destroy(&t->done_cond);
         pthread_mutex_destroy(&t->report_lock);
+        pthread_mutex_destroy(&t->wait_lock);
+        pthread_cond_destroy(&t->wait_idle);
+        if (t->wake_pipe[0] >= 0) {
+            close(t->wake_pipe[0]);
+            close(t->wake_pipe[1]);
+        }
         rask_free(t);
     }
 }
@@ -396,7 +424,21 @@ int64_t rask_handle_join(void *h, int64_t *value_out, RaskStr *msg_out) {
 int64_t rask_handle_cancel(void *h, int64_t *value_out, RaskStr *msg_out) {
     RaskTask *t = handle_task(h, "cancel");
     RASK_SIM_POINT();
-    atomic_store_explicit(&t->cancel_flag, 1, memory_order_release);
+    atomic_store_explicit(&t->cancel_flag, 1, memory_order_seq_cst);
+    // Wake it if it's parked. The body registers its wake before it last
+    // reads the flag, and this reads the wake after raising the flag, so one
+    // of the two always sees the other.
+    pthread_mutex_lock(&t->wait_lock);
+    RaskCancelWake *w = t->wake;
+    if (w) t->waking = 1;
+    pthread_mutex_unlock(&t->wait_lock);
+    if (w) {
+        w->wake(w);
+        pthread_mutex_lock(&t->wait_lock);
+        t->waking = 0;
+        rask_task_cond_broadcast(&t->wait_idle);
+        pthread_mutex_unlock(&t->wait_lock);
+    }
     return rask_handle_join(h, value_out, msg_out);
 }
 
@@ -430,24 +472,157 @@ int8_t rask_handle_cancelled(void) {
     return atomic_load_explicit(&t->cancel_flag, memory_order_acquire) ? 1 : 0;
 }
 
+// ─── Waits a cancel ends (conc.async/CN3) ──────────────────
+//
+// A wait that a cancel should end registers how to wake it, then loops on its
+// own condition and on `rask_cancel_requested()`. The waker lives on the
+// waiter's stack, so `rask_cancel_wait_end` doesn't return while a canceller
+// is still calling it.
+
+int rask_cancel_requested(void) {
+    RaskTask *t = current_task;
+    return t && atomic_load_explicit(&t->cancel_flag, memory_order_seq_cst);
+}
+
+int rask_cancel_wait_begin(RaskCancelWake *w) {
+    RaskTask *t = current_task;
+    if (!t) return 0;
+    pthread_mutex_lock(&t->wait_lock);
+    t->wake = w;
+    pthread_mutex_unlock(&t->wait_lock);
+    return atomic_load_explicit(&t->cancel_flag, memory_order_seq_cst);
+}
+
+void rask_cancel_wait_end(void) {
+    RaskTask *t = current_task;
+    if (!t) return;
+    pthread_mutex_lock(&t->wait_lock);
+    while (t->waking) {
+        rask_task_cond_wait(&t->wait_idle, &t->wait_lock, "a cancel to finish");
+    }
+    t->wake = NULL;
+    pthread_mutex_unlock(&t->wait_lock);
+}
+
+// The waker for a condvar wait: `a` is the mutex, `b` the condvar.
+static void wake_cond(RaskCancelWake *w) {
+    pthread_mutex_lock((pthread_mutex_t *)w->a);
+    rask_task_cond_broadcast((pthread_cond_t *)w->b);
+    pthread_mutex_unlock((pthread_mutex_t *)w->a);
+}
+
+RaskCancelWake rask_cancel_wake_cond(void *m, void *c) {
+    return (RaskCancelWake){ .wake = wake_cond, .a = m, .b = c };
+}
+
+// ─── A thread waiting on a socket ──────────────────────────
+
+static void wake_pipe_write(RaskCancelWake *w) {
+    char one = 1;
+    ssize_t ignored = write((int)(intptr_t)w->a, &one, 1);
+    (void)ignored;
+}
+
+// Block until `fd` is ready or the task is cancelled; 1 means cancelled. The
+// thread polls the task's wake pipe beside the socket, since a condvar can't
+// interrupt poll.
+int rask_thread_io_wait(int64_t fd, int64_t want_write) {
+    short events = want_write ? POLLOUT : POLLIN;
+    RaskTask *t = current_task;
+    if (!t) {
+        struct pollfd p = { .fd = (int)fd, .events = events };
+        while (poll(&p, 1, -1) < 0 && errno == EINTR) {}
+        return 0;
+    }
+    if (t->wake_pipe[0] < 0) {
+        if (pipe(t->wake_pipe) < 0) {
+            rask_panic_fmt("cancellable wait: pipe failed: %s", strerror(errno));
+        }
+        // Drained without blocking; a byte left from an earlier cancel only
+        // wakes a wait that would see the flag anyway.
+        fcntl(t->wake_pipe[0], F_SETFL, fcntl(t->wake_pipe[0], F_GETFL) | O_NONBLOCK);
+    }
+    RaskCancelWake w = { .wake = wake_pipe_write, .a = (void *)(intptr_t)t->wake_pipe[1] };
+    int cancelled = rask_cancel_wait_begin(&w);
+    struct pollfd p[2] = {
+        { .fd = (int)fd, .events = events },
+        { .fd = t->wake_pipe[0], .events = POLLIN },
+    };
+    rask_thread_wait_begin(want_write ? "a socket to take a write" : "a socket to be readable");
+    while (!cancelled) {
+        int n = poll(p, 2, -1);
+        if (n < 0 && errno == EINTR) continue;
+        if (p[1].revents) {
+            char buf[16];
+            while (read(t->wake_pipe[0], buf, sizeof(buf)) == sizeof(buf)) {}
+        }
+        cancelled = rask_cancel_requested();
+        if (n < 0 || p[0].revents) break;
+    }
+    rask_thread_wait_end();
+    rask_cancel_wait_end();
+    return cancelled;
+}
+
+#ifdef RASK_SIM
+static void wake_sim_sleeper(RaskCancelWake *w) {
+    rask_sim_wake(w->a);
+}
+#endif
+
+// A task's thread asleep: a timed wait a cancel can broadcast.
+static int thread_sleep_cancellable(int64_t ns) {
+    pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t c = PTHREAD_COND_INITIALIZER;
+    struct timespec now, until;
+    clock_gettime(CLOCK_REALTIME, &now);
+    int64_t end_ns = (int64_t)now.tv_sec * 1000000000LL + now.tv_nsec + ns;
+    until.tv_sec = end_ns / 1000000000LL;
+    until.tv_nsec = end_ns % 1000000000LL;
+
+    RaskCancelWake w = rask_cancel_wake_cond(&m, &c);
+    int cancelled = rask_cancel_wait_begin(&w);
+    pthread_mutex_lock(&m);
+    rask_thread_wait_begin("a sleep");
+    while (!cancelled) {
+        if (pthread_cond_timedwait(&c, &m, &until) == ETIMEDOUT) break;
+        cancelled = rask_cancel_requested();
+    }
+    rask_thread_wait_end();
+    pthread_mutex_unlock(&m);
+    rask_cancel_wait_end();
+    pthread_cond_destroy(&c);
+    pthread_mutex_destroy(&m);
+    return cancelled;
+}
+
+// 0, or RASK_CANCELLED when a cancel ended the sleep early (conc.async/CN3).
 int64_t rask_sleep_ns(int64_t ns) {
+    int cancelled = 0;
 #ifdef RASK_SIM
     if (rask_sim_active()) {
-        rask_sim_sleep(ns);
-        return 0;
+        RaskCancelWake w = { .wake = wake_sim_sleeper, .a = rask_sim_self() };
+        cancelled = rask_cancel_wait_begin(&w);
+        if (!cancelled) {
+            rask_sim_sleep(ns);
+            cancelled = rask_cancel_requested();
+        }
+        rask_cancel_wait_end();
+        return cancelled ? RASK_CANCELLED : 0;
     }
 #endif
     if (ns <= 0) return 0;
-    // A green task parks and leaves its worker to the others.
     if (rask_fiber_active()) {
-        rask_fiber_sleep_ns(ns);
-        return 0;
+        // A green task parks and leaves its worker to the others.
+        cancelled = rask_fiber_sleep_ns(ns);
+    } else if (current_task) {
+        cancelled = thread_sleep_cancellable(ns);
+    } else {
+        // Nothing can cancel the scope's own thread.
+        struct timespec ts = { .tv_sec = ns / 1000000000LL, .tv_nsec = ns % 1000000000LL };
+        nanosleep(&ts, NULL);
     }
-    struct timespec ts;
-    ts.tv_sec  = ns / 1000000000LL;
-    ts.tv_nsec = ns % 1000000000LL;
-    nanosleep(&ts, NULL);
-    return 0;
+    return cancelled ? RASK_CANCELLED : 0;
 }
 
 // Sleep for the given number of milliseconds.

@@ -178,19 +178,26 @@ extend Receiver<T> {
 
 // --- Channel errors ---
 
-public enum SendError { Closed }
+/// `Cancelled`: the task was cancelled while it waited (conc.async/CN3).
+public enum SendError { Closed, Cancelled }
 
 extend SendError {
     public func message(self) -> string {
-        return "send on closed channel"
+        match self {
+            SendError.Closed => return "send on closed channel"
+            SendError.Cancelled => return "send cancelled"
+        }
     }
 }
 
-public enum ReceiveError { Closed }
+public enum ReceiveError { Closed, Cancelled }
 
 extend ReceiveError {
     public func message(self) -> string {
-        return "receive on closed channel"
+        match self {
+            ReceiveError.Closed => return "receive on closed channel"
+            ReceiveError.Cancelled => return "receive cancelled"
+        }
     }
 }
 

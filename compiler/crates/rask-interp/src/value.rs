@@ -632,11 +632,26 @@ pub const ALL_MODULE_KINDS: &[ModuleKind] = &[
     ModuleKind::Reflect,
 ];
 
+impl Value {
+    /// The tracker key for a value tracked like a file: a `File`, or a socket
+    /// (`tcp_listen`, `accept`, `tcp_connect` register them the same way).
+    /// Sockets were missing from every walk over resources, so one captured by
+    /// a task stayed owed by the spawner and was reported leaked there.
+    pub fn tracked_as_file(&self) -> Option<usize> {
+        match self {
+            Value::File(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
+            Value::TcpListener(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
+            Value::TcpConnection(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
+            _ => None,
+        }
+    }
+}
+
 /// What every spawn form hands back (conc.async/H5).
 pub struct HandleInner {
     pub handle: Mutex<Option<std::thread::JoinHandle<Result<Value, String>>>>,
-    /// Raised by `cancel()`, read by `cancelled()` in the running body (CN1).
-    pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// Raised by `cancel()`, read by `cancelled()` and by the waits it ends.
+    pub cancel: Arc<CancelToken>,
     /// ctrl.panic/F1: which task this is, for the detached-panic report.
     pub task_id: i64,
 }
@@ -644,21 +659,51 @@ pub struct HandleInner {
 impl HandleInner {
     pub fn new(
         handle: std::thread::JoinHandle<Result<Value, String>>,
-        cancel: Arc<std::sync::atomic::AtomicBool>,
+        cancel: Arc<CancelToken>,
     ) -> Arc<Self> {
         Arc::new(HandleInner { handle: Mutex::new(Some(handle)), cancel, task_id: next_task_id() })
     }
 }
 
+/// A task's cancel flag, and a condvar a waiting body sleeps on so a cancel
+/// wakes it (conc.async/CN3).
+#[derive(Default)]
+pub struct CancelToken {
+    flag: std::sync::atomic::AtomicBool,
+    lock: Mutex<()>,
+    wake: std::sync::Condvar,
+}
+
+impl CancelToken {
+    pub fn cancel(&self) {
+        let _held = self.lock.lock().unwrap();
+        self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.wake.notify_all();
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Wait up to `d` or until cancelled; true when cancelled.
+    pub fn wait(&self, d: std::time::Duration) -> bool {
+        let held = self.lock.lock().unwrap();
+        let (_held, _) = self.wake
+            .wait_timeout_while(held, d, |_| !self.is_cancelled())
+            .unwrap();
+        self.is_cancelled()
+    }
+}
+
 std::thread_local! {
-    static CURRENT_CANCEL: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> =
+    static CURRENT_CANCEL: std::cell::RefCell<Option<Arc<CancelToken>>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Run a spawned body with `flag` as what `cancelled()` reads. A pool worker
-/// runs many bodies, so the previous flag is put back after.
-pub fn with_cancel_flag<R>(flag: Arc<std::sync::atomic::AtomicBool>, f: impl FnOnce() -> R) -> R {
-    let prev = CURRENT_CANCEL.with(|c| c.replace(Some(flag)));
+/// Run a spawned body with `token` as what `cancelled()` reads. A pool worker
+/// runs many bodies, so the previous token is put back after.
+pub fn with_cancel_flag<R>(token: Arc<CancelToken>, f: impl FnOnce() -> R) -> R {
+    let prev = CURRENT_CANCEL.with(|c| c.replace(Some(token)));
     let out = f();
     CURRENT_CANCEL.with(|c| *c.borrow_mut() = prev);
     out
@@ -666,9 +711,13 @@ pub fn with_cancel_flag<R>(flag: Arc<std::sync::atomic::AtomicBool>, f: impl FnO
 
 /// Whether whatever is running this thread has been asked to stop.
 pub fn cancel_requested() -> bool {
-    CURRENT_CANCEL.with(|c| {
-        c.borrow().as_ref().is_some_and(|f| f.load(std::sync::atomic::Ordering::Acquire))
-    })
+    CURRENT_CANCEL.with(|c| c.borrow().as_ref().is_some_and(|t| t.is_cancelled()))
+}
+
+/// The running task's token, for a wait a cancel should end. None outside a
+/// task, where nothing can cancel the caller.
+pub fn current_cancel() -> Option<Arc<CancelToken>> {
+    CURRENT_CANCEL.with(|c| c.borrow().clone())
 }
 
 /// Task ids, handed out in spawn order like the runtime's `rask_next_task_id`.

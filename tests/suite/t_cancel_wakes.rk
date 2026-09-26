@@ -1,0 +1,131 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A cancel reaches a task that is waiting, not only one that polls
+// `cancelled()` (conc.async/CN3, #1370). The wait it's in ends with a
+// `Cancelled` error and the body carries on through its own code, so what it
+// returns is what `cancel()` hands back.
+//
+// Before, the flag was only ever read by `cancelled()`: a task parked in a
+// receive never saw it, and `cancel()` waited forever. Native reported a
+// deadlock; the interpreter hung.
+
+import async.{spawn, Handle, JoinError, ReceiveError, SendError, Receiver}
+import thread.{Thread, ThreadPool}
+import io.IoError
+import os.SysError
+import time
+import time.Duration
+import net
+
+func receive_one(rx: Receiver<i64>) -> string {
+    match rx.receive() {
+        i64 as v => { return "value {v}" }
+        ReceiveError.Cancelled => { return "cancelled" }
+        ReceiveError.Closed => { return "closed" }
+    }
+}
+
+func sleep_a_minute() -> string {
+    match time.sleep(Duration.seconds(60)) {
+        SysError.Cancelled => { return "cancelled" }
+        _ => { return "slept" }
+    }
+}
+
+// Give the body time to reach its wait, then cancel it.
+func cancel_later(take h: Handle<string>) -> string {
+    ensure h.detach()
+    time.sleep(Duration.millis(20))!
+    match h.cancel() {
+        string as s => { return s }
+        JoinError.Panicked(m) => { return "panicked {m}" }
+    }
+}
+
+test "a task parked in receive" {
+    using Multitasking(workers: 2) {
+        mut (tx, rx) = Channel<i64>.buffered(1)
+        ensure tx.close()
+        assert cancel_later(spawn(|| { return receive_one(rx) })) == "cancelled"
+    }
+}
+
+test "a task parked in an unbuffered receive" {
+    using Multitasking(workers: 2) {
+        mut (tx, rx) = Channel<i64>.unbuffered()
+        ensure tx.close()
+        assert cancel_later(spawn(|| { return receive_one(rx) })) == "cancelled"
+    }
+}
+
+test "a task parked sending to a full channel" {
+    using Multitasking(workers: 2) {
+        mut (tx, rx) = Channel<i64>.buffered(1)
+        ensure rx.close()
+        let h = spawn(|| {
+            tx.send(1)!
+            match tx.send(2) {
+                SendError.Cancelled => { return "cancelled" }
+                _ => { return "sent" }
+            }
+        })
+        assert cancel_later(h) == "cancelled"
+    }
+}
+
+test "a task asleep" {
+    using Multitasking(workers: 2) {
+        assert cancel_later(spawn(|| { return sleep_a_minute() })) == "cancelled"
+    }
+}
+
+test "a task waiting to accept" {
+    using Multitasking(workers: 2) {
+        let listener = net.tcp_listen("127.0.0.1:0")!
+        let h = spawn(|| {
+            ensure listener.close()
+            match listener.accept() {
+                IoError.Cancelled => { return "cancelled" }
+                _ => { return "accepted" }
+            }
+        })
+        assert cancel_later(h) == "cancelled"
+    }
+}
+
+test "a thread parked in receive, and one asleep" {
+    mut (tx, rx) = Channel<i64>.buffered(1)
+    ensure tx.close()
+    assert cancel_later(Thread.spawn(|| { return receive_one(rx) })) == "cancelled"
+    assert cancel_later(Thread.spawn(|| { return sleep_a_minute() })) == "cancelled"
+}
+
+test "a pool job asleep" {
+    using ThreadPool(workers: 1) {
+        assert cancel_later(ThreadPool.spawn(|| { return sleep_a_minute() })) == "cancelled"
+    }
+}
+
+test "a value that is already there wins over the cancel" {
+    using Multitasking(workers: 2) {
+        mut (tx, rx) = Channel<i64>.buffered(1)
+        ensure tx.close()
+        tx.send(7)!
+        let h = spawn(|| {
+            time.sleep(Duration.millis(40))
+            return receive_one(rx)
+        })
+        // Cancelled while asleep: the sleep ends early, and the receive finds
+        // the value without waiting.
+        assert cancel_later(h) == "value 7"
+    }
+}
+
+test "outside a task nothing is cancelled" {
+    mut (tx, rx) = Channel<i64>.buffered(1)
+    tx.send(3)!
+    assert receive_one(rx) == "value 3"
+    tx.close()
+}
+
+func main() {}

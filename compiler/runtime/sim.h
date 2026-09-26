@@ -30,6 +30,9 @@ void rask_sim_park(const void *key, const char *what);
 void rask_sim_notify(const void *key);
 void rask_sim_notify_one(const void *key);
 void rask_sim_sleep(int64_t ns);
+// The calling sim task, and ending another's sleep early (a cancel, CN3).
+void *rask_sim_self(void);
+void rask_sim_wake(void *task);
 int64_t rask_sim_now_ns(void);
 uint64_t rask_sim_random_seed(void);
 uint64_t rask_sim_fault_draw(void);

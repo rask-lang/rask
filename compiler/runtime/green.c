@@ -1079,21 +1079,24 @@ static int io_ready(void *arg) {
     return poll(&p, 1, 0) > 0;
 }
 
-static void block_until_ready(int fd, short events) {
-    struct pollfd p = { .fd = fd, .events = events };
-    while (poll(&p, 1, -1) < 0 && errno == EINTR) {}
+// Ready, or the task was cancelled while waiting (conc.async/CN3).
+static int io_ready_or_cancelled(void *arg) {
+    return rask_cancel_requested() || io_ready(arg);
+}
+
+static void wake_io_waiter(RaskCancelWake *w) {
+    rask_fiber_notify(w->a, 1);
 }
 
 // Wait until a non-blocking socket can be read (or accepted on) or written.
 // On a fiber this parks and gives the worker to other tasks; anywhere else it
-// blocks the thread in poll.
-void rask_io_wait(int64_t fd, int64_t want_write) {
+// blocks the thread in poll. 1 means a cancel ended the wait.
+int rask_io_wait(int64_t fd, int64_t want_write) {
     GreenTask *t = tl_current_task;
     GreenScheduler *s = g_sched;
     short events = want_write ? POLLOUT : POLLIN;
     if (!t || !s || s->epfd < 0) {
-        block_until_ready((int)fd, events);
-        return;
+        return rask_thread_io_wait(fd, want_write);
     }
     struct epoll_event ev = {
         .events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET,
@@ -1101,14 +1104,18 @@ void rask_io_wait(int64_t fd, int64_t want_write) {
     };
     if (epoll_ctl(s->epfd, EPOLL_CTL_ADD, (int)fd, &ev) < 0 && errno != EEXIST) {
         // Not something epoll can watch.
-        block_until_ready((int)fd, events);
-        return;
+        return rask_thread_io_wait(fd, want_write);
     }
     IoWait w = { .fd = (int)fd, .events = events };
+    const void *key = io_key((int)fd, (int)want_write);
+    RaskCancelWake wake = { .wake = wake_io_waiter, .a = (void *)key };
+    rask_cancel_wait_begin(&wake);
     atomic_fetch_add_explicit(&s->io_waiters, 1, memory_order_seq_cst);
-    park_until(io_key((int)fd, (int)want_write), io_ready, &w,
+    park_until(key, io_ready_or_cancelled, &w,
                want_write ? "a socket to take a write" : "a socket to be readable");
     atomic_fetch_sub_explicit(&s->io_waiters, 1, memory_order_seq_cst);
+    rask_cancel_wait_end();
+    return rask_cancel_requested();
 }
 
 // Every parked task and what it waits on, for the deadlock report.
@@ -1124,12 +1131,38 @@ static void report_waits(FILE *out) {
     }
 }
 
-void rask_fiber_sleep_ns(int64_t ns) {
+// A cancel ending a sleep: take the fiber off the timer list, so the timer
+// can't wake it a second time later, and make it runnable. If the timer got
+// there first it's already on its way.
+static void wake_sleeper(RaskCancelWake *w) {
+    GreenTask *t = (GreenTask *)w->a;
+    GreenScheduler *s = g_sched;
+    int found = 0;
+    pthread_mutex_lock(&s->timers_lock);
+    for (GreenTask **link = &s->timers; *link; link = &(*link)->timer_next) {
+        if (*link == t) {
+            *link = t->timer_next;
+            t->timer_next = NULL;
+            atomic_fetch_sub_explicit(&s->timer_count, 1, memory_order_relaxed);
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&s->timers_lock);
+    if (found) task_wake(t);
+}
+
+int rask_fiber_sleep_ns(int64_t ns) {
     GreenTask *t = tl_current_task;
     GreenScheduler *s = g_sched;
     if (ns <= 0) {
         fiber_yield();
-        return;
+        return 0;
+    }
+    RaskCancelWake w = { .wake = wake_sleeper, .a = t };
+    if (rask_cancel_wait_begin(&w)) {
+        rask_cancel_wait_end();
+        return 1;
     }
     t->wake_at_ns = now_ns() + ns;
     pthread_mutex_lock(&s->timers_lock);
@@ -1141,6 +1174,8 @@ void rask_fiber_sleep_ns(int64_t ns) {
     // A sleeping worker may be waiting longer than this timer.
     for (int i = 0; i < s->worker_count; i++) worker_wake(&s->workers[i]);
     switch_to_worker(t, SWITCH_PARKED);
+    rask_cancel_wait_end();
+    return rask_cancel_requested();
 }
 
 // ─── Spawn / Join / Detach / Cancel ─────────────────────────

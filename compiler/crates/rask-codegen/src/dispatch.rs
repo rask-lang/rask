@@ -116,6 +116,9 @@ pub enum RetAdapt {
     /// belongs to the entry, and a name missing from a list four deep is how
     /// this went wrong the first time.
     BoxPayloadPtr,
+    /// The return is a status: 0 for Ok, or a `RASK_CHAN_*` failure the
+    /// destination's error enum names a variant for (`Closed`, `Cancelled`).
+    Status,
 }
 
 /// A stdlib function entry: MIR name → C runtime function + adaptation.
@@ -1324,7 +1327,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── ThreadPool ─────────────────────────────────────────────
         StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("time_sleep", "rask_sleep_ns", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "time_sleep", c_name: "rask_sleep_ns",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::Status,
+        },
 
         // ── Concurrency: spawn/join/detach ──────────────────────────
         // join/cancel report how the task ended alongside its value — a
@@ -1381,7 +1388,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "Sender_send", c_name: "rask_channel_send_ptr",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::NegErr,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::Status,
         },
         StdlibEntry::neg_err("Sender_try_send", "rask_channel_try_send_i64", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_err("Sender_close", "rask_sender_close_i64", &[types::I64], Some(types::I64), false),
@@ -1390,7 +1397,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "send", c_name: "rask_channel_send_ptr",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::Status,
         },
         StdlibEntry::simple("sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),

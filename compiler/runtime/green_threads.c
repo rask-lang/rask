@@ -87,12 +87,11 @@ void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l, const char *what) {
     (void)what;
     pthread_rwlock_wrlock(l);
 }
-void rask_fiber_sleep_ns(int64_t ns) { rask_sleep_ns(ns); }
+int rask_fiber_sleep_ns(int64_t ns) { return rask_sleep_ns(ns) != 0; }
 
 // No fibers to park, so waiting on a socket blocks the thread.
-void rask_io_wait(int64_t fd, int64_t want_write) {
-    struct pollfd p = { .fd = (int)fd, .events = want_write ? POLLOUT : POLLIN };
-    while (poll(&p, 1, -1) < 0 && errno == EINTR) {}
+int rask_io_wait(int64_t fd, int64_t want_write) {
+    return rask_thread_io_wait(fd, want_write);
 }
 
 #endif // !RASK_HAS_GREEN

@@ -376,6 +376,7 @@ public enum Signal {
 public enum SysError {
     Unsupported(string)     // operation not available on this platform
     Failed(string)          // raw OS error text
+    Cancelled               // the task was cancelled while it waited (conc.async/CN3)
 }
 
 extend SysError {
@@ -383,6 +384,7 @@ extend SysError {
         match self {
             SysError.Unsupported(msg) => return "unsupported: {msg}"
             SysError.Failed(msg) => return "os error: {msg}"
+            SysError.Cancelled => return "cancelled"
         }
     }
 }

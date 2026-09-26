@@ -59,7 +59,7 @@ No `duration_since` on `Instant` — `end - start` is the one way to get the dif
 
 | Rule | Description |
 |------|-------------|
-| **S1: Sleep** | `time.sleep(duration)` blocks current thread for at least the given duration. May wake early on signal. Fails with `SysError` (`std.os/SY1`) on rare platform-level errors |
+| **S1: Sleep** | `time.sleep(duration)` pauses the task (or blocks the thread) for at least the given duration. A cancel ends it early with `SysError.Cancelled` (`conc.async/CN3`); otherwise it fails only on rare platform-level errors (`std.os/SY1`) |
 
 <!-- test: skip -->
 ```rask

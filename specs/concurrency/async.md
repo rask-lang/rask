@@ -223,7 +223,7 @@ match h.join() { }    // explicit handling
 |------|-------------|
 | **CN1: Cooperative** | Cancellation sets a flag; the work checks `cancelled()`. Same for a task, a pooled job and an OS thread: `cancelled()` reads the flag of whichever one is running it |
 | **CN2: Ensure runs** | `ensure` blocks always run, even on cancellation |
-| **CN3: I/O checks** | I/O operations check cancel flag and return `Cancelled` error if set |
+| **CN3: A cancel ends a wait** | A task parked in a channel `receive` or `send`, a `sleep`, or a socket call wakes when it's cancelled, and the call returns `Cancelled`: `ReceiveError.Cancelled`, `SendError.Cancelled`, `SysError.Cancelled`, `IoError.Cancelled`. A call that doesn't need to wait completes: a value already in the channel is received. Joins and lock waits keep waiting, since what they wait for ends by its own code anyway |
 | **CN4: No kill at pause points** | Cancellation never terminates a task at a suspension point. A cancelled task always resumes and exits through its own control flow — the flag check or the `Cancelled` error return. Preemption pauses tasks, never kills them |
 | **CN5: The body's ending is the answer** | `cancel()` and `join()` return what the body returned, or its panic. Cancellation is not a third way to end: a body that stops early says so in its own return type |
 
@@ -246,6 +246,10 @@ let h = spawn(|| {
 sleep(5.seconds)
 let finished = try h.cancel()   // how far it got
 ```
+
+A cancel reaches a task that is waiting, not only one that polls: the wait
+ends with `Cancelled`, and the task carries on through its own code. Without
+that, `cancel()` on a task parked in a receive waited forever.
 
 `JoinError.Cancelled` used to exist, and `cancel()` answered with it whatever
 the body did. That threw away a value the task had already produced, and when
@@ -362,6 +366,8 @@ Install a `using Multitasking { ... }` block that encloses the call.
 | Cancelled while holding a lock | CN4 | No forced release — the lock releases when the task's own exit path leaves the block (`ctrl.panic/LK4`) |
 | Panic-unwind of `using` block with tasks still pending | C4 | Cancellation signalled, no drain. A task that never reaches another check point never runs again — its ensures are skipped and locks it held stay held. Teardown of a dying runtime, not a state the program continues from |
 | Channel send after all receivers closed | CH3 | Returns `Closed` error |
+| Cancelled while an unbuffered send waits for its receiver | CN3 | The offer is withdrawn and `send` returns `Cancelled`, unless a receiver already took the value, in which case it was sent |
+| Cancelled while `select` waits | — | Keeps waiting; `select` has no error arm to report it through (#1371) |
 | Nested `using Multitasking` blocks | C1 | Error — second `enter` aborts (compile error if lexically nested, runtime panic otherwise) |
 | Library opens `using Multitasking` while app already did | C6 | Falls under C1 — runtime panic |
 | Test block spawns | C6 | Tests are application code — the test opens its own `using Multitasking { }`; the runner serializes runtime-holding tests to respect C1 (`std.testing/T17–T19`) |
@@ -392,8 +398,8 @@ Install a `using Multitasking { ... }` block that encloses the call.
 
 <!-- test: parse -->
 ```rask
-enum SendError { Closed }
-enum ReceiveError { Closed }
+enum SendError { Closed, Cancelled }
+enum ReceiveError { Closed, Cancelled }
 enum CloseError { AlreadyClosed, FlushFailed }
 enum TrySendError { Full(T), Closed(T) }
 enum TryReceiveError { Empty, Closed }

@@ -1177,6 +1177,24 @@ void rask_handle_detach(void *h);
 // Whether whatever is running the caller has been asked to stop.
 int8_t rask_handle_cancelled(void);
 
+// A wait a cancel ends (conc.async/CN3): a channel receive or send, a sleep, a
+// socket. The wait registers how to wake it, loops on its own condition and on
+// `rask_cancel_requested()`, and deregisters once it has let go of its locks.
+// `rask_cancel_wait_begin` answers whether the cancel came already. Outside a
+// task nothing can cancel the caller, and these do nothing.
+typedef struct RaskCancelWake {
+    void (*wake)(struct RaskCancelWake *w);
+    void *a;
+    void *b;
+} RaskCancelWake;
+int  rask_cancel_requested(void);
+int  rask_cancel_wait_begin(RaskCancelWake *w);
+void rask_cancel_wait_end(void);
+// The waker for a condvar wait: lock `mutex`, broadcast `cond`.
+RaskCancelWake rask_cancel_wake_cond(void *mutex, void *cond);
+// A thread (not a fiber) waiting on a socket; 1 means the task was cancelled.
+int  rask_thread_io_wait(int64_t fd, int64_t want_write);
+
 // For the runners (green.c, threadpool.c). A new task holds two refs: the
 // handle's and the runner's.
 RaskTask *rask_task_new(void);
@@ -1214,7 +1232,9 @@ int64_t rask_outside_progress(void);
 
 // Wait until a non-blocking socket is readable (or has a connection to
 // accept), or writable. A green task parks; any other caller blocks in poll.
-void rask_io_wait(int64_t fd, int64_t want_write);
+// 1 when a cancel ended the wait (conc.async/CN3); the caller fails the
+// operation with ECANCELED.
+int  rask_io_wait(int64_t fd, int64_t want_write);
 
 // `using Multitasking(workers: n)` on a build with no green scheduler: the
 // scope installs the count and a task body waits for one of the slots. Inert
@@ -1260,6 +1280,10 @@ typedef struct RaskRecver  RaskRecver;
 #define RASK_CHAN_CLOSED -1
 #define RASK_CHAN_FULL   -2
 #define RASK_CHAN_EMPTY  -3
+// The task was cancelled while it waited (conc.async/CN3). The same code
+// ends a sleep early.
+#define RASK_CHAN_CANCELLED -4
+#define RASK_CANCELLED RASK_CHAN_CANCELLED
 
 // Create a channel. capacity=0 for rendezvous (unbuffered).
 // Returns sender and receiver through out-params.
@@ -1267,7 +1291,7 @@ void rask_channel_new(int64_t elem_size, int64_t capacity,
                       RaskSender **tx_out, RaskRecver **rx_out);
 
 // Blocking send. Copies elem_size bytes from data into the channel.
-// Returns RASK_CHAN_OK or RASK_CHAN_CLOSED.
+// Returns RASK_CHAN_OK, RASK_CHAN_CLOSED or RASK_CHAN_CANCELLED.
 int64_t rask_channel_send(RaskSender *tx, const void *data);
 
 // Blocking receive. Copies elem_size bytes from channel into data_out.
@@ -1340,7 +1364,7 @@ void    rask_select_wait(int64_t seen);
 
 // Park the running green fiber for `ns` (green.c). Only valid on a fiber —
 // check rask_fiber_active() first.
-void rask_fiber_sleep_ns(int64_t ns);
+int  rask_fiber_sleep_ns(int64_t ns);  // 1 = a cancel ended it
 int  rask_fiber_active(void);
 
 // A task's share of the runtime's thread-local state, swapped on and off a

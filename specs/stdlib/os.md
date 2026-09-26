@@ -65,6 +65,7 @@ func main() {
 enum SysError {
     Unsupported(string)     // operation not available on this platform
     Failed(string)          // raw OS error text
+    Cancelled               // a cancel ended the wait (`time.sleep`, conc.async/CN3)
 }
 ```
 

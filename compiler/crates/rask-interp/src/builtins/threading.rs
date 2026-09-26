@@ -3,7 +3,6 @@
 //!
 //! Layer: RUNTIME — thread join/detach and channel ops need OS primitives.
 
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
@@ -28,6 +27,11 @@ fn report_detached_panic(task_id: i64, jh: std::thread::JoinHandle<Result<Value,
     }
 }
 
+/// How long a channel wait in a task goes between looks at its cancel flag.
+/// An mpsc end can't be woken from outside, so a cancel reaches one within
+/// this.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(2);
+
 impl Interpreter {
     /// Mark a handle as consumed in the resource tracker (conc.async/H1).
     fn consume_handle(&mut self, handle: &Arc<HandleInner>) {
@@ -51,7 +55,7 @@ impl Interpreter {
             "cancel" => {
                 self.consume_handle(handle);
                 // CN1: raise the flag, then wait for the body to notice.
-                handle.cancel.store(true, Ordering::Release);
+                handle.cancel.cancel();
                 Ok(join_outcome(handle))
             }
             "detach" => {
@@ -77,11 +81,27 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match method {
             "send" => {
-                let val = args.into_iter().next().unwrap_or(Value::Unit);
+                let mut val = args.into_iter().next().unwrap_or(Value::Unit);
                 let tx = tx.lock().unwrap();
-                match tx.send(val) {
-                    Ok(()) => Ok(chan_ok(Value::Unit)),
-                    Err(_) => Ok(chan_err(chan_error("SendError", "Closed", 0, vec![]))),
+                let closed = || Ok(chan_err(chan_error("SendError", "Closed", 0, vec![])));
+                // In a task the wait is one its cancel ends (conc.async/CN3).
+                // An mpsc sender can't be woken from outside, so it retries
+                // between waits on the task's token.
+                let Some(token) = crate::value::current_cancel() else {
+                    return match tx.send(val) {
+                        Ok(()) => Ok(chan_ok(Value::Unit)),
+                        Err(_) => closed(),
+                    };
+                };
+                loop {
+                    match tx.try_send(val) {
+                        Ok(()) => return Ok(chan_ok(Value::Unit)),
+                        Err(mpsc::TrySendError::Disconnected(_)) => return closed(),
+                        Err(mpsc::TrySendError::Full(v)) => val = v,
+                    }
+                    if token.wait(CANCEL_POLL) {
+                        return Ok(chan_err(chan_error("SendError", "Cancelled", 1, vec![])));
+                    }
                 }
             }
             "try_send" => {
@@ -135,9 +155,24 @@ impl Interpreter {
         match method {
             "receive" => {
                 let rx = rx.lock().unwrap();
-                match rx.recv() {
-                    Ok(val) => Ok(chan_ok(val)),
-                    Err(_) => Ok(chan_err(chan_error("ReceiveError", "Closed", 0, vec![]))),
+                let closed = || Ok(chan_err(chan_error("ReceiveError", "Closed", 0, vec![])));
+                let Some(token) = crate::value::current_cancel() else {
+                    return match rx.recv() {
+                        Ok(val) => Ok(chan_ok(val)),
+                        Err(_) => closed(),
+                    };
+                };
+                // A value already there is taken, cancel or not, the same as
+                // native: the channel is looked at before the flag.
+                loop {
+                    match rx.recv_timeout(CANCEL_POLL) {
+                        Ok(val) => return Ok(chan_ok(val)),
+                        Err(mpsc::RecvTimeoutError::Disconnected) => return closed(),
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                    if token.is_cancelled() {
+                        return Ok(chan_err(chan_error("ReceiveError", "Cancelled", 1, vec![])));
+                    }
                 }
             }
             "try_receive" => {

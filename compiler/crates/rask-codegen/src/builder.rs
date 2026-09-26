@@ -261,14 +261,15 @@ enum CallAdapt {
     /// A payload with its own storage binds the destination to the pointer, so
     /// the block's writes land in the box; a word-sized one takes a load.
     BoxPayloadPtr,
-    /// Receiver.try_recv: call returned a channel status; the payload was
-    /// written into the given slot. Build a `T or E` Result in dst —
-    /// status==OK → Ok(payload of `elem_size` bytes), else → Err.
-    /// The bool says whether a closed channel is a distinct error variant.
-    /// `try_receive` answers `TryReceiveError` — Empty(0) or Closed(1) — and
-    /// stored a bare tag with no variant, so a drained closed channel reported
-    /// "channel is empty" (#1067). `receive`'s `ReceiveError` has one variant.
-    TryRecvResult(StackSlot, u32, bool),
+    /// A receive: call returned a channel status; the payload was written
+    /// into the given slot. Build a `T or E` Result in dst — status==OK →
+    /// Ok(payload of `elem_size` bytes), else Err of the variant the status
+    /// names. A bare tag once reported a drained closed channel as "channel is
+    /// empty" (#1067).
+    TryRecvResult(StackSlot, u32),
+    /// The call returned a status (RetAdapt::Status). Build a `void or E`
+    /// from it: a send, a sleep.
+    Status,
     /// parse: the call returned 0/1; the value was written into the given slot.
     /// Build a `T or ParseError` — status==0 → Ok(value), else Err.
     /// Carries (slot, type the runtime wrote, type the destination wants).
@@ -293,6 +294,11 @@ const IO_ERROR_UNEXPECTED_EOF: i64 = 6;
 /// `RASK_JOIN_*` defines in runtime/rask_runtime.h.
 const RASK_JOIN_OK: i64 = 0;
 const RASK_JOIN_PANICKED: i64 = 1;
+
+/// Channel statuses a receive or send can fail with. Mirrors the
+/// `RASK_CHAN_*` defines in runtime/rask_runtime.h.
+const RASK_CHAN_EMPTY: i64 = -3;
+const RASK_CHAN_CANCELLED: i64 = -4;
 
 /// How a string-out-param call ended, as the runtime reports it. Mirrors the
 /// `RASK_STROUT_*` defines in runtime/rask_runtime.h.
@@ -5557,9 +5563,9 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     ptr
                 }
-                CallAdapt::TryRecvResult(payload_ss, elem_size, closed_is_own_variant) => {
+                CallAdapt::TryRecvResult(payload_ss, elem_size) => {
                     // Channel status → `T or E` Result. status==OK(0) →
-                    // Ok(payload); anything else (EMPTY/CLOSED) → Err.
+                    // Ok(payload); anything else → Err.
                     let results = builder.inst_results(call_inst);
                     let status = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, crate::layouts::TAG_OFFSET as i64)
@@ -5582,18 +5588,39 @@ impl<'a> FunctionBuilder<'a> {
                         );
                         builder.ins().jump(merge_block, &[]);
 
-                        // Err(variant). The payload is the error enum's own
-                        // discriminant: `TryReceiveError` is Empty(0) or
-                        // Closed(1), and the channel reports CLOSED as -1.
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
-                        let variant = if closed_is_own_variant {
-                            let closed = builder.ins().iconst(types::I64, -1);
-                            let is_closed = builder.ins().icmp(IntCC::Equal, status, closed);
-                            builder.ins().uextend(types::I64, is_closed)
-                        } else {
-                            builder.ins().iconst(types::I64, 0)
-                        };
+                        let variant = Self::chan_error_variant(builder, status, dst_id, ctx);
+                        Self::build_err(builder, dst_ss, variant);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                    }
+                    builder.ins().iconst(types::I64, 0)
+                }
+                CallAdapt::Status => {
+                    let results = builder.inst_results(call_inst);
+                    let status = if !results.is_empty() { results[0] } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id).copied() {
+                        slot_already_written = true;
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        Self::build_ok(builder, dst_ss, zero);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let variant = Self::chan_error_variant(builder, status, dst_id, ctx);
                         Self::build_err(builder, dst_ss, variant);
                         builder.ins().jump(merge_block, &[]);
 
@@ -6908,6 +6935,37 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Err(scalar) into a Result slot (origin zeroed — no source location here).
+    /// A variant's tag in the error enum `dst` carries, found by name so the
+    /// order the stdlib declares them in doesn't matter.
+    fn err_variant_tag(dst_id: &LocalId, name: &str, ctx: &CodegenCtx) -> Option<i64> {
+        let local = ctx.locals.iter().find(|l| l.id == *dst_id)?;
+        let MirType::Result { err, .. } = &local.ty else { return None };
+        let MirType::Enum(id) = err.as_ref() else { return None };
+        let layout = ctx.enum_layouts.get(id.id as usize)?;
+        layout.variants.iter().find(|v| v.name == name).map(|v| v.tag as i64)
+    }
+
+    /// Which error variant a failed channel status is: EMPTY, CLOSED or
+    /// CANCELLED (runtime/rask_runtime.h), each looked up by name.
+    fn chan_error_variant(
+        builder: &mut ClifFunctionBuilder,
+        status: Value,
+        dst_id: &LocalId,
+        ctx: &CodegenCtx,
+    ) -> Value {
+        let tag = |name: &str| Self::err_variant_tag(dst_id, name, ctx).unwrap_or(0);
+        let mut variant = builder.ins().iconst(types::I64, tag("Closed"));
+        for (code, name) in [(RASK_CHAN_EMPTY, "Empty"), (RASK_CHAN_CANCELLED, "Cancelled")] {
+            if Self::err_variant_tag(dst_id, name, ctx).is_none() {
+                continue;
+            }
+            let is = builder.ins().icmp_imm(IntCC::Equal, status, code);
+            let this = builder.ins().iconst(types::I64, tag(name));
+            variant = builder.ins().select(is, this, variant);
+        }
+        variant
+    }
+
     fn build_err(builder: &mut ClifFunctionBuilder, slot: StackSlot, payload: Value) {
         let tag = builder.ins().iconst(types::I64, 1);
         builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
@@ -8438,6 +8496,7 @@ impl<'a> FunctionBuilder<'a> {
             // keyed off the entry's RetAdapt::NegErr — arg handling is untouched.
             RetAdapt::NegErr | RetAdapt::NegNone => call_adapt,
             RetAdapt::BoxPayloadPtr => CallAdapt::BoxPayloadPtr,
+            RetAdapt::Status => CallAdapt::Status,
         }
     }
 
@@ -8665,7 +8724,8 @@ impl<'a> FunctionBuilder<'a> {
                         args[1] = Self::value_to_ptr(builder, val);
                     }
                 }
-                CallAdapt::None
+                // Custom entries return before `ret_adapt` is read.
+                CallAdapt::Status
             }
 
             // Both receives take the value through a buffer of the element's
@@ -8683,7 +8743,7 @@ impl<'a> FunctionBuilder<'a> {
                 ));
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
-                CallAdapt::TryRecvResult(ss, elem_size, func_name == "Receiver_try_receive")
+                CallAdapt::TryRecvResult(ss, elem_size)
             }
 
             _ => CallAdapt::None,

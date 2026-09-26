@@ -507,6 +507,13 @@ static int would_block(void) {
     return errno == EAGAIN || errno == EWOULDBLOCK;
 }
 
+// A cancel ended the wait (conc.async/CN3): fail the call the way the OS
+// would, so it reaches Rask as `IoError.Cancelled`.
+static ssize_t io_cancelled(void) {
+    errno = ECANCELED;
+    return -1;
+}
+
 static ssize_t sock_read(int64_t fd, void *buf, size_t n) {
 #ifdef RASK_SIM
     if (rask_sim_net_owns(fd)) return (ssize_t)rask_sim_net_read(fd, buf, n);
@@ -514,7 +521,7 @@ static ssize_t sock_read(int64_t fd, void *buf, size_t n) {
     for (;;) {
         ssize_t got = read((int)fd, buf, n);
         if (got >= 0 || !would_block()) return got;
-        rask_io_wait(fd, 0);
+        if (rask_io_wait(fd, 0)) return io_cancelled();
     }
 }
 
@@ -529,7 +536,7 @@ static ssize_t sock_write(int64_t fd, const void *buf, size_t n) {
         if (put >= 0) {
             done += (size_t)put;
         } else if (would_block()) {
-            rask_io_wait(fd, 1);
+            if (rask_io_wait(fd, 1)) return done > 0 ? (ssize_t)done : io_cancelled();
         } else {
             return done > 0 ? (ssize_t)done : -1;
         }
@@ -563,7 +570,7 @@ static int sock_accept(int64_t listen_fd) {
             return client;
         }
         if (!would_block()) return -1;
-        rask_io_wait(listen_fd, 0);
+        if (rask_io_wait(listen_fd, 0)) return (int)io_cancelled();
     }
 }
 
@@ -820,6 +827,7 @@ int32_t rask_io_error_kind(int32_t err) {
         case EPIPE: return 3;                   // BrokenPipe
         case ECONNRESET: return 4;              // ConnectionReset
         case ETIMEDOUT: return 5;               // TimedOut
+        case ECANCELED: return 8;               // Cancelled
         default: return 7;                      // Other
     }
 }
@@ -1128,7 +1136,12 @@ static int64_t net_connect_fd(const char *host, const char *port_str) {
             errno = saved;
             return -1;
         }
-        rask_io_wait(fd, 1);
+        if (rask_io_wait(fd, 1)) {
+            close(fd);
+            freeaddrinfo(result);
+            errno = ECANCELED;
+            return -1;
+        }
         int err = 0;
         socklen_t len = sizeof(err);
         if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) {

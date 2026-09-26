@@ -677,7 +677,7 @@ impl Interpreter {
     fn hand_out_handle(
         &mut self,
         join_handle: std::thread::JoinHandle<Result<Value, String>>,
-        cancel: Arc<std::sync::atomic::AtomicBool>,
+        cancel: Arc<crate::value::CancelToken>,
     ) -> Value {
         let inner = crate::value::HandleInner::new(join_handle, cancel);
         let ptr = Arc::as_ptr(&inner) as usize;
@@ -709,7 +709,7 @@ impl Interpreter {
                 let body = body.clone();
                 let captured = captured_env.clone();
                 let child = self.spawn_child(captured);
-                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel = Arc::new(crate::value::CancelToken::default());
                 let flag = cancel.clone();
                 let join_handle = crate::spawn_interp_thread(move || {
                     crate::value::with_cancel_flag(flag, move || run_task_body(child, &body))
@@ -760,7 +760,7 @@ impl Interpreter {
                 // The thread starts now; the body waits for one of the scope's
                 // task slots before running, so `workers: n` bounds how many
                 // run at once (#1111).
-                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel = Arc::new(crate::value::CancelToken::default());
                 let flag = cancel.clone();
                 let join_handle = crate::spawn_interp_thread(move || {
                     crate::with_task_slot(move || {
@@ -815,7 +815,7 @@ impl Interpreter {
                 let child = self.spawn_child(captured);
 
                 let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
-                let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let cancel = Arc::new(crate::value::CancelToken::default());
                 let flag = cancel.clone();
 
                 let task = PoolTask {
@@ -909,9 +909,8 @@ impl Interpreter {
     pub(crate) fn get_resource_id(&self, value: &Value) -> Option<u64> {
         match value {
             Value::Struct(ref s) => s.lock().unwrap().resource_id,
-            Value::File(rc) => {
-                let ptr = Arc::as_ptr(rc) as usize;
-                self.resource_tracker.lookup_file_id(ptr)
+            _ if value.tracked_as_file().is_some() => {
+                self.resource_tracker.lookup_file_id(value.tracked_as_file()?)
             }
             Value::Handle(h) => {
                 let ptr = Arc::as_ptr(h) as usize;
@@ -941,8 +940,8 @@ impl Interpreter {
             }
         };
         match value {
-            Value::File(rc) => {
-                let ptr = Arc::as_ptr(rc) as usize;
+            _ if value.tracked_as_file().is_some() => {
+                let ptr = value.tracked_as_file().expect("just checked");
                 if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
                     move_one(self, id);
                     child.resource_tracker.register_file_id(ptr, id);
@@ -1009,8 +1008,8 @@ impl Interpreter {
             return;
         }
         match value {
-            Value::File(rc) => {
-                let ptr = Arc::as_ptr(rc) as usize;
+            _ if value.tracked_as_file().is_some() => {
+                let ptr = value.tracked_as_file().expect("just checked");
                 if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
                     self.resource_tracker.transfer_to_scope(id, new_depth, outward_only);
                 }
