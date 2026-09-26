@@ -2022,8 +2022,8 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_code("E0889")
                 .with_primary(*span, format!("the second `{}` has nowhere to live", method))
                 .with_fix(format!(
-                    "give the second conformance a type of its own, same bytes, its own name:\n    type {ty}2 = {ty}\n    {ty}2 implements {second} {{ … }}",
-                    ty = ty, second = second
+                    "rename `{method}` in the interface you own, or conform a nominal type of your own instead: `type … = {ty}`, then `… implements {second}`",
+                    method = method, ty = ty, second = second
                 ))
                 .with_why("a type has one method per name (type.generics/MN1), so two conformances asking for different `{method}`s leave `x.{method}(…)` with no answer. This is about the name, not about who owns the type or the interface: there is no orphan rule [type.generics/MN3]".replace("{method}", method))
             }
@@ -2033,7 +2033,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0898")
                     .with_primary(*span, "defined again here")
                     .with_secondary(*first, "first defined here")
-                    .with_fix(format!("a type has one `{m}`. If two interfaces want a `{m}` with the same signature, one block defines it and the other leaves it out; if they want different ones, the second conformance goes on a nominal type of its own:\n    type {t}2 = {t}", m = method, t = ty))
+                    .with_fix(format!("a type has one `{m}`. If both interfaces want the same `{m}`, define it once and leave it out of the other block. If they want different ones, rename the method in the interface you own, or conform a nominal type of your own instead: `type … = {t}`", m = method, t = ty))
                     .with_why("a type has one method per name (type.generics/MN1), and the block read last used to win without a word, so reordering two files changed what a program did. This is a rule about one name, not about who owns the type or the interface: there is no orphan rule [type.generics/MN2]")
             }
 

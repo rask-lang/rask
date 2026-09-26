@@ -2614,7 +2614,8 @@ fn two_blocks_defining_one_method_are_rejected() {
     assert_eq!(out.matches("E0898").count(), 2, "one per second definition: {}", out);
     assert!(out.contains("`Doc` already defines `label`"), "{}", out);
     assert!(out.contains("`Counter` already defines `bump`"), "{}", out);
-    assert!(out.contains("type Doc2 = Doc"), "the fix names the newtype: {}", out);
+    assert!(out.contains("rename the method in the interface you own"), "the fix offers the rename: {}", out);
+    assert!(out.contains("`type … = Doc`"), "the fix offers the newtype without inventing a name: {}", out);
 }
 
 // type.generics/CD2: an `implements` block is the contract. A method the

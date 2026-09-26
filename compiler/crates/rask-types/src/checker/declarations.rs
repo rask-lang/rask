@@ -1127,6 +1127,8 @@ impl TypeChecker {
                 .iter()
                 .any(|k| !self.same_applied_interface(k, n, &i.target_ty))
         });
+        // Copied default bodies never collide here: the desugar injects one
+        // per name, and only when no block of the type defines it.
         // Within one package only: two packages conforming one foreign type
         // are each well-formed on their own, and their clash is XC3's, reported
         // where the conformance is needed (XC4), so a collision nobody uses
