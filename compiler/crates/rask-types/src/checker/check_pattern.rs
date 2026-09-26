@@ -707,6 +707,30 @@ impl TypeChecker {
                 ),
                 None => (None, Vec::new()),
             },
+            // `MyErr.Bad(m)` against an `i64 or MyErr`: the pattern is about
+            // one branch, so its payload types come from that branch. It fell
+            // to the fresh-variable path, and native couldn't resolve a method
+            // call on `m`.
+            Type::Result { .. } => match self.enum_id_from_pattern_name(name) {
+                Some((id, params)) => {
+                    let leaves = two_branch_leaves(&mut self.ctx, &self.types, &resolved_scrutinee);
+                    let args = leaves.iter().find_map(|leaf| match leaf {
+                        Type::Named(b) if *b == id => Some(Vec::new()),
+                        Type::Generic { base, args } if *base == id => Some(
+                            args.iter()
+                                .filter_map(|a| match a {
+                                    GenericArg::Type(t) => Some((**t).clone()),
+                                    _ => None,
+                                })
+                                .collect(),
+                        ),
+                        _ => None,
+                    });
+                    let args = args.unwrap_or_else(|| params.iter().map(|_| self.ctx.fresh_var()).collect());
+                    (Some(id), args)
+                }
+                None => (None, Vec::new()),
+            },
             _ => (None, Vec::new()),
         };
 
