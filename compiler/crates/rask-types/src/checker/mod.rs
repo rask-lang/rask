@@ -161,7 +161,7 @@ pub struct TypeChecker {
     pub(super) conformance_disambiguation: HashMap<NodeId, String>,
     /// MN2: where each method name on a type was first defined by a block in
     /// this program, so a second block defining it is reported as a duplicate.
-    pub(super) declared_methods: HashMap<(crate::types::TypeId, String), rask_ast::Span>,
+    pub(super) declared_methods: HashMap<(crate::types::TypeId, String), (rask_ast::Span, Option<String>)>,
     pub(super) reported_ambiguous_conformances:
         std::collections::HashSet<(crate::types::TypeId, String, String)>,
     /// Current function's return type (for checking return statements).

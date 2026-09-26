@@ -1127,18 +1127,28 @@ impl TypeChecker {
                 .iter()
                 .any(|k| !self.same_applied_interface(k, n, &i.target_ty))
         });
+        // Within one package only: two packages conforming one foreign type
+        // are each well-formed on their own, and their clash is XC3's, reported
+        // where the conformance is needed (XC4), so a collision nobody uses
+        // costs nothing.
         if !self.types.stdlib_mode && !dup_pair && !same_base_sibling {
+            let here = self.package_of(span).map(str::to_string);
             for (m, sig) in i.methods.iter().zip(new_methods.iter()) {
                 let key = (type_id, sig.name.clone());
-                if let Some(first) = self.declared_methods.get(&key).copied() {
-                    self.errors.push(TypeError::DuplicateMethod {
-                        ty: i.target_ty.clone(),
-                        method: m.name.clone(),
-                        first,
-                        span: m.span,
-                    });
-                } else {
-                    self.declared_methods.insert(key, m.span);
+                match self.declared_methods.get(&key) {
+                    Some((first, pkg)) if *pkg == here => {
+                        let first = *first;
+                        self.errors.push(TypeError::DuplicateMethod {
+                            ty: i.target_ty.clone(),
+                            method: m.name.clone(),
+                            first,
+                            span: m.span,
+                        });
+                    }
+                    Some(_) => {}
+                    None => {
+                        self.declared_methods.insert(key, (m.span, here.clone()));
+                    }
                 }
             }
         }
