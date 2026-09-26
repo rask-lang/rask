@@ -3,8 +3,9 @@
 //!
 //! Layer: RUNTIME — thread join/detach and channel ops need OS primitives.
 
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex};
 
+use crate::chan::{ReceiverEnd, RecvError, SendError, SenderEnd};
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{HandleInner, Value};
 
@@ -26,11 +27,6 @@ fn report_detached_panic(task_id: i64, jh: std::thread::JoinHandle<Result<Value,
         crate::register_detached_reaper(reaper);
     }
 }
-
-/// How long a channel wait in a task goes between looks at its cancel flag.
-/// An mpsc end can't be woken from outside, so a cancel reaches one within
-/// this.
-const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(2);
 
 impl Interpreter {
     /// Mark a handle as consumed in the resource tracker (conc.async/H1).
@@ -75,70 +71,43 @@ impl Interpreter {
     /// Handle Sender method calls.
     pub(crate) fn call_sender_method(
         &self,
-        tx: &Arc<Mutex<mpsc::SyncSender<Value>>>,
+        tx: &Arc<SenderEnd>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
             "send" => {
-                let mut val = args.into_iter().next().unwrap_or(Value::Unit);
-                let tx = tx.lock().unwrap();
-                let closed = || Ok(chan_err(chan_error("SendError", "Closed", 0, vec![])));
+                let val = args.into_iter().next().unwrap_or(Value::Unit);
                 // In a task the wait is one its cancel ends (conc.async/CN3).
-                // An mpsc sender can't be woken from outside, so it retries
-                // between waits on the task's token.
-                let Some(token) = crate::value::current_cancel() else {
-                    return match tx.send(val) {
-                        Ok(()) => Ok(chan_ok(Value::Unit)),
-                        Err(_) => closed(),
-                    };
-                };
-                loop {
-                    match tx.try_send(val) {
-                        Ok(()) => return Ok(chan_ok(Value::Unit)),
-                        Err(mpsc::TrySendError::Disconnected(_)) => return closed(),
-                        Err(mpsc::TrySendError::Full(v)) => val = v,
+                match tx.send(val) {
+                    Ok(()) => Ok(chan_ok(Value::Unit)),
+                    Err(SendError::Cancelled(_)) => {
+                        Ok(chan_err(chan_error("SendError", "Cancelled", 1, vec![])))
                     }
-                    if token.wait(CANCEL_POLL) {
-                        return Ok(chan_err(chan_error("SendError", "Cancelled", 1, vec![])));
-                    }
+                    Err(_) => Ok(chan_err(chan_error("SendError", "Closed", 0, vec![]))),
                 }
             }
             "try_send" => {
                 let val = args.into_iter().next().unwrap_or(Value::Unit);
-                let tx = tx.lock().unwrap();
                 match tx.try_send(val) {
                     Ok(()) => Ok(chan_ok(Value::Unit)),
                     // Both variants carry the value back — the send didn't
                     // happen, so the caller still owns what it tried to send.
-                    Err(mpsc::TrySendError::Full(v)) => {
+                    Err(SendError::Full(v)) => {
                         Ok(chan_err(chan_error("TrySendError", "Full", 0, vec![v])))
                     }
-                    Err(mpsc::TrySendError::Disconnected(v)) => {
+                    Err(SendError::Closed(v) | SendError::Cancelled(v)) => {
                         Ok(chan_err(chan_error("TrySendError", "Closed", 1, vec![v])))
                     }
                 }
             }
             "close" => {
-                // Drop the sender to close the channel
-                let mut guard = tx.lock().unwrap();
-                // Replace with a disconnected sender by dropping the inner value
-                // We can't actually drop through Arc<Mutex<>>, so we create a
-                // disconnected channel and swap in its sender.
-                let (replacement, _) = mpsc::sync_channel(0);
-                *guard = replacement;
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
-                    variant_index: 0, origin: None,
-                })
+                tx.close();
+                Ok(chan_ok(Value::Unit))
             }
-            "clone" => {
-                // A cloned sender is another handle to the same channel.
-                let inner = tx.lock().unwrap().clone();
-                Ok(Value::Sender(Arc::new(Mutex::new(inner))))
-            }
+            // Another sender on the same channel; it stays open when this
+            // one closes.
+            "clone" => Ok(Value::Sender(tx.clone_end())),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Sender".to_string(),
                 method: method.to_string(),
@@ -149,56 +118,29 @@ impl Interpreter {
     /// Handle Receiver method calls.
     pub(crate) fn call_receiver_method(
         &self,
-        rx: &Arc<Mutex<mpsc::Receiver<Value>>>,
+        rx: &Arc<ReceiverEnd>,
         method: &str,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "receive" => {
-                let rx = rx.lock().unwrap();
-                let closed = || Ok(chan_err(chan_error("ReceiveError", "Closed", 0, vec![])));
-                let Some(token) = crate::value::current_cancel() else {
-                    return match rx.recv() {
-                        Ok(val) => Ok(chan_ok(val)),
-                        Err(_) => closed(),
-                    };
-                };
-                // A value already there is taken, cancel or not, the same as
-                // native: the channel is looked at before the flag.
-                loop {
-                    match rx.recv_timeout(CANCEL_POLL) {
-                        Ok(val) => return Ok(chan_ok(val)),
-                        Err(mpsc::RecvTimeoutError::Disconnected) => return closed(),
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    }
-                    if token.is_cancelled() {
-                        return Ok(chan_err(chan_error("ReceiveError", "Cancelled", 1, vec![])));
-                    }
+            // A value already there is taken, cancel or not, the same as
+            // native.
+            "receive" => match rx.recv() {
+                Ok(val) => Ok(chan_ok(val)),
+                Err(RecvError::Cancelled) => {
+                    Ok(chan_err(chan_error("ReceiveError", "Cancelled", 1, vec![])))
                 }
-            }
-            "try_receive" => {
-                let rx = rx.lock().unwrap();
-                match rx.try_recv() {
-                    Ok(val) => Ok(chan_ok(val)),
-                    Err(mpsc::TryRecvError::Empty) => {
-                        Ok(chan_err(chan_error("TryReceiveError", "Empty", 0, vec![])))
-                    }
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        Ok(chan_err(chan_error("TryReceiveError", "Closed", 1, vec![])))
-                    }
+                Err(_) => Ok(chan_err(chan_error("ReceiveError", "Closed", 0, vec![]))),
+            },
+            "try_receive" => match rx.try_recv() {
+                Ok(val) => Ok(chan_ok(val)),
+                Err(RecvError::Empty) => {
+                    Ok(chan_err(chan_error("TryReceiveError", "Empty", 0, vec![])))
                 }
-            }
+                Err(_) => Ok(chan_err(chan_error("TryReceiveError", "Closed", 1, vec![]))),
+            },
             "close" => {
-                // Drop the receiver to close the channel
-                let mut guard = rx.lock().unwrap();
-                // Replace with a disconnected receiver
-                let (_, replacement) = mpsc::sync_channel(0);
-                *guard = replacement;
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
-                    variant_index: 0, origin: None,
-                })
+                rx.close();
+                Ok(chan_ok(Value::Unit))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Receiver".to_string(),

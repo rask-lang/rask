@@ -21,7 +21,7 @@ result = select {
     rx2 -> v: handle_v(v),
     tx <- msg: sent(),
     Timer.after(5.seconds) -> _: timed_out(),
-}
+}!
 ```
 
 Timeouts use `Timer.after(duration)` which returns a receiver that fires once — regular receive arm, no special syntax.
@@ -40,13 +40,13 @@ Timeouts use `Timer.after(duration)` which returns a receiver that fires once �
 select {
     rx1 -> v: handle(v),  // 50% if both ready
     rx2 -> v: handle(v),  // 50% if both ready
-}
+}!
 
 // Priority — deterministic
 select_priority {
     shutdown -> _: return,       // Always checked first
     work -> w: process(w),       // Only if shutdown not ready
-}
+}!
 ```
 
 ## Ownership
@@ -61,16 +61,39 @@ select_priority {
 result = select {
     tx1 <- msg: "sent to tx1",
     tx2 <- msg: "sent to tx2",  // msg reused if tx1 selected
-}
+}!
 ```
 
-## Closed Channels
+## Result Type
+
+A select that can wait can also end without running any arm, so its value is `T or SelectError`, where `T` is the arms' type. A select with a `_:` arm never waits, so it always runs an arm and its value is plain `T`.
 
 | Rule | Description |
 |------|-------------|
-| **CL1: All closed** | If all receive channels closed, immediate return with `Closed` error |
-| **CL2: Some closed** | Skip closed channels, wait on remaining |
-| **CL3: Send closed** | Send arm returns `Closed` error |
+| **CL1: All closed** | Every channel closed: `SelectError.Closed`, at once |
+| **CL2: Some closed** | Closed channels are skipped; the rest are waited on |
+| **CL3: Send closed** | A closed send arm counts as closed, the same as a receive arm |
+| **CL4: Cancelled** | The task is cancelled while the select waits: `SelectError.Cancelled`. A ready arm still runs first (conc.async/CN3) |
+
+<!-- test: skip -->
+```rask
+// Not expected to fail: `!` panics if it does
+let v = select {
+    rx1 -> v: v,
+    rx2 -> v: v,
+}!
+
+// A worker that stops cleanly
+loop {
+    match select { jobs -> j: j } {
+        Job as j => run(j)
+        SelectError.Closed => return
+        SelectError.Cancelled => return
+    }
+}
+```
+
+`SelectError` lives in `builtins`, not `async`. `select` is syntax, so the checker needs the type whatever the program imports.
 
 ## Timer
 
@@ -101,7 +124,9 @@ ERROR [conc.select/P3]: select requires at least one arm
 | Case | Rule | Handling |
 |------|------|----------|
 | Select with 0 arms | P3 | Compile error |
-| All channels closed | CL1 | Returns immediately with `Closed` error |
+| All channels closed | CL1 | `SelectError.Closed`, immediately |
+| Cancelled while waiting | CL4 | `SelectError.Cancelled` |
+| `_:` arm present | CL1 | Plain `T`; the default arm runs instead of an error |
 | Timer in select | A1 | Regular receive arm — `Timer.after()` returns `Receiver<void>` |
 | Non-selected send value | OW2 | Value returned to caller, not consumed |
 
@@ -123,7 +148,7 @@ ERROR [conc.select/P3]: select requires at least one arm
 result = select {
     rx -> v: v,
     Timer.after(5.seconds) -> _: Timeout,
-}
+}!
 ```
 
 **Fan-in:**
@@ -134,7 +159,7 @@ loop {
         rx1 -> v: process(v),
         rx2 -> v: process(v),
         rx3 -> v: process(v),
-    }
+    }!
 }
 ```
 

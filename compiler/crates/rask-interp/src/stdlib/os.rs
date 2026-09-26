@@ -160,57 +160,35 @@ impl Interpreter {
             // --- Signals ---
             #[cfg(not(target_arch = "wasm32"))]
             "signals" => {
-                // SG2: returns Receiver<Signal> via channel
-                // Signal handling uses a self-pipe: the C signal handler writes to a pipe,
-                // a background thread reads the pipe and sends to the channel.
-                use std::sync::mpsc;
-                use std::os::unix::io::{FromRawFd, RawFd};
-
-                let signal_names = if let Some(Value::Vec(v)) = args.first() {
-                    let guard = v.lock().unwrap();
-                    guard.iter().filter_map(|s| {
-                        if let Value::Enum { variant, .. } = s {
-                            Some(variant.clone())
-                        } else {
-                            None
-                        }
-                    }).collect::<Vec<_>>()
-                } else {
-                    vec![]
+                // SG2: a Receiver<Signal> the handler feeds through a
+                // self-pipe (see `signal_handler_fn`).
+                let wanted: Vec<(i32, String, u32)> = match args.first() {
+                    Some(Value::Vec(v)) => v
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|s| match s {
+                            Value::Enum { variant, .. } => signal_number(variant)
+                                .map(|(num, index)| (num, variant.clone(), index)),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => vec![],
                 };
-
-                let (tx, _rx) = mpsc::channel::<Value>();
-
-                // Register signal handlers via pipe-based approach
-                for sig_name in &signal_names {
-                    let sig_num: Option<i32> = match sig_name.as_str() {
-                        "Interrupt" => Some(2),   // SIGINT
-                        "Terminate" => Some(15),  // SIGTERM
-                        "Hangup" => Some(1),      // SIGHUP
-                        "User1" => Some(10),      // SIGUSR1
-                        "User2" => Some(12),      // SIGUSR2
-                        _ => None,
-                    };
-                    if let Some(num) = sig_num {
-                        let mut senders = SIGNAL_SENDERS.lock().unwrap();
-                        senders.push((num, tx.clone(), sig_name.clone()));
-                        // Install handler via raw syscall
-                        unsafe {
-                            let _ = set_signal_handler(num);
-                        }
+                let (tx, rx) = crate::chan::Chan::pair(wanted.len().max(1));
+                if let Err(e) = start_signal_reader() {
+                    return Ok(crate::stdlib::fs::io_error_result(&e));
+                }
+                for (num, name, index) in wanted {
+                    SIGNAL_SENDERS.lock().unwrap().push((num, tx.clone(), name, index));
+                    unsafe {
+                        let _ = set_signal_handler(num);
                     }
                 }
-
-                let rx_value = Value::Struct(Arc::new(Mutex::new(crate::value::StructData {
-                    name: "Receiver".to_string(),
-                    fields: indexmap::IndexMap::new(),
-                    resource_id: None,
-                })));
-
                 Ok(Value::Enum {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
-                    fields: vec![rx_value],
+                    fields: vec![Value::Receiver(rx)],
                     variant_index: 0,
                     origin: None,
                 })
@@ -615,36 +593,96 @@ fn string_vec_arg(args: &[Value], index: usize) -> Vec<String> {
 static CHILD_PROCESSES: std::sync::LazyLock<Mutex<Vec<std::process::Child>>> =
     std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
+/// Everyone waiting on a signal: its number, the channel, and the `Signal`
+/// variant's name and index.
 #[cfg(not(target_arch = "wasm32"))]
-static SIGNAL_SENDERS: std::sync::LazyLock<Mutex<Vec<(i32, std::sync::mpsc::Sender<Value>, String)>>> =
-    std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
+static SIGNAL_SENDERS: std::sync::LazyLock<
+    Mutex<Vec<(i32, Arc<crate::chan::SenderEnd>, String, u32)>>,
+> = std::sync::LazyLock::new(|| Mutex::new(Vec::new()));
 
-/// Install a signal handler using raw syscall (avoids libc dependency).
+/// Signals raised and not yet delivered, one bit per number.
+#[cfg(not(target_arch = "wasm32"))]
+static SIGNAL_PENDING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Write end of the self-pipe; -1 until the reader starts.
+#[cfg(not(target_arch = "wasm32"))]
+static SIGNAL_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+#[cfg(not(target_arch = "wasm32"))]
+extern "C" {
+    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    fn pipe(fds: *mut i32) -> i32;
+    fn read(fd: i32, buf: *mut u8, n: usize) -> isize;
+    fn write(fd: i32, buf: *const u8, n: usize) -> isize;
+}
+
+/// The number and `Signal` variant index for a variant name.
+#[cfg(not(target_arch = "wasm32"))]
+fn signal_number(variant: &str) -> Option<(i32, u32)> {
+    Some(match variant {
+        "Interrupt" => (2, 0),
+        "Terminate" => (15, 1),
+        "Hangup" => (1, 2),
+        "User1" => (10, 3),
+        "User2" => (12, 4),
+        _ => return None,
+    })
+}
+
+/// Start the thread that turns pipe wakeups into channel sends, once.
+#[cfg(not(target_arch = "wasm32"))]
+fn start_signal_reader() -> Result<(), std::io::Error> {
+    // The errno the pipe failed with, if it did.
+    static STARTED: std::sync::OnceLock<Option<i32>> = std::sync::OnceLock::new();
+    let failed = *STARTED.get_or_init(|| {
+        let mut fds = [0i32; 2];
+        if unsafe { pipe(fds.as_mut_ptr()) } != 0 {
+            return std::io::Error::last_os_error().raw_os_error();
+        }
+        let read_fd = fds[0];
+        SIGNAL_PIPE.store(fds[1], std::sync::atomic::Ordering::SeqCst);
+        std::thread::spawn(move || {
+            let mut byte = 0u8;
+            while unsafe { read(read_fd, &mut byte, 1) } >= 0 {
+                let raised = SIGNAL_PENDING.swap(0, std::sync::atomic::Ordering::SeqCst);
+                for (num, tx, name, index) in SIGNAL_SENDERS.lock().unwrap().iter() {
+                    if raised & (1 << num) != 0 {
+                        // A full channel drops the signal rather than block
+                        // every other listener behind a slow one.
+                        let _ = tx.try_send(Value::Enum {
+                            name: "Signal".to_string(),
+                            variant: name.clone(),
+                            fields: vec![],
+                            variant_index: *index,
+                            origin: None,
+                        });
+                    }
+                }
+            }
+        });
+        None
+    });
+    match failed {
+        Some(errno) => Err(std::io::Error::from_raw_os_error(errno)),
+        None => Ok(()),
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn set_signal_handler(sig: i32) -> Result<(), ()> {
-    // Use the C signal() function via extern
-    extern "C" {
-        fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
-    }
     let result = signal(sig, signal_handler_fn);
     if result == usize::MAX { Err(()) } else { Ok(()) }
 }
 
+/// Only async-signal-safe work here: an atomic and a `write`. The reader
+/// thread does the allocating and the locking.
 #[cfg(not(target_arch = "wasm32"))]
 extern "C" fn signal_handler_fn(sig: i32) {
-    // Signal handlers must be async-signal-safe.
-    // We just set a flag; actual delivery happens elsewhere.
-    if let Ok(senders) = SIGNAL_SENDERS.try_lock() {
-        for (num, tx, name) in senders.iter() {
-            if *num == sig {
-                let _ = tx.send(Value::Enum {
-                    name: "Signal".to_string(),
-                    variant: name.clone(),
-                    fields: vec![],
-                    variant_index: 0,
-                    origin: None,
-                });
-            }
+    SIGNAL_PENDING.fetch_or(1 << sig, std::sync::atomic::Ordering::SeqCst);
+    let fd = SIGNAL_PIPE.load(std::sync::atomic::Ordering::SeqCst);
+    if fd >= 0 {
+        unsafe {
+            let _ = write(fd, &1u8, 1);
         }
     }
 }

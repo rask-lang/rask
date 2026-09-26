@@ -5,7 +5,6 @@
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, Value};
-use std::sync::{Arc, Mutex, mpsc};
 
 /// Refuse a clock read on a target that has no clock.
 ///
@@ -321,13 +320,13 @@ impl Interpreter {
                     return Err(no_clock("time.Timer.after()"));
                 }
 
-                let (tx, rx) = mpsc::sync_channel(1);
+                let (tx, rx) = crate::chan::Chan::pair(1);
                 std::thread::spawn(move || {
                     std::thread::sleep(duration);
                     let _ = tx.send(Value::Unit);
                 });
 
-                Ok(Value::Receiver(Arc::new(Mutex::new(rx))))
+                Ok(Value::Receiver(rx))
             }
             "interval" => {
                 // Timer.interval(duration) -> Receiver<()>
@@ -342,7 +341,7 @@ impl Interpreter {
                     return Err(no_clock("time.Timer.interval()"));
                 }
 
-                let (tx, rx) = mpsc::sync_channel(1);
+                let (tx, rx) = crate::chan::Chan::pair(1);
                 std::thread::spawn(move || {
                     loop {
                         std::thread::sleep(duration);
@@ -352,7 +351,7 @@ impl Interpreter {
                     }
                 });
 
-                Ok(Value::Receiver(Arc::new(Mutex::new(rx))))
+                Ok(Value::Receiver(rx))
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "Timer has no method '{}'", method

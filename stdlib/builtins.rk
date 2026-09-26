@@ -114,3 +114,20 @@ extend ConvertError {
         }
     }
 }
+
+/// Why a `select` with no `_:` arm ended without running one
+/// (conc.select/CL1, CN1). Here rather than in `async` because `select` is
+/// syntax: the checker needs the type whatever the program imports.
+public enum SelectError {
+    Closed      // every channel in it is closed
+    Cancelled   // the task was cancelled while it waited
+}
+
+extend SelectError {
+    public func message(self) -> string {
+        match self {
+            SelectError.Closed => return "every channel in the select is closed"
+            SelectError.Cancelled => return "task cancelled"
+        }
+    }
+}

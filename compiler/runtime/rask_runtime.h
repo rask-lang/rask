@@ -1360,7 +1360,7 @@ int64_t rask_select_rotate(int64_t num_arms);
 // A select with nothing ready: read the epoch before probing the arms, and
 // if none was ready, wait for it to move (channel.c).
 int64_t rask_select_epoch(void);
-void    rask_select_wait(int64_t seen);
+int64_t rask_select_wait(int64_t seen);  // 1 = cancelled
 
 // Park the running green fiber for `ns` (green.c). Only valid on a fiber —
 // check rask_fiber_active() first.

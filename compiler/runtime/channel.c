@@ -148,14 +148,24 @@ int64_t rask_select_epoch(void) {
     return (int64_t)atomic_load_explicit(&select_epoch, memory_order_seq_cst);
 }
 
-void rask_select_wait(int64_t seen) {
+// 1 when the task was cancelled while it waited (conc.select/CN1).
+int64_t rask_select_wait(int64_t seen) {
+    RaskCancelWake wake = rask_cancel_wake_cond(&select_lock, &select_cond);
+    int cancelled = rask_cancel_wait_begin(&wake);
     atomic_fetch_add_explicit(&select_waiters, 1, memory_order_seq_cst);
     pthread_mutex_lock(&select_lock);
-    while ((int64_t)atomic_load_explicit(&select_epoch, memory_order_seq_cst) == seen) {
+    while (!cancelled &&
+           (int64_t)atomic_load_explicit(&select_epoch, memory_order_seq_cst) == seen) {
+        if (rask_cancel_requested()) {
+            cancelled = 1;
+            break;
+        }
         rask_task_cond_wait(&select_cond, &select_lock, "select");
     }
     pthread_mutex_unlock(&select_lock);
     atomic_fetch_sub_explicit(&select_waiters, 1, memory_order_seq_cst);
+    rask_cancel_wait_end();
+    return cancelled;
 }
 
 // ─── Waiting, and being cancelled while waiting ────────────

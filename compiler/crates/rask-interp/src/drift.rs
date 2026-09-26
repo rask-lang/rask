@@ -7,7 +7,7 @@
 //! the method is registered but not implemented — that's a bug.
 
 use indexmap::IndexMap;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::interp::Interpreter;
 use crate::value::{FloatKind, ModuleKind, HandleInner, Value};
@@ -94,12 +94,12 @@ fn dummy_value(type_name: &str) -> Value {
             task_id: crate::value::next_task_id(),
         })),
         "Sender" => {
-            let (tx, _rx) = mpsc::sync_channel(1);
-            Value::Sender(Arc::new(Mutex::new(tx)))
+            let (tx, _rx) = crate::chan::Chan::pair(1);
+            Value::Sender(tx)
         }
         "Receiver" => {
-            let (_tx, rx) = mpsc::sync_channel(1);
-            Value::Receiver(Arc::new(Mutex::new(rx)))
+            let (_tx, rx) = crate::chan::Chan::pair(1);
+            Value::Receiver(rx)
         }
         "Shared" => Value::Shared(Arc::new(RwLock::new(Value::Unit))),
         "Mutex" => Value::RaskMutex(Arc::new(Mutex::new(Value::Unit))),

@@ -3022,11 +3022,11 @@ impl Interpreter {
             #[allow(dead_code)]
             enum EvalSelectKind {
                 Recv {
-                    rx: Arc<Mutex<mpsc::Receiver<Value>>>,
+                    rx: Arc<crate::chan::ReceiverEnd>,
                     binding: String,
                 },
                 Send {
-                    tx: Arc<Mutex<mpsc::SyncSender<Value>>>,
+                    tx: Arc<crate::chan::SenderEnd>,
                     value: Value,
                 },
                 Default,
@@ -3104,78 +3104,71 @@ impl Interpreter {
                 }
             }
 
-            // Poll loop with backoff
-            let mut backoff_us: u64 = 10; // start at 10μs
-            let max_backoff_us: u64 = 1000; // cap at 1ms
+            // A select that can wait answers `T or SelectError`; one with a
+            // `_:` arm never waits and answers the arm's value.
+            let wrap = |v: Value, ok: bool| {
+                if default_idx.is_some() {
+                    return v;
+                }
+                Value::Enum {
+                    name: "Result".to_string(),
+                    variant: if ok { "Ok" } else { "Err" }.to_string(),
+                    fields: vec![v],
+                    variant_index: if ok { 0 } else { 1 },
+                    origin: None,
+                }
+            };
+            let select_err = |variant: &str, index: u32| Value::Enum {
+                name: "SelectError".to_string(),
+                variant: variant.to_string(),
+                fields: vec![],
+                variant_index: index,
+                origin: None,
+            };
+            let token = crate::value::current_cancel();
 
             loop {
+                // Read before probing, so a change after a probe found nothing
+                // still ends the wait below.
+                let seen = crate::chan::select_epoch();
                 let mut all_closed = true;
 
                 for &entry_idx in &poll_order {
                     let entry = &entries[entry_idx];
                     match &entry.kind {
-                        EvalSelectKind::Recv { rx, binding } => {
-                            let rx_guard = rx.lock().unwrap();
-                            match rx_guard.try_recv() {
-                                Ok(val) => {
-                                    drop(rx_guard);
-                                    // Execute this arm's body with binding
-                                    self.env.push_scope();
-                                    self.env.define(binding.clone(), val);
-                                    let result = self.eval_expr(&arms[entry.arm_idx].body)?;
-                                    self.env.pop_scope();
-                                    return Ok(result);
-                                }
-                                Err(mpsc::TryRecvError::Empty) => {
-                                    all_closed = false;
-                                }
-                                Err(mpsc::TryRecvError::Disconnected) => {
-                                    // Channel closed, skip
-                                }
+                        EvalSelectKind::Recv { rx, binding } => match rx.try_recv() {
+                            Ok(val) => {
+                                self.env.push_scope();
+                                self.env.define(binding.clone(), val);
+                                let result = self.eval_expr(&arms[entry.arm_idx].body);
+                                self.env.pop_scope();
+                                return Ok(wrap(result?, true));
                             }
-                        }
-                        EvalSelectKind::Send { tx, value } => {
-                            let tx_guard = tx.lock().unwrap();
-                            match tx_guard.try_send(value.clone()) {
-                                Ok(()) => {
-                                    drop(tx_guard);
-                                    let result = self.eval_expr(&arms[entry.arm_idx].body)?;
-                                    return Ok(result);
-                                }
-                                Err(mpsc::TrySendError::Full(_)) => {
-                                    all_closed = false;
-                                }
-                                Err(mpsc::TrySendError::Disconnected(_)) => {
-                                    // Channel closed
-                                }
+                            Err(crate::chan::RecvError::Closed) => {}
+                            Err(_) => all_closed = false,
+                        },
+                        EvalSelectKind::Send { tx, value } => match tx.try_send(value.clone()) {
+                            Ok(()) => {
+                                let result = self.eval_expr(&arms[entry.arm_idx].body)?;
+                                return Ok(wrap(result, true));
                             }
-                        }
+                            Err(crate::chan::SendError::Full(_)) => all_closed = false,
+                            Err(_) => {}
+                        },
                         EvalSelectKind::Default => unreachable!(),
                     }
-                }
-
-                // All channels closed (CL1). This used to hand back an
-                // `Err(...)` — but a select's type is its arms' type, so a
-                // Result appearing there is a value nothing can use:
-                // `const got: i64 = select { … }` would be holding an enum.
-                // Native panics here, and now so does this.
-                if all_closed && default_idx.is_none() {
-                    return Err(RuntimeDiagnostic::new(
-                        RuntimeError::Panic(
-                            "select: every channel is closed [conc.select/CL1]".to_string(),
-                        ),
-                        expr.span,
-                    ));
                 }
 
                 // Default arm fires if nothing ready (A3)
                 if let Some(idx) = default_idx {
                     return self.eval_expr(&arms[idx].body);
                 }
-
-                // Backoff
-                std::thread::sleep(std::time::Duration::from_micros(backoff_us));
-                backoff_us = (backoff_us * 2).min(max_backoff_us);
+                if all_closed {
+                    return Ok(wrap(select_err("Closed", 0), false));
+                }
+                if crate::chan::select_wait(seen, token.as_ref()) {
+                    return Ok(wrap(select_err("Cancelled", 1), false));
+                }
             }
     }
 

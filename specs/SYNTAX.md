@@ -1004,7 +1004,7 @@ select {
     rx1 -> msg: process1(msg),
     rx2 -> msg: process2(msg),
     Timer.after(5.seconds) -> _: handle_timeout(),
-}
+}!
 
 // Shared state
 let config = Shared.new(AppConfig {})

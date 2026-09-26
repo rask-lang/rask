@@ -7,7 +7,7 @@ mod async_mod;
 mod cli;
 mod env;
 #[cfg(not(target_arch = "wasm32"))]
-mod fs;
+pub(crate) mod fs;
 #[cfg(not(target_arch = "wasm32"))]
 mod io;
 mod json;

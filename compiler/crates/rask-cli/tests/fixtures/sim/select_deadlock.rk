@@ -11,7 +11,7 @@ test "select on channels nobody will ever send on" {
         let got = select {
             rx_a -> v: v,
             rx_b -> v: v,
-        }
+        }!
         assert got == 0
     }
 }

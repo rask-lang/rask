@@ -672,13 +672,38 @@ pub struct CancelToken {
     flag: std::sync::atomic::AtomicBool,
     lock: Mutex<()>,
     wake: std::sync::Condvar,
+    /// How to wake the body out of a channel or select wait, while it's in one.
+    waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+/// Registered while a body waits; dropping it deregisters.
+pub struct CancelWake<'a>(&'a CancelToken);
+
+impl Drop for CancelWake<'_> {
+    fn drop(&mut self) {
+        *self.0.waker.lock().unwrap() = None;
+    }
 }
 
 impl CancelToken {
     pub fn cancel(&self) {
-        let _held = self.lock.lock().unwrap();
-        self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        self.wake.notify_all();
+        {
+            let _held = self.lock.lock().unwrap();
+            self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.wake.notify_all();
+        }
+        // Read after raising the flag; the body registers before it last reads
+        // the flag, so one of the two sees the other.
+        let waker = self.waker.lock().unwrap().clone();
+        if let Some(w) = waker {
+            w();
+        }
+    }
+
+    /// `wake` runs if a cancel comes while the guard is alive.
+    pub fn wake_on_cancel(&self, wake: Arc<dyn Fn() + Send + Sync>) -> CancelWake<'_> {
+        *self.waker.lock().unwrap() = Some(wake);
+        CancelWake(self)
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -1051,9 +1076,9 @@ pub enum Value {
     /// From any spawn form (conc.async/H5)
     Handle(Arc<HandleInner>),
     /// Channel sender
-    Sender(Arc<Mutex<mpsc::SyncSender<Value>>>),
+    Sender(Arc<crate::chan::SenderEnd>),
     /// Channel receiver
-    Receiver(Arc<Mutex<mpsc::Receiver<Value>>>),
+    Receiver(Arc<crate::chan::ReceiverEnd>),
     /// Thread pool (from `using ThreadPool(workers: n) { }`)
     ThreadPool(Arc<ThreadPoolInner>),
     /// Multitasking runtime (from `using Multitasking { }`)

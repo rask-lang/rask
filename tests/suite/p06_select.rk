@@ -13,7 +13,7 @@ test "conc.select/A1 — fires the ready receive arm" {
     let got = select {
         rx1 -> v: v,
         rx2 -> v: v + 1000,
-    }
+    }!
     assert got == 7
 }
 

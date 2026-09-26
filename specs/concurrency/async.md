@@ -367,7 +367,7 @@ Install a `using Multitasking { ... }` block that encloses the call.
 | Panic-unwind of `using` block with tasks still pending | C4 | Cancellation signalled, no drain. A task that never reaches another check point never runs again — its ensures are skipped and locks it held stay held. Teardown of a dying runtime, not a state the program continues from |
 | Channel send after all receivers closed | CH3 | Returns `Closed` error |
 | Cancelled while an unbuffered send waits for its receiver | CN3 | The offer is withdrawn and `send` returns `Cancelled`, unless a receiver already took the value, in which case it was sent |
-| Cancelled while `select` waits | — | Keeps waiting; `select` has no error arm to report it through (#1371) |
+| Cancelled while `select` waits | CN3 | Ends with `SelectError.Cancelled` (conc.select/CL4) |
 | Nested `using Multitasking` blocks | C1 | Error — second `enter` aborts (compile error if lexically nested, runtime panic otherwise) |
 | Library opens `using Multitasking` while app already did | C6 | Falls under C1 — runtime panic |
 | Test block spawns | C6 | Tests are application code — the test opens its own `using Multitasking { }`; the runner serializes runtime-holding tests to respect C1 (`std.testing/T17–T19`) |

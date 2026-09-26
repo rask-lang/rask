@@ -851,7 +851,7 @@ impl<'a> MirLowerer<'a> {
     /// `find_enum_written` rather than `find_enum` so `Holder<i64>.Empty`
     /// resolves too: the parser folds the written type arguments into the name
     /// (#782).
-    fn lower_enum_variant_path(&mut self, enum_name: &str, variant: &str) -> Option<TypedOperand> {
+    pub(super) fn lower_enum_variant_path(&mut self, enum_name: &str, variant: &str) -> Option<TypedOperand> {
         let (idx, layout) = self.ctx.find_enum_written(enum_name)?;
         let v = layout.variants.iter().find(|v| v.name == variant)?;
         let (tag, tag_offset) = (v.tag as i64, layout.tag_offset);
@@ -1549,7 +1549,7 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Comptime { body } => self.lower_comptime(body),
 
             // Select (channel multiplexing)
-            ExprKind::Select { arms, is_priority } => self.lower_select(arms, *is_priority),
+            ExprKind::Select { arms, is_priority } => self.lower_select(expr, arms, *is_priority),
 
             // Assert
             ExprKind::Assert { condition, message } => self.lower_assert(condition, message.as_deref()),

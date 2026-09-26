@@ -1082,7 +1082,7 @@ using Multitasking {
     result = select {
         rx -> msg: handle_message(msg),
         timer -> _: handle_timeout(),
-    }
+    }!
 }
 ```
 
@@ -1187,7 +1187,7 @@ fn timer_thread(wheel: Arc<TimerWheel>) {
 result = select {
     rx1 -> v: handle_v(v),
     Timer.after(5.seconds) -> _: timed_out(),
-}
+}!
 ```
 
 **Implementation:**

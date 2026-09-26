@@ -2304,7 +2304,18 @@ impl TypeChecker {
                         result_ty = Some(body_ty);
                     }
                 }
-                result_ty.unwrap_or(Type::Unit)
+                let arms_ty = result_ty.unwrap_or(Type::Unit);
+                // A select that can wait can end without running an arm: every
+                // channel closed, or the task cancelled. One with a `_:` arm
+                // never waits, so it always runs one.
+                let has_default = arms
+                    .iter()
+                    .any(|a| matches!(a.kind, rask_ast::expr::SelectArmKind::Default));
+                if has_default {
+                    arms_ty
+                } else {
+                    Type::Result { ok: Box::new(arms_ty), err: Box::new(self.select_error_type()) }
+                }
             }
 
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
@@ -5708,6 +5719,16 @@ impl TypeChecker {
         match self.types.get_type_id("ConvertError") {
             Some(id) => Type::Named(id),
             None => Type::UnresolvedNamed("ConvertError".to_string()),
+        }
+    }
+
+    /// The `SelectError` a waiting `select` ends with (conc.select/CL1).
+    /// In `stdlib/builtins.rk` beside `ConvertError`, for the same reason:
+    /// `select` is syntax, so its error can't depend on an import.
+    fn select_error_type(&self) -> Type {
+        match self.types.get_type_id("SelectError") {
+            Some(id) => Type::Named(id),
+            None => Type::UnresolvedNamed("SelectError".to_string()),
         }
     }
 
