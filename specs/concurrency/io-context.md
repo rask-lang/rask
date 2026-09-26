@@ -114,21 +114,21 @@ func TcpConnection.read(self, buf: Vec<u8>) -> usize or IoError {
 }
 ```
 
-## Reader/Writer Trait Integration
+## Reader/Writer Interface Integration
 
 | Rule | Description |
 |------|-------------|
-| **IO7: Clean trait signatures** | `Reader` and `Writer` signatures carry no runtime annotation — true for traits AND concrete implementations |
+| **IO7: Clean interface signatures** | `Reader` and `Writer` signatures carry no runtime annotation — true for interfaces AND concrete implementations |
 | **IO8: Implementations read the slot directly** | Concrete implementations (File, TcpConnection) read RUNTIME_SLOT when they run |
 | **IO9: Generic I/O stays clean** | `io.copy(reader, writer)` is a plain generic call — no hidden parameter propagation |
 
 <!-- test: skip -->
 ```rask
-trait Reader {
+interface Reader {
     func read(self, buf: Vec<u8>) -> usize or IoError
 }
 
-extend File with Reader {
+File implements Reader {
     func read(self, buf: Vec<u8>) -> usize or IoError {
         // Reads RUNTIME_SLOT at execution time
     }
@@ -147,7 +147,7 @@ func io.copy(reader: any Reader, writer: any Writer) -> usize or IoError {
 }
 ```
 
-The key insight: trait dispatch and runtime discovery are orthogonal. Signatures stay the same whether I/O is sync or async; the runtime slot decides at call time.
+The key insight: interface dispatch and runtime discovery are orthogonal. Signatures stay the same whether I/O is sync or async; the runtime slot decides at call time.
 
 ## Error Types
 
@@ -197,7 +197,7 @@ FIX: wrap the caller chain in `using Multitasking { ... }`, typically near main.
 
 **CTX1 (process-global slot):** The earlier design threaded `RuntimeContext` as a hidden parameter through every function transitively reachable from a `using Multitasking` block. That colored every such signature and propagated a requirement through the call graph. The process-global slot avoids the coloring: exactly one slot exists per process by design (`conc.async/C1`), every thread reads it, and signatures stay clean.
 
-**IO7 (clean trait signatures):** Because runtime discovery is global-slot-based, trait signatures never need to mention a runtime context — for traits or implementations. Generic I/O stays uncolored.
+**IO7 (clean interface signatures):** Because runtime discovery is global-slot-based, interface signatures never need to mention a runtime context — for interfaces or implementations. Generic I/O stays uncolored.
 
 **IO4 (Phase A ignores the slot contents):** Phase A creates real OS threads per spawn; each thread blocks independently on I/O. The scaling limit (~10k) comes from OS thread count, not from missing async I/O.
 
@@ -250,6 +250,6 @@ The annotation appears on any call that can read RUNTIME_SLOT and park a task. P
 - `conc.async/IO1-IO2` — Transparent pausing and sync fallback semantics
 - `conc.runtime/IO1-IO3` — Async I/O flow, reactor registration protocol
 - `conc.strategy` — Phase A vs Phase B runtime implementation
-- `std.io` — Reader/Writer traits, IoError
+- `std.io` — Reader/Writer interfaces, IoError
 - `std.fs` — File type and convenience functions
 - `std.net` — TcpListener, TcpConnection

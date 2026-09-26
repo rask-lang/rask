@@ -93,15 +93,15 @@ extend BlockCache {
     }
 }
 
-// ─── Trait-based Lookup Strategy ────────────────────────────────────
+// ─── Interface-based Lookup Strategy ────────────────────────────────────
 
-trait SstLookup {
+interface SstLookup {
     func lookup(self, meta: SstMeta, key: string, mutate cache: BlockCache) -> KeyValue? or SstError
 }
 
 struct DefaultLookup { }
 
-extend DefaultLookup with SstLookup {
+DefaultLookup implements SstLookup {
     func lookup(self, meta: SstMeta, key: string, mutate cache: BlockCache) -> KeyValue? or SstError {
         return sst_point_lookup(meta, key, mutate cache)
     }

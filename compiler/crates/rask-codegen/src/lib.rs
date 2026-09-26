@@ -73,7 +73,7 @@ pub type CodegenResult<T> = Result<T, CodegenError>;
 /// Backend abstraction — implemented by Cranelift today, LLVM in the future.
 ///
 /// Covers the full lifecycle: declare functions/data → generate IR → emit object.
-/// Constructors are backend-specific (different config), so not part of the trait.
+/// Constructors are backend-specific (different config), so not part of the interface.
 pub trait Backend {
     /// Declare C runtime functions (rask_alloc, rask_free, print helpers, etc.).
     fn declare_runtime_functions(&mut self) -> CodegenResult<()>;
@@ -103,7 +103,7 @@ pub trait Backend {
     /// Register writable slots for module-level consts.
     fn register_const_slots(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()>;
 
-    /// Register vtable data for trait objects.
+    /// Register vtable data for interface objects.
     fn register_vtables(&mut self, vtables: &[vtable::VTableInfo]) -> CodegenResult<()>;
 
     /// Generate native code for one MIR function.

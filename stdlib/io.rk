@@ -87,9 +87,9 @@ func os_error_text(code: i32) -> string {
 
 /// Readable stream: bytes in, `IoError` out. `read`/`read_bytes`/`read_text`
 /// mirror the Writer trio (specs/stdlib/io.md R1-R3).
-public trait Reader {
+public interface Reader {
     /// `buf` is `mutate` because that's the whole point of `read` — it fills
-    /// the caller's buffer. Without it the trait was unimplementable: any body
+    /// the caller's buffer. Without it the interface was unimplementable: any body
     /// that wrote into `buf` was rejected as mutating a read-only parameter.
     func read(self, mutate buf: Vec<u8>) -> i64 or IoError
     func read_bytes(self) -> Vec<u8> or IoError
@@ -98,7 +98,7 @@ public trait Reader {
 
 /// Writable stream: bytes out, `IoError` back. Mirror of Reader (W1-W2, W4;
 /// no `flush` — not every writer buffers).
-public trait Writer {
+public interface Writer {
     func write(self, data: Vec<u8>) -> i64 or IoError
     func write_bytes(self, data: Vec<u8>) -> void or IoError
     func write_text(self, data: string) -> void or IoError
@@ -115,7 +115,7 @@ public enum SeekFrom {
 ///
 /// `File` and `Buffer` implement it. The standard streams don't — they are
 /// sequential, and there is nothing to seek.
-public trait Seeker {
+public interface Seeker {
     func seek(self, pos: SeekFrom) -> i64 or IoError
     func position(self) -> i64 or IoError
 }
@@ -166,7 +166,7 @@ extend io {
 
     /// Copy all bytes from reader to writer. Returns total bytes copied.
     ///
-    /// C1: no handles to acquire. Written in Rask over the two traits, so any
+    /// C1: no handles to acquire. Written in Rask over the two interfaces, so any
     /// Reader/Writer pair works and both backends agree — there was no native
     /// entry point for this at all before.
     public func copy(reader: any Reader, writer: any Writer) -> i64 or IoError {
@@ -188,7 +188,7 @@ public struct Stdin {
     stream: i32
 }
 
-extend Stdin with Reader {
+Stdin implements Reader {
     /// Read bytes into buffer. Returns number of bytes read (0 = EOF).
     public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
         let want = buf.len().wrap<i64>()
@@ -246,7 +246,7 @@ public struct Stdout {
     stream: i32
 }
 
-extend Stdout with Writer {
+Stdout implements Writer {
     /// Write bytes. Returns number of bytes written.
     public func write(self, data: Vec<u8>) -> i64 or IoError {
         let n = io.write_std_bytes(self.stream, data)
@@ -299,7 +299,7 @@ public struct Stderr {
     stream: i32
 }
 
-extend Stderr with Writer {
+Stderr implements Writer {
     /// Write bytes. Returns number of bytes written.
     public func write(self, data: Vec<u8>) -> i64 or IoError {
         let n = io.write_std_bytes(self.stream, data)
@@ -365,7 +365,7 @@ public struct Buffer {
     pos: Shared<i64, Local>
 }
 
-extend Buffer with Reader {
+Buffer implements Reader {
     /// Read up to `buf.len()` bytes into `buf`, starting at the read position.
     /// Returns how many were copied — 0 once the buffer is exhausted (R1).
     public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
@@ -410,7 +410,7 @@ extend Buffer with Reader {
     }
 }
 
-extend Buffer with Writer {
+Buffer implements Writer {
     /// Append bytes, and report how many went in (W1). A memory buffer never
     /// writes short, so that's always all of them.
     public func write(self, data: Vec<u8>) -> i64 or IoError {
@@ -469,7 +469,7 @@ extend Buffer {
 
 /// K1–K3 for a file: the position the OS keeps, with the `SeekFrom` taken
 /// apart here rather than in each backend.
-extend File with Seeker {
+File implements Seeker {
     public func seek(self, pos: SeekFrom) -> i64 or IoError {
         mut whence: i64 = 0
         mut offset: i64 = 0
@@ -514,7 +514,7 @@ extend File with Seeker {
 /// shouldn't exist — "no `reset` — `buf.seek(SeekFrom.Start(0))` is the one way
 /// to rewind" — and which nothing implemented either. So it is gone and this is
 /// the spelling.
-extend Buffer with Seeker {
+Buffer implements Seeker {
     public func seek(self, pos: SeekFrom) -> i64 or IoError {
         let total = self.data.len().wrap<i64>()
         mut want: i64 = 0
@@ -554,7 +554,7 @@ extend File {
     func is_null(self) -> bool {}
 
     /// The two halves of `Seeker`, as the backends see them: a position or -1.
-    /// The trait methods below turn -1 into an `IoError` and take the
+    /// The interface methods below turn -1 into an `IoError` and take the
     /// `SeekFrom` apart, which is work neither backend should be doing.
     @native("rask_file_seek")
     func seek_raw(self, whence: i64, offset: i64) -> i64 {}

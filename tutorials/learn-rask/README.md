@@ -57,7 +57,7 @@ won't allow, read the error, and understand why. Those are the most important on
 | 09 | [09_ownership.rk](09_ownership.rk) | Ownership — why Rask doesn't need a garbage collector |
 | 10 | [10_closures.rk](10_closures.rk) | Closures — numerical integration, autopilot filters |
 | 11 | [11_generics.rk](11_generics.rk) | Generics — write once, use with any type |
-| 12 | [12_traits.rk](12_traits.rk) | Traits — aircraft interfaces, polymorphism |
+| 12 | [12_interfaces.rk](12_interfaces.rk) | Interfaces — aircraft interfaces, polymorphism |
 | 13 | [13_enums_advanced.rk](13_enums_advanced.rk) | Rich enums — flight logs, airport status |
 | 14 | [14_strings.rk](14_strings.rk) | Strings — METAR parsing, flight plans, ATC |
 | 15 | [15_concurrency.rk](15_concurrency.rk) | Concurrency — parallel physics, Monte Carlo |

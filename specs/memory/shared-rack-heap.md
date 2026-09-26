@@ -63,7 +63,7 @@ Rust-style guards (`MutexGuard`, `Ref`, `RefMut`) let a reference escape the acq
 | Rule | Description |
 |------|-------------|
 | **BX1: Fixed set** | The set is `Shared` (with its `Local`/`Readers`/`Mutex` strategies), `Rack` + `Link` and `Heap`, plus adjacent `Atomic`. They're language constructs with type-shaped names, like `T or E` and `T?` — not library types |
-| **BX2: No user-built equivalent** | No user-defined type gets these semantics: refcounted copy, shared interior, or `with`-scoped access. There is no annotation, trait, or generic parameter that grants them |
+| **BX2: No user-built equivalent** | No user-defined type gets these semantics: refcounted copy, shared interior, or `with`-scoped access. There is no annotation, interface, or generic parameter that grants them |
 | **BX3: Compose instead** | Types that need sharing wrap one — `Shared<Map<K,V>>` for a cache, `Rack<T>` + `Link<T>` for a graph, `Shared<Vec<u8>>` for a refcounted buffer |
 | **BX4: `unsafe` doesn't unlock it** | Raw pointers let you build any data structure you like (`mem.unsafe`). They don't let a type opt into running code on assignment, on scope exit, or at borrow boundaries — that's what these semantics require, and it isn't a pointer capability |
 

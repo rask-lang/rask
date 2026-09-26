@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// Two libraries conform `traitpkg.Doc` to `traitpkg.Labeled`, both use their
+// Two libraries conform `interfacepkg.Doc` to `interfacepkg.Labeled`, both use their
 // own, and the program uses both. It printed `b:7` twice: there was one `Doc`,
 // both blocks' `label` landed in its method table, and both mangled to one
 // `Doc_label` — so `liba` called its own function and ran `libb`'s body.
@@ -17,12 +17,12 @@
 // `rask test --interp` too. Measured against an interpreter without the fix:
 // `assertion failed: "b:7" == "a:7"`.
 
-import traitpkg
+import interfacepkg
 import liba
 import libb
 
 func main() {
-    let d = traitpkg.make_doc(7)
+    let d = interfacepkg.make_doc(7)
     println(liba.describe(d))
     println(libb.describe(d))
     // And through a generic, where the receiver is a type parameter and the
@@ -34,7 +34,7 @@ func main() {
 }
 
 test "each library keeps its own conformance" {
-    let d = traitpkg.make_doc(7)
+    let d = interfacepkg.make_doc(7)
     assert liba.describe(d) == "a:7"
     assert libb.describe(d) == "b:7"
     assert liba.describe_generic(d) == "a:7"

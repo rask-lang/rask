@@ -265,7 +265,7 @@ pub fn generic_instance_key(name: &str) -> Option<String> {
 ///
 /// Textual because that is the shape reflection reports — `FieldInfo.type_name`
 /// is a string, and the layout has already rendered the declared type. Only
-/// whole identifiers are replaced, so a `T` inside `Trait` is left alone.
+/// whole identifiers are replaced, so a `T` inside `Interface` is left alone.
 pub fn substitute_type_params(rendered: &str, subst: &[(String, String)]) -> String {
     if subst.is_empty() {
         return rendered.to_string();
@@ -356,7 +356,7 @@ mod generic_name_tests {
         assert_eq!(substitute_type_params("Vec<T>", &subst), "Vec<i64>");
         assert_eq!(substitute_type_params("T", &subst), "i64");
         // `T` inside a longer name is part of that name.
-        assert_eq!(substitute_type_params("Trait", &subst), "Trait");
+        assert_eq!(substitute_type_params("Interface", &subst), "Interface");
         assert_eq!(substitute_type_params("Map<T, T>", &subst), "Map<i64, i64>");
     }
 

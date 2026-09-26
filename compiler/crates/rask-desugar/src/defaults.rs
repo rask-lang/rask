@@ -387,7 +387,7 @@ impl DefaultDesugarer {
             DeclKind::Impl(i) => {
                 for m in &mut i.methods { self.desugar_fn_body(m); }
             }
-            DeclKind::Trait(t) => {
+            DeclKind::Interface(t) => {
                 for m in &mut t.methods { self.desugar_fn_body(m); }
             }
             DeclKind::Const(c) => self.desugar_expr(&mut c.init),

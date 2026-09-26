@@ -24,7 +24,7 @@ needing one of those is refused with a message rather than half-working:
 | `spawn`, `Thread.spawn`, `using Multitasking`, `using ThreadPool` | no threads |
 | `extern "C"`, `import c` | no libc to call |
 
-Everything else runs: collections, structs, enums, generics, traits, pattern
+Everything else runs: collections, structs, enums, generics, interfaces, pattern
 matching, closures, error handling, `comptime`. Recursion is capped a few
 hundred frames deep, because the browser puts a much lower ceiling on call
 depth than an OS thread does.

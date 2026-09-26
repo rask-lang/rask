@@ -94,7 +94,7 @@ test "std.json — a Vec of structs keeps each element's fields" {
     assert p.tags[1].weight == 2.5
 }
 
-// J9: present is Some, explicit null is none, missing is none.
+// J9: present is Some, explicit nullptr is none, missing is none.
 test "std.json — optional fields follow presence, null, and absence" {
     let p = json.decode<Profile>(profile_json()) catch e => {
         assert false

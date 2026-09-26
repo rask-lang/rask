@@ -22,7 +22,7 @@ enum Light {
     Green
 }
 
-type Celsius = f64 with (Equal)
+type Celsius = f64 implements Equal
 
 extend Counter {
     // Static — no self.

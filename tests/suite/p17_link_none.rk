@@ -1,4 +1,4 @@
-// `Link<T>?` is one word with no tag, and its `none` is the null address.
+// `Link<T>?` is one word with no tag, and its `none` is the nullptr address.
 //
 // The first native pass gave links all-ones instead — the sentinel the pool's
 // handles used, back when there were handles — so every absent edge in a fresh

@@ -7,7 +7,7 @@
 // built by `push` had no element type — the checker leaves that an inference
 // variable — and encoded a Vec of structs as `[1,2]`. And a `T?` field went
 // through json_buf_add_i64, writing the address of the option's storage where
-// `null` belongs.
+// `nullptr` belongs.
 //
 // Checked with `contains` rather than whole-string equality: a `{` in a string
 // literal opens interpolation, so the expected JSON can't be written as a

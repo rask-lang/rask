@@ -125,11 +125,11 @@ impl TypeChecker {
                 }
             }
         }
-        // #314: record trait bounds so the body can call trait methods on a
+        // #314: record interface bounds so the body can call interface methods on a
         // bounded type param (`func f(g: T) where T: Greeter { g.greet() }`).
         // `where` bounds already folded into `type_params` by the parser.
         let saved_type_param_bounds = std::mem::take(&mut self.current_type_param_bounds);
-        // Seed from the enclosing `extend Foo<T> where T: Trait { }` block's
+        // Seed from the enclosing `extend Foo<T> where T: Interface { }` block's
         // own bounds, if any — a bound declared there covers every method in
         // the block, not just one with its own `where` clause (#838).
         self.current_type_param_bounds = self.current_impl_type_param_bounds.clone();
@@ -313,7 +313,7 @@ impl TypeChecker {
         self.note_linear_container_site(f.span, resolved_ret_ty.clone());
 
         // Empty body with non-Unit return type is a missing return (unless it's
-        // a trait method declaration with no body — those are handled separately).
+        // an interface method declaration with no body — those are handled separately).
         // Stdlib stubs are never passed through check_fn.
 
         match &resolved_ret_ty {
@@ -388,7 +388,7 @@ impl TypeChecker {
                 // and no longer need whitelisting. Bare `Error` stays: several
                 // flagship examples write `-> void or Error` expecting the
                 // `any Error` catch-all, but `any Error`/ER32 auto-boxing isn't
-                // implemented yet (`Error` isn't a registered trait either) —
+                // implemented yet (`Error` isn't a registered interface either) —
                 // rejecting the bare form now would break those examples ahead
                 // of that landing. Tracked in #708.
                 // `Heap` is compiler-provided and has no declaration to find:

@@ -50,7 +50,7 @@ impl<'a> MirLowerer<'a> {
         // storage and readers disagreeing: `Vec.from([1, 2, 3])` summed to
         // 21474836486 because each 8-byte load straddled two elements (#461).
         // Widen narrow scalars to the slot width; genuinely wide elements
-        // (string, trait object, aggregates) keep their real size.
+        // (string, interface object, aggregates) keep their real size.
         if elem_ty.size() < 8 && !matches!(elem_ty, MirType::Struct(_) | MirType::Enum(_)) {
             elem_ty = MirType::I64;
         }
@@ -891,7 +891,7 @@ impl<'a> MirLowerer<'a> {
             MirType::Array { elem, len } => self.elem_size_for_type(elem) * (*len as i64),
             MirType::Tuple(_) | MirType::Option(_)
             | MirType::Result { .. } | MirType::Union(_)
-            | MirType::SimdVector { .. } | MirType::TraitObject { .. } => ty.size() as i64,
+            | MirType::SimdVector { .. } | MirType::InterfaceObject { .. } => ty.size() as i64,
             MirType::Void => 0,
         }
     }

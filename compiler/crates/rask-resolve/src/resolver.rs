@@ -2,7 +2,7 @@
 //! The name resolver implementation.
 
 use std::collections::{HashMap, HashSet};
-use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, ImportDecl, ExportDecl, CImportDecl, TypeParam, UnionDecl};
+use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, InterfaceDecl, ImplDecl, ImportDecl, ExportDecl, CImportDecl, TypeParam, UnionDecl};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::{NodeId, Span};
@@ -720,7 +720,7 @@ impl Resolver {
                     .filter(|d| match &d.kind {
                         DeclKind::Struct(s) => s.is_pub,
                         DeclKind::Enum(e) => e.is_pub,
-                        DeclKind::Trait(t) => t.is_pub,
+                        DeclKind::Interface(t) => t.is_pub,
                         DeclKind::TypeAlias(a) => a.is_pub,
                         // A reader in another package needs the declaration,
                         // not just the attachment: `has<A>()` matches the
@@ -892,12 +892,12 @@ impl Resolver {
                     }
                     exports.insert(base, sym_id);
                 }
-                DeclKind::Trait(t) if t.is_pub => {
+                DeclKind::Interface(t) if t.is_pub => {
                     let sym_id = self.symbols.insert(
                         t.name.clone(),
-                        SymbolKind::Trait {
+                        SymbolKind::Interface {
                             methods: vec![],
-                            super_traits: t.super_traits.clone(),
+                            super_interfaces: t.super_interfaces.clone(),
                         },
                         None,
                         Span::new(0, 0),
@@ -938,8 +938,8 @@ impl Resolver {
                 DeclKind::Enum(enum_decl) => {
                     self.declare_enum(enum_decl, decl.span);
                 }
-                DeclKind::Trait(trait_decl) => {
-                    self.declare_trait(trait_decl, decl.span);
+                DeclKind::Interface(interface_decl) => {
+                    self.declare_interface(interface_decl, decl.span);
                 }
                 DeclKind::Impl(_) => {}
                 DeclKind::Import(import_decl) => {
@@ -1060,7 +1060,7 @@ impl Resolver {
         }
     }
 
-    /// Strip generic params from function name: "foo<T: Trait>" → "foo"
+    /// Strip generic params from function name: "foo<T: Interface>" → "foo"
     fn base_name(name: &str) -> &str {
         name.split('<').next().unwrap_or(name)
     }
@@ -1110,7 +1110,7 @@ impl Resolver {
                 sym.kind,
                 SymbolKind::Struct { .. }
                     | SymbolKind::Enum { .. }
-                    | SymbolKind::Trait { .. }
+                    | SymbolKind::Interface { .. }
                     | SymbolKind::TypeAlias { .. }
             ) && sym.span != Span::new(0, 0)
         })
@@ -1264,24 +1264,24 @@ impl Resolver {
         }
     }
 
-    fn declare_trait(&mut self, trait_decl: &TraitDecl, span: Span) {
-        if !self.stdlib_mode && self.is_reserved_name(&trait_decl.name) {
-            self.errors.push(ResolveError::shadows_builtin(trait_decl.name.clone(), span));
+    fn declare_interface(&mut self, interface_decl: &InterfaceDecl, span: Span) {
+        if !self.stdlib_mode && self.is_reserved_name(&interface_decl.name) {
+            self.errors.push(ResolveError::shadows_builtin(interface_decl.name.clone(), span));
         }
-        let trait_base = Self::base_name(&trait_decl.name).to_string();
-        self.check_shadows_import(&trait_base, span);
+        let interface_base = Self::base_name(&interface_decl.name).to_string();
+        self.check_shadows_import(&interface_base, span);
 
         let sym_id = self.symbols.insert(
-            trait_decl.name.clone(),
-            SymbolKind::Trait {
+            interface_decl.name.clone(),
+            SymbolKind::Interface {
                 methods: vec![],
-                super_traits: trait_decl.super_traits.clone(),
+                super_interfaces: interface_decl.super_interfaces.clone(),
             },
             None,
             span,
-            trait_decl.is_pub,
+            interface_decl.is_pub,
         );
-        if let Err(e) = self.scopes.define(trait_decl.name.clone(), sym_id, span) {
+        if let Err(e) = self.scopes.define(interface_decl.name.clone(), sym_id, span) {
             self.errors.push(e);
         }
     }
@@ -1880,8 +1880,8 @@ impl Resolver {
                         self.resolve_method(method, &enum_decl.type_params);
                     }
                 }
-                DeclKind::Trait(trait_decl) => {
-                    for method in &trait_decl.methods {
+                DeclKind::Interface(interface_decl) => {
+                    for method in &interface_decl.methods {
                         if !method.body.is_empty() {
                             self.resolve_method(method, &[]);
                         }
@@ -2494,7 +2494,7 @@ impl Resolver {
     /// The type-parameter names a declaration introduces.
     ///
     /// Two places to look: the parsed `type_params` list, and the `<…>` suffix
-    /// the parser leaves on a declaration's name (`foo<T: Trait>`) or on an
+    /// the parser leaves on a declaration's name (`foo<T: Interface>`) or on an
     /// `extend`'s target (`Ring<T>`). Only plain identifiers are taken — a
     /// concrete argument like `extend Foo<Duration>` is a type, not a parameter,
     /// and treating it as one would hide a missing import.
@@ -2597,7 +2597,7 @@ impl Resolver {
                     self.pop_type_params();
                 }
                 DeclKind::Fn(f) => self.check_fn_annotations(f, decl.span),
-                DeclKind::Trait(t) => {
+                DeclKind::Interface(t) => {
                     for m in &t.methods {
                         self.check_fn_annotations(m, decl.span);
                     }
@@ -3321,11 +3321,11 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    trait_names: vec![],
+                    interface_name: None,
                     target_ty: "Job".to_string(),
                     methods: vec![method],
                     is_unsafe: false,
-                    is_scoped: false,
+                    is_pub: false,
                     where_bounds: vec![],
                     doc: None,
                     assoc_bindings: Vec::new(),

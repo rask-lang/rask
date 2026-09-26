@@ -7,7 +7,7 @@ import memory.Heap
 /// Spawn a green task on the current scheduler.
 /// Requires an active `using Multitasking { ... }` scope in the process.
 /// Compile error if called outside any scope (directly or transitively);
-/// runtime panic for higher-order/trait-object cases the compiler can't prove.
+/// runtime panic for higher-order/interface-object cases the compiler can't prove.
 ///
 /// `take f`: the task keeps the closure and runs it after this call returns, so
 /// the closure is given away here (PM3). It read as a borrow for a long time,

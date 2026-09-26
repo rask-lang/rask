@@ -779,13 +779,13 @@ fn fd4_defaults_and_spread_satisfy_construction() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// DT1 — a `duck trait` is scratchpad-only, so it can never be public
+// DT1 — a `duck interface` is scratchpad-only, so it can never be public
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
-fn dt1_public_duck_trait_errors() {
+fn dt1_public_duck_interface_errors() {
     let path = tmp_rk(r#"
-        public duck trait Frobber {
+        public duck interface Frobber {
             func frobnicate(self) -> i32
         }
         func main() {
@@ -793,7 +793,7 @@ fn dt1_public_duck_trait_errors() {
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
-    assert!(!output.succeeded(), "DT1: `public duck trait` must error");
+    assert!(!output.succeeded(), "DT1: `public duck interface` must error");
     assert!(
         output.diagnostics.iter().any(|d|
             d.code.as_ref().map_or(false, |c| c.0 == "E0824") && d.message.contains("Frobber")),
@@ -804,12 +804,12 @@ fn dt1_public_duck_trait_errors() {
 }
 
 #[test]
-fn dt1_package_internal_duck_trait_is_fine() {
-    // Without `public` the trait stays in the package, which is where duck
-    // traits live — shape matching still satisfies the bound with no
+fn dt1_package_internal_duck_interface_is_fine() {
+    // Without `public` the interface stays in the package, which is where duck
+    // interfaces live — shape matching still satisfies the bound with no
     // conformance declaration.
     let path = tmp_rk(r#"
-        duck trait Frobber {
+        duck interface Frobber {
             func frobnicate(self) -> i32
         }
         struct Widget {
@@ -826,23 +826,23 @@ fn dt1_package_internal_duck_trait_is_fine() {
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
-    assert!(output.succeeded(), "package-internal duck trait must type-check, got: {:?}",
+    assert!(output.succeeded(), "package-internal duck interface must type-check, got: {:?}",
         output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
     let _ = std::fs::remove_file(&path);
 }
 
 #[test]
-fn dt1_public_nominal_trait_is_fine() {
-    // Dropping `duck` is the fix DT1 points at — the same trait as `public
-    // trait` is legal, with conformance declared.
+fn dt1_public_nominal_interface_is_fine() {
+    // Dropping `duck` is the fix DT1 points at — the same interface as `public
+    // interface` is legal, with conformance declared.
     let path = tmp_rk(r#"
-        public trait Frobber {
+        public interface Frobber {
             func frobnicate(self) -> i32
         }
         struct Widget {
             id: i32
         }
-        extend Widget with Frobber {
+        Widget implements Frobber {
             func frobnicate(self) -> i32 {
                 return self.id
             }
@@ -853,7 +853,7 @@ fn dt1_public_nominal_trait_is_fine() {
         }
     "#);
     let output = check_file(path.to_str().unwrap(), &default_config());
-    assert!(output.succeeded(), "hardened public trait must type-check, got: {:?}",
+    assert!(output.succeeded(), "hardened public interface must type-check, got: {:?}",
         output.diagnostics.iter().map(|d| (&d.code, &d.message)).collect::<Vec<_>>());
     let _ = std::fs::remove_file(&path);
 }

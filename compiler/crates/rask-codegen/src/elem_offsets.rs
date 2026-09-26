@@ -54,8 +54,8 @@ const KIND_HEAP: i32 = 6;
 /// start — how a type that reaches itself is described at all (#1202).
 const KIND_SELF: i32 = 7;
 
-/// One trait-box entry at offset zero: what to hand `rask_owned_release` when
-/// the slot *is* the fat pointer, which is the shape of a trait-object field.
+/// One interface-box entry at offset zero: what to hand `rask_owned_release` when
+/// the slot *is* the fat pointer, which is the shape of an interface-object field.
 pub const TRAITBOX_AT_ZERO: i32 = KIND_TRAITBOX << KIND_SHIFT;
 
 /// A `Heap<T>` slot: the pointer at `offset`, and `count` entries after this one
@@ -304,7 +304,7 @@ fn describe_named(
 }
 
 /// Is this field a `Heap<T>`? The release walk asks before it looks at
-/// anything else, the way it asks about a trait object.
+/// anything else, the way it asks about an interface object.
 pub fn is_heap_field(ty: &RaskType) -> bool {
     heap_payload_name(ty).is_some()
 }

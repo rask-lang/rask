@@ -16,7 +16,7 @@ const SPAWN_NO_RUNTIME_MSG: &str =
      \n\
      This can happen when:\n\
      - A closure containing spawn is stored and called outside a block\n\
-     - A trait object dispatches to an impl that spawns\n\
+     - An interface object dispatches to an impl that spawns\n\
      - FFI calls back into Rask outside any scope\n\
      \n\
      Install a `using Multitasking { ... }` block that encloses the call.";

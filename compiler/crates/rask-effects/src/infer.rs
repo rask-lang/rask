@@ -116,7 +116,7 @@ impl InferPass {
                         self.collect_fn(&qname, method);
                     }
                 }
-                DeclKind::Trait(t) => {
+                DeclKind::Interface(t) => {
                     for method in &t.methods {
                         let qname = format!("{}.{}", t.name, method.name);
                         self.collect_fn(&qname, method);

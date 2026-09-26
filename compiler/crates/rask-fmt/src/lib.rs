@@ -546,9 +546,21 @@ func main() {
             "a variant attribute",
         );
         keeps(
-            "@allow(idiom/duck-trait)\nduck trait Frobber {\n    func frob(self) -> i64\n}\n",
-            "duck trait Frobber",
+            "@allow(idiom/duck-interface)\nduck interface Frobber {\n    func frob(self) -> i64\n}\n",
+            "duck interface Frobber",
             "the duck modifier",
+        );
+        // The modifiers in front of a block used to be parsed and dropped, so
+        // `rask fmt` quietly removed them.
+        keeps(
+            "public Point implements Named {\n    func name(self) -> string {\n        return \"p\"\n    }\n}\n",
+            "public Point implements Named",
+            "public on a conformance",
+        );
+        keeps(
+            "unsafe Point implements Raw {\n    func raw(self) -> i64 {\n        return 1\n    }\n}\n",
+            "unsafe Point implements Raw",
+            "unsafe on a conformance",
         );
     }
 

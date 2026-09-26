@@ -141,11 +141,11 @@ impl Hasher {
                 self.feed_tag(3);
                 self.hash_enum_decl(e);
             }
-            DeclKind::Trait(t) => {
+            DeclKind::Interface(t) => {
                 self.feed_tag(4);
                 self.feed_str(&t.name);
                 self.feed_bool(t.is_pub);
-                for st in &t.super_traits {
+                for st in &t.super_interfaces {
                     self.feed_str(st);
                 }
                 for m in &t.methods {
@@ -154,8 +154,8 @@ impl Hasher {
             }
             DeclKind::Impl(i) => {
                 self.feed_tag(5);
-                self.feed_u32(i.trait_names.len() as u32);
-                for tn in &i.trait_names {
+                self.feed_u32(i.interface_name.is_some() as u32);
+                if let Some(tn) = &i.interface_name {
                     self.feed_str(tn);
                 }
                 self.feed_str(&i.target_ty);

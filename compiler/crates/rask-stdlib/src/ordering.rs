@@ -13,7 +13,7 @@
 //! `rask_mono::ordering_layout` synthesizes one from that list, so `Ordering`
 //! lays out like any other fieldless enum: a `u8` tag at offset 0.
 //! `compare` stores its result into a real slot rather than handing back the
-//! bare tag, which is what makes `extend Ordering with Displayable` work on
+//! bare tag, which is what makes `Ordering implements Displayable` work on
 //! native — `{a.compare(b)}` used to print `0` for Less while the interpreter
 //! printed `less` (#729).
 //!
@@ -30,7 +30,7 @@
 //! byte. Structural `==` compares the whole slot, so a narrow store leaves the
 //! rest undefined and equality turns on whatever the stack held — three
 //! identical asserts passed in `main` and the third failed inside a `test`
-//! block. `t55_ordering`, `t61_nominal_traits` and `t_sort_by_closure` are the
+//! block. `t55_ordering`, `t61_nominal_interfaces` and `t_sort_by_closure` are the
 //! suites that catch all of this; run `tests/differential.sh`.
 
 /// Comparison results (ORD1) and atomic memory orderings, in tag order.

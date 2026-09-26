@@ -49,7 +49,7 @@ pub fn detect(
             DeclKind::Impl(i) => {
                 for m in &i.methods { ctx.check_fn(&format!("{}.{}", i.target_ty, m.name), m, false, &mut warnings); }
             }
-            DeclKind::Trait(t) => {
+            DeclKind::Interface(t) => {
                 for m in &t.methods { ctx.check_fn(&format!("{}.{}", t.name, m.name), m, false, &mut warnings); }
             }
             // A `test` block is a root like `main` is: nothing calls it, so

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A `with` block is an expression (mem.borrowing) — its value has to survive
 // the guard being released. On native it was thrown away: a scalar came out 0
-// and an aggregate came out a null pointer, so reading a field segfaulted.
+// and an aggregate came out a nullptr pointer, so reading a field segfaulted.
 import sync.Shared
 
 struct Counter {

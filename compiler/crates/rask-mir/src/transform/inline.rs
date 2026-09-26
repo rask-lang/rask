@@ -758,36 +758,36 @@ fn remap_stmt(
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             name: name.clone(),
         },
-        MirStmtKind::TraitBox {
+        MirStmtKind::InterfaceBox {
             dst,
             value,
             concrete_type,
-            trait_name,
+            interface_name,
             concrete_size,
             vtable_name,
-        } => MirStmtKind::TraitBox {
+        } => MirStmtKind::InterfaceBox {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             value: remap_operand(value, local_map),
             concrete_type: concrete_type.clone(),
-            trait_name: trait_name.clone(),
+            interface_name: interface_name.clone(),
             concrete_size: *concrete_size,
             vtable_name: vtable_name.clone(),
         },
-        MirStmtKind::TraitCall {
+        MirStmtKind::InterfaceCall {
             dst,
-            trait_object,
+            interface_object,
             method_name,
             vtable_offset,
             args,
-        } => MirStmtKind::TraitCall {
+        } => MirStmtKind::InterfaceCall {
             dst: dst.map(|d| local_map.get(&d).copied().unwrap_or(d)),
-            trait_object: local_map.get(trait_object).copied().unwrap_or(*trait_object),
+            interface_object: local_map.get(interface_object).copied().unwrap_or(*interface_object),
             method_name: method_name.clone(),
             vtable_offset: *vtable_offset,
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
         },
-        MirStmtKind::TraitDrop { trait_object } => MirStmtKind::TraitDrop {
-            trait_object: local_map.get(trait_object).copied().unwrap_or(*trait_object),
+        MirStmtKind::InterfaceDrop { interface_object } => MirStmtKind::InterfaceDrop {
+            interface_object: local_map.get(interface_object).copied().unwrap_or(*interface_object),
         },
         MirStmtKind::Phi { dst, args } => MirStmtKind::Phi {
             dst: local_map.get(dst).copied().unwrap_or(*dst),

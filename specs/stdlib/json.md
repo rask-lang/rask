@@ -184,10 +184,10 @@ WHY: Only primitive, collection, optional, and nested-struct types can be encode
 ### Resolved (by std.encoding)
 
 - ~~`@json(rename = "fieldName")`~~ → `@rename("fieldName")` — format-agnostic field annotation (`std.encoding/E18`)
-- ~~`JsonEncodable` / `JsonDecodable`~~ → `Encode` / `Decode` marker traits (`std.encoding/E11`)
+- ~~`JsonEncodable` / `JsonDecodable`~~ → `Encode` / `Decode` marker interfaces (`std.encoding/E11`)
 
 ### See Also
 
-- `std.encoding` — Encode/Decode traits, comptime field iteration, field annotations
+- `std.encoding` — Encode/Decode interfaces, comptime field iteration, field annotations
 - `std.collections` — `Vec`, `Map` used in JsonValue
 - `type.errors` — `JsonError` follows standard error pattern

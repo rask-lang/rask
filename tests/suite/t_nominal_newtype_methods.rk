@@ -6,7 +6,7 @@
 // `string_shout`, and the interpreter looked for methods on the literal type
 // name "nominal". Keying by the newtype's own name fixes both.
 
-type UserId = u64 with (Hashable, Comparable)
+type UserId = u64 implements Hashable, Comparable
 type Label = string
 
 extend UserId {

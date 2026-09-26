@@ -64,7 +64,7 @@ fit.
 | **CV2: Narrowing blocked** | `i32` → `i8` | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV3: Sign reinterpret** | `i32` → `u32` (same width) | ❌ via `as` | Name a policy (CV11–CV16) |
 | **CV4: Float→Int** | Any float→int | ❌ via `as` | Name a policy (CV11–CV16) |
-| **CV4a: Non-numeric target** | `[1, 2, 3]` → `Vec<i64>`, `i64` → a struct | ❌ via `as` | `as` converts between numbers and erases a concrete type to a trait object (`as any Trait`). To anything else it reinterprets bits, so it needs `unsafe` |
+| **CV4a: Non-numeric target** | `[1, 2, 3]` → `Vec<i64>`, `i64` → a struct | ❌ via `as` | `as` converts between numbers and erases a concrete type to an interface object (`as any Interface`). To anything else it reinterprets bits, so it needs `unsafe` |
 
 ```rask
 let wide: i32 = narrow_val as i32   // CV1: OK, lossless
@@ -338,13 +338,13 @@ let header = try NetworkHeader.parse(bytes)
 mut port: u16 = header.port   // Native u16
 ```
 
-## Numeric Traits
+## Numeric Interfaces
 
 | Rule | Description |
 |------|-------------|
 | **NT1: Common constants** | All numeric types provide `ZERO`, `ONE`, `MIN`, `MAX` |
-| **NT2: Integer trait** | `trait Integer: Numeric { const MIN, MAX, BITS; }` |
-| **NT3: Float trait** | `trait Float: Numeric { const INFINITY, NAN, EPSILON; func is_nan(); }` |
+| **NT2: Integer interface** | `interface Integer: Numeric { const MIN, MAX, BITS; }` |
+| **NT3: Float interface** | `interface Float: Numeric { const INFINITY, NAN, EPSILON; func is_nan(); }` |
 
 ## Edge Cases
 

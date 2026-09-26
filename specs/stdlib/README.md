@@ -33,7 +33,7 @@ test ([strings.md](strings.md) `U1`–`U5`).
 ### Core & Collections
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [core](#core) | Primitives, traits, optionals (`T?`), results (`T or E`) | Specified |
+| [core](#core) | Primitives, interfaces, optionals (`T?`), results (`T or E`) | Specified |
 | [collections](collections.md) | Vec, Map, Pool | Specified |
 | [string](strings.md) | String types | Specified |
 | [iteration](iteration.md) | Collection iteration | Specified |
@@ -41,7 +41,7 @@ test ([strings.md](strings.md) `U1`–`U5`).
 ### I/O & Filesystem
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [io](io.md) | Reader, Writer, Buffer traits | Specified |
+| [io](io.md) | Reader, Writer, Buffer interfaces | Specified |
 | [fs](fs.md) | File operations | Specified |
 | [path](path.md) | Path manipulation | Specified |
 
@@ -57,7 +57,7 @@ test ([strings.md](strings.md) `U1`–`U5`).
 | Module | Purpose | Status |
 |--------|---------|--------|
 | [json](json.md) | JSON encoding and decoding | Specified |
-| [encoding](encoding.md) | Encode/Decode traits, field annotations | Specified |
+| [encoding](encoding.md) | Encode/Decode interfaces, field annotations | Specified |
 | [csv](csv.md) | CSV reading and writing | Specified |
 | [base64](base64.md) | Base64 encoding | Specified |
 | [hex](hex.md) | Hex encoding | Specified |
@@ -105,7 +105,7 @@ Always available without import:
 |------|-------------|
 | `T?` | Optional value (present or `none`) |
 | `T or E` | Success value or error |
-| `Error` | Error trait |
+| `Error` | Error interface |
 
 ### Collections
 
@@ -129,9 +129,9 @@ Always available without import:
 | `println(...)` | Print to stdout with newline |
 | `panic(msg)` | Terminate with message |
 
-### Traits
+### Interfaces
 
-| Trait | Description |
+| Interface | Description |
 |-------|-------------|
 | `Copy` | Implicitly copyable (≤16 bytes) |
 | `Cloneable` | Explicitly cloneable |
@@ -163,13 +163,13 @@ let file = try fs.open("data.txt")
 
 ## Core
 
-Fundamental types and traits. Everything in core is in the prelude. See [types/primitives.md](../types/primitives.md), [types/optionals.md](../types/optionals.md), [types/error-types.md](../types/error-types.md), [types/traits.md](../types/traits.md).
+Fundamental types and interfaces. Everything in core is in the prelude. See [types/primitives.md](../types/primitives.md), [types/optionals.md](../types/optionals.md), [types/error-types.md](../types/error-types.md), [types/interfaces.md](../types/interfaces.md).
 
 ---
 
 ## IO
 
-Reader/Writer traits, buffered I/O, standard streams. See [io.md](io.md).
+Reader/Writer interfaces, buffered I/O, standard streams. See [io.md](io.md).
 
 ---
 
@@ -347,7 +347,7 @@ Command-line argument parsing (flags, options, positional args, help generation)
 
 ## Encoding
 
-`Encode`/`Decode` traits and comptime field iteration — how a struct becomes any
+`Encode`/`Decode` interfaces and comptime field iteration — how a struct becomes any
 format. See [encoding.md](encoding.md).
 
 Binary-to-text encodings are their own modules, because they do a different job that

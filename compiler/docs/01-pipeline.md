@@ -103,7 +103,7 @@ Defined in `rask-ast/src/`. Every node has an `id: NodeId`, a `kind` enum, and
 a `span: Span`. The three levels:
 
 - **Declarations** (`decl.rs`): Top-level items—functions, structs, enums,
-  traits, imports, extend blocks, tests, benchmarks, package declarations.
+  interfaces, imports, extend blocks, tests, benchmarks, package declarations.
 - **Statements** (`stmt.rs`): Things inside function bodies—let/let bindings,
   assignments, loops, returns, ensure blocks.
 - **Expressions** (`expr.rs`): Things that produce values—literals, identifiers,
@@ -182,7 +182,7 @@ Determines the type of every expression and verifies type correctness.
 for the deep dive.
 
 **Output:** `TypedProgram` containing:
-- `TypeTable`: definitions of all structs, enums, traits
+- `TypeTable`: definitions of all structs, enums, interfaces
 - `node_types: HashMap<NodeId, Type>`: the type of every expression
 - `call_type_args`: which concrete types were used at generic call sites
 

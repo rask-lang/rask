@@ -72,8 +72,8 @@ pub fn escaping_strings(func: &MirFunction) -> HashSet<LocalId> {
                         }
                     }
                 }
-                // Passed to trait boxing (data escapes to heap)
-                MirStmtKind::TraitBox { value: MirOperand::Local(id), .. } => {
+                // Passed to interface boxing (data escapes to heap)
+                MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. } => {
                     if string_locals.contains(id) {
                         escaped.insert(*id);
                     }

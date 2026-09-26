@@ -72,7 +72,7 @@ test "the callee's write is visible to a later delete" {
     attach(mutate h, n)
 
     // Only reachable if the edge was recorded against the caller's field rather
-    // than a copy: the rack has to find this slot to null it.
+    // than a copy: the rack has to find this slot to nullptr it.
     h.nodes.delete(n)
     if h.root? as _r { assert false }
 }

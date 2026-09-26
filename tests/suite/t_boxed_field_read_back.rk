@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A trait object in a struct field, called through, and who frees the block.
+// An interface object in a struct field, called through, and who frees the block.
 //
 // Storing a box in a struct field moves it in, and the struct's release gives
 // it back — through the vtable's `owned_release`, so the containers and strings
 // inside the boxed value come back too. Reading the field to call a method is a
 // borrow: the block is still the struct's.
 //
-// That read used to get a `TraitDrop` of its own. The rule it matched was
+// That read used to get a `InterfaceDrop` of its own. The rule it matched was
 // written for a *wrapper* — a `T?` or a `T or E` holds its payload and nothing
 // else releases it, so the frame has to — and a struct is the other way round.
 // Two owners, and the weaker one ran first:
 //
 //     *(_0+0) = _10           // the box, into the field
 //     _12 = _11.0             // and out again, to call through
-//     trait_drop(_12)         // the frame frees the block...
+//     interface_drop(_12)         // the frame frees the block...
 //     rc_dec_contents(_11)    // ...and the struct's release reads it after
 //
 // The `Vec` inside the boxed value was freed by nobody, and the release walk
@@ -23,7 +23,7 @@
 // else releases it, so the frame still owns a box on the error side.
 // `t_any_error_boxing.rk` and `t_bare_error_type.rk` are that half.
 
-trait Describes {
+interface Describes {
     func describe(self) -> string
 }
 
@@ -32,7 +32,7 @@ struct Holder {
     public counts: Vec<i64>
 }
 
-extend Holder with Describes {
+Holder implements Describes {
     public func describe(self) -> string {
         return "{self.label}:{self.counts.len()}"
     }

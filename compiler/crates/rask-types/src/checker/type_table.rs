@@ -11,7 +11,7 @@ use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
-/// MN3/XC3: an `extend T with Trait` block, as the conformance table remembers
+/// MN3/XC3: an `T implements Interface` block, as the conformance table remembers
 /// it. Auto-derive records no site at all, so having one means it was written.
 ///
 /// `from_stdlib` is what XC3 turns on. It has to be the *first* registration's,
@@ -116,16 +116,16 @@ pub struct TypeTable {
     /// loser's methods too, and a mangled `Type_method` string can't tell them
     /// apart. Binding happens here, where the TypeId is still known.
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
-    /// G1: declared/derived trait conformances (nominal). TypeId → trait base
-    /// names the type conforms to, from `extend T with Trait` and auto-derive.
+    /// G1: declared/derived interface conformances (nominal). TypeId → interface base
+    /// names the type conforms to, from `T implements Interface` and auto-derive.
     pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
-    /// AT2/AT8: `(type, applied trait) → associated type → what it answers with`.
+    /// AT2/AT8: `(type, applied interface) → associated type → what it answers with`.
     pub(super) assoc_bindings: HashMap<(TypeId, String), HashMap<String, Type>>,
     /// MN3/XC3: where each conformance was written, so a collision between two
     /// of them is reported once, on the later one.
     pub(super) conformance_spans: HashMap<(TypeId, String), Vec<ConformanceSite>>,
-    /// CC1/CC2: conditional-conformance conditions. (TypeId, trait base) → the
-    /// `where` bounds (type-param name → required trait names) that must hold
+    /// CC1/CC2: conditional-conformance conditions. (TypeId, interface base) → the
+    /// `where` bounds (type-param name → required interface names) that must hold
     /// for the conformance, checked per instantiation.
     pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<String>)>>,
     /// XC4/XC5: which package's `extend` block each method on a type came from,
@@ -137,7 +137,7 @@ pub struct TypeTable {
     /// `liba`'s body and monomorphization emits both instead of one winning.
     pub(super) impl_method_packages:
         HashMap<(TypeId, String), Vec<(String, NodeId)>>,
-    /// XC3: `(type, applied trait)` pairs with more than one written
+    /// XC3: `(type, applied interface)` pairs with more than one written
     /// declaration. Empty in every program that doesn't have a collision, which
     /// is nearly all of them — the use-site check reads this first and does
     /// nothing when it's empty.
@@ -149,7 +149,7 @@ pub struct TypeTable {
     /// wrote it, which is how a conformance block knows whether it owns the
     /// type it's extending.
     pub(super) declared_at: HashMap<TypeId, Span>,
-    /// OR1: the conformances, read the other way round — applied trait
+    /// OR1: the conformances, read the other way round — applied interface
     /// (`Mul<Duration>`) → the types that answer it.
     ///
     /// `3 * duration` asks "which type forms this pair with `Duration`", which
@@ -312,7 +312,7 @@ impl TypeTable {
         let name = match &def {
             TypeDef::Struct { name, .. } => name.clone(),
             TypeDef::Enum { name, .. } => name.clone(),
-            TypeDef::Trait { name, .. } => name.clone(),
+            TypeDef::Interface { name, .. } => name.clone(),
             TypeDef::Union { name, .. } => name.clone(),
             TypeDef::NominalAlias { name, .. } => name.clone(),
             TypeDef::Primitive { name, .. } => name.clone(),
@@ -494,21 +494,21 @@ impl TypeTable {
         self.types.get_mut(id.0 as usize)
     }
 
-    /// The base name of a trait reference: `Mul<f64>` → `Mul`.
-    pub(super) fn conformance_key(trait_name: &str) -> String {
-        trait_name.split('<').next().unwrap_or(trait_name).trim().to_string()
+    /// The base name of an interface reference: `Mul<f64>` → `Mul`.
+    pub(super) fn conformance_key(interface_name: &str) -> String {
+        interface_name.split('<').next().unwrap_or(interface_name).trim().to_string()
     }
 
-    /// GT2/GT3: the key a conformance is filed under — the trait *with its
+    /// GT2/GT3: the key a conformance is filed under — the interface *with its
     /// arguments*, so `Mul<f64>` and `Mul<Meters>` on one type stay apart.
     ///
     /// Written-out defaults are filled in and `Self` becomes the conforming
-    /// type's name, so `extend Meters with Mul` and `extend Meters with
+    /// type's name, so `Meters implements Mul` and `Meters implements
     /// Mul<Meters>` land on the same key when `Rhs` defaults to `Self`.
-    /// A trait with no parameters keys on its bare name, exactly as before.
-    pub fn applied_conformance_key(&self, trait_name: &str, self_name: &str) -> String {
-        let base = Self::conformance_key(trait_name);
-        let Some(TypeDef::Trait { type_params, .. }) =
+    /// An interface with no parameters keys on its bare name, exactly as before.
+    pub fn applied_conformance_key(&self, interface_name: &str, self_name: &str) -> String {
+        let base = Self::conformance_key(interface_name);
+        let Some(TypeDef::Interface { type_params, .. }) =
             self.get_type_id(&base).and_then(|id| self.get(id))
         else {
             return base;
@@ -516,7 +516,7 @@ impl TypeTable {
         if type_params.is_empty() {
             return base;
         }
-        let written = trait_ref_args(trait_name);
+        let written = interface_ref_args(interface_name);
         let mut args = Vec::new();
         for (i, p) in type_params.iter().enumerate() {
             let arg = match written.get(i) {
@@ -534,16 +534,16 @@ impl TypeTable {
         format!("{}<{}>", base, args.join(", "))
     }
 
-    /// The trait base name as an error should print it.
-    pub(super) fn conformance_display(trait_name: &str) -> String {
-        Self::conformance_key(trait_name)
+    /// The interface base name as an error should print it.
+    pub(super) fn conformance_display(interface_name: &str) -> String {
+        Self::conformance_key(interface_name)
     }
 
-    /// G1: record that a type conforms to a trait (declared or auto-derived).
-    pub fn record_conformance(&mut self, type_id: TypeId, trait_name: &str) {
+    /// G1: record that a type conforms to an interface (declared or auto-derived).
+    pub fn record_conformance(&mut self, type_id: TypeId, interface_name: &str) {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
-        let key = self.applied_conformance_key(trait_name, &self_base);
+        let key = self.applied_conformance_key(interface_name, &self_base);
         let conformers = self.conformers_by_pair.entry(key.clone()).or_default();
         if !conformers.contains(&type_id) {
             conformers.push(type_id);
@@ -551,7 +551,7 @@ impl TypeTable {
         self.conformances.entry(type_id).or_default().insert(key);
     }
 
-    /// OR1: every type that conforms to this applied trait, in declaration
+    /// OR1: every type that conforms to this applied interface, in declaration
     /// order. `Mul<Duration>` answers with the `i64` the stdlib wrote.
     pub fn conformers_of(&self, applied: &str) -> &[TypeId] {
         self.conformers_by_pair.get(applied).map_or(&[], |v| v.as_slice())
@@ -561,13 +561,13 @@ impl TypeTable {
     pub fn record_assoc_binding(
         &mut self,
         type_id: TypeId,
-        trait_name: &str,
+        interface_name: &str,
         assoc: &str,
         ty: Type,
     ) {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
-        let key = self.applied_conformance_key(trait_name, &self_base);
+        let key = self.applied_conformance_key(interface_name, &self_base);
         self.assoc_bindings
             .entry((type_id, key))
             .or_default()
@@ -575,18 +575,18 @@ impl TypeTable {
     }
 
     /// AT6: read an associated type off a conformance. A lookup, never a search.
-    pub fn assoc_binding(&self, type_id: TypeId, trait_name: &str, assoc: &str) -> Option<&Type> {
+    pub fn assoc_binding(&self, type_id: TypeId, interface_name: &str, assoc: &str) -> Option<&Type> {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name);
-        let key = self.applied_conformance_key(trait_name, self_base);
+        let key = self.applied_conformance_key(interface_name, self_base);
         if let Some(t) = self.assoc_bindings.get(&(type_id, key)).and_then(|m| m.get(assoc)) {
             return Some(t);
         }
         // A bare `Mul` asking about a type with exactly one `Mul<...>`
         // conformance still has one answer. Two of them is the caller's
         // problem to disambiguate, and it gets nothing here.
-        let base = Self::conformance_key(trait_name);
-        if trait_name.contains('<') {
+        let base = Self::conformance_key(interface_name);
+        if interface_name.contains('<') {
             return None;
         }
         let mut found = None;
@@ -609,7 +609,7 @@ impl TypeTable {
     /// XC3: returns the earlier block's span when this pair already has one and
     /// both blocks are the program's own — the same-package clash, reported at
     /// the second declaration. A program block landing on a stdlib one is an
-    /// override across a package boundary, legal for every non-core trait by
+    /// override across a package boundary, legal for every non-core interface by
     /// XC2, and it *takes the slot* so a second program block is blamed on the
     /// program's first rather than on the stdlib's.
     ///
@@ -618,14 +618,14 @@ impl TypeTable {
     pub fn record_conformance_span(
         &mut self,
         type_id: TypeId,
-        trait_name: &str,
+        interface_name: &str,
         decl: NodeId,
         span: Span,
         package: Option<String>,
     ) -> Option<Span> {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
-        let key = self.applied_conformance_key(trait_name, &self_base);
+        let key = self.applied_conformance_key(interface_name, &self_base);
         let from_stdlib = self.stdlib_mode;
         let mine = ConformanceSite { span, decl, from_stdlib, package: package.clone() };
         let sites = self.conformance_spans.entry((type_id, key.clone())).or_default();
@@ -643,7 +643,7 @@ impl TypeTable {
                 return Some(first.span);
             }
             // A program block landing on the stdlib's is an override across a
-            // package boundary, legal for every non-core trait by XC2, and it
+            // package boundary, legal for every non-core interface by XC2, and it
             // takes the slot — so a second program block is blamed on the
             // program's first rather than on the stdlib's.
             sites.retain(|s| !s.from_stdlib);
@@ -693,7 +693,7 @@ impl TypeTable {
             .any(|(id, _)| *id == type_id)
     }
 
-    /// XC3: the applied trait keys this type has more than one declaration of.
+    /// XC3: the applied interface keys this type has more than one declaration of.
     pub(super) fn ambiguous_conformance_keys(&self, type_id: TypeId) -> Vec<String> {
         self.ambiguous_conformances
             .iter()
@@ -707,11 +707,11 @@ impl TypeTable {
     pub(super) fn conformance_sites(
         &self,
         type_id: TypeId,
-        trait_name: &str,
+        interface_name: &str,
     ) -> &[ConformanceSite] {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name);
-        let key = self.applied_conformance_key(trait_name, self_base);
+        let key = self.applied_conformance_key(interface_name, self_base);
         self.conformance_spans
             .get(&(type_id, key))
             .map(|v| v.as_slice())
@@ -739,10 +739,10 @@ impl TypeTable {
         self.declared_at.get(&type_id).copied()
     }
 
-    pub fn conformance_span(&self, type_id: TypeId, trait_name: &str) -> Option<Span> {
+    pub fn conformance_span(&self, type_id: TypeId, interface_name: &str) -> Option<Span> {
         let self_name = self.type_name(type_id);
         let self_base = self_name.split('<').next().unwrap_or(&self_name);
-        let key = self.applied_conformance_key(trait_name, self_base);
+        let key = self.applied_conformance_key(interface_name, self_base);
         self.conformance_spans
             .get(&(type_id, key))
             .and_then(|v| v.first())
@@ -756,7 +756,7 @@ impl TypeTable {
     /// `T.Out` at a call, once `T` is concrete. Two conformances answering to
     /// one name have no single answer, and this gives none rather than picking:
     /// disambiguating is the caller's, and `type.operator-resolution/OR1` is
-    /// what does it for the operator traits.
+    /// what does it for the operator interfaces.
     pub fn assoc_binding_any(&self, type_id: TypeId, assoc: &str) -> Option<&Type> {
         let mut found = None;
         for ((id, _), m) in &self.assoc_bindings {
@@ -789,25 +789,25 @@ impl TypeTable {
             .unwrap_or_default()
     }
 
-    /// G1: does the type declare (or auto-derive) conformance to the trait?
+    /// G1: does the type declare (or auto-derive) conformance to the interface?
     ///
-    /// TD3: a sub-trait requires everything its super-traits require, so
-    /// declaring the sub-trait declares the parents too. Without that,
-    /// `extend Horn with Shouty` — where `trait Shouty: Speak` — left
-    /// `horn as any Speak` refused for a trait the type demonstrably implements,
+    /// TD3: a sub-interface requires everything its super-interfaces require, so
+    /// declaring the sub-interface declares the parents too. Without that,
+    /// `Horn implements Shouty` — where `interface Shouty: Speak` — left
+    /// `horn as any Speak` refused for an interface the type demonstrably implements,
     /// and pushing one into a `Vec<any Speak>` was a type error (#873).
-    pub fn declares_conformance(&self, type_id: TypeId, trait_name: &str) -> bool {
-        let base = Self::conformance_key(trait_name);
+    pub fn declares_conformance(&self, type_id: TypeId, interface_name: &str) -> bool {
+        let base = Self::conformance_key(interface_name);
         let Some(set) = self.conformances.get(&type_id) else {
             return false;
         };
         // GT3: `Mul` asks whether any applied form is declared; `Mul<f64>` asks
         // for that one. The canonical key fills in defaults and `Self`, so a
         // bare header and its written-out equivalent agree.
-        if trait_name.contains('<') {
+        if interface_name.contains('<') {
             let self_name = self.type_name(type_id);
             let self_base = self_name.split('<').next().unwrap_or(&self_name);
-            let key = self.applied_conformance_key(trait_name, self_base);
+            let key = self.applied_conformance_key(interface_name, self_base);
             if set.contains(&key) {
                 return true;
             }
@@ -815,46 +815,46 @@ impl TypeTable {
             return true;
         }
         set.iter().any(|declared| {
-            self.trait_extends(&Self::conformance_key(declared), &base, &mut Vec::new())
+            self.interface_extends(&Self::conformance_key(declared), &base, &mut Vec::new())
         })
     }
 
-    /// Is `target` somewhere in `trait_name`'s super-trait closure? `seen` keeps
+    /// Is `target` somewhere in `interface_name`'s super-interface closure? `seen` keeps
     /// a cycle in the graph from recursing forever.
-    fn trait_extends(&self, trait_name: &str, target: &str, seen: &mut Vec<String>) -> bool {
-        if seen.iter().any(|s| s == trait_name) {
+    fn interface_extends(&self, interface_name: &str, target: &str, seen: &mut Vec<String>) -> bool {
+        if seen.iter().any(|s| s == interface_name) {
             return false;
         }
-        seen.push(trait_name.to_string());
-        let Some(TypeDef::Trait { super_traits, .. }) =
-            self.get_type_id(trait_name).and_then(|id| self.get(id))
+        seen.push(interface_name.to_string());
+        let Some(TypeDef::Interface { super_interfaces, .. }) =
+            self.get_type_id(interface_name).and_then(|id| self.get(id))
         else {
             return false;
         };
-        let parents: Vec<String> = super_traits.iter().map(|s| Self::conformance_key(s)).collect();
+        let parents: Vec<String> = super_interfaces.iter().map(|s| Self::conformance_key(s)).collect();
         parents
             .iter()
-            .any(|p| p == target || self.trait_extends(p, target, seen))
+            .any(|p| p == target || self.interface_extends(p, target, seen))
     }
 
     /// CC1/CC2: record the `where` condition for a conditional conformance.
     pub fn record_conformance_condition(
         &mut self,
         type_id: TypeId,
-        trait_name: &str,
+        interface_name: &str,
         bounds: Vec<(String, Vec<String>)>,
     ) {
         self.conformance_conditions
-            .insert((type_id, Self::conformance_key(trait_name)), bounds);
+            .insert((type_id, Self::conformance_key(interface_name)), bounds);
     }
 
     /// CC1: the `where` condition for a conformance, if it's conditional.
     pub fn conformance_condition(
         &self,
         type_id: TypeId,
-        trait_name: &str,
+        interface_name: &str,
     ) -> Option<&Vec<(String, Vec<String>)>> {
-        let base = Self::conformance_key(trait_name);
+        let base = Self::conformance_key(interface_name);
         let base = base.as_str();
         self.conformance_conditions.get(&(type_id, base.to_string()))
     }
@@ -907,7 +907,7 @@ impl TypeTable {
 
     /// ER42/L1: A `Type` value is transitively linear. Walks through tuples,
     /// arrays, slices, Result, and Generic args so containers of linear values
-    /// inherit the obligation. Trait objects and unresolved/error types are
+    /// inherit the obligation. Interface objects and unresolved/error types are
     /// conservatively non-linear.
     pub fn type_is_transitive_resource(&self, ty: &Type) -> bool {
         match ty {
@@ -1172,7 +1172,7 @@ impl TypeTable {
             | Type::Error
             | Type::UnresolvedNamed(_)
             | Type::UnresolvedGeneric { .. } => None,
-            settled if crate::traits::implements_trait(self, settled, "Hashable") => None,
+            settled if crate::interfaces::implements_interface(self, settled, "Hashable") => None,
             settled => Some((settled.clone(), self.map_key_fix(settled))),
         }
     }
@@ -1437,7 +1437,7 @@ impl TypeTable {
         match def {
             TypeDef::Struct { name, .. }
             | TypeDef::Enum { name, .. }
-            | TypeDef::Trait { name, .. }
+            | TypeDef::Interface { name, .. }
             | TypeDef::Union { name, .. }
             | TypeDef::NominalAlias { name, .. }
             | TypeDef::Primitive { name, .. } => name,
@@ -1480,7 +1480,7 @@ impl TypeTable {
         let name = match self.get(id) {
             Some(TypeDef::Struct { name, .. }) => name,
             Some(TypeDef::Enum { name, .. }) => name,
-            Some(TypeDef::Trait { name, .. }) => name,
+            Some(TypeDef::Interface { name, .. }) => name,
             Some(TypeDef::Union { name, .. }) => name,
             Some(TypeDef::NominalAlias { name, .. }) => name,
             Some(TypeDef::Primitive { name, .. }) => name,
@@ -1603,14 +1603,14 @@ impl TypeTable {
     }
 }
 
-/// The written-out arguments of a trait reference: `Mul<f64, i64>` → `["f64", "i64"]`.
-pub fn trait_ref_args(trait_ref: &str) -> Vec<String> {
-    let Some(open) = trait_ref.find('<') else { return Vec::new() };
-    let Some(close) = trait_ref.rfind('>') else { return Vec::new() };
+/// The written-out arguments of an interface reference: `Mul<f64, i64>` → `["f64", "i64"]`.
+pub fn interface_ref_args(interface_ref: &str) -> Vec<String> {
+    let Some(open) = interface_ref.find('<') else { return Vec::new() };
+    let Some(close) = interface_ref.rfind('>') else { return Vec::new() };
     if close <= open + 1 {
         return Vec::new();
     }
-    let inner = &trait_ref[open + 1..close];
+    let inner = &interface_ref[open + 1..close];
     let mut args = Vec::new();
     let mut depth = 0i32;
     let mut start = 0usize;
@@ -1634,7 +1634,7 @@ pub fn trait_ref_args(trait_ref: &str) -> Vec<String> {
 
 /// OR6: the primitives a conformance may be written against.
 ///
-/// `string` is here for the operator traits it can carry from a package
+/// `string` is here for the operator interfaces it can carry from a package
 /// (`Path`'s `/` is one), not for `+` — `type.strings` keeps concatenation a
 /// method (E0397). `void`, `none` and the C aliases have no operators to
 /// answer for.

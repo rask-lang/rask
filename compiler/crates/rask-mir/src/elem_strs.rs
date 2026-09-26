@@ -20,7 +20,7 @@
 //!   2            the element *is* a Vec
 //!   3            the element *is* a Map
 //!   4            the element *is* a closure — a pointer to its block
-//!   5            the element *is* a trait box — a `[data, vtable]` fat pointer
+//!   5            the element *is* an interface box — a `[data, vtable]` fat pointer
 //!   6 + index    a struct with that layout
 
 use crate::MirType;
@@ -34,7 +34,7 @@ pub const ELEM_MAP: i64 = 3;
 /// header words before the pointer, so releasing one needs nothing
 /// type-specific and retaining one is a count on the same header (#1149).
 pub const ELEM_CLOSURE: i64 = 4;
-/// The element is a trait box: a `[data, vtable]` fat pointer whose `data`
+/// The element is an interface box: a `[data, vtable]` fat pointer whose `data`
 /// block the container has to free. The block's size is the vtable's first
 /// word, so releasing one needs nothing generated either (#1149).
 ///
@@ -177,7 +177,7 @@ pub fn tag_of(ty: Option<&MirType>) -> i64 {
         // describable as offsets inside the element: the element *is* the
         // pointer. So it gets its own kind rather than a struct layout.
         Some(MirType::FuncPtr(_)) => ELEM_CLOSURE,
-        Some(MirType::TraitObject { .. }) => ELEM_TRAITBOX,
+        Some(MirType::InterfaceObject { .. }) => ELEM_TRAITBOX,
         Some(MirType::Struct(id)) => ELEM_STRUCT_BASE + id.id as i64,
         Some(MirType::Enum(id)) => ELEM_ENUM_BASE - id.id as i64,
         _ => ELEM_NONE,
@@ -345,7 +345,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("cstring_bytes", 0, 0, "Vec_free"),
     // Bytes off standard input, into a Vec the runtime made for this call and
     // nothing else holds. Without it `Stdin.read_bytes` handed back a vector
-    // nobody owned — and, because a trait call's answer is only as good as the
+    // nobody owned — and, because an interface call's answer is only as good as the
     // worst implementation behind it, it also stopped `reader.read_bytes()`
     // from being anyone's (#1199).
     ("io_read_std_bytes", 0, 0, "Vec_free"),
@@ -382,7 +382,7 @@ pub fn free_fn(name: &str) -> Option<&'static str> {
 pub const WRAPPED_CTORS: &[(&str, &str)] = &[
     // Bytes off a socket, in a Vec the runtime made for this call; `none`
     // when the read failed. `TcpConnection.read_bytes` is one of the bodies
-    // behind `reader.read_bytes()`, and a trait call's result is only owned
+    // behind `reader.read_bytes()`, and an interface call's result is only owned
     // when every body hands back a fresh container — so leaving this out
     // made every reader's bytes nobody's, a `Buffer`'s included.
     ("TcpConnection_read_bytes_raw", "Vec_free"),

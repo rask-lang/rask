@@ -10,14 +10,14 @@ struct Meters { v: f64 }
 
 struct SquareMeters { v: f64 }
 
-extend Meters with Mul<f64> {
+Meters implements Mul<f64> {
     func mul(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
     }
 }
 
 // OR6: a conformance on a primitive. Neither type is the compiler's.
-extend f64 with Mul<Meters> {
+f64 implements Mul<Meters> {
     type Out = Meters
 
     func mul(self, m: Meters) -> Meters {
@@ -43,7 +43,7 @@ test "OR1 — the same pair through the method spelling" {
 // call their method `mul` and both have a body — which is exactly the pair
 // `type.associated-types` recorded as unwritable until the operator resolved
 // from the argument.
-extend Meters with Mul<Meters> {
+Meters implements Mul<Meters> {
     type Out = SquareMeters
 
     func mul(self, other: Meters) -> SquareMeters {
@@ -60,9 +60,9 @@ test "OR4 — two conformances of one operator on one type" {
     assert (a * 2.0).v == 6.0
 }
 
-// OR3: both defaults declared on the trait, so this is `Add<Meters>` answering
+// OR3: both defaults declared on the interface, so this is `Add<Meters>` answering
 // in `Meters`.
-extend Meters with Add {
+Meters implements Add {
     func add(self, other: Meters) -> Meters {
         return Meters { v: self.v + other.v }
     }
@@ -75,7 +75,7 @@ test "OR3 — a bare header means the homogeneous pair" {
 }
 
 // The result type is the pair's, not the receiver's.
-extend SquareMeters with Div<Meters> {
+SquareMeters implements Div<Meters> {
     type Out = Meters
 
     func div(self, m: Meters) -> Meters {
@@ -108,7 +108,7 @@ test "primitive arithmetic is untouched" {
 // a bare `T.Out` doesn't say which bound it was projected through (#1330).
 struct Feet { v: f64 }
 
-extend Feet with Mul<f64> {
+Feet implements Mul<f64> {
     func mul(self, k: f64) -> Feet {
         return Feet { v: self.v * k }
     }

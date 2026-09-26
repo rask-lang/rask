@@ -105,7 +105,7 @@ fn decide_allocation(func: &mut MirFunction, callee_escapes: &HashMap<String, Ve
 /// compiler can see the closure's whole life inside it. Two things end that:
 ///
 ///   - the closure leaves by name — returned, stored through a pointer, put in
-///     an array, boxed as a trait object, or captured by another closure that
+///     an array, boxed as an interface object, or captured by another closure that
 ///     leaves;
 ///   - the closure is handed to a call that *keeps* it. `fns.push(|x| …)` is
 ///     this one: the vector holds the closure, `fns[0]` reads it back out under
@@ -182,7 +182,7 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
                     }
                     MirStmtKind::Store { value: MirOperand::Local(id), .. }
                     | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
-                    | MirStmtKind::TraitBox { value: MirOperand::Local(id), .. } => {
+                    | MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. } => {
                         names.extend(name_of(*id));
                     }
                     // An environment that goes with an escaping closure is as
@@ -536,10 +536,10 @@ fn find_escaping_closures(
                 }
                 // Three ways to put a closure somewhere the frame does not
                 // control: through a pointer, into a fixed-size array, or
-                // inside a trait box.
+                // inside an interface box.
                 MirStmtKind::Store { value: MirOperand::Local(id), .. }
                 | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
-                | MirStmtKind::TraitBox { value: MirOperand::Local(id), .. } => {
+                | MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. } => {
                     escaping.extend(aliases.origins(id).iter().copied());
                 }
                 _ => {}

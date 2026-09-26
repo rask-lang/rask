@@ -1,0 +1,9 @@
+# rask.lock — auto-generated, do not edit
+lockfile-version = 1
+
+[[package]]
+name = "liba"
+version = "0.1.0"
+source = "path+liba"
+checksum = "sha256:059cbbffa5ef252f87965cd7f890eeebbeffd1c99c8ce91f2aacd877cd78023f"
+

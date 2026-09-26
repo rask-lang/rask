@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Month one: JSON encoding and decoding.
 //
-// Encode and Decode are auto-derived from the struct — there's no trait to
+// Encode and Decode are auto-derived from the struct — there's no interface to
 // implement and no annotations needed for the ordinary case. Field annotations
 // (`@rename`, `@no_serialize`, `@default`) adjust the wire form.
 //

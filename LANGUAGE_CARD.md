@@ -224,7 +224,7 @@ struct User {
     retries: i32 = 3                         // declared field default
 }
 let u = User { name: "bo", email: "e", hash: h() }   // retries filled from default
-// All fields defaulted → `Config {}` is the empty construction. There is NO Default trait.
+// All fields defaulted → `Config {}` is the empty construction. There is NO Default interface.
 
 extend Point {                               // methods live in extend blocks
     func length(self) -> f64 { return (self.x * self.x + self.y * self.y).sqrt() }
@@ -239,7 +239,7 @@ enum Shape {                                 // tagged union; exhaustive match r
 }
 
 type UserId = u64                            // NOMINAL — a distinct type, not an alias
-type TaskId = u64 with (Equal, Hashable)     // …and it inherits no traits; opt in with `with`
+type TaskId = u64 implements Equal, Hashable     // …and it inherits no interfaces; opt in with `implements`
 type alias Bytes = Vec<u8>                   // transparent alias
 ```
 
@@ -294,29 +294,30 @@ The error-conversion rules — widening into a union, wrapping into a boundary e
 - Every error type satisfies `Error` (`func message(self) -> string`) — **auto-derived for enums**, overridable. Primitives can't be error types; `void or string` is illegal. `SysError` covers rare platform failures.
 - Errors are for what callers can handle; panics are for bugs (bounds, overflow, stale handles). Panics kill the task, run `ensure` blocks, and are deterministic (`ctrl.panic`).
 
-## Traits and generics
+## Interfaces and generics
 
 Conformance is **nominal — declared, not shape-matched** (`type.generics/G1`):
 
 <!-- test: parse -->
 ```rask
-trait Comparable { func compare(self, other: Self) -> Ordering }
+interface Comparable { func compare(self, other: Self) -> Ordering }
 
-extend Score with Comparable {
+Score implements Comparable {
     func compare(self, other: Score) -> Ordering { return self.value.compare(other.value) }
 }
-extend Ring<T> with Countable, Sizable {}    // comma-list; empty block = methods already exist
-public extend Point with Displayable { }     // public conformance is declared, never inferred
+Ring<T> implements Countable {}             // one interface per block; empty block = methods already exist
+Ring<T> implements Sizable {}
+public Point implements Displayable { }     // public conformance is declared, never inferred
 
-duck trait Sketchy { func poke(self) }       // opt-in shape-matching — prototyping only;
+duck interface Sketchy { func poke(self) }       // opt-in shape-matching — prototyping only;
                                              // harden by deleting `duck` + accepting generated declarations
 ```
 
-- Auto-derived (no declaration needed): **Equal, Hashable, Comparable, Cloneable** for eligible field types, `Debug` for all types, `Encode`/`Decode` markers, `Error` for enums. Structs and enums only — a nominal newtype (`type TaskId = u64`) inherits nothing from what it wraps and opts in with `with (…)` (`type.aliases/T10`, T11). Overriding `Equal` cancels auto-derived `Hashable`/`Comparable` — redeclare them consistently (OC1).
-- Method-name collision between two conformances: mark the second `scoped extend`; call it as `Trait.method(value, args)` (MN3–MN5).
+- Auto-derived (no declaration needed): **Equal, Hashable, Comparable, Cloneable** for eligible field types, `Debug` for all types, `Encode`/`Decode` markers, `Error` for enums. Structs and enums only — a nominal newtype (`type TaskId = u64`) inherits nothing from what it wraps and opts in with `implements …` (`type.aliases/T10`, T11). Overriding `Equal` cancels auto-derived `Hashable`/`Comparable` — redeclare them consistently (OC1).
+- Method-name collision between two conformances: compile error; put the second conformance on a nominal type of its own, `type Loud = Doc` (MN3). Not an orphan rule: who owns the type never matters.
 - Generics monomorphize (`func max<T: Comparable>(a: T, b: T) -> T`). Public functions declare bounds; private functions may omit types and bounds entirely — inferred from the body, still fully static (`type.gradual`). Error unions infer too: `-> Config or _`.
 - Operators are authored sugar on concrete types: `a + b` calls `a.add(b)` — write the method, get the operator. Arithmetic operators require Copy types (no allocating `+`); `+=` has no such limit. Generic operator use goes through nominal bounds (OP1). There is no `From`/`Into` — `try` widens error unions structurally, and there's one string type.
-- Runtime polymorphism: `any Trait` boxes the value (heap allocation + vtable). Conversion is always explicit — `button as any Widget` — including in collections and arguments (TR5). Methods returning `Self` or generic methods can't be called through `any`.
+- Runtime polymorphism: `any Interface` boxes the value (heap allocation + vtable). Conversion is always explicit — `button as any Widget` — including in collections and arguments (TR5). Methods returning `Self` or generic methods can't be called through `any`.
 
 ## Resources and cleanup
 
@@ -389,7 +390,7 @@ func encode<T: Encode>(value: T, mutate w: Writer) -> void or Error {
 }
 ```
 
-No I/O (`@embed_file` excepted), no racks/concurrency/`any Trait` at comptime. `comptime if cfg.os == "linux"` for conditional compilation — discarded branches are only syntax-checked. Serialization is built on this plus `@rename`/`@no_serialize`/`@default` field annotations (`std.encoding`) — there are no macros. Auto-derive covers every non-`private` field; `private` means off the wire.
+No I/O (`@embed_file` excepted), no racks/concurrency/`any Interface` at comptime. `comptime if cfg.os == "linux"` for conditional compilation — discarded branches are only syntax-checked. Serialization is built on this plus `@rename`/`@no_serialize`/`@default` field annotations (`std.encoding`) — there are no macros. Auto-derive covers every non-`private` field; `private` means off the wire.
 
 ## Modules, build, unsafe
 
@@ -406,8 +407,8 @@ No I/O (`@embed_file` excepted), no racks/concurrency/`any Trait` at comptime. `
 2. **No `Ok`/`Err`/`Some`/`None`.** Return bare values or the error value. On results: handle with `catch`, test with `is` (`IoError as e`), never `is Ok` — and never `r?`; `?` is absence-only and doesn't apply to results.
 3. **Bindings are `let`/`mut`** — never `let mut`. `mut`, not `let`, is the rebindable one; `const` exists only at module level.
 4. **`try` is a prefix keyword**, not a `?` suffix: `let x = try f()`. The `?` suffix means absence, on optionals only — and **`?`-tests don't narrow; there is no flow typing.** `if x? { use(x) }` doesn't unwrap `x`; Kotlin/TypeScript smart-cast instincts fail here. Bind instead (`if x? as v { use(v) }`) or exit with the fallback (`let v = x ?? return`).
-5. **Methods live in `extend Point { }` blocks**, not in the struct body; trait conformance is `extend Point with Trait { }` — and it's required (nominal), methods matching by shape is not enough.
-6. **Boxing is explicit**: `render(button as any Widget)` — no implicit conversion to `any Trait`, even when the target type is known.
+5. **Methods live in `extend Point { }` blocks**, not in the struct body; interface conformance is `Point implements Interface { }` — and it's required (nominal), methods matching by shape is not enough.
+6. **Boxing is explicit**: `render(button as any Widget)` — no implicit conversion to `any Interface`, even when the target type is known.
 7. **No `&`, `&mut`, lifetimes, or storable references.** Pass values (borrow is the default mode); store a `Link<T>` into a rack, an index, or a `Span` instead of a reference; use `with` for multi-statement element access.
 8. **Explicit `return` in functions.** Only block *expressions* (if/match arms, `with`) use last-expression value.
 9. **No string `+` or concat** — interpolation `"{a}{b}"`, `StringBuilder`, or `join`. Strings are Copy: never `.clone()` a string, never try to mutate one.
@@ -415,7 +416,7 @@ No I/O (`@embed_file` excepted), no racks/concurrency/`any Trait` at comptime. `
 11. **`|` has three meanings**: closure params `|x| x + 1`, error unions `IoError | ParseError` (error position only), bitwise-or. Match alternatives also use `|`.
 12. **Map iteration order is seeded-random** — sort before iterating if order matters. `push`/`insert` panic on OOM; `try_push` for fallible.
 13. **Static paths use `.`**: `Shape.Circle(2.0)`, `Vec.new()`, `Token.Plus` — never `::`.
-14. **`void` and `none`**, not `()` and `null`: `func f() -> void or Error`, `return none`.
+14. **`void` and `none`**, not `()` and `null`: `func f() -> void or Error`, `return none`. `nullptr` exists only for raw pointers inside `unsafe`.
 15. **There is no prelude.** Rust hands you `Vec`, `String` and `Option` for free; Rask hands you primitives, `string`, `Vec`, `Map`, `Set`, `Error`, `Channel` and `none`, and nothing else. `StringBuilder`, `Shared`, `Mutex`, `Rack`, `Link`, `File`, `Duration`, `Thread` all need an `import` line. Reaching for one without it is the single easiest way to not compile.
 
 ## Spec vs compiler (temporary)
@@ -433,4 +434,4 @@ one task yet — `spawn` needs `own`, which moves it, and there's no way to hand
 second task its own handle (#1068), so use `Shared<i64>` for a counter until
 that lands.
 
-The spec is normative; the compiler lags it in places. Nominal conformance is now enforced (#283 landed). Still lagging: implicit `any Trait` coercion is still accepted (#284), seeded Map order (#285), and some codegen paths fail on valid programs (see the open codegen issues). Write to the spec; don't infer rules from what today's binary accepts.
+The spec is normative; the compiler lags it in places. Nominal conformance is now enforced (#283 landed). Still lagging: implicit `any Interface` coercion is still accepted (#284), seeded Map order (#285), and some codegen paths fail on valid programs (see the open codegen issues). Write to the spec; don't infer rules from what today's binary accepts.

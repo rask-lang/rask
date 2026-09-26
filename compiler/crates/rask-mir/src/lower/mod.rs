@@ -265,7 +265,7 @@ fn mir_ty_is_aggregate(ty: &MirType) -> bool {
             | MirType::Array { .. }
             | MirType::SimdVector { .. }
             | MirType::String
-            | MirType::TraitObject { .. }
+            | MirType::InterfaceObject { .. }
     )
 }
 
@@ -326,7 +326,7 @@ impl<'a> MirContext<'a> {
             // Straight off the checker — never optional.
             type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
-            trait_coercions: &typed.trait_coercions,
+            interface_coercions: &typed.interface_coercions,
             error_wraps: &typed.error_wraps,
             fallback_keeps_shape: &typed.fallback_keeps_shape,
             escaping_closures: &typed.escaping_closures,
@@ -338,7 +338,7 @@ impl<'a> MirContext<'a> {
             package_modules: empty::strings(),
             line_map: None,
             source_file: None,
-            trait_methods: HashMap::new(),
+            interface_methods: HashMap::new(),
             call_rewrites: empty::node_names(),
             resource_types: empty::strings(),
             nominal_underlying: empty::str_map(),
@@ -376,8 +376,8 @@ impl<'a> MirContext<'a> {
         self
     }
 
-    pub fn with_trait_methods(mut self, methods: HashMap<String, Vec<String>>) -> Self {
-        self.trait_methods = methods;
+    pub fn with_interface_methods(mut self, methods: HashMap<String, Vec<String>>) -> Self {
+        self.interface_methods = methods;
         self
     }
 
@@ -457,11 +457,11 @@ pub struct MirContext<'a> {
     /// Comptime interpreter for evaluating `comptime if` during lowering.
     /// None in tests or when cfg is unavailable.
     pub comptime_interp: Option<std::cell::RefCell<rask_comptime::ComptimeInterpreter>>,
-    /// Trait method lists for trait object dispatch.
-    /// Key: trait name, Value: method names in declaration order.
-    pub trait_methods: HashMap<String, Vec<String>>,
-    /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
-    pub trait_coercions: &'a HashMap<NodeId, String>,
+    /// Interface method lists for interface object dispatch.
+    /// Key: interface name, Value: method names in declaration order.
+    pub interface_methods: HashMap<String, Vec<String>>,
+    /// TR5: implicit interface coercion sites. NodeId of expression → interface name.
+    pub interface_coercions: &'a HashMap<NodeId, String>,
     /// ER31a: `try` sites whose propagated error gets wrapped in a variant of
     /// the enclosing function's error enum, keyed by the `try` expression.
     pub error_wraps: &'a HashMap<NodeId, rask_types::ErrorWrap>,
@@ -496,7 +496,7 @@ pub struct MirContext<'a> {
     pub resource_types: &'a std::collections::HashSet<String>,
     /// Nominal newtype name → the type it wraps, as a type string.
     ///
-    /// `type Id = u64 with (…)` has no layout of its own: it *is* a u64 with a
+    /// `type Id = u64 implements …` has no layout of its own: it *is* a u64 with a
     /// distinct identity, so it's transparent in MIR. Without this the name
     /// resolved to a bare `Ptr` with nothing allocated behind it, and
     /// construction stored through an uninitialised pointer (#445).
@@ -586,8 +586,8 @@ impl<'a> MirContext<'a> {
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(std::collections::HashSet::new()),
             comptime_interp: None,
-            trait_methods: HashMap::new(),
-            trait_coercions: &EMPTY_COERCIONS,
+            interface_methods: HashMap::new(),
+            interface_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             escaping_closures: &EMPTY_ESCAPING,
@@ -1022,24 +1022,24 @@ impl<'a> MirContext<'a> {
                 if let Some(inner) = name.strip_suffix('?') {
                     return option_of(self.payload_from_str(inner));
                 }
-                // "any TraitName" → TraitObject. After the wrapper shapes above,
+                // "any InterfaceName" → InterfaceObject. After the wrapper shapes above,
                 // not before: the parser normalizes `(any Shape)?` to
-                // `any Shape?`, and claiming that first made the trait's name
+                // `any Shape?`, and claiming that first made the interface's name
                 // "Shape?" instead of building an Option. Nothing then saw a
                 // depth mismatch to wrap, so `let a: (any Shape)? = c as any
                 // Shape` stored a bare fat pointer in the slot and the read took
                 // the data pointer's low bits for a tag — always `none` (#764).
                 // The checker's `parse_type_string` has the same two checks in
                 // this order, which is why only native was wrong.
-                if let Some(trait_name) = rask_ast::traits::trait_object_name(name) {
-                    return MirType::TraitObject { trait_name: trait_name.to_string() };
+                if let Some(interface_name) = rask_ast::interfaces::interface_object_name(name) {
+                    return MirType::InterfaceObject { interface_name: interface_name.to_string() };
                 }
                 // Bare `Error` is the same type written short (#1095). Nothing
-                // named `Error` reaches here but the trait — BI2 reserves the
+                // named `Error` reaches here but the interface — BI2 reserves the
                 // name and monomorphization has already substituted any type
                 // parameter — so this needs none of the checker's ordering care.
-                if rask_ast::traits::is_bare_error(name) {
-                    return MirType::TraitObject { trait_name: "Error".to_string() };
+                if rask_ast::interfaces::is_bare_error(name) {
+                    return MirType::InterfaceObject { interface_name: "Error".to_string() };
                 }
                 // Generic collection types: Vec<T>, Map<K,V>, etc. are heap pointers
                 if name.starts_with("Vec<") || name == "Vec" {
@@ -1331,7 +1331,7 @@ impl<'a> MirContext<'a> {
             Type::Char => MirType::Char,
             Type::String => MirType::String,
             Type::Never => MirType::Void,
-            Type::TraitObject { trait_name } => MirType::TraitObject { trait_name: trait_name.clone() },
+            Type::InterfaceObject { interface_name } => MirType::InterfaceObject { interface_name: interface_name.clone() },
             // Named types — look up in struct/enum layouts by name
             Type::UnresolvedNamed(name) => self.resolve_type_str(name),
             // Handle<T> → packed i64 handle
@@ -1517,7 +1517,7 @@ impl<'a> MirContext<'a> {
     /// OR6: the prefix a *conformance* method's symbol carries.
     ///
     /// Not `builtin_method_prefix`: that collapses widths, so every float
-    /// receiver answers `f64` and an `extend f32 with Mul<…>` body would be
+    /// receiver answers `f64` and an `f32 implements Mul<…>` body would be
     /// called under someone else's name. A conformance is filed on the type as
     /// written.
     pub fn conformance_prefix(
@@ -3130,7 +3130,7 @@ impl<'a> MirLowerer<'a> {
     /// data — an aggregate's stack address, or a heap pointer (Vec/Map/String).
     /// Capturing such a value by value is capture-by-reference: the ensure hook
     /// sees later mutations (U2). Scalars are excluded (a value copy would go
-    /// stale), as are fat pointers (a trait object — 16 bytes, doesn't fit an
+    /// stale), as are fat pointers (an interface object — 16 bytes, doesn't fit an
     /// 8-byte env slot).
     /// Collect every name this body reassigns. Walks closure and spawn bodies
     /// too: a closure writing an outer name reassigns it just the same.
@@ -4479,9 +4479,9 @@ impl<'a> MirLowerer<'a> {
             Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
             // `type_names` stores the declaration name with its parameter list
             // attached ("Vec<T>"), not the bare "Vec" — an exact match here
-            // never fired, so a `Vec<any Trait>` field (which resolves to this
+            // never fired, so a `Vec<any Interface>` field (which resolves to this
             // form through the checker's `HasField` constraint) lost its
-            // trait-object element type and segfaulted iterating natively.
+            // interface-object element type and segfaulted iterating natively.
             Type::Generic { base, args }
                 if self
                     .ctx
@@ -4512,14 +4512,14 @@ impl<'a> MirLowerer<'a> {
                     })
                 }
                 Type::Array { elem, .. } => return Some(self.ctx.type_to_mir(elem)),
-                // Vec<any Trait> yields fat-pointer elements. Only the trait-object
+                // Vec<any Interface> yields fat-pointer elements. Only the interface-object
                 // case is taken from the checker here: concrete element types are
-                // already covered by the tracked elem_type below, but a trait object
+                // already covered by the tracked elem_type below, but an interface object
                 // carries a vtable half that nothing downstream can recover once the
                 // binding has been typed as a plain scalar.
                 _ => {
-                    if let Some(Type::TraitObject { trait_name }) = self.vec_elem_raw_type(ty) {
-                        return Some(MirType::TraitObject { trait_name: trait_name.clone() });
+                    if let Some(Type::InterfaceObject { interface_name }) = self.vec_elem_raw_type(ty) {
+                        return Some(MirType::InterfaceObject { interface_name: interface_name.clone() });
                     }
                 }
             }
@@ -5906,7 +5906,7 @@ pub(crate) fn is_variant_name(name: &str) -> bool {
 
 /// Detect identifiers that name types or stdlib modules rather than values.
 ///
-/// Uppercase-initial names are user-defined types (structs, enums, traits).
+/// Uppercase-initial names are user-defined types (structs, enums, interfaces).
 /// Lowercase names are checked against stdlib stub registrations.
 fn is_type_constructor_name(name: &str) -> bool {
     name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
@@ -7379,8 +7379,8 @@ mod tests {
             line_map: None,
             source_file: None,
             comptime_interp: None,
-            trait_methods: HashMap::new(),
-            trait_coercions: &empty_coercions,
+            interface_methods: HashMap::new(),
+            interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
@@ -7458,8 +7458,8 @@ mod tests {
             line_map: None,
             source_file: None,
             comptime_interp: None,
-            trait_methods: HashMap::new(),
-            trait_coercions: &empty_coercions,
+            interface_methods: HashMap::new(),
+            interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
@@ -7546,8 +7546,8 @@ mod tests {
             line_map: None,
             source_file: None,
             comptime_interp: None,
-            trait_methods: HashMap::new(),
-            trait_coercions: &empty_coercions,
+            interface_methods: HashMap::new(),
+            interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             escaping_closures: &empty_escaping,

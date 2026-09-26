@@ -55,7 +55,7 @@ impl fmt::Display for MirType {
                 Ok(())
             }
             MirType::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
-            MirType::TraitObject { trait_name } => write!(f, "any {}", trait_name),
+            MirType::InterfaceObject { interface_name } => write!(f, "any {}", interface_name),
         }
     }
 }
@@ -252,21 +252,21 @@ impl fmt::Display for MirStmt {
             MirStmtKind::GlobalRef { dst, name } => {
                 write!(f, "_{} = global_ref(\"{}\")", dst.0, name)
             }
-            MirStmtKind::TraitBox { dst, value, concrete_type, trait_name, .. } => {
-                write!(f, "_{} = trait_box({}, {} as any {})", dst.0, value, concrete_type, trait_name)
+            MirStmtKind::InterfaceBox { dst, value, concrete_type, interface_name, .. } => {
+                write!(f, "_{} = interface_box({}, {} as any {})", dst.0, value, concrete_type, interface_name)
             }
-            MirStmtKind::TraitCall { dst, trait_object, method_name, vtable_offset, args } => {
+            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args } => {
                 if let Some(d) = dst {
                     write!(f, "_{} = ", d.0)?;
                 }
-                write!(f, "trait_call(_{}.{}@{}", trait_object.0, method_name, vtable_offset)?;
+                write!(f, "interface_call(_{}.{}@{}", interface_object.0, method_name, vtable_offset)?;
                 for arg in args {
                     write!(f, ", {}", arg)?;
                 }
                 write!(f, ")")
             }
-            MirStmtKind::TraitDrop { trait_object } => {
-                write!(f, "trait_drop(_{})", trait_object.0)
+            MirStmtKind::InterfaceDrop { interface_object } => {
+                write!(f, "interface_drop(_{})", interface_object.0)
             }
             MirStmtKind::Phi { dst, args } => {
                 write!(f, "_{} = phi [", dst.0)?;

@@ -11,7 +11,7 @@
 // Annotating the binding (`mut m: Map<TaskId, string> = Map.new()`) went through a
 // path that resolved them, so the same mistake was caught there and nowhere else.
 
-type TaskId = u64 with (Equal, Hashable)
+type TaskId = u64 implements Equal, Hashable
 
 struct Key {
     public n: i64

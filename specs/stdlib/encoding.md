@@ -1,11 +1,11 @@
 <!-- id: std.encoding -->
 <!-- status: decided -->
 <!-- summary: Comptime field iteration and auto-derived Encode/Decode for format-agnostic serialization -->
-<!-- depends: control/comptime.md, stdlib/reflect.md, types/generics.md, types/traits.md -->
+<!-- depends: control/comptime.md, stdlib/reflect.md, types/generics.md, types/interfaces.md -->
 
 # Encoding
 
-Two language primitives — `comptime for` over struct fields and comptime field access — plus auto-derived `Encode`/`Decode` traits. Format libraries (JSON, TOML, MessagePack) use these to serialize any compatible struct with zero user ceremony.
+Two language primitives — `comptime for` over struct fields and comptime field access — plus auto-derived `Encode`/`Decode` interfaces. Format libraries (JSON, TOML, MessagePack) use these to serialize any compatible struct with zero user ceremony.
 
 ## Core Mechanism
 
@@ -34,11 +34,11 @@ struct Point { x: f64, y: f64 }
 //   print("y = {value.y}")
 ```
 
-## Encode and Decode Traits
+## Encode and Decode Interfaces
 
 | Rule | Description |
 |------|-------------|
-| **E11: Marker traits** | `Encode` and `Decode` are marker traits with no methods. They signal that a type's structure is serialization-compatible |
+| **E11: Marker interfaces** | `Encode` and `Decode` are marker interfaces with no methods. They signal that a type's structure is serialization-compatible |
 | **E12: Auto-derive** | The compiler auto-derives `Encode` for any struct where every serialized field (E13) has an `Encode` type, unless the struct is marked `@no_encode`. Same for `Decode` |
 | **E13: Non-private fields** | Auto-derived encoding covers `public` and package-default fields. `private` fields never auto-serialize, in either direction |
 | **E14: Base types** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `string` are `Encode` and `Decode` |
@@ -48,8 +48,8 @@ struct Point { x: f64, y: f64 }
 
 <!-- test: parse -->
 ```rask
-trait Encode { }
-trait Decode { }
+interface Encode { }
+interface Decode { }
 ```
 
 <!-- test: skip -->
@@ -483,7 +483,7 @@ FIX: @no_serialize
 
 ### Rationale
 
-**E11 (marker traits):** I wanted Encode/Decode for generic bounds (`T: Encode`) and a Serializer trait hierarchy (like serde) needs associated types, which Rask didn't have when this was written. It has them now (`type.associated-types`), so the hierarchy is writable — but the markers work and the rewrite isn't free, so that's its own call, not a consequence of this one. Marker traits are the simplest option that enables compile-time checked generic bounds. Format libraries use `comptime for` directly instead of dispatching through trait methods — each format writes ~100 lines, which is acceptable since formats differ genuinely in how they handle nulls, numbers, nesting.
+**E11 (marker interfaces):** I wanted Encode/Decode for generic bounds (`T: Encode`) and a Serializer interface hierarchy (like serde) needs associated types, which Rask didn't have when this was written. It has them now (`type.associated-types`), so the hierarchy is writable — but the markers work and the rewrite isn't free, so that's its own call, not a consequence of this one. Marker interfaces are the simplest option that enables compile-time checked generic bounds. Format libraries use `comptime for` directly instead of dispatching through interface methods — each format writes ~100 lines, which is acceptable since formats differ genuinely in how they handle nulls, numbers, nesting.
 
 **E12 (auto-derive with opt-out):** The zero-ceremony path should be the common path. Adding a `File` field to a struct naturally breaks `Encode` — good. The error message tells you exactly which field is the problem.
 
@@ -498,7 +498,7 @@ The visibility tiers already mean the right things, so the gate just had to move
 
 The leak rail is stronger than before, not weaker. Under the old rule, protecting a field meant *remembering* not to write `public` on it — an omission, invisible in review. Now it's `private`, which states the intent and is enforced by the compiler for code access too.
 
-**E13a/E28 (declared defaults, not invented zeros).** E28 used to carry a "known zero values" table — `0`, `false`, `""`, empty vec — purely to have something to put in a skipped field on decode. That's a shadow `Default` trait, the same disease that got `Default` removed (`type.generics`): values the author never chose, appearing in their struct. Declared field defaults (FD1/FD6) already do this job properly, with the value written where the reader can see it. So E28 and its table are gone; an excluded field without a default is a compile error that names the field. `@default(expr)` stays as the decode-only override.
+**E13a/E28 (declared defaults, not invented zeros).** E28 used to carry a "known zero values" table — `0`, `false`, `""`, empty vec — purely to have something to put in a skipped field on decode. That's a shadow `Default` interface, the same disease that got `Default` removed (`type.generics`): values the author never chose, appearing in their struct. Declared field defaults (FD1/FD6) already do this job properly, with the value written where the reader can see it. So E28 and its table are gone; an excluded field without a default is a compile error that names the field. `@default(expr)` stays as the decode-only override.
 
 **E16 (@no_encode):** The opt-out exists for types where automatic serialization is semantically wrong — connection pools, caches, types with invariants that can't survive a round-trip. The compiler won't silently serialize something you've explicitly excluded.
 
@@ -605,6 +605,6 @@ Zero serialization boilerplate. Comparable to Go.
 - `ctrl.comptime` — Compile-time execution, `comptime if` (`ctrl.comptime/CT5`)
 - `std.reflect` — Field reflection, type introspection (`std.reflect/R1`)
 - `std.json` — JSON format library using this mechanism (`std.json/J6`)
-- `type.generics` — Trait bounds, auto-derive pattern (`type.generics/CL1`)
-- `type.generics` — Trait conformance, structural opt-in (`type.generics/G1`)
+- `type.generics` — Interface bounds, auto-derive pattern (`type.generics/CL1`)
+- `type.generics` — Interface conformance, structural opt-in (`type.generics/G1`)
 - `mem.relocatable` — Rack binary serialization using Encode/Decode (`mem.relocatable/RB1`)

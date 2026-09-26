@@ -481,14 +481,14 @@ impl TypeChecker {
             Type::Result { .. } => false,
             Type::Named(id) | Type::Generic { base: id, .. } => {
                 // A nominal newtype inherits nothing it didn't ask for
-                // (type.aliases/T10), so its `with (…)` list is the answer —
+                // (type.aliases/T10), so its `implements` list is the answer —
                 // and an `extend` block that writes `to_string` counts too.
-                if let Some(TypeDef::NominalAlias { with_traits, methods, .. }) = self.types.get(*id) {
-                    return with_traits.iter().any(|t| t == "Displayable")
+                if let Some(TypeDef::NominalAlias { with_interfaces, methods, .. }) = self.types.get(*id) {
+                    return with_interfaces.iter().any(|t| t == "Displayable")
                         || methods.iter().any(|m| m.name == "to_string" || m.name == "message");
                 }
                 let has = |name: &str| {
-                    crate::traits::implements_trait(&self.types, ty, name)
+                    crate::interfaces::implements_interface(&self.types, ty, name)
                 };
                 has("Displayable") || has("Error")
             }
@@ -506,24 +506,24 @@ impl TypeChecker {
         }
     }
 
-    /// The signature `method` gets on a nominal newtype from one of the traits
-    /// its `with (…)` clause lists (type.aliases/T11).
+    /// The signature `method` gets on a nominal newtype from one of the interfaces
+    /// its `implements` clause lists (type.aliases/T11).
     ///
-    /// The trait signatures write `Self` as type variable 0, so binding that to
+    /// The interface signatures write `Self` as type variable 0, so binding that to
     /// the newtype is the whole of T12's delegation: `Id`'s `eq` takes an `Id`,
-    /// and its `clone` gives one back. Positions the trait spells out concretely
+    /// and its `clone` gives one back. Positions the interface spells out concretely
     /// — `hash`'s `u64`, `compare`'s `Ordering` — stay as written.
-    fn inherited_trait_method(
+    fn inherited_interface_method(
         &self,
         ty: &Type,
-        with_traits: &[String],
+        with_interfaces: &[String],
         method: &str,
     ) -> Option<MethodSig> {
-        let checker = crate::traits::TraitChecker::new(&self.types);
+        let checker = crate::interfaces::InterfaceChecker::new(&self.types);
         let self_var = Type::Var(TypeVarId(0));
-        for trait_name in with_traits {
+        for interface_name in with_interfaces {
             let Some(mut sig) = checker
-                .get_trait_methods_public(trait_name)
+                .get_interface_methods_public(interface_name)
                 .into_iter()
                 .find(|m| m.name == method)
             else {
@@ -909,15 +909,15 @@ impl TypeChecker {
                     Some(TypeDef::Enum { methods, type_params, .. }) => {
                         (methods.clone(), type_params.clone())
                     }
-                    Some(TypeDef::NominalAlias { methods, with_traits, .. }) => {
-                        // T11/T12: a nominal newtype inherits the traits its
-                        // `with (…)` clause lists, and they delegate to the
+                    Some(TypeDef::NominalAlias { methods, with_interfaces, .. }) => {
+                        // T11/T12: a nominal newtype inherits the interfaces its
+                        // `implements` clause lists, and they delegate to the
                         // value underneath. The list was recorded and never
-                        // read, so `type Id = u64 with (Equal)` gave `Id` no
+                        // read, so `type Id = u64 implements Equal` gave `Id` no
                         // `eq` at all and `a == b` didn't compile (#551).
                         let own = methods.iter().any(|m| m.name == method);
                         let inherited = (!own)
-                            .then(|| self.inherited_trait_method(&ty, with_traits, &method))
+                            .then(|| self.inherited_interface_method(&ty, with_interfaces, &method))
                             .flatten();
                         match inherited {
                             Some(sig) => (vec![sig], Vec::new()),
@@ -1395,33 +1395,33 @@ impl TypeChecker {
                     }
                 }
             }
-            // Trait object: look up method in trait definition
-            Type::TraitObject { ref trait_name } => {
-                let trait_name = trait_name.clone();
-                let checker = crate::traits::TraitChecker::new(&self.types);
+            // Interface object: look up method in interface definition
+            Type::InterfaceObject { ref interface_name } => {
+                let interface_name = interface_name.clone();
+                let checker = crate::interfaces::InterfaceChecker::new(&self.types);
                 // TR3: reject generic methods — they can't be monomorphized
                 // into a single vtable slot, so they have no dynamic entry.
-                // Checked before method lookup: trait method names carry their
+                // Checked before method lookup: interface method names carry their
                 // type params (`convert<T>`) while the call site does not, so
                 // an exact-name lookup would miss and report "no such method".
-                let is_generic = self.types.get_type_id(&trait_name)
+                let is_generic = self.types.get_type_id(&interface_name)
                     .and_then(|id| self.types.get(id))
-                    .map_or(false, |def| def.is_generic_trait_method(&method));
+                    .map_or(false, |def| def.is_generic_interface_method(&method));
                 if is_generic {
-                    return Err(TypeError::TraitObjectGenericMethod {
-                        trait_name,
+                    return Err(TypeError::InterfaceObjectGenericMethod {
+                        interface_name,
                         method,
                         span,
                     });
                 }
 
-                let trait_methods = checker.get_trait_methods_public(&trait_name);
+                let interface_methods = checker.get_interface_methods_public(&interface_name);
 
-                if let Some(method_sig) = trait_methods.iter().find(|m| m.name == method) {
+                if let Some(method_sig) = interface_methods.iter().find(|m| m.name == method) {
                     // TR2: reject methods returning Self
                     if matches!(&method_sig.ret, Type::UnresolvedNamed(n) if n == "Self") {
-                        return Err(TypeError::TraitObjectSelfReturn {
-                            trait_name,
+                        return Err(TypeError::InterfaceObjectSelfReturn {
+                            interface_name,
                             method,
                             span,
                         });
@@ -1560,7 +1560,7 @@ impl TypeChecker {
                 Ok(progress)
             }
             // #314: a bounded type param `T where T: Greeter` carries the
-            // trait's method set. Resolve statically against the bound; mono
+            // interface's method set. Resolve statically against the bound; mono
             // later substitutes T with the concrete type and re-resolves.
             Type::UnresolvedNamed(ref name)
                 if self.current_type_param_bounds.contains_key(name) =>
@@ -1583,8 +1583,8 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve a method call on a type parameter through its trait bounds (#314).
-    /// The bound brings the trait's methods into scope on the parameter; the
+    /// Resolve a method call on a type parameter through its interface bounds (#314).
+    /// The bound brings the interface's methods into scope on the parameter; the
     /// `Self` position in each signature is the parameter itself.
     fn resolve_bounded_type_param_method(
         &mut self,
@@ -1601,14 +1601,14 @@ impl TypeChecker {
             .cloned()
             .unwrap_or_default();
 
-        // Find a bound trait that declares `method`, pulling out its signature.
+        // Find a bound interface that declares `method`, pulling out its signature.
         let receiver = Type::UnresolvedNamed(param.clone());
         let sig = {
-            let checker = crate::traits::TraitChecker::new(&self.types);
+            let checker = crate::interfaces::InterfaceChecker::new(&self.types);
             bounds.iter().find_map(|tr| {
                 let base = tr.split('<').next().unwrap_or(tr);
                 checker
-                    .get_trait_methods_public(base)
+                    .get_interface_methods_public(base)
                     .into_iter()
                     .find(|m| m.name == method)
             })
@@ -1624,13 +1624,13 @@ impl TypeChecker {
                 .iter()
                 .find(|b| {
                     let base = b.split('<').next().unwrap_or(b).trim();
-                    rask_ast::operators::operator_trait_method(base) == Some(method.as_str())
+                    rask_ast::operators::operator_interface_method(base) == Some(method.as_str())
                 })
                 .cloned()
             {
                 if let Some(filed) = rask_ast::operators::conformance_method_name(
                     &param,
-                    std::slice::from_ref(&applied),
+                    Some(applied.as_str()),
                     &method,
                 ) {
                     // CALL6: dispatch keys on this, and mono carries it into
@@ -1650,7 +1650,7 @@ impl TypeChecker {
                             recv: receiver.clone(),
                             method: filed,
                             applied,
-                            // A bound names the trait, not the conformance, so
+                            // A bound names the interface, not the conformance, so
                             // whether the instantiation's is `@builtin` isn't
                             // known here. No stdlib `@builtin` pair is reachable
                             // through a bound today; if one becomes so, the
@@ -1695,14 +1695,14 @@ impl TypeChecker {
         Ok(progress)
     }
 
-    /// Replace the `Self` placeholder in a trait-method signature with the
-    /// receiver type. User traits spell it `Self`; builtin trait sigs use the
-    /// `Var(0)` placeholder (see `get_builtin_trait_methods`).
+    /// Replace the `Self` placeholder in an interface-method signature with the
+    /// receiver type. User interfaces spell it `Self`; builtin interface sigs use the
+    /// `Var(0)` placeholder (see `get_builtin_interface_methods`).
     fn substitute_self_placeholder(ty: &Type, receiver: &Type) -> Type {
         match ty {
             Type::UnresolvedNamed(n) if n == "Self" => receiver.clone(),
             Type::Var(crate::types::TypeVarId(0)) => receiver.clone(),
-            // AT3: `Self.Out` on a trait method called through a bound becomes
+            // AT3: `Self.Out` on an interface method called through a bound becomes
             // `T.Out` — the same projection the caller's signature writes, so
             // the two match without either being resolved yet.
             Type::Assoc { base, name } => Type::Assoc {
@@ -4117,7 +4117,7 @@ impl TypeChecker {
             // them, so the stdlib's own definitions didn't resolve.
             "to_be" | "to_le" if args.is_empty() => self.unify(ret, ty, span),
             // HA1: every integer width is Hashable, and `Hashable` is
-            // `hash(self) -> u64`. The trait table said so and this didn't, so the
+            // `hash(self) -> u64`. The interface table said so and this didn't, so the
             // conformance held while the call was rejected (#813).
             "hash" if args.is_empty() => self.unify(ret, &Type::U64, span),
             _ => Err(TypeError::NoSuchMethod {

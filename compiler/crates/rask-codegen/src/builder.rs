@@ -1127,14 +1127,14 @@ impl<'a> FunctionBuilder<'a> {
                 builder.def_var(*var, addr);
             }
 
-            // ── Trait object support ──────────────────────────────────
+            // ── Interface object support ──────────────────────────────────
 
-            MirStmtKind::TraitBox { dst, value, vtable_name, concrete_size, .. } => Self::lower_trait_box(builder, dst, value, vtable_name, concrete_size, ctx)?,
+            MirStmtKind::InterfaceBox { dst, value, vtable_name, concrete_size, .. } => Self::lower_interface_box(builder, dst, value, vtable_name, concrete_size, ctx)?,
 
-            MirStmtKind::TraitCall { dst, trait_object, method_name, vtable_offset, args } => Self::lower_trait_call(builder, dst, trait_object, method_name, vtable_offset, args, ctx)?,
+            MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args } => Self::lower_interface_call(builder, dst, interface_object, method_name, vtable_offset, args, ctx)?,
 
             // This is only ever the *borrowed* box — the one built for a
-            // call, which `trait_drop` emits a drop for because the frame
+            // call, which `interface_drop` emits a drop for because the frame
             // outlives it. So the block goes and nothing inside it does: the
             // value's strings and containers are the frame's, and the box holds
             // the same buffer and the same handle (mem.shared-rack-heap, #1144).
@@ -1143,10 +1143,10 @@ impl<'a> FunctionBuilder<'a> {
             // Hence the null hook. A box the value was *moved* into owns its
             // contents and passes the vtable's `owned_release` here instead,
             // which is what a container element's release does.
-            MirStmtKind::TraitDrop { trait_object } => {
-                let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
+            MirStmtKind::InterfaceDrop { interface_object } => {
+                let obj_val = builder.use_var(*ctx.var_map.get(interface_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "TraitDrop: trait object variable not found".to_string()
+                        "InterfaceDrop: interface object variable not found".to_string()
                     ))?);
                 let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
                 let none = builder.ins().iconst(types::I64, 0);
@@ -2261,14 +2261,14 @@ impl<'a> FunctionBuilder<'a> {
         let needs_copy = match (&dst_local.ty, rvalue) {
             (MirType::String, _) => true,
             // Field on aggregate base returns pointer for aggregate elements.
-            // TraitObject belongs here: it's a 16-byte fat pointer, so reading one
+            // InterfaceObject belongs here: it's a 16-byte fat pointer, so reading one
             // out of a `T?` payload as a scalar took the data half and left the
             // vtable behind. The call through it then read the concrete value's
             // first word as a vtable — for `Circle { r: 2.0 }` that meant
             // jumping through 2.0 (#552).
             (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
              MirType::Result { .. } | MirType::Option(_) |
-             MirType::TraitObject { .. }, MirRValue::Field { .. }) => true,
+             MirType::InterfaceObject { .. }, MirRValue::Field { .. }) => true,
             // Whole-aggregate copy: rvalue produces a pointer to the source
             // aggregate, dst has its own storage (either a stack slot or an
             // external pointer for mutate-params).
@@ -2889,7 +2889,7 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
-    fn lower_trait_box(
+    fn lower_interface_box(
         builder: &mut ClifFunctionBuilder,
         dst: &LocalId,
         value: &MirOperand,
@@ -2916,7 +2916,7 @@ impl<'a> FunctionBuilder<'a> {
                 // the var aliases another slot (e.g. `_1 = _0`).
                 let src_var = ctx.var_map.get(src_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "TraitBox: source variable not found".to_string()
+                        "InterfaceBox: source variable not found".to_string()
                     ))?;
                 let src_ptr = builder.use_var(*src_var);
                 let sz = *concrete_size;
@@ -2934,7 +2934,7 @@ impl<'a> FunctionBuilder<'a> {
                 // Scalar: load from variable, store to heap
                 let src_val = builder.use_var(*ctx.var_map.get(src_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
-                        "TraitBox: source variable not found".to_string()
+                        "InterfaceBox: source variable not found".to_string()
                     ))?);
                 builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
             }
@@ -2947,14 +2947,14 @@ impl<'a> FunctionBuilder<'a> {
         // Get vtable address
         let gv = ctx.vtable_globals.get(vtable_name.as_str())
             .ok_or_else(|| CodegenError::UnsupportedFeature(
-                format!("TraitBox: vtable '{}' not found", vtable_name)
+                format!("InterfaceBox: vtable '{}' not found", vtable_name)
             ))?;
         let vtable_ptr = builder.ins().global_value(types::I64, *gv);
 
         // Store fat pointer into destination stack slot: [data_ptr, vtable_ptr]
         let (ss, _) = ctx.stack_slot_map.get(dst)
             .ok_or_else(|| CodegenError::UnsupportedFeature(
-                "TraitBox destination stack slot not found".to_string()
+                "InterfaceBox destination stack slot not found".to_string()
             ))?;
         let dst_addr = builder.ins().stack_addr(types::I64, *ss, 0);
         builder.ins().store(MemFlags::new(), data_ptr, dst_addr, crate::layouts::FAT_PTR_DATA_OFFSET);
@@ -2963,25 +2963,25 @@ impl<'a> FunctionBuilder<'a> {
         // Set the variable to point to the stack slot
         let var = ctx.var_map.get(dst)
             .ok_or_else(|| CodegenError::UnsupportedFeature(
-                "TraitBox destination variable not found".to_string()
+                "InterfaceBox destination variable not found".to_string()
             ))?;
         builder.def_var(*var, dst_addr);
         Ok(())
     }
 
-    fn lower_trait_call(
+    fn lower_interface_call(
         builder: &mut ClifFunctionBuilder,
         dst: &Option<LocalId>,
-        trait_object: &LocalId,
+        interface_object: &LocalId,
         method_name: &String,
         vtable_offset: &u32,
         args: &[MirOperand],
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
-        // Load fat pointer components from trait object stack slot
-        let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
+        // Load fat pointer components from interface object stack slot
+        let obj_val = builder.use_var(*ctx.var_map.get(interface_object)
             .ok_or_else(|| CodegenError::UnsupportedFeature(
-                "TraitCall: trait object variable not found".to_string()
+                "InterfaceCall: interface object variable not found".to_string()
             ))?);
         let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
         let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_VTABLE_OFFSET);
@@ -2995,7 +2995,7 @@ impl<'a> FunctionBuilder<'a> {
         //
         // From the operands' own types, not I64 for everything. An aggregate
         // travels as a pointer, but a float travels in a float register — an
-        // `f64`-returning trait method declared as returning I64 put the ABI
+        // `f64`-returning interface method declared as returning I64 put the ABI
         // and the callee on different registers entirely.
         let abi_ty = |ty: Option<&MirType>| -> Type {
             match ty {
@@ -3007,7 +3007,7 @@ impl<'a> FunctionBuilder<'a> {
                     | MirType::Result { .. }
                     | MirType::Option(_)
                     | MirType::String
-                    | MirType::TraitObject { .. },
+                    | MirType::InterfaceObject { .. },
                 ) => types::I64,
                 Some(t) => mir_to_cranelift_type(t).unwrap_or(types::I64),
                 None => types::I64,
@@ -3079,7 +3079,7 @@ impl<'a> FunctionBuilder<'a> {
             };
             let var = ctx.var_map.get(dst_id)
                 .ok_or_else(|| CodegenError::UnsupportedFeature(
-                    format!("TraitCall destination for '{}' not found", method_name)
+                    format!("InterfaceCall destination for '{}' not found", method_name)
                 ))?;
             // Aggregate-returning methods hand back a pointer to data in the
             // callee frame, so copy into the dst's slot before that frame goes
@@ -6792,7 +6792,7 @@ impl<'a> FunctionBuilder<'a> {
     ///
     /// The rule lives here and nowhere else. Six places build a signature for a
     /// Rask function — the declaration, the definition, the entry block, the
-    /// cleanup block, the call, and the by-hand ones for closures and trait
+    /// cleanup block, the call, and the by-hand ones for closures and interface
     /// dispatch — and a caller that disagrees with its callee writes through a
     /// pointer the other side never passed.
     pub(crate) fn returns_through_dst(
@@ -6853,7 +6853,7 @@ impl<'a> FunctionBuilder<'a> {
                 Some((offset + max_align - 1) & !(max_align - 1))
             }
             MirType::String => Some(16),
-            MirType::TraitObject { .. } => Some(ty.size()),
+            MirType::InterfaceObject { .. } => Some(ty.size()),
             // `[member:8][member bytes]` — the index word counts, or the slot
             // comes up 8 bytes short and the widest member's tail lands past its
             // end (#776).
@@ -7117,9 +7117,9 @@ impl<'a> FunctionBuilder<'a> {
             MirType::Heap(_) => true,
             // A box moved into a field is the aggregate's: the block, and the
             // value's own contents through the vtable. Left out, a struct whose
-            // only owning field was an `any Trait` was skipped by the whole
+            // only owning field was an `any Interface` was skipped by the whole
             // walk and the box leaked (#1149's field case).
-            MirType::TraitObject { .. } => true,
+            MirType::InterfaceObject { .. } => true,
             // A closure in a slot is the aggregate's too. The frame frees one
             // it holds by name (`ClosureDrop`) and a container frees one it
             // holds as an element (#1149); behind a tag, at a tuple offset or
@@ -7186,7 +7186,7 @@ impl<'a> FunctionBuilder<'a> {
         // and the value's own contents go when the aggregate does. Asked before
         // the name lookup below, which would read `any Handler` as a struct
         // nobody declared and answer no.
-        if crate::drop_fields::is_trait_object(ty) {
+        if crate::drop_fields::is_interface_object(ty) {
             return true;
         }
         // The block is the aggregate's whatever is inside it, so a `Heap<i32>`
@@ -7261,9 +7261,9 @@ impl<'a> FunctionBuilder<'a> {
             // The slot *is* the `[data, vtable]` fat pointer. The runtime's own
             // entry walker reads both words and the vtable's release hook, so
             // hand it the slot rather than repeating that here — and the hook
-            // is what makes this different from `TraitDrop`, which frees the
+            // is what makes this different from `InterfaceDrop`, which frees the
             // block and leaves the contents to the frame (#1144).
-            MirType::TraitObject { .. } => Self::emit_boxed_field_release(builder, base, offset, ctx),
+            MirType::InterfaceObject { .. } => Self::emit_boxed_field_release(builder, base, offset, ctx),
             // The slot holds the block's address and the block describes
             // itself — `rask_closure_free` reads its size and its
             // environment-drop glue out of the header words, so releasing one
@@ -7367,8 +7367,8 @@ impl<'a> FunctionBuilder<'a> {
         // Same shape as the MIR-typed arm: the slot *is* the fat pointer, and
         // the runtime's own entry walker reads both words and the vtable's
         // release hook. Before the match for the reason `holds_string_ty` asks
-        // it early — a field's `any Trait` is a name, not a parsed form.
-        if crate::drop_fields::is_trait_object(ty) {
+        // it early — a field's `any Interface` is a name, not a parsed form.
+        if crate::drop_fields::is_interface_object(ty) {
             return Self::emit_boxed_field_release(builder, base, offset, ctx);
         }
         // Before the match for the same reason: a `Heap<T>` field reaches here
@@ -7459,7 +7459,7 @@ impl<'a> FunctionBuilder<'a> {
     /// Release the box a slot holds: the block, and the value's own contents
     /// through the vtable's hook.
     ///
-    /// That hook is what separates this from `TraitDrop`, which frees the block
+    /// That hook is what separates this from `InterfaceDrop`, which frees the block
     /// and leaves the contents to the frame — a box built for a *call* borrows
     /// its value, and one moved into a field or an element owns it (#1144).
     /// A `Heap<T>` field: hand the slot and the type's descriptor to the
@@ -7816,11 +7816,11 @@ impl<'a> FunctionBuilder<'a> {
                 | MirType::String
                 | MirType::Option(_)
                 | MirType::Result { .. }
-                // A trait object is two words, so the payload read has to hand
+                // An interface object is two words, so the payload read has to hand
                 // back its address like any other aggregate. Loading the first
                 // 8 bytes as a scalar kept the data pointer and dropped the
                 // vtable (#552).
-                | MirType::TraitObject { .. }
+                | MirType::InterfaceObject { .. }
                 // An error union is `[member:8][member bytes]` in the payload
                 // area. Loaded as a word, the member index came back as if it
                 // were the union's address (#776).
@@ -7973,7 +7973,7 @@ impl<'a> FunctionBuilder<'a> {
 
     /// MIR arg already lives behind a pointer — its i64 value is a pointer to
     /// the data, not the data itself. Strings, structs, enums, tuples, options,
-    /// results, slices, and trait objects all qualify.
+    /// results, slices, and interface objects all qualify.
     fn is_by_ptr_arg(mir_args: &[MirOperand], index: usize, locals: &[rask_mir::MirLocal]) -> bool {
         match mir_args.get(index) {
             Some(MirOperand::Local(id)) => locals
@@ -7987,7 +7987,7 @@ impl<'a> FunctionBuilder<'a> {
                     | MirType::Option(_)
                     | MirType::Result { .. }
                     | MirType::Union(_)
-                    | MirType::TraitObject { .. }
+                    | MirType::InterfaceObject { .. }
                 ))
                 .unwrap_or(false),
             Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
@@ -8014,7 +8014,7 @@ impl<'a> FunctionBuilder<'a> {
                 | MirType::Option(_)
                 | MirType::Result { .. }
                 | MirType::Union(_)
-                | MirType::TraitObject { .. }))
+                | MirType::InterfaceObject { .. }))
             .unwrap_or(false)
     }
 
@@ -8085,7 +8085,7 @@ impl<'a> FunctionBuilder<'a> {
                 | MirType::Option(_)
                 | MirType::Result { .. }
                 | MirType::Union(_)
-                | MirType::TraitObject { .. }
+                | MirType::InterfaceObject { .. }
             ))
             .unwrap_or(false);
         if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }

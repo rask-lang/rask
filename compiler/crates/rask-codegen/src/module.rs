@@ -61,10 +61,10 @@ pub struct CodeGenerator {
     fn_ret_types: HashMap<String, rask_mir::MirType>,
     /// Debug or Release — controls inlining of pool checks
     build_mode: BuildMode,
-    /// VTable data sections for trait objects (vtable_name → DataId)
+    /// VTable data sections for interface objects (vtable_name → DataId)
     vtable_data: HashMap<String, cranelift_module::DataId>,
     /// Per-concrete-type owned-value release, generated once and shared across
-    /// every vtable that boxes the same type behind a different trait.
+    /// every vtable that boxes the same type behind a different interface.
     owned_release_fns: HashMap<String, cranelift_module::FuncId>,
     /// Collected debug info per function (debug builds only)
     debug_srclocs: Vec<crate::debug_info::FunctionDebugInfo>,
@@ -845,7 +845,7 @@ impl CodeGenerator {
             self.func_ids.insert("rask_closure_free".to_string(), id);
         }
 
-        // rask_box_alloc(value_size: i64) -> ptr — a trait object's block, with
+        // rask_box_alloc(value_size: i64) -> ptr — an interface object's block, with
         // a reference count in the word before the value it returns.
         {
             let mut sig = self.module.make_signature();
@@ -880,7 +880,7 @@ impl CodeGenerator {
         }
 
         // rask_owned_release(slot: i64, entry: i32) -> void — one entry of the
-        // element map, applied to a slot. The release walk uses it for a trait
+        // element map, applied to a slot. The release walk uses it for an interface
         // object in a field, where the box was moved in and the value's
         // contents go with it: that logic already lives in the runtime and
         // needs the vtable's release hook, which codegen would have to fetch by
@@ -1556,7 +1556,7 @@ impl CodeGenerator {
         Ok(())
     }
 
-    /// Register vtable data sections for trait objects.
+    /// Register vtable data sections for interface objects.
     ///
     /// Each vtable is a static data section: [size, align, drop_fn, method_0, method_1, ...]
     /// Function pointers are emitted as relocations resolved by the linker.
@@ -1581,7 +1581,7 @@ impl CodeGenerator {
 
             // The release for a value this box owns, when it owns anything.
             // Only a moved-in box reads it — a container element, a struct
-            // field, a return. `TraitDrop` is the borrowed case and frees the
+            // field, a return. `InterfaceDrop` is the borrowed case and frees the
             // block alone.
             if !vt.owned.is_empty() {
                 let func_id = self.get_or_create_owned_release(&vt.concrete_type, &vt.owned)?;
@@ -1616,8 +1616,8 @@ impl CodeGenerator {
     /// value holds, at the offsets `owned_fields` found.
     ///
     /// One per concrete type, shared across every vtable that boxes it behind a
-    /// different trait, because the answer depends on the value and not on the
-    /// trait.
+    /// different interface, because the answer depends on the value and not on the
+    /// interface.
     fn get_or_create_owned_release(
         &mut self,
         concrete_type: &str,
@@ -1941,7 +1941,7 @@ fn collect_used_vtables(mir_fn: &MirFunction) -> HashSet<String> {
     let mut vtables = HashSet::new();
     for block in &mir_fn.blocks {
         for stmt in &block.statements {
-            if let rask_mir::MirStmtKind::TraitBox { vtable_name, .. } = &stmt.kind {
+            if let rask_mir::MirStmtKind::InterfaceBox { vtable_name, .. } = &stmt.kind {
                 vtables.insert(vtable_name.clone());
             }
         }

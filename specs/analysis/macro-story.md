@@ -165,12 +165,12 @@ Adversarial pass over the chosen design. Found four, one of which reshaped a rul
 comptime story above); the rest get rules or honest caps here.
 
 - **The indirect-call hole is a family, not a case.** Function values were already
-  restricted, but closures declaring captures and trait methods called through
-  `any Trait` vtables have the same problem: an indirect call site can't know the target
+  restricted, but closures declaring captures and interface methods called through
+  `any Interface` vtables have the same problem: an indirect call site can't know the target
   captures. One unified v1 rule instead of three: both are legal only
   on named functions, and a capturing function can't be referenced as a value, used as a
-  closure body's implicit target, or declared in a trait's method signature. Generic
-  bounds are fine — calls through `T: Trait` monomorphize into direct calls, and the
+  closure body's implicit target, or declared in an interface's method signature. Generic
+  bounds are fine — calls through `T: Interface` monomorphize into direct calls, and the
   captured location is the call inside the generic body, which is the right answer.
 - **Forwarding guarantees provenance, not correspondence.** With two text captures,
   a wrapper can forward its text-of-`a` into a callee slot documented as text-of-`b` —
@@ -267,7 +267,7 @@ encoding. It's also Principle 5 verbatim — metadata surfaced, nothing enforced
 
 ### The API contract
 
-**Not traits.** A trait is a behavior contract; an annotation is a data record. There is
+**Not interfaces.** An interface is a behavior contract; an annotation is a data record. There is
 no conformance, no dispatch, no methods, and no "annotation processor" hook (Java's
 mistake — behavior belongs in the library that reads the data, not in the annotation).
 

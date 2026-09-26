@@ -113,12 +113,12 @@ export internal.lexer.Lexer
 | **SV3: Any private field** | Literal construction only in `extend` blocks — must provide factory for outside use |
 | **SV4: Pattern matching** | Only visible fields are bindable; `private` fields require `..` |
 
-## Trait Implementation Visibility
+## Interface Implementation Visibility
 
 | Rule | Description |
 |------|-------------|
-| **TV1: Declared** | Trait conformance is package-internal by default; `public extend Type with Trait` exports it |
-| **TV2: Capped by parts** | `public extend` requires both trait and type to be public — conformance can't be more visible than what it connects |
+| **TV1: Declared** | Interface conformance is package-internal by default; `public Type implements Interface` exports it |
+| **TV2: Capped by parts** | `public extend` requires both interface and type to be public — conformance can't be more visible than what it connects |
 
 ## Package-Level State
 
@@ -262,21 +262,21 @@ extend Request {
 }
 ```
 
-**Trait-based cycle breaking:**
+**Interface-based cycle breaking:**
 <!-- test: skip -->
 ```rask
 // pkg: ast
-public trait Visitor {
+public interface Visitor {
     func visit(self: mut, node: Node)
 }
 
-// pkg: printer — no import of ast needed beyond the trait
-extend Printer with ast.Visitor {
+// pkg: printer — no import of ast needed beyond the interface
+Printer implements ast.Visitor {
     func visit(self: mut, node: ast.Node) { ... }
 }
 ```
 
-**Self-referential types with links (not trait objects):**
+**Self-referential types with links (not interface objects):**
 <!-- test: parse -->
 ```rask
 struct Node {

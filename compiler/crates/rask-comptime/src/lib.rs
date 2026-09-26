@@ -140,7 +140,7 @@ fn eliminate_in_decl(decl: &mut Decl, cfg_values: &HashMap<String, String>) {
         DeclKind::Enum(e) => {
             for m in &mut e.methods { eliminate_in_fn_body(&mut m.body, cfg_values); }
         }
-        DeclKind::Trait(t) => {
+        DeclKind::Interface(t) => {
             for m in &mut t.methods { eliminate_in_fn_body(&mut m.body, cfg_values); }
         }
         DeclKind::Impl(i) => {

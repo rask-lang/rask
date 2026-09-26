@@ -8,7 +8,7 @@ enum ParseError {
     NotANumber { text: string }
 }
 
-extend ReadError with Error {
+ReadError implements Error {
     func message(self) -> string {
         return match self {
             ReadError.Empty => "no lines"
@@ -17,7 +17,7 @@ extend ReadError with Error {
     }
 }
 
-extend ParseError with Error {
+ParseError implements Error {
     func message(self) -> string {
         return match self {
             ParseError.NotANumber(text) => "not a number: {text}"

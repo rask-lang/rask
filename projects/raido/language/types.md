@@ -300,7 +300,7 @@ Promotion is widening (lossless for ints within +/-2.1B). If the int exceeds num
 - Function signatures are fully typed (parameters + return type)
 - Local variables inferred from initializer: `const x = 42` -> `x` is `int`
 - No generics beyond built-in `array<T>`, `map<K, V>`, `T?`, tuples, and function types
-- No traits or interfaces
+- No interfaces or interfaces
 - Exhaustive `match` on enums -- compiler error if a variant is missing
 - `??` supplies the other branch on an optional: `value ?? fallback` (both sides same type)
 - Compound assignment: `+=`, `-=`, `*=`, `/=`, `%=` on `let` l-values including chained access (`ships[i].health -= damage`)

@@ -3,7 +3,7 @@
 package "app" "0.1.0" {
     description: "Pulls in two packages that both conform the same pair"
     license: "MIT OR Apache-2.0"
-    dep "traitpkg" { path: "../traitpkg" }
+    dep "interfacepkg" { path: "../interfacepkg" }
     dep "liba" { path: "../liba" }
     dep "libb" { path: "../libb" }
 }

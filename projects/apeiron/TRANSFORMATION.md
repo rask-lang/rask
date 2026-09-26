@@ -650,4 +650,4 @@ No tech trees. No recipe books. No unlock gates. Elements interact to produce ma
 
 ## Future Directions
 
-**Biological science.** Genetics, breeding, ecosystem engineering, terraforming, alien life. The transformation model extends naturally — genetic building blocks combine via an interaction function, organisms have trait vectors, ecosystems are system-design problems. Not designed yet. The core material/system science needs to validate first. Nothing in this spec forecloses it.
+**Biological science.** Genetics, breeding, ecosystem engineering, terraforming, alien life. The transformation model extends naturally — genetic building blocks combine via an interaction function, organisms have interface vectors, ecosystems are system-design problems. Not designed yet. The core material/system science needs to validate first. Nothing in this spec forecloses it.

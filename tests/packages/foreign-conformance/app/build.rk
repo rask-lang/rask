@@ -3,6 +3,6 @@
 package "app" "0.1.0" {
     description: "Uses the conformance a third package declared"
     license: "MIT OR Apache-2.0"
-    dep "traitpkg" { path: "../traitpkg" }
+    dep "interfacepkg" { path: "../interfacepkg" }
     dep "liba" { path: "../liba" }
 }

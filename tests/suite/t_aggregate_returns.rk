@@ -28,7 +28,7 @@
 //
 // Three call kinds have to agree about the convention, because each builds the
 // signature in its own place: a direct call, a closure through a function
-// pointer, and a trait method through a vtable. A caller that disagrees with its
+// pointer, and an interface method through a vtable. A caller that disagrees with its
 // callee doesn't produce a wrong value — it makes the callee write through a
 // pointer nobody passed.
 
@@ -130,13 +130,13 @@ test "a closure returning something that fits a word" {
     assert one(7).n == 7
 }
 
-// ── 3. a trait method through a vtable ──────────────────────────
+// ── 3. an interface method through a vtable ──────────────────────────
 //
 // The third place, and the one with no way to notice a mistake from the output:
 // get the signature wrong and the callee writes through a pointer the caller
 // never passed, which is the same class of bug as the one being fixed.
 
-trait Describes {
+interface Describes {
     func describe(self) -> Wide
     func name(self) -> string
 }
@@ -145,7 +145,7 @@ struct Alpha {
     seed: i64
 }
 
-extend Alpha with Describes {
+Alpha implements Describes {
     public func describe(self) -> Wide {
         return Wide { a: self.seed, b: self.seed * 10, c: self.seed * 100, label: "alpha" }
     }
@@ -157,7 +157,7 @@ extend Alpha with Describes {
 
 struct Beta {}
 
-extend Beta with Describes {
+Beta implements Describes {
     public func describe(self) -> Wide {
         return Wide { a: -1, b: -2, c: -3, label: "beta" }
     }
@@ -176,7 +176,7 @@ func describe_all(items: Vec<any Describes>) -> i64 {
     return total
 }
 
-test "a trait method returning a wide struct, through a vtable" {
+test "an interface method returning a wide struct, through a vtable" {
     let a = Alpha { seed: 2 }
     let boxed = a as any Describes
     let w = boxed.describe()
@@ -186,13 +186,13 @@ test "a trait method returning a wide struct, through a vtable" {
     assert w.label == "alpha"
 }
 
-test "a trait method returning a string" {
+test "an interface method returning a string" {
     let b = Beta {}
     let boxed = b as any Describes
     assert boxed.name() == "beta"
 }
 
-test "several implementations behind one trait" {
+test "several implementations behind one interface" {
     let items: Vec<any Describes> = [Alpha { seed: 1 } as any Describes, Beta {} as any Describes]
     assert describe_all(items) == 105
 }

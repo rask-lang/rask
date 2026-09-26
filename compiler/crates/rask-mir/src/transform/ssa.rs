@@ -431,7 +431,7 @@ fn rename_stmt(
                 return Some(orig);
             }
         }
-        MirStmtKind::TraitBox { dst, value, .. } => {
+        MirStmtKind::InterfaceBox { dst, value, .. } => {
             rename_operand(value, version_stack, num_orig_locals);
             let orig = dst.0 as usize;
             if orig < num_orig_locals {
@@ -442,8 +442,8 @@ fn rename_stmt(
                 return Some(orig);
             }
         }
-        MirStmtKind::TraitCall { dst, trait_object, args, .. } => {
-            *trait_object = current_version(*trait_object, version_stack, num_orig_locals);
+        MirStmtKind::InterfaceCall { dst, interface_object, args, .. } => {
+            *interface_object = current_version(*interface_object, version_stack, num_orig_locals);
             for arg in args.iter_mut() {
                 rename_operand(arg, version_stack, num_orig_locals);
             }
@@ -458,8 +458,8 @@ fn rename_stmt(
                 }
             }
         }
-        MirStmtKind::TraitDrop { trait_object } => {
-            *trait_object = current_version(*trait_object, version_stack, num_orig_locals);
+        MirStmtKind::InterfaceDrop { interface_object } => {
+            *interface_object = current_version(*interface_object, version_stack, num_orig_locals);
         }
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }

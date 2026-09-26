@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A trait bound on a type parameter that appears only in the return type, and
+// An interface bound on a type parameter that appears only in the return type, and
 // the written type argument that pins it.
 //
-// `Integer` had never been registered as a trait. Nothing could satisfy it, so
+// `Integer` had never been registered as an interface. Nothing could satisfy it, so
 // `func zero<T: Integer>() -> T` failed at every call site with "`_` does not
-// implement `Integer`" — `_` because an unknown trait has no type to blame
+// implement `Integer`" — `_` because an unknown interface has no type to blame
 // (#713).
 //
 // And `zero<i32>()` parsed fine and then dropped the `<i32>`. The parser folds

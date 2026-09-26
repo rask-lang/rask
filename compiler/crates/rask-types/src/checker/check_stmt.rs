@@ -27,7 +27,7 @@ impl TypeChecker {
     ///
     /// The element type is spelled out wherever it can be read off the
     /// container: leaving it a free var loses the element's identity, and a
-    /// `Vec<any Trait>` binding then has no trait to dispatch against.
+    /// `Vec<any Interface>` binding then has no interface to dispatch against.
     ///
     /// Everything else gets a fresh var plus an `ElementOf` constraint — either
     /// because the container is a field access whose type hasn't resolved yet,

@@ -63,7 +63,7 @@ func f12() {
     println("12")
 }
 
-@allow(idiom/duck-trait)
+@allow(idiom/duck-interface)
 func f13() {
     println("13")
 }

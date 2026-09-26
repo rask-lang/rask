@@ -44,7 +44,7 @@ pub fn elide_rc_ops(func: &mut MirFunction, own: &HashSet<String>) {
 ///
 /// A call is the shape that hands one over, and MIR has three kinds of call:
 /// direct, through a closure, and through a vtable. Only the direct one was
-/// listed. So `n.label()` on a trait object came back with a reference nobody
+/// listed. So `n.label()` on an interface object came back with a reference nobody
 /// released, and every boxed value with a string field leaked it (#1145).
 ///
 /// This list is call kinds and not "everything that isn't a copy" on purpose. A
@@ -78,7 +78,7 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
                 // all three ways of calling something, not just the direct one.
                 MirStmtKind::Call { dst: Some(dst), .. }
                 | MirStmtKind::ClosureCall { dst: Some(dst), .. }
-                | MirStmtKind::TraitCall { dst: Some(dst), .. }
+                | MirStmtKind::InterfaceCall { dst: Some(dst), .. }
                     if string_locals.contains(dst) =>
                 {
                     owned.insert(*dst);

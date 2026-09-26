@@ -26,7 +26,7 @@ enum MyErr {
     Bad
 }
 
-extend MyErr with Error {
+MyErr implements Error {
     func message(self) -> string {
         return "bad"
     }

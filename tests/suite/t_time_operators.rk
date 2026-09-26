@@ -8,7 +8,7 @@
 // span between two wall-clock points — was simply missing, and each addition
 // would have meant another arm in the compiler.
 //
-// It's `extend Instant with Sub<Instant> { type Out = Duration … }` in
+// It's `Instant implements Sub<Instant> { type Out = Duration … }` in
 // stdlib/time.rk now, and the two that couldn't be written at all work.
 
 import time

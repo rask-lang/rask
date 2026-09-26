@@ -2,7 +2,7 @@
 // Rejects: structural match without a declared conformance (nominal flip, G1/#283)
 // Expected: typecheck error E0333 — `Dog` does not implement `Greeter`
 
-trait Greeter {
+interface Greeter {
     func greet(self) -> string
 }
 
@@ -18,6 +18,6 @@ func announce(g: T) -> string where T: Greeter {
 }
 
 func main() {
-    // Nominal: matching the shape isn't enough without `extend Dog with Greeter`.
+    // Nominal: matching the shape isn't enough without `Dog implements Greeter`.
     println("{announce(Dog { name: \"Rex\" })}")
 }

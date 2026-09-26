@@ -113,7 +113,7 @@ impl PassManager {
         // After inlining, deliberately: an inlined chain's environments end up
         // in a frame the pre-inline analysis never saw (#1045).
         pm.add(ClosureDropInsertionPass);
-        pm.add(TraitDropInsertionPass);
+        pm.add(InterfaceDropInsertionPass);
         // Per-function passes — run after inlining for wider optimization window (IN5)
         pm.add(StringConcatPass);
         pm.add(CloneElisionPass);
@@ -197,13 +197,13 @@ impl MirPass for ClosureDropInsertionPass {
     }
 }
 
-/// Insert `TraitDrop` for trait objects that don't escape their function (#366).
-pub struct TraitDropInsertionPass;
+/// Insert `InterfaceDrop` for interface objects that don't escape their function (#366).
+pub struct InterfaceDropInsertionPass;
 
-impl MirPass for TraitDropInsertionPass {
-    fn name(&self) -> &str { "trait_drop_insertion" }
+impl MirPass for InterfaceDropInsertionPass {
+    fn name(&self) -> &str { "interface_drop_insertion" }
     fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::insert_trait_drops(fns);
+        crate::insert_interface_drops(fns);
     }
 }
 

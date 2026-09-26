@@ -221,7 +221,7 @@ Two comptime bugs, both native-only:
       t_month_reflect_field_strings.rk (interp 6/6, native BUILD-FAIL).
 
 Both are "the comptime value reached MIR without a type". Related: every node_types miss the
-compiler makes is in an auto-derived `compare` body, because auto_derive_traits registers a
+compiler makes is in an auto-derived `compare` body, because auto_derive_interfaces registers a
 MethodSig with no body and the checker never visits what's synthesized later — see the measurement
 on #725. If comptime bodies have the same shape, say so on that issue.
 ```

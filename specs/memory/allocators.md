@@ -22,17 +22,17 @@ Collections use the global allocator by default. `using` clauses let functions r
 > new one, and reintroducing it should be priced on its own merits rather than
 > inherited from a design that was retired.
 
-## Allocator Trait
+## Allocator Interface
 
 | Rule | Description |
 |------|-------------|
-| **AL1: Trait definition** | `Allocator` trait requires `alloc`, `dealloc`, `realloc` |
+| **AL1: Interface definition** | `Allocator` interface requires `alloc`, `dealloc`, `realloc` |
 | **AL2: Global default** | `Global` implements `Allocator`, is zero-sized, used when no context present |
 | **AL3: Fallible allocation** | `alloc` returns `&raw u8 or AllocError`; `realloc` same |
 
 <!-- test: skip -->
 ```rask
-trait Allocator {
+interface Allocator {
     func alloc(self, size: usize, align: usize) -> &raw u8 or AllocError
     func dealloc(self, ptr: &raw u8, size: usize, align: usize)
     func realloc(self, ptr: &raw u8, old_size: usize, new_size: usize, align: usize) -> &raw u8 or AllocError

@@ -37,9 +37,9 @@ Not everything is trivially relocatable. Types fall into three tiers based on th
 |------|------|-------|-----------|------|
 | **R1: Flat** | Flat | Primitives, flat structs | Bitwise copy / mmap | Zero |
 | **R2: Deep** | Deep | Flat + `string`, `Vec`, `Map` (no resources) | Binary serialization (heap contents traversed) | Linear scan |
-| **R3: Opaque** | Opaque | Resource types, closures, `any Trait` | Cannot serialize | N/A |
+| **R3: Opaque** | Opaque | Resource types, closures, `any Interface` | Cannot serialize | N/A |
 
-Closures and `any Trait` contain function pointers — process-local, not serializable. Resource types (`@resource`) have external side effects that can't survive a round-trip. The spec doesn't try to make these relocatable.
+Closures and `any Interface` contain function pointers — process-local, not serializable. Resource types (`@resource`) have external side effects that can't survive a round-trip. The spec doesn't try to make these relocatable.
 
 **Graphs are R2, and there is no rule that could move them to R1.** Flat means "contains no addresses" and a `Link<T>` is an address, so a node struct of primitives-plus-links is a linear scan, not a bitwise copy. Mmap-a-graph-and-go is not a gap waiting to be closed — it is what the model costs. This is the one capability that was real under handles and isn't under links, and #626's top persistence tier should be read with that in mind.
 
@@ -49,7 +49,7 @@ A type is *flat* when it contains no heap-backed fields, recursively.
 
 | Rule | Description |
 |------|-------------|
-| **FL1: Definition** | A type is flat if all fields are flat, recursively. No `string`, `Vec`, `Map`, `Shared`, `any Trait`, closures, or resource types |
+| **FL1: Definition** | A type is flat if all fields are flat, recursively. No `string`, `Vec`, `Map`, `Shared`, `any Interface`, closures, or resource types |
 | **FL2: Primitives** | `bool`, `i8`–`i64`, `u8`–`u64`, `f32`, `f64`, `usize` are flat |
 | **FL3: References are not flat** | A `Link<T>` is an address, so no struct holding one is flat. The flat tier is primitives and flat structs, full stop. `Handle<T>` used to answer flat — index-plus-generation, no address — which credited the zero-cost tier with graphs it cannot carry; it went out with the pool (rask-lang/rask#908) |
 | **FL4: Comptime check** | `reflect.is_flat<T>()` returns `true` if T is flat. Resolved at compile time (`std.reflect/R1`) |
@@ -238,7 +238,7 @@ FIX: Add a migration step, or keep the old field and add a new one.
 
 They do cost two things, and I'd rather write them down than round them off. A link you held before the round trip is dead afterwards, so undo/redo and time-travel debugging carry a step that handles didn't need. And a graph can never be flat, so mmap-a-graph-and-go is gone — not deferred, gone, because flat means "no addresses" and a link is one. I'm taking both. Per-read speed is what these types exist for, and paying for it once at serialization time, in the one place a program is already writing every byte it owns, is the right end to pay at.
 
-**FL1–FL4 (flat constraint):** I considered a `Relocatable` trait but it would duplicate `Copy` for flat types and `Encode + Decode` for deep types. `reflect.is_flat<T>()` at comptime is simpler — it's a query, not a type-system concept. The compiler already knows the layout; just expose that knowledge.
+**FL1–FL4 (flat constraint):** I considered a `Relocatable` interface but it would duplicate `Copy` for flat types and `Encode + Decode` for deep types. `reflect.is_flat<T>()` at comptime is simpler — it's a query, not a type-system concept. The compiler already knows the layout; just expose that knowledge.
 
 **SE1–SE4 (schema evolution):** Field-by-field matching by name gives forward/backward compatibility for free on additive changes. Type changes are intentionally an error — silent coercion between `f32` and `i32` would be a bug factory. If you need a migration, write one explicitly.
 
@@ -271,5 +271,5 @@ rather than corrupting the read.
 - [Linearity](linear.md) — Why linear values are the Tier-3 opaque case (`mem.linear`)
 - [Shared, Rack and Heap](shared-rack-heap.md) — Their relocatability tiers (`mem.shared-rack-heap`)
 - [Resource Types](resource-types.md) — Why resources are Tier-3 opaque (`mem.resources`)
-- [Encoding](../stdlib/encoding.md) — `Encode`/`Decode` traits, field annotations (`std.encoding`)
+- [Encoding](../stdlib/encoding.md) — `Encode`/`Decode` interfaces, field annotations (`std.encoding`)
 - [Reflect](../stdlib/reflect.md) — `reflect.is_flat<T>()`, comptime type introspection (`std.reflect`)

@@ -3,7 +3,7 @@
 //!
 //! Provides a unified diagnostic type that both CLI and language server consume.
 //! Each compiler phase's error types are converted to `Diagnostic` via the
-//! `ToDiagnostic` trait, keeping compiler crates lightweight while enabling
+//! `ToDiagnostic` interface, keeping compiler crates lightweight while enabling
 //! rich error display.
 
 pub mod codes;
@@ -258,7 +258,7 @@ impl Diagnostic {
 }
 
 // ============================================================================
-// Conversion Trait
+// Conversion Interface
 // ============================================================================
 
 /// Convert a compiler error into a rich diagnostic.

@@ -527,12 +527,12 @@ impl TypeChecker {
             return false;
         }
 
-        // `any Trait` values: the trait's own declared self mode is known —
+        // `any Interface` values: the interface's own declared self mode is known —
         // no need for the unresolved-type name heuristic below, which would
-        // flag every trait's `write`/`read` as mutating regardless of how it
+        // flag every interface's `write`/`read` as mutating regardless of how it
         // was actually declared.
-        if let Type::TraitObject { trait_name } = &resolved {
-            let methods = crate::traits::TraitChecker::new(&self.types).get_trait_methods_public(trait_name);
+        if let Type::InterfaceObject { interface_name } = &resolved {
+            let methods = crate::interfaces::InterfaceChecker::new(&self.types).get_interface_methods_public(interface_name);
             if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
                 return matches!(sig.self_param, SelfParam::Mutate);
             }
@@ -616,8 +616,8 @@ impl TypeChecker {
         if let Some(ty) = self.lookup_local(var_name) {
             let resolved = self.resolve_named(&self.ctx.apply(&ty));
 
-            if let Type::TraitObject { trait_name } = &resolved {
-                let methods = crate::traits::TraitChecker::new(&self.types).get_trait_methods_public(trait_name);
+            if let Type::InterfaceObject { interface_name } = &resolved {
+                let methods = crate::interfaces::InterfaceChecker::new(&self.types).get_interface_methods_public(interface_name);
                 if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
                     return match sig.self_param {
                         SelfParam::Mutate | SelfParam::Take => BorrowMode::Exclusive,

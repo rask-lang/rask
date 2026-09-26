@@ -149,8 +149,8 @@ extend Sequence<T> {
 //
 // Bounds are compiler-enforced rather than written: `sum` needs a numeric
 // element, `min`/`max` an ordered one, `to_vec` a Copy or chain-owned one. As
-// `Vec.sum` and `Vec.min` today — the stdlib has no Numeric or Cloneable trait
-// to name, and inventing one only for these signatures would be a trait nobody
+// `Vec.sum` and `Vec.min` today — the stdlib has no Numeric or Cloneable interface
+// to name, and inventing one only for these signatures would be an interface nobody
 // implements.
 // ---------------------------------------------------------------------------
 
@@ -313,7 +313,7 @@ extend Sequence<T> {
 // per block is CC3, which is why there are two of them.
 //
 // The comment that used to sit above these said the stdlib "has no Numeric or
-// Cloneable trait to name". It has both; the line predated them.
+// Cloneable interface to name". It has both; the line predated them.
 // ---------------------------------------------------------------------------
 
 extend Sequence<T> where T: Numeric {
@@ -379,7 +379,7 @@ extend Sequence<T> where T: Comparable {
 
 // ---------------------------------------------------------------------------
 // Terminals that need the element to be a particular *shape* rather than to
-// satisfy a trait. A concrete instantiation says it directly.
+// satisfy an interface. A concrete instantiation says it directly.
 // ---------------------------------------------------------------------------
 
 extend Sequence<string> {

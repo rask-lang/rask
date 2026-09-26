@@ -29,11 +29,11 @@ pub mod operators;
 mod validate;
 pub(crate) mod resolved_types;
 
-pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, TraitTypeParam, TraitAssocType, TypeBinding, TypedProgram, receiver_name, conformance_symbol};
+pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, receiver_name, conformance_symbol};
 pub use type_table::{primitive_spelling, TypeTable};
-pub use operators::{operator_trait, OperatorTarget};
+pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext};
+pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
 pub use parse_type::parse_type_string;
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
@@ -162,13 +162,16 @@ pub struct TypeChecker {
     pub(super) symbol_types: HashMap<SymbolId, Type>,
     /// Collected errors.
     pub(super) errors: Vec<TypeError>,
-    /// XC3: (type, applied trait, using package) triples already reported. The
+    /// XC3: (type, applied interface, using package) triples already reported. The
     /// same collision turns up at every bound and every call that needs it, and
     /// one error is the news.
     /// XC5: `extend` blocks whose methods carry the package that wrote them,
     /// because the block is on a type that package doesn't own. Filled as each
     /// block registers — the answer is a property of that block alone.
     pub(super) conformance_disambiguation: HashMap<NodeId, String>,
+    /// MN2: where each method name on a type was first defined by a block in
+    /// this program, so a second block defining it is reported as a duplicate.
+    pub(super) declared_methods: HashMap<(crate::types::TypeId, String), (rask_ast::Span, Option<String>)>,
     pub(super) reported_ambiguous_conformances:
         std::collections::HashSet<(crate::types::TypeId, String, String)>,
     /// Current function's return type (for checking return statements).
@@ -193,10 +196,10 @@ pub struct TypeChecker {
     pub(super) loop_forms: Vec<(&'static str, rask_ast::Span)>,
     /// Current Self type (inside extend blocks).
     pub(super) current_self_type: Option<Type>,
-    /// Trait bounds on the current function's type params (name → trait names).
+    /// Interface bounds on the current function's type params (name → interface names).
     /// Lets `g.greet()` resolve against `T: Greeter` for static dispatch (#314).
     pub(super) current_type_param_bounds: HashMap<String, Vec<String>>,
-    /// Trait bounds from the enclosing `extend Foo<T> where T: Trait { }`
+    /// Interface bounds from the enclosing `extend Foo<T> where T: Interface { }`
     /// block's own where-clause, distinct from a method's own bounds (those
     /// live on the method's `FnDecl` and are folded into
     /// `current_type_param_bounds` directly). A bound declared at the extend
@@ -242,8 +245,8 @@ pub struct TypeChecker {
     /// and ran the float parse (#1029).
     pub(super) written_method_type_args: HashMap<NodeId, Vec<Type>>,
     /// TR5 checks whose container hadn't resolved yet when the call was walked
-    /// — `(argument node, was it an `as any Trait`, receiver, argument)`.
-    pub(super) pending_trait_elem_coercions:
+    /// — `(argument node, was it an `as any Interface`, receiver, argument)`.
+    pub(super) pending_interface_elem_coercions:
         Vec<(NodeId, bool, Type, Type)>,
     /// ER18: the error a `try { … } catch e =>` handler is waiting for. Inner
     /// `try`s propagate to the innermost of these instead of to the enclosing
@@ -273,14 +276,14 @@ pub struct TypeChecker {
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
-    /// SymbolId → (type param name → trait bounds) for generic functions.
+    /// SymbolId → (type param name → interface bounds) for generic functions.
     /// Used to check bound satisfaction at call sites (#314).
     pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<String>>>,
     /// Names declared as annotations (type.annotations). Registered as struct
     /// types for `has<A>()` name resolution, but comptime-only: runtime
     /// construction is rejected.
     pub(super) annotation_types: std::collections::HashSet<String>,
-    /// Call-site bound obligations: (type-arg var, bound trait names, span).
+    /// Call-site bound obligations: (type-arg var, bound interface names, span).
     /// Verified after constraint solving resolves the var to a concrete type.
     pub(super) pending_bound_checks: Vec<(Type, Vec<String>, rask_ast::Span)>,
     /// ER3a: call-site disjointness obligations read off the callee's signature.
@@ -310,9 +313,9 @@ pub struct TypeChecker {
     /// GC1/GC2: Pre-created type vars for functions with inferred params/return.
     /// Key is function name, value is (param_type_vars, return_type_var).
     pub(super) inferred_fn_types: HashMap<String, (Vec<(String, Type)>, Type)>,
-    /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
-    /// MIR lowering uses this to emit TraitBox instructions at coercion sites.
-    pub(super) trait_coercions: HashMap<NodeId, String>,
+    /// TR5: implicit interface coercion sites. NodeId of expression → interface name.
+    /// MIR lowering uses this to emit InterfaceBox instructions at coercion sites.
+    pub(super) interface_coercions: HashMap<NodeId, String>,
     /// ER31a: `try` sites where the propagated error gets wrapped in a variant
     /// of the enclosing function's error enum. NodeId of the `try` expression →
     /// the wrapping variant. Both backends read this to build the enum value.
@@ -493,7 +496,7 @@ impl TypeChecker {
     /// `coerce_into`, naming the expression being coerced.
     ///
     /// Worth the extra argument only where the decision has to reach a backend:
-    /// ER32's error branch erases a concrete error into `any Trait`, and MIR
+    /// ER32's error branch erases a concrete error into `any Interface`, and MIR
     /// boxes at the value, keyed by its node.
     pub(super) fn coerce_into_node(
         &mut self,
@@ -517,6 +520,7 @@ impl TypeChecker {
         Self {
             resolved,
             conformance_disambiguation: HashMap::new(),
+            declared_methods: HashMap::new(),
             reported_ambiguous_conformances: std::collections::HashSet::new(),
             types: TypeTable::new(),
             ctx: InferenceContext::new(),
@@ -540,7 +544,7 @@ impl TypeChecker {
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
             written_method_type_args: HashMap::new(),
-            pending_trait_elem_coercions: Vec::new(),
+            pending_interface_elem_coercions: Vec::new(),
             try_block_errors: Vec::new(),
             debug_fmt_calls: std::collections::HashSet::new(),
             call_targets: HashMap::new(),
@@ -558,7 +562,7 @@ impl TypeChecker {
             inferred_fn_types: HashMap::new(),
             in_assign_target: false,
             in_stmt_expr: false,
-            trait_coercions: HashMap::new(),
+            interface_coercions: HashMap::new(),
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
@@ -757,10 +761,10 @@ impl TypeChecker {
         self.validate_pending_linear_containers();
 
         // TR5: an element pushed into a container the checker only resolved
-        // later. A concrete value going into an `any Trait` slot has to be boxed
+        // later. A concrete value going into an `any Interface` slot has to be boxed
         // with a vtable, and the container reached through a field wasn't known
         // when the push was walked (#955).
-        self.validate_pending_trait_elem_coercions();
+        self.validate_pending_interface_elem_coercions();
 
         // S2: view bindings whose source was a field or loop variable — the type
         // is concrete now, so "is this a string slice / a growable view" has an
@@ -933,7 +937,7 @@ impl TypeChecker {
             .filter(|(_, params)| !params.iter().any(|(_, t)| Self::contains_type_var(t)))
             .collect();
 
-        let trait_coercions = self.trait_coercions.clone();
+        let interface_coercions = self.interface_coercions.clone();
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
         let try_chain_placement = self.try_chain_placement.clone();
@@ -970,7 +974,7 @@ impl TypeChecker {
             call_type_args,
             call_targets,
             operator_targets: std::mem::take(&mut self.operator_targets),
-            trait_coercions,
+            interface_coercions,
             file_packages: self.resolved.file_packages.clone(),
             conformance_disambiguation: self.conformance_disambiguation,
             error_wraps,

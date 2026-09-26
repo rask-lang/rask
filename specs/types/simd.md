@@ -241,6 +241,6 @@ func dot_product[T: Numeric, N: usize](a: Vec[T, N], b: Vec[T, N]) -> T {
 ### See Also
 
 - `type.primitives` — Scalar numeric types
-- `type.operators` — Operator traits
+- `type.operators` — Operator interfaces
 - `type.generics` — Parameterized types
 - `struct.c-interop` — C FFI

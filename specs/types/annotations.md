@@ -118,7 +118,7 @@ don't exist: `get<A>()` is a projection, `field.get<A>().max` splices the consta
 and the annotation itself never reaches MIR. This also matches how `field.name` already
 works — no FieldInfo struct is ever built natively either; the members splice.
 
-**AN7 (not traits, no processors):** A trait is a behavior contract; an annotation is a
+**AN7 (not interfaces, no processors):** An interface is a behavior contract; an annotation is a
 data record. Java's annotation processors put behavior in the metadata layer and got a
 second compilation model for it. Here the reader owns the behavior — the whole checking
 story is AN3's construction check, done by machinery that already exists.

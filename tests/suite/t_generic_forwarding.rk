@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A trait-bound call forwarded through a second generic resolves (#372).
+// An interface-bound call forwarded through a second generic resolves (#372).
 //
 // `func outer<T: Show>(x: T) { inner(x) }` instantiated `outer$Tag` but left
 // `inner` generic, so its body mangled `x.show()` to `T_show` — a symbol
@@ -9,7 +9,7 @@
 // there's more than one: `pair<A, B>` calling `level1(a)` records `[A]`, and
 // only the name says which of the two that is.
 
-trait Show {
+interface Show {
     func show(self) -> string
 }
 
@@ -17,7 +17,7 @@ struct Tag {
     public v: i64
 }
 
-extend Tag with Show {
+Tag implements Show {
     func show(self) -> string {
         return "tag {self.v}"
     }
@@ -27,7 +27,7 @@ struct Note {
     public s: string
 }
 
-extend Note with Show {
+Note implements Show {
     func show(self) -> string {
         return "note {self.s}"
     }

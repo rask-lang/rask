@@ -1,10 +1,10 @@
 <!-- id: std.fmt -->
 <!-- status: decided -->
-<!-- summary: String formatting via format(), Displayable/Debug traits, Error auto-bridge, println interpolation -->
+<!-- summary: String formatting via format(), Displayable/Debug interfaces, Error auto-bridge, println interpolation -->
 
 # Formatting
 
-`format(template, args...)` with `{}`, `{0}`, `{name}`, `{:spec}` placeholders. `Displayable` and `Debug` traits for type-to-string conversion. `println`/`print` do implicit `{name}` interpolation.
+`format(template, args...)` with `{}`, `{0}`, `{name}`, `{:spec}` placeholders. `Displayable` and `Debug` interfaces for type-to-string conversion. `println`/`print` do implicit `{name}` interpolation.
 
 ## format() Function
 
@@ -74,13 +74,13 @@ for row in rows {
 For ASCII text this costs a flag test — `width()` is `len()` when the string is
 ASCII (`std.strings/U4`).
 
-## Displayable Trait
+## Displayable Interface
 
 | Rule | Description |
 |------|-------------|
-| **D1: Trait** | `trait Displayable { func display(self) -> string }` |
+| **D1: Interface** | `interface Displayable { func display(self) -> string }` |
 | **D2: Primitives** | All primitive types implement `Displayable` by default |
-| **D3: Structs opt-in** | Structs do NOT auto-implement `Displayable` — must add via `extend Type with Displayable` |
+| **D3: Structs opt-in** | Structs do NOT auto-implement `Displayable` — must add via `Type implements Displayable` |
 | **D4: Required for {}** | `format("{}", x)` calls `display()`. Compile error if `Displayable` not implemented. `print(x)` and `println(x)` are the same rule with a different spelling — each argument is rendered through `display()`, so a value that can't render is rejected at the call and one that can uses its own impl. Two ways to reach the renderer, one renderer |
 | **D5: Error bridge** | Types satisfying `Error` (have `message(self) -> string`) auto-satisfy `Displayable` — `display()` calls `message()`. No boilerplate needed for error types in `format("{}", err)` |
 
@@ -88,7 +88,7 @@ ASCII (`std.strings/U4`).
 person; `to_string()` converts something that already is text into a `string`
 (`StringView`, a slice, `Span`, `cstring`, `Path`). Keeping one verb for both
 meant a `Point` — which contains no text at all — "converted to a string", and it
-put the trait in the way of fallible conversions: `cstring.to_string()` returns
+put the interface in the way of fallible conversions: `cstring.to_string()` returns
 `string or Utf8Error`, which no `Displayable` signature can accommodate. Two jobs,
 two verbs.
 
@@ -96,7 +96,7 @@ two verbs.
 ```rask
 struct Point { x: f64, y: f64 }
 
-extend Point with Displayable {
+Point implements Displayable {
     func display(self) -> string {
         return format("({}, {})", self.x, self.y)
     }
@@ -125,17 +125,17 @@ extend AppError {
 // format("{}", AppError.Timeout) → "timed out"
 ```
 
-## Debug Trait
+## Debug Interface
 
 | Rule | Description |
 |------|-------------|
-| **G1: Trait** | `trait Debug { func debug(self) -> string }` |
+| **G1: Interface** | `interface Debug { func debug(self) -> string }` |
 | **G2: Auto-derive** | All types auto-derive `Debug` by default |
-| **G3: Override** | Auto-derived `Debug` can be overridden via `extend Type with Debug` |
+| **G3: Override** | Auto-derived `Debug` can be overridden via `Type implements Debug` |
 | **G4: Debug format** | `format("{:debug}", x)` calls `debug()` |
 | **G5: Map order** | A `Map` renders its entries sorted by key. A key with no ordering falls back to sorting the rendered entries |
 
-The verb matches the trait and the specifier — `Debug`, `{:debug}`, `debug()`.
+The verb matches the interface and the specifier — `Debug`, `{:debug}`, `debug()`.
 
 G5 exists because a map has no order to report. Iteration order is unspecified
 and seeded per process (`std.collections`, `determinism/D7`), so printing the
@@ -175,11 +175,11 @@ ERROR [std.fmt/D4]: type does not implement Displayable
 5  |  println(format("{}", my_struct))
    |                       ^^^^^^^^^ `MyStruct` does not implement Displayable
 
-WHY: {} calls display(), which requires the Displayable trait.
+WHY: {} calls display(), which requires the Displayable interface.
 
 FIX 1: Add Displayable implementation:
 
-  extend MyStruct with Displayable {
+  MyStruct implements Displayable {
       func display(self) -> string { ... }
   }
 
@@ -264,7 +264,7 @@ isn't implemented.
 
 **D3 (structs opt-in):** Auto-deriving Displayable would produce output that looks intentional but isn't. Debug auto-derives because it's for developers. Displayable is for users, so you write it.
 
-**D5 (Error bridge):** Every error type already has `message()` — requiring a separate `display()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `display()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `extend Type with Displayable`.
+**D5 (Error bridge):** Every error type already has `message()` — requiring a separate `display()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `display()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `Type implements Displayable`.
 
 **I3 (no expressions):** Expressions in string interpolation create hidden complexity. `format()` makes the formatting explicit. Keeps println simple.
 
@@ -274,7 +274,7 @@ Columns is the only answer that makes the example true. It costs a flag test for
 
 S6 exists because the actual table-formatting task is two passes — measure the widest cell, then pad every row to it — and a format string with only literal widths can't express the second pass. Padding to a name from scope reuses the `{name}` capture rule rather than inventing `{:width$}`.
 
-**D1/G1 (`display` and `debug` as verbs):** `to_string` was doing two unrelated jobs. On `StringView`, a slice, `Span` or `cstring` it's a conversion — there are bytes, they become a `string`. On a `Point` there is no text to convert; it's rendering. Naming both `to_string` also broke `cstring`, whose conversion is fallible (`string or Utf8Error`) and so can't match any `Displayable` signature. Splitting the verbs fixes both, and `to_debug_string` collapses to `debug` on the way, which finally matches the trait and the `{:debug}` specifier it serves.
+**D1/G1 (`display` and `debug` as verbs):** `to_string` was doing two unrelated jobs. On `StringView`, a slice, `Span` or `cstring` it's a conversion — there are bytes, they become a `string`. On a `Point` there is no text to convert; it's rendering. Naming both `to_string` also broke `cstring`, whose conversion is fallible (`string or Utf8Error`) and so can't match any `Displayable` signature. Splitting the verbs fixes both, and `to_debug_string` collapses to `debug` on the way, which finally matches the interface and the `{:debug}` specifier it serves.
 
 ### Patterns & Guidance
 
@@ -292,7 +292,7 @@ println(format("{:<20} {:>10} {:>10.2}", "Widget", 5, 9.99))
 ```rask
 struct Color { r: u8, g: u8, b: u8 }
 
-extend Color with Displayable {
+Color implements Displayable {
     func display(self) -> string {
         return format("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }
@@ -319,5 +319,5 @@ let report = b.build()
 ### See Also
 
 - `std.strings` — `format()` returns a `string`, uses `StringBuilder` internally
-- `type.traits` — Displayable and Debug are standard traits
+- `type.interfaces` — Displayable and Debug are standard interfaces
 - `type.errors` — Error types auto-bridge to Displayable (D5)

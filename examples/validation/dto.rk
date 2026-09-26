@@ -77,21 +77,23 @@ struct ErrorBody {
 }
 
 // ─── Validation conformances ─────────────────────────────────────────
-// Comma-list conformance: one block claims both traits (CD1). Displayable
-// gives a compact log line; Validate is the request gate.
+// One block per interface (CD1). Validate is the request gate; Displayable
+// gives a compact log line.
 
-extend CreateTaskRequest with Validate, Displayable {
+CreateTaskRequest implements Validate {
     func validate(self) -> void or ValidationError {
         try check_len("title", self.title, MAX_TITLE_LEN)
         return
     }
+}
 
+CreateTaskRequest implements Displayable {
     func to_string(self) -> string {
         return "CreateTask(title={self.title}, project={self.project_id})"
     }
 }
 
-extend UpdateTaskRequest with Validate {
+UpdateTaskRequest implements Validate {
     func validate(self) -> void or ValidationError {
         // Enum parses happen in the handler where a bad value becomes
         // ValidationError.BadEnum; only the tag count is bounded here.
@@ -104,7 +106,7 @@ extend UpdateTaskRequest with Validate {
 
 // public extend: the conformance is part of the crate's public API surface,
 // so it's declared public (never inferred — G1).
-extend CreateUserRequest with Validate {
+CreateUserRequest implements Validate {
     func validate(self) -> void or ValidationError {
         try check_len("name", self.name, MAX_NAME_LEN)
         if !self.email.contains("@") {

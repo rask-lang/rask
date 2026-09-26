@@ -456,10 +456,10 @@ fn redirect_def(stmt: &mut MirStmt, to: LocalId) {
         | MirStmtKind::LoadCapture { dst, .. }
         | MirStmtKind::ResourceRegister { dst, .. }
         | MirStmtKind::GlobalRef { dst, .. }
-        | MirStmtKind::TraitBox { dst, .. } => *dst = to,
+        | MirStmtKind::InterfaceBox { dst, .. } => *dst = to,
         MirStmtKind::Call { dst: Some(d), .. }
         | MirStmtKind::ClosureCall { dst: Some(d), .. }
-        | MirStmtKind::TraitCall { dst: Some(d), .. } => *d = to,
+        | MirStmtKind::InterfaceCall { dst: Some(d), .. } => *d = to,
         _ => {}
     }
 }

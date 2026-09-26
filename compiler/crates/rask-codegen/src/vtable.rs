@@ -1,33 +1,33 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! VTable contents for trait objects: what goes in one, and what it's called.
+//! VTable contents for interface objects: what goes in one, and what it's called.
 //!
 //! The offsets live in `rask_mir::vtable_layout`, because lowering picks a
-//! `TraitCall`'s offset and this crate writes the pointers it will read.
+//! `InterfaceCall`'s offset and this crate writes the pointers it will read.
 
 pub use rask_mir::vtable_layout::{
     method_offset, VTABLE_ALIGN_OFFSET, VTABLE_METHODS_START, VTABLE_OWNED_RELEASE_OFFSET,
     VTABLE_SIZE_OFFSET,
 };
 
-/// Metadata for a single vtable: one (concrete type, trait) pair.
+/// Metadata for a single vtable: one (concrete type, interface) pair.
 #[derive(Debug, Clone)]
 pub struct VTableInfo {
     /// Data section name: ".vtable.Button__Widget"
     pub data_name: String,
     /// Concrete type name: "Button"
     pub concrete_type: String,
-    /// Trait name: "Widget"
-    pub trait_name: String,
+    /// Interface name: "Widget"
+    pub interface_name: String,
     /// sizeof(concrete_type) in bytes
     pub concrete_size: u32,
     /// alignof(concrete_type) in bytes
     pub concrete_align: u32,
-    /// Compatible methods in vtable order (trait declaration order, minus incompatible)
+    /// Compatible methods in vtable order (interface declaration order, minus incompatible)
     pub methods: Vec<VTableMethod>,
     /// What the concrete value owns, for a box that owns the value — a moved-in
     /// one. Empty leaves `owned_release` null. A box built for a call borrows
-    /// instead, and `TraitDrop` never reads this slot.
+    /// instead, and `InterfaceDrop` never reads this slot.
     pub owned: Vec<crate::drop_fields::DropField>,
 }
 
@@ -49,7 +49,7 @@ impl VTableInfo {
     }
 }
 
-/// Build the vtable data section name from concrete type and trait name.
-pub fn vtable_data_name(concrete_type: &str, trait_name: &str) -> String {
-    format!(".vtable.{}__{}", concrete_type, trait_name)
+/// Build the vtable data section name from concrete type and interface name.
+pub fn vtable_data_name(concrete_type: &str, interface_name: &str) -> String {
+    format!(".vtable.{}__{}", concrete_type, interface_name)
 }

@@ -223,6 +223,6 @@ func wrapping_increment<T: Integer>(x: Wrapping<T>) -> Wrapping<T> {
 
 ### See Also
 
-- `type.operators` — Operator precedence and traits
+- `type.operators` — Operator precedence and interfaces
 - `type.primitives` — Primitive integer types
 - `mem.unsafe` — Unsafe blocks

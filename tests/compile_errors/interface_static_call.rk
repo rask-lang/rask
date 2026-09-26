@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An interface names what a type can do; its methods run on a value of a
+// conforming type (type.generics/MN1). Calling one on the interface's own name
+// used to type-check as a static call and die in MIR lowering.
+
+interface Labeled {
+    func label(self) -> string
+}
+
+struct Doc {
+    n: i64
+}
+
+Doc implements Labeled {
+    func label(self) -> string {
+        return "doc {self.n}"
+    }
+}
+
+func main() {
+    let d = Doc { n: 1 }
+    // ERROR: `Labeled` is an interface, and an interface has no static methods (E0897)
+    println(Labeled.label(d))
+}

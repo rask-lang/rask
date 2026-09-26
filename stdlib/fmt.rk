@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// String formatting: Displayable and Debug traits, format() function.
+// String formatting: Displayable and Debug interfaces, format() function.
 //
 // format(template, args...) is compiler-known (CM1) — it accepts variadic
 // arguments through compiler support, not a general variadic mechanism.
@@ -11,24 +11,24 @@
 // ─── Displayable ────────────────────────────────────────────────
 
 /// User-facing string representation. Structs must opt in via
-/// `extend Type with Displayable`. Primitives implement it by default (D2).
+/// `Type implements Displayable`. Primitives implement it by default (D2).
 ///
 /// format("{}", x) calls to_string() — compile error if not implemented (D4).
 ///
 /// Error bridge (D5): types with message(self) -> string auto-satisfy
 /// Displayable — to_string() delegates to message(). No boilerplate for
 /// error types in format("{}", err).
-public trait Displayable {
+public interface Displayable {
     func to_string(self) -> string
 }
 
 // ─── Debug ──────────────────────────────────────────────────────
 
 /// Developer-facing representation. Auto-derived for all types (G2).
-/// Override via `extend Type with Debug` (G3).
+/// Override via `Type implements Debug` (G3).
 ///
-/// format("{:debug}", x) calls debug() (G4) — the verb matches the trait.
+/// format("{:debug}", x) calls debug() (G4) — the verb matches the interface.
 /// Auto-derived output shows struct fields and enum variants.
-public trait Debug {
+public interface Debug {
     func debug(self) -> string
 }

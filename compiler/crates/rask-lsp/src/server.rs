@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! LanguageServer trait implementation.
+//! LanguageServer interface implementation.
 //!
 //! Handler methods run on the tokio executor. Anything that might panic
 //! (cursor on a char boundary, a compiler bug walking the AST) is caught

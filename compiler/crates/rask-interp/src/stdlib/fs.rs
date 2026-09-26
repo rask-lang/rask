@@ -413,7 +413,7 @@ impl Interpreter {
             }
             // std.io/K1, K3. The two halves of `Seeker` as the backends see
             // them: a position, or -1. The `SeekFrom` is taken apart by the
-            // Rask trait body in `stdlib/io.rk`, so neither backend repeats it,
+            // Rask interface body in `stdlib/io.rk`, so neither backend repeats it,
             // and `whence` follows that enum's declaration order —
             // 0 = Start, 1 = End, 2 = Current.
             "seek_raw" => {

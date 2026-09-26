@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
 // The conformance is declared in neither the package that owns the type nor
-// the one that owns the trait, and it's used here through the bound — the
+// the one that owns the interface, and it's used here through the bound — the
 // whole of type.generics/XC2 in one program.
 
-import traitpkg
-import traitpkg.Labeled
+import interfacepkg
+import interfacepkg.Labeled
 import liba
 
 func show<T: Labeled>(x: T) -> string {
@@ -13,7 +13,7 @@ func show<T: Labeled>(x: T) -> string {
 }
 
 func main() {
-    let d = traitpkg.make_doc(7)
+    let d = interfacepkg.make_doc(7)
     println(show(d))
     println(d.label())
     return

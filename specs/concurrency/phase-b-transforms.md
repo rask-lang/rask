@@ -1,7 +1,7 @@
 <!-- id: conc.phase-b -->
 <!-- status: proposed -->
 <!-- summary: Phase B compiler transforms — vtable ABI, closure state machines, separate compilation, FFI boundaries -->
-<!-- depends: concurrency/runtime-strategy.md, concurrency/io-context.md, compiler/memory-layout.md, compiler/effects.md, types/traits.md -->
+<!-- depends: concurrency/runtime-strategy.md, concurrency/io-context.md, compiler/memory-layout.md, compiler/effects.md, types/interfaces.md -->
 
 # Phase B Compiler Transforms
 
@@ -19,15 +19,15 @@ There are NO state-machine transforms, NO wide ABIs, NO pause-point enumeration 
 
 | Rule | Description |
 |------|-------------|
-| **VT1: Clean vtable entries** | Vtable method entries have exactly the trait's declared signature. No hidden runtime parameter |
+| **VT1: Clean vtable entries** | Vtable method entries have exactly the interface's declared signature. No hidden runtime parameter |
 | **VT2: Implementations read the slot** | Any implementation that performs async-capable I/O reads the process-global runtime slot at call time |
-| **VT3: Trait object calls are potential pause points** | Inside spawn closures, trait object method calls to implementations that may read the runtime slot generate state machine yield variants |
+| **VT3: Interface object calls are potential pause points** | Inside spawn closures, interface object method calls to implementations that may read the runtime slot generate state machine yield variants |
 
-The runtime lives in a process-global slot (`conc.runtime`), so vtable ABI never needs to carry it. Trait signatures and vtable layouts stay clean.
+The runtime lives in a process-global slot (`conc.runtime`), so vtable ABI never needs to carry it. Interface signatures and vtable layouts stay clean.
 
 <!-- test: skip -->
 ```rask
-trait Reader {
+interface Reader {
     func read(self, buf: Vec<u8>) -> usize or IoError
 }
 
@@ -84,7 +84,7 @@ enum State {
 }
 ```
 
-For in-memory implementations (Buffer), `io_future.poll()` returns Ready immediately — the scheduler never parks the task. The `AwaitingRead` variant is "dead" but harmless. Cost: a few bytes in the state machine enum per trait object call in the closure.
+For in-memory implementations (Buffer), `io_future.poll()` returns Ready immediately — the scheduler never parks the task. The `AwaitingRead` variant is "dead" but harmless. Cost: a few bytes in the state machine enum per interface object call in the closure.
 
 ## Function Pointers and Closures
 
@@ -202,7 +202,7 @@ using Multitasking, ThreadPool {
 
 | Case | Rule | Behavior |
 |------|------|----------|
-| Trait with no I/O methods (e.g., `Display`) | VT1 | Clean vtable, implementations never touch RUNTIME_SLOT, zero cost |
+| Interface with no I/O methods (e.g., `Display`) | VT1 | Clean vtable, implementations never touch RUNTIME_SLOT, zero cost |
 | `any Reader` in non-async context | VT2 | Implementation reads RUNTIME_SLOT, finds `none`, takes blocking path |
 | Pure closure stored in variable, called in spawn | FP1, FP3 | Clean ABI, yield point generated conservatively. Poll returns Ready immediately |
 | Cross-module function gains `spawn` internally | SC3 | Caller sees a new CC2 scope requirement. Source-level breakage, same as any API change |
@@ -211,7 +211,7 @@ using Multitasking, ThreadPool {
 | Many concurrent blocking FFI calls | FFI3 | Scheduler grows temporarily. Bounded by OS thread limits |
 | FFI callback into Rask code | FFI1 | Runs on FFI's OS thread. If no `using Multitasking` block is active, `spawn` in the callback is a CC3 runtime panic |
 | `compile_rust()` interop (`struct.build`) | FFI1 | Same rules as C FFI |
-| Nested trait object call (e.g., `io.copy(any Reader, any Writer)`) | VT3 | Two potential yield points per loop iteration. Two state machine variants. Acceptable — this is the I/O copy hot path |
+| Nested interface object call (e.g., `io.copy(any Reader, any Writer)`) | VT3 | Two potential yield points per loop iteration. Two state machine variants. Acceptable — this is the I/O copy hot path |
 
 ---
 
@@ -219,7 +219,7 @@ using Multitasking, ThreadPool {
 
 ### Rationale
 
-**Clean vtable and fn-pointer ABIs (VT1, FP1):** With stackful fibers, runtime discovery happens inside the callee (via `RUNTIME_SLOT`) rather than through a parameter threaded by the caller. Indirect calls therefore don't need wide ABIs. Trait signatures match their vtable entries exactly.
+**Clean vtable and fn-pointer ABIs (VT1, FP1):** With stackful fibers, runtime discovery happens inside the callee (via `RUNTIME_SLOT`) rather than through a parameter threaded by the caller. Indirect calls therefore don't need wide ABIs. Interface signatures match their vtable entries exactly.
 
 **FFI worker compensation (FFI3):** Go does this for cgo and it works well in practice. The 1 ms threshold avoids thread churn for fast FFI while catching blocking I/O.
 
@@ -239,7 +239,7 @@ Rejected in favor of stackful fibers. See `conc.runtime` §Design Rationale.
 
 **Go-style copying stacks:** Start small (2 KiB), copy to a larger stack on growth, rewrite pointers. Requires GC to find pointers-into-stack during copy. Rask has no GC (ownership-based memory), so copying isn't viable. Loom-style virtual-reservation stacks avoid the issue entirely.
 
-**Per-trait vtable specialization:** Generate different vtable shapes for "pure" vs "potentially pausing" traits. Rejected as heuristic-based and fragile. With stackful fibers, the ABI is uniform anyway.
+**Per-interface vtable specialization:** Generate different vtable shapes for "pure" vs "potentially pausing" interfaces. Rejected as heuristic-based and fragile. With stackful fibers, the ABI is uniform anyway.
 
 ### See Also
 
@@ -248,5 +248,5 @@ Rejected in favor of stackful fibers. See `conc.runtime` §Design Rationale.
 - `conc.io-context` — Runtime discovery via process-global slot
 - `comp.effects` — Effect tracking (IO/Async/Mutation metadata)
 - `compiler.layout/V1-V5` — Vtable memory layout
-- `type.traits/TR12-TR13` — Vtable dispatch, fat pointer structure
+- `type.interfaces/TR12-TR13` — Vtable dispatch, fat pointer structure
 - `mem.closures` — Closure capture rules, storable vs immediate

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // `fs.metadata` used to be `@native("rask_fs_metadata")`, and that C function
-// signalled failure by returning a null pointer. Codegen handed the null back
+// signalled failure by returning a nullptr pointer. Codegen handed the nullptr back
 // as a valid `Metadata`, so the `catch` never ran and reading a field went
-// through null — native reported size 0 for a file that doesn't exist while the
+// through nullptr — native reported size 0 for a file that doesn't exist while the
 // interpreter reported NotFound (#674).
 //
 // It's written in Rask now, so the error branch is built on the Rask side and

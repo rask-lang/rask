@@ -9,7 +9,7 @@
 //! aspirational until #1048: its free existed in the runtime and no constructor
 //! of its own was on the list this pass reads.
 //!
-//! Modelled on `trait_drop.rs`, which solves the same problem for trait
+//! Modelled on `interface_drop.rs`, which solves the same problem for interface
 //! objects, and shares its rules: track only *fresh* allocations — the
 //! destinations of the constructors below, plus whatever a chain of moves or
 //! phis carries forward — and drop only what never hands ownership to anything
@@ -17,7 +17,7 @@
 //! call's return value is somebody else's, and freeing it double-frees.
 //!
 //! One rule differs, and it has to. A container's own methods take it as their
-//! first argument, so the "any call argument escapes" rule of the trait pass
+//! first argument, so the "any call argument escapes" rule of the interface pass
 //! would mark every vector escaping the moment anything was pushed onto it, and
 //! nothing would ever be dropped. A container-prefixed call borrows its
 //! *receiver* — argument zero — and escapes the rest: `v.push(inner)` hands
@@ -183,8 +183,8 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     let handing_over = functions_that_hand_a_container_back(fns, &targets);
     let kept = params_a_callee_keeps(fns);
-    let trait_kept = trait_method_args_kept(fns, &kept);
-    let trait_handing = trait_methods_that_hand_back(fns, &handing_over);
+    let interface_kept = interface_method_args_kept(fns, &kept);
+    let interface_handing = interface_methods_that_hand_back(fns, &handing_over);
     // A snapshot, because tracing a container through a capture cell has to
     // read the closure that captured it while the frame it belongs to is being
     // rewritten.
@@ -194,7 +194,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     let own: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
     for func in fns.iter_mut() {
         insert_for_function(
-            func, &snapshot, &handing_over, &trait_handing, &kept, &trait_kept, &targets, &own,
+            func, &snapshot, &handing_over, &interface_handing, &kept, &interface_kept, &targets, &own,
         );
     }
     let glue = env_drop_glue(fns, &handing_over, &targets);
@@ -283,12 +283,12 @@ fn env_drop_glue(
     // site that builds this closure has to agree about what its environment
     // owns — inlining copies a create site into each caller, and a site that
     // owns nothing must not get a glue that frees something.
-    let trait_handing = trait_methods_that_hand_back(fns, handing_over);
+    let interface_handing = interface_methods_that_hand_back(fns, handing_over);
     let mut answers: HashMap<String, Vec<Vec<EnvSlot>>> = HashMap::new();
     let mut order: Vec<(String, Option<String>)> = Vec::new();
     for func in fns {
         let fresh =
-            collect_fresh_containers_with(func, fns, handing_over, &trait_handing, targets);
+            collect_fresh_containers_with(func, fns, handing_over, &interface_handing, targets);
         // What this frame frees for itself, right after dropping the closure.
         // The site owns nothing then, which is what lets a site that borrows
         // its capture and a site that owns one agree — see
@@ -651,10 +651,10 @@ pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<
     }
 }
 
-/// Per trait method, which of its arguments an implementation keeps.
+/// Per interface method, which of its arguments an implementation keeps.
 ///
 /// The same question `params_a_callee_keeps` answers, asked of a call that has
-/// no function name to ask about — a trait call names a method and a vtable
+/// no function name to ask about — an interface call names a method and a vtable
 /// slot. The answer is taken across every function in the program that could
 /// be behind that slot, which by name is any `Something_method`, and a call is
 /// a borrow only when all of them borrow. So a name that merely looks like an
@@ -662,9 +662,9 @@ pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<
 /// an unknown argument is "kept" — a leak, where the other way is a double
 /// free.
 ///
-/// `self` isn't in a trait call's argument list, so the implementation's
+/// `self` isn't in an interface call's argument list, so the implementation's
 /// parameters are read one to the right.
-fn trait_method_args_kept(
+fn interface_method_args_kept(
     fns: &[MirFunction],
     kept: &HashMap<String, Vec<bool>>,
 ) -> HashMap<String, Vec<bool>> {
@@ -697,7 +697,7 @@ fn trait_method_args_kept(
         .collect()
 }
 
-/// Per trait method, how an implementation hands a container back.
+/// Per interface method, how an implementation hands a container back.
 ///
 /// Same shape as the closure answer below it: the method is only a
 /// constructor when every function that could be behind the vtable slot is
@@ -706,7 +706,7 @@ fn trait_method_args_kept(
 ///
 /// Without it a `Vec<u8>` read out of `reader.read_bytes()` was nobody's —
 /// nothing named the callee, so nothing knew the caller owned it (#1199).
-fn trait_methods_that_hand_back(
+fn interface_methods_that_hand_back(
     fns: &[MirFunction],
     handing: &HashMap<String, HandBack>,
 ) -> HashMap<String, HandBack> {
@@ -779,14 +779,14 @@ fn param_is_kept_by(
                         }
                     }
                 }
-                MirStmtKind::ClosureCall { args, .. } | MirStmtKind::TraitCall { args, .. } => {
+                MirStmtKind::ClosureCall { args, .. } | MirStmtKind::InterfaceCall { args, .. } => {
                     if args.iter().any(holds) {
                         return true;
                     }
                 }
                 MirStmtKind::Store { value, .. }
                 | MirStmtKind::ArrayStore { value, .. }
-                | MirStmtKind::TraitBox { value, .. } => {
+                | MirStmtKind::InterfaceBox { value, .. } => {
                     if holds(value) {
                         return true;
                     }
@@ -854,9 +854,9 @@ fn functions_that_hand_a_container_back(
             if handing.contains_key(&func.name) {
                 continue;
             }
-            // No trait answer yet — it is built from this one, and a
+            // No interface answer yet — it is built from this one, and a
             // half-built map would make the fixed point depend on iteration
-            // order. A trait call's result is nobody's here, which is what the
+            // order. An interface call's result is nobody's here, which is what the
             // whole map said before it existed.
             let fresh =
                 collect_fresh_containers_with(func, fns, &handing, &HashMap::new(), targets);
@@ -1046,19 +1046,19 @@ fn insert_for_function(
     func: &mut MirFunction,
     all: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
-    trait_handing: &HashMap<String, HandBack>,
+    interface_handing: &HashMap<String, HandBack>,
     kept: &HashMap<String, Vec<bool>>,
-    trait_kept: &HashMap<String, Vec<bool>>,
+    interface_kept: &HashMap<String, Vec<bool>>,
     targets: &crate::closure_targets::ClosureTargets,
     own: &HashSet<String>,
 ) {
     let fresh =
-        collect_fresh_containers_with(func, all, handing_over, trait_handing, targets);
+        collect_fresh_containers_with(func, all, handing_over, interface_handing, targets);
     if fresh.is_empty() {
         return;
     }
-    let (mut escaping, consumed) = find_escaping(func, &fresh, kept, trait_kept);
-    escaping.extend(consumed_by_an_ensure(func, all, &fresh, kept, trait_kept));
+    let (mut escaping, consumed) = find_escaping(func, &fresh, kept, interface_kept);
+    escaping.extend(consumed_by_an_ensure(func, all, &fresh, kept, interface_kept));
     let carried = carried_variables(func, &crate::analysis::dominators::DominatorTree::build(func));
     let moved_away = find_moved_away(func, &fresh, &carried);
     let already_freed = find_already_freed(func, &fresh, own);
@@ -1173,7 +1173,7 @@ fn insert_for_function(
     // A container in a capture cell is reached through a store, which the rule
     // above reads as handing it over — so it never becomes droppable and its
     // free goes in separately, keyed on the cell rather than on a name.
-    let cells = cells_this_frame_frees(func, all, &fresh, kept, trait_kept, trait_handing);
+    let cells = cells_this_frame_frees(func, all, &fresh, kept, interface_kept, interface_handing);
     for (cell, _, _) in &cells {
         for group in &groups {
             if group.iter().any(|id| stores_into(func, *id, *cell)) {
@@ -1595,7 +1595,7 @@ fn collect_fresh_containers_with(
     func: &MirFunction,
     all: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
-    trait_handing: &HashMap<String, HandBack>,
+    interface_handing: &HashMap<String, HandBack>,
     targets: &crate::closure_targets::ClosureTargets,
 ) -> HashMap<LocalId, &'static str> {
     let mut fresh: HashMap<LocalId, &'static str> = HashMap::new();
@@ -1624,8 +1624,8 @@ fn collect_fresh_containers_with(
             // A call through a vtable, once every implementation agrees it
             // hands one back — the same rule as the closure case below, and
             // for the same reason: there is no callee name to look up.
-            if let MirStmtKind::TraitCall { dst: Some(dst), method_name, .. } = &stmt.kind {
-                if let Some(back) = trait_handing.get(method_name) {
+            if let MirStmtKind::InterfaceCall { dst: Some(dst), method_name, .. } = &stmt.kind {
+                if let Some(back) = interface_handing.get(method_name) {
                     if back.wrapped {
                         unwrap_for.insert(*dst, back.free);
                     } else {
@@ -1904,8 +1904,8 @@ fn cells_this_frame_frees(
     all: &[MirFunction],
     fresh: &HashMap<LocalId, &'static str>,
     kept: &HashMap<String, Vec<bool>>,
-    trait_kept: &HashMap<String, Vec<bool>>,
-    _trait_handing: &HashMap<String, HandBack>,
+    interface_kept: &HashMap<String, Vec<bool>>,
+    _interface_handing: &HashMap<String, HandBack>,
 ) -> Vec<(LocalId, Holds, BlockId)> {
     let mut by_ref_cells: HashSet<LocalId> = func
         .blocks
@@ -1961,7 +1961,7 @@ fn cells_this_frame_frees(
                 // The address itself going somewhere this pass can't follow.
                 // A `ClosureCreate` is the one that made the cell and is read
                 // through `cell_is_read_only_in_closures` instead.
-                MirStmtKind::Call { args, .. } | MirStmtKind::TraitCall { args, .. } => {
+                MirStmtKind::Call { args, .. } | MirStmtKind::InterfaceCall { args, .. } => {
                     for arg in args {
                         if let MirOperand::Local(id) = arg {
                             handed_on.insert(*id);
@@ -2016,7 +2016,7 @@ fn cells_this_frame_frees(
                 }
             }
             // No name to ask about, so the conservative answer.
-            MirStmtKind::TraitCall { args, .. } | MirStmtKind::ClosureCall { args, .. } => {
+            MirStmtKind::InterfaceCall { args, .. } | MirStmtKind::ClosureCall { args, .. } => {
                 for arg in args {
                     if let MirOperand::Local(id) = arg {
                         kept_by_a_call.insert(*id);
@@ -2078,7 +2078,7 @@ fn cells_this_frame_frees(
         // way out of the frame, so a value already taken away must not be
         // named at all. The path-sensitivity below is for a frame's own locals,
         // which have a placement to be sensitive about.
-        let (escapes, taken) = find_escaping(func, &carried, kept, trait_kept);
+        let (escapes, taken) = find_escaping(func, &carried, kept, interface_kept);
         if !escapes.is_empty() || !taken.is_empty() {
             continue;
         }
@@ -2705,7 +2705,7 @@ fn find_escaping(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
     kept: &HashMap<String, Vec<bool>>,
-    trait_kept: &HashMap<String, Vec<bool>>,
+    interface_kept: &HashMap<String, Vec<bool>>,
 ) -> (HashSet<LocalId>, HashMap<LocalId, HashSet<BlockId>>) {
     let mut escaping = HashSet::new();
     // Where a container is handed to a stdlib method declared `take self`.
@@ -2752,15 +2752,15 @@ fn find_escaping(
                         }
                     }
                 }
-                // A trait call names a method and a vtable slot, so the
+                // An interface call names a method and a vtable slot, so the
                 // by-name answer above has nothing to look up — every argument
                 // read as handed over. `io.copy` reads a `Vec<u8>` out of one
-                // trait call and passes it to another, and that second call
+                // interface call and passes it to another, and that second call
                 // left it to nobody (#1199). `self` isn't in the argument list,
                 // so an implementation's parameters sit one to the right.
-                MirStmtKind::TraitCall { method_name, args, .. } => {
+                MirStmtKind::InterfaceCall { method_name, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
-                        let keeps = trait_kept
+                        let keeps = interface_kept
                             .get(method_name)
                             .and_then(|v| v.get(i))
                             .copied()
@@ -2777,7 +2777,7 @@ fn find_escaping(
                 }
                 MirStmtKind::Store { value, .. }
                 | MirStmtKind::ArrayStore { value, .. }
-                | MirStmtKind::TraitBox { value, .. } => {
+                | MirStmtKind::InterfaceBox { value, .. } => {
                     mark(value, &mut escaping);
                 }
                 MirStmtKind::ClosureCreate { captures, .. } => {
@@ -2822,7 +2822,7 @@ fn consumed_by_an_ensure(
     all: &[MirFunction],
     fresh: &HashMap<LocalId, &'static str>,
     kept: &HashMap<String, Vec<bool>>,
-    trait_kept: &HashMap<String, Vec<bool>>,
+    interface_kept: &HashMap<String, Vec<bool>>,
 ) -> HashSet<LocalId> {
     let mut out = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
@@ -2844,7 +2844,7 @@ fn consumed_by_an_ensure(
                     _ => {}
                 }
             }
-            let (escaping, consumed) = find_escaping(body, &names, kept, trait_kept);
+            let (escaping, consumed) = find_escaping(body, &names, kept, interface_kept);
             if !escaping.is_empty() || !consumed.is_empty() {
                 out.insert(cap.local_id);
             }
@@ -2951,7 +2951,7 @@ fn placed_locals(
 
 /// Free before every return the container's definition dominates, and before
 /// every loop back-edge it was built inside. Same placement rules as
-/// `trait_drop.rs`, and for the same reasons — see the comments there on why
+/// `interface_drop.rs`, and for the same reasons — see the comments there on why
 /// dominance is what decides it rather than block order.
 fn insert_drops(
     func: &mut MirFunction,

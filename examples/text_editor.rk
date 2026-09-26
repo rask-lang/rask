@@ -5,7 +5,7 @@
 import fs
 import io
 
-// What an edit can refuse to do. `Error` is the trait every error type
+// What an edit can refuse to do. `Error` is the interface every error type
 // satisfies, not a type of its own — a document needs its own.
 enum EditError {
     IndexOutOfBounds

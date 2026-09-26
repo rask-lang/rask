@@ -17,7 +17,7 @@ enum RpnError {
     Empty
 }
 
-extend RpnError with Error {
+RpnError implements Error {
     func message(self) -> string
 }
 

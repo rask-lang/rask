@@ -79,12 +79,12 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
             visit_operand_uses(index, f);
             visit_operand_uses(value, f);
         }
-        MirStmtKind::TraitBox { value, .. } => visit_operand_uses(value, f),
-        MirStmtKind::TraitCall { trait_object, args, .. } => {
-            f(*trait_object);
+        MirStmtKind::InterfaceBox { value, .. } => visit_operand_uses(value, f),
+        MirStmtKind::InterfaceCall { interface_object, args, .. } => {
+            f(*interface_object);
             args.iter().for_each(|a| visit_operand_uses(a, f));
         }
-        MirStmtKind::TraitDrop { trait_object } => f(*trait_object),
+        MirStmtKind::InterfaceDrop { interface_object } => f(*interface_object),
         MirStmtKind::Phi { args, .. } => {
             args.iter().for_each(|(_, o)| visit_operand_uses(o, f))
         }
@@ -175,12 +175,12 @@ pub fn visit_stmt_use_locals_mut(
             visit_operand_local_mut(index, f);
             visit_operand_local_mut(value, f);
         }
-        MirStmtKind::TraitBox { value, .. } => visit_operand_local_mut(value, f),
-        MirStmtKind::TraitCall { trait_object, args, .. } => {
-            f(trait_object, UseKind::Value);
+        MirStmtKind::InterfaceBox { value, .. } => visit_operand_local_mut(value, f),
+        MirStmtKind::InterfaceCall { interface_object, args, .. } => {
+            f(interface_object, UseKind::Value);
             args.iter_mut().for_each(|a| visit_operand_local_mut(a, f));
         }
-        MirStmtKind::TraitDrop { trait_object } => f(trait_object, UseKind::Value),
+        MirStmtKind::InterfaceDrop { interface_object } => f(interface_object, UseKind::Value),
         MirStmtKind::Phi { args, .. } => {
             args.iter_mut().for_each(|(_, o)| visit_operand_local_mut(o, f))
         }
@@ -270,10 +270,10 @@ pub fn stmt_def(stmt: &MirStmt) -> Option<LocalId> {
         | MirStmtKind::LoadCapture { dst, .. }
         | MirStmtKind::ResourceRegister { dst, .. }
         | MirStmtKind::GlobalRef { dst, .. }
-        | MirStmtKind::TraitBox { dst, .. } => Some(*dst),
+        | MirStmtKind::InterfaceBox { dst, .. } => Some(*dst),
         MirStmtKind::Call { dst: Some(d), .. }
         | MirStmtKind::ClosureCall { dst: Some(d), .. }
-        | MirStmtKind::TraitCall { dst: Some(d), .. } => Some(*d),
+        | MirStmtKind::InterfaceCall { dst: Some(d), .. } => Some(*d),
         _ => None,
     }
 }

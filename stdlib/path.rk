@@ -148,7 +148,7 @@ extend Path {
 }
 
 /// `path / "component"` appends with a separator. There is no `join`.
-extend Path with Div<string> {
+Path implements Div<string> {
     type Out = Path
 
     /// Append a component with a separator. Backs the `/` operator —

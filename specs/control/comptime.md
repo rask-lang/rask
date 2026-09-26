@@ -97,12 +97,12 @@ Being callable at comptime is a property of what a function does, not of its mar
 
 | Rule | Description |
 |------|-------------|
-| **CT6: Comptime-evaluable calls** | A call in comptime position is legal iff the callee — after substituting generic parameters and resolving trait methods to concrete implementations — evaluates within CT7/CT8, transitively. No `comptime` marking required on the callee |
+| **CT6: Comptime-evaluable calls** | A call in comptime position is legal iff the callee — after substituting generic parameters and resolving interface methods to concrete implementations — evaluates within CT7/CT8, transitively. No `comptime` marking required on the callee |
 | **CT7: No I/O** | Cannot perform I/O (exception: `@embed_file`), spawn tasks, allocate from runtime pools |
 | **CT8: No runtime values** | All inputs must be comptime-known; using runtime values in comptime context is a compile error |
 | **CT60: Definition-time guarantee** | `comptime func` checks CT6/CT7 at the definition instead of at distant call sites. Obligations involving type parameters are deferred to instantiation (`type.generics/G2`). `comptime func` stays comptime-only (CT3) |
-| **CT61: Trait bounds at comptime** | Calling a bound's method on `T` in comptime code is legal iff the concrete implementation, after instantiation, is comptime-evaluable — checked per instantiation. Auto-derived conformances (Equal, Hashable, Comparable, Cloneable, Debug, Error) are comptime-evaluable by construction |
-| **CT62: No dynamic dispatch** | `any Trait` cannot be created or called at comptime — heap allocation and vtables are runtime machinery (CT30–CT34) |
+| **CT61: Interface bounds at comptime** | Calling a bound's method on `T` in comptime code is legal iff the concrete implementation, after instantiation, is comptime-evaluable — checked per instantiation. Auto-derived conformances (Equal, Hashable, Comparable, Cloneable, Debug, Error) are comptime-evaluable by construction |
+| **CT62: No dynamic dispatch** | `any Interface` cannot be created or called at comptime — heap allocation and vtables are runtime machinery (CT30–CT34) |
 
 <!-- test: skip -->
 ```rask
@@ -388,8 +388,8 @@ const B = comptime get_value(5)  // Compile error: "Index out of bounds: 5 >= 3"
 |------|------|----------|
 | Comptime code calls unmarked pure function | CT6 | Works — evaluated at comptime, checked transitively |
 | Comptime code calls function that does I/O | CT6/CT7 | Compile error with comptime call stack naming the I/O call |
-| Comptime func with `<T: Trait>` calls bound method | CT61 | Legal iff T's implementation is comptime-evaluable; error shows instantiation chain |
-| `any Trait` created or called at comptime | CT62 | Compile error: "dynamic dispatch not available at compile time" |
+| Comptime func with `<T: Interface>` calls bound method | CT61 | Legal iff T's implementation is comptime-evaluable; error shows instantiation chain |
+| `any Interface` created or called at comptime | CT62 | Compile error: "dynamic dispatch not available at compile time" |
 | `comptime for` body calls runtime function | CT57 | Works — the body is runtime residue, not comptime code |
 | Discarded `comptime if` branch has type error | CT59 | Not reported — discarded branches are syntax-checked only |
 | Comptime result feeds its own computation | CT67 | Compile error: "comptime dependency cycle" with chain |
@@ -470,7 +470,7 @@ WHY: Comptime panics become compile errors to prevent invalid constants.
 FIX: Fix the comptime logic or use a valid input value.
 ```
 
-**Comptime-evaluability failure through a trait bound [CT61]:**
+**Comptime-evaluability failure through an interface bound [CT61]:**
 ```
 ERROR [ctrl.comptime/CT61]: cannot evaluate `Logger.hash` at compile time: it performs I/O
 

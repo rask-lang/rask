@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A nominal newtype can carry a conformance of its own.
 //
-// `extend Tagged with Labeled { … }` put its methods on the newtype, which is
+// `Tagged implements Labeled { … }` put its methods on the newtype, which is
 // where `register_impl_methods` writes them, and the check that reads them back
-// looked at structs, enums and traits only. So the block came back methodless
-// and G1 reported every trait method missing on a block that had them all —
+// looked at structs, enums and interfaces only. So the block came back methodless
+// and G1 reported every interface method missing on a block that had them all —
 // including `Hashable` and friends, where the methods are the whole point.
 //
 // It matters beyond the newtype: `type MyDoc = Doc` plus a conformance is the
 // remedy both type.generics/XC1 and XC3 name, so two diagnostics were telling
 // people to write something that didn't compile.
 //
-// `with (…)` is the other half of T11 and was never broken — a listed trait
+// `implements …` is the other half of T11 and was never broken — a listed interface
 // delegates to the wrapped value. Both are here, because the two paths meet in
 // the same check.
 
-trait Labeled {
+interface Labeled {
     func label(self) -> string
 }
 
@@ -25,7 +25,7 @@ struct Doc {
 
 type Tagged = Doc
 
-extend Tagged with Labeled {
+Tagged implements Labeled {
     public func label(self) -> string {
         return "tagged {self.value.n}"
     }
@@ -33,7 +33,7 @@ extend Tagged with Labeled {
 
 type Counted = Doc
 
-extend Counted with Hashable {
+Counted implements Hashable {
     public func hash(self) -> u64 {
         return 7
     }
@@ -44,7 +44,7 @@ extend Counted with Hashable {
 
 // T11: listed in the clause, so it delegates to the `i64` underneath instead of
 // needing a block.
-type Ticket = i64 with (Equal, Hashable)
+type Ticket = i64 implements Equal, Hashable
 
 func describe<T: Labeled>(x: T) -> string {
     return x.label()

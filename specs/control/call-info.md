@@ -15,7 +15,7 @@ typed values. Design history: [analysis/macro-story.md](../analysis/macro-story.
 | Rule | Description |
 |------|-------------|
 | **CS1: Two compiler annotations** | `@call_text(param)` on a `string` parameter yields the source text of the caller's argument for `param` — an annotation taking an argument, the shape `@rename("x")` and `@default(0)` already have. `@call_location` on a `SourceLoc { file: string, line: u32, column: u32 }` parameter yields the call expression's position — a bare marker, the shape `@no_serialize` and `@test` already have. No kind vocabulary: these are two annotation names, and the set is closed |
-| **CS2: Named functions only** | Both annotate parameters of named functions. Illegal in closure literals and in trait method signatures |
+| **CS2: Named functions only** | Both annotate parameters of named functions. Illegal in closure literals and in interface method signatures |
 | **CS3: Outside arity** | A compiler-filled parameter is not part of the call's argument list. Callers cannot fill it positionally or by name — except by forwarding (CS5) |
 | **CS4: Compiler fill** | At every direct call site the compiler splices the values as constants: `@call_text(p)` from the caller's argument expression for `p`, `@call_location` from the call expression itself |
 | **CS5: Forward-only fill** | The only explicit fill: a named argument whose value is a parameter carrying the *same* annotation in the calling function. Any other expression — literal, computed, stored — is a compile error. Filled values are unforgeable: a text is always something some caller wrote, a location always names a real call site |
@@ -73,7 +73,7 @@ func env_or_die(key: string, @call_location loc: SourceLoc) -> string {
 | Filled value stored in a struct, passed on later | CS5 | Degrades to an ordinary `string`/`SourceLoc` — printable, no longer forwardable |
 | Filled value in `comptime if` / `value.()` | CS6 | Compile error via CT8 — it is a runtime parameter |
 | `@call_text` / `@call_location` on a closure parameter | CS2 | Compile error |
-| Trait declares a method with filled parameters | CS2 | Compile error at the trait declaration |
+| Interface declares a method with filled parameters | CS2 | Compile error at the interface declaration |
 
 ## Error Messages
 

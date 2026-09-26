@@ -148,7 +148,7 @@ func call_c_string_api(name: string) -> void or NullByteError {
 | **EX3: Header generation** | `raskc --emit-header pkg` produces `pkg.h` |
 | **EX4: C-compatible only** | Exported types must use C-compatible fields (primitives, pointers, extern structs) |
 
-Not C-compatible: `string`, `Vec`, `Pool`, handles, closures, trait objects.
+Not C-compatible: `string`, `Vec`, `Pool`, handles, closures, interface objects.
 
 ## Linear Resources and FFI
 
@@ -220,7 +220,7 @@ import c "sqlite3.h" as sql
 public struct Database { handle: *sql.sqlite3 }
 
 public func open(path: string) -> Database or Error {
-    mut db: *sql.sqlite3 = null
+    mut db: *sql.sqlite3 = nullptr
     unsafe {
         mut rc = sql.sqlite3_open(try path.to_cstring().as_ptr(), &db)
         if rc != sql.SQLITE_OK {

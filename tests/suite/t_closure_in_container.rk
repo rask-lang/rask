@@ -92,7 +92,7 @@ test "std.collections — a cloned Vec of closures" {
 }
 
 // A closure holding an inline string: the env owns something, so `env_drop` is
-// not null and the release path actually calls it.
+// not nullptr and the release path actually calls it.
 test "std.collections — a closure whose env holds a string" {
     let tag = "ab"
     mut fns: Vec<func(i64) -> string> = []

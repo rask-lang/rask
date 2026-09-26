@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! if cond { mut v = Vec.new()  … }          // container_drop
-//! classify(-1) catch e => -1                // trait_drop, the boxed error
+//! classify(-1) catch e => -1                // interface_drop, the boxed error
 //! while … { if … { counter(r).count() } }   // closures, the environment
 //! ```
 //!

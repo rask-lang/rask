@@ -49,7 +49,7 @@ func manual_allocation_example() {
         // Allocate 16 bytes
         let ptr = malloc(16)
 
-        if ptr == null {
+        if ptr == nullptr {
             print("Allocation failed\n")
             return
         }

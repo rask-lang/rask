@@ -152,7 +152,7 @@ Two details Raido states better than C3, worth carrying into that rule: **fixed 
 auto-grow** (its reason — "hides allocation cost" — is principle 1 restated; a growing arena
 is an invisible malloc) and **exhaustion is a deterministic error, not a panic**.
 
-This stays an add-on. `Arena` is a stdlib allocator behind the `Allocator` trait (AL1),
+This stays an add-on. `Arena` is a stdlib allocator behind the `Allocator` interface (AL1),
 reached through `using`, and a reset marker doesn't change that. Nothing here is load-bearing
 for the memory model — `Pool` + `Handle` remains the answer for long-lived identity; the
 arena is for scratch that dies at a frame or request boundary.

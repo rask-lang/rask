@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// CC1/CC2: `extend Ring<T> with Show where T: Show` — the conformance holds only
+// CC1/CC2: `Ring<T> implements Show where T: Show` — the conformance holds only
 // for instantiations whose argument satisfies the condition. Ring<Coin> works
 // because Coin declares Show; Ring<Blob> is rejected at the use site (see the
 // conditional_conformance_unmet compile-error fixture).
 
-trait Show {
+interface Show {
     func show(self) -> string
 }
 
 struct Coin { v: i64 }
-extend Coin with Show {
+Coin implements Show {
     func show(self) -> string { return "coin" }
 }
 
 struct Ring<T> { items: Vec<T> }
-extend Ring<T> with Show where T: Show {
+Ring<T> implements Show where T: Show {
     func show(self) -> string { return "ring-of-show" }
 }
 

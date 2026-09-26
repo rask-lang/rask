@@ -149,14 +149,14 @@ pub struct Monomorphizer<'a> {
     /// call; substituting this instantiation's arguments turns that into the
     /// concrete pair that reachability needs to enqueue.
     instantiated_call_type_args: HashMap<NodeId, Vec<TypeBinding>>,
-    /// Trait name → object-compatible method names (TR1–TR3).
+    /// Interface name → object-compatible method names (TR1–TR3).
     /// A vtable references a slot per compatible method, so boxing a value as
-    /// `any Trait` makes every such method of the concrete type reachable even
+    /// `any Interface` makes every such method of the concrete type reachable even
     /// if it's never called explicitly.
-    trait_methods: HashMap<String, Vec<String>>,
-    /// Expression NodeId → trait name, for implicit TR5 coercion sites (a value
-    /// passed where `any Trait` is expected, with no written-out cast).
-    trait_coercions: HashMap<NodeId, String>,
+    interface_methods: HashMap<String, Vec<String>>,
+    /// Expression NodeId → interface name, for implicit TR5 coercion sites (a value
+    /// passed where `any Interface` is expected, with no written-out cast).
+    interface_coercions: HashMap<NodeId, String>,
     /// All declarations, for roots that don't come from a function body
     /// (module-level `const` initializers).
     decls: &'a [Decl],
@@ -185,7 +185,7 @@ struct MethodOwner {
     template: String,
 }
 
-/// Split `One<A, B: Trait>` into `("One", ["A", "B"])`. `None` when the name
+/// Split `One<A, B: Interface>` into `("One", ["A", "B"])`. `None` when the name
 /// carries no parameters.
 fn parse_owner(type_name: &str) -> Option<MethodOwner> {
     let open = type_name.find('<')?;
@@ -523,7 +523,7 @@ impl<'a> Monomorphizer<'a> {
                 DeclKind::Fn(f) => {
                     fn_table.insert(f.name.clone(), decl);
                     // Also register under base name for generic functions:
-                    // parser stores "foo<T: Trait>" but call sites use "foo"
+                    // parser stores "foo<T: Interface>" but call sites use "foo"
                     let base = f.name.split('<').next().unwrap_or(&f.name);
                     if base != f.name {
                         fn_table.insert(base.to_string(), decl);
@@ -579,7 +579,7 @@ impl<'a> Monomorphizer<'a> {
                         // same rule the checker files them under.
                         let filed;
                         let method = match rask_ast::operators::conformance_method_name(
-                            &i.target_ty, &i.trait_names, &method.name,
+                            &i.target_ty, i.interface_name.as_deref(), &method.name,
                         ) {
                             Some(name) => {
                                 filed = FnDecl { name, ..method.clone() };
@@ -598,30 +598,30 @@ impl<'a> Monomorphizer<'a> {
             }
         }
 
-        // TR1–TR3: object-compatible methods per trait — a method drops out if
+        // TR1–TR3: object-compatible methods per interface — a method drops out if
         // it declares its own type params (TR3) or returns Self (TR2), matching
         // the vtable layout in codegen.
-        let mut trait_methods: HashMap<String, Vec<String>> = HashMap::new();
+        let mut interface_methods: HashMap<String, Vec<String>> = HashMap::new();
         for decl in decls {
-            if let DeclKind::Trait(t) = &decl.kind {
+            if let DeclKind::Interface(t) = &decl.kind {
                 let compatible = t.methods.iter()
                     .filter(|m| m.type_params.is_empty()
                         && m.ret_ty.as_deref() != Some("Self"))
                     .map(|m| m.name.clone())
                     .collect();
-                trait_methods.insert(t.name.clone(), compatible);
+                interface_methods.insert(t.name.clone(), compatible);
             }
         }
-        // Compiler-provided traits have no declaration to read. Without an
+        // Compiler-provided interfaces have no declaration to read. Without an
         // entry, boxing a value as `any Error` marked none of the concrete
         // type's `message` bodies reachable, so the vtable slot pointed at a
         // function nobody had emitted (#708). Method names only — the
         // signatures live in rask-types, and the concrete bodies are found by
-        // bare name below, same as for a declared trait.
+        // bare name below, same as for a declared interface.
         for name in rask_types::COMPILER_PROVIDED_TRAITS {
-            trait_methods
+            interface_methods
                 .entry(name.to_string())
-                .or_insert_with(|| rask_types::builtin_trait_method_names(name));
+                .or_insert_with(|| rask_types::builtin_interface_method_names(name));
         }
 
         Self {
@@ -646,8 +646,8 @@ impl<'a> Monomorphizer<'a> {
             instantiated_fallback_keeps_shape: HashSet::new(),
             instantiated_escaping_closures: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
-            trait_methods,
-            trait_coercions: HashMap::new(),
+            interface_methods,
+            interface_coercions: HashMap::new(),
             decls,
             method_owners,
         }
@@ -967,7 +967,7 @@ impl<'a> Monomorphizer<'a> {
                             span: decl.span,
                         };
                         if suffix.is_some() {
-                            // Boxing as `any Trait` enqueues by bare method
+                            // Boxing as `any Interface` enqueues by bare method
                             // name, and the disambiguated symbol is the only
                             // one either body now answers to.
                             self.method_by_bare_name
@@ -996,18 +996,18 @@ impl<'a> Monomorphizer<'a> {
         typed.types.get_type_id(&name)
     }
 
-    /// Record implicit trait-coercion sites (TR5) from the type checker.
-    pub fn set_trait_coercions(&mut self, coercions: &HashMap<NodeId, String>) {
-        self.trait_coercions = coercions.clone();
+    /// Record implicit interface-coercion sites (TR5) from the type checker.
+    pub fn set_interface_coercions(&mut self, coercions: &HashMap<NodeId, String>) {
+        self.interface_coercions = coercions.clone();
     }
 
-    /// Boxing a value as `any Trait` needs every object-compatible method of
+    /// Boxing a value as `any Interface` needs every object-compatible method of
     /// the concrete type in the vtable. The receiver type isn't resolved here,
     /// so enqueue every implementation of each compatible method name — the
     /// same conservative widening used for ordinary instance calls.
-    fn mark_trait_object_methods(&mut self, trait_name: &str) {
-        let base = trait_name.split('<').next().unwrap_or(trait_name);
-        let Some(methods) = self.trait_methods.get(base).cloned() else { return };
+    fn mark_interface_object_methods(&mut self, interface_name: &str) {
+        let base = interface_name.split('<').next().unwrap_or(interface_name);
+        let Some(methods) = self.interface_methods.get(base).cloned() else { return };
         for method in methods {
             if let Some(qualified_names) = self.method_by_bare_name.get(&method).cloned() {
                 for qname in qualified_names {
@@ -1124,7 +1124,7 @@ impl<'a> Monomorphizer<'a> {
         }
     }
 
-    /// ER32: a function whose error side is `any Trait` boxes every error that
+    /// ER32: a function whose error side is `any Interface` boxes every error that
     /// leaves it, and the box needs a vtable whether or not anyone calls
     /// through it.
     ///
@@ -1143,12 +1143,12 @@ impl<'a> Monomorphizer<'a> {
                 None => return,
             },
         };
-        let trait_name = match rask_ast::traits::trait_object_name(err) {
+        let interface_name = match rask_ast::interfaces::interface_object_name(err) {
             Some(t) => t.to_string(),
-            None if rask_ast::traits::is_bare_error(err) => "Error".to_string(),
+            None if rask_ast::interfaces::is_bare_error(err) => "Error".to_string(),
             None => return,
         };
-        self.mark_trait_object_methods(&trait_name);
+        self.mark_interface_object_methods(&interface_name);
     }
 
     /// Run until fixpoint: process queue, instantiate, discover more calls
@@ -1647,10 +1647,10 @@ impl<'a> Monomorphizer<'a> {
     }
 
     fn visit_expr(&mut self, expr: &Expr) {
-        // TR5: implicit coercion to `any Trait` (function arg, field, element)
+        // TR5: implicit coercion to `any Interface` (function arg, field, element)
         // with no written-out cast — the checker flags these by NodeId.
-        if let Some(trait_name) = self.trait_coercions.get(&expr.id).cloned() {
-            self.mark_trait_object_methods(&trait_name);
+        if let Some(interface_name) = self.interface_coercions.get(&expr.id).cloned() {
+            self.mark_interface_object_methods(&interface_name);
         }
 
         match &expr.kind {
@@ -2133,9 +2133,9 @@ impl<'a> Monomorphizer<'a> {
                 self.visit_expr(body);
             }
             ExprKind::Cast { expr: inner, ty } => {
-                // TR5: `value as any Trait` boxes `value` — pull in the vtable's methods.
-                if let Some(trait_name) = rask_ast::traits::trait_object_name(ty) {
-                    self.mark_trait_object_methods(trait_name);
+                // TR5: `value as any Interface` boxes `value` — pull in the vtable's methods.
+                if let Some(interface_name) = rask_ast::interfaces::interface_object_name(ty) {
+                    self.mark_interface_object_methods(interface_name);
                 }
                 self.visit_expr(inner);
             }

@@ -38,7 +38,7 @@ Rask currently uses `Result<T, E>` and `Option<T>` as standard enums with constr
 - **`T?` is a language-level nullable** (compiler-generated tagged union), not a user-definable enum. `Option<T>` as a named user-facing type is gone.
 - **No constructor keywords or wrappers.** No `Ok`, `Err`, `Some`, `None`, `ok`, `err`, `some` keywords or constructors anywhere.
 - **Type-based branch disambiguation.** `T or E` requires T and E to be distinct nominal types. The compiler picks the branch from the value's type at construction.
-- **Error bound.** Every `E` in `T or E` must implement the structural `Error` trait (`message(self) -> string`). Enforced at type formation. Primitives like `i32`, `f64` don't qualify unless wrapped in a nominal type. This bound is what makes `r!` format a useful message and removes the "is this literal an error?" ambiguity at construction.
+- **Error bound.** Every `E` in `T or E` must implement the structural `Error` interface (`message(self) -> string`). Enforced at type formation. Primitives like `i32`, `f64` don't qualify unless wrapped in a nominal type. This bound is what makes `r!` format a useful message and removes the "is this literal an error?" ambiguity at construction.
 - **Auto-wrap rules (asymmetric):**
   - **`T or E`:** auto-wrap fires **only at `return`**. Elsewhere (assignment, field, argument) requires the value to already have the union type. This keeps the error-branch coercion visible — you can only produce a `T or E` by returning from a function declared to return one.
   - **`T?`:** auto-wrap fires at return **and** assignment (OPT8 unchanged). Bare `T` becomes `T?` wherever a `T?` is expected. Absence-via-sentinel is unambiguous and the pattern is too common for ceremony.
@@ -205,7 +205,7 @@ Enforcement happens at:
 - **Instantiation** for generics (compile error at the use site, not the definition)
 - **Signature parse** for trivially-equal forms like `func id<T>(x: T) -> T or T`
 
-The escape hatch is **newtypes**, not language syntax. `type ParseError = i32 with (…)` lets you express what would have been `i32 or i32`. No special-case `err` keyword for the same-type case.
+The escape hatch is **newtypes**, not language syntax. `type ParseError = i32 implements …` lets you express what would have been `i32 or i32`. No special-case `err` keyword for the same-type case.
 
 ### Migration diagnostic
 
@@ -255,7 +255,7 @@ Use `.ok()` or `.to_result(err)` for explicit conversions.
 
 **`else as` is Result-only.** `if r? { … } else as e { log(e) }` binds the error value. Option has no error to name in the else branch — `else as n { … }` would bind "none" which has no payload. Only `T or E` supports `else as`.
 
-**`Error` trait.** Structural; requires a single `message(self) -> string` method. Implemented by writing an `extend` block with that method — no explicit trait declaration needed. Examples:
+**`Error` interface.** Structural; requires a single `message(self) -> string` method. Implemented by writing an `extend` block with that method — no explicit interface declaration needed. Examples:
 
 ```rask
 enum DivError { ByZero, Overflow }
@@ -276,7 +276,7 @@ extend NotFound {
 
 The bound is enforced at type formation: `T or E` where `E` doesn't implement `Error` is a compile error pointing at the missing method. Primitives (`i32`, `f64`, `string`) don't qualify — wrap them in a nominal type that does.
 
-**Layered error traits.** `Error` is the minimum. Richer capabilities live in opt-in traits on top — `LinedError` (source line), `ContextualError` (key/value context map), `CodedError` (numeric code), etc. Libraries choose which they implement. Operators and `match` don't require the richer traits; they're for diagnostics/logging pipelines that want more than a string.
+**Layered error interfaces.** `Error` is the minimum. Richer capabilities live in opt-in interfaces on top — `LinedError` (source line), `ContextualError` (key/value context map), `CodedError` (numeric code), etc. Libraries choose which they implement. Operators and `match` don't require the richer interfaces; they're for diagnostics/logging pipelines that want more than a string.
 
 **`??` is strictly extract, never widens.** `x ?? y` requires `y` to be compatible with the inner type of `x` (`T` for `x: T?`, `T` for `x: T or E`). Never produces a wider type. If you have `o: T?` and want `T or E`, use `o.to_result(err)`.
 
@@ -424,7 +424,7 @@ func greet_v2(path: string) -> string {
 - `if r is E as e` narrow-to-error with rename.
 - Early-exit narrowing: by the time control reaches line "narrows to Config here," every error arm has diverged.
 - `match` with type patterns (`Config`, `ParseError`, `IoError`) and variant patterns (`IoError.NotFound(_)`).
-- `Error.message()` used at `.message()` call sites; compiler-enforced because every `E` satisfies the trait.
+- `Error.message()` used at `.message()` call sites; compiler-enforced because every `E` satisfies the interface.
 
 **What would not compile:**
 - `let r: Config or IoError = read_file(path)` — assignment position rejects auto-wrap for `T or E`.
@@ -484,7 +484,7 @@ After reading the affected specs, here are the concrete changes each needs:
 
 - Changes to `try` / `??` / `!` / `?.` operator behavior beyond what's needed for the new model
 - `ensure` / linear resource handling
-- Custom user-defined "result-shaped" types (Rask deliberately doesn't have a `Try` trait; this stays)
+- Custom user-defined "result-shaped" types (Rask deliberately doesn't have a `Try` interface; this stays)
 - Effect tracking (`comp.effects`) — separate system
 
 ## Prior art
