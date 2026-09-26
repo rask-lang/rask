@@ -1,0 +1,361 @@
+/* SPDX-License-Identifier: (MIT OR Apache-2.0) */
+
+/* Makes the book look like the rest of the site.
+ *
+ * Two jobs, in order: point mdBook's own variables at the site's tokens, then
+ * fix the handful of places mdBook hardcodes something. The tokens themselves
+ * live in /tokens.css — the build copies docs/shared/tokens.css to the site
+ * root, which is why this reaches for it by absolute path rather than keeping
+ * a second copy of the palette here. */
+
+@import url("/tokens.css?v=87daebe35963");
+@import url("https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap");
+
+/* --- mdBook's variables, in our colours ------------------------------- */
+
+/* `--bg` is the one name mdBook and the tokens already share, so it needs no
+   mapping — tokens.css sets it, and mdBook reads it. The rest are renames. */
+.light, .rust, .coal, .navy, .ayu {
+    --fg: var(--ink);
+
+    --sidebar-bg: var(--bg-sunken);
+    --sidebar-fg: var(--ink-soft);
+    --sidebar-non-existant: var(--ink-faint);
+    --sidebar-active: var(--accent);
+    --sidebar-spacer: var(--rule);
+
+    --scrollbar: var(--rule);
+    --icons: var(--ink-faint);
+    --icons-hover: var(--accent);
+
+    --links: var(--accent);
+    --links-hover: var(--accent-hover);
+
+    --inline-code-color: var(--ink);
+    --inline-code-bg: var(--bg-sunken);
+
+    --theme-popup-bg: var(--surface);
+    --theme-popup-border: var(--rule);
+    --theme-hover: var(--accent-wash);
+
+    --quote-bg: var(--bg-sunken);
+    --quote-border: var(--accent);
+
+    --table-border-color: var(--rule);
+    --table-header-bg: var(--bg-sunken);
+    --table-alternate-bg: var(--bg);
+
+    --searchbar-border-color: var(--rule);
+    --searchbar-bg: var(--surface);
+    --searchbar-fg: var(--ink);
+    --searchbar-shadow-color: rgba(0, 0, 0, 0.08);
+    --searchresults-header-fg: var(--ink-faint);
+    --searchresults-border-color: var(--rule);
+    --searchresults-li-bg: var(--bg-sunken);
+    --search-mark-bg: var(--accent-wash);
+}
+
+/* --- type ------------------------------------------------------------- */
+
+/* Careful with rem in this file: mdBook sets `:root { font-size: 62.5% }`, so
+   1rem is 10px here, not the 16px it is on the landing page. Body text is
+   1.6rem. Every size below is written for that, which is also what mdBook's own
+   stylesheets do — getting it wrong shrinks everything to ~62%, which is how
+   the headings ended up smaller than the paragraphs under them. */
+
+html {
+    font-family: var(--font-sans);
+    scrollbar-color: var(--rule) transparent;
+}
+
+body { background: var(--bg); color: var(--ink); }
+
+h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.2;
+}
+
+.content h1 { font-size: 3.4rem; font-weight: 500; }
+.content h2 { font-size: 2.4rem; margin-top: 2.4em; }
+.content h3 { font-size: 1.9rem; margin-top: 1.8em; }
+.content h4 { font-size: 1.65rem; margin-top: 1.6em; }
+
+.content p, .content ul, .content ol, .content li { line-height: 1.7; }
+.content p, .content ul, .content ol { max-width: var(--measure); }
+.content li { margin-bottom: 0.3em; }
+
+a { text-underline-offset: 3px; }
+a:hover { color: var(--accent-hover); }
+
+.menu-title { font-family: var(--font-display); font-weight: 600; }
+
+/* --- sidebar ---------------------------------------------------------- */
+
+.sidebar { border-right: 1px solid var(--rule); }
+.sidebar .sidebar-scrollbox { padding: 2rem 1.6rem; }
+.chapter li.chapter-item { line-height: 1.6; margin: 0.1em 0; }
+
+.chapter li.part-title {
+    font-family: var(--font-sans);
+    font-size: 1.2rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin-top: 1.6em;
+}
+
+.sidebar a.active {
+    color: var(--accent) !important;
+    font-weight: 600;
+}
+
+/* --- code ------------------------------------------------------------- */
+
+/* Code has its own surface per theme — light on paper, dark at night — so a
+   snippet never lands as a dark slab in the middle of a pale page. */
+pre, pre > code, .hljs {
+    background: var(--code-bg) !important;
+    color: var(--code-fg) !important;
+    font-family: var(--font-mono);
+}
+
+pre {
+    padding: 1.6rem 1.8rem;
+    border: 1px solid var(--code-rule);
+    border-radius: 8px;
+    margin: 1.6em 0;
+}
+
+pre > code { font-size: 0.86em; line-height: 1.7; }
+
+/* ---------- runnable blocks ---------- */
+
+/* A block the book gate has proved is a whole program gets a Run, sitting with
+   mdBook's own corner controls. Quiet until hovered: the chapter is the point,
+   not the button. */
+/* mdBook keeps a block's controls at `visibility: hidden` until the block is
+   hovered. That's fine for a convenience like copy-to-clipboard and wrong for
+   this: a reader has to know Run is there, and on a phone there is no hover to
+   reveal it with. So on a runnable block the Run shows at rest and the rest of
+   mdBook's controls keep their old behaviour. */
+pre[data-rask-run] > .buttons { visibility: visible; opacity: 1; }
+pre[data-rask-run] > .buttons > :not(.rask-run) { visibility: hidden; opacity: 0; }
+pre[data-rask-run]:hover > .buttons > * { visibility: visible; opacity: 1; }
+
+/* Specific enough to beat `pre > .buttons button`, which sets a 23px icon
+   font that would render the word "Run" at the size of a heading. */
+pre > .buttons button.rask-run {
+    margin: 0 0.5rem 0 0;
+    padding: 0 0.6rem;
+    border: 1px solid var(--code-rule);
+    border-radius: 4px;
+    background: var(--code-bg);
+    color: var(--ink-faint);
+    font-family: var(--font-mono);
+    font-size: 1.2rem;
+    line-height: 2;
+    cursor: pointer;
+}
+
+pre > .buttons button.rask-run:hover { color: var(--accent); border-color: var(--accent); }
+pre > .buttons button.rask-run:disabled { opacity: 0.5; cursor: default; }
+
+/* A finger needs more than 36x26. Only where there's no mouse, so the desktop
+   corner stays as small as it looks. */
+@media (pointer: coarse) {
+    pre > .buttons button.rask-run { padding: 0.3rem 0.9rem; }
+}
+
+/* Output belongs to the block above it, so it joins on rather than floating
+   away as a second slab. Hidden entirely until there is something to say. */
+.rask-output {
+    margin: -1.6em 0 1.6em;
+    border-top: 0;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+    padding: 1rem 1.8rem;
+    font-size: 1.4rem;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+}
+
+.rask-output.bad { color: var(--c-bad) !important; }
+
+/* The compiler's own colours, the same names the playground's output carries.
+   A diagnostic paints itself, so the block keeps the normal code foreground. */
+.rask-output .diag-error { color: var(--c-bad); }
+.rask-output .diag-warning { color: var(--c-kw); }
+.rask-output .diag-info, .rask-output .diag-help { color: var(--c-ty); }
+.rask-output .diag-fix { color: var(--c-str); }
+.rask-output .diag-dim { color: var(--c-cmt); }
+.rask-output .diag-bold { font-weight: 600; }
+
+:not(pre) > code {
+    background: var(--bg-sunken);
+    color: var(--ink);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.88em;
+    font-family: var(--font-mono);
+}
+
+/* Syntax colours, once. highlight.js emits these classes for every language,
+   so Rask, Rust, Bash and TOML snippets all land on the same palette. */
+.hljs-keyword, .hljs-meta { color: var(--c-kw) !important; }
+.hljs-type, .hljs-title\.class, .hljs-class .hljs-title { color: var(--c-ty) !important; }
+.hljs-string, .hljs-number, .hljs-literal { color: var(--c-str) !important; }
+.hljs-comment, .hljs-quote { color: var(--c-cmt) !important; font-style: italic; }
+.hljs-title, .hljs-title\.function, .hljs-function, .hljs-built_in { color: var(--c-fn) !important; }
+.hljs-attr, .hljs-attribute, .hljs-variable, .hljs-params { color: var(--code-fg) !important; }
+
+/* --- tables, quotes, footer ------------------------------------------- */
+
+.content table { border-collapse: collapse; }
+.content table thead th { font-weight: 600; color: var(--ink); }
+.content table td, .content table th { border: 1px solid var(--rule); padding: 0.55em 0.8em; }
+.content table tbody tr:nth-child(even) { background: var(--bg-sunken); }
+
+blockquote {
+    border-left: 3px solid var(--accent-fill);
+    background: var(--bg-sunken);
+    color: var(--ink-soft);
+    padding: 0.8em 1.1em;
+    margin: 1.6em 0;
+}
+
+blockquote > p:first-child { margin-top: 0; }
+blockquote > p:last-child { margin-bottom: 0; }
+
+.edit-url, .nav-chapters { color: var(--ink-faint); }
+
+img[alt="rask logo"] { max-width: 100%; height: auto; }
+
+@media only screen and (max-width: 768px) {
+    .content h1 { font-size: 2.7rem; }
+    img[alt="rask logo"] { width: 260px; }
+}
+
+/* --- phone ------------------------------------------------------------ */
+
+/* chrome.js appends this to every page; only the phone rules below turn it on. */
+.rask-scrim { display: none; }
+
+/* mdBook opens the sidebar by translating the whole page out of the way. At
+   desk width that's fine — the page has 300px to spare. On a phone it doesn't:
+   308px of a 390px screen goes to the sidebar, the menu bar travels with the
+   page, and the toggle you'd press to get back ends up 17px from the edge.
+   That's the "no way to close it" — the button is there, as a sliver.
+
+   So below the width where the push stops fitting, the sidebar overlays the
+   page instead and the page stays put. The scrim chrome.js adds is what you
+   tap to dismiss it. */
+@media only screen and (max-width: 620px) {
+    #mdbook-sidebar-toggle-anchor:checked ~ .page-wrapper {
+        transform: none;
+    }
+
+    .sidebar {
+        /* Over the menu bar, which sits at 101. */
+        z-index: 102;
+        box-shadow: 0 0 40px rgba(0, 0, 0, 0.25);
+        /* Leave a thumb's worth of page visible, so it reads as a drawer over
+           the page rather than as a new screen. */
+        width: min(300px, calc(100vw - 3.5rem));
+    }
+
+    .rask-scrim {
+        position: fixed;
+        inset: 0;
+        z-index: 101;
+        background: rgba(0, 0, 0, 0.32);
+        cursor: pointer;
+    }
+
+    #mdbook-sidebar-toggle-anchor:checked ~ .page-wrapper ~ .rask-scrim,
+    html.sidebar-visible .rask-scrim {
+        display: block;
+    }
+
+    /* Six icons and a title don't fit. Print and "edit this page" are desk
+       jobs — nobody prints a chapter or opens a GitHub editor on a phone — so
+       they go, and the title gets the room back. */
+    .right-buttons a[href$="print.html"],
+    .right-buttons a[rel="edit"] {
+        display: none;
+    }
+
+    .menu-title {
+        font-size: 1.8rem;
+        min-width: 0;
+    }
+
+    /* --- code, on a screen four inches wide --------------------------- */
+
+    /* A code line had 312px to live in, which is about 34 characters of the
+       mono face: `pre` padded 18px a side and `code` another 10 on top of the
+       content's own margin, so 56px of a 390px screen went on inset. The block
+       runs to the edges instead, and drops one step in size — code is set
+       smaller than prose everywhere, and 0.8em against the page's 16px buys
+       six characters. That's 45 a line.
+
+       What happens past 45 depends on what the block is, because the two kinds
+       here want opposite things. */
+    pre {
+        margin-inline: calc(0px - var(--page-padding));
+        padding: 1.2rem 1.4rem;
+        border-radius: 0;
+        border-inline: none;
+    }
+
+    pre > code {
+        font-size: 0.8em;
+        padding: 0;
+    }
+
+    /* Rask snippets wrap. 80% of the book's lines fit in 45 characters as it
+       is, so wrapping is the exception rather than the layout, and a line that
+       does wrap is still a line you can read without moving the page. */
+    pre > code.language-rask {
+        white-space: pre-wrap;
+        overflow-wrap: break-word;
+    }
+
+    /* A compiler diagnostic scrolls, and keeps its shape.
+
+       Wrapping one destroys it: the `NN |` gutter, the source line and the
+       `^^^^^` underneath only mean anything while they stay in column, and
+       re-flowing them to 45 characters turns a diagnostic into a paragraph of
+       punctuation. That was the first attempt and it was worse than the
+       problem.
+
+       Scrolling is affordable here now because the compiler wraps its own
+       prose at 80 columns — the `= why:` line that ran to 441 characters is
+       the reason it does. The widest line left in the book's diagnostics is 97
+       and most are under 80, so this is a short swipe over something that
+       still looks like what the terminal prints, rather than a trek. The
+       scroll sits on the `pre` so the block's own edge is what moves, which
+       is the part that shows there is more to see. */
+    pre:has(> code.language-text) {
+        overflow-x: auto;
+    }
+
+    pre > code.language-text {
+        white-space: pre;
+        /* mdBook puts the scroll on the inner `code`, which is why there was
+           never anything to grab: the bar sat inside the block's padding
+           instead of at its edge. */
+        overflow-x: visible;
+    }
+}
+
+/* The logo comes in two versions, and which one to show follows the book's
+   theme switcher rather than the reader's system preference — `prefers-color-scheme`
+   gets it backwards for anyone who picks light on a dark desktop, leaving a
+   white wordmark on white paper. */
+.logo-on-paper, .logo-on-night { display: none; }
+.light .logo-on-paper, .rust .logo-on-paper { display: inline; }
+.coal .logo-on-night, .navy .logo-on-night, .ayu .logo-on-night { display: inline; }
