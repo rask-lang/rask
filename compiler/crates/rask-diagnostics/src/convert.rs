@@ -940,7 +940,7 @@ impl ToDiagnostic for rask_types::TypeError {
                         );
                 } else {
                     diag = diag.with_fix(format!(
-                        "give it one: `extend {} implements Displayable {{ func to_string(self) -> string {{ … }} }}`",
+                        "give it one: `{} implements Displayable {{ func to_string(self) -> string {{ … }} }}`",
                         ty
                     ))
                     .with_note(format!(
@@ -1980,7 +1980,7 @@ impl ToDiagnostic for rask_types::TypeError {
                         .with_why("the numeric interfaces are membership, not conformance: their contents are constants like MIN, MAX and BITS, and a type is a member because of what it is [type.primitives/NT1-NT3]"),
                     Ctx::GenericBound => d
                         .with_fix(format!(
-                            "pass a type that implements `{0}`, or declare the conformance:\n    extend {1} implements {0} {{ … }}",
+                            "pass a type that implements `{0}`, or declare the conformance:\n    {1} implements {0} {{ … }}",
                             interface_name, ty
                         ))
                         .with_why("a type parameter's bound is a promise the body relies on, so it's checked against the type argument at the call [type.generics/G1]"),
@@ -1992,14 +1992,14 @@ impl ToDiagnostic for rask_types::TypeError {
                                 if sig.is_empty() { format!("func {}(…) {{ … }}", m) } else { sig.clone() }
                             ),
                             None => format!(
-                                "add the missing methods to the block, or drop `{}` from its header:\n    extend {} implements {} {{ … }}",
+                                "add the missing methods to the block, or drop `{}` from its header:\n    {} implements {} {{ … }}",
                                 interface_name, ty, interface_name
                             ),
                         })
                         .with_why("the header is the claim and the block is the evidence — a conformance is only declared once the methods are there [type.generics/G1]"),
                     Ctx::InterfaceObjectCast => d
                         .with_fix(format!(
-                            "implement the interface before boxing:\n    extend {} implements {} {{ … }}",
+                            "implement the interface before boxing:\n    {} implements {} {{ … }}",
                             ty, interface_name
                         ))
                         .with_why("`as any Interface` builds a vtable from the concrete type's methods, so every method the interface declares has to be there [type.generics/G7]"),
@@ -2094,11 +2094,11 @@ impl ToDiagnostic for rask_types::TypeError {
                 // one-word edit and a rewrite.
                 d.with_fix(if *has_inherent {
                     format!(
-                        "`{}` has the method — move it under the header that registers it:\n                             extend {} implements {} {{ … }}",
+                        "`{}` has the method — move it under the header that registers it:\n                             {} implements {} {{ … }}",
                         left, left, header
                     )
                 } else {
-                    format!("extend {} implements {} {{ … }}", left, header)
+                    format!("{} implements {} {{ … }}", left, header)
                 })
                     .with_why(&format!(
                         "an operator is resolved from both operand types, in order, against a \
@@ -2116,7 +2116,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_code("E0892")
                 .with_primary(*span, format!("`{}` can't be an inherent method here", method))
                 .with_fix(format!(
-                    "write it as a conformance:\n    extend {} implements SomeInterface {{ func {}(…) }}",
+                    "write it as a conformance:\n    {} implements SomeInterface {{ func {}(…) }}",
                     ty, method
                 ))
                 .with_why("a primitive's own methods are the compiler's, so an `extend` block on one adds nothing anyone can call — the method silently didn't exist. A conformance is different: it registers against an interface, which is how `2.0 * meters` becomes writable [type.operator-resolution/OR6]")
@@ -2160,7 +2160,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(format!("`duck interface {}` cannot be public", name))
                     .with_code("E0824")
                     .with_primary(*span, "shape-matching can't cross a package boundary")
-                    .with_fix(format!("drop `duck` to harden it — `public interface {}`, then declare conformance with `extend Type implements {} {{}}` on each matching type. Or drop `public` to keep it a package-internal sketch", name, name))
+                    .with_fix(format!("drop `duck` to harden it — `public interface {}`, then declare conformance with `Type implements {} {{}}` on each matching type. Or drop `public` to keep it a package-internal sketch", name, name))
                     .with_why("a duck interface matches by shape, so an external type could start or stop satisfying it without either author changing a line they'd notice — a break semver can't describe. Duck interfaces stay package-internal (DT1)")
             }
 
@@ -2837,7 +2837,7 @@ impl ToDiagnostic for rask_types::TypeError {
                         ),
                     MapKeyFix::ExtendBlock => d
                         .with_fix(format!(
-                            "extend {key} implements Equal {{ func eq(self, other: {key}) -> bool {{ … }} }}\n  extend {key} implements Hashable {{ func hash(self) -> u64 {{ … }} }}"
+                            "{key} implements Equal {{ func eq(self, other: {key}) -> bool {{ … }} }}\n  {key} implements Hashable {{ func hash(self) -> u64 {{ … }} }}"
                         ))
                         .with_why(
                             "a Map key has to hash equal whenever it compares equal. Auto-derive covers primitives and aggregates whose every field is itself Hashable; anything else says so with a declared conformance [type.generics/HA1, G1]"
@@ -2986,7 +2986,7 @@ impl ToDiagnostic for rask_types::InterfaceError {
             .with_code("E0701")
             .with_primary(*span, format!("`{}` is not in the block", method))
             .with_fix(format!(
-                "add it:\n    extend {} implements {} {{\n        {}\n    }}",
+                "add it:\n    {} implements {} {{\n        {}\n    }}",
                 ty,
                 interface_name,
                 if signature.is_empty() { format!("func {}(…) {{ … }}", method) } else { signature.clone() }

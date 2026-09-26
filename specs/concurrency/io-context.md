@@ -126,7 +126,7 @@ interface Reader {
     func read(self, buf: Vec<u8>) -> usize or IoError
 }
 
-extend File implements Reader {
+File implements Reader {
     func read(self, buf: Vec<u8>) -> usize or IoError {
         // Reads RUNTIME_SLOT at execution time
     }

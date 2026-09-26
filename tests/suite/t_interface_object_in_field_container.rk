@@ -26,13 +26,13 @@ struct Square {
     public s: i64
 }
 
-extend Circle implements Shape {
+Circle implements Shape {
     public func area(self) -> i64 {
         return self.r * self.r * 3
     }
 }
 
-extend Square implements Shape {
+Square implements Shape {
     public func area(self) -> i64 {
         return self.s * self.s
     }

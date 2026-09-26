@@ -11,7 +11,7 @@ use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
-/// MN3/XC3: an `extend T implements Interface` block, as the conformance table remembers
+/// MN3/XC3: an `T implements Interface` block, as the conformance table remembers
 /// it. Auto-derive records no site at all, so having one means it was written.
 ///
 /// `from_stdlib` is what XC3 turns on. It has to be the *first* registration's,
@@ -117,7 +117,7 @@ pub struct TypeTable {
     /// apart. Binding happens here, where the TypeId is still known.
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
     /// G1: declared/derived interface conformances (nominal). TypeId → interface base
-    /// names the type conforms to, from `extend T implements Interface` and auto-derive.
+    /// names the type conforms to, from `T implements Interface` and auto-derive.
     pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
     /// AT2/AT8: `(type, applied interface) → associated type → what it answers with`.
     pub(super) assoc_bindings: HashMap<(TypeId, String), HashMap<String, Type>>,
@@ -503,7 +503,7 @@ impl TypeTable {
     /// arguments*, so `Mul<f64>` and `Mul<Meters>` on one type stay apart.
     ///
     /// Written-out defaults are filled in and `Self` becomes the conforming
-    /// type's name, so `extend Meters implements Mul` and `extend Meters implements
+    /// type's name, so `Meters implements Mul` and `Meters implements
     /// Mul<Meters>` land on the same key when `Rhs` defaults to `Self`.
     /// An interface with no parameters keys on its bare name, exactly as before.
     pub fn applied_conformance_key(&self, interface_name: &str, self_name: &str) -> String {
@@ -793,7 +793,7 @@ impl TypeTable {
     ///
     /// TD3: a sub-interface requires everything its super-interfaces require, so
     /// declaring the sub-interface declares the parents too. Without that,
-    /// `extend Horn implements Shouty` — where `interface Shouty: Speak` — left
+    /// `Horn implements Shouty` — where `interface Shouty: Speak` — left
     /// `horn as any Speak` refused for an interface the type demonstrably implements,
     /// and pushing one into a `Vec<any Speak>` was a type error (#873).
     pub fn declares_conformance(&self, type_id: TypeId, interface_name: &str) -> bool {

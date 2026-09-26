@@ -15,7 +15,7 @@ pub enum MapKeyFix {
     /// A nominal newtype — the interfaces it inherits are the ones its `implements`
     /// clause names.
     NominalClause,
-    /// Anything else — an `extend T implements Hashable` block declares it.
+    /// Anything else — an `T implements Hashable` block declares it.
     ExtendBlock,
 }
 
@@ -1175,7 +1175,7 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// type.generics/XC3: a second `extend T implements Interface` for a pair that
+    /// type.generics/XC3: a second `T implements Interface` for a pair that
     /// already has one. The set this used to be filed in absorbed the second
     /// declaration, so the last block parsed silently supplied the methods.
     #[error("`{ty}` already declares conformance to `{interface_name}`")]
@@ -1201,7 +1201,7 @@ pub enum TypeError {
         /// The interface, spelled as the block writes it.
         interface_name: String,
         /// The package that declares the type. `None` is the standard library,
-        /// which owns every builtin — that is what makes `extend Vec<i64> implements
+        /// which owns every builtin — that is what makes `Vec<i64> implements
         /// Hashable` in a program an error rather than a shrug.
         owner: Option<String>,
         /// The package the block is in. `None` is the program itself, in a
@@ -1289,7 +1289,7 @@ pub enum InterfaceBoundContext {
     InterfaceObjectCast,
     /// `f<T: Interface>(…)` at a call site — the type argument doesn't qualify.
     GenericBound,
-    /// `extend T implements Interface { … }` — the block claims a conformance it doesn't
+    /// `T implements Interface { … }` — the block claims a conformance it doesn't
     /// deliver.
     ConformanceHeader,
     /// A bound on one of the numeric interfaces (NT1–NT3). These are sets of

@@ -10,7 +10,7 @@ struct Rectangle { width: f64, height: f64 }
 
 struct Triangle { base: f64, height: f64 }
 
-extend Circle implements Shape {
+Circle implements Shape {
     func area(self) -> f64 {
         return 3.14159 * self.radius * self.radius
     }
@@ -19,7 +19,7 @@ extend Circle implements Shape {
     }
 }
 
-extend Rectangle implements Shape {
+Rectangle implements Shape {
     func area(self) -> f64 {
         return self.width * self.height
     }
@@ -28,7 +28,7 @@ extend Rectangle implements Shape {
     }
 }
 
-extend Triangle implements Shape {
+Triangle implements Shape {
     func area(self) -> f64 {
         return self.base * self.height / 2.0
     }

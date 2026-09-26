@@ -13,6 +13,6 @@ func announce(g: T) -> string where T: Greeter {
 }
 
 func main() {
-    // Fish has no `extend Fish implements Greeter`, so it can't satisfy `T: Greeter`.
+    // Fish has no `Fish implements Greeter`, so it can't satisfy `T: Greeter`.
     println("{announce(Fish { name: \"Nemo\" })}")
 }

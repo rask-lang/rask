@@ -146,7 +146,7 @@ unsafe interface Sync {}
 struct MyType { ptr: *i32 }
 
 // Implementer asserts: MyType can safely cross thread boundaries
-unsafe extend MyType implements Send {}
+unsafe MyType implements Send {}
 ```
 
 ## Safe/Unsafe Boundary

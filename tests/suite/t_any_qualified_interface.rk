@@ -29,7 +29,7 @@ struct Loud {
     name: string
 }
 
-extend Loud implements Greeter {
+Loud implements Greeter {
     func greet(self) -> string {
         return "HI {self.name}"
     }
@@ -44,7 +44,7 @@ func hail(g: any Greeter) -> string {
 // A qualified interface in a parameter, which is what the issue is about. It parses
 // and it checks — `io.Buffer` conforms — and it stops there for now: the rest of
 // the spelling isn't built. Calling it fails to lower natively (#1309), and
-// declaring conformance with a qualified name (`extend Counter implements io.Writer`)
+// declaring conformance with a qualified name (`Counter implements io.Writer`)
 // is refused outright (#1310). So this is a signature that has to compile, not
 // a call.
 func sink(w: any io.Writer, data: string) -> bool {

@@ -3,7 +3,7 @@
 
 struct Point { x: i64, y: i64 }
 
-extend Point implements Displayable {
+Point implements Displayable {
     public func to_string(self) -> string {
         return "({self.x}, {self.y})"
     }
@@ -29,7 +29,7 @@ extend AppError {
 // stdlib type like `StringView` render without a conformance declaration, and
 // what broke when `stdlib/fmt.rk` joined the stub set: a declaration for
 // `Displayable` made it look like an interface a program had written, and G1 gates
-// those on `extend T implements Interface` (#990).
+// those on `T implements Interface` (#990).
 struct Tally { hits: i64 }
 
 extend Tally {

@@ -45,7 +45,7 @@ Percentages are rough coverage vs spec.
 
 ## Design questions
 
-- [ ] **Conformance condition inference** — deferred from the interface review: `extend Ring<T> implements Interface { }` inferring its `where` clause from the block body (gradual-constraints machinery). Explicit `where` required everywhere for now (`type.generics/CC2`); relaxing to inference is purely additive.
+- [ ] **Conformance condition inference** — deferred from the interface review: `Ring<T> implements Interface { }` inferring its `where` clause from the block body (gradual-constraints machinery). Explicit `where` required everywhere for now (`type.generics/CC2`); relaxing to inference is purely additive.
 
 - [ ] **Task-local storage syntax** — Deferred until M:N scheduler is real and explicit param passing proves inadequate.
 - [ ] **String C interop** — `as_c_str()`, `string.from_c()`.

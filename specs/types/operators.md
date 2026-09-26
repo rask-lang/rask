@@ -149,7 +149,7 @@ interface Equal {
 | Rule | Description |
 |------|-------------|
 | **ORD1: Comparable interface** | `<`, `>`, `<=`, `>=` derived from `compare()` returning `Ordering` |
-| **ORD2: Derivable** | Structs and enums auto-derive lexicographic ordering (first field, then second, etc.). Override with explicit `extend Type implements Comparable` |
+| **ORD2: Derivable** | Structs and enums auto-derive lexicographic ordering (first field, then second, etc.). Override with explicit `Type implements Comparable` |
 | **ORD4: Mixed-signedness comparison** | `==`, `!=`, `<`, `<=`, `>`, `>=` work between any two integer primitives, answered by **value** — a negative signed operand is below every unsigned one, so `5u64 > -1i32` is true and `u64::MAX > 1i32` is true. Comparison operators only: mixed-type *arithmetic* is a type error, because `u64 + i32` has no obviously-correct result type while the comparison has an obviously-correct answer. The bitwise operators and the shifts go with arithmetic, not with comparison. Integer primitives only — not floats, not user types — and `Comparable` itself is unchanged and stays same-type |
 | **ORD3: Float ordering** | `f32`/`f64` implement `Comparable`. `compare()` is a **total** order so sorting is well-defined; the operators `<`, `>`, `<=`, `>=` stay IEEE, so every comparison against `NaN` is `false` |
 

@@ -34,7 +34,7 @@ struct Square {
     side: i64
 }
 
-extend Square implements Shape {
+Square implements Shape {
     public func area(self) -> i64 {
         return self.side * self.side
     }
@@ -45,7 +45,7 @@ struct Rect {
     h: i64
 }
 
-extend Rect implements Shape {
+Rect implements Shape {
     public func area(self) -> i64 {
         return self.w * self.h
     }

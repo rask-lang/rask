@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Rejects: two `extend T implements Interface` blocks claiming the same pair
+// Rejects: two `T implements Interface` blocks claiming the same pair
 //
 // XC3. Conformances used to be filed in a set, so the second declaration
 // landed on the first and vanished — and since the *methods* were registered
@@ -28,14 +28,14 @@ struct Doc {
     n: i64
 }
 
-extend Doc implements Labeled {
+Doc implements Labeled {
     func label(self) -> string {
         return "doc {self.n}"
     }
 }
 
 // ERROR: `Doc` already declares conformance to `Labeled` (E0407)
-extend Doc implements Labeled {
+Doc implements Labeled {
     func label(self) -> string {
         return "second"
     }
@@ -45,14 +45,14 @@ struct Memo {
     n: i64
 }
 
-extend Memo implements Labeled {
+Memo implements Labeled {
     func label(self) -> string {
         return "memo {self.n}"
     }
 }
 
 // ERROR: a `scoped` block is still a declaration (E0407)
-scoped extend Memo implements Labeled {
+scoped Memo implements Labeled {
     func label(self) -> string {
         return "scoped"
     }
@@ -61,14 +61,14 @@ scoped extend Memo implements Labeled {
 // A program block landing on a *stdlib* one is an override, not a clash (XC2),
 // and the program's takes the slot — so a second program block is reported
 // against the program's first, never against the stdlib's.
-extend Method implements Displayable {
+Method implements Displayable {
     func to_string(self) -> string {
         return "first"
     }
 }
 
 // ERROR: the program's own first block is the one this collides with (E0407)
-extend Method implements Displayable {
+Method implements Displayable {
     func to_string(self) -> string {
         return "second"
     }
@@ -85,14 +85,14 @@ interface Scale<Rhs = Self> {
     func scale(self, rhs: Rhs) -> Self
 }
 
-extend Meters implements Scale<f64> {
+Meters implements Scale<f64> {
     func scale(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
     }
 }
 
 // ERROR: both `scale`s want the type's one method name (E0889, MN3)
-extend Meters implements Scale<Meters> {
+Meters implements Scale<Meters> {
     func scale(self, o: Meters) -> Meters {
         return Meters { v: self.v * o.v }
     }
@@ -103,13 +103,13 @@ struct Note {
     n: i64
 }
 
-extend Note implements Labeled {
+Note implements Labeled {
     func label(self) -> string {
         return "note {self.n}"
     }
 }
 
-extend Note implements Shouty {
+Note implements Shouty {
     func shout(self) -> string {
         return "NOTE"
     }
@@ -120,13 +120,13 @@ struct Tag {
     n: i64
 }
 
-extend Tag implements Labeled {
+Tag implements Labeled {
     func label(self) -> string {
         return "tag {self.n}"
     }
 }
 
-extend Tag implements Shouty {
+Tag implements Shouty {
     func shout(self) -> string {
         return "TAG"
     }

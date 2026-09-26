@@ -29,7 +29,7 @@ interface Middleware {
 
 struct RequestLogger { }
 
-extend RequestLogger implements Middleware {
+RequestLogger implements Middleware {
     func name(self) -> string {
         return "logger"
     }
@@ -49,7 +49,7 @@ struct AuthGuard {
     required_token: string
 }
 
-extend AuthGuard implements Middleware {
+AuthGuard implements Middleware {
     func name(self) -> string {
         return "auth"
     }
@@ -91,7 +91,7 @@ extend RateLimiter {
     }
 }
 
-extend RateLimiter implements Middleware {
+RateLimiter implements Middleware {
     func name(self) -> string {
         return "rate_limiter"
     }

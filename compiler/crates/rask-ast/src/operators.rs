@@ -60,7 +60,7 @@ pub fn is_unary_operator_interface(interface_base: &str) -> bool {
 /// isn't an operator conformance supplying that method.
 ///
 /// `target_ty` is the `extend` header's type, which is what `Rhs` defaults to
-/// (`type.generics/GT4`): `extend Point implements Add` is `Add<Point>`.
+/// (`type.generics/GT4`): `Point implements Add` is `Add<Point>`.
 pub fn conformance_method_name(
     target_ty: &str,
     interface_ref: Option<&str>,

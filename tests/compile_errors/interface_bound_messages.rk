@@ -25,7 +25,7 @@ struct Silent {
 }
 
 // ERROR: conformance header with no evidence — the block doesn't define `greet`
-extend Silent implements Greeter {
+Silent implements Greeter {
     public func other(self) -> i64 {
         return self.tag
     }

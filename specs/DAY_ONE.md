@@ -30,7 +30,7 @@ This page is a budget. If it stops fitting on a page, the language got bigger �
 
 10. **Pattern matching.** `match` for branches, `if x is Pattern` for one check.
 
-11. **Interfaces.** `extend Type implements Interface` declares conformance. `any Interface` holds mixed types — the cast allocates, and writing it is the marker.
+11. **Interfaces.** `Type implements Interface` declares conformance. `any Interface` holds mixed types — the cast allocates, and writing it is the marker.
 
 12. **Concurrency.** `using Multitasking { }` once, near the top of `main`. `spawn(|| { ... })` returns a handle you must `.join()` or `.detach()`. Channels move values between tasks. No `async`/`await` — calls look like calls.
 

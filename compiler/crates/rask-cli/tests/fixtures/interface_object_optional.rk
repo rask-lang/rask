@@ -28,13 +28,13 @@ interface Shape {
 }
 
 struct Circle { r: f64 }
-extend Circle implements Shape {
+Circle implements Shape {
     func area(self) -> f64 { return 3.14 * self.r * self.r }
     func message(self) -> string { return "circle" }
 }
 
 struct Square { s: f64 }
-extend Square implements Shape {
+Square implements Shape {
     func area(self) -> f64 { return self.s * self.s }
     func message(self) -> string { return "square" }
 }

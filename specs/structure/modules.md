@@ -117,7 +117,7 @@ export internal.lexer.Lexer
 
 | Rule | Description |
 |------|-------------|
-| **TV1: Declared** | Interface conformance is package-internal by default; `public extend Type implements Interface` exports it |
+| **TV1: Declared** | Interface conformance is package-internal by default; `public Type implements Interface` exports it |
 | **TV2: Capped by parts** | `public extend` requires both interface and type to be public — conformance can't be more visible than what it connects |
 
 ## Package-Level State
@@ -271,7 +271,7 @@ public interface Visitor {
 }
 
 // pkg: printer — no import of ast needed beyond the interface
-extend Printer implements ast.Visitor {
+Printer implements ast.Visitor {
     func visit(self: mut, node: ast.Node) { ... }
 }
 ```

@@ -55,7 +55,7 @@ struct Holder {
     public counts: Vec<i64>
 }
 
-extend Holder implements Describes {
+Holder implements Describes {
     public func describe(self) -> string {
         return "{self.label}:{self.counts.len()}"
     }

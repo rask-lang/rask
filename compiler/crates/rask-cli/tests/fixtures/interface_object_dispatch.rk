@@ -22,7 +22,7 @@ struct Circle {
     radius: i64
 }
 
-extend Square implements Shape {
+Square implements Shape {
     func duplicate(self) -> Square {
         return Square { side: self.side }
     }
@@ -34,7 +34,7 @@ extend Square implements Shape {
     }
 }
 
-extend Circle implements Shape {
+Circle implements Shape {
     func duplicate(self) -> Circle {
         return Circle { radius: self.radius }
     }

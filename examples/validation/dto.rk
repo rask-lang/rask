@@ -80,20 +80,20 @@ struct ErrorBody {
 // One block per interface (CD1). Validate is the request gate; Displayable
 // gives a compact log line.
 
-extend CreateTaskRequest implements Validate {
+CreateTaskRequest implements Validate {
     func validate(self) -> void or ValidationError {
         try check_len("title", self.title, MAX_TITLE_LEN)
         return
     }
 }
 
-extend CreateTaskRequest implements Displayable {
+CreateTaskRequest implements Displayable {
     func to_string(self) -> string {
         return "CreateTask(title={self.title}, project={self.project_id})"
     }
 }
 
-extend UpdateTaskRequest implements Validate {
+UpdateTaskRequest implements Validate {
     func validate(self) -> void or ValidationError {
         // Enum parses happen in the handler where a bad value becomes
         // ValidationError.BadEnum; only the tag count is bounded here.
@@ -106,7 +106,7 @@ extend UpdateTaskRequest implements Validate {
 
 // public extend: the conformance is part of the crate's public API surface,
 // so it's declared public (never inferred — G1).
-extend CreateUserRequest implements Validate {
+CreateUserRequest implements Validate {
     func validate(self) -> void or ValidationError {
         try check_len("name", self.name, MAX_NAME_LEN)
         if !self.email.contains("@") {

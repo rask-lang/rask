@@ -18,6 +18,6 @@ func announce(g: T) -> string where T: Greeter {
 }
 
 func main() {
-    // Nominal: matching the shape isn't enough without `extend Dog implements Greeter`.
+    // Nominal: matching the shape isn't enough without `Dog implements Greeter`.
     println("{announce(Dog { name: \"Rex\" })}")
 }

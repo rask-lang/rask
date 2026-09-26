@@ -182,7 +182,7 @@ public struct Stdin {
     stream: i32
 }
 
-extend Stdin implements Reader {
+Stdin implements Reader {
     /// Read bytes into buffer. Returns number of bytes read (0 = EOF).
     public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
         let want = buf.len().wrap<i64>()
@@ -240,7 +240,7 @@ public struct Stdout {
     stream: i32
 }
 
-extend Stdout implements Writer {
+Stdout implements Writer {
     /// Write bytes. Returns number of bytes written.
     public func write(self, data: Vec<u8>) -> i64 or IoError {
         let n = io.write_std_bytes(self.stream, data)
@@ -293,7 +293,7 @@ public struct Stderr {
     stream: i32
 }
 
-extend Stderr implements Writer {
+Stderr implements Writer {
     /// Write bytes. Returns number of bytes written.
     public func write(self, data: Vec<u8>) -> i64 or IoError {
         let n = io.write_std_bytes(self.stream, data)
@@ -359,7 +359,7 @@ public struct Buffer {
     pos: Shared<i64, Local>
 }
 
-extend Buffer implements Reader {
+Buffer implements Reader {
     /// Read up to `buf.len()` bytes into `buf`, starting at the read position.
     /// Returns how many were copied — 0 once the buffer is exhausted (R1).
     public func read(self, mutate buf: Vec<u8>) -> i64 or IoError {
@@ -404,7 +404,7 @@ extend Buffer implements Reader {
     }
 }
 
-extend Buffer implements Writer {
+Buffer implements Writer {
     /// Append bytes, and report how many went in (W1). A memory buffer never
     /// writes short, so that's always all of them.
     public func write(self, data: Vec<u8>) -> i64 or IoError {
@@ -463,7 +463,7 @@ extend Buffer {
 
 /// K1–K3 for a file: the position the OS keeps, with the `SeekFrom` taken
 /// apart here rather than in each backend.
-extend File implements Seeker {
+File implements Seeker {
     public func seek(self, pos: SeekFrom) -> i64 or IoError {
         mut whence: i64 = 0
         mut offset: i64 = 0
@@ -508,7 +508,7 @@ extend File implements Seeker {
 /// shouldn't exist — "no `reset` — `buf.seek(SeekFrom.Start(0))` is the one way
 /// to rewind" — and which nothing implemented either. So it is gone and this is
 /// the spelling.
-extend Buffer implements Seeker {
+Buffer implements Seeker {
     public func seek(self, pos: SeekFrom) -> i64 or IoError {
         let total = self.data.len().wrap<i64>()
         mut want: i64 = 0

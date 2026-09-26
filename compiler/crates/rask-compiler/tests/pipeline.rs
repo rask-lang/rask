@@ -842,7 +842,7 @@ fn dt1_public_nominal_interface_is_fine() {
         struct Widget {
             id: i32
         }
-        extend Widget implements Frobber {
+        Widget implements Frobber {
             func frobnicate(self) -> i32 {
                 return self.id
             }

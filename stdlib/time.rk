@@ -201,7 +201,7 @@ extend Timer {
 // write a conformance whose result type depends on the right operand.
 
 /// A1: shift an instant forward.
-extend Instant implements Add<Duration> {
+Instant implements Add<Duration> {
     type Out = Instant
 
     @builtin
@@ -209,7 +209,7 @@ extend Instant implements Add<Duration> {
 }
 
 /// A1: shift an instant back.
-extend Instant implements Sub<Duration> {
+Instant implements Sub<Duration> {
     type Out = Instant
 
     @builtin
@@ -217,7 +217,7 @@ extend Instant implements Sub<Duration> {
 }
 
 /// A2: the span between two instants.
-extend Instant implements Sub<Instant> {
+Instant implements Sub<Instant> {
     type Out = Duration
 
     @builtin
@@ -225,24 +225,24 @@ extend Instant implements Sub<Instant> {
 }
 
 /// A3: durations add and subtract.
-extend Duration implements Add {
+Duration implements Add {
     @builtin
     public func add(self, other: Duration) -> Duration {}
 }
 
-extend Duration implements Sub {
+Duration implements Sub {
     @builtin
     public func sub(self, other: Duration) -> Duration {}
 }
 
 /// A4: scale a duration. Both directions — `d * 3` and `3 * d`.
-extend Duration implements Mul<i64> {
+Duration implements Mul<i64> {
     public func mul(self, n: i64) -> Duration {
         return Duration.nanos(self.as_nanos().wrap<i64>() * n)
     }
 }
 
-extend i64 implements Mul<Duration> {
+i64 implements Mul<Duration> {
     type Out = Duration
 
     public func mul(self, span: Duration) -> Duration {
@@ -250,14 +250,14 @@ extend i64 implements Mul<Duration> {
     }
 }
 
-extend Duration implements Div<i64> {
+Duration implements Div<i64> {
     public func div(self, n: i64) -> Duration {
         return Duration.nanos(self.as_nanos().wrap<i64>() / n)
     }
 }
 
 /// A5: how many of the second fit in the first, truncated.
-extend Duration implements Div<Duration> {
+Duration implements Div<Duration> {
     type Out = u64
 
     public func div(self, other: Duration) -> u64 {
@@ -266,7 +266,7 @@ extend Duration implements Div<Duration> {
 }
 
 /// A7: shift a wall-clock point.
-extend SystemTime implements Add<Duration> {
+SystemTime implements Add<Duration> {
     type Out = SystemTime
 
     public func add(self, span: Duration) -> SystemTime {
@@ -274,7 +274,7 @@ extend SystemTime implements Add<Duration> {
     }
 }
 
-extend SystemTime implements Sub<Duration> {
+SystemTime implements Sub<Duration> {
     type Out = SystemTime
 
     public func sub(self, span: Duration) -> SystemTime {
@@ -285,7 +285,7 @@ extend SystemTime implements Sub<Duration> {
 /// A8: the span between two wall-clock points, unchecked — it wraps when
 /// `other` is later. `duration_since` is the one that reports the clock going
 /// backward.
-extend SystemTime implements Sub<SystemTime> {
+SystemTime implements Sub<SystemTime> {
     type Out = Duration
 
     public func sub(self, other: SystemTime) -> Duration {

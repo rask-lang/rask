@@ -530,7 +530,11 @@ impl Parser {
                     let is_annotation_decl =
                         matches!(self.current_kind(), TokenKind::Ident(s) if s == "annotation")
                             && matches!(self.peek(1), TokenKind::At | TokenKind::Ident(_));
-                    if is_annotation_decl || matches!(self.current_kind(),
+                    // `T implements I` starts with a plain identifier too, and its
+                    // errors (a second interface after the comma) are the ones
+                    // worth keeping over the statement retry's generic line.
+                    let is_conformance = self.at_conformance_header();
+                    if is_annotation_decl || is_conformance || matches!(self.current_kind(),
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                         TokenKind::Union | TokenKind::Interface | TokenKind::Extend |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
@@ -698,10 +702,14 @@ impl Parser {
         if is_duck {
             self.advance();
         }
-        let is_scoped = matches!(self.current_kind(), TokenKind::Ident(s) if s == "scoped")
-            && matches!(self.peek(1), TokenKind::Extend);
-        if is_scoped {
+        let mut is_scoped = false;
+        if matches!(self.current_kind(), TokenKind::Ident(s) if s == "scoped") {
+            let saved = self.pos;
             self.advance();
+            is_scoped = matches!(self.current_kind(), TokenKind::Extend) || self.at_conformance_header();
+            if !is_scoped {
+                self.pos = saved;
+            }
         }
 
         // Contextual: `annotation @name { ... }` (type.annotations/AN1). Plain
@@ -744,7 +752,10 @@ impl Parser {
             }
         }
 
-        let kind = match self.current_kind() {
+        let is_conformance = self.at_conformance_header();
+        let kind = if is_conformance {
+            self.parse_conformance_decl(is_unsafe, is_scoped, doc)?
+        } else { match self.current_kind() {
             TokenKind::Func => {
                 self.reject_keyword_fn_name()?;
                 self.parse_fn_decl(is_pub, false, is_comptime, is_unsafe, attrs, doc)?
@@ -753,7 +764,7 @@ impl Parser {
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
             TokenKind::Interface => self.parse_interface_decl(is_pub, is_unsafe, is_duck, attrs, doc)?,
-            TokenKind::Extend => self.parse_impl_decl(is_unsafe, is_scoped, doc)?,
+            TokenKind::Extend => self.parse_extend_decl(is_unsafe, is_scoped, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub, attrs, doc)?,
@@ -800,12 +811,12 @@ impl Parser {
             }
             _ => {
                 return Err(ParseError::expected(
-                    "declaration (func, struct, enum, union, interface, extend, import, export, const, type, test, benchmark, extern, package)",
+                    "declaration (func, struct, enum, union, interface, extend, `T implements I`, import, export, const, type, test, benchmark, extern, package)",
                     self.current_kind(),
                     self.current().span,
                 ));
             }
-        };
+        } };
 
         if let Some(span) = extern_first_span {
             return Ok(Decl { id: self.next_id(), kind, span });
@@ -2137,27 +2148,52 @@ impl Parser {
         })
     }
 
-    fn parse_impl_decl(&mut self, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    /// `extend T { … }`: the type's own methods.
+    fn parse_extend_decl(&mut self, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Extend)?;
         let target_ty = self.parse_type_name()?;
+        self.parse_impl_body(target_ty, None, is_unsafe, is_scoped, doc)
+    }
 
-        // CD1: `extend T implements I` — one interface per block, so the
-        // block is exactly that interface's contract.
-        let mut interface_name = None;
-        if self.match_token(&TokenKind::Implements) {
-            self.skip_newlines();
-            let name = self.parse_type_name()?;
-            if self.check(&TokenKind::Comma) {
-                let span = self.current().span;
-                return Err(ParseError {
-                    message: format!("`extend {} implements {}` names a second interface", target_ty, name),
-                    span,
-                    hint: Some("one interface per block: write a second `extend` block for the other one".to_string()),
-                    why: Some("the block is the interface's contract, so a reader can see which methods belong to it".to_string()),
-                });
-            }
-            interface_name = Some(name);
+    /// `T implements I { … }`: one interface per block (CD1), so the block is
+    /// exactly that interface's contract.
+    fn parse_conformance_decl(&mut self, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+        let target_ty = self.parse_type_name()?;
+        self.expect(&TokenKind::Implements)?;
+        self.skip_newlines();
+        let name = self.parse_type_name()?;
+        if self.check(&TokenKind::Comma) {
+            let span = self.current().span;
+            return Err(ParseError {
+                message: format!("`{} implements {}` names a second interface", target_ty, name),
+                span,
+                hint: Some("one interface per block: write a second block for the other one".to_string()),
+                why: Some("the block is the interface's contract, so a reader can see which methods belong to it".to_string()),
+            });
         }
+        self.parse_impl_body(target_ty, Some(name), is_unsafe, is_scoped, doc)
+    }
+
+    /// Does a `T implements I` header start here? Reads a type name and looks
+    /// at the token after it, then puts the position back.
+    fn at_conformance_header(&mut self) -> bool {
+        if !matches!(self.current_kind(), TokenKind::Ident(_)) {
+            return false;
+        }
+        let saved = self.pos;
+        let hit = self.parse_type_name().is_ok() && self.check(&TokenKind::Implements);
+        self.pos = saved;
+        hit
+    }
+
+    fn parse_impl_body(
+        &mut self,
+        target_ty: String,
+        interface_name: Option<String>,
+        is_unsafe: bool,
+        is_scoped: bool,
+        doc: Option<String>,
+    ) -> Result<DeclKind, ParseError> {
 
         // CC2: conditional conformance condition — `where T: Displayable`.
         let mut where_bounds = Vec::new();
@@ -2223,7 +2259,7 @@ impl Parser {
         Ok(DeclKind::Impl(ImplDecl { interface_name, target_ty, methods, is_unsafe, is_scoped, where_bounds, assoc_bindings, doc }))
     }
 
-    /// AT2: `type Out = Meters` inside an `extend ... implements Interface` block.
+    /// AT2: `type Out = Meters` inside a `T implements I` block.
     fn parse_assoc_type_binding(&mut self) -> Result<AssocTypeBinding, ParseError> {
         let start = self.current().span;
         self.expect(&TokenKind::Type)?;

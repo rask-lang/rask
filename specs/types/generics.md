@@ -6,13 +6,13 @@
 
 # Generics and Interfaces
 
-Interface conformance is declared — `extend Type implements Interface` says the type satisfies the interface, and the compiler checks the signatures against the declaration. `duck interface` opts individual interfaces into shape-matching, but only inside a package: a duck interface can never be `public`, and the tooling keeps reminding you it's a sketch (DT1–DT4). Operators like `a + b` expand to method calls. The compiler generates specialized code for each concrete type you use (this is called *monomorphization*). For mixed-type collections, opt into runtime dispatch with `any Interface`.
+Interface conformance is declared — `Type implements Interface` says the type satisfies the interface, and the compiler checks the signatures against the declaration. `duck interface` opts individual interfaces into shape-matching, but only inside a package: a duck interface can never be `public`, and the tooling keeps reminding you it's a sketch (DT1–DT4). Operators like `a + b` expand to method calls. The compiler generates specialized code for each concrete type you use (this is called *monomorphization*). For mixed-type collections, opt into runtime dispatch with `any Interface`.
 
 ## Core Principles
 
 | Rule | Description |
 |------|-------------|
-| **G1: Declared conformance** | A type satisfies an interface through a declared `extend Type implements Interface` block, checked against the interface's signatures. `duck interface` opts an interface into shape-matching (no declaration needed) within its own package — see DT1–DT4. The four core interfaces (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `Error` (enums, `type.errors/ER6`) are also auto-derived. Of those, the four plus `Encode`/`Decode` may be overridden only by the package that declares the type (XC1) |
+| **G1: Declared conformance** | A type satisfies an interface through a declared `Type implements Interface` block, checked against the interface's signatures. `duck interface` opts an interface into shape-matching (no declaration needed) within its own package — see DT1–DT4. The four core interfaces (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `Error` (enums, `type.errors/ER6`) are also auto-derived. Of those, the four plus `Encode`/`Decode` may be overridden only by the package that declares the type (XC1) |
 | **G2: Checked at use site** | The compiler verifies interface matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before interface checking |
@@ -32,7 +32,7 @@ Interface conformance is declared — `extend Type implements Interface` says th
 
 | Interface Form | Meaning |
 |------------|---------|
-| `interface Comparable` | Nominal (default) — types conform via `extend Type implements Comparable` |
+| `interface Comparable` | Nominal (default) — types conform via `Type implements Comparable` |
 | `duck interface Frobber` | Shape-matched — any type with the right methods satisfies it, no declaration. Package-internal: never `public` (DT1), and flagged as a sketch by lint (DT3) |
 | `interface Hashable: Equal` | Composition (requires all methods from Equal plus Hashable's own) |
 
@@ -59,7 +59,7 @@ interface Scale<Rhs> {
     func scale(self, k: Rhs) -> Self
 }
 
-extend Meters implements Scale<f64> {
+Meters implements Scale<f64> {
     func scale(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
     }
@@ -71,7 +71,7 @@ The header binds `Rhs` to `f64`, so what the conformance owes is `scale(self, k:
 | Rule | Description |
 |------|-------------|
 | **GT1: Parameters on the declaration** | `interface Scale<Rhs>` — one or two parameters, the same cap generic types carry. `Self` is always in scope and is not one of them |
-| **GT2: The header applies them** | `extend T implements Scale<f64>` substitutes through every required signature. A header that gives the wrong number of arguments is an error naming the interface's arity |
+| **GT2: The header applies them** | `T implements Scale<f64>` substitutes through every required signature. A header that gives the wrong number of arguments is an error naming the interface's arity |
 | **GT3: The applied interface is the conformance** | `Mul<f64>` and `Mul<Meters>` are different conformances of one interface, each with its own signatures and its own associated types (`type.associated-types/AT8`). A bare `T: Mul` bound means the defaulted instantiation, not "some instantiation". Both of them *on one type* is rejected at the second block while MN1 still decides the call — see AT8 |
 | **GT4: Declared defaults** | `interface Mul<Rhs = Self>` lets `Mul` be written bare and mean `Mul<Self>`. Without a default the argument is required, in a bound and in a conformance header alike |
 | **GT5: Bounds on the parameter** | `interface Scale<Rhs: Numeric>` is checked where the conformance names its argument, the same as a bound on a generic struct's parameter |
@@ -87,7 +87,7 @@ Associated types are the other half of this: a parameter is what the *conformanc
 | **DT1: Never public** | `public duck interface` is a compile error. A duck interface also may not appear in any public signature — not as a bound, not as `any Interface`, not in a public type alias, and not in a `public extend ... with` header (TV2 already caps that). A duck interface's methods may still be `public` on the types that match it; the *interface* is what stays package-internal |
 | **DT2: Reported at publish** | `rask publish` reports duck interfaces the package declares, as a warning with a count (`struct.build/PB8`). Not a gate — DT1 already means they can't reach a consumer, so there's nothing for a release check to protect |
 | **DT3: Flagged by lint** | `rask lint` warns on every `duck interface` declaration and names the harden step (`tool.lint/I3`). Suppressible with `@allow(idiom/duck-interface)` when the sketch is deliberate |
-| **DT4: Hardening is mechanical** | Deleting the `duck` keyword turns it nominal. The compiler already knows every type matching by shape, so it lists them and a quick-fix inserts the `extend Type implements Interface {}` declarations. Nothing else about the interface changes |
+| **DT4: Hardening is mechanical** | Deleting the `duck` keyword turns it nominal. The compiler already knows every type matching by shape, so it lists them and a quick-fix inserts the `Type implements Interface {}` declarations. Nothing else about the interface changes |
 
 Declare an interface duck while sketching: no conformance declarations, methods move freely between types, nothing to keep in sync. Declaring conformance to a duck interface anyway is legal and harmless — documentation plus a signature check at the declaration instead of the use site. The stdlib ships zero duck interfaces.
 
@@ -151,14 +151,14 @@ See [Gradual Constraints](gradual-constraints.md) for inference rules, smart err
 A conformance declaration provides the interface's methods (or inherits them from methods already on the type):
 
 ```rask
-extend Point implements Comparable {
+Point implements Comparable {
     func compare(self, other: Point) -> Ordering {
         // Custom implementation
     }
 }
 ```
 
-An empty `extend Point implements Comparable {}` declares conformance using methods the type already has. Either way, the compiler checks each required method:
+An empty `Point implements Comparable {}` declares conformance using methods the type already has. Either way, the compiler checks each required method:
 1. Method exists on the type (not a free function)
 2. Parameter types match exactly
 3. Return type matches exactly
@@ -176,23 +176,23 @@ For `duck interface`, the same signature check runs at the use site against the 
 
 | Rule | Description |
 |------|-------------|
-| **CD1: One interface per block** | `extend T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public extend`, `scoped extend`) apply to the block |
+| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public extend`, `scoped extend`) apply to the block |
 | **CD2: The block is the contract** | An `implements` block holds only the methods its interface declares (its parent interfaces' included). Any other method in it is an error (E0893): a plain method belongs in `extend T { }`, so reading the block shows exactly what the interface asks of the type |
-| **CD3: Composite chain** | Declaring a composite (`extend T implements HashKey {}`) checks the full parent interface chain (TD3); auto-derived parent interfaces satisfy automatically, missing methods error at the declaration |
+| **CD3: Composite chain** | Declaring a composite (`T implements HashKey {}`) checks the full parent interface chain (TD3); auto-derived parent interfaces satisfy automatically, missing methods error at the declaration |
 
 <!-- test: skip -->
 ```rask
 // One block per interface, and only that interface's methods in it
-extend LogSource implements Reader {
+LogSource implements Reader {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
 }
 extend LogSource {
     func rewind(mutate self) { ... }            // plain method, own block
 }
-extend LogSource implements Displayable {
+LogSource implements Displayable {
     func display(self) -> string { ... }
 }
-extend LogSource implements Error {
+LogSource implements Error {
     func message(self) -> string { ... }
 }
 ```
@@ -203,19 +203,19 @@ One type, one method name, one meaning — with an opt-out scoped to the collisi
 
 | Rule | Description |
 |------|-------------|
-| **MN1: Single namespace** | Methods defined in `extend T implements Interface { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
+| **MN1: Single namespace** | Methods defined in `T implements Interface { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
 | **MN2: Shared implementation** | Two conformances requiring the same method name share the one implementation — legal iff both signatures match it. One implementation means one definition: two blocks each defining `label` on the same type is a duplicate method, whichever interfaces they name (XC3) |
 | **MN3: Conflict needs scoping** | If the signatures disagree, the second conformance declaration is a compile error naming both interfaces — unless it is declared `scoped`. This covers two applied forms of one generic interface (`Mul<f64>` and `Mul<Meters>` on the same type) as much as two different interfaces. `scoped` is parsed but not yet honoured ([#1303](https://github.com/rask-lang/rask/issues/1303)), so today the error stands either way |
-| **MN4: Scoped conformance** | `scoped extend T implements Interface { ... }` — methods in a scoped conformance do not enter T's inherent namespace. Reachable through interface dispatch (generic bounds, `any Interface`) and interface-qualified calls |
+| **MN4: Scoped conformance** | `scoped T implements Interface { ... }` — methods in a scoped conformance do not enter T's inherent namespace. Reachable through interface dispatch (generic bounds, `any Interface`) and interface-qualified calls |
 | **MN5: Interface-qualified call** | `Interface.method(value, args)` — mirrors `Type.method()` static-call syntax. Legal for any conformance, needed only for scoped ones |
 
 <!-- test: skip -->
 ```rask
-extend Dog implements Greeter {
+Dog implements Greeter {
     func greet(self) -> string { ... }               // ordinary method: dog.greet()
 }
 
-scoped extend Dog implements Announcer {
+scoped Dog implements Announcer {
     func greet(self, volume: i32) -> string { ... }  // interface-only
 }
 
@@ -235,12 +235,12 @@ The core-interface family carries cross-interface contracts (`a == b` implies `h
 
 ## Cross-Package Conformance
 
-There is no orphan rule. Any package may declare `extend T implements Interface` for a type and an interface it doesn't own — except for six auto-derived interfaces that decide what happens to the type's data, which belong to its owner and nobody else.
+There is no orphan rule. Any package may declare `T implements Interface` for a type and an interface it doesn't own — except for six auto-derived interfaces that decide what happens to the type's data, which belong to its owner and nobody else.
 
 | Rule | Description |
 |------|-------------|
-| **XC1: Contract interfaces belong to the owner** | `extend T implements Equal`, `Hashable`, `Comparable`, `Cloneable`, `Encode` or `Decode` is legal only where `T` is declared. From anywhere else it's a compile error, the empty-body form included. A builtin's declarer is the standard library, so `extend Vec<i64> implements Hashable` in a program is the same error as extending a sibling package's type. All six are auto-derived for every eligible type (EQ1/HA1/CO1/CL1, `std.encoding/E12`), so nobody else ever needs one |
-| **XC2: Everything else is open** | For every other interface, `extend T implements Interface` is legal wherever both names are visible. No newtype wrapper, no forwarding methods, no ceremony for the case that has no conflict |
+| **XC1: Contract interfaces belong to the owner** | `T implements Equal`, `Hashable`, `Comparable`, `Cloneable`, `Encode` or `Decode` is legal only where `T` is declared. From anywhere else it's a compile error, the empty-body form included. A builtin's declarer is the standard library, so `Vec<i64> implements Hashable` in a program is the same error as extending a sibling package's type. All six are auto-derived for every eligible type (EQ1/HA1/CO1/CL1, `std.encoding/E12`), so nobody else ever needs one |
+| **XC2: Everything else is open** | For every other interface, `T implements Interface` is legal wherever both names are visible. No newtype wrapper, no forwarding methods, no ceremony for the case that has no conflict |
 | **XC3: Two conformances never resolve silently** | Two declared conformances for the same (type, interface) pair are a compile error, never a pick. The pair is the *applied* interface, so two different applied forms of one generic interface are two conformances, not one declared twice — that they can still collide on a method name is MN3's, reported once and not twice. Both in one package: the error is at the second declaration. In two packages: at the place that needs the conformance, so a collision nobody uses costs nothing |
 | **XC4: Visibility is the user's, not the build's** | A conformance is visible to a package iff the declaring package is in *that* package's dependency graph. A library keeps using its own conformance even when the program linking it also pulls in someone else's |
 | **XC5: Conformance is part of the instantiation** | A generic instance is keyed by its type arguments *and* the conformances resolved for its bounds. `show<Doc>` under two different `Labeled` conformances is two instances, so neither can silently get the other's code |
@@ -270,7 +270,7 @@ In order of what to reach for:
 
 1. **Drop one dependency.** Two packages conforming the same foreign type to the same foreign interface usually means they overlap in more than this.
 2. **Move the use down.** Put the code that needs the conformance in a package that depends on one of the two. XC4 means it sees one conformance and compiles.
-3. **Wrap it.** `type MyDoc = Doc` plus your own `extend MyDoc implements Labeled { ... }`.
+3. **Wrap it.** `type MyDoc = Doc` plus your own `MyDoc implements Labeled { ... }`.
 
 Step 3 gives you a type that compiles; it does not give you liba's behavior. Nothing names a conformance, and where both are in scope the method name collides too (MN1 puts conformance methods in the type's inherent namespace), so the wrapper can't delegate to either — it writes its own body. Keeping one of the two implementations is what step 2 is for: a package that sees one conformance also sees exactly one `label`.
 
@@ -286,7 +286,7 @@ types a program actually puts in containers.
 ```
 error[E0409]: only `interfacepkg` can declare `Hashable` for `interfacepkg.Doc`
    |
-4  |  public extend Doc implements Hashable {
+4  |  public Doc implements Hashable {
    |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this block is in `liba`
    |
 7  |  public struct Doc {
@@ -294,7 +294,7 @@ error[E0409]: only `interfacepkg` can declare `Hashable` for `interfacepkg.Doc`
 
 FIX: put the behaviour you want on a type of your own:
        type MyDoc = interfacepkg.Doc
-       extend MyDoc implements Hashable { … }
+       MyDoc implements Hashable { … }
 
 WHY: `Hashable` is one answer per type — `Map`, `Set` and every sort built
      on them assume `interfacepkg.Doc` answers the same way everywhere. A second
@@ -312,7 +312,7 @@ whose owner hasn't decided yet.
 ```
 error[E0409]: only `interfacepkg` can make `interfacepkg.Secret` encodable
    |
-4  |  public extend Secret implements Encode {
+4  |  public Secret implements Encode {
    |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this block is in `liba`
    |
 5  |  public struct Secret {
@@ -344,7 +344,7 @@ WHY: Picking one would come down to link order. Which `label()` runs has
 FIX: Give the collision a type of its own, and say what it does:
 
   type MyDoc = interfacepkg.Doc
-  extend MyDoc implements Labeled {
+  MyDoc implements Labeled {
       func label(self) -> string { return "doc {self.value.n}" }
   }
 
@@ -376,7 +376,7 @@ ran `libb`'s body and printed `b:7`.
 
 <!-- test: skip -->
 ```rask
-extend Ring<T> implements Displayable where T: Displayable {
+Ring<T> implements Displayable where T: Displayable {
     func display(self) -> string {
         return self.items.map(|x| x.display()).join(", ")
     }
@@ -432,7 +432,7 @@ The compiler auto-derives Equal where all fields implement Equal — same patter
 | Rule | Description |
 |------|-------------|
 | **EQ1: Auto-derive** | Primitives, structs with all Equal fields, enums (tag + payload equality): auto-derived |
-| **EQ2: Override** | `extend Type implements Equal { ... }` overrides the auto-derived version |
+| **EQ2: Override** | `Type implements Equal { ... }` overrides the auto-derived version |
 | **EQ3: Enum equality** | Variants compared by tag, then field-wise payload equality |
 
 ```rask
@@ -462,7 +462,7 @@ The compiler auto-derives Hashable where all fields implement Hashable. Since Ha
 | Rule | Description |
 |------|-------------|
 | **HA1: Auto-derive** | Primitives, structs with all Hashable fields, enums (tag + payload hash): auto-derived |
-| **HA2: Override** | `extend Type implements Hashable { ... }` overrides the auto-derived version |
+| **HA2: Override** | `Type implements Hashable { ... }` overrides the auto-derived version |
 | **HA3: Hash combine** | Field-wise hash uses deterministic combine (order matches declaration order) |
 | **HA3a: What a scalar's hash is** | `x.hash()` on an integer, a `bool`, a `char` or a `string` is FNV-1a over the value's little-endian bytes at its own width — the same function an int-keyed Map buckets with, so a value and the same value used as a key agree. Unseeded: a hash is as stable as `==`. The width counts, so `5u32` and `5u64` don't hash alike |
 | **HA4: Float exclusion** | `f32` and `f64` are NOT Hashable (NaN != NaN violates Hashable contract). So `Map<f64, V>` is a compile error — including nested, as in `Vec<Map<f64, V>>`. A float *value* is fine; only the key position is excluded |
@@ -485,7 +485,7 @@ The compiler auto-derives Comparable where all fields implement Comparable — l
 | Rule | Description |
 |------|-------------|
 | **CO1: Auto-derive** | Primitives, structs with all Comparable fields, enums (variant order, then payload): auto-derived |
-| **CO2: Override** | `extend Type implements Comparable { ... }` overrides the auto-derived version |
+| **CO2: Override** | `Type implements Comparable { ... }` overrides the auto-derived version |
 | **CO3: Lexicographic** | Fields compared in declaration order — first field is most significant |
 | **CO4: Floats included** | `f32`/`f64` are Comparable. `compare()` is a total order so `sort`, `min`, `max` and every `T: Comparable` helper work on them; the operators `<`, `>`, `<=`, `>=` stay IEEE, so a comparison against `NaN` is `false`. See `type.operators/ORD3` |
 
@@ -646,7 +646,7 @@ Which makes the rule less "these interfaces get baked into data structures" and 
 
 XC5 is the part that makes XC3 more than a slogan. Two conformances in one build, resolved per instantiation (XC4), means the same generic at the same type argument can need two bodies. If the monomorphization key were just the type arguments, one of them would silently win and which one would depend on link order — the exact regression this design exists to prevent, reintroduced at the back.
 
-That turned out to be true of plain methods as well, not just generic instances. Two `extend Doc implements Labeled` blocks in two packages both put a `label` on one `Doc`, and both mangled to `Doc_label`: `liba` called its own function, which called `d.label()`, and ran `libb`'s body.
+That turned out to be true of plain methods as well, not just generic instances. Two `Doc implements Labeled` blocks in two packages both put a `label` on one `Doc`, and both mangled to `Doc_label`: `liba` called its own function, which called `d.label()`, and ran `libb`'s body.
 
 So a block on a type its package doesn't own carries that package in the symbol its methods get — `Doc_label~liba` — and a call asks for its own package's version, falling back to the plain name when that package has no block of its own. Two rules, each about one thing at a time, and the collision case falls out: `liba` and `libb` get separate symbols without either being told the other exists.
 

@@ -33,7 +33,7 @@ enum Inner {
     TooSmall
 }
 
-extend Inner implements Error {
+Inner implements Error {
     func message(self) -> string {
         return "inner said no"
     }
@@ -56,7 +56,7 @@ enum ExtendsItsOwn {
     Whatever
 }
 
-extend ExtendsItsOwn implements Error {
+ExtendsItsOwn implements Error {
     func message(self) -> string {
         return "from the extend block"
     }

@@ -12,13 +12,13 @@ struct Key {
     public n: i64
 }
 
-extend Key implements Equal {
+Key implements Equal {
     func eq(self, other: Key) -> bool {
         return self.n == other.n
     }
 }
 
-extend Key implements Hashable {
+Key implements Hashable {
     func hash(self) -> u64 {
         return self.n.clamp<u64>()
     }

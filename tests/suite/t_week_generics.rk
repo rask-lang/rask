@@ -40,7 +40,7 @@ struct Line {
     len: i64
 }
 
-extend Line implements Sized2 {
+Line implements Sized2 {
     func measure(self) -> i64 {
         return self.len
     }

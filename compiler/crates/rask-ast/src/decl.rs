@@ -214,7 +214,7 @@ pub struct AssocTypeDecl {
     pub span: Span,
 }
 
-/// AT2: `type Out = Meters` inside an `extend T implements Interface` block.
+/// AT2: `type Out = Meters` inside an `T implements Interface` block.
 #[derive(Debug, Clone)]
 pub struct AssocTypeBinding {
     pub name: String,
@@ -479,7 +479,7 @@ pub struct InterfaceDecl {
     pub doc: Option<String>,
 }
 
-/// An extend block (`extend T`, `extend T implements I`).
+/// An extend block (`extend T`, `T implements I`).
 #[derive(Debug, Clone)]
 pub struct ImplDecl {
     /// The one interface this block conforms to (CD1). None for a plain
@@ -492,7 +492,7 @@ pub struct ImplDecl {
     /// `scoped extend` — methods stay out of the type's inherent namespace (MN4).
     pub is_scoped: bool,
     /// CC1/CC2: `where` condition for conditional conformance on a generic
-    /// target (`extend Ring<T> implements Displayable where T: Displayable`). Each
+    /// target (`Ring<T> implements Displayable where T: Displayable`). Each
     /// entry is a type param and its required interface bounds.
     pub where_bounds: Vec<TypeParam>,
     /// AT2: `type Out = Meters` lines in the block.

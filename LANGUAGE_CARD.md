@@ -302,12 +302,12 @@ Conformance is **nominal — declared, not shape-matched** (`type.generics/G1`):
 ```rask
 interface Comparable { func compare(self, other: Self) -> Ordering }
 
-extend Score implements Comparable {
+Score implements Comparable {
     func compare(self, other: Score) -> Ordering { return self.value.compare(other.value) }
 }
-extend Ring<T> implements Countable {}             // one interface per block; empty block = methods already exist
-extend Ring<T> implements Sizable {}
-public extend Point implements Displayable { }     // public conformance is declared, never inferred
+Ring<T> implements Countable {}             // one interface per block; empty block = methods already exist
+Ring<T> implements Sizable {}
+public Point implements Displayable { }     // public conformance is declared, never inferred
 
 duck interface Sketchy { func poke(self) }       // opt-in shape-matching — prototyping only;
                                              // harden by deleting `duck` + accepting generated declarations
@@ -407,7 +407,7 @@ No I/O (`@embed_file` excepted), no racks/concurrency/`any Interface` at comptim
 2. **No `Ok`/`Err`/`Some`/`None`.** Return bare values or the error value. On results: handle with `catch`, test with `is` (`IoError as e`), never `is Ok` — and never `r?`; `?` is absence-only and doesn't apply to results.
 3. **Bindings are `let`/`mut`** — never `let mut`. `mut`, not `let`, is the rebindable one; `const` exists only at module level.
 4. **`try` is a prefix keyword**, not a `?` suffix: `let x = try f()`. The `?` suffix means absence, on optionals only — and **`?`-tests don't narrow; there is no flow typing.** `if x? { use(x) }` doesn't unwrap `x`; Kotlin/TypeScript smart-cast instincts fail here. Bind instead (`if x? as v { use(v) }`) or exit with the fallback (`let v = x ?? return`).
-5. **Methods live in `extend Point { }` blocks**, not in the struct body; interface conformance is `extend Point implements Interface { }` — and it's required (nominal), methods matching by shape is not enough.
+5. **Methods live in `extend Point { }` blocks**, not in the struct body; interface conformance is `Point implements Interface { }` — and it's required (nominal), methods matching by shape is not enough.
 6. **Boxing is explicit**: `render(button as any Widget)` — no implicit conversion to `any Interface`, even when the target type is known.
 7. **No `&`, `&mut`, lifetimes, or storable references.** Pass values (borrow is the default mode); store a `Link<T>` into a rack, an index, or a `Span` instead of a reference; use `with` for multi-statement element access.
 8. **Explicit `return` in functions.** Only block *expressions* (if/match arms, `with`) use last-expression value.

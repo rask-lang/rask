@@ -23,7 +23,7 @@ enum MyError {
     Bad
 }
 
-extend MyError implements Error {
+MyError implements Error {
     func message(self) -> string {
         return "bad"
     }

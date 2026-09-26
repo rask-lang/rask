@@ -1177,11 +1177,13 @@ impl<'a> Printer<'a> {
         if imp.is_scoped {
             self.emit("scoped ");
         }
-        self.emit("extend ");
-        self.emit(&imp.target_ty);
         if let Some(name) = &imp.interface_name {
+            self.emit(&imp.target_ty);
             self.emit(" implements ");
             self.emit(name);
+        } else {
+            self.emit("extend ");
+            self.emit(&imp.target_ty);
         }
         if !imp.where_bounds.is_empty() {
             let clause: Vec<String> = imp.where_bounds.iter()

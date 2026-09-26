@@ -86,7 +86,7 @@ const COMPILER_MODULES: &[&str] = &[
     //
     // `fmt` and `encoding` declare interfaces the compiler provides, and giving
     // `Displayable` a declaration made it look like an interface a program had
-    // written — which G1 gates on `extend T implements Interface`, so every inherent
+    // written — which G1 gates on `T implements Interface`, so every inherent
     // `to_string` in the stdlib stopped counting. The gate asks what kind of
     // interface it is now, not whether a declaration exists.
 ];

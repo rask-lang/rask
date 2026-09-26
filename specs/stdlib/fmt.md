@@ -80,7 +80,7 @@ ASCII (`std.strings/U4`).
 |------|-------------|
 | **D1: Interface** | `interface Displayable { func display(self) -> string }` |
 | **D2: Primitives** | All primitive types implement `Displayable` by default |
-| **D3: Structs opt-in** | Structs do NOT auto-implement `Displayable` — must add via `extend Type implements Displayable` |
+| **D3: Structs opt-in** | Structs do NOT auto-implement `Displayable` — must add via `Type implements Displayable` |
 | **D4: Required for {}** | `format("{}", x)` calls `display()`. Compile error if `Displayable` not implemented. `print(x)` and `println(x)` are the same rule with a different spelling — each argument is rendered through `display()`, so a value that can't render is rejected at the call and one that can uses its own impl. Two ways to reach the renderer, one renderer |
 | **D5: Error bridge** | Types satisfying `Error` (have `message(self) -> string`) auto-satisfy `Displayable` — `display()` calls `message()`. No boilerplate needed for error types in `format("{}", err)` |
 
@@ -96,7 +96,7 @@ two verbs.
 ```rask
 struct Point { x: f64, y: f64 }
 
-extend Point implements Displayable {
+Point implements Displayable {
     func display(self) -> string {
         return format("({}, {})", self.x, self.y)
     }
@@ -131,7 +131,7 @@ extend AppError {
 |------|-------------|
 | **G1: Interface** | `interface Debug { func debug(self) -> string }` |
 | **G2: Auto-derive** | All types auto-derive `Debug` by default |
-| **G3: Override** | Auto-derived `Debug` can be overridden via `extend Type implements Debug` |
+| **G3: Override** | Auto-derived `Debug` can be overridden via `Type implements Debug` |
 | **G4: Debug format** | `format("{:debug}", x)` calls `debug()` |
 | **G5: Map order** | A `Map` renders its entries sorted by key. A key with no ordering falls back to sorting the rendered entries |
 
@@ -179,7 +179,7 @@ WHY: {} calls display(), which requires the Displayable interface.
 
 FIX 1: Add Displayable implementation:
 
-  extend MyStruct implements Displayable {
+  MyStruct implements Displayable {
       func display(self) -> string { ... }
   }
 
@@ -264,7 +264,7 @@ isn't implemented.
 
 **D3 (structs opt-in):** Auto-deriving Displayable would produce output that looks intentional but isn't. Debug auto-derives because it's for developers. Displayable is for users, so you write it.
 
-**D5 (Error bridge):** Every error type already has `message()` — requiring a separate `display()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `display()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `extend Type implements Displayable`.
+**D5 (Error bridge):** Every error type already has `message()` — requiring a separate `display()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `display()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `Type implements Displayable`.
 
 **I3 (no expressions):** Expressions in string interpolation create hidden complexity. `format()` makes the formatting explicit. Keeps println simple.
 
@@ -292,7 +292,7 @@ println(format("{:<20} {:>10} {:>10.2}", "Widget", 5, 9.99))
 ```rask
 struct Color { r: u8, g: u8, b: u8 }
 
-extend Color implements Displayable {
+Color implements Displayable {
     func display(self) -> string {
         return format("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }

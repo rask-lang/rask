@@ -11,7 +11,7 @@
 // ─── Displayable ────────────────────────────────────────────────
 
 /// User-facing string representation. Structs must opt in via
-/// `extend Type implements Displayable`. Primitives implement it by default (D2).
+/// `Type implements Displayable`. Primitives implement it by default (D2).
 ///
 /// format("{}", x) calls to_string() — compile error if not implemented (D4).
 ///
@@ -25,7 +25,7 @@ public interface Displayable {
 // ─── Debug ──────────────────────────────────────────────────────
 
 /// Developer-facing representation. Auto-derived for all types (G2).
-/// Override via `extend Type implements Debug` (G3).
+/// Override via `Type implements Debug` (G3).
 ///
 /// format("{:debug}", x) calls debug() (G4) — the verb matches the interface.
 /// Auto-derived output shows struct fields and enum variants.

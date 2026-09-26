@@ -745,7 +745,7 @@ func render_children<T: Renderable>(children: Vec<T>, mutate builder: StringBuil
     }
 }
 
-extend Inline implements Renderable {
+Inline implements Renderable {
     func render(self, mutate builder: StringBuilder, refs: Map<string, string>) {
         match self {
             Text(s) => builder.push(html_escape(s))
@@ -807,7 +807,7 @@ func render_list_item(item: ListItem, mutate builder: StringBuilder, refs: Map<s
     builder.push("</li>\n")
 }
 
-extend Block implements Renderable {
+Block implements Renderable {
     func render(self, mutate builder: StringBuilder, refs: Map<string, string>) {
         match self {
             Heading(level, inlines) => {

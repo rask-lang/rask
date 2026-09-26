@@ -9,7 +9,7 @@
 // comparator ABI and the assert helpers — convert explicitly, so the shapes
 // below are the ones that catch a regression in either direction.
 
-extend Ordering implements Displayable {
+Ordering implements Displayable {
     func to_string(self) -> string {
         match self {
             Ordering.Less => return "less",

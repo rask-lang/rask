@@ -15,7 +15,7 @@ interface Updatable {
 }
 
 // Position implements Updatable (applies velocity)
-extend Position implements Updatable {
+Position implements Updatable {
     func update(self, dt: f32) {
         // Position updated by movement system
     }

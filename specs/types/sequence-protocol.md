@@ -757,7 +757,7 @@ The retired `Iterator<Item>` interface mapped to these patterns:
 
 | Old | New |
 |-----|-----|
-| `extend MyType implements Iterator<T> { func next(...) }` | `public func walk(self) -> Sequence<T> { return \|yield\| { ... } }` — any method name, the return type is what makes it iterable (SEQ6) |
+| `MyType implements Iterator<T> { func next(...) }` | `public func walk(self) -> Sequence<T> { return \|yield\| { ... } }` — any method name, the return type is what makes it iterable (SEQ6) |
 | `collection.iterate()` (returned `VecRefIterator<T>` etc.) | the collection *is* the chain head — `collection.filter(p)`, `for x in collection` (SEQ48) |
 | `iter.collect()` | `iter.to_vec()` (SEQ28) — or `.to_map()` / `.join(sep)` |
 | `.take_all()` returning consuming iterator struct | `.take_all()` returns the drained `Vec<T>` (SEQ35) — not a Sequence |

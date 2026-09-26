@@ -59,7 +59,7 @@ No new syntax. The signature already says which types can't collide; writing a s
 
 | Rule | Description |
 |------|-------------|
-| **ER6: Auto-derived for enums** | `Error` is nominal, auto-derived for enums: `message()` is the humanized variant name plus payload interpolation (`UnexpectedEnd(ctx)` → `"unexpected end: {ctx}"`); a single-payload variant whose payload implements `Error` delegates to it. Override with `extend E implements Error { ... }` for hand-written prose — `rask lint` nudges public error types toward it. Structs declare conformance (usually the header of the block defining `message()`) |
+| **ER6: Auto-derived for enums** | `Error` is nominal, auto-derived for enums: `message()` is the humanized variant name plus payload interpolation (`UnexpectedEnd(ctx)` → `"unexpected end: {ctx}"`); a single-payload variant whose payload implements `Error` delegates to it. Override with `E implements Error { ... }` for hand-written prose — `rask lint` nudges public error types toward it. Structs declare conformance (usually the header of the block defining `message()`) |
 | **ER7: Auto-Displayable** | Error types auto-satisfy `Displayable`; `display()` delegates to `message()` |
 | **ER8: Layered interfaces** | Richer capabilities (`LinedError`, `ContextualError`, `CodedError`) are opt-in interfaces on top of `Error`. The minimum bound is just `message() -> string` |
 
@@ -70,7 +70,7 @@ enum DivError { ByZero, Overflow }
 //   ByZero → "by zero", Overflow → "overflow"
 
 // Override for hand-written prose:
-extend DivError implements Error {
+DivError implements Error {
     func message(self) -> string {
         match self {
             DivError.ByZero   => "division by zero",
@@ -81,7 +81,7 @@ extend DivError implements Error {
 
 // Structs declare conformance in the block defining message():
 struct NotFound { key: string }
-extend NotFound implements Error {
+NotFound implements Error {
     func message(self) -> string { "not found: {self.key}" }
 }
 ```

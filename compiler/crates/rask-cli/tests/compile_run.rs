@@ -2607,7 +2607,7 @@ fn a_plain_method_inside_an_interface_block_is_rejected() {
 
 #[test]
 fn error_conformance_missing_method() {
-    assert!(compile_error("conformance_missing_method.rk"), "should reject `extend T implements Interface` when the type lacks the interface's method (G1)");
+    assert!(compile_error("conformance_missing_method.rk"), "should reject `T implements Interface` when the type lacks the interface's method (G1)");
 }
 
 #[test]
@@ -6147,7 +6147,7 @@ fn a_map_key_that_is_not_hashable_is_rejected_per_kind() {
     assert!(out.contains("`f64` is not Hashable"), "{}", out);
     assert!(out.contains("`map.insert(x.to_bits(), v)`"), "{}", out);
     assert!(out.contains("`Floaty` is not Hashable"), "{}", out);
-    assert!(out.contains("extend Floaty implements Hashable"), "{}", out);
+    assert!(out.contains("Floaty implements Hashable"), "{}", out);
     // The two good keys stay good.
     assert!(!out.contains("`Plain`"), "an all-Hashable struct is a key: {}", out);
     assert!(!out.contains("`Tag`"), "a newtype that lists Hashable is a key: {}", out);
@@ -6922,7 +6922,7 @@ fn run_rask_test_source(src: &str, interp: bool) -> String {
 
 const TRY_IN_TEST_SRC: &str = r#"
 enum OpenErr { Denied }
-extend OpenErr implements Error {
+OpenErr implements Error {
     func message(self) -> string { return "denied" }
 }
 func might_fail(ok: bool) -> i64 or OpenErr {

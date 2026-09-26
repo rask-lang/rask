@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // A nominal newtype can carry a conformance of its own.
 //
-// `extend Tagged implements Labeled { … }` put its methods on the newtype, which is
+// `Tagged implements Labeled { … }` put its methods on the newtype, which is
 // where `register_impl_methods` writes them, and the check that reads them back
 // looked at structs, enums and interfaces only. So the block came back methodless
 // and G1 reported every interface method missing on a block that had them all —
@@ -25,7 +25,7 @@ struct Doc {
 
 type Tagged = Doc
 
-extend Tagged implements Labeled {
+Tagged implements Labeled {
     public func label(self) -> string {
         return "tagged {self.value.n}"
     }
@@ -33,7 +33,7 @@ extend Tagged implements Labeled {
 
 type Counted = Doc
 
-extend Counted implements Hashable {
+Counted implements Hashable {
     public func hash(self) -> u64 {
         return 7
     }

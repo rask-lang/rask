@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Week one: interfaces, and `any Interface` for runtime dispatch.
 //
-// Conformance is declared with `extend Type implements Interface` — nothing matches a
+// Conformance is declared with `Type implements Interface` — nothing matches a
 // interface by accident. Covers a one-method interface on two types, static dispatch
 // through a `T: Interface` bound, `any Interface` in a binding, a parameter, a return,
 // and a Vec, default methods, an interface with several methods, and one type
@@ -36,26 +36,26 @@ struct Tag {
     text: string
 }
 
-extend Circle implements Shape {
+Circle implements Shape {
     func area(self) -> f64 {
         return 3.0 * self.r * self.r
     }
 }
 
-extend Square implements Shape {
+Square implements Shape {
     func area(self) -> f64 {
         return self.side * self.side
     }
 }
 
 // One block per interface.
-extend Tag implements Named {
+Tag implements Named {
     func name(self) -> string {
         return self.text
     }
 }
 
-extend Tag implements Describable {
+Tag implements Describable {
     func label(self) -> string {
         return "tag:{self.text}"
     }

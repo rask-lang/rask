@@ -34,7 +34,7 @@ struct Crate {
     public note: string
 }
 
-extend Crate implements Named {
+Crate implements Named {
     public func label(self) -> string {
         return self.name
     }
@@ -44,7 +44,7 @@ struct Bin {
     public id: i64
 }
 
-extend Bin implements Named {
+Bin implements Named {
     public func label(self) -> string {
         return "bin {self.id}"
     }

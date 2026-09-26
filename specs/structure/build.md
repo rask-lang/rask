@@ -577,9 +577,9 @@ FIX: delete `duck`. For `Frobber`, 3 types already match by shape; the
      "harden duck interface" quick action (type.generics/DT4) inserts their
      conformance declarations:
 
-  extend Widget implements Frobber {}
-  extend Gadget implements Frobber {}
-  extend Doohickey implements Frobber {}
+  Widget implements Frobber {}
+  Gadget implements Frobber {}
+  Doohickey implements Frobber {}
 
      Or keep the sketch — `@allow(idiom/duck-interface)` silences the nudge.
 ```

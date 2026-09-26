@@ -414,7 +414,7 @@ impl StubRegistry {
                     // definitions — types must be visible for resolution even when
                     // their methods aren't implemented yet. Interfaces are the same:
                     // no body to strip, but the type checker still needs them to
-                    // validate `extend T implements Interface` conformance (#320).
+                    // validate `T implements Interface` conformance (#320).
                     matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Interface(_))
                 };
                 if dominated {
@@ -560,7 +560,7 @@ impl StubRegistry {
             }
             DeclKind::Impl(i) => {
                 let base_name = strip_type_params(&i.target_ty);
-                // OR6: `extend i64 implements Mul<Duration>` is a conformance, not a
+                // OR6: `i64 implements Mul<Duration>` is a conformance, not a
                 // declaration that `i64` is a stdlib type. Filing it as one made
                 // `i64.MAX` a member of a type rather than a numeric constant,
                 // and the assert compiled to a call to `MAX_eq`.
@@ -1151,7 +1151,7 @@ mod boundary_tests {
         // Empty, and the last two entries are worth the note: `fmt.rk` and
         // `encoding.rk` were out because they declare an interface the compiler
         // already provides, and a declaration made `Displayable` look like a
-        // interface a program had written — which is gated on `extend T implements Interface`,
+        // interface a program had written — which is gated on `T implements Interface`,
         // so every inherent `to_string` in the stdlib stopped counting. The gate
         // asks what kind of interface it is now rather than whether a declaration
         // exists, so `stdlib/` is the source of truth for all 29 files (#990).

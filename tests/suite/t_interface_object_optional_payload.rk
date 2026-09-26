@@ -14,7 +14,7 @@ struct Circle {
     r: f64
 }
 
-extend Circle implements Shape {
+Circle implements Shape {
     func area(self) -> f64 {
         return 3.14159 * self.r * self.r
     }
@@ -24,7 +24,7 @@ struct Square {
     side: f64
 }
 
-extend Square implements Shape {
+Square implements Shape {
     func area(self) -> f64 {
         return self.side * self.side
     }

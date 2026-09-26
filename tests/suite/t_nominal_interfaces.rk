@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Nominal interface conformance (G1/#283): a type satisfies a user interface through a
-// declared `extend T implements Interface`. `duck interface` opts back into shape-matching.
+// declared `T implements Interface`. `duck interface` opts back into shape-matching.
 // CD1: one `extend` header can declare several conformances at once.
 
 interface Greeter {
@@ -18,7 +18,7 @@ interface Countable { func count(self) -> i64 }
 interface Sizable { func size(self) -> i64 }
 
 struct Dog { name: string }
-extend Dog implements Greeter {
+Dog implements Greeter {
     func greet(self) -> string { return "woof:{self.name}" }
 }
 
@@ -30,10 +30,10 @@ extend Widget {
 
 struct Bag { n: i64 }
 // CD1: one block per conformance.
-extend Bag implements Countable {
+Bag implements Countable {
     func count(self) -> i64 { return self.n }
 }
-extend Bag implements Sizable {
+Bag implements Sizable {
     func size(self) -> i64 { return self.n * 2 }
 }
 

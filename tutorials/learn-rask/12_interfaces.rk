@@ -13,7 +13,7 @@
 // Having the right methods isn't enough on its own: the type says which
 // interface it's conforming to, in the header of the block that implements it.
 //
-//   extend Circle implements HasArea {
+//   Circle implements HasArea {
 //       func area(self) -> f64 { return 3.14159 * self.r * self.r }
 //   }
 //
@@ -44,7 +44,7 @@ struct Star {
     mass_solar: f64
 }
 
-extend Star implements Describable {
+Star implements Describable {
     func describe(self) -> string {
         return "{self.name}: {self.mass_solar} solar masses"
     }
@@ -86,7 +86,7 @@ struct Cessna172 {
 //   max_speed_knots → 453.0
 //   range_nm → 3500.0
 //   designation → "Boeing 737-{variant}" (use self.variant)
-extend Boeing737 implements Aircraft {
+Boeing737 implements Aircraft {
     func max_speed_knots(self) -> f64 {
         todo()
     }
@@ -102,7 +102,7 @@ extend Boeing737 implements Aircraft {
 //   max_speed_knots → 124.0
 //   range_nm → 640.0
 //   designation → "Cessna 172 ({registration})" (use self.registration)
-extend Cessna172 implements Aircraft {
+Cessna172 implements Aircraft {
     func max_speed_knots(self) -> f64 {
         todo()
     }
@@ -133,7 +133,7 @@ struct Measurement {
 }
 
 // Implement Summable for Measurement — return self.reading
-extend Measurement implements Summable {
+Measurement implements Summable {
     func value(self) -> f64 {
         todo()
     }

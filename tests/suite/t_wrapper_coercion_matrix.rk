@@ -60,7 +60,7 @@ enum Fault {
     Bad
 }
 
-extend Fault implements Error {
+Fault implements Error {
     func message(self) -> string {
         return "bad"
     }

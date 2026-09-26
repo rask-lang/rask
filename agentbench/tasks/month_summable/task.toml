@@ -21,6 +21,6 @@ stdlib interface `+` resolves against.
 an empty list totals to that `zero`. `doubled` adds a value to itself.
 
 `+` resolves on the pair of operand types against a declared conformance, so
-`extend Money implements Add` is what makes `a + b` work — and it is the same
+`Money implements Add` is what makes `a + b` work — and it is the same
 conformance `a.add(b)` and the `T: Add` bound reach.
 """

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
 // The nominal type is what both XC1 and XC3 tell you to reach for, and it
-// couldn't hold a conformance at all: an `extend Tagged implements Hashable` block
+// couldn't hold a conformance at all: an `Tagged implements Hashable` block
 // registered its methods on the nominal type and the check that reads them
 // back looked only at structs, enums and interfaces. Every method came back
 // missing on a block that had them all.

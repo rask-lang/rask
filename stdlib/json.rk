@@ -77,7 +77,7 @@ extend JsonValue {
 // and number helpers below it. Nothing reached it — `json.encode` is `@native`,
 // and MIR routes a non-struct, non-Vec, non-string argument to
 // `json_encode_i64`, so a JsonValue printed as its own address (#689).
-extend JsonValue implements Displayable {
+JsonValue implements Displayable {
     func to_string(self) -> string {
         return stringify_value(self)
     }

@@ -37,7 +37,7 @@ enum ConfigError {
     Malformed(string)
 }
 
-extend ConfigError implements Error {
+ConfigError implements Error {
     func message(self) -> string {
         match self {
             ConfigError.Missing(key) => return "{key} is not set"

@@ -10,7 +10,7 @@
 // This dev-only /debug/inspect endpoint is genuinely throwaway, so it's the
 // one spot where the loose contract fits: unrelated types grow a describe()
 // method for ad-hoc introspection without ceremony, and if the endpoint ever
-// stayed, deleting `duck` would generate the `extend ... implements Inspectable {}`
+// stayed, deleting `duck` would generate the `... implements Inspectable {}`
 // declarations. See FINDINGS on why this stayed a note more than a feature.
 
 import http

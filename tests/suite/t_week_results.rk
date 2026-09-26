@@ -18,7 +18,7 @@ enum MathError {
     Negative
 }
 
-extend MathError implements Error {
+MathError implements Error {
     func message(self) -> string {
         return match self {
             DivByZero => "divide by zero",
@@ -32,7 +32,7 @@ enum ParseFail {
     BadDigit
 }
 
-extend ParseFail implements Error {
+ParseFail implements Error {
     func message(self) -> string {
         return match self {
             Empty => "empty input",

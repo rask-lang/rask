@@ -276,7 +276,7 @@ pub fn check_duck_interface(decls: &[Decl], source: &str) -> Vec<LintDiagnostic>
                 source_line,
             },
             fix: format!(
-                "delete `duck` and declare conformance (`extend Type implements {} {{}}`) on each matching type, or `@allow(idiom/duck-interface)` to keep the sketch",
+                "delete `duck` and declare conformance (`Type implements {} {{}}`) on each matching type, or `@allow(idiom/duck-interface)` to keep the sketch",
                 t.name
             ),
         });

@@ -22,21 +22,21 @@ struct Person {
 }
 
 // Implement Describable for Point
-extend Point implements Describable {
+Point implements Describable {
     func describe(self) -> string {
         return "Point({self.x}, {self.y})"
     }
 }
 
 // Implement Describable for Circle
-extend Circle implements Describable {
+Circle implements Describable {
     func describe(self) -> string {
         return "Circle with radius {self.radius}"
     }
 }
 
 // Implement Describable for Person
-extend Person implements Describable {
+Person implements Describable {
     func describe(self) -> string {
         return "{self.name}, age {self.age}"
     }

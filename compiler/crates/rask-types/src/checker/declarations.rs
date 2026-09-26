@@ -477,7 +477,7 @@ impl TypeChecker {
     /// symbols. Every other generic interface still has only the name to go on.
     /// OR6: the table entry an `extend` block's methods and conformances go
     /// under. A struct or enum answers with its own id, a primitive with its
-    /// stand-in — `extend f64 implements Mul<Meters>` has to land somewhere.
+    /// stand-in — `f64 implements Mul<Meters>` has to land somewhere.
     pub(super) fn impl_target_id(&self, target_ty: &str) -> Option<crate::types::TypeId> {
         let base = target_ty.split('<').next().unwrap_or(target_ty).trim();
         self.types
@@ -924,7 +924,7 @@ impl TypeChecker {
                 // XC1 still applies to a primitive. `string` and the integer
                 // types aren't `Named`, so they have no entry in the table and
                 // the lookup above misses — the block registered unchecked, and
-                // a program's `extend string implements Hashable` made `"abc".hash()`
+                // a program's `string implements Hashable` made `"abc".hash()`
                 // answer 4242 while every `Map` went on using the real one. One
                 // answer per type is exactly what that isn't.
                 if rask_resolve::is_builtin_type(base_name) {
@@ -1009,7 +1009,7 @@ impl TypeChecker {
         // AT4: a declared default is as much this conformance's answer as a
         // written binding, and everything reading one goes through the same
         // lookup — so fill it in here rather than making every reader know
-        // about defaults. Without this `extend Meters implements Mul<f64>` under a
+        // about defaults. Without this `Meters implements Mul<f64>` under a
         // `type Out = Self` default had no `Out` at all, and `T.Out` in generic
         // code came back unresolved.
         let self_ty = self.resolve_impl_self_type(&i.target_ty);
@@ -1923,7 +1923,7 @@ impl TypeChecker {
                     }
 
                     // G1: mark auto-derived conformances so the nominal check
-                    // accepts eligible types without an explicit `extend ... implements`.
+                    // accepts eligible types without an explicit `T implements`.
                     let eq_ok = field_types.iter().all(|ty| self.type_has_method(ty, "eq"));
                     let hash_ok = eq_ok && field_types.iter().all(|ty| self.type_has_method(ty, "hash"));
                     let clone_ok = field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
@@ -2325,7 +2325,7 @@ impl TypeChecker {
 
                 // G1: verify the declared conformance at the extend site — the
                 // type must have each interface method with a matching signature.
-                // Generic targets (`extend Ring<T> implements ...`) are checked per
+                // Generic targets (`Ring<T> implements ...`) are checked per
                 // instantiation (CC1), so skip them here.
                 // GT2/AT2/AT5: the header gives every interface parameter an
                 // argument and the block answers every associated type. Both

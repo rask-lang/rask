@@ -40,7 +40,7 @@ struct EmailAddress {
     public raw: string
 }
 
-extend EmailAddress implements Equal {
+EmailAddress implements Equal {
     func eq(self, other: EmailAddress) -> bool {
         return self.raw.to_lowercase() == other.raw.to_lowercase()
     }
@@ -48,7 +48,7 @@ extend EmailAddress implements Equal {
 
 // OC1: overriding Equal cancels the derived Hashable, so it's redeclared to
 // agree with the case-insensitive equality.
-extend EmailAddress implements Hashable {
+EmailAddress implements Hashable {
     func hash(self) -> u64 { return self.raw.to_lowercase().hash() }
 }
 
@@ -125,13 +125,13 @@ struct Version {
     public minor: u32
 }
 
-extend Version implements Equal {
+Version implements Equal {
     func eq(self, other: Version) -> bool {
         return self.major == other.major
     }
 }
 
-extend Version implements Hashable {
+Version implements Hashable {
     func hash(self) -> u64 { return self.major.hash() }
 }
 

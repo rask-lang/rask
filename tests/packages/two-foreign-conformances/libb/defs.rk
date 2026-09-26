@@ -2,7 +2,7 @@
 
 import interfacepkg.Labeled
 
-public extend interfacepkg.Doc implements Labeled {
+public interfacepkg.Doc implements Labeled {
     public func label(self) -> string {
         return "b:{self.n}"
     }

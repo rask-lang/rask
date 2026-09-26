@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Rejects: declared `extend T implements Interface` but the type lacks the interface's method
+// Rejects: declared `T implements Interface` but the type lacks the interface's method
 // Expected: typecheck error E0333 at the extend — `Dog` does not implement `Greeter`
 
 interface Greeter {
@@ -9,7 +9,7 @@ interface Greeter {
 struct Dog { name: string }
 
 // Declares conformance but provides `bark`, not `greet`.
-extend Dog implements Greeter {
+Dog implements Greeter {
     func bark(self) -> string { return "woof" }
 }
 

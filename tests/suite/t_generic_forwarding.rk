@@ -17,7 +17,7 @@ struct Tag {
     public v: i64
 }
 
-extend Tag implements Show {
+Tag implements Show {
     func show(self) -> string {
         return "tag {self.v}"
     }
@@ -27,7 +27,7 @@ struct Note {
     public s: string
 }
 
-extend Note implements Show {
+Note implements Show {
     func show(self) -> string {
         return "note {self.s}"
     }

@@ -68,7 +68,7 @@ struct Wide {
     w: i64
 }
 
-extend Wide implements Sized2 {
+Wide implements Sized2 {
     func width(self) -> i64 {
         return self.w
     }

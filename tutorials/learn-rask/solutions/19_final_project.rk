@@ -19,7 +19,7 @@ extend Vec3 {
     }
 }
 
-extend Vec3 implements Add {
+Vec3 implements Add {
     func add(self, other: Vec3) -> Vec3 {
         return Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
     }

@@ -1471,7 +1471,7 @@ mod tests {
     // parse error that says how to split it.
     #[test]
     fn extend_conformance_list_rejected() {
-        let result = parse("extend Bag implements Countable, Sizable { }");
+        let result = parse("Bag implements Countable, Sizable { }");
         assert!(!result.is_ok(), "a comma list of interfaces should not parse");
         let msg = &result.errors[0].message;
         assert!(msg.contains("second interface"), "got: {msg}");
@@ -1479,7 +1479,7 @@ mod tests {
 
     #[test]
     fn extend_single_conformance() {
-        let result = parse("extend Bag implements Countable { }");
+        let result = parse("Bag implements Countable { }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
@@ -1582,7 +1582,7 @@ mod tests {
     #[test]
     fn extend_block_records_assoc_bindings() {
         let result = parse(
-            "extend Meters implements Mul<f64> {\n    type Out = Meters\n\
+            "Meters implements Mul<f64> {\n    type Out = Meters\n\
              \n    func mul(self, k: f64) -> Meters { return self }\n}",
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
@@ -1623,10 +1623,10 @@ mod tests {
         }
     }
 
-    // MN4: `scoped extend T implements Interface` sets the scoped flag.
+    // MN4: `scoped T implements Interface` sets the scoped flag.
     #[test]
     fn scoped_extend_flag() {
-        let result = parse("scoped extend Dog implements Announcer { func greet(self, v: i32) -> string { return \"x\" } }");
+        let result = parse("scoped Dog implements Announcer { func greet(self, v: i32) -> string { return \"x\" } }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
@@ -1682,10 +1682,10 @@ mod tests {
         }
     }
 
-    // CC2: `extend Ring<T> implements Show where T: Show` captures the condition.
+    // CC2: `Ring<T> implements Show where T: Show` captures the condition.
     #[test]
     fn extend_conditional_conformance() {
-        let result = parse("extend Ring<T> implements Show where T: Show { func show(self) -> string { return \"r\" } }");
+        let result = parse("Ring<T> implements Show where T: Show { func show(self) -> string { return \"r\" } }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {

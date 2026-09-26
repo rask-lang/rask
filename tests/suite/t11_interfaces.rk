@@ -13,13 +13,13 @@ struct Cat {
     name: string
 }
 
-extend Dog implements Describable {
+Dog implements Describable {
     func describe(self) -> string {
         return "Dog: {self.name}"
     }
 }
 
-extend Cat implements Describable {
+Cat implements Describable {
     func describe(self) -> string {
         return "Cat: {self.name}"
     }
@@ -69,7 +69,7 @@ struct Rect {
     h: i64
 }
 
-extend Square implements Shape {
+Square implements Shape {
     func scaled(self, factor: i64) -> Square {
         return Square { side: self.side * factor }
     }
@@ -81,7 +81,7 @@ extend Square implements Shape {
     }
 }
 
-extend Rect implements Shape {
+Rect implements Shape {
     func scaled(self, factor: i64) -> Rect {
         return Rect { w: self.w * factor, h: self.h * factor }
     }

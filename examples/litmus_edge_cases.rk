@@ -202,7 +202,7 @@ interface Parser {
 
 struct StrictParser { }
 
-extend StrictParser implements Parser {
+StrictParser implements Parser {
     func parse(self, input: string) -> i32 or ParseError {
         if input == "42" {
             return 42

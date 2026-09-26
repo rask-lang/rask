@@ -4,7 +4,7 @@ enum ConfigError {
     NotANumber { key: string, text: string }
 }
 
-extend ConfigError implements Error {
+ConfigError implements Error {
     func message(self) -> string {
         return match self {
             ConfigError.MissingKey(key) => "missing key: {key}"

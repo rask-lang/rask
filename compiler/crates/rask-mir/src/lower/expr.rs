@@ -7526,14 +7526,14 @@ impl<'a> MirLowerer<'a> {
             overload_names.push(name);
         }
         // XC5: an operator method is a conformance method like any other —
-        // `extend Doc implements Equal` in two packages puts two `eq`s on one type.
+        // `Doc implements Equal` in two packages puts two `eq`s on one type.
         let method = &overload_names
             .first()
             .map(|p| self.dispatch_method_name(call, p, method))
             .unwrap_or_else(|| method.clone());
         // A nominal newtype has no layout of its own (type.aliases/T3), so it
         // isn't an aggregate by `obj_ty` even when it wraps a struct — and an
-        // `extend Counted implements Equal` block is exactly the overload this gate
+        // `Counted implements Equal` block is exactly the overload this gate
         // is here to find.
         let has_operator_overload = (aggregate_receiver
             || self.expr_is_transparent_newtype(object))
@@ -7950,7 +7950,7 @@ impl<'a> MirLowerer<'a> {
     /// worked — the match lowering special-cased `Ordering` against a raw tag —
     /// but nothing downstream knew the value was an enum, so `{a.compare(b)}`
     /// formatted it as the integer it claimed to be and printed `0` for Less,
-    /// and a user's `extend Ordering implements Displayable` was never consulted
+    /// and a user's `Ordering implements Displayable` was never consulted
     /// (#729). Storing the tag into a properly laid out slot makes it the same
     /// shape as any other fieldless enum value.
     fn wrap_ordering(&mut self, tag: MirOperand) -> TypedOperand {

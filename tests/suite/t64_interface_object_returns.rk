@@ -24,7 +24,7 @@ interface Handler {
 
 struct Echo { public n: i64 }
 
-extend Echo implements Handler {
+Echo implements Handler {
     public func code(self) -> Status { return Status.NotFound }
     public func pair(self) -> Pair { return Pair { a: self.n, b: self.n * 2 } }
     public func big(self) -> Big {

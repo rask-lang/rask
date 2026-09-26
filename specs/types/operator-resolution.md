@@ -47,10 +47,10 @@ public interface Mul<Rhs = Self> {
 |------|-------------|
 | **OR1: Resolution on the ordered pair** | `a OP b` selects the operator-interface conformance registered for `(typeof a, typeof b)`, in that order. It is not a method lookup on `a` |
 | **OR2: Declared operator interfaces** | `Add`, `Sub`, `Mul`, `Div`, `Rem`, `BitAnd`, `BitOr`, `BitXor`, `Shl`, `Shr` are declared interfaces taking `<Rhs>` and carrying an associated `Out`. `Neg` and `BitNot` are unary — no `Rhs`, `Out` only. They live in [`stdlib/ops.rk`](../../stdlib/ops.rk) |
-| **OR3: Both default to `Self`** | The operator interfaces are declared `interface Mul<Rhs = Self> { type Out = Self … }`, so this is `type.generics/GT4` and `type.associated-types/AT4` rather than an operator rule. `extend Point implements Add` is `Add<Point>` answering in `Point`; `extend Meters implements Mul<f64>` answers in `Meters` |
+| **OR3: Both default to `Self`** | The operator interfaces are declared `interface Mul<Rhs = Self> { type Out = Self … }`, so this is `type.generics/GT4` and `type.associated-types/AT4` rather than an operator rule. `Point implements Add` is `Add<Point>` answering in `Point`; `Meters implements Mul<f64>` answers in `Meters` |
 | **OR4: One conformance per pair** | At most one conformance of a given operator interface for a given `(Self, Rhs)` in a build. A second is a use-site error naming both packages — the same collision rule retroactive conformance already carries (#312). Two conformances of one operator to *different* pairs are fine and are what OR1 tells apart |
 | **OR5: `Out` is read, not inferred** | OR4 makes the conformance unique, so `Out` is read off it — `type.associated-types/AT6`, which holds for every associated type for the same reason. No inference search and no ambiguity |
-| **OR6: Primitives take conformances only** | `extend f64 implements Mul<Meters>` is legal. `extend f64 { … }` — an inherent method on a primitive — remains illegal |
+| **OR6: Primitives take conformances only** | `f64 implements Mul<Meters>` is legal. `extend f64 { … }` — an inherent method on a primitive — remains illegal |
 | **OR7: No implicit symmetry, pending `@commutative`** | Defining `Meters * f64` does not by itself generate `f64 * Meters`. Whether `@commutative` may generate the flip is open — see below |
 | **OR8: A missing pair is a compile error** | Naming both operand types and the operator as it was written, at check time. The left operand having a method of that name is not a conformance — `extend Meters { func mul(…) }` leaves `m * 2.0` undefined, and the error says the header is what's missing |
 | **OR8a: Method syntax is not the operator** | `a.mul(b)` written out is an ordinary method call. It reaches the conformance when there is one, and an inherent `mul` when there isn't — so a type is free to have a `mul`, an `add` or a `div` that means something else. Only the operator requires the conformance |
@@ -64,13 +64,13 @@ public interface Mul<Rhs = Self> {
 ```rask
 struct Meters { v: f64 }
 
-extend Meters implements Mul<f64> {          // Out defaults to Meters
+Meters implements Mul<f64> {          // Out defaults to Meters
     func mul(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
     }
 }
 
-extend f64 implements Mul<Meters> {          // the direction that was impossible
+f64 implements Mul<Meters> {          // the direction that was impossible
     type Out = Meters
 
     func mul(self, m: Meters) -> Meters {
@@ -84,7 +84,7 @@ Both may be written by a third package that owns neither `f64` nor `Meters`, bec
 `Out` differing from `Self` is expressible, and so is a second conformance on the same type:
 
 ```rask
-extend Meters implements Mul<Meters> {
+Meters implements Mul<Meters> {
     type Out = SquareMeters
 
     func mul(self, other: Meters) -> SquareMeters {
@@ -111,7 +111,7 @@ Anything still ambiguous waits for literal defaulting rather than picking.
 
 ## What doesn't change
 
-- Source for the common case. `extend Point implements Add` reads the same as `extend Point { func add(…) }` did and means the same thing, because of OR3.
+- Source for the common case. `Point implements Add` reads the same as `extend Point { func add(…) }` did and means the same thing, because of OR3.
 - Precedence, associativity, newline continuation, `try`/`??`/`catch` placement — all of `type.operators` P1–P4 is untouched.
 - Indexing, `Equal`, `Comparable`, division and remainder semantics, overflow.
 - Method-call syntax. `a.mul(b)` still works and resolves the same conformance.
@@ -135,7 +135,7 @@ error[E0382]: cannot apply `*` to `f64` and `Meters`
     |
   6 |     let r = 2.0 * d
     |             ^^^^^^^ `f64` on the left, `Meters` on the right
-    = fix: extend f64 implements Mul<Meters> { type Out = Meters … }
+    = fix: f64 implements Mul<Meters> { type Out = Meters … }
     = why: an operator is resolved from both operand types, in order
 ```
 
@@ -161,7 +161,7 @@ Both are the messages that decide whether the feature is trusted, so they are no
 
 | Case | Rule | Behavior |
 |------|------|----------|
-| `2.0 * meters`, with `extend f64 implements Mul<Meters>` | OR1, OR6 | `Meters` |
+| `2.0 * meters`, with `f64 implements Mul<Meters>` | OR1, OR6 | `Meters` |
 | `2.0 * meters`, without it | OR8 | Compile error naming both operands |
 | `meters * meters` and `meters * 2.0` on one type | OR4 | Two conformances, told apart by the argument |
 | `f64 * f64` where `f64` also carries `Mul<Meters>` | OR12 | The builtin pair — a conformance doesn't take it away |
@@ -219,7 +219,7 @@ It's the same shape as every other thing the front end knows and the back end wo
 <!-- test: skip -->
 ```rask
 @commutative
-extend Meters implements Mul<f64> { … }        // and f64 * Meters, for free
+Meters implements Mul<f64> { … }        // and f64 * Meters, for free
 ```
 
 against roughly five for the hand-written flip. Rask has user annotations already, so this is not new machinery.

@@ -9,7 +9,7 @@ interface Show {
 struct Blob { v: i64 }   // does NOT conform to Show
 
 struct Ring<T> { items: Vec<T> }
-extend Ring<T> implements Show where T: Show {
+Ring<T> implements Show where T: Show {
     func show(self) -> string { return "ring" }
 }
 

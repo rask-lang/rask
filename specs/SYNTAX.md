@@ -498,31 +498,31 @@ interface Comparable {
 }
 ```
 
-**Conformance is declared:** a type satisfies an interface through `extend Type implements Interface` (`type.generics/G1`):
+**Conformance is declared:** a type satisfies an interface through `Type implements Interface` (`type.generics/G1`):
 ```rask
-extend Point implements Displayable {
+Point implements Displayable {
     func display(self) -> string {
         return "({self.x}, {self.y})"
     }
 }
 ```
 
-If the type already has the methods, an empty declaration suffices: `extend Point implements Displayable {}`.
+If the type already has the methods, an empty declaration suffices: `Point implements Displayable {}`.
 
 **Duck interfaces (scratchpad only):** an interface marked `duck` matches by shape — any type with the right methods satisfies it, no declaration. Sketch with it, then delete the keyword to harden (the compiler generates the missing conformance declarations). It can't leave the package: `public duck interface` is an error (`type.generics/DT1`). Inside the package it's allowed but nudged — lint and `rask publish` report it, neither blocks. The stdlib ships none.
 
 **One interface per block, and only its methods inside:** a block names exactly one interface and holds exactly what that interface asks for. A type with three conformances writes three blocks; its own methods go in `extend LogSource { }` (`type.generics/CD1`, `CD2`):
 
 ```rask
-extend LogSource implements Reader {
+LogSource implements Reader {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
 }
 
-extend LogSource implements Displayable {
+LogSource implements Displayable {
     func display(self) -> string { ... }
 }
 
-extend LogSource implements Error {
+LogSource implements Error {
     func message(self) -> string { ... }
 }
 ```

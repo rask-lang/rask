@@ -138,7 +138,7 @@ impl<'a> InterfaceChecker<'a> {
     /// G1: is this a nominal user-declared interface (registered, not `duck`)?
     /// Builtin/auto-derived interfaces (Equal, Comparable, …) are handled by
     /// eligibility and keep structural matching; only user-declared interfaces
-    /// require an explicit `extend T implements Interface` conformance.
+    /// require an explicit `T implements Interface` conformance.
     fn is_nominal_user_interface(&self, interface_name: &str) -> bool {
         let base = interface_name.split('<').next().unwrap_or(interface_name);
         // A compiler-provided interface is satisfied by shape, whether or not
@@ -147,7 +147,7 @@ impl<'a> InterfaceChecker<'a> {
         // alone — and `Error`, `Debug` and `Hashable` are the same kind of rule.
         //
         // The G1 gate below is for an interface a program *declares*, where a
-        // matching shape without `extend T implements Interface` is deliberately rejected.
+        // matching shape without `T implements Interface` is deliberately rejected.
         // Reading the name off a declaration alone conflated the two: putting
         // `fmt.rk` in the stub set gave `Displayable` a declaration and every
         // inherent `to_string` in the stdlib stopped counting — `StringView`
@@ -213,7 +213,7 @@ impl<'a> InterfaceChecker<'a> {
         // OP1 says generic operator use goes through it "like any other
         // generic call" — so a type that declares the conformance has to count
         // too. Short-circuiting to a membership test alone would have made
-        // `extend MyDecimal implements Numeric` unusable as a bound.
+        // `MyDecimal implements Numeric` unusable as a bound.
         //
         // Unregistered, these names failed at every call site: `func
         // narrow<T: Integer>` reported "`_` does not implement `Integer`" —
@@ -301,7 +301,7 @@ impl<'a> InterfaceChecker<'a> {
         }
 
         // G1 nominal gate: a user struct/enum satisfies a user-declared interface
-        // only through a declared `extend T implements Interface` (or auto-derive). A
+        // only through a declared `T implements Interface` (or auto-derive). A
         // matching shape without the declaration is rejected — the flip.
         if self.is_nominal_user_interface(interface_name) {
             if let Some(type_id) = self.user_type_id(ty) {
@@ -1105,7 +1105,7 @@ impl<'a> InterfaceChecker<'a> {
             Some(TypeDef::Interface { methods, .. }) => methods.clone(),
             // T13: an `extend` block on a nominal type puts its methods on the
             // nominal type, which is where `register_impl_methods` writes them.
-            // Left out here, `extend MyDoc implements Labeled { func label … }` came
+            // Left out here, `MyDoc implements Labeled { func label … }` came
             // back methodless and G1 reported every interface method missing on a
             // block that had them all — so the newtype, which is the way out of
             // both XC1 and XC3, couldn't carry a conformance at all.
@@ -1596,7 +1596,7 @@ mod tests {
         assert!(implements_interface(&types, &Type::I32, "Comparable"));
     }
 
-    // CC1: `extend Ring<T> implements Show where T: Show` — the conformance holds for
+    // CC1: `Ring<T> implements Show where T: Show` — the conformance holds for
     // Ring<Coin> (Coin: Show) and fails for Ring<Blob> (Blob not Show).
     #[test]
     fn conditional_conformance_checks_argument() {
@@ -1670,10 +1670,10 @@ mod tests {
             no_decode: false,
         });
 
-        // extend Ring<T> implements Show where T: Show
+        // Ring<T> implements Show where T: Show
         types.record_conformance(ring, "Show");
         types.record_conformance_condition(ring, "Show", vec![("T".to_string(), vec!["Show".to_string()])]);
-        // extend Coin implements Show
+        // Coin implements Show
         types.record_conformance(coin, "Show");
 
         let ring_of = |arg: crate::types::TypeId| Type::Generic {

@@ -174,7 +174,7 @@ pub enum TypeDef {
     /// methods that come with them.
     ///
     /// `extend f64 { … }` — an inherent method on a primitive — stays illegal.
-    /// What lands here is `extend f64 implements Mul<Meters>`: the conformance tables
+    /// What lands here is `f64 implements Mul<Meters>`: the conformance tables
     /// are keyed by `TypeId`, and without an entry a primitive had none to be
     /// keyed by, which is why the right-hand direction of every unit and vector
     /// operator was unwritable.

@@ -1517,7 +1517,7 @@ impl<'a> MirContext<'a> {
     /// OR6: the prefix a *conformance* method's symbol carries.
     ///
     /// Not `builtin_method_prefix`: that collapses widths, so every float
-    /// receiver answers `f64` and an `extend f32 implements Mul<…>` body would be
+    /// receiver answers `f64` and an `f32 implements Mul<…>` body would be
     /// called under someone else's name. A conformance is filed on the type as
     /// written.
     pub fn conformance_prefix(

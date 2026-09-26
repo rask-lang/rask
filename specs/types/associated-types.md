@@ -14,7 +14,7 @@ interface Mul<Rhs> {
     func mul(self, rhs: Rhs) -> Self.Out
 }
 
-extend Meters implements Mul<f64> {
+Meters implements Mul<f64> {
     type Out = Meters
     func mul(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
@@ -35,7 +35,7 @@ That is the whole reason this was affordable enough to promote. `rejected-featur
 | Rule | Description |
 |------|-------------|
 | **AT1: Declared in the interface** | `type Out` in an interface body declares an associated type. It is a member of the interface like a method — part of what a conformance owes |
-| **AT2: Supplied by the conformance** | `type Out = Meters` inside the `extend T implements Interface` block. A conformance that leaves one unsupplied and undefaulted is an error at the block, naming the associated type |
+| **AT2: Supplied by the conformance** | `type Out = Meters` inside the `T implements Interface` block. A conformance that leaves one unsupplied and undefaulted is an error at the block, naming the associated type |
 | **AT3: Projection is `.`** | `Self.Out` inside the interface, `T.Out` in generic code where `T` carries the bound. A dot, like every other member access in Rask — not `::` |
 | **AT4: Declared defaults** | `type Out = Self` in the *interface* gives a default; a conformance may then omit it. Without a default the conformance must state it |
 | **AT5: Bounds** | `type Out: Comparable` requires every conformance's `Out` to satisfy `Comparable`, checked at the conformance against the concrete type it named. One check, no search |
@@ -43,7 +43,7 @@ That is the whole reason this was affordable enough to promote. `rejected-featur
 | **AT7: No equality constraints** | `where T.Out == U` is not in the language. That constraint is what turns a lookup into a search, and nothing needs it yet. A generic function names `T.Out` and uses it; it cannot demand that two projections agree |
 | **AT8: One binding per applied interface** | The binding belongs to `(Self, interface with its arguments)`. `Mul<f64>` and `Mul<Meters>` are different conformances with different `Out`s, whether they're on one type or two |
 | **AT9: Not through `any`** | A method whose signature mentions an associated type has no vtable slot, and calling it through `any Interface` is a compile error at the call site (`type.interfaces/TR4`). Creating the `any` value is still fine |
-| **AT10: Conditional conformance** | The binding may name the block's type parameters (`extend Ring<T> implements Wrap { type Out = Ring<T> }`), resolved per instantiation like every other part of a conditional conformance (CC1) |
+| **AT10: Conditional conformance** | The binding may name the block's type parameters (`Ring<T> implements Wrap { type Out = Ring<T> }`), resolved per instantiation like every other part of a conditional conformance (CC1) |
 
 ### Two of them on one type
 
@@ -51,8 +51,8 @@ AT8 keys the binding on the applied interface, so the two `Out`s in
 
 <!-- test: skip -->
 ```rask
-extend Meters implements Mul<f64>    { type Out = Meters }
-extend Meters implements Mul<Meters> { type Out = SquareMeters }
+Meters implements Mul<f64>    { type Out = Meters }
+Meters implements Mul<Meters> { type Out = SquareMeters }
 ```
 
 never get confused for each other. `m.mul(x)` used to have no answer, though: `MN1` gives a type one `mul` and both conformances want it, so the second block was rejected where it was written.

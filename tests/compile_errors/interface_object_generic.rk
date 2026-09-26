@@ -13,7 +13,7 @@ struct Bin {
     count: i64
 }
 
-extend Bin implements Store {
+Bin implements Store {
     func put<T>(self, value: T) {}
     func size(self) -> i64 {
         return self.count

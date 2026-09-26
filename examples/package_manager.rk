@@ -410,7 +410,7 @@ struct LocalRegistry {
     root: string
 }
 
-extend LocalRegistry implements Registry {
+LocalRegistry implements Registry {
     func available(self, name: string) -> Vec<PackageMeta> or RegistryError {
         return local_available(self.root, name)
     }
@@ -537,7 +537,7 @@ struct HttpRegistry {
     base_url: string
 }
 
-extend HttpRegistry implements Registry {
+HttpRegistry implements Registry {
     func available(self, name: string) -> Vec<PackageMeta> or RegistryError {
         return http_available(self.base_url, name)
     }

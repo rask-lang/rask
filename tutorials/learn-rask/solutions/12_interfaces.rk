@@ -9,13 +9,13 @@ interface Aircraft {
 struct Boeing737 { variant: string, passenger_count: i32 }
 struct Cessna172 { registration: string }
 
-extend Boeing737 implements Aircraft {
+Boeing737 implements Aircraft {
     func max_speed_knots(self) -> f64 { return 453.0 }
     func range_nm(self) -> f64 { return 3500.0 }
     func designation(self) -> string { return "Boeing 737-{self.variant}" }
 }
 
-extend Cessna172 implements Aircraft {
+Cessna172 implements Aircraft {
     func max_speed_knots(self) -> f64 { return 124.0 }
     func range_nm(self) -> f64 { return 640.0 }
     func designation(self) -> string { return "Cessna 172 ({self.registration})" }
@@ -32,7 +32,7 @@ interface Summable {
 
 struct Measurement { reading: f64, unit: string }
 
-extend Measurement implements Summable {
+Measurement implements Summable {
     func value(self) -> f64 { return self.reading }
 }
 

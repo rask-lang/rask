@@ -8,12 +8,12 @@ interface Greeter {
 }
 
 struct Dog { name: string }
-extend Dog implements Greeter {
+Dog implements Greeter {
     func greet(self) -> string { return "woof:{self.name}" }
 }
 
 struct Robot { id: i64 }
-extend Robot implements Greeter {
+Robot implements Greeter {
     func greet(self) -> string { return "beep:{self.id}" }
 }
 

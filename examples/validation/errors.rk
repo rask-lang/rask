@@ -4,7 +4,7 @@
 // Error is delivered two ways here:
 //   StoreError / AuthError / ApiError — @message (templates, plus ApiError's
 //     wrapper variants auto-delegating to the inner error, ER37)
-//   ValidationError — hand-written `extend … implements Error`, because its
+//   ValidationError — hand-written `… implements Error`, because its
 //     messages weave the payloads into prose
 //
 // ER6 works now (#1001): an enum a signature names as an error type gets a
@@ -49,7 +49,7 @@ enum ValidationError {
     BadEnum(string, string)
 }
 
-extend ValidationError implements Error {
+ValidationError implements Error {
     func message(self) -> string {
         match self {
             Empty(field) => return "{field} must not be empty"

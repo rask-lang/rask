@@ -10,11 +10,11 @@ interface Handler {
 struct Echo { public msg: string }
 struct Fail { public reason: string }
 
-extend Echo implements Handler {
+Echo implements Handler {
     public func handle(self) -> string { return "echo: {self.msg}" }
 }
 
-extend Fail implements Handler {
+Fail implements Handler {
     public func handle(self) -> string { return "fail: {self.reason}" }
 }
 

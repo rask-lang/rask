@@ -123,7 +123,7 @@ struct Marker {
     public v: i64
 }
 
-extend Marker implements Opaque {
+Marker implements Opaque {
     func tag(self) -> i64 { return self.v }
 }
 

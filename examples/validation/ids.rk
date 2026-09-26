@@ -46,7 +46,7 @@ extend EmailAddress {
 }
 
 // Custom Equal (EQ2).
-extend EmailAddress implements Equal {
+EmailAddress implements Equal {
     func eq(self, other: EmailAddress) -> bool {
         return self.raw.to_lowercase() == other.raw.to_lowercase()
     }
@@ -58,7 +58,7 @@ extend EmailAddress implements Equal {
 // a hand-written conformance must supply all five of compare/lt/le/gt/ge (the
 // interface doesn't derive the four booleans from compare), and EmailAddress is
 // never sorted, so it stays non-Comparable. See FINDINGS.
-extend EmailAddress implements Hashable {
+EmailAddress implements Hashable {
     func hash(self) -> u64 {
         return self.raw.to_lowercase().hash()
     }

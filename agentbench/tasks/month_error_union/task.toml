@@ -7,8 +7,8 @@ contract = """
 enum ReadError { Empty, TooShort(saw: i64) }
 enum ParseError { NotANumber(text: string) }
 
-extend ReadError implements Error { func message(self) -> string }
-extend ParseError implements Error { func message(self) -> string }
+ReadError implements Error { func message(self) -> string }
+ParseError implements Error { func message(self) -> string }
 
 func first_line(text: string) -> string or ReadError
 func to_number(text: string) -> i64 or ParseError

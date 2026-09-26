@@ -46,7 +46,7 @@ Last pass, five spec constructs didn't parse. Now:
 |-----------|--------|-----|
 | `duck interface` | ✗ | **✓ parses + checks** |
 | `scoped extend` | ✗ | **✓ parses + checks** |
-| comma-list `extend T implements A, B` | ✗ | **✓ parses + checks** |
+| comma-list `T implements A, B` | ✗ | **✓ parses + checks** |
 | struct field defaults `f: T = expr` | ✗ | **✓ parses + runs** |
 | field annotations `@rename/@no_serialize/@default` | ✗ | ✗ still unimplemented |
 
@@ -82,7 +82,7 @@ stays non-Comparable. That's the reason now, not "Ordering unnameable".)
 ### B3 — `Error` auto-derive (ER6) — [#1001], **fixed**
 A bare error enum used to get no `message()` and couldn't be an error type
 (`does not implement Error`), so every error enum here needed `@message` or a
-hand-written `extend … implements Error`. An enum a signature names as an error type
+hand-written `… implements Error`. An enum a signature names as an error type
 now gets `message()` derived from its variant names and payloads, with nothing
 written. `@message` is still how you supply prose per variant, which is why the
 enums here keep it.

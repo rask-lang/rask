@@ -14,11 +14,11 @@
 enum AErr { Bad }
 enum BErr { Worse }
 
-extend AErr implements Error {
+AErr implements Error {
     func message(self) -> string { return "a" }
 }
 
-extend BErr implements Error {
+BErr implements Error {
     func message(self) -> string { return "b" }
 }
 

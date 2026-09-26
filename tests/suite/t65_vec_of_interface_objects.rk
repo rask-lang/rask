@@ -12,12 +12,12 @@ interface Shape {
 struct Circle { public r: i64 }
 struct Square { public s: i64 }
 
-extend Circle implements Shape {
+Circle implements Shape {
     public func area(self) -> i64 { return self.r * self.r * 3 }
     public func name(self) -> string { return "circle" }
 }
 
-extend Square implements Shape {
+Square implements Shape {
     public func area(self) -> i64 { return self.s * self.s }
     public func name(self) -> string { return "square" }
 }

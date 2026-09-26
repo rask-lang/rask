@@ -192,7 +192,7 @@ impl TypeChecker {
         let right = args
             .first()
             .map(|a| self.render_type(&self.resolve_named(&self.ctx.apply(a))));
-        // `extend Meters implements Mul<f64>` — the argument's own type is the `Rhs`
+        // `Meters implements Mul<f64>` — the argument's own type is the `Rhs`
         // the author wants, and when it's the receiver's the default covers it.
         let header = match &right {
             Some(r) if *r != left => format!("{}<{}>", interface_name, r),
@@ -432,7 +432,7 @@ impl TypeChecker {
         call_node: Option<NodeId>,
     ) -> Result<bool, super::TypeError> {
         // AT10: a conditional conformance's `Out` and parameters are written in
-        // the receiver's own parameters — `extend Wrapping<T> implements Add` answers
+        // the receiver's own parameters — `Wrapping<T> implements Add` answers
         // in `Wrapping<T>`. Bind them to what this receiver actually is, or
         // `(a + b).value` comes back as the literal `T` and every use of it is
         // a method call on a type parameter.
@@ -467,7 +467,7 @@ impl TypeChecker {
             self.call_targets.insert(
                 node,
                 // XC5: an operator method is a conformance method, so it takes
-                // the calling package like any other — `extend Doc implements Equal`
+                // the calling package like any other — `Doc implements Equal`
                 // in two packages puts two `eq`s on one type.
                 crate::Callee::Method {
                     recv: recv.clone(),

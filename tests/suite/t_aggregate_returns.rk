@@ -145,7 +145,7 @@ struct Alpha {
     seed: i64
 }
 
-extend Alpha implements Describes {
+Alpha implements Describes {
     public func describe(self) -> Wide {
         return Wide { a: self.seed, b: self.seed * 10, c: self.seed * 100, label: "alpha" }
     }
@@ -157,7 +157,7 @@ extend Alpha implements Describes {
 
 struct Beta {}
 
-extend Beta implements Describes {
+Beta implements Describes {
     public func describe(self) -> Wide {
         return Wide { a: -1, b: -2, c: -3, label: "beta" }
     }

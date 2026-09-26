@@ -5,7 +5,7 @@
 // `a * b` picks the conformance registered for the ordered pair
 // `(typeof a, typeof b)`. Both sides of that pair are written here: `Rhs` is
 // the right operand's type, `Out` is what the pair answers with. Both default
-// to `Self`, so the homogeneous case — `extend Point implements Add` — says nothing
+// to `Self`, so the homogeneous case — `Point implements Add` — says nothing
 // it doesn't have to.
 //
 // A conformance may be written by a package that owns neither type, which is

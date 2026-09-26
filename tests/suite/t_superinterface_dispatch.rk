@@ -36,7 +36,7 @@ struct Horn {
     id: i64
 }
 
-extend Horn implements Shouty {
+Horn implements Shouty {
     func say(self) -> string {
         return "beep{self.id}"
     }
@@ -50,7 +50,7 @@ struct Siren {
     id: i64
 }
 
-extend Siren implements Deafening {
+Siren implements Deafening {
     func say(self) -> string {
         return "wail{self.id}"
     }

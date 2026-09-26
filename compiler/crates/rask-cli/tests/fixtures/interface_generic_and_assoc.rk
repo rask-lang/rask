@@ -9,7 +9,7 @@ struct Meters { v: f64 }
 struct SquareMeters { v: f64 }
 struct Point { x: f64, y: f64 }
 
-// GT4/AT4: both defaults declared on the interface, so `extend Point implements Mul`
+// GT4/AT4: both defaults declared on the interface, so `Point implements Mul`
 // means `Mul<Point>` answering in `Point`.
 interface Mul<Rhs = Self> {
     type Out = Self
@@ -17,13 +17,13 @@ interface Mul<Rhs = Self> {
     func mul(self, rhs: Rhs) -> Self.Out
 }
 
-extend Point implements Mul {
+Point implements Mul {
     func mul(self, rhs: Point) -> Point {
         return Point { x: self.x * rhs.x, y: self.y * rhs.y }
     }
 }
 
-extend Meters implements Mul<f64> {
+Meters implements Mul<f64> {
     func mul(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
     }
@@ -33,7 +33,7 @@ extend Meters implements Mul<f64> {
 // own `Out`. `Meters` can't also carry `Mul<Meters>` — that would be two
 // `mul`s on one type and MN1 gives it one, so it's rejected at the block
 // (E0889) until operator resolution picks from the pair.
-extend SquareMeters implements Mul<SquareMeters> {
+SquareMeters implements Mul<SquareMeters> {
     type Out = SquareMeters
 
     func mul(self, other: SquareMeters) -> SquareMeters {
@@ -46,7 +46,7 @@ interface Scale<Rhs> {
     func scale(self, k: Rhs) -> Self
 }
 
-extend Meters implements Scale<f64> {
+Meters implements Scale<f64> {
     func scale(self, k: f64) -> Meters {
         return Meters { v: self.v * k }
     }

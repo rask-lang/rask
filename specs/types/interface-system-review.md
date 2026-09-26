@@ -43,7 +43,7 @@ struct Username {
     name: string
 }
 
-extend Username implements Equal {
+Username implements Equal {
     func eq(self, other: Username) -> bool {
         return self.name.lower() == other.name.lower()   // case-insensitive
     }
@@ -61,32 +61,32 @@ This is the same corruption class the #312 core-interface carve-out exists to pr
 | Rule | Description |
 |------|-------------|
 | **OC1: Override cancels dependents** | Overriding `Equal` cancels auto-derived `Hashable` and `Comparable` for that type. Overriding `Hashable` alone is safe (hashing fewer fields than eq compares only costs collisions, never correctness) and cancels nothing |
-| **OC2: Loud, with the fix** | Using a cancelled conformance is a compile error at the use site: "Username overrides Equal, so Hashable is no longer auto-derived — declare `extend Username implements Hashable` consistent with your eq" |
+| **OC2: Loud, with the fix** | Using a cancelled conformance is a compile error at the use site: "Username overrides Equal, so Hashable is no longer auto-derived — declare `Username implements Hashable` consistent with your eq" |
 | **OC3: Canonical order only** | The OC error for `Comparable` should steer one-off orderings ("sort by salary") to `sort_by` — `Comparable` is the type's one canonical order, not a per-call-site choice |
 
 Common case (no override) unaffected. The rare case gets an error instead of a haunted Map.
 
 ## Finding 2: Method-name collisions across interfaces have no rule
 
-**Scenario 10.** Under structural matching this was a non-question — one `greet` method satisfied every greet-shaped interface. Under nominal, conformance blocks can carry bodies, so two interfaces can in principle demand two different `greet`s. There is no qualified-call syntax to disambiguate, and nothing says whether a method defined inside `extend T implements Interface { }` joins T's ordinary method namespace.
+**Scenario 10.** Under structural matching this was a non-question — one `greet` method satisfied every greet-shaped interface. Under nominal, conformance blocks can carry bodies, so two interfaces can in principle demand two different `greet`s. There is no qualified-call syntax to disambiguate, and nothing says whether a method defined inside `T implements Interface { }` joins T's ordinary method namespace.
 
 **Rules (accepted, with opt-in scoping):** single namespace by default; collisions opt into scoping at the site of the collision.
 
 | Rule | Description |
 |------|-------------|
-| **MN1: Single namespace** | Methods defined in `extend T implements Interface { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
+| **MN1: Single namespace** | Methods defined in `T implements Interface { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
 | **MN2: Shared implementation** | Two conformances requiring the same method name share the one implementation — legal iff both signatures match it |
 | **MN3: Conflict needs scoping** | If the signatures disagree, the second conformance declaration is a compile error naming both interfaces — unless it is declared `scoped` |
-| **MN4: Scoped conformance** | `scoped extend T implements Interface { ... }` — methods in a scoped conformance do not enter T's inherent namespace. Reachable through interface dispatch (generic bounds, `any Interface`) and interface-qualified calls |
+| **MN4: Scoped conformance** | `scoped T implements Interface { ... }` — methods in a scoped conformance do not enter T's inherent namespace. Reachable through interface dispatch (generic bounds, `any Interface`) and interface-qualified calls |
 | **MN5: Interface-qualified call** | `Interface.method(value, args)` — mirrors the existing `Type.method()` static-call syntax. Legal for any conformance, needed only for scoped ones |
 
 <!-- test: skip -->
 ```rask
-extend Dog implements Greeter {
+Dog implements Greeter {
     func greet(self) -> string { ... }            // ordinary method: dog.greet()
 }
 
-scoped extend Dog implements Announcer {
+scoped Dog implements Announcer {
     func greet(self, volume: i32) -> string { ... }  // interface-only
 }
 
@@ -111,14 +111,14 @@ Common case: nothing to learn, `dog.greet()` works even when `greet` was defined
 <!-- test: skip -->
 ```rask
 // Package-private: zero boilerplate — clause inferred as `where T: Displayable`
-extend Ring<T> implements Displayable {
+Ring<T> implements Displayable {
     func to_string(self) -> string {
         return self.items.map(|x| x.to_string()).join(", ")
     }
 }
 
 // Public library API: the contract is spelled out
-public extend Ring<T> implements Displayable where T: Displayable { ... }
+public Ring<T> implements Displayable where T: Displayable { ... }
 ```
 
 CC3 is blocked on `where` parsing (#313) and `public extend` (#283). No global analysis: instantiation-site checking, same as today's bounds.
@@ -147,7 +147,7 @@ Two clarifications that came out of reviewing this seam, worth putting in the sp
 
 **Interfaces belong to the structuring/publishing phase, not the sketching phase.** Prototype code doesn't need them — private inference carries shapes, and that is unchanged. The promotion wall is not a defect in the prototype workflow; naming the contract *is* the publish step. The tooling's job (IS2) is to make naming it one action.
 
-**When an interface is wanted during prototyping, `duck interface` is the prototype mode** (keyword decided below). Declare the interface duck while sketching: zero conformance declarations, methods move freely between types, nothing to keep in sync. To harden it, delete the `duck` keyword — the compiler knows every type currently matching by shape, so it lists them and a quick-fix inserts the `extend T implements Interface {}` declarations mechanically. This is the same migration #283 describes for the global flip, available per-interface, permanently:
+**When an interface is wanted during prototyping, `duck interface` is the prototype mode** (keyword decided below). Declare the interface duck while sketching: zero conformance declarations, methods move freely between types, nothing to keep in sync. To harden it, delete the `duck` keyword — the compiler knows every type currently matching by shape, so it lists them and a quick-fix inserts the `T implements Interface {}` declarations mechanically. This is the same migration #283 describes for the global flip, available per-interface, permanently:
 
 | Phase | What you write | What conformance costs |
 |-------|----------------|------------------------|
@@ -163,7 +163,7 @@ Prototype-to-production for interfaces is: delete one word, accept the quick-fix
 
 `structural` is type-theory jargon. The replacement is `duck interface` — the established name for exactly this semantics (duck typing), pre-taught to the Python-first audience. The register is deliberate: the keyword *reading as unserious is the signal*. A `duck interface` in a diff announces "this contract is loose by design" — prototype-mode made visible in source, and lintable (`rask lint` warns on every duck interface declaration, `tool.lint/I3`).
 
-**Consequence (ruled): the stdlib ships zero duck interfaces.** `Reader`, `Writer`, and `Error` go nominal; `duck` is purely the prototyping dial. The structural carve-out for them entered in commit 27c65f4 as implementation detail of the #283 migration, never as its own decision, and its stated rationale (ER6: "a conformance line on every error enum would tax the most common interface") is arithmetically wrong — `message()` is hand-written in an extend block regardless, so conformance is a header edit (`extend ConfigError implements Error { ... }`), zero marginal lines. Multi-interface types stay flat via CD1/CD2 (one block, header lists the claims). Retroactive conformance for third-party types is one line, priced by #312. Fold-in rewrites ER4/ER6 and the G1 rationale accordingly.
+**Consequence (ruled): the stdlib ships zero duck interfaces.** `Reader`, `Writer`, and `Error` go nominal; `duck` is purely the prototyping dial. The structural carve-out for them entered in commit 27c65f4 as implementation detail of the #283 migration, never as its own decision, and its stated rationale (ER6: "a conformance line on every error enum would tax the most common interface") is arithmetically wrong — `message()` is hand-written in an extend block regardless, so conformance is a header edit (`ConfigError implements Error { ... }`), zero marginal lines. Multi-interface types stay flat via CD1/CD2 (one block, header lists the claims). Retroactive conformance for third-party types is one line, priced by #312. Fold-in rewrites ER4/ER6 and the G1 rationale accordingly.
 
 The candidate analysis, for the record:
 
@@ -199,37 +199,37 @@ No fine-grained `Add`/`Sub`/`Mul` interface zoo. A math type defines the methods
 | Item | Problem | Fix |
 |------|---------|-----|
 | TD1 interface visibility | "Public by default" contradicts the language-wide package-private default (`struct.modules/V1`) | Interfaces default package-visible, `public interface` exports — same as everything else |
-| Composite conformance | `extend T implements HashKey {}` — unstated whether it checks/implies the parent interface chain | It checks the full chain (TD3 already collects it); auto-derived parent interfaces satisfy automatically, missing ones error at the declaration |
+| Composite conformance | `T implements HashKey {}` — unstated whether it checks/implies the parent interface chain | It checks the full chain (TD3 already collects it); auto-derived parent interfaces satisfy automatically, missing ones error at the declaration |
 | Declaring conformance to a `structural interface` | Unstated | Allowed and harmless — it's documentation plus a signature check at the declaration instead of the use site |
 | Interface evolution | Adding a required method breaks every conformer downstream | Non-normative note: adding a method **with a default body** (TD2) is non-breaking; without one is a major-version change |
 | Conformance visibility | `min(interface, type)` inference — API surface changes with no syntax | Already bundled in #283 (`public extend`); resolve there |
 
 ## Trim: several conformances, one declaration (reversed)
 
-The comma-list header (`extend T implements A, B, C`) was accepted here and later reversed: a block that holds two contracts no longer shows which method belongs to which, and the single-method interfaces it was meant to serve — the operator ones — could never share a block anyway, because `Div<i64>` and `Div<Duration>` both supply `div`. The corpus never used the list. One interface per block is the rule; the nominal-type list (`type UserId = u64 implements Equal, Hashable`) stays, since it names no methods.
+The comma-list header (`T implements A, B, C`) was accepted here and later reversed: a block that holds two contracts no longer shows which method belongs to which, and the single-method interfaces it was meant to serve — the operator ones — could never share a block anyway, because `Div<i64>` and `Div<Duration>` both supply `div`. The corpus never used the list. One interface per block is the rule; the nominal-type list (`type UserId = u64 implements Equal, Hashable`) stays, since it names no methods.
 
 | Rule | Description |
 |------|-------------|
-| **CD1: One interface per block** | `extend T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public extend`, `scoped extend`) apply to the block |
+| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public extend`, `scoped extend`) apply to the block |
 | **CD2: The block is the contract** | An `implements` block holds only the methods its interface declares (its parent interfaces' included). Any other method in it is an error (E0893): a plain method belongs in `extend T { }`, so reading the block shows exactly what the interface asks of the type |
 | **CD3: One condition per block** | On generic types, the inferred condition (CC2) is computed for the block's interface. An explicit `where` clause (public, CC3) applies to the whole block |
 
 <!-- test: skip -->
 ```rask
-extend Ring<T> implements Countable {}               // one claim per block
-extend Ring<T> implements Sizable {}
+Ring<T> implements Countable {}               // one claim per block
+Ring<T> implements Sizable {}
 
 // One block per interface, and only that interface's methods in it
-extend LogSource implements Reader {
+LogSource implements Reader {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
 }
 extend LogSource {
     func rewind(mutate self) { ... }            // plain method, own block
 }
-extend LogSource implements Displayable {
+LogSource implements Displayable {
     func to_string(self) -> string { ... }
 }
-extend LogSource implements Error {
+LogSource implements Error {
     func message(self) -> string { ... }
 }
 

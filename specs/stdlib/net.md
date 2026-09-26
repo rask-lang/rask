@@ -63,13 +63,13 @@ loop {
 
 <!-- test: skip -->
 ```rask
-extend TcpConnection implements Reader {
+TcpConnection implements Reader {
     func read(self, buf: Vec<u8>) -> usize or IoError
     func read_bytes(self) -> Vec<u8> or IoError
     func read_text(self) -> string or IoError
 }
 
-extend TcpConnection implements Writer {
+TcpConnection implements Writer {
     func write(self, data: Vec<u8>) -> usize or IoError
     func write_bytes(self, data: Vec<u8>) -> void or IoError
     func write_text(self, data: string) -> void or IoError

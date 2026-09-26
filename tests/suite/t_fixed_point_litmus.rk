@@ -37,20 +37,20 @@ extend Fixed {
 
 // The whole conformance surface a number type needs. `Comparable` comes from
 // ORD2's derive — one field, so the lexicographic order is the raw order.
-extend Fixed implements Add {
+Fixed implements Add {
     func add(self, other: Fixed) -> Fixed {
         return Fixed { raw: self.raw + other.raw }
     }
 }
 
-extend Fixed implements Mul<i64> {
+Fixed implements Mul<i64> {
     func mul(self, k: i64) -> Fixed {
         return Fixed { raw: self.raw * k }
     }
 }
 
 // The direction that could not be written before: the scalar on the left.
-extend i64 implements Mul<Fixed> {
+i64 implements Mul<Fixed> {
     type Out = Fixed
 
     func mul(self, x: Fixed) -> Fixed {

@@ -11,7 +11,7 @@ struct LogSource {
     pos: i64
 }
 
-extend LogSource implements Reader {
+LogSource implements Reader {
     func read(mutate self) -> i64 {
         self.pos = self.pos + 1
         return self.pos

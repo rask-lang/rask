@@ -16,7 +16,7 @@ struct Label { public text: string }
 
 struct Probe { public hot: bool }
 
-extend Probe implements Reporter {
+Probe implements Reporter {
     public func status(self) -> Level {
         if self.hot {
             return Level.High
