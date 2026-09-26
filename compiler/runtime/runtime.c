@@ -492,18 +492,56 @@ void rask_check_fail_cmp_f32(float left, float right,
 // Every fd read, write and close goes through these rather than the syscall:
 // under sim an fd may be one of sim's in-memory sockets (sim_net.c), which the
 // kernel has never heard of.
+//
+// Sockets this runtime opens are non-blocking (`sock_nonblocking`), so a read
+// or write that would block comes back EAGAIN and waits in `rask_io_wait`: a
+// green task parks there and its worker runs another, anything else blocks in
+// poll. A file or a pipe is blocking and never says EAGAIN, so it reads as
+// before.
+static void sock_nonblocking(int fd) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags >= 0) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static int would_block(void) {
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
+// A cancel ended the wait (conc.async/CN3): fail the call the way the OS
+// would, so it reaches Rask as `IoError.Cancelled`.
+static ssize_t io_cancelled(void) {
+    errno = ECANCELED;
+    return -1;
+}
+
 static ssize_t sock_read(int64_t fd, void *buf, size_t n) {
 #ifdef RASK_SIM
     if (rask_sim_net_owns(fd)) return (ssize_t)rask_sim_net_read(fd, buf, n);
 #endif
-    return read((int)fd, buf, n);
+    for (;;) {
+        ssize_t got = read((int)fd, buf, n);
+        if (got >= 0 || !would_block()) return got;
+        if (rask_io_wait(fd, 0)) return io_cancelled();
+    }
 }
 
+// All of it, as a blocking write would: a non-blocking one can stop part way.
 static ssize_t sock_write(int64_t fd, const void *buf, size_t n) {
 #ifdef RASK_SIM
     if (rask_sim_net_owns(fd)) return (ssize_t)rask_sim_net_write(fd, buf, n);
 #endif
-    return write((int)fd, buf, n);
+    size_t done = 0;
+    while (done < n) {
+        ssize_t put = write((int)fd, (const char *)buf + done, n - done);
+        if (put >= 0) {
+            done += (size_t)put;
+        } else if (would_block()) {
+            if (rask_io_wait(fd, 1)) return done > 0 ? (ssize_t)done : io_cancelled();
+        } else {
+            return done > 0 ? (ssize_t)done : -1;
+        }
+    }
+    return (ssize_t)done;
 }
 
 static int sock_close(int64_t fd) {
@@ -524,7 +562,16 @@ static int sock_accept(int64_t listen_fd) {
 #ifdef RASK_SIM
     if (rask_sim_net_owns(listen_fd)) return (int)rask_sim_net_accept(listen_fd);
 #endif
-    return accept((int)listen_fd, NULL, NULL);
+    for (;;) {
+        int client = accept((int)listen_fd, NULL, NULL);
+        if (client >= 0) {
+            // Linux doesn't pass O_NONBLOCK on to an accepted socket.
+            sock_nonblocking(client);
+            return client;
+        }
+        if (!would_block()) return -1;
+        if (rask_io_wait(listen_fd, 0)) return (int)io_cancelled();
+    }
 }
 
 int64_t rask_io_open(const char *path, int64_t flags, int64_t mode) {
@@ -780,6 +827,7 @@ int32_t rask_io_error_kind(int32_t err) {
         case EPIPE: return 3;                   // BrokenPipe
         case ECONNRESET: return 4;              // ConnectionReset
         case ETIMEDOUT: return 5;               // TimedOut
+        case ECANCELED: return 8;               // Cancelled
         default: return 7;                      // Other
     }
 }
@@ -889,7 +937,7 @@ int64_t rask_file_read_bytes(int64_t file) {
     if (size < 0) size = 0;
     char *buf = (char *)rask_alloc((int64_t)size + 1);
     size_t n = fread(buf, 1, (size_t)size, f);
-    RaskVec *v = rask_vec_from_static(buf, (int64_t)n, 1, NULL, 0);
+    RaskVec *v = rask_vec_from_bytes(buf, (int64_t)n);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }
@@ -1021,6 +1069,7 @@ int64_t rask_net_tcp_listen(const RaskStr *addr) {
 
     int opt = 1;
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    sock_nonblocking(fd);
 
     if (bind(fd, result->ai_addr, result->ai_addrlen) < 0) {
         close(fd);
@@ -1076,10 +1125,31 @@ static int64_t net_connect_fd(const char *host, const char *port_str) {
         return -1;
     }
 
+    // Non-blocking, so a slow handshake parks a task instead of its worker:
+    // EINPROGRESS, wait for writable, then SO_ERROR says how it went.
+    sock_nonblocking(fd);
     if (connect(fd, result->ai_addr, result->ai_addrlen) < 0) {
-        close(fd);
-        freeaddrinfo(result);
-        return -1;
+        if (errno != EINPROGRESS) {
+            int saved = errno;
+            close(fd);
+            freeaddrinfo(result);
+            errno = saved;
+            return -1;
+        }
+        if (rask_io_wait(fd, 1)) {
+            close(fd);
+            freeaddrinfo(result);
+            errno = ECANCELED;
+            return -1;
+        }
+        int err = 0;
+        socklen_t len = sizeof(err);
+        if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0 || err != 0) {
+            close(fd);
+            freeaddrinfo(result);
+            errno = err ? err : errno;
+            return -1;
+        }
     }
 
     freeaddrinfo(result);
@@ -1283,8 +1353,8 @@ int64_t rask_io_std_write_text(int64_t which, int64_t str_ptr) {
     return n == (size_t)len ? len : -1;
 }
 
-// The bytes are gathered first: a `Vec<u8>` is contiguous only when the runtime
-// built it, and compiled Rask code gives every element its own slot (#863).
+// The bytes are gathered first: a `Vec<u8>` gives every element its own 8-byte
+// slot, so its buffer isn't a byte string (#863).
 int64_t rask_io_std_write_bytes(int64_t which, int64_t vec_ptr) {
     const RaskVec *v = (const RaskVec *)(uintptr_t)vec_ptr;
     int64_t len = rask_vec_len(v);
@@ -1307,12 +1377,12 @@ int64_t rask_io_std_flush(int64_t which) {
 // `Vec<u8>` cast to i64.
 int64_t rask_io_std_read_bytes(int64_t max) {
     RASK_SIM_UNSIMULATED("reading stdin");
-    RaskVec *v = rask_vec_new(1, NULL, 0);
+    RaskVec *v = rask_vec_new(8, NULL, 0);
     if (max <= 0) return (int64_t)(uintptr_t)v;
     for (int64_t i = 0; i < max; i++) {
         int c = fgetc(stdin);
         if (c == EOF) break;
-        uint8_t byte = (uint8_t)c;
+        int64_t byte = (unsigned char)c;   // one 8-byte slot, as rask_vec_from_bytes
         rask_vec_push(v, &byte);
     }
     return (int64_t)(uintptr_t)v;
@@ -1576,17 +1646,16 @@ int64_t rask_net_read_bytes(int64_t fd) {
             buf = (char *)rask_realloc(buf, cap / 2, cap);
         }
     }
-    RaskVec *v = rask_vec_from_static(buf, total, 1, NULL, 0);
+    RaskVec *v = rask_vec_from_bytes(buf, total);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }
 
 // Write all bytes in a Vec<u8> to a TCP connection. Returns 0 on success, -1 on error.
 //
-// The bytes are gathered before the write because a `Vec<u8>` is only
-// contiguous when the runtime built it. Compiled Rask code gives every element
-// its own 8-byte slot, so taking element 0's address as the start of a byte
-// buffer sent every second byte as seven NULs: "hello" left as
+// The bytes are gathered before the write because a `Vec<u8>` gives every
+// element its own 8-byte slot, so taking element 0's address as the start of a
+// byte buffer sent every second byte as seven NULs: "hello" left as
 // "h\0\0\0\0\0\0\0e\0…" and the far end read one character (#863). Same
 // per-element read `rask_fwrite_vec` does for files.
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr) {
@@ -2176,45 +2245,13 @@ void rask_result_origin(RaskStr *out, const void *result_ptr) {
 }
 
 // ─── Resource tracking ──────────────────────────────────────────
-// Simple consumed-flag tracker for ensure consumption cancellation (C1/C2).
-// Each resource gets an integer ID via rask_resource_register().
-// rask_resource_consume() marks it consumed.
-// rask_resource_is_consumed() checks the flag (used before ensure cleanup).
+// Whether an `ensure`'s value was consumed, so its cleanup stands down (C1/C2).
+// The token is the address of a flag in the owning frame — codegen allocates
+// the slot and writes it; this reads it for the cleanup path and the unwind
+// thunk alike.
 
-#define RASK_MAX_RESOURCES 256
-
-static struct {
-    int8_t consumed;
-    int64_t scope_depth;
-} rask_resources[RASK_MAX_RESOURCES];
-static int64_t rask_resource_next_id = 1;
-
-int64_t rask_resource_register(int64_t scope_depth) {
-    int64_t id = rask_resource_next_id++;
-    if (id > 0 && id < RASK_MAX_RESOURCES) {
-        rask_resources[id].consumed = 0;
-        rask_resources[id].scope_depth = scope_depth;
-    }
-    return id;
-}
-
-void rask_resource_consume(int64_t id) {
-    if (id > 0 && id < RASK_MAX_RESOURCES) {
-        rask_resources[id].consumed = 1;
-    }
-}
-
-int64_t rask_resource_is_consumed(int64_t id) {
-    if (id > 0 && id < RASK_MAX_RESOURCES) {
-        return rask_resources[id].consumed;
-    }
-    return 0;
-}
-
-void rask_resource_scope_check(int64_t scope_depth) {
-    // Check for unconsumed resources at this scope depth.
-    // For now, no-op — the ownership checker catches this statically.
-    (void)scope_depth;
+int64_t rask_resource_is_consumed(int64_t token) {
+    return *(const int64_t *)(intptr_t)token;
 }
 
 // ─── Runtime checks ──────────────────────────────────────────────

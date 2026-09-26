@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
-use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
+use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadPoolInner, TypeConstructorKind, Value};
 
 use super::{AssertDetail, Interpreter, RuntimeDiagnostic, RuntimeError};
 
@@ -787,10 +787,6 @@ impl Interpreter {
                         kind: TypeConstructorKind::Ordering,
                         type_param,
                     }),
-                    "TaskGroup" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::TaskGroup,
-                        type_param,
-                    }),
                     "f32x8" => return Ok(Value::Type("f32x8".to_string())),
                     _ => {}
                 }
@@ -1098,10 +1094,10 @@ impl Interpreter {
 
                     if let Some(type_methods) = self.methods.get(name).cloned() {
                         if let Some(method_fn) = type_methods.get(method) {
-                            // Skip empty-body stubs (e.g. fs.write_bytes) —
-                            // they exist for native codegen and should fall
+                            // Skip a declaration whose body lives in the
+                            // backend (e.g. `@native` fs.write_bytes): it falls
                             // through to the built-in module dispatch.
-                            let has_body = !method_fn.body.is_empty();
+                            let has_body = !method_fn.body_lives_elsewhere();
                             let is_static = method_fn
                                 .params
                                 .first()
@@ -2545,96 +2541,6 @@ impl Interpreter {
                 }
             }
 
-            ExprKind::BlockCall { name, body } if name == "spawn_raw" => {
-                let body = body.clone();
-                let captured = self.env.capture_snapshot();
-                let child = self.spawn_child(captured);
-                let join_handle = crate::spawn_interp_thread(move || {
-                    let mut interp = child;
-                    let mut result = Value::Unit;
-                    for stmt in &body {
-                        match interp.exec_stmt(stmt) {
-                            Ok(val) => result = val,
-                            Err(e) => return Err(interp.task_failure_message(&e)),
-                        }
-                    }
-                    Ok(result)
-                }).map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-
-                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
-                    handle: Mutex::new(Some(join_handle)),
-                    receiver: Mutex::new(None),
-                    task_id: crate::value::next_task_id(),
-                })))
-            }
-
-            ExprKind::BlockCall { name, body } if name == "spawn_thread" => {
-                let pool = self.env.get("__thread_pool");
-                let pool = match pool {
-                    Some(Value::ThreadPool(p)) => p,
-                    _ => {
-                        return Err(RuntimeDiagnostic::new(
-                            RuntimeError::TypeError(
-                                "spawn_thread requires `ThreadPool` in scope".to_string(),
-                            ),
-                            expr.span
-                        ))
-                    }
-                };
-
-                let body = body.clone();
-                let captured = self.env.capture_snapshot();
-                let child = self.spawn_child(captured);
-
-                let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
-
-                let task = PoolTask {
-                    work: Box::new(move || {
-                        let mut interp = child;
-                        let mut result = Value::Unit;
-                        for stmt in &body {
-                            match interp.exec_stmt(stmt) {
-                                Ok(val) => result = val,
-                                Err(e) => {
-                                    let _ = result_tx.send(Err(interp.task_failure_message(&e)));
-                                    return;
-                                }
-                            }
-                        }
-                        let _ = result_tx.send(Ok(result));
-                    }),
-                };
-
-                let sender = pool.sender.lock().unwrap();
-                if let Some(ref tx) = *sender {
-                    tx.send(task).map_err(|_| {
-                        RuntimeDiagnostic::new(
-                            RuntimeError::ResourceClosed { resource_type: "ThreadPool".to_string(), operation: "spawn on".to_string() },
-                            expr.span
-                        )
-                    })?;
-                } else {
-                    return Err(RuntimeDiagnostic::new(
-                        RuntimeError::TypeError(
-                            "thread pool is shut down".to_string(),
-                        ),
-                        expr.span
-                    ));
-                }
-
-                let join_handle = crate::spawn_interp_thread(move || {
-                    result_rx
-                        .recv()
-                        .unwrap_or(Err("thread pool task dropped".to_string()))
-                }).map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-
-                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
-                    handle: Mutex::new(Some(join_handle)),
-                    receiver: Mutex::new(None),
-                    task_id: crate::value::next_task_id(),
-                })))
-            }
-
             ExprKind::UsingBlock { name, args, body }
                 if name == "ThreadPool" || name == "threading" =>
             {
@@ -2679,20 +2585,19 @@ impl Interpreter {
                 self.env.push_scope();
                 self.env.define("__thread_pool".to_string(), Value::ThreadPool(pool.clone()));
 
-                let mut result = Value::Unit;
-                for stmt in body {
-                    match self.exec_stmt(stmt) {
-                        Ok(val) => result = val,
-                        Err(e) => {
-                            *pool.sender.lock().unwrap() = None;
-                            for w in workers {
-                                let _ = w.join();
-                            }
-                            self.env.pop_scope();
-                            return Err(e);
+                // `exec_stmts`, not a loop over `exec_stmt`: that one runs the
+                // block's `ensure`s, and a bare loop skipped every one of them.
+                let result = match self.exec_stmts(body) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        *pool.sender.lock().unwrap() = None;
+                        for w in workers {
+                            let _ = w.join();
                         }
+                        self.env.pop_scope();
+                        return Err(e);
                     }
-                }
+                };
 
                 *pool.sender.lock().unwrap() = None;
                 for w in workers {
@@ -2739,18 +2644,17 @@ impl Interpreter {
                 self.env.push_scope();
                 let scope_depth = self.env.scope_depth();
 
-                let mut result = Value::Unit;
-                for stmt in body {
-                    match self.exec_stmt(stmt) {
-                        Ok(val) => result = val,
-                        Err(e) => {
-                            runtime.shutdown();
-                            *ACTIVE_RUNTIME.write().unwrap() = None;
-                            self.env.pop_scope();
-                            return Err(e);
-                        }
+                // `exec_stmts` runs the block's `ensure`s; a bare loop over
+                // `exec_stmt` skipped them.
+                let result = match self.exec_stmts(body) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        runtime.shutdown();
+                        *ACTIVE_RUNTIME.write().unwrap() = None;
+                        self.env.pop_scope();
+                        return Err(e);
                     }
-                }
+                };
 
                 // Check for unconsumed handles (conc.async/H1)
                 if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
@@ -3014,13 +2918,8 @@ impl Interpreter {
             // Execute body. Capture the exit instead of `?`-returning: unwind
             // releases access but keeps writes (ctrl.panic/U2), so the
             // writeback and scope-pop below must run even on panic.
-            let mut body_result: Result<Value, RuntimeDiagnostic> = Ok(Value::Unit);
-            for stmt in body {
-                match self.exec_stmt(stmt) {
-                    Ok(v) => body_result = Ok(v),
-                    Err(e) => { body_result = Err(e); break; }
-                }
-            }
+            // `exec_stmts` so the body's own `ensure`s run.
+            let body_result = self.exec_stmts(body);
 
             // ST3: a staged binding's copy is discarded on unwind, so survivors
             // see the last committed state and never a torn one. Every other
@@ -3123,11 +3022,11 @@ impl Interpreter {
             #[allow(dead_code)]
             enum EvalSelectKind {
                 Recv {
-                    rx: Arc<Mutex<mpsc::Receiver<Value>>>,
+                    rx: Arc<crate::chan::ReceiverEnd>,
                     binding: String,
                 },
                 Send {
-                    tx: Arc<Mutex<mpsc::SyncSender<Value>>>,
+                    tx: Arc<crate::chan::SenderEnd>,
                     value: Value,
                 },
                 Default,
@@ -3205,78 +3104,71 @@ impl Interpreter {
                 }
             }
 
-            // Poll loop with backoff
-            let mut backoff_us: u64 = 10; // start at 10μs
-            let max_backoff_us: u64 = 1000; // cap at 1ms
+            // A select that can wait answers `T or SelectError`; one with a
+            // `_:` arm never waits and answers the arm's value.
+            let wrap = |v: Value, ok: bool| {
+                if default_idx.is_some() {
+                    return v;
+                }
+                Value::Enum {
+                    name: "Result".to_string(),
+                    variant: if ok { "Ok" } else { "Err" }.to_string(),
+                    fields: vec![v],
+                    variant_index: if ok { 0 } else { 1 },
+                    origin: None,
+                }
+            };
+            let select_err = |variant: &str, index: u32| Value::Enum {
+                name: "SelectError".to_string(),
+                variant: variant.to_string(),
+                fields: vec![],
+                variant_index: index,
+                origin: None,
+            };
+            let token = crate::value::current_cancel();
 
             loop {
+                // Read before probing, so a change after a probe found nothing
+                // still ends the wait below.
+                let seen = crate::chan::select_epoch();
                 let mut all_closed = true;
 
                 for &entry_idx in &poll_order {
                     let entry = &entries[entry_idx];
                     match &entry.kind {
-                        EvalSelectKind::Recv { rx, binding } => {
-                            let rx_guard = rx.lock().unwrap();
-                            match rx_guard.try_recv() {
-                                Ok(val) => {
-                                    drop(rx_guard);
-                                    // Execute this arm's body with binding
-                                    self.env.push_scope();
-                                    self.env.define(binding.clone(), val);
-                                    let result = self.eval_expr(&arms[entry.arm_idx].body)?;
-                                    self.env.pop_scope();
-                                    return Ok(result);
-                                }
-                                Err(mpsc::TryRecvError::Empty) => {
-                                    all_closed = false;
-                                }
-                                Err(mpsc::TryRecvError::Disconnected) => {
-                                    // Channel closed, skip
-                                }
+                        EvalSelectKind::Recv { rx, binding } => match rx.try_recv() {
+                            Ok(val) => {
+                                self.env.push_scope();
+                                self.env.define(binding.clone(), val);
+                                let result = self.eval_expr(&arms[entry.arm_idx].body);
+                                self.env.pop_scope();
+                                return Ok(wrap(result?, true));
                             }
-                        }
-                        EvalSelectKind::Send { tx, value } => {
-                            let tx_guard = tx.lock().unwrap();
-                            match tx_guard.try_send(value.clone()) {
-                                Ok(()) => {
-                                    drop(tx_guard);
-                                    let result = self.eval_expr(&arms[entry.arm_idx].body)?;
-                                    return Ok(result);
-                                }
-                                Err(mpsc::TrySendError::Full(_)) => {
-                                    all_closed = false;
-                                }
-                                Err(mpsc::TrySendError::Disconnected(_)) => {
-                                    // Channel closed
-                                }
+                            Err(crate::chan::RecvError::Closed) => {}
+                            Err(_) => all_closed = false,
+                        },
+                        EvalSelectKind::Send { tx, value } => match tx.try_send(value.clone()) {
+                            Ok(()) => {
+                                let result = self.eval_expr(&arms[entry.arm_idx].body)?;
+                                return Ok(wrap(result, true));
                             }
-                        }
+                            Err(crate::chan::SendError::Full(_)) => all_closed = false,
+                            Err(_) => {}
+                        },
                         EvalSelectKind::Default => unreachable!(),
                     }
-                }
-
-                // All channels closed (CL1). This used to hand back an
-                // `Err(...)` — but a select's type is its arms' type, so a
-                // Result appearing there is a value nothing can use:
-                // `const got: i64 = select { … }` would be holding an enum.
-                // Native panics here, and now so does this.
-                if all_closed && default_idx.is_none() {
-                    return Err(RuntimeDiagnostic::new(
-                        RuntimeError::Panic(
-                            "select: every channel is closed [conc.select/CL1]".to_string(),
-                        ),
-                        expr.span,
-                    ));
                 }
 
                 // Default arm fires if nothing ready (A3)
                 if let Some(idx) = default_idx {
                     return self.eval_expr(&arms[idx].body);
                 }
-
-                // Backoff
-                std::thread::sleep(std::time::Duration::from_micros(backoff_us));
-                backoff_us = (backoff_us * 2).min(max_backoff_us);
+                if all_closed {
+                    return Ok(wrap(select_err("Closed", 0), false));
+                }
+                if crate::chan::select_wait(seen, token.as_ref()) {
+                    return Ok(wrap(select_err("Cancelled", 1), false));
+                }
             }
     }
 

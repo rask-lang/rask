@@ -97,6 +97,7 @@ go down.
 | [mutate_param_left_empty.rk](mutate_param_left_empty.rk) | A `mutate` parameter consumed and not replaced (PM2, E0836, #815) — outright and on one path only; consume-and-replace stays legal, and `take` is how a function says it keeps the value |
 | [heap_not_consumed.rk](heap_not_consumed.rk) | A `Heap(…)` value that nothing consumes, one consumed twice, one handed to a `take` parameter and then dropped, and one consumed on only one branch (mem.linear/L1, L3, E0837, E0800, #819) |
 | [consume_borrowed_param.rk](consume_borrowed_param.rk) | Giving away a parameter the caller only lent (PM1/L1, E0835, #804) — a `take self` method, a `take` parameter, `own` at the call site, and storing it into a field, which used to be reported as a borrow conflict about a mutation that wasn't happening (#818); `take` on the declaration is the way to say it |
+| [borrowed_match_part_given_away.rk](borrowed_match_part_given_away.rk) | A part matched out of a borrowed value given away (E0899). The arm's bindings are views into the caller's value: reading one is fine and no longer asks to be consumed, closing one is the error. The `take` version still owes each part |
 | [with_guard_escapes.rk](with_guard_escapes.rk) | A `with` guard's bare identifier returned as the block's own value (#559, E0829) — struct payload rejected, field read/method call/scalar payload still compile |
 | [small_size_fence.rk](small_size_fence.rk) | `@small` types over the 16-byte copy threshold (SM2, E0374) — a three-`i64` struct and a two-`string` one; plus the generic half, where `Pair<i64>` fits and `Pair<string>` doesn't (SM3, E0375) (#587) |
 | [ensure_cancellation.rk](ensure_cancellation.rk) | `ensure` cancellation must be statically definite (C3/C4): resource consumed on some merging paths but not all — if-without-else, single match arm, nested block (E0821) |
@@ -124,10 +125,14 @@ go down.
 | [module_needs_import.rk](module_needs_import.rk) | A stdlib module used with no import for it (IM1, E0210) — `json` and `net` were exempt because `stdlib/http.rk` imports them into a scope shared with user code (#780) |
 | [stdlib_renames.rk](stdlib_renames.rk) | task-2b rename sweep (#302): old stdlib names are hard errors, not aliases — `recv`/`try_recv`, `as_secs`/`as_secs_f64`, `os.getpid`/`os.vars`, `fs.read_file`/`write_file`/`append_file`, removed `File.lines()` (E0313) |
 | [let_reassign.rk](let_reassign.rk) | Reassigning a let binding |
+| [shared_access_closure.rk](shared_access_closure.rk) | A closure handed to a blocking `read`/`write` on a `Shared` (E0900, #1311). Blocking access is a `with` block or one expression; closures are for `try_read`/`try_write`. The checker accepted the closure form, undeclared, and native read a slot nobody wrote |
+| [link_sent_to_task.rk](link_sent_to_task.rk) | A link captured by `spawn` (E0901, #830) — on its own, optional, in a Vec, in a struct field, or as a channel's element. A link is its node's address, so two tasks would write one node unordered. A copied field and a whole rack still cross |
+| [thread_handle_unjoined.rk](thread_handle_unjoined.rk) | A `Thread` handle dropped without a join or detach (E0805, #1360), and one put in a `Vec` (E0820). Several go in a `Handles` |
 | [read_lock_mutate.rk](read_lock_mutate.rk) | Mutating through a `shared.read()` with-binding (E0360, conc.sync/R1) |
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |
 | [resource_leak.rk](resource_leak.rk) | Resource type not consumed |
+| [result_match_by_variant.rk](result_match_by_variant.rk) | A `T or E` match covers `E` with an arm per variant; a fieldless variant arm is not a catch-all |
 | [optional_resource.rk](optional_resource.rk) | A `@resource` inside an optional is still linear — the binding, the `? as` payload, and a `none` that gets filled (E0805, mem.linear/L1, #827) |
 | [resource_field_debts.rk](resource_field_debts.rk) | A holder owes each resource field separately — closing one leaves the others, reported by field path (E0805, mem.linear/L1, #828) |
 | [context_missing.rk](context_missing.rk) | Missing pool context clause |

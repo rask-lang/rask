@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A spawned closure is checked for what it *captures*: a `Local` box or a link
+// it reaches from outside can't go to another task (E0346, E0901). What the
+// task makes for itself is its own.
+//
+//     spawn(|| {
+//         mut r: Rack<Node> = Rack.new()
+//         let a = r.insert(Node { id: 1 })
+//         let c = Shared.local(0)
+//         ...
+//     })
+//
+// used to be rejected twice: the check asked whether a name was *used* inside
+// the closure, not whether it came from outside, so the task's own link and
+// its own `Local` box both counted as sent (#830).
+
+import async.spawn
+import memory.{Rack, Link}
+import sync.Shared
+
+struct Node {
+    id: i64
+    peer: Link<Node>?
+}
+
+func count_in_a_task() -> i64 {
+    let h = spawn(|| {
+        mut r: Rack<Node> = Rack.new()
+        let a = r.insert(Node { id: 1, peer: none })
+        let b = r.insert(Node { id: 2, peer: a })
+        a.id += 10
+        let c = Shared.local(0)
+        with c.write() as v {
+            v += a.id
+        }
+        if b.peer? as p {
+            with c.write() as v {
+                v += p.id
+            }
+        }
+        return c.get()
+    })
+    return h.join() catch e => -1
+}
+
+func a_graph_crosses_whole() -> i64 {
+    mut world: Rack<Node> = Rack.new()
+    let a = world.insert(Node { id: 5, peer: none })
+    let bonus = a.id
+    let frame = world.snapshot()
+    let h = spawn(|| {
+        mut t = bonus
+        for n in frame.nodes() {
+            t += n.id
+        }
+        return t
+    })
+    return h.join() catch e => -1
+}
+
+test "what a task makes for itself stays its own" {
+    using Multitasking(workers: 2) {
+        assert count_in_a_task() == 22
+    }
+}
+
+test "a copied field and a snapshot go across" {
+    using Multitasking(workers: 2) {
+        assert a_graph_crosses_whole() == 10
+    }
+}
+
+func main() {}

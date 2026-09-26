@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A link captured by `spawn` (E0901, #830).
+//
+// A link is its node's address and every link can write the node, so a task
+// handed one writes the same memory as the task that kept it, with nothing
+// ordering the two. The checker accepted it, and both backends ran two tasks
+// writing one node. A link can't cross in any wrapper: on its own, optional,
+// in a Vec, in a struct field, or as a channel's element type; nor through a
+// closure bound to a name and spawned by it.
+
+import async.spawn
+import memory.{Rack, Link}
+import async.Channel
+
+struct Node {
+    id: i64
+}
+
+struct Cursor {
+    at: Link<Node>?
+    steps: i64
+}
+
+func main() {
+    using Multitasking {
+        mut r: Rack<Node> = Rack.new()
+        let a = r.insert(Node { id: 1 })
+        let maybe: Link<Node>? = a
+        let links = Vec.from([a])
+        let cur = Cursor { at: a, steps: 0 }
+        let (tx, rx) = Channel<Link<Node>>.buffered(1)
+
+        let h = spawn(|| {
+            // ERROR: E0901 — a link on its own
+            a.id += 1
+            // ERROR: E0901 — optional
+            if maybe? as m { a.id += m.id }
+            // ERROR: E0901 — in a struct field
+            mut t = cur.steps
+            // ERROR: E0901 — in a Vec
+            if links.is_empty() { t += 1 }
+            // ERROR: E0901 — as what a channel carries
+            let _ = tx.send(a)
+            return t
+        })
+        let v = h.join() catch e => { return }
+
+        // A closure named first is checked the same as one written in place.
+        let bump = || {
+            // ERROR: E0901 — captured by a closure that is then spawned
+            a.id += 1
+            return a.id
+        }
+        let hb = spawn(bump)
+        let vb = hb.join() catch e => { return }
+
+        // Still fine: a copy of a field, and the whole rack.
+        let id = a.id
+        let h2 = spawn(|| {
+            mut t = id
+            for n in r.nodes() { t += n.id }
+            return t
+        })
+        let w = h2.join() catch e => { return }
+        let _ = rx
+        println("{v} {vb} {w}")
+    }
+}

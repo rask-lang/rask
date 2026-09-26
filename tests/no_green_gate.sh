@@ -19,7 +19,7 @@
 # the same two lists differential.sh reads. Without that, a registered
 # divergence that happens to mention `spawn(` fails this gate for a reason this
 # gate isn't about — `t_native_reach_taskgroup.rk` did, and the failure read as
-# "macOS is broken" when what it says is "TaskGroup has no native entry point",
+# "macOS is broken" when what it says is "Handles has no native entry point",
 # which is #1288 and already tracked.
 
 set -uo pipefail

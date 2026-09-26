@@ -210,6 +210,8 @@ WHY: Linear values can be consumed exactly once. A second consumption
 | Conditional consumption | L1 | Both branches must consume |
 | Linear value + panic | L4 | `ensure` runs during unwind |
 | Linear value in loop | L1 | Each iteration's binding must be consumed that iteration |
+| Matching a borrowed value | L3 | The arm's bindings are views into the caller's value: not owed, and can't be consumed (E0899). `take` the value to own its parts |
+| Draining a list in a `loop` | L1, L7 | `match rest` moves `rest`; `rest = *next` gives the name a new value with its own window. After the loop, `rest` is what it was at each `break` |
 | `take` parameter | L7 | Arrives owed; the body's first statement commits it |
 | `take self` method of the linear type | — | The method is the consumption, so L7 doesn't apply to `self` |
 

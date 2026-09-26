@@ -507,8 +507,6 @@ pub enum BuiltinKind {
     Panic,
     Format,
     AsyncSpawn,     // spawn(|| {}) from async module
-    JoinAll,        // join_all(handles) — wait for all tasks
-    SelectFirst,    // select_first(handles) — first completed wins
     Cancelled,      // cancelled() — cooperative cancellation check
     Todo,
     Unreachable,
@@ -542,7 +540,6 @@ pub enum TypeConstructorKind {
     Mutex,
     Atomic,
     Ordering,
-    TaskGroup,
 }
 
 /// Module kinds for stdlib modules.
@@ -635,14 +632,117 @@ pub const ALL_MODULE_KINDS: &[ModuleKind] = &[
     ModuleKind::Reflect,
 ];
 
-/// Inner state for a spawned thread/task handle.
-pub struct ThreadHandleInner {
-    /// OS thread join handle (used for raw thread::spawn)
+impl Value {
+    /// The tracker key for a value tracked like a file: a `File`, or a socket
+    /// (`tcp_listen`, `accept`, `tcp_connect` register them the same way).
+    /// Sockets were missing from every walk over resources, so one captured by
+    /// a task stayed owed by the spawner and was reported leaked there.
+    pub fn tracked_as_file(&self) -> Option<usize> {
+        match self {
+            Value::File(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
+            Value::TcpListener(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
+            Value::TcpConnection(rc) => Some(Arc::as_ptr(rc) as *const () as usize),
+            _ => None,
+        }
+    }
+}
+
+/// What every spawn form hands back (conc.async/H5).
+pub struct HandleInner {
     pub handle: Mutex<Option<std::thread::JoinHandle<Result<Value, String>>>>,
-    /// Result channel (used for tasks submitted to a thread pool)
-    pub receiver: Mutex<Option<mpsc::Receiver<Result<Value, String>>>>,
+    /// Raised by `cancel()`, read by `cancelled()` and by the waits it ends.
+    pub cancel: Arc<CancelToken>,
     /// ctrl.panic/F1: which task this is, for the detached-panic report.
     pub task_id: i64,
+}
+
+impl HandleInner {
+    pub fn new(
+        handle: std::thread::JoinHandle<Result<Value, String>>,
+        cancel: Arc<CancelToken>,
+    ) -> Arc<Self> {
+        Arc::new(HandleInner { handle: Mutex::new(Some(handle)), cancel, task_id: next_task_id() })
+    }
+}
+
+/// A task's cancel flag, and a condvar a waiting body sleeps on so a cancel
+/// wakes it (conc.async/CN3).
+#[derive(Default)]
+pub struct CancelToken {
+    flag: std::sync::atomic::AtomicBool,
+    lock: Mutex<()>,
+    wake: std::sync::Condvar,
+    /// How to wake the body out of a channel or select wait, while it's in one.
+    waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+/// Registered while a body waits; dropping it deregisters.
+pub struct CancelWake<'a>(&'a CancelToken);
+
+impl Drop for CancelWake<'_> {
+    fn drop(&mut self) {
+        *self.0.waker.lock().unwrap() = None;
+    }
+}
+
+impl CancelToken {
+    pub fn cancel(&self) {
+        {
+            let _held = self.lock.lock().unwrap();
+            self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            self.wake.notify_all();
+        }
+        // Read after raising the flag; the body registers before it last reads
+        // the flag, so one of the two sees the other.
+        let waker = self.waker.lock().unwrap().clone();
+        if let Some(w) = waker {
+            w();
+        }
+    }
+
+    /// `wake` runs if a cancel comes while the guard is alive.
+    pub fn wake_on_cancel(&self, wake: Arc<dyn Fn() + Send + Sync>) -> CancelWake<'_> {
+        *self.waker.lock().unwrap() = Some(wake);
+        CancelWake(self)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Wait up to `d` or until cancelled; true when cancelled.
+    pub fn wait(&self, d: std::time::Duration) -> bool {
+        let held = self.lock.lock().unwrap();
+        let (_held, _) = self.wake
+            .wait_timeout_while(held, d, |_| !self.is_cancelled())
+            .unwrap();
+        self.is_cancelled()
+    }
+}
+
+std::thread_local! {
+    static CURRENT_CANCEL: std::cell::RefCell<Option<Arc<CancelToken>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run a spawned body with `token` as what `cancelled()` reads. A pool worker
+/// runs many bodies, so the previous token is put back after.
+pub fn with_cancel_flag<R>(token: Arc<CancelToken>, f: impl FnOnce() -> R) -> R {
+    let prev = CURRENT_CANCEL.with(|c| c.replace(Some(token)));
+    let out = f();
+    CURRENT_CANCEL.with(|c| *c.borrow_mut() = prev);
+    out
+}
+
+/// Whether whatever is running this thread has been asked to stop.
+pub fn cancel_requested() -> bool {
+    CURRENT_CANCEL.with(|c| c.borrow().as_ref().is_some_and(|t| t.is_cancelled()))
+}
+
+/// The running task's token, for a wait a cancel should end. None outside a
+/// task, where nothing can cancel the caller.
+pub fn current_cancel() -> Option<Arc<CancelToken>> {
+    CURRENT_CANCEL.with(|c| c.borrow().clone())
 }
 
 /// Task ids, handed out in spawn order like the runtime's `rask_next_task_id`.
@@ -652,9 +752,9 @@ pub fn next_task_id() -> i64 {
     NEXT.fetch_add(1, Ordering::Relaxed)
 }
 
-impl fmt::Debug for ThreadHandleInner {
+impl fmt::Debug for HandleInner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ThreadHandleInner")
+        write!(f, "HandleInner")
     }
 }
 
@@ -973,18 +1073,14 @@ pub enum Value {
         rack_id: u32,
         node: Arc<Mutex<StructData>>,
     },
-    /// Thread handle (from spawn_raw or spawn_thread)
-    ThreadHandle(Arc<ThreadHandleInner>),
+    /// From any spawn form (conc.async/H5)
+    Handle(Arc<HandleInner>),
     /// Channel sender
-    Sender(Arc<Mutex<mpsc::SyncSender<Value>>>),
+    Sender(Arc<crate::chan::SenderEnd>),
     /// Channel receiver
-    Receiver(Arc<Mutex<mpsc::Receiver<Value>>>),
+    Receiver(Arc<crate::chan::ReceiverEnd>),
     /// Thread pool (from `using ThreadPool(workers: n) { }`)
     ThreadPool(Arc<ThreadPoolInner>),
-    /// Async task handle (from spawn() in using Multitasking)
-    TaskHandle(Arc<ThreadHandleInner>),
-    /// TaskGroup for dynamic task spawning (M3)
-    TaskGroup(Arc<Mutex<Vec<Value>>>),
     /// Multitasking runtime (from `using Multitasking { }`)
     MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
@@ -1271,9 +1367,7 @@ impl Value {
             Value::Cell(_) => "Cell",
             Value::Rack(_) => "Rack",
             Value::Link { .. } => "Link",
-            Value::ThreadHandle(_) => "ThreadHandle",
-            Value::TaskHandle(_) => "TaskHandle",
-            Value::TaskGroup(_) => "TaskGroup",
+            Value::Handle(_) => "Handle",
             Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
@@ -1537,7 +1631,6 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Mutex => "Mutex",
                     TypeConstructorKind::Atomic => "Atomic",
                     TypeConstructorKind::Ordering => "Ordering",
-                    TypeConstructorKind::TaskGroup => "TaskGroup",
                 };
                 if let Some(param) = type_param {
                     write!(f, "{}<{}>", base_name, param)
@@ -1591,9 +1684,7 @@ impl fmt::Display for Value {
                 let guard = node.lock().unwrap();
                 write!(f, "{}", Value::Struct(Arc::new(Mutex::new(guard.clone()))))
             }
-            Value::ThreadHandle(_) => write!(f, "<ThreadHandle>"),
-            Value::TaskHandle(_) => write!(f, "<TaskHandle>"),
-            Value::TaskGroup(tasks) => write!(f, "<TaskGroup len={}>", tasks.lock().unwrap().len()),
+            Value::Handle(_) => write!(f, "<Handle>"),
             Value::MultitaskingRuntime(r) => write!(f, "<Multitasking runtime workers={}>", r.workers),
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),

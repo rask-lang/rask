@@ -39,12 +39,23 @@ test "a user method named spawn is not a task" {
     assert count == 1
 }
 
-// The third case belongs here and can't run yet: a closure rebound before it
-// is spawned hangs on native (#1335), because the spawn lookahead lowers the
-// binding's initializer and not what a later assignment put there. The
-// compile-time half — reading the closure the name holds *now*, rather than
-// the body the program threw away — is fixed, and `rask check` on the repro in
-// that issue is what says so.
+// The check reads the closure the name holds *now*, not the body the program
+// threw away. This hung `rask compile` until #1335: the closure analysis gave
+// each local one closure it came from, and a reassigned one flipped between
+// the two forever.
+test "a closure rebound before it is spawned" {
+    using Multitasking {
+        mut dropped = 0
+        mut seen = 0
+        mut f = || { dropped += 1 }
+        f = || {
+            seen += 1
+            println("task seen={seen}")
+        }
+        let h = spawn(f)
+        h.join() catch _ => { return }
+    }
+}
 
 test "a closure that arrives as a parameter carries no body to blame" {
     run_through_a_parameter(|| { println("ran") })

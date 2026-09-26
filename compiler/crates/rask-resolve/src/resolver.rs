@@ -193,7 +193,7 @@ impl Resolver {
         // See resolve_import() for how they enter scope.
 
         // Top-level stdlib stub functions (e.g. async.rk's `spawn`,
-        // `cancelled`, `join_all`, `select_first`) are auto-registered.
+        // `cancelled`) are auto-registered.
         // The pipeline sometimes runs the resolver without stdlib_decls
         // (single-file `rask check`), and these names are spec-required to
         // be in scope under their context (`spawn` under `using Multitasking`,
@@ -211,8 +211,8 @@ impl Resolver {
             //
             // This was `vec![]`, which made every stdlib function look nullary.
             // Nothing could bind a signature's type parameter from an argument:
-            // `spawn(f: func() -> T) -> TaskHandle<T>` came out as
-            // `Fn { params: [], ret: TaskHandle<T> }`, so the closure had nothing
+            // `spawn(f: func() -> T) -> Handle<T>` came out as
+            // `Fn { params: [], ret: Handle<T> }`, so the closure had nothing
             // to unify with, `T` stayed an inference variable through to MIR, and
             // the join's payload was whatever a fallback invented — i64, always,
             // whatever the task returned (#963).
@@ -3278,6 +3278,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: Span::new(0, 10),
+                decl_start: 0,
             }),
             span: Span::new(0, 10),
         }
@@ -3622,6 +3623,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: Span::new(0, 10),
+                decl_start: 0,
             }),
             span: Span::new(0, 10),
         }
@@ -4117,6 +4119,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: Span::new(0, 20),
+                decl_start: 0,
             }),
             span: Span::new(0, 20),
         };

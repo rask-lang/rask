@@ -126,10 +126,10 @@ Tests are application code. `conc.async/C6` says application code opens the runt
 ```rask
 test "concurrent fetch joins all workers" {
     using Multitasking {
-        let (a, b) = join_all(
-            spawn(|| { fetch(url_a) }),
-            spawn(|| { fetch(url_b) })
-        )
+        let ha = spawn(|| { fetch(url_a) })
+        let hb = spawn(|| { fetch(url_b) })
+        let a = try ha.join()
+        let b = try hb.join()
         assert a? && b?
     }
 }

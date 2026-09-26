@@ -1413,6 +1413,29 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
             }
 
+            LinkSent { name, ty, span } => {
+                let rendered = ty.to_string();
+                let label = if rendered.starts_with("Link<") {
+                    format!("`{}` is a link into a rack", name)
+                } else {
+                    format!("`{}` is a `{}`, which holds a link", name, rendered)
+                };
+                Diagnostic::error(format!("`{}` holds a link, which can't go to another task", name))
+                    .with_code("E0901")
+                    .with_primary(*span, label)
+                    .with_fix(
+                        "copy out what the task needs before the spawn — `let id = n.id` — \
+                         or hand it the whole graph: `let copy = rack.snapshot()` and use \
+                         `copy` inside",
+                    )
+                    .with_why(
+                        "a link is its node's address, and every link can write the node, \
+                         so two tasks holding one would both write the same memory with \
+                         nothing ordering them. A rack moves as a whole, links and all; a \
+                         link on its own never crosses [mem.ownership/T2]",
+                    )
+            }
+
             SharedStrategyMismatch { found, expected, span } => {
                 Diagnostic::error(format!(
                     "this `Shared` uses the `{}` strategy, but `{}` is expected here",
@@ -1439,6 +1462,24 @@ impl ToDiagnostic for rask_types::TypeError {
                          have to agree. A `Local` box read through the read-write-lock \
                          entry points blocks forever — it has no lock for them to take \
                          [conc.sync/SH2]",
+                    )
+            }
+
+            SharedAccessClosure { method, span } => {
+                Diagnostic::error(format!("`{}` on a `Shared` doesn't take a closure", method))
+                    .with_code("E0900")
+                    .with_primary(*span, format!("`.{}(…)` with an argument", method))
+                    .with_fix(format!(
+                        "open a `with` block, whose value is the block's last expression:\n    \
+                         with s.{m}() as v {{ v * 2 }}\n\
+                         or chain the access into one expression: `s.{m}().field`",
+                        m = method,
+                    ))
+                    .with_why(
+                        "`read` and `write` block until the lock is free, and a blocking \
+                         access is scoped by a `with` block or a single expression. A \
+                         closure is the shape of `try_read`/`try_write`, which can fail \
+                         to get the lock and say so [conc.sync]",
                     )
             }
 
@@ -3826,6 +3867,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_fix(format!("consume `{}` (e.g. `ensure {{ {}.close() }}`) at the top of the {} body", name, name, context))
                 .with_why("resource types must be consumed exactly once — a closure/spawn that captures a resource takes ownership and must consume it")
+            }
+
+            ConsumeBorrowedPart { name, from, matched_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` isn't yours to give", s, name),
+                    None => format!("this takes ownership, and `{}` isn't yours to give", name),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — it's part of `{}`, which is borrowed",
+                    name, from
+                ))
+                .with_code("E0899")
+                .with_primary(self.span, label)
+                .with_secondary(*matched_at, format!("`{}` comes out of `{}` here", name, from))
+                .with_fix(format!("take `{}` in the signature: `take {}: …`", from, from))
+                .with_why(format!(
+                    "matching a borrowed value doesn't take it apart — the caller still holds `{}`, `{}` included, so giving `{}` away would leave them holding something that's gone. [mem.parameters/PM1, mem.linear/L1]",
+                    from, name, name
+                ))
             }
 
             ConsumeBorrowedCapture { name, closure_at } => {

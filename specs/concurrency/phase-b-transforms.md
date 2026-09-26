@@ -158,39 +158,12 @@ The state machine transform in module A checks effect bits from module B's metad
 |------|-------------|
 | **FFI1: Extern functions cannot pause tasks** | Foreign functions don't read the process-global runtime slot. C code can't participate in cooperative scheduling |
 | **FFI2: Blocking is accepted** | FFI calls that block I/O block the worker thread. Scheduler runs remaining tasks on N-1 workers |
-| **FFI3: Compile-time warning** | Extern function calls inside `using Multitasking` context trigger a suppressible warning |
-| **FFI4: Runtime worker compensation** | If a worker thread is blocked in FFI for >1ms, the scheduler spawns a temporary replacement worker |
-| **FFI5: Convention for long-blocking FFI** | FFI calls expected to block significantly should use `ThreadPool.spawn` |
+| **FFI3: Runtime worker compensation** | If a worker thread is blocked in FFI for >1ms, the scheduler spawns a temporary replacement worker |
+| **FFI4: Convention for long-blocking FFI** | FFI calls expected to block significantly should use `ThreadPool.spawn` |
 
-### Compile-time warning (FFI3)
+### Runtime worker compensation (FFI3)
 
-The effects system (`comp.effects/INF5`) already tags extern functions as conservatively IO. When an extern call appears inside `using Multitasking` scope:
-
-```
-WARNING [conc.phase-b/FFI3]: extern call in async context may block worker thread
-   |
-5  |  let result = sqlite_query(db, sql)
-   |                 ^^^^^^^^^^^^ extern function — blocks OS thread
-   |
-WHY: Foreign functions can't park green tasks. Blocking I/O in FFI
-     blocks a scheduler worker thread.
-
-FIX: Wrap in ThreadPool.spawn for blocking FFI:
-
-  let result = try ThreadPool.spawn(|| { sqlite_query(db, sql) }).join()
-```
-
-Suppress with `@allow(ffi_in_async)` for fast FFI (crypto primitives, math libraries):
-
-<!-- test: skip -->
-```rask
-@allow(ffi_in_async)
-let hash = crypto_sha256(data)  // extern, returns in µs
-```
-
-### Runtime worker compensation (FFI4)
-
-Safety net for FFI calls that block unexpectedly or when warnings are suppressed.
+No annotation, no warning. A C call that blocks longer than 1 ms gets its worker replaced for as long as it stays blocked.
 
 ```
 FFI call flow:
@@ -219,8 +192,7 @@ using Multitasking, ThreadPool {
 
         process(rows)
 
-        // Acceptable: fast FFI inline (suppress warning)
-        @allow(ffi_in_async)
+        // Fine: fast FFI inline
         let checksum = crc32(data)
     }).detach()
 }
@@ -235,26 +207,11 @@ using Multitasking, ThreadPool {
 | Pure closure stored in variable, called in spawn | FP1, FP3 | Clean ABI, yield point generated conservatively. Poll returns Ready immediately |
 | Cross-module function gains `spawn` internally | SC3 | Caller sees a new CC2 scope requirement. Source-level breakage, same as any API change |
 | Cross-module generic with type-dependent effects | SC4 | Conservative metadata (union of effects). Precise after monomorphization |
-| FFI call returns in <1ms | FFI4 | No compensation thread, zero overhead |
-| Many concurrent blocking FFI calls | FFI4 | Scheduler grows temporarily. Bounded by OS thread limits |
+| FFI call returns in <1ms | FFI3 | No compensation thread, zero overhead |
+| Many concurrent blocking FFI calls | FFI3 | Scheduler grows temporarily. Bounded by OS thread limits |
 | FFI callback into Rask code | FFI1 | Runs on FFI's OS thread. If no `using Multitasking` block is active, `spawn` in the callback is a CC3 runtime panic |
 | `compile_rust()` interop (`struct.build`) | FFI1 | Same rules as C FFI |
 | Nested interface object call (e.g., `io.copy(any Reader, any Writer)`) | VT3 | Two potential yield points per loop iteration. Two state machine variants. Acceptable — this is the I/O copy hot path |
-
-## Error Messages
-
-```
-WARNING [conc.phase-b/FFI3]: extern call in async context may block worker thread
-   |
-5  |  let result = ffi_compute(data)
-   |                 ^^^^^^^^^^^ extern function — blocks OS thread
-   |
-WHY: Foreign functions can't park green tasks.
-
-FIX: Wrap in ThreadPool.spawn for blocking FFI:
-
-  let result = try ThreadPool.spawn(|| { ffi_compute(data) }).join()
-```
 
 ---
 
@@ -264,9 +221,9 @@ FIX: Wrap in ThreadPool.spawn for blocking FFI:
 
 **Clean vtable and fn-pointer ABIs (VT1, FP1):** With stackful fibers, runtime discovery happens inside the callee (via `RUNTIME_SLOT`) rather than through a parameter threaded by the caller. Indirect calls therefore don't need wide ABIs. Interface signatures match their vtable entries exactly.
 
-**FFI warnings (FFI3):** The effects system already marks extern functions as conservatively IO (`comp.effects/INF5`). Detecting "extern call in async context" is a subset of the existing IO-in-ThreadPool warning (`comp.effects/CW1`). Same infrastructure, same suppressibility. Warning rather than error because fast FFI calls (crypto, compression, math) are common and harmless. `@allow(ffi_in_async)` makes suppression visible and auditable.
+**FFI worker compensation (FFI3):** Go does this for cgo and it works well in practice. The 1 ms threshold avoids thread churn for fast FFI while catching blocking I/O.
 
-**FFI worker compensation (FFI4):** Go does this for cgo and it works well in practice. The 1 ms threshold avoids thread churn for fast FFI while catching blocking I/O.
+**No FFI warning.** An earlier version warned on every extern call inside `using Multitasking`, suppressible with `@allow(ffi_in_async)`. I dropped it. A program wrapping sqlite or openssl would warn at every call site about a cost FFI3 already absorbs, and most FFI calls (hashing, compression, math) return in microseconds. Which calls block is information for tooling to surface, not a warning to silence.
 
 ### Alternatives Considered
 

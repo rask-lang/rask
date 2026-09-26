@@ -692,19 +692,14 @@ fn remap_stmt(
         MirStmtKind::ResourceRegister {
             dst,
             type_name,
-            scope_depth,
             slot,
         } => MirStmtKind::ResourceRegister {
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             type_name: type_name.clone(),
-            scope_depth: *scope_depth,
             slot: slot.map(|s| local_map.get(&s).copied().unwrap_or(s)),
         },
         MirStmtKind::ResourceConsume { resource_id } => MirStmtKind::ResourceConsume {
             resource_id: local_map.get(resource_id).copied().unwrap_or(*resource_id),
-        },
-        MirStmtKind::ResourceScopeCheck { scope_depth } => MirStmtKind::ResourceScopeCheck {
-            scope_depth: *scope_depth,
         },
         MirStmtKind::EnsurePush { cleanup_block } => MirStmtKind::EnsurePush {
             cleanup_block: block_map.get(cleanup_block).copied().unwrap_or(*cleanup_block),

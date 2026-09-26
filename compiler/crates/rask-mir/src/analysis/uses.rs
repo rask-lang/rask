@@ -96,8 +96,7 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop
-        | MirStmtKind::ResourceScopeCheck { .. } => {}
+        | MirStmtKind::EnsureHookPop => {}
     }
 }
 
@@ -195,8 +194,7 @@ pub fn visit_stmt_use_locals_mut(
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop
-        | MirStmtKind::ResourceScopeCheck { .. } => {}
+        | MirStmtKind::EnsureHookPop => {}
     }
 }
 

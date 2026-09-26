@@ -1,0 +1,2 @@
+# Soak programs expected to fail today, one per line, with the issue and how.
+# tests/soak_gate.sh reads this.

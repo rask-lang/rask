@@ -2901,18 +2901,18 @@ fn error_linear_consumed_if_without_else() {
         "resource consumed in an if-without-else should be E0805 (L1): {}", output);
 }
 
-// ─── TaskHandle must be consumed (issue #797, conc.async/H1) ──
+// ─── Handle must be consumed (issue #797, conc.async/H1) ──
 //
-// `TaskHandle<T>` is `@resource` (stdlib/async.rk): `spawn(...)` must be
+// `Handle<T>` is `@resource` (stdlib/async.rk): `spawn(...)` must be
 // joined, detached, or cancelled — never silently dropped.
 
 #[test]
 fn error_task_handle_bound_but_never_consumed() {
     let output = check_output(
-        "import async.TaskHandle\n\nfunc leaky() -> i64 {\n    let h: TaskHandle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
+        "import async.Handle\n\nfunc leaky() -> i64 {\n    let h: Handle<i64> = spawn(|| { return 1 })\n    return 7\n}\nfunc main() {\n    using Multitasking {\n        let _ = leaky()\n    }\n}"
     );
     assert!(output.contains("E0805"),
-        "a TaskHandle bound but never joined/detached should be E0805 (H1): {}", output);
+        "a Handle bound but never joined/detached should be E0805 (H1): {}", output);
 }
 
 #[test]
@@ -3954,7 +3954,7 @@ fn panic_ensure_e3_first_panic_wins() {
 // guard it was reached through was R5, a pool still holding a resource,
 // and no container takes a linear value now that pools are gone: Vec, Map and
 // Rack are all compile errors (mem.resource-types/RC1-RC3). Every earlier
-// trigger went the same way — an unconsumed TaskHandle behind a `join()` is
+// trigger went the same way — an unconsumed Handle behind a `join()` is
 // mem.linear/L7. The rule stands, the path is unreachable from Rask source, and
 // rask-lang/rask#1296 tracks it.
 
@@ -4074,7 +4074,7 @@ fn thread_join_reports_value_and_panic_on_both_backends() {
         // at print time, not in a string user code prints itself. The path is
         // relative to the runner's cwd, so match the tail.
         let panicked = lines.get(2).copied().unwrap_or_default();
-        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:26: boom"),
+        assert!(panicked.starts_with("panicked ") && panicked.ends_with("thread_join_outcome.rk:24: boom"),
             "{}: a panicked task joins as JoinError.Panicked carrying file:line and its message: {:?}", mode, stdout);
         assert_eq!(lines.get(3), Some(&"still alive"), "{}: execution continues: {:?}", mode, stdout);
     }
@@ -4254,19 +4254,48 @@ fn ensure_handler_binds_a_binding_bodys_error() {
 
 #[test]
 fn panic_in_a_lock_closure_releases_the_lock() {
-    // ctrl.panic/U3–U4 + LK1: `write(|v| …)` and `try_write(|v| …)` take the
-    // lock, call the closure, then unlock — and a panic longjmps over that
-    // unlock. Nothing had registered the lock, so the unwind had nothing to
-    // release and the next acquirer blocked forever. Both of these hung.
+    // ctrl.panic/U3–U4 + LK1: `try_write(|v| …)` takes the lock, calls the
+    // closure, then unlocks — and a panic longjmps over that unlock. Nothing
+    // had registered the lock, so the unwind had nothing to release and the
+    // next acquirer blocked forever. The `with` case beside it is the blocking
+    // form, which the closure spelling used to stand in for (E0900).
     for mode in ["--interp", "--native"] {
         let (stdout, stderr, code) = run_capture(mode, "panic_closure_releases_lock.rk");
         assert_eq!(code, 0, "{}: the survivor keeps running; stderr: {}", mode, stderr);
         assert_eq!(
             stdout,
             "write panicked\ntry_write panicked\nblocking lock free\nnon-blocking lock free\n",
-            "{}: both closure forms hand the lock back", mode,
+            "{}: both the with block and the closure hand the lock back", mode,
         );
     }
+}
+
+// A real deadlock is reported instead of hanging (#1354). Every task is parked
+// and the scope's thread is waiting in `join`, so nothing can move again; the
+// scheduler says which task waits on what and ends the process. Native only:
+// the interpreter runs a task per OS thread and has no scheduler to ask.
+#[test]
+fn a_deadlock_is_reported() {
+    let rask = rask_binary();
+    let out = Command::new("timeout")
+        .arg("60")
+        .arg(&rask)
+        .args(["run", "--native"])
+        .arg(fixture("deadlock_is_reported.rk"))
+        .env("RASK_RUNTIME_DIR", runtime_dir())
+        .output()
+        .expect("failed to run rask");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(101), "should exit 101, not hang (124); stderr: {}", stderr);
+    assert!(
+        stderr.contains("deadlock: every task is waiting and nothing can wake one"),
+        "stderr: {}", stderr,
+    );
+    assert_eq!(
+        stderr.matches("waiting on channel receive").count(), 2,
+        "both tasks named with their wait; stderr: {}", stderr,
+    );
+    assert!(stderr.contains("waiting on join"), "the scope's thread too; stderr: {}", stderr);
 }
 
 // ctrl.panic/U3, U4, LK1–LK3: the locks a dying task holds get released.

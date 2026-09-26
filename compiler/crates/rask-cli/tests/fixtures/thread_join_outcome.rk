@@ -9,7 +9,6 @@ func main() {
     match ok.join() {
         i64 as v => println("value {v}"),
         JoinError.Panicked(m) => println("panicked {m}"),
-        JoinError.Cancelled => println("cancelled"),
     }
 
     // A value that used to be indistinguishable from the panic sentinel.
@@ -19,7 +18,6 @@ func main() {
     match neg.join() {
         i64 as v => println("value {v}"),
         JoinError.Panicked(m) => println("panicked {m}"),
-        JoinError.Cancelled => println("cancelled"),
     }
 
     let boom = Thread.spawn(|| {
@@ -29,7 +27,6 @@ func main() {
     match boom.join() {
         i64 as v => println("value {v}"),
         JoinError.Panicked(m) => println("panicked {m}"),
-        JoinError.Cancelled => println("cancelled"),
     }
 
     println("still alive")

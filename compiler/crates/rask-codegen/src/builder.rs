@@ -261,14 +261,15 @@ enum CallAdapt {
     /// A payload with its own storage binds the destination to the pointer, so
     /// the block's writes land in the box; a word-sized one takes a load.
     BoxPayloadPtr,
-    /// Receiver.try_recv: call returned a channel status; the payload was
-    /// written into the given slot. Build a `T or E` Result in dst —
-    /// status==OK → Ok(payload of `elem_size` bytes), else → Err.
-    /// The bool says whether a closed channel is a distinct error variant.
-    /// `try_receive` answers `TryReceiveError` — Empty(0) or Closed(1) — and
-    /// stored a bare tag with no variant, so a drained closed channel reported
-    /// "channel is empty" (#1067). `receive`'s `ReceiveError` has one variant.
-    TryRecvResult(StackSlot, u32, bool),
+    /// A receive: call returned a channel status; the payload was written
+    /// into the given slot. Build a `T or E` Result in dst — status==OK →
+    /// Ok(payload of `elem_size` bytes), else Err of the variant the status
+    /// names. A bare tag once reported a drained closed channel as "channel is
+    /// empty" (#1067).
+    TryRecvResult(StackSlot, u32),
+    /// The call returned a status (RetAdapt::Status). Build a `void or E`
+    /// from it: a send, a sleep.
+    Status,
     /// parse: the call returned 0/1; the value was written into the given slot.
     /// Build a `T or ParseError` — status==0 → Ok(value), else Err.
     /// Carries (slot, type the runtime wrote, type the destination wants).
@@ -293,6 +294,11 @@ const IO_ERROR_UNEXPECTED_EOF: i64 = 6;
 /// `RASK_JOIN_*` defines in runtime/rask_runtime.h.
 const RASK_JOIN_OK: i64 = 0;
 const RASK_JOIN_PANICKED: i64 = 1;
+
+/// Channel statuses a receive or send can fail with. Mirrors the
+/// `RASK_CHAN_*` defines in runtime/rask_runtime.h.
+const RASK_CHAN_EMPTY: i64 = -3;
+const RASK_CHAN_CANCELLED: i64 = -4;
 
 /// How a string-out-param call ended, as the runtime reports it. Mirrors the
 /// `RASK_STROUT_*` defines in runtime/rask_runtime.h.
@@ -764,12 +770,18 @@ impl<'a> FunctionBuilder<'a> {
                 None
             };
 
+            // Targets resolve to this chain's copies first. A cleanup block's
+            // terminator goes through the same lowering as any other block's,
+            // so a `switch` in an inlined `match` is a switch here too.
+            let mut cleanup_targets = self.block_map.clone();
+            cleanup_targets.extend(cleanup_block_map.iter().map(|(k, v)| (*k, *v)));
             let cleanup_ctx = CodegenCtx {
                 source_file: None,
                 line_map: None,
                 current_line: 0,
                 current_col: 0,
                 current_span_start: 0,
+                block_map: &cleanup_targets,
                 ..ctx
             };
 
@@ -786,102 +798,20 @@ impl<'a> FunctionBuilder<'a> {
                 continue;
             }
 
-            // Process each cleanup block in the chain as a real CFG.
-            // Unreachable sentinels → jump to next chain block or return.
-            for (i, block_id) in chain.iter().enumerate() {
-                let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == *block_id) else {
-                    continue;
-                };
-                let Some(&cl_block) = cleanup_block_map.get(block_id) else {
-                    continue;
-                };
-
-                builder.switch_to_block(cl_block);
-
-                // Lower statements
-                for stmt in &mir_block.statements {
-                    Self::lower_stmt(&mut builder, stmt, &cleanup_ctx)?;
-                }
-
-                // Lower terminator — Unreachable means "continue chain or return"
-                match &mir_block.terminator.kind {
-                    MirTerminatorKind::Unreachable => {
-                        // End of this ensure's sub-CFG. Jump to next chain block or return.
-                        if let Some(next_bid) = chain.get(i + 1) {
-                            if let Some(&next_cl) = cleanup_block_map.get(next_bid) {
-                                builder.ins().jump(next_cl, &[]);
-                            } else if let Some(val) = ret_param {
-                                builder.ins().return_(&[val]);
-                            } else {
-                                builder.ins().return_(&[]);
-                            }
-                        } else if let Some(val) = ret_param {
-                            builder.ins().return_(&[val]);
-                        } else {
-                            builder.ins().return_(&[]);
-                        }
-                    }
-                    MirTerminatorKind::Branch { cond, then_block, else_block } => {
-                        let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;
-                        let actual_ty = builder.func.dfg.value_type(cond_val);
-                        let cond_final = if actual_ty != types::I8 {
-                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8, None)
-                        } else {
-                            cond_val
-                        };
-                        let then_cl = cleanup_block_map.get(then_block).copied()
-                            .unwrap_or_else(|| builder.create_block());
-                        let else_cl = cleanup_block_map.get(else_block).copied()
-                            .unwrap_or_else(|| builder.create_block());
-                        builder.ins().brif(cond_final, then_cl, &[], else_cl, &[]);
-                    }
-                    MirTerminatorKind::Goto { target } => {
-                        // Cleanup blocks first, then the main map. A target in
-                        // neither would leave this block with no terminator,
-                        // which Cranelift rejects with a message that says
-                        // nothing about where it came from — so say it here.
-                        let tgt = cleanup_block_map.get(target)
-                            .or_else(|| self.block_map.get(target))
-                            .copied()
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(format!(
-                                "cleanup block jumps to {:?}, which has no Cranelift block",
-                                target,
-                            )))?;
-                        builder.ins().jump(tgt, &[]);
-                    }
-                    _ => {
-                        // Other terminators in cleanup blocks: treat as return
-                        if let Some(val) = ret_param {
-                            builder.ins().return_(&[val]);
-                        } else {
-                            builder.ins().return_(&[]);
-                        }
-                    }
-                }
-            }
-
-            // Process sub-blocks (handler blocks, done blocks) that aren't
-            // in the chain but are reachable from chain blocks.
-            let chain_set: HashSet<BlockId> = chain.iter().copied().collect();
-            for &bid in &used {
-                if chain_set.contains(&bid) {
-                    continue; // Already processed above
-                }
-                // Only process sub-blocks reachable from THIS chain's blocks
-                let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == bid) else {
-                    continue;
-                };
-                let Some(&cl_block) = cleanup_block_map.get(&bid) else {
-                    continue;
-                };
-
-                // Check if this sub-block is reachable from any block in THIS chain
-                let reachable = chain.iter().any(|chain_bid| {
+            // Which chain member each used block hangs off: the member itself,
+            // or the first one it's reachable from. An `Unreachable` ends that
+            // member's sub-CFG and continues with the next member.
+            let owner_of = |bid: BlockId| -> Option<usize> {
+                chain.iter().position(|cid| {
                     let mut visited = HashSet::new();
-                    let mut queue = vec![*chain_bid];
+                    let mut queue = vec![*cid];
                     while let Some(qid) = queue.pop() {
-                        if qid == bid { return true; }
-                        if !visited.insert(qid) { continue; }
+                        if qid == bid {
+                            return true;
+                        }
+                        if !visited.insert(qid) {
+                            continue;
+                        }
                         if let Some(qb) = self.mir_fn.blocks.iter().find(|b| b.id == qid) {
                             for succ in rask_mir::analysis::cfg::successors(&qb.terminator) {
                                 if cleanup_only.contains(&succ) {
@@ -891,8 +821,31 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                     false
-                });
-                if !reachable { continue; }
+                })
+            };
+
+            // Chain members in order, then the sub-blocks hanging off them.
+            let chain_set: HashSet<BlockId> = chain.iter().copied().collect();
+            let mut order: Vec<BlockId> = chain.clone();
+            let mut rest: Vec<BlockId> =
+                used.iter().copied().filter(|b| !chain_set.contains(b)).collect();
+            rest.sort_by_key(|b| b.0);
+            order.extend(rest);
+
+            for bid in order {
+                let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == bid) else {
+                    continue;
+                };
+                let Some(&cl_block) = cleanup_block_map.get(&bid) else {
+                    continue;
+                };
+                let owner = match chain.iter().position(|c| *c == bid) {
+                    Some(i) => i,
+                    None => match owner_of(bid) {
+                        Some(i) => i,
+                        None => continue,
+                    },
+                };
 
                 builder.switch_to_block(cl_block);
                 for stmt in &mir_block.statements {
@@ -900,74 +853,39 @@ impl<'a> FunctionBuilder<'a> {
                 }
 
                 match &mir_block.terminator.kind {
+                    // End of this ensure's sub-CFG: the next chain member, or
+                    // the function's own return once the chain is done.
                     MirTerminatorKind::Unreachable => {
-                        // End of sub-CFG — jump to next chain block or return.
-                        // Find which chain block this sub-block belongs to.
-                        let chain_idx = chain.iter().position(|cid| {
-                            let mut visited = HashSet::new();
-                            let mut queue = vec![*cid];
-                            while let Some(qid) = queue.pop() {
-                                if qid == bid { return true; }
-                                if !visited.insert(qid) { continue; }
-                                if let Some(qb) = self.mir_fn.blocks.iter().find(|b| b.id == qid) {
-                                    for succ in rask_mir::analysis::cfg::successors(&qb.terminator) {
-                                        if cleanup_only.contains(&succ) {
-                                            queue.push(succ);
-                                        }
-                                    }
-                                }
-                            }
-                            false
-                        });
-                        let next_chain_idx = chain_idx.map(|i| i + 1);
-                        if let Some(next_bid) = next_chain_idx.and_then(|i| chain.get(i)) {
-                            if let Some(&next_cl) = cleanup_block_map.get(next_bid) {
+                        match chain.get(owner + 1).and_then(|n| cleanup_block_map.get(n)) {
+                            Some(&next_cl) => {
                                 builder.ins().jump(next_cl, &[]);
-                            } else if let Some(val) = ret_param {
+                            }
+                            None => match ret_param {
+                                Some(val) => {
+                                    builder.ins().return_(&[val]);
+                                }
+                                None => {
+                                    builder.ins().return_(&[]);
+                                }
+                            },
+                        }
+                    }
+                    // Leaving from inside a cleanup returns what the function
+                    // was already returning.
+                    MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => {
+                        match ret_param {
+                            Some(val) => {
                                 builder.ins().return_(&[val]);
-                            } else {
+                            }
+                            None => {
                                 builder.ins().return_(&[]);
                             }
-                        } else if let Some(val) = ret_param {
-                            builder.ins().return_(&[val]);
-                        } else {
-                            builder.ins().return_(&[]);
                         }
-                    }
-                    MirTerminatorKind::Goto { target } => {
-                        // Cleanup blocks first, then the main map. A target in
-                        // neither would leave this block with no terminator,
-                        // which Cranelift rejects with a message that says
-                        // nothing about where it came from — so say it here.
-                        let tgt = cleanup_block_map.get(target)
-                            .or_else(|| self.block_map.get(target))
-                            .copied()
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(format!(
-                                "cleanup block jumps to {:?}, which has no Cranelift block",
-                                target,
-                            )))?;
-                        builder.ins().jump(tgt, &[]);
-                    }
-                    MirTerminatorKind::Branch { cond, then_block, else_block } => {
-                        let cond_val = Self::lower_operand_typed(&mut builder, cond, Some(types::I8), &cleanup_ctx)?;
-                        let actual_ty = builder.func.dfg.value_type(cond_val);
-                        let cond_final = if actual_ty != types::I8 {
-                            Self::convert_value(&mut builder, cond_val, actual_ty, types::I8, None)
-                        } else {
-                            cond_val
-                        };
-                        let then_cl = cleanup_block_map.get(then_block).copied()
-                            .unwrap_or_else(|| builder.create_block());
-                        let else_cl = cleanup_block_map.get(else_block).copied()
-                            .unwrap_or_else(|| builder.create_block());
-                        builder.ins().brif(cond_final, then_cl, &[], else_cl, &[]);
                     }
                     _ => {
-                        if let Some(val) = ret_param {
-                            builder.ins().return_(&[val]);
-                        } else {
-                            builder.ins().return_(&[]);
-                        }
+                        Self::lower_terminator(
+                            &mut builder, &mir_block.terminator, &cleanup_ctx, &cleanup_chain_blocks,
+                        )?;
                     }
                 }
             }
@@ -1051,42 +969,38 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // ── Resource tracking ──────────────────────────────────────
-            // Calls C runtime functions for runtime must-consume checks.
+            // Whether an `ensure`'s value was consumed on the way out. The flag
+            // lives in the frame that owns the value: the token is the address
+            // of an 8-byte slot, and the ensure thunk captures that address, so
+            // a panic unwinding the frame reads the live flag. It used to be an
+            // index into one process-wide 256-entry table that never recycled
+            // an index, so from the 256th `ensure` on every value read as "not
+            // consumed" and its cleanup ran a second time (a `detach` after
+            // `join`, a `close` after `close`).
 
-            MirStmtKind::ResourceRegister { dst, scope_depth, .. } => {
-                // rask_resource_register(scope_depth) → resource_id
-                let func_ref = ctx.func_refs.get("rask_resource_register")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_register".to_string()))?;
-                let depth_val = builder.ins().iconst(types::I64, *scope_depth as i64);
-                let call_inst = builder.ins().call(*func_ref, &[depth_val]);
-
-                let results = builder.inst_results(call_inst);
-                if !results.is_empty() {
-                    let var = ctx.var_map.get(dst)
-                        .ok_or_else(|| CodegenError::UnsupportedFeature(
-                            "Resource register destination not found".to_string()
-                        ))?;
-                    builder.def_var(*var, results[0]);
-                }
+            MirStmtKind::ResourceRegister { dst, .. } => {
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    8,
+                    3,
+                ));
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.ins().stack_store(zero, slot, 0);
+                let addr = builder.ins().stack_addr(types::I64, slot, 0);
+                let var = ctx.var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "Resource register destination not found".to_string()
+                    ))?;
+                builder.def_var(*var, addr);
             }
 
             MirStmtKind::ResourceConsume { resource_id } => {
-                // rask_resource_consume(resource_id)
-                let func_ref = ctx.func_refs.get("rask_resource_consume")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_consume".to_string()))?;
-                let id_val = builder.use_var(*ctx.var_map.get(resource_id)
+                let addr = builder.use_var(*ctx.var_map.get(resource_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Resource ID variable not found".to_string()
                     ))?);
-                builder.ins().call(*func_ref, &[id_val]);
-            }
-
-            MirStmtKind::ResourceScopeCheck { scope_depth } => {
-                // rask_resource_scope_check(scope_depth)
-                let func_ref = ctx.func_refs.get("rask_resource_scope_check")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_scope_check".to_string()))?;
-                let depth_val = builder.ins().iconst(types::I64, *scope_depth as i64);
-                builder.ins().call(*func_ref, &[depth_val]);
+                let one = builder.ins().iconst(types::I64, 1);
+                builder.ins().store(MemFlags::trusted(), one, addr, 0);
             }
 
             // ── Cleanup stack ──────────────────────────────────────────
@@ -5649,9 +5563,9 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     ptr
                 }
-                CallAdapt::TryRecvResult(payload_ss, elem_size, closed_is_own_variant) => {
+                CallAdapt::TryRecvResult(payload_ss, elem_size) => {
                     // Channel status → `T or E` Result. status==OK(0) →
-                    // Ok(payload); anything else (EMPTY/CLOSED) → Err.
+                    // Ok(payload); anything else → Err.
                     let results = builder.inst_results(call_inst);
                     let status = if !results.is_empty() { results[0] } else {
                         builder.ins().iconst(types::I64, crate::layouts::TAG_OFFSET as i64)
@@ -5674,18 +5588,39 @@ impl<'a> FunctionBuilder<'a> {
                         );
                         builder.ins().jump(merge_block, &[]);
 
-                        // Err(variant). The payload is the error enum's own
-                        // discriminant: `TryReceiveError` is Empty(0) or
-                        // Closed(1), and the channel reports CLOSED as -1.
                         builder.switch_to_block(err_block);
                         builder.seal_block(err_block);
-                        let variant = if closed_is_own_variant {
-                            let closed = builder.ins().iconst(types::I64, -1);
-                            let is_closed = builder.ins().icmp(IntCC::Equal, status, closed);
-                            builder.ins().uextend(types::I64, is_closed)
-                        } else {
-                            builder.ins().iconst(types::I64, 0)
-                        };
+                        let variant = Self::chan_error_variant(builder, status, dst_id, ctx);
+                        Self::build_err(builder, dst_ss, variant);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(merge_block);
+                        builder.seal_block(merge_block);
+                    }
+                    builder.ins().iconst(types::I64, 0)
+                }
+                CallAdapt::Status => {
+                    let results = builder.inst_results(call_inst);
+                    let status = if !results.is_empty() { results[0] } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id).copied() {
+                        slot_already_written = true;
+                        let zero = builder.ins().iconst(types::I64, 0);
+                        let is_ok = builder.ins().icmp(IntCC::Equal, status, zero);
+                        let ok_block = builder.create_block();
+                        let err_block = builder.create_block();
+                        let merge_block = builder.create_block();
+                        builder.ins().brif(is_ok, ok_block, &[], err_block, &[]);
+
+                        builder.switch_to_block(ok_block);
+                        builder.seal_block(ok_block);
+                        Self::build_ok(builder, dst_ss, zero);
+                        builder.ins().jump(merge_block, &[]);
+
+                        builder.switch_to_block(err_block);
+                        builder.seal_block(err_block);
+                        let variant = Self::chan_error_variant(builder, status, dst_id, ctx);
                         Self::build_err(builder, dst_ss, variant);
                         builder.ins().jump(merge_block, &[]);
 
@@ -7000,6 +6935,37 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Err(scalar) into a Result slot (origin zeroed — no source location here).
+    /// A variant's tag in the error enum `dst` carries, found by name so the
+    /// order the stdlib declares them in doesn't matter.
+    fn err_variant_tag(dst_id: &LocalId, name: &str, ctx: &CodegenCtx) -> Option<i64> {
+        let local = ctx.locals.iter().find(|l| l.id == *dst_id)?;
+        let MirType::Result { err, .. } = &local.ty else { return None };
+        let MirType::Enum(id) = err.as_ref() else { return None };
+        let layout = ctx.enum_layouts.get(id.id as usize)?;
+        layout.variants.iter().find(|v| v.name == name).map(|v| v.tag as i64)
+    }
+
+    /// Which error variant a failed channel status is: EMPTY, CLOSED or
+    /// CANCELLED (runtime/rask_runtime.h), each looked up by name.
+    fn chan_error_variant(
+        builder: &mut ClifFunctionBuilder,
+        status: Value,
+        dst_id: &LocalId,
+        ctx: &CodegenCtx,
+    ) -> Value {
+        let tag = |name: &str| Self::err_variant_tag(dst_id, name, ctx).unwrap_or(0);
+        let mut variant = builder.ins().iconst(types::I64, tag("Closed"));
+        for (code, name) in [(RASK_CHAN_EMPTY, "Empty"), (RASK_CHAN_CANCELLED, "Cancelled")] {
+            if Self::err_variant_tag(dst_id, name, ctx).is_none() {
+                continue;
+            }
+            let is = builder.ins().icmp_imm(IntCC::Equal, status, code);
+            let this = builder.ins().iconst(types::I64, tag(name));
+            variant = builder.ins().select(is, this, variant);
+        }
+        variant
+    }
+
     fn build_err(builder: &mut ClifFunctionBuilder, slot: StackSlot, payload: Value) {
         let tag = builder.ins().iconst(types::I64, 1);
         builder.ins().stack_store(tag, slot, crate::layouts::TAG_OFFSET);
@@ -7093,7 +7059,7 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Assemble a `T or JoinError` from what the runtime reported.
     ///
-    /// `outcome` is RASK_JOIN_OK / _PANICKED / _CANCELLED; `value_ss` holds the
+    /// `outcome` is RASK_JOIN_OK / _PANICKED; `value_ss` holds the
     /// task's return value and `msg_ss` a 16-byte RaskStr (empty unless it
     /// panicked). The JoinError variant tags and its message field's offset come
     /// from the destination's own error layout, so renaming or reordering the
@@ -7227,6 +7193,11 @@ impl<'a> FunctionBuilder<'a> {
         // field counts as much as a `Heap<Record>` does.
         if crate::elem_offsets::is_heap_field(ty) {
             return true;
+        }
+        if let Some(named) =
+            crate::elem_offsets::generic_as_layout(ty, ctx.struct_layouts, ctx.enum_layouts)
+        {
+            return Self::holds_string_ty(&named, ctx, depth);
         }
         match ty {
             RaskType::String => true,
@@ -7404,6 +7375,11 @@ impl<'a> FunctionBuilder<'a> {
         // as a name, and what is inside the block is the runtime's to walk.
         if crate::elem_offsets::is_heap_field(ty) {
             return Self::emit_heap_field_release(builder, base, offset, ty, ctx);
+        }
+        if let Some(named) =
+            crate::elem_offsets::generic_as_layout(ty, ctx.struct_layouts, ctx.enum_layouts)
+        {
+            return Self::release_strings_ty(builder, base, offset, &named, ctx, depth);
         }
         match ty {
             RaskType::String => Self::emit_string_release(builder, base, offset, ctx),
@@ -7755,12 +7731,9 @@ impl<'a> FunctionBuilder<'a> {
                 .unwrap_or((fallback, 8))
         };
         let (panicked_tag, msg_offset) = variant("Panicked", 0);
-        let (cancelled_tag, _) = variant("Cancelled", 1);
 
         let ok_block = builder.create_block();
         let fail_block = builder.create_block();
-        let panicked_block = builder.create_block();
-        let cancelled_block = builder.create_block();
         let merge_block = builder.create_block();
 
         let ok_code = builder.ins().iconst(types::I64, RASK_JOIN_OK);
@@ -7783,7 +7756,7 @@ impl<'a> FunctionBuilder<'a> {
         if boxed {
             // The task handed back an address. Copy through it — nothing in the
             // slot survives the callee otherwise — and then free it: joining
-            // takes ownership of the box, which `rask_green_join` transfers by
+            // takes ownership of the box, which `rask_handle_join` transfers by
             // clearing the task's own reference. Without the free this leaked
             // one allocation per task, about 80 bytes, which no assertion can
             // see (#963).
@@ -7807,9 +7780,9 @@ impl<'a> FunctionBuilder<'a> {
         let err_tag = builder.ins().iconst(types::I64, 1);
         builder.ins().stack_store(err_tag, dst_ss, crate::layouts::TAG_OFFSET);
         Self::zero_result_origin(builder, dst_ss);
-        // The message slot is a valid string either way — empty for Cancelled —
-        // so copy it before the split. A Cancelled left with an uninitialized
-        // 16 bytes there would be freed as if it were a heap string.
+        // The only way a join fails is a panic: JoinError.Panicked(msg).
+        let v = builder.ins().iconst(types::I64, panicked_tag);
+        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
         let src = builder.ins().stack_addr(types::I64, msg_ss, 0);
         let dst_addr = builder.ins().stack_addr(types::I64, dst_ss, 0);
         Self::copy_bytes(
@@ -7817,20 +7790,6 @@ impl<'a> FunctionBuilder<'a> {
             crate::layouts::RESULT_PAYLOAD_OFFSET + msg_offset,
             crate::layouts::STRING_SIZE as u32,
         );
-        let panicked_code = builder.ins().iconst(types::I64, RASK_JOIN_PANICKED);
-        let is_panicked = builder.ins().icmp(IntCC::Equal, outcome, panicked_code);
-        builder.ins().brif(is_panicked, panicked_block, &[], cancelled_block, &[]);
-
-        builder.switch_to_block(panicked_block);
-        builder.seal_block(panicked_block);
-        let v = builder.ins().iconst(types::I64, panicked_tag);
-        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
-        builder.ins().jump(merge_block, &[]);
-
-        builder.switch_to_block(cancelled_block);
-        builder.seal_block(cancelled_block);
-        let v = builder.ins().iconst(types::I64, cancelled_tag);
-        builder.ins().stack_store(v, dst_ss, crate::layouts::RESULT_PAYLOAD_OFFSET);
         builder.ins().jump(merge_block, &[]);
 
         builder.switch_to_block(merge_block);
@@ -8537,6 +8496,7 @@ impl<'a> FunctionBuilder<'a> {
             // keyed off the entry's RetAdapt::NegErr — arg handling is untouched.
             RetAdapt::NegErr | RetAdapt::NegNone => call_adapt,
             RetAdapt::BoxPayloadPtr => CallAdapt::BoxPayloadPtr,
+            RetAdapt::Status => CallAdapt::Status,
         }
     }
 
@@ -8764,7 +8724,8 @@ impl<'a> FunctionBuilder<'a> {
                         args[1] = Self::value_to_ptr(builder, val);
                     }
                 }
-                CallAdapt::None
+                // Custom entries return before `ret_adapt` is read.
+                CallAdapt::Status
             }
 
             // Both receives take the value through a buffer of the element's
@@ -8782,7 +8743,7 @@ impl<'a> FunctionBuilder<'a> {
                 ));
                 let addr = builder.ins().stack_addr(types::I64, ss, 0);
                 if args.len() >= 2 { args[1] = addr; } else { args.push(addr); }
-                CallAdapt::TryRecvResult(ss, elem_size, func_name == "Receiver_try_receive")
+                CallAdapt::TryRecvResult(ss, elem_size)
             }
 
             _ => CallAdapt::None,

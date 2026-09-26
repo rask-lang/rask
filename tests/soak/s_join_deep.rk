@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Forty levels of spawn-and-join on one worker.
+//
+// Every level blocks in `join` until the one below it finishes. A worker that
+// blocks stops being able to run anything, so today each level costs an OS
+// thread (#1130's replacement), and past 32 of them the runtime aborts with its
+// deadlock report. A parked task costs its stack and gives the worker back.
+//
+// soak-expect: 40
+
+import async.spawn
+
+func spin(n: i64) -> i64 {
+    mut i: i64 = 0
+    mut t: i64 = 0
+    while i < n {
+        t = t + (i % 3)
+        i = i + 1
+    }
+    return t
+}
+
+func level(n: i64) -> i64 {
+    if n == 0 {
+        // Holds the whole chain blocked long enough for the sampler to see it.
+        let _ = spin(20000000)
+        return 0
+    }
+    let h = spawn(|| { return level(n - 1) })
+    ensure h.detach()
+    let below = h.join() catch e => { return -1000 }
+    return below + 1
+}
+
+func main() {
+    using Multitasking(workers: 1) {
+        let top = spawn(|| { return level(39) })
+        ensure top.detach()
+        let r = top.join() catch e => { return }
+        println("{r + 1}")
+    }
+}

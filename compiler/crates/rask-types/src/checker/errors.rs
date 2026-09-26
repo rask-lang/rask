@@ -268,6 +268,11 @@ pub enum TypeError {
         recv: String,
         span: Span,
     },
+    #[error("`{method}` on a `Shared` doesn't take a closure")]
+    SharedAccessClosure {
+        method: String,
+        span: Span,
+    },
     #[error("`{name}` is not a type any more — it's a strategy on `Shared`")]
     RetiredBoxType {
         name: String,
@@ -768,6 +773,15 @@ pub enum TypeError {
     #[error("this `Shared` is task-local and cannot be sent")]
     LocalSharedSent {
         name: String,
+        span: Span,
+    },
+
+    /// mem.ownership/T2: a value carrying a `Link` captured by `spawn`. A link
+    /// is a node's address; two tasks holding it would both write the node.
+    #[error("`{name}` holds a link, which can't go to another task")]
+    LinkSent {
+        name: String,
+        ty: Type,
         span: Span,
     },
 
@@ -1485,7 +1499,9 @@ impl TypeError {
             | MutateReadOnlyParam { .. }
             | MutateConst { .. }
             | RetiredBoxType { .. }
+            | SharedAccessClosure { .. }
             | LocalSharedSent { .. }
+            | LinkSent { .. }
             | SharedStrategyMismatch { .. }
             | NonOptionalLink { .. }
             | RecursiveTypeHasNoSize { .. }

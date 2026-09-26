@@ -7,10 +7,10 @@
 //! the method is registered but not implemented — that's a bug.
 
 use indexmap::IndexMap;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::interp::Interpreter;
-use crate::value::{FloatKind, ModuleKind, ThreadHandleInner, Value};
+use crate::value::{FloatKind, ModuleKind, HandleInner, Value};
 
 /// Construct a minimal dummy value for a given type name.
 /// Only needs to route to the right dispatch — doesn't need valid data.
@@ -88,23 +88,18 @@ fn dummy_value(type_name: &str) -> Value {
             IndexMap::new(),
             None,
         ),
-        "ThreadHandle" => Value::ThreadHandle(Arc::new(ThreadHandleInner {
+        "Handle" => Value::Handle(Arc::new(HandleInner {
             handle: Mutex::new(None),
-            receiver: Mutex::new(None),
-            task_id: crate::value::next_task_id(),
-        })),
-        "TaskHandle" => Value::TaskHandle(Arc::new(ThreadHandleInner {
-            handle: Mutex::new(None),
-            receiver: Mutex::new(None),
+            cancel: Default::default(),
             task_id: crate::value::next_task_id(),
         })),
         "Sender" => {
-            let (tx, _rx) = mpsc::sync_channel(1);
-            Value::Sender(Arc::new(Mutex::new(tx)))
+            let (tx, _rx) = crate::chan::Chan::pair(1);
+            Value::Sender(tx)
         }
         "Receiver" => {
-            let (_tx, rx) = mpsc::sync_channel(1);
-            Value::Receiver(Arc::new(Mutex::new(rx)))
+            let (_tx, rx) = crate::chan::Chan::pair(1);
+            Value::Receiver(rx)
         }
         "Shared" => Value::Shared(Arc::new(RwLock::new(Value::Unit))),
         "Mutex" => Value::RaskMutex(Arc::new(Mutex::new(Value::Unit))),

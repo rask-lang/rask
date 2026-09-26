@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `T or E` match covers `E` by naming it, or by an arm for each of its
+// variants. The variant arms didn't count: `Fault.Slow(ms)` covered nothing,
+// so a one-variant error enum could only be matched with a wildcard. And a
+// fieldless `Fault.Lost` read as a catch-all binding, so one such arm made any
+// match look exhaustive.
+
+enum Fault {
+    Slow(i64)
+    Lost
+}
+
+enum Only {
+    Case(i64)
+}
+
+// Fine: every variant has an arm.
+func all_variants(r: i64 or Fault) -> i64 {
+    match r {
+        i64 as v => { return v },
+        Fault.Slow(ms) => { return ms },
+        Fault.Lost => { return 0 },
+    }
+}
+
+// Fine: the only variant.
+func the_only_one(r: i64 or Only) -> i64 {
+    match r {
+        i64 as v => { return v },
+        Only.Case(x) => { return x },
+    }
+}
+
+func one_missing(r: i64 or Fault) -> i64 {
+    // ERROR: E0340
+    match r {
+        i64 as v => { return v },
+        Fault.Lost => { return 0 },
+    }
+}
+
+func main() {}

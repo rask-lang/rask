@@ -3,7 +3,7 @@
 //!
 //! Layer: PURE — no OS access, can be compiled from Rask.
 
-use std::sync::{Arc, Mutex, RwLock, mpsc};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::ptr::RawPtr;
@@ -499,7 +499,7 @@ impl Interpreter {
                         .filter(|ty| {
                             self.methods.get(ty)
                                 .and_then(|ms| ms.get("compare"))
-                                .is_some_and(|f| !f.body.is_empty())
+                                .is_some_and(|f| !f.body_lives_elsewhere())
                         })
                 };
                 let items: Vec<Value> = v.lock().unwrap().items.clone();
@@ -1243,19 +1243,13 @@ impl Interpreter {
             }
             (TypeConstructorKind::Channel, "buffered") => {
                 let cap = self.expect_int(&args, 0)? as usize;
-                let (tx, rx) = mpsc::sync_channel::<Value>(cap);
-                let tuple = vec![
-                    Value::Sender(Arc::new(Mutex::new(tx))),
-                    Value::Receiver(Arc::new(Mutex::new(rx))),
-                ];
+                let (tx, rx) = crate::chan::Chan::pair(cap);
+                let tuple = vec![Value::Sender(tx), Value::Receiver(rx)];
                 Ok(Value::vec(tuple))
             }
             (TypeConstructorKind::Channel, "unbuffered") => {
-                let (tx, rx) = mpsc::sync_channel::<Value>(0);
-                let tuple = vec![
-                    Value::Sender(Arc::new(Mutex::new(tx))),
-                    Value::Receiver(Arc::new(Mutex::new(rx))),
-                ];
+                let (tx, rx) = crate::chan::Chan::pair(0);
+                let tuple = vec![Value::Sender(tx), Value::Receiver(rx)];
                 Ok(Value::vec(tuple))
             }
             (TypeConstructorKind::Map, "new") => {
@@ -1382,9 +1376,6 @@ impl Interpreter {
                     fields: vec![],
                     variant_index: 0, origin: None,
                 })
-            }
-            (TypeConstructorKind::TaskGroup, "new") => {
-                Ok(Value::TaskGroup(Arc::new(Mutex::new(Vec::new()))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: format!("{:?}", kind),

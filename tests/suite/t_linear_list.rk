@@ -1,0 +1,223 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A group of linear values written in plain Rask: a list built from an enum
+// and `Heap`, drained by a loop. It's how `Handles` is written, and the
+// shape anyone holding a run-time count of resources reaches for. Each piece
+// was broken somewhere:
+//
+//   - `Heap(rest)` didn't move `rest`, so the list still owed it
+//   - `mut rest = self.conns` was a "mutable view" error, though a linear
+//     field can only be moved out
+//   - `match rest` then `rest = *next` read as no commitment (L7), and the
+//     `break` that ends the drain didn't count as consuming `rest`
+//   - the interpreter reported a resource made in a method and stored into
+//     `mutate self` as leaked when the method returned
+//   - native sized a generic list inside a generic struct as one word, and
+//     didn't know a generic `take self` method cancels the `ensure`
+//   - `Vec.reverse` swapped through a 16-byte buffer, and `T or E` is wider
+
+import memory.Heap
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) -> i64 {
+        return self.id
+    }
+}
+
+enum Conns {
+    Empty
+    More(Conn, Heap<Conns>)
+}
+
+@resource
+struct Pool {
+    conns: Conns
+}
+
+extend Pool {
+    func new() -> Pool {
+        return Pool { conns: Conns.Empty }
+    }
+
+    func add(mutate self, take c: Conn) {
+        self.conns = Conns.More(c, Heap(self.conns))
+    }
+
+    // Made here, kept by the caller's pool.
+    func open(mutate self, id: i64) {
+        self.conns = Conns.More(Conn { id }, Heap(self.conns))
+    }
+
+    func close_all(take self) -> Vec<i64> {
+        mut ids: Vec<i64> = Vec.new()
+        mut rest = self.conns
+        loop {
+            match rest {
+                Conns.Empty => break
+                Conns.More(c, next) => {
+                    ids.push(c.close())
+                    rest = *next
+                }
+            }
+        }
+        return ids
+    }
+}
+
+// Generic: a connection and a tag of any type per node. `Named<string>`'s
+// nodes are wider than the shared layout, so native needs the instance one.
+enum Tagged<T> {
+    Empty
+    More(Conn, T, Heap<Tagged<T>>)
+}
+
+@resource
+struct Named<T> {
+    items: Tagged<T>
+    count: i64
+}
+
+extend Named<T> {
+    func new() -> Named<T> {
+        return Named { items: Tagged.Empty, count: 0 }
+    }
+
+    func add(mutate self, take c: Conn, take tag: T) {
+        self.items = Tagged.More(c, tag, Heap(self.items))
+        self.count += 1
+    }
+
+    func close_all(take self) -> Vec<T> {
+        mut tags: Vec<T> = Vec.new()
+        mut rest = self.items
+        loop {
+            match rest {
+                Tagged.Empty => break
+                Tagged.More(c, tag, next) => {
+                    c.close()
+                    tags.push(tag)
+                    rest = *next
+                }
+            }
+        }
+        tags.reverse()
+        return tags
+    }
+}
+
+test "a pool of resources, added and made in place" {
+    mut p = Pool.new()
+    ensure p.close_all()
+    p.add(Conn { id: 1 })
+    mut i = 2
+    while i <= 4 {
+        let c = Conn { id: i }
+        p.add(c)
+        i += 1
+    }
+    p.open(5)
+    let ids = p.close_all()
+    assert ids.len() == 5
+    assert ids[0] == 5
+    assert ids[4] == 1
+}
+
+test "a generic group closes in add order" {
+    mut g: Named<string> = Named.new()
+    ensure g.close_all()
+    g.add(Conn { id: 1 }, "a")
+    g.add(Conn { id: 2 }, "b")
+    g.add(Conn { id: 3 }, "c")
+    assert g.count == 3
+    let tags = g.close_all()
+    assert tags.len() == 3
+    assert tags[0] == "a"
+    assert tags[2] == "c"
+}
+
+test "an empty pool closes to nothing" {
+    let p = Pool.new()
+    assert p.close_all().len() == 0
+}
+
+struct Wide {
+    a: i64
+    b: i64
+    c: i64
+}
+
+test "reverse moves elements wider than 16 bytes" {
+    mut v: Vec<Wide> = Vec.new()
+    mut i = 0
+    while i < 5 {
+        v.push(Wide { a: i, b: i * 10, c: i * 100 })
+        i += 1
+    }
+    v.reverse()
+    assert v[0].a == 4
+    assert v[0].c == 400
+    assert v[4].b == 0
+    assert v[2].c == 200
+}
+
+// Its derived `message()` borrows `self`, so the arms' bindings owe nothing.
+// This enum failed to compile with E0805 at line 1, used or not.
+enum Slot {
+    Empty
+    Full(Conn)
+}
+
+func finish(take s: Slot) -> i64 {
+    match s {
+        Slot.Empty => {
+            return 0
+        }
+        Slot.Full(c) => {
+            return c.close()
+        }
+    }
+}
+
+test "an enum carrying a resource gets a message" {
+    let s = Slot.Full(Conn { id: 3 })
+    ensure finish(s)
+    assert s.message().starts_with("full: Conn")
+}
+
+// A consuming call that loops over a `match`, run by an `ensure` at scope
+// exit. Inlined into the cleanup path, the `match`'s switch was lowered as a
+// return, so the drain stopped at its first node: nothing closed, every node
+// leaked, and the scope exited quietly.
+extend Pool {
+    func close_into(take self, mutate ids: Vec<i64>) {
+        mut rest = self.conns
+        loop {
+            match rest {
+                Conns.Empty => break
+                Conns.More(c, next) => {
+                    ids.push(c.close())
+                    rest = *next
+                }
+            }
+        }
+    }
+}
+
+func fill_and_leave(mutate ids: Vec<i64>) {
+    mut p = Pool.new()
+    ensure p.close_into(mutate ids)
+    p.open(1)
+    p.open(2)
+}
+
+test "an ensure drains the pool at scope exit" {
+    mut ids: Vec<i64> = Vec.new()
+    fill_and_leave(mutate ids)
+    assert ids.len() == 2
+    assert ids[0] == 2
+    assert ids[1] == 1
+}

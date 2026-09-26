@@ -96,19 +96,21 @@ pub fn rask_file_read(file: &File, buf: &mut [u8]) -> Result<usize, IoError> {
 
 | Rule | Description |
 |------|-------------|
-| **IO5: Cancel check before I/O** | I/O functions check `cancel_flag` before initiating syscalls (`conc.async/CN3`) |
-| **IO6: Cancel returns error** | If cancelled, return `Err(IoError.Cancelled)` before the syscall happens |
+| **IO5: A cancel ends an I/O wait** | A socket call that has to wait for readiness wakes when its task is cancelled (`conc.async/CN3`) |
+| **IO6: Cancel returns error** | The call then returns `Err(IoError.Cancelled)`. One that didn't need to wait completes, the same as a receive that finds a value already there |
 
 <!-- test: skip -->
 ```rask
-// Cancellation check woven into I/O
-func File.read(self, buf: Vec<u8>) -> usize or IoError {
-    if let Some(runtime) = RUNTIME_SLOT.read() {
-        if runtime.current_task().cancel_flag.load() {
+// A socket read that has to wait: the wait is where a cancel lands.
+func TcpConnection.read(self, buf: Vec<u8>) -> usize or IoError {
+    loop {
+        let n = sys_read(self.fd, buf)        // non-blocking
+        if n >= 0 { return n }
+        if !would_block() { return Err(IoError.last_os_error()) }
+        if wait_until_readable(self.fd) is Cancelled {
             return Err(IoError.Cancelled)
         }
     }
-    // Proceed with actual I/O...
 }
 ```
 
@@ -159,7 +161,7 @@ The key insight: interface dispatch and runtime discovery are orthogonal. Signat
 // Extended IoError (additions from this spec)
 enum IoError {
     // ... existing variants from std.io/E1 ...
-    Cancelled           // Task was cancelled before I/O completed (IO6)
+    Cancelled           // Task was cancelled while the call waited (IO6)
     RuntimePoisoned     // Reactor thread panicked (Phase B only, conc.runtime/E7)
 }
 ```

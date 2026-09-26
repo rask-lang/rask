@@ -53,7 +53,7 @@ fn is_io_source(callee: &str) -> bool {
         | "print" | "println" | "eprint" | "eprintln"
         // async sources that are also IO (AS3)
         | "sleep" | "timeout"
-        | "spawn" | "Channel.send" | "Channel.receive" | "TaskHandle.join"
+        | "spawn" | "Channel.send" | "Channel.receive" | "Handle.join"
     )
 }
 
@@ -61,7 +61,7 @@ fn is_async_source(callee: &str) -> bool {
     matches!(callee,
         "spawn" | "sleep" | "timeout"
         | "Channel.send" | "Channel.receive"
-        | "TaskHandle.join"
+        | "Handle.join"
     )
 }
 

@@ -655,6 +655,7 @@ impl Parser {
                         attrs: vec!["entry".to_string()],
                         doc: None,
                         span,
+                        decl_start: span.start,
                     }),
                     span,
                 });
@@ -808,6 +809,10 @@ impl Parser {
             }
         } };
 
+        let mut kind = kind;
+        if let DeclKind::Fn(f) = &mut kind {
+            f.decl_start = start;
+        }
         if let Some(span) = extern_first_span {
             return Ok(Decl { id: self.next_id(), kind, span });
         }
@@ -876,7 +881,10 @@ impl Parser {
     /// in its name. `parse_fn_decl` folds them into the name for display, which
     /// is what a free function wants — but a method is looked up by the name the
     /// call site writes, and `w.tag(7)` writes `tag`, not `tag<E>`.
-    fn as_method(mut fn_decl: FnDecl) -> FnDecl {
+    /// `start` is where the member's text begins, attributes and modifiers
+    /// included.
+    fn as_method(mut fn_decl: FnDecl, start: usize) -> FnDecl {
+        fn_decl.decl_start = start;
         if let Some(base) = fn_decl.name.split('<').next() {
             if base.len() != fn_decl.name.len() {
                 fn_decl.name = base.to_string();
@@ -1000,7 +1008,7 @@ impl Parser {
 
         let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         let fn_span = self.span(fn_start, fn_end);
-        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span }))
+        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span, decl_start: fn_start }))
     }
 
     /// `using` on a signature is gone. It only ever declared a pool context, and
@@ -1642,6 +1650,7 @@ impl Parser {
                 continue;
             }
 
+            let member_start = self.current().span.start;
             let method_doc = self.take_doc();
 
             // Field annotations: @rename("..."), @skip, @default(expr).
@@ -1656,7 +1665,7 @@ impl Parser {
 
             if self.check(&TokenKind::Func) {
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, field_private, false, false, field_attrs, method_doc)? {
-                    methods.push(Self::as_method(fn_decl));
+                    methods.push(Self::as_method(fn_decl, member_start));
                 }
             } else {
                 let visibility = if field_private {
@@ -1831,6 +1840,7 @@ impl Parser {
         let mut methods = Vec::new();
 
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            let member_start = self.current().span.start;
             // Parse variant-level attributes (e.g., @message("template"))
             let mut variant_attrs = Vec::new();
             while self.check(&TokenKind::At) {
@@ -1843,7 +1853,7 @@ impl Parser {
                 let m_private = self.match_token(&TokenKind::Private);
                 let m_pub = if !m_private { self.match_token(&TokenKind::Public) } else { false };
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, m_private, false, false, vec![], item_doc)? {
-                    methods.push(Self::as_method(fn_decl));
+                    methods.push(Self::as_method(fn_decl, member_start));
                 }
             } else {
                 let _variant_doc = item_doc;
@@ -1981,7 +1991,8 @@ impl Parser {
             let method_doc = self.take_doc();
             if self.check(&TokenKind::Func) {
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, false, vec![], method_doc)? {
-                    methods.push(Self::as_method(fn_decl));
+                    let start = fn_decl.span.start;
+                    methods.push(Self::as_method(fn_decl, start));
                 }
             } else if self.check(&TokenKind::Type) {
                 assoc_types.push(self.parse_assoc_type_decl()?);
@@ -2135,6 +2146,7 @@ impl Parser {
             attrs: vec![],
             doc: None,
             span: self.span(fn_start, fn_end),
+            decl_start: fn_start,
         })
     }
 
@@ -2212,6 +2224,7 @@ impl Parser {
                 self.skip_newlines();
                 continue;
             }
+            let member_start = self.current().span.start;
             let mut method_attrs = Vec::new();
             while self.check(&TokenKind::At) {
                 match self.parse_attribute() {
@@ -2230,7 +2243,7 @@ impl Parser {
             let m_comptime = self.match_token(&TokenKind::Comptime);
             let m_unsafe = if !m_comptime { self.match_token(&TokenKind::Unsafe) } else { false };
             match self.parse_fn_decl(m_pub, m_private, m_comptime, m_unsafe, method_attrs, method_doc) {
-                Ok(DeclKind::Fn(fn_decl)) => methods.push(Self::as_method(fn_decl)),
+                Ok(DeclKind::Fn(fn_decl)) => methods.push(Self::as_method(fn_decl, member_start)),
                 Ok(_) => {}
                 Err(e) => {
                     self.record_error(e);
@@ -2606,6 +2619,7 @@ impl Parser {
                 attrs: vec![],
                 doc,
                 span: self.span(fn_start, self.tokens[self.pos.saturating_sub(1)].span.end),
+                decl_start: fn_start,
             }));
         }
 

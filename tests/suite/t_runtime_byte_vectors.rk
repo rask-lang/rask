@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `Vec<u8>` the runtime builds has the layout compiled code gives one: an
+// 8-byte slot per element.
+//
+// The runtime packed its byte vectors one byte per element, so the same type
+// had two layouts. `v.get(i)` copies a whole slot, and on the last element of
+// a packed vector that ran seven bytes past the buffer (valgrind: an 8-byte
+// read "1 bytes inside a block of size 5"). `cstring.bytes` was worse: it made
+// the element as wide as the string, so `to_string` read the wrong bytes for
+// anything longer than eight.
+
+import fs
+
+test "a cstring longer than a word comes back intact" {
+    let s = "twenty-four bytes, more!"
+    let c = s.to_cstring() catch e => {
+        assert false
+        return
+    }
+    let back = c.to_string() catch e => {
+        assert false
+        return
+    }
+    assert back == s
+}
+
+test "the last byte of a file read by the runtime" {
+    let path = "/tmp/rask_t_runtime_byte_vectors.txt"
+    fs.write_text(path, "hello") catch e => {
+        assert false
+        return
+    }
+    let f = fs.open(path) catch e => {
+        assert false
+        return
+    }
+    let bytes = f.read_bytes() catch e => {
+        assert false
+        return
+    }
+    let _ = f.close()
+    assert bytes.len() == 5
+    assert (bytes.get(4) ?? 0) == 111
+    let text = string.from_utf8(bytes) catch e => {
+        assert false
+        return
+    }
+    assert text == "hello"
+    let _ = fs.remove_file(path)
+}
+
+func main() {}

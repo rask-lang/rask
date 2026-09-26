@@ -558,13 +558,15 @@ impl<'a> MirLowerer<'a> {
     /// probe per round; the first that succeeds jumps to its body. With a
     /// `_:` arm, a round where nothing was ready falls into it (A3). Without
     /// one, the loop yields and goes round again — unless every channel came
-    /// back closed, which is the end of the road (CL1).
+    /// back closed (CL1) or the task was cancelled while it waited (CN1): then
+    /// the select's value is `Err(SelectError…)`, and an arm's is `Ok(v)`.
     ///
     /// The old lowering fell straight into arm 0 and ran every body in
     /// sequence, so a receive binding was never defined and MIR failed with
     /// `UnresolvedVariable("v")`.
     pub(super) fn lower_select(
         &mut self,
+        expr: &Expr,
         arms: &[rask_ast::expr::SelectArm],
         is_priority: bool,
     ) -> Result<TypedOperand, LoweringError> {
@@ -623,13 +625,28 @@ impl<'a> MirLowerer<'a> {
         // Tracks whether any channel could still deliver. Reset every round so
         // a channel closing mid-wait is noticed.
         let any_open = self.builder.alloc_temp(MirType::Bool);
-        let result_local = self.builder.alloc_temp(MirType::I64);
+        // `T or SelectError` when the select can wait; the checker's type.
+        let wrapped = match (default_arm, self.lookup_expr_type(expr)) {
+            (None, Some(ty @ MirType::Result { .. })) => Some(ty),
+            _ => None,
+        };
+        let result_local = self
+            .builder
+            .alloc_temp(wrapped.clone().unwrap_or(MirType::I64));
         // How many arms this round has probed — the cycle stops once every
         // arm's had exactly one turn, wherever it started.
         let visited = self.builder.alloc_temp(MirType::I64);
+        // Read before the arms are probed, so a channel that changes after a
+        // probe found it not ready still wakes the wait below (#1342).
+        let epoch = self.builder.alloc_temp(MirType::I64);
 
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: poll_block }));
         self.builder.switch_to_block(poll_block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(epoch),
+            func: FunctionRef::internal("rask_select_epoch".to_string()),
+            args: vec![],
+        }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: any_open,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
@@ -786,26 +803,37 @@ impl<'a> MirLowerer<'a> {
                 else_block: all_closed,
             }));
 
+            // Nothing ready: sleep until some channel changes, then probe
+            // again. It used to yield and probe straight away, which spun a
+            // worker and, under sim, hid a deadlocked select as a busy one.
+            // A cancel ends the wait (conc.async/CN3), after a round that found
+            // nothing ready.
             self.builder.switch_to_block(wait);
+            let cancelled = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("rask_yield".to_string()),
-                args: vec![],
+                dst: Some(cancelled),
+                func: FunctionRef::internal("rask_select_wait".to_string()),
+                args: vec![MirOperand::Local(epoch)],
             }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
-                target: poll_block,
+            let cancelled_block = self.builder.create_block();
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                cond: MirOperand::Local(cancelled),
+                then_block: cancelled_block,
+                else_block: poll_block,
             }));
 
-            self.builder.switch_to_block(all_closed);
-            let msg = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(msg),
-                func: FunctionRef::internal("panic".to_string()),
-                args: vec![MirOperand::Constant(MirConst::String(
-                    "select: every channel is closed [conc.select/CL1]".to_string(),
-                ))],
-            }));
-            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+            let Some(sel_ty) = &wrapped else {
+                return Err(LoweringError::InvalidConstruct(
+                    "select without a `_:` arm has no `T or SelectError` type".to_string(),
+                ));
+            };
+            for (block, variant) in [(all_closed, "Closed"), (cancelled_block, "Cancelled")] {
+                self.builder.switch_to_block(block);
+                self.store_select_err(result_local, sel_ty, variant)?;
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
+                    target: merge_block,
+                }));
+            }
         }
 
         // Arm bodies. A receive arm binds its value from the probe's buffer.
@@ -827,20 +855,78 @@ impl<'a> MirLowerer<'a> {
                 self.locals.insert(binding.clone(), (bound, elem.clone()));
             }
             let (arm_val, arm_ty) = self.lower_expr(&arm.body)?;
-            if !matches!(arm_ty, MirType::Void) {
-                result_ty = arm_ty;
+            if wrapped.is_some() {
+                self.store_result_arm(result_local, 0, arm_val, &arm_ty);
+            } else {
+                if !matches!(arm_ty, MirType::Void) {
+                    result_ty = arm_ty;
+                }
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Use(arm_val),
+                }));
             }
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: result_local,
-                rvalue: MirRValue::Use(arm_val),
-            }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: merge_block,
             }));
         }
 
         self.builder.switch_to_block(merge_block);
+        if let Some(ty) = wrapped {
+            return Ok((MirOperand::Local(result_local), ty));
+        }
         Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// `Err(SelectError.<variant>)` into the select's result.
+    fn store_select_err(
+        &mut self,
+        result: crate::LocalId,
+        sel_ty: &MirType,
+        variant: &str,
+    ) -> Result<(), LoweringError> {
+        let (err, err_ty) = self.lower_enum_variant_path("SelectError", variant).ok_or_else(|| {
+            LoweringError::InvalidConstruct(format!(
+                "SelectError.{variant} missing — stdlib/builtins.rk declares it"
+            ))
+        })?;
+        let err_ty = match sel_ty {
+            MirType::Result { err, .. } => (**err).clone(),
+            _ => err_ty,
+        };
+        self.store_result_arm(result, 1, err, &err_ty);
+        Ok(())
+    }
+
+    /// A Result's tag, zero origin words, and payload. Payload stored the way
+    /// `coerce_into_wrapper` stores one, since the reader expects that shape.
+    fn store_result_arm(&mut self, result: crate::LocalId, tag: i64, val: MirOperand, ty: &MirType) {
+        for (offset, value) in [
+            (rask_mono::abi::RESULT_TAG_OFFSET, tag),
+            (rask_mono::abi::RESULT_ORIGIN_FILE_OFFSET, 0),
+            (rask_mono::abi::RESULT_ORIGIN_LINE_OFFSET, 0),
+        ] {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: result,
+                offset,
+                value: MirOperand::Constant(MirConst::Int(value)),
+                store_size: Some(8),
+            }));
+        }
+        if matches!(ty, MirType::Void) {
+            return;
+        }
+        let (payload, size) = if ty.passed_by_address() {
+            (val, self.aggregate_alloc_size(ty))
+        } else {
+            (self.widen_scalar_payload(val, ty), 8)
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: result,
+            offset: rask_mono::abi::RESULT_PAYLOAD_OFFSET,
+            value: payload,
+            store_size: Some(size),
+        }));
     }
 
     /// Element type behind a `Receiver<T>` expression, defaulting to a word.

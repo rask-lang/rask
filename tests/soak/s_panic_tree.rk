@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The join tree again, with every seventh leaf panicking.
+//
+// A panicking task unwinds on its own stack and its joiner gets the error. With
+// parking, the unwind runs on a fiber stack while its parent sits parked on
+// another, which is where a switch that saved the wrong registers, or ran an
+// ensure on the wrong stack, would show up. A node whose child panicked
+// returns 0 for its whole subtree, so the count is what that rule leaves of
+// 2^12 leaves (the interpreter agrees).
+//
+// soak-expect: 2924
+
+import async.spawn
+
+func spin(n: i64) -> i64 {
+    mut i: i64 = 0
+    mut t: i64 = 0
+    while i < n {
+        t = t + (i % 3)
+        i = i + 1
+    }
+    return t
+}
+
+func tree(depth: i64, index: i64) -> i64 {
+    if depth == 0 {
+        let _ = spin(2000)
+        if index % 7 == 0 {
+            panic("leaf {index}")
+        }
+        return 1
+    }
+    let left = spawn(|| { return tree(depth - 1, index * 2) })
+    ensure left.detach()
+    let right = spawn(|| { return tree(depth - 1, index * 2 + 1) })
+    ensure right.detach()
+    let l = left.join() catch e => { return 0 }
+    let r = right.join() catch e => { return 0 }
+    return l + r
+}
+
+func main() {
+    using Multitasking(workers: 4) {
+        let root = spawn(|| { return tree(12, 0) })
+        ensure root.detach()
+        let n = root.join() catch e => { return }
+        println("{n}")
+    }
+}

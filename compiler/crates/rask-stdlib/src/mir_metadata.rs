@@ -747,7 +747,7 @@ pub fn returns_a_view(qualified_name: &str) -> bool {
         // a rule, where `TRANSFERS_OUT` above is a list, because the list is
         // for `mutate self` methods that hand out storage they keep.
         //
-        // `TaskHandle.join(take self) -> T or JoinError` is what this was
+        // `Handle.join(take self) -> T or JoinError` is what this was
         // getting wrong: it names a type parameter, so it read as a view, so
         // the frame released nothing — and a panicking task's message string
         // was freed by nobody (#1223).
@@ -1330,7 +1330,7 @@ mod tests {
         assert!(borrows_receiver("Vec_push"));
         assert!(borrows_receiver("Vec_get"));
         assert!(!borrows_receiver("Vec_new"), "static: no receiver at all");
-        assert!(!borrows_receiver("TaskHandle_join"), "declared `take self`");
+        assert!(!borrows_receiver("Handle_join"), "declared `take self`");
     }
 
     /// A monomorphized name carries a `$` suffix, and a path-qualified one a

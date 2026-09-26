@@ -415,7 +415,7 @@ fn rename_stmt(
         MirStmtKind::ResourceConsume { resource_id } => {
             *resource_id = current_version(*resource_id, version_stack, num_orig_locals);
         }
-        MirStmtKind::ResourceScopeCheck { .. } | MirStmtKind::EnsurePush { .. } | MirStmtKind::EnsurePop => {}
+        MirStmtKind::EnsurePush { .. } | MirStmtKind::EnsurePop => {}
         MirStmtKind::ArrayStore { base, index, value, .. } => {
             *base = current_version(*base, version_stack, num_orig_locals);
             rename_operand(index, version_stack, num_orig_locals);

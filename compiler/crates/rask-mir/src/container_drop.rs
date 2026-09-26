@@ -878,7 +878,13 @@ fn functions_that_hand_a_container_back(
             let mut wrapped = false;
             let mut any = false;
             for b in &func.blocks {
-                let MirTerminatorKind::Return { value: Some(v), .. } = &b.terminator.kind else {
+                // A function with an `ensure` returns through the cleanup chain.
+                // Reading only `Return` left every such function handing nothing
+                // back, so `ensure g.detach(); return g.join_all()` gave its
+                // caller a vector nobody freed.
+                let (MirTerminatorKind::Return { value: Some(v), .. }
+                | MirTerminatorKind::CleanupReturn { value: Some(v), .. }) = &b.terminator.kind
+                else {
                     continue;
                 };
                 any = true;
@@ -1051,7 +1057,8 @@ fn insert_for_function(
     if fresh.is_empty() {
         return;
     }
-    let (escaping, consumed) = find_escaping(func, &fresh, kept, interface_kept);
+    let (mut escaping, consumed) = find_escaping(func, &fresh, kept, interface_kept);
+    escaping.extend(consumed_by_an_ensure(func, all, &fresh, kept, interface_kept));
     let carried = carried_variables(func, &crate::analysis::dominators::DominatorTree::build(func));
     let moved_away = find_moved_away(func, &fresh, &carried);
     let already_freed = find_already_freed(func, &fresh, own);
@@ -2798,6 +2805,52 @@ fn find_escaping(
         }
     }
     (escaping, consumed)
+}
+
+/// Containers an `ensure` body gives away: `ensure tx.close()`.
+///
+/// Either the ensure consumes it at scope exit or something else did first and
+/// the ensure stood down (mem.linear/L6); one way or the other it is consumed
+/// once, so the frame has no free of its own to add. It added one anyway: the
+/// scope-exit free ran before the cleanup chain, then the ensure closed the
+/// sender again — a double free for any `ensure tx.close()`.
+///
+/// The ensure body is a thunk, and the same question `find_escaping` asks of a
+/// frame is asked of it: does the capture escape, or reach a `take self`?
+fn consumed_by_an_ensure(
+    func: &MirFunction,
+    all: &[MirFunction],
+    fresh: &HashMap<LocalId, &'static str>,
+    kept: &HashMap<String, Vec<bool>>,
+    interface_kept: &HashMap<String, Vec<bool>>,
+) -> HashSet<LocalId> {
+    let mut out = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let MirStmtKind::EnsureHookRegister { thunk, captures } = &stmt.kind else { continue };
+        let Some(body) = all.iter().find(|f| f.name == *thunk) else { continue };
+        for cap in captures.iter().filter(|c| !c.by_ref && fresh.contains_key(&c.local_id)) {
+            // What the capture is called inside the thunk, and every copy of it.
+            let mut names: HashMap<LocalId, &'static str> = HashMap::new();
+            for st in body.blocks.iter().flat_map(|b| b.statements.iter()) {
+                match &st.kind {
+                    MirStmtKind::LoadCapture { dst, offset, .. } if *offset == cap.offset => {
+                        names.insert(*dst, fresh[&cap.local_id]);
+                    }
+                    MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+                        if names.contains_key(src) =>
+                    {
+                        names.insert(*dst, fresh[&cap.local_id]);
+                    }
+                    _ => {}
+                }
+            }
+            let (escaping, consumed) = find_escaping(body, &names, kept, interface_kept);
+            if !escaping.is_empty() || !consumed.is_empty() {
+                out.insert(cap.local_id);
+            }
+        }
+    }
+    out
 }
 
 /// Copied into another local, or merged through a phi: the new name owns it.

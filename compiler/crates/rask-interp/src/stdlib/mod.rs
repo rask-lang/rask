@@ -7,7 +7,7 @@ mod async_mod;
 mod cli;
 mod env;
 #[cfg(not(target_arch = "wasm32"))]
-mod fs;
+pub(crate) mod fs;
 #[cfg(not(target_arch = "wasm32"))]
 mod io;
 mod json;
@@ -232,7 +232,7 @@ impl Interpreter {
                 // User-defined static methods from extend blocks
                 if let Some(type_methods) = self.methods.get(type_name).cloned() {
                     if let Some(method_fn) = type_methods.get(method) {
-                        let has_body = !method_fn.body.is_empty();
+                        let has_body = !method_fn.body_lives_elsewhere();
                         let is_static = method_fn
                             .params
                             .first()

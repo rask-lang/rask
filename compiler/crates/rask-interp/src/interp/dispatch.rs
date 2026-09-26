@@ -102,12 +102,6 @@ impl Interpreter {
                 if kind == BuiltinKind::AsyncSpawn {
                     return self.spawn_async_task(args);
                 }
-                if kind == BuiltinKind::JoinAll {
-                    return self.call_async_method("join_all", args);
-                }
-                if kind == BuiltinKind::SelectFirst {
-                    return self.call_async_method("select_first", args);
-                }
                 if kind == BuiltinKind::Cancelled {
                     return self.call_async_method("cancelled", args);
                 }
@@ -217,8 +211,7 @@ impl Interpreter {
                     .unwrap_or_else(|| "panic".to_string());
                 Err(RuntimeError::Panic(msg))
             }
-            BuiltinKind::AsyncSpawn | BuiltinKind::JoinAll
-            | BuiltinKind::SelectFirst | BuiltinKind::Cancelled => {
+            BuiltinKind::AsyncSpawn | BuiltinKind::Cancelled => {
                 // These should have been handled in call_value
                 unreachable!("Async builtins should be handled in call_value")
             }
@@ -499,22 +492,6 @@ impl Interpreter {
             // `write` are the same operation here; the verb is intent the
             // reader can see, not a different call (conc.sync/SH5).
             Value::Cell(ref c) => match method {
-                // The closure form. This arm ignored `args` entirely, so
-                // `s.read(|v| v * 2)` on a `Local` box handed back the value
-                // and never ran the closure — 5 where the `Readers` strategy
-                // answered 10 on the same program (#1155).
-                //
-                // `write` runs it under the same lock and keeps what it
-                // returns, which is what makes it a write.
-                "read" | "write" if args.len() == 1 => {
-                    let closure = args.into_iter().next().unwrap();
-                    let snapshot = { c.lock().unwrap().clone() };
-                    let result = self.call_closure_with_arg(&closure, snapshot)?;
-                    if method == "write" {
-                        *c.lock().unwrap() = result.clone();
-                    }
-                    Ok(result)
-                }
                 // R3: a `Local` box is never contended, so the non-blocking
                 // pair always succeeds — the same answer wrapped in `Some`.
                 "try_read" | "try_write" if args.len() == 1 => {
@@ -540,6 +517,9 @@ impl Interpreter {
                     let guard = c.lock().unwrap();
                     Ok(guard.clone())
                 }
+                // Another handle on the same cell, as under the other two
+                // strategies.
+                "clone" => Ok(Value::Cell(Arc::clone(c))),
                 "set" => {
                     if args.len() != 1 {
                         return Err(RuntimeError::TypeError("Cell.set expects 1 argument".into()));
@@ -737,7 +717,7 @@ impl Interpreter {
             .get(type_name)
             .and_then(|ms| ms.get(method))
             .cloned()
-            .filter(|f| !f.body.is_empty())
+            .filter(|f| !f.body_lives_elsewhere())
         else {
             return Err(RuntimeError::NoSuchMethod {
                 ty: type_name.to_string(),
@@ -763,7 +743,7 @@ impl Interpreter {
             .get(type_name)
             .and_then(|ms| ms.get(method))
             .cloned()
-            .filter(|f| !f.body.is_empty())
+            .filter(|f| !f.body_lives_elsewhere())
         else {
             return Err(RuntimeError::NoSuchMethod {
                 ty: type_name.to_string(),

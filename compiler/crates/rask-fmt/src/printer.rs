@@ -611,10 +611,12 @@ impl<'a> Printer<'a> {
             self.emit_indent();
         }
 
-        for attr in &f.attrs {
+        for (i, attr) in f.attrs.iter().enumerate() {
+            if i > 0 {
+                self.emit_indent();
+            }
             self.emit(&format!("@{attr}"));
             self.emit_newline();
-            self.emit_indent();
         }
 
         // A comment written between the attributes and `func`. The
@@ -625,6 +627,7 @@ impl<'a> Printer<'a> {
         // keeps it where it was written.
         if !f.attrs.is_empty() {
             self.emit_standalone_comments_before(f.span.start);
+            self.emit_indent();
         }
 
         if f.is_private {
@@ -1156,8 +1159,12 @@ impl<'a> Printer<'a> {
     fn format_block_members(&mut self, methods: &[FnDecl], is_interface_decl: bool) {
         let mut is_first = true;
         for method in methods {
-            let comments = self.emit_comments_before(method.span.start, !is_first);
-            let blank_in_source = self.has_blank_line_before(method.span.start);
+            // Its attributes and modifiers, not the `func` its span starts at:
+            // looking back for a blank line from `func` met `public` and found
+            // none.
+            let start = method.decl_start;
+            let comments = self.emit_comments_before(start, !is_first);
+            let blank_in_source = self.has_blank_line_before(start);
             if comments.is_empty() {
                 if !is_first && blank_in_source {
                     self.emit_blank_line();
@@ -2050,6 +2057,13 @@ impl<'a> Printer<'a> {
             ExprKind::Bool(b) => {
                 self.emit(if *b { "true" } else { "false" });
             }
+            // A type named in expression position (`Handles<void>.new()`)
+            // is stored as its parsed spelling, `Handles<()>`, which
+            // doesn't parse back.
+            ExprKind::Ident(name) if name.contains('<') => {
+                let spelled = self.format_type(name);
+                self.emit(&spelled);
+            }
             ExprKind::Ident(name) => {
                 self.emit(name);
             }
@@ -2131,8 +2145,9 @@ impl<'a> Printer<'a> {
                 self.emit(".");
                 self.emit(method);
                 if let Some(ref targs) = type_args {
+                    let spelled: Vec<String> = targs.iter().map(|t| self.format_type(t)).collect();
                     self.emit("<");
-                    self.emit(&targs.join(", "));
+                    self.emit(&spelled.join(", "));
                     self.emit(">");
                 }
                 self.emit("(");

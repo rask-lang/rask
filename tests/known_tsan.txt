@@ -1,0 +1,4 @@
+# Suite files ThreadSanitizer is expected to report on, one per line, with the
+# issue that tracks the race. tests/tsan_gate.sh reads this.
+#
+#   t_example.rk   # #1234 — what races

@@ -1,20 +1,47 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// M:N green task scheduler with work-stealing.
+// M:N scheduler: tasks are stackful fibers on N worker threads
+// (conc.runtime, conc.strategy/B1-B2).
 //
-// Core design:
-//   - N worker threads (default: CPU count), each with a local Chase-Lev deque
-//   - Global injection queue for cross-thread spawns
-//   - I/O engine (io_uring or epoll) polled by idle workers
-//   - Tasks are stackless state machines: poll_fn(state, ctx) → READY/PENDING
+// A task runs on its own stack (fiber.c). When it waits — for a join, a
+// channel, a lock, a sleep — it parks: its registers go onto its stack, and
+// the worker thread picks up something else. Waking it puts it back in a run
+// queue. So a blocked task costs its stack, not a thread, and `workers: n`
+// means n OS threads however many tasks are waiting.
 //
-// Worker loop: local pop → steal from peer → global pop → poll I/O → park
+// Worker loop: resumed fibers (inbox) → own deque → steal → global queue →
+// timers and sockets → sleep.
 //
-// Task lifecycle: Spawned → Running → (Waiting ↔ Running) → Complete
-// Handles are refcounted: one for the handle holder, one for the scheduler.
+// A task that waits on a socket parks the same way (`rask_io_wait`): the fd
+// goes into one epoll set, and whichever idle worker is the poller sleeps in
+// `epoll_wait` instead of on its condvar, so a ready socket wakes its task
+// without a thread of its own. The poller is woken for other work through an
+// eventfd in the same set.
+//
+// A task that has started stays on the worker that started it. Only tasks that
+// haven't run yet are stolen. Moving a running fiber to another thread would
+// leave the C code under it looking at the old thread's `__thread` variables:
+// the compiler may compute a thread-local's address once per function and
+// reuse it across a call, and a park is a call. Pinning keeps every
+// thread-local address a fiber has computed valid, and keeps a lock a task
+// holds across a park being released by the thread that took it.
+//
+// Each task's share of the runtime's thread-local state (panic handler, ensure
+// hooks, held locks — panic.c's `TaskTls`) is swapped onto the thread when the
+// task switches on and off again when it switches off, since several fibers
+// take turns on one thread.
+//
+// What a task produced, and its handle, live in thread.c's `RaskTask`, shared
+// with threads and pooled jobs. This file owns only the fiber and its place in
+// the scheduler, and frees it when the body is done.
 
-#include "io_engine.h"
+#include "fiber.h"
 #include "rask_runtime.h"
+#include "sim.h"
+
+#include <poll.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -22,104 +49,63 @@
 #include <pthread.h>
 #include <stdatomic.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <unistd.h>
 #include <sched.h>
-#include <sys/socket.h>
 #include <errno.h>
 #include <time.h>
 
-// ─── Constants ──────────────────────────────────────────────
-//
-// RASK_POLL_READY/PENDING are in rask_runtime.h: the thread-backed stand-in
-// off Linux runs the same generated poll functions and has to read the same
-// numbers.
-
-#define TASK_STATE_READY    0
-#define TASK_STATE_RUNNING  1
-#define TASK_STATE_WAITING  2
-#define TASK_STATE_COMPLETE 3
-
 #define DEQUE_CAP 1024
-
-// How many extra workers a scope may grow when its own are stuck in join.
-//
-// A worker that joins blocks and stops taking work, so `using
-// Multitasking(workers: 1)` with one nested spawn+join had nobody left to run
-// the inner task and the program hung (#1130). A blocked worker isn't running
-// anything, so the scope starts a replacement for the duration — which makes
-// the worker count a count of *runnable* workers rather than a cap on threads.
-//
-// Suspending the joining task and reusing its thread is the real answer and
-// needs the fiber switch that isn't built. This needs one OS thread per
-// simultaneously-blocked join, which is why it is capped: past this depth the
-// deadlock report is still what you get.
-#define JOIN_HELPER_SLOTS 32
-#define MAX_EVENTS_PER_POLL 64
 
 // ─── Green task ─────────────────────────────────────────────
 
-typedef int (*rask_poll_fn)(void *state, void *task_ctx);
+// Where a fiber is in going to sleep, read by the worker it switched off and
+// by whoever wakes it — the two can race. A wake that arrives while the fiber
+// is still `PARKING` (enqueued as a waiter, not yet switched off) must not put
+// it in a run queue: it could be resumed before its registers are saved. So it
+// flips the state to `WOKEN` instead, and the worker that switches it off sees
+// that and queues it itself.
+enum { PARK_RUNNING = 0, PARK_PARKING, PARK_PARKED, PARK_WOKEN };
+
+// Why a fiber switched back to its worker.
+enum { SWITCH_DONE = 1, SWITCH_PARKED, SWITCH_YIELD };
 
 typedef struct GreenTask {
-    rask_poll_fn    poll_fn;
-    void           *state;
-    int64_t         state_size;    // for deallocation
-    atomic_int      task_state;
-    atomic_int      cancel_flag;
-    int64_t         result;
-    // Non-zero when `result` is a heap box this task owns rather than a plain
-    // value. A task's result travels as one machine word, so anything wider —
-    // and anything that comes back in a float register — is allocated by the
-    // spawn thunk and the word is its address. Somebody has to free it, and the
-    // task is the only party present at every ending: joined, cancelled, or
-    // detached and never looked at.
-    //
-    // `rask_green_join` hands ownership to the joiner by clearing `result`, so
-    // exactly one of the two frees it (#963).
-    int64_t         result_owned;
+    // The body: the closure's function and its environment.
+    int64_t       (*body)(void *);
+    void           *body_arg;
 
-    // The closure allocation the task body runs out of. The task owns it for
-    // the same reason it owns `result_owned` above: joined, cancelled or
-    // detached, the task is present for all three endings. The body used to
-    // free it on the line after its own call, which a panicking body longjmps
-    // past (#1223).
-    void           *closure_base;
-    char           *panic_msg;
+    // How it ended and who waits for it (thread.c). The task holds one ref,
+    // released when the fiber is done.
+    RaskTask       *task;
 
-    // Completion signaling
-    pthread_mutex_t done_lock;
-    pthread_cond_t  done_cond;
-    int             done;
+    // ── Fiber ──
+    RaskFiber       fiber;
+    int             started;
+    int             home;            // worker it runs on once started
+    RaskFiber      *worker_fiber;    // what to switch back to
+    int             switch_reason;
+    atomic_int      park;
+    void           *tls;             // panic.c's TaskTls while switched off
 
-    // O4: set by detach(), checked (under done_lock) wherever the task's
-    // panic would otherwise only surface to a join() that's never coming.
-    int             detached;
-
-    int64_t         task_id;   // ctrl.panic/F1
-
-    // Refcount: handle(1) + scheduler(1)
-    atomic_int      refcount;
-
-    // I/O result staging (set by I/O callback before re-enqueue)
-    int64_t         io_result;
-    int             io_err;
-
-    // Per-task ensure hook stack (LIFO cleanup on cancel/panic)
-    void           *ensure_stack;
-    void           *access_stack;   // locks this task holds (ctrl.panic/U3)
+    // Run-queue link (global queue, inboxes) — a task is in one queue at most.
+    struct GreenTask *qnext;
+    // Wait-table link and key, and what the wait is for (the deadlock report).
+    const void       *wait_key;
+    const char       *wait_what;
+    struct GreenTask *wait_next;
+    // Sleep deadline, and the timer list link.
+    int64_t           wake_at_ns;
+    struct GreenTask *timer_next;
 } GreenTask;
-
-// ─── Task handle (returned to user code) ────────────────────
-
-typedef struct GreenHandle {
-    GreenTask *task;
-} GreenHandle;
 
 // ─── Chase-Lev work-stealing deque ──────────────────────────
 //
 // Owner: push_bottom / pop_bottom (LIFO, no CAS needed for single owner)
 // Stealer: steal_top (FIFO, CAS for contention)
-// Bounded fixed-size for simplicity.
+//
+// Holds tasks that haven't started. It is bounded; a full one spills to the
+// global queue, which isn't.
 
 typedef struct {
     GreenTask  *buf[DEQUE_CAP];
@@ -133,17 +119,14 @@ static void deque_init(WorkDeque *d) {
     atomic_init(&d->bottom, 0);
 }
 
-static void deque_push(WorkDeque *d, GreenTask *task) {
+// Returns 0 when full.
+static int deque_push(WorkDeque *d, GreenTask *task) {
     long b = atomic_load_explicit(&d->bottom, memory_order_relaxed);
     long t = atomic_load_explicit(&d->top, memory_order_acquire);
-    if (b - t >= DEQUE_CAP) {
-        // Deque full — shouldn't happen with reasonable task counts.
-        // Drop on floor rather than crash; task leaks but runtime stays alive.
-        fprintf(stderr, "rask: work deque overflow\n");
-        return;
-    }
+    if (b - t >= DEQUE_CAP) return 0;
     d->buf[b % DEQUE_CAP] = task;
     atomic_store_explicit(&d->bottom, b + 1, memory_order_release);
+    return 1;
 }
 
 static GreenTask *deque_pop(WorkDeque *d) {
@@ -187,106 +170,108 @@ static GreenTask *deque_steal(WorkDeque *d) {
     return task;
 }
 
-// ─── Global injection queue (mutex-protected) ───────────────
+// ─── Locked FIFO (global queue, inboxes) ────────────────────
 
 typedef struct {
-    GreenTask  *buf[DEQUE_CAP * 4];
-    int         head;
-    int         tail;
-    int         cap;
     pthread_mutex_t lock;
-} GlobalQueue;
+    GreenTask      *head;
+    GreenTask      *tail;
+    atomic_int      len;
+} TaskQueue;
 
-static void gq_init(GlobalQueue *gq) {
-    gq->head = 0;
-    gq->tail = 0;
-    gq->cap = DEQUE_CAP * 4;
-    pthread_mutex_init(&gq->lock, NULL);
+static void tq_init(TaskQueue *q) {
+    pthread_mutex_init(&q->lock, NULL);
+    q->head = q->tail = NULL;
+    atomic_init(&q->len, 0);
 }
 
-static void gq_destroy(GlobalQueue *gq) {
-    pthread_mutex_destroy(&gq->lock);
+static void tq_destroy(TaskQueue *q) {
+    pthread_mutex_destroy(&q->lock);
 }
 
-static void gq_push(GlobalQueue *gq, GreenTask *task) {
-    pthread_mutex_lock(&gq->lock);
-    int next = (gq->tail + 1) % gq->cap;
-    if (next == gq->head) {
-        // Global queue full
-        pthread_mutex_unlock(&gq->lock);
-        fprintf(stderr, "rask: global queue overflow\n");
-        return;
+static void tq_push(TaskQueue *q, GreenTask *t) {
+    t->qnext = NULL;
+    pthread_mutex_lock(&q->lock);
+    if (q->tail) q->tail->qnext = t; else q->head = t;
+    q->tail = t;
+    atomic_fetch_add_explicit(&q->len, 1, memory_order_release);
+    pthread_mutex_unlock(&q->lock);
+}
+
+static GreenTask *tq_pop(TaskQueue *q) {
+    if (atomic_load_explicit(&q->len, memory_order_acquire) == 0) return NULL;
+    pthread_mutex_lock(&q->lock);
+    GreenTask *t = q->head;
+    if (t) {
+        q->head = t->qnext;
+        if (!q->head) q->tail = NULL;
+        t->qnext = NULL;
+        atomic_fetch_sub_explicit(&q->len, 1, memory_order_relaxed);
     }
-    gq->buf[gq->tail] = task;
-    gq->tail = next;
-    pthread_mutex_unlock(&gq->lock);
-}
-
-static GreenTask *gq_pop(GlobalQueue *gq) {
-    pthread_mutex_lock(&gq->lock);
-    if (gq->head == gq->tail) {
-        pthread_mutex_unlock(&gq->lock);
-        return NULL;
-    }
-    GreenTask *task = gq->buf[gq->head];
-    gq->head = (gq->head + 1) % gq->cap;
-    pthread_mutex_unlock(&gq->lock);
-    return task;
+    pthread_mutex_unlock(&q->lock);
+    return t;
 }
 
 // ─── Scheduler ──────────────────────────────────────────────
 
-// One per worker thread — its scheduler plus its own index into the deque
-// array. Lives in the scheduler so it outlives pthread_create.
-typedef struct WorkerArg WorkerArg;
+typedef struct GreenScheduler GreenScheduler;
 
 typedef struct {
-    pthread_t       *workers;
-    WorkerArg       *worker_args;   // one per worker: scheduler + its own id
-    int              worker_count;  // what the program asked for
-    int              worker_slots;  // worker_count + JOIN_HELPER_SLOTS
-    // Threads that exist, so deques that are initialized. Only ever grows, and
-    // a stealer reading a stale smaller value simply doesn't target the newest
-    // worker — see `helper_spawn`.
-    atomic_int       live_workers;
-    pthread_mutex_t  grow_lock;
-    WorkDeque       *local;        // local[worker_id]
-    GlobalQueue      global;
-    RaskIoEngine    *io;
-    atomic_int       active_tasks;
-    atomic_int       shutdown;
-
-    // Deadlock watch. A worker that calls `join` blocks on the target's
-    // condvar and stops taking work — so when every worker is blocked in a
-    // join, nothing can run the tasks they are waiting for and the program
-    // hangs with no output. `using Multitasking(workers: 1)` plus one nested
-    // spawn+join is enough to do it, deterministically.
-    //
-    // `completions` moves whenever any task finishes, so a worker that times
-    // out can tell a real deadlock ("every worker blocked and nothing has
-    // completed since") from a slow task.
-    atomic_int       blocked_in_join;
-    atomic_uint      completions;
-
-    // Parking: workers sleep here when no work found
-    pthread_mutex_t  park_lock;
-    pthread_cond_t   park_cond;
-
-    // Shutdown barrier: main thread waits here
-    pthread_mutex_t  done_lock;
-    pthread_cond_t   done_cond;
-} GreenScheduler;
-
-struct WorkerArg {
     GreenScheduler *sched;
     int             id;
+    WorkDeque       deque;      // unstarted tasks, stealable
+    TaskQueue       inbox;      // started tasks resuming here
+    RaskFiber       fiber;      // this worker thread's own stack
+    // Sleeping: waits on `cond` until something lands in its queues.
+    pthread_mutex_t sleep_lock;
+    pthread_cond_t  sleep_cond;
+    atomic_int      sleeping;
+    // Sleeping in `epoll_wait` as the poller, not on `sleep_cond`: a wake
+    // is an eventfd write then.
+    atomic_int      polling;
+    // Fibers this worker has switched to. Only its own thread writes it; the
+    // deadlock check reads it to see whether anything ran.
+    atomic_long     runs;
+    pthread_t       thread;
+} Worker;
+
+struct GreenScheduler {
+    Worker          *workers;
+    int              worker_count;
+    TaskQueue        global;
+    atomic_int       active_tasks;
+
+    // Sockets tasks are parked on (edge-triggered, both directions), the
+    // eventfd that wakes the poller, whether some worker holds the poller
+    // role, and how many tasks are parked on a socket.
+    int              epfd;
+    int              wakefd;
+    atomic_int       poller_taken;
+    atomic_int       io_waiters;
+    atomic_int       shutdown;
+
+    // Sleeping tasks, unsorted: a wake is a scan, and a program that sleeps
+    // in thousands of tasks at once is not the case to optimise first.
+    pthread_mutex_t  timers_lock;
+    GreenTask       *timers;
+    atomic_int       timer_count;
+
+    // Shutdown barrier: the scope's thread waits here
+    pthread_mutex_t  done_lock;
+    pthread_cond_t   done_cond;
+
+    // Deadlock check: when nothing could move was first seen, and the
+    // progress count then. See `check_deadlock`.
+    pthread_mutex_t  stuck_lock;
+    int64_t          stuck_since;
+    int64_t          stuck_progress;
 };
 
 // Singleton scheduler
 static GreenScheduler *g_sched = NULL;
 
 // Per-worker thread-local state
-static __thread int tl_worker_id = -1;
+static __thread Worker    *tl_worker = NULL;
 static __thread GreenTask *tl_current_task = NULL;
 
 // XorShift RNG for steal target selection
@@ -302,90 +287,93 @@ static uint32_t xorshift32(void) {
     return x;
 }
 
+static int64_t now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+static void worker_wake(Worker *w) {
+    if (!atomic_load_explicit(&w->sleeping, memory_order_seq_cst)) return;
+    if (atomic_load_explicit(&w->polling, memory_order_seq_cst)) {
+        uint64_t one = 1;
+        ssize_t ignored = write(w->sched->wakefd, &one, sizeof(one));
+        (void)ignored;
+        return;
+    }
+    pthread_mutex_lock(&w->sleep_lock);
+    pthread_cond_signal(&w->sleep_cond);
+    pthread_mutex_unlock(&w->sleep_lock);
+}
+
+// Something anyone can run arrived: wake one sleeping worker.
+static void wake_any(GreenScheduler *s) {
+    for (int i = 0; i < s->worker_count; i++) {
+        Worker *w = &s->workers[i];
+        if (atomic_load_explicit(&w->sleeping, memory_order_acquire)) {
+            worker_wake(w);
+            return;
+        }
+    }
+}
+
 // ─── Task lifecycle ─────────────────────────────────────────
 
-static GreenTask *task_new(rask_poll_fn fn, void *state, int64_t state_size) {
+static GreenTask *task_new(void) {
     GreenTask *t = (GreenTask *)calloc(1, sizeof(GreenTask));
-    if (!t) {
+    void *tls = calloc(1, rask_task_tls_size());
+    if (!t || !tls) {
         fprintf(stderr, "rask: green task alloc failed\n");
         abort();
     }
-    t->poll_fn    = fn;
-    t->state      = state;
-    t->state_size = state_size;
-    atomic_init(&t->task_state, TASK_STATE_READY);
-    atomic_init(&t->cancel_flag, 0);
-    t->result     = 0;
-    t->panic_msg  = NULL;
-    t->done       = 0;
-    t->detached   = 0;
-    t->task_id    = rask_next_task_id();
-    atomic_init(&t->refcount, 2); // handle + scheduler
-    t->io_result  = 0;
-    t->io_err     = 0;
-    pthread_mutex_init(&t->done_lock, NULL);
-    pthread_cond_init(&t->done_cond, NULL);
+    t->tls = tls;
+    atomic_init(&t->park, PARK_RUNNING);
+    t->home = -1;
     return t;
 }
 
-static void task_release(GreenTask *t) {
-    if (atomic_fetch_sub_explicit(&t->refcount, 1, memory_order_acq_rel) == 1) {
-        pthread_mutex_destroy(&t->done_lock);
-        pthread_cond_destroy(&t->done_cond);
-        if (t->panic_msg) free(t->panic_msg);
-        if (t->state) free(t->state);
-        // The task body's closure allocation, whichever way the body ended.
-        if (t->closure_base) rask_closure_free(t->closure_base);
-        // Still set means nobody took it — a detached task whose value no join
-        // ever came for.
-        if (t->result_owned && t->result) rask_free((void *)(intptr_t)t->result);
-        free(t);
-    }
+static void task_free(GreenTask *t) {
+    rask_task_release(t->task); // the runner's ref
+    free(t->tls);
+    free(t);
 }
 
-static void task_mark_complete(GreenTask *t) {
-    pthread_mutex_lock(&t->done_lock);
-    t->done = 1;
-    // O4: already detached — no join() is coming to read panic_msg, so
-    // report it now instead of leaking it silently.
-    if (t->detached && t->panic_msg) {
-        fprintf(stderr, "task %lld panic at %s\n",
-                (long long)t->task_id, t->panic_msg);
-        free(t->panic_msg);
-        t->panic_msg = NULL;
+// A task that hasn't started: onto this worker's deque if we are one, else
+// the global queue.
+static void sched_enqueue_new(GreenScheduler *s, GreenTask *t) {
+    Worker *w = tl_worker;
+    if (!(w && w->sched == s && deque_push(&w->deque, t))) {
+        tq_push(&s->global, t);
     }
-    pthread_cond_broadcast(&t->done_cond);
-    pthread_mutex_unlock(&t->done_lock);
-    if (g_sched) {
-        atomic_fetch_add_explicit(&g_sched->completions, 1, memory_order_relaxed);
-    }
+    wake_any(s);
 }
 
-// Enqueue task to the scheduler.
-// If called from a worker thread, push to local deque.
-// Otherwise, push to global queue.
-static void sched_enqueue(GreenScheduler *s, GreenTask *t) {
-    atomic_store_explicit(&t->task_state, TASK_STATE_READY, memory_order_release);
-
-    if (tl_worker_id >= 0 && tl_worker_id < s->worker_count) {
-        deque_push(&s->local[tl_worker_id], t);
-    } else {
-        gq_push(&s->global, t);
-    }
-
-    // Wake a parked worker
-    pthread_mutex_lock(&s->park_lock);
-    pthread_cond_signal(&s->park_cond);
-    pthread_mutex_unlock(&s->park_lock);
+// A started task that can run again: back to the worker it lives on.
+static void sched_resume(GreenTask *t) {
+    GreenScheduler *s = g_sched;
+    Worker *w = &s->workers[t->home];
+    tq_push(&w->inbox, t);
+    worker_wake(w);
 }
 
-// I/O completion callback: re-enqueue the task.
-static void io_completion_cb(void *userdata, int64_t result, int err) {
-    GreenTask *t = (GreenTask *)userdata;
-    t->io_result = result;
-    t->io_err    = err;
-    if (g_sched) {
-        sched_enqueue(g_sched, t);
+// Make a parked task runnable. See PARK_* for the race this settles.
+static void task_wake(GreenTask *t) {
+    for (;;) {
+        int st = atomic_load_explicit(&t->park, memory_order_acquire);
+        if (st == PARK_PARKING) {
+            if (atomic_compare_exchange_weak_explicit(&t->park, &st, PARK_WOKEN,
+                    memory_order_acq_rel, memory_order_acquire)) {
+                return;
+            }
+        } else if (st == PARK_PARKED) {
+            if (atomic_compare_exchange_weak_explicit(&t->park, &st, PARK_RUNNING,
+                    memory_order_acq_rel, memory_order_acquire)) {
+                sched_resume(t);
+                return;
+            }
+        } else {
+            return; // already awake
+        }
     }
 }
 
@@ -394,160 +382,413 @@ static void io_completion_cb(void *userdata, int64_t result, int err) {
 extern jmp_buf *rask_panic_jmpbuf(void);
 extern void     rask_panic_activate(void);
 extern char    *rask_panic_take_message(void);
-extern int64_t  rask_next_task_id(void);
 extern void     rask_panic_set_task_id(int64_t id);
+extern void     rask_ensure_run_all(void);
 
-// ─── Ensure hooks (LIFO cleanup stack) ──────────────────────
-//
-// The stack itself lives in panic.c (always linked, shared by every
-// backend). A fiber worker parks the running task's hooks with
-// rask_ensure_stack_take/set on each context switch, and drains them via
-// rask_ensure_run_all on completion or panic.
+// ─── Running a fiber ────────────────────────────────────────
 
-extern void  *rask_ensure_stack_take(void);
-extern void   rask_ensure_stack_set(void *head);
-extern void   rask_ensure_run_all(void);
+// Switch off the running fiber back to its worker, for `reason`.
+static void switch_to_worker(GreenTask *t, int reason) {
+    t->switch_reason = reason;
+    rask_fiber_switch(&t->fiber, t->worker_fiber);
+}
 
-// Same deal for the locks a task holds (ctrl.panic/U3): parked with the task so
-// a worker multiplexing fibers doesn't hand one task's held locks to another.
-extern void  *rask_access_stack_take(void);
-extern void   rask_access_stack_set(void *head);
+// Let everything else that is runnable here go first.
+static void fiber_yield(void) {
+    GreenTask *t = tl_current_task;
+    if (!t) return;
+    switch_to_worker(t, SWITCH_YIELD);
+}
 
-// ─── Execute a single task ──────────────────────────────────
+static void fiber_main(void *arg) {
+    rask_fiber_started();
+    // A fresh fiber stack reads as zeros, which hides a slot codegen forgot to
+    // write exactly the way a fresh thread stack does.
+    rask_poison_stack();
+    GreenTask *t = (GreenTask *)arg;
 
-static void execute_task(GreenScheduler *s, GreenTask *t) {
-    atomic_store_explicit(&t->task_state, TASK_STATE_RUNNING,
-                          memory_order_release);
-    tl_current_task = t;
-
-    // Restore per-task ensure hook stack (may have hooks from previous polls)
-    rask_ensure_stack_set(t->ensure_stack);
-    rask_access_stack_set(t->access_stack);
-
-    // Install panic handler for this task invocation
     rask_panic_install();
     jmp_buf *jb = rask_panic_jmpbuf();
-    rask_panic_set_task_id(t->task_id); // F1
+    rask_panic_set_task_id(rask_task_id(t->task)); // F1
 
-    int poll_result;
+    int64_t result = 0;
+    char *panic_msg = NULL;
     if (setjmp(*jb) == 0) {
         rask_panic_activate();
-        poll_result = t->poll_fn(t->state, t);
+        result = t->body(t->body_arg);
     } else {
-        // Panicked — run cleanup hooks before completing
+        // Panicked — the hooks ran before the longjmp; drain anything left.
         rask_ensure_run_all();
-        t->panic_msg = rask_panic_take_message();
-        poll_result = RASK_POLL_READY;
-        t->result = -1;
+        panic_msg = rask_panic_take_message();
     }
-
     rask_panic_remove();
     rask_panic_set_task_id(0);
+    // A normal return has popped its hooks; anything still here is owed.
+    rask_ensure_run_all();
 
-    // Save ensure hook stack back to task before switching away
-    t->ensure_stack = rask_ensure_stack_take();
-    t->access_stack = rask_access_stack_take();
+    rask_task_finish(t->task, result, panic_msg);
+    t->switch_reason = SWITCH_DONE;
+    rask_fiber_switch_final(&t->fiber, t->worker_fiber);
+}
+
+static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
+    if (!t->started) {
+        t->started = 1;
+        t->home = w->id;
+        rask_fiber_init(&t->fiber, fiber_main, t);
+    }
+    t->worker_fiber = &w->fiber;
+    tl_current_task = t;
+    rask_task_set_current(t->task);
+    rask_task_tls_swap(t->tls);
+    rask_fiber_switch(&w->fiber, &t->fiber);
+    rask_task_tls_swap(t->tls);
+    rask_task_set_current(NULL);
     tl_current_task = NULL;
 
-    if (poll_result == RASK_POLL_READY) {
-        // Task complete — run remaining ensure hooks
-        rask_ensure_stack_set(t->ensure_stack);
-        t->ensure_stack = NULL;
-        rask_ensure_run_all();
-
-        atomic_store_explicit(&t->task_state, TASK_STATE_COMPLETE,
-                              memory_order_release);
-        task_mark_complete(t);
-        atomic_fetch_sub_explicit(&s->active_tasks, 1, memory_order_relaxed);
-        task_release(t); // scheduler's ref
-
-        // Signal shutdown waiter if all tasks done
-        if (atomic_load_explicit(&s->active_tasks, memory_order_acquire) == 0) {
+    switch (t->switch_reason) {
+    case SWITCH_DONE:
+        rask_fiber_destroy(&t->fiber);
+        if (atomic_fetch_sub_explicit(&s->active_tasks, 1, memory_order_acq_rel) == 1) {
             pthread_mutex_lock(&s->done_lock);
-            pthread_cond_signal(&s->done_cond);
+            pthread_cond_broadcast(&s->done_cond);
             pthread_mutex_unlock(&s->done_lock);
         }
-    } else {
-        // Task yielded (PENDING) — it will be re-enqueued by I/O callback
-        // or immediately if it self-enqueued before returning PENDING
-        atomic_store_explicit(&t->task_state, TASK_STATE_WAITING,
-                              memory_order_release);
+        task_free(t);
+        break;
+    case SWITCH_PARKED: {
+        int expected = PARK_PARKING;
+        if (!atomic_compare_exchange_strong_explicit(&t->park, &expected, PARK_PARKED,
+                memory_order_acq_rel, memory_order_acquire)) {
+            // Woken before it was off the stack; it runs again now.
+            atomic_store_explicit(&t->park, PARK_RUNNING, memory_order_release);
+            tq_push(&w->inbox, t);
+        }
+        break;
     }
+    case SWITCH_YIELD:
+        tq_push(&w->inbox, t);
+        break;
+    }
+}
+
+// ─── Timers ─────────────────────────────────────────────────
+
+// Wake every sleeper whose deadline has passed; returns the nearest deadline
+// still pending, or 0.
+static int64_t fire_timers(GreenScheduler *s) {
+    if (atomic_load_explicit(&s->timer_count, memory_order_acquire) == 0) return 0;
+    int64_t now = now_ns();
+    int64_t next = 0;
+    GreenTask *due = NULL;
+    pthread_mutex_lock(&s->timers_lock);
+    GreenTask **link = &s->timers;
+    while (*link) {
+        GreenTask *t = *link;
+        if (t->wake_at_ns <= now) {
+            *link = t->timer_next;
+            t->timer_next = due;
+            due = t;
+            atomic_fetch_sub_explicit(&s->timer_count, 1, memory_order_relaxed);
+        } else {
+            if (!next || t->wake_at_ns < next) next = t->wake_at_ns;
+            link = &t->timer_next;
+        }
+    }
+    pthread_mutex_unlock(&s->timers_lock);
+    while (due) {
+        GreenTask *t = due;
+        due = t->timer_next;
+        t->timer_next = NULL;
+        task_wake(t);
+    }
+    return next;
+}
+
+// ─── Stack overflow ─────────────────────────────────────────
+//
+// A fiber that runs into its guard page faults on a stack it can't push
+// another frame on, so the handler runs on a stack of its own (sigaltstack,
+// one per worker) and says what happened before the process dies. Any other
+// fault goes to whatever handler was there before.
+
+static struct sigaction prev_segv;
+static struct sigaction prev_bus;
+
+static void overflow_handler(int sig, siginfo_t *info, void *uctx) {
+    GreenTask *t = tl_current_task;
+    if (t && info && rask_fiber_in_guard(&t->fiber, info->si_addr)) {
+        char msg[160];
+        int n = snprintf(msg, sizeof(msg),
+                         "task %lld overflowed its stack (1 MiB) — "
+                         "unbounded recursion?\n",
+                         (long long)rask_task_id(t->task));
+        if (n > 0) {
+            ssize_t ignored = write(2, msg, (size_t)n);
+            (void)ignored;
+        }
+        signal(SIGABRT, SIG_DFL);
+        abort();
+    }
+    struct sigaction *prev = sig == SIGSEGV ? &prev_segv : &prev_bus;
+    if (prev->sa_flags & SA_SIGINFO) {
+        if (prev->sa_sigaction) {
+            prev->sa_sigaction(sig, info, uctx);
+            return;
+        }
+    } else if (prev->sa_handler != SIG_IGN && prev->sa_handler != SIG_DFL) {
+        prev->sa_handler(sig);
+        return;
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static pthread_once_t overflow_once = PTHREAD_ONCE_INIT;
+
+static void install_overflow_handler(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = overflow_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, &prev_segv);
+    sigaction(SIGBUS, &sa, &prev_bus);
+}
+
+// ─── Deadlock ───────────────────────────────────────────────
+//
+// Every task parked and nothing left that could wake one: no worker running a
+// fiber, nothing queued, no sleeper whose timer will fire, and every program
+// thread outside the scheduler itself blocked in a wait (thread.c). Once that
+// holds, it holds forever. A worker about to sleep checks it; one that finds it
+// true, and finds it still true with nothing having run a second later, reports
+// the waits and ends the process rather than hang.
+//
+// The second is for the one gap the counts can't see: a thread outside the
+// scheduler that has been signalled still counts as waiting until it gets a
+// CPU and comes out of `pthread_cond_wait`. On a loaded machine, or under
+// valgrind, that can take a while.
+//
+// A task parked on a socket rules a deadlock out, since the other end can wake
+// it. A task in a blocking read of anything else keeps its worker busy, so it
+// can't be mistaken for stuck either.
+
+#define DEADLOCK_CONFIRM_NS (1000LL * 1000000LL)
+
+void rask_outside_report(FILE *out);   // thread.c
+static void report_waits(FILE *out);
+
+static int nothing_can_move(GreenScheduler *s, Worker *self) {
+    if (atomic_load_explicit(&s->active_tasks, memory_order_seq_cst) == 0) return 0;
+    // A socket can be woken from outside the program.
+    if (atomic_load_explicit(&s->io_waiters, memory_order_seq_cst) != 0) return 0;
+    if (atomic_load_explicit(&s->timer_count, memory_order_seq_cst) != 0) return 0;
+    if (rask_outside_running() != 0) return 0;
+    if (atomic_load_explicit(&s->global.len, memory_order_seq_cst) != 0) return 0;
+    for (int i = 0; i < s->worker_count; i++) {
+        Worker *w = &s->workers[i];
+        if (w != self && !atomic_load_explicit(&w->sleeping, memory_order_seq_cst)) return 0;
+        if (atomic_load_explicit(&w->inbox.len, memory_order_seq_cst) != 0) return 0;
+        long top = atomic_load_explicit(&w->deque.top, memory_order_seq_cst);
+        long bottom = atomic_load_explicit(&w->deque.bottom, memory_order_seq_cst);
+        if (bottom > top) return 0;
+    }
+    return 1;
+}
+
+static int64_t progress_count(GreenScheduler *s) {
+    int64_t n = rask_outside_progress();
+    for (int i = 0; i < s->worker_count; i++) {
+        n += atomic_load_explicit(&s->workers[i].runs, memory_order_relaxed);
+    }
+    return n;
+}
+
+_Noreturn static void report_deadlock(void) {
+    fflush(stdout);
+    fprintf(stderr, "rask: deadlock: every task is waiting and nothing can wake one\n");
+    report_waits(stderr);
+    rask_outside_report(stderr);
+    fflush(stderr);
+    _exit(101);
+}
+
+// A failed check doesn't restart the clock: another worker is often awake for
+// a moment between its timed sleeps, which says nothing. What restarts it is
+// progress — a fiber running, or an outside thread coming out of a wait — and
+// nothing can un-stick the program without one of those.
+static void check_deadlock(GreenScheduler *s, Worker *self) {
+    if (!nothing_can_move(s, self)) return;
+    int64_t now = now_ns();
+    int64_t progress = progress_count(s);
+    pthread_mutex_lock(&s->stuck_lock);
+    int confirmed = 0;
+    if (s->stuck_since && s->stuck_progress == progress) {
+        confirmed = now - s->stuck_since >= DEADLOCK_CONFIRM_NS;
+    } else {
+        s->stuck_since = now;
+        s->stuck_progress = progress;
+    }
+    pthread_mutex_unlock(&s->stuck_lock);
+    if (confirmed && nothing_can_move(s, self) && progress_count(s) == progress) {
+        report_deadlock();
+    }
+}
+
+// ─── Sockets ────────────────────────────────────────────────
+//
+// A task waiting on a socket parks on a key made from the fd and the
+// direction. Fds sit in one epoll set, edge-triggered for both directions, and
+// any event on one wakes both of its keys; a waiter re-checks with `poll` and
+// parks again if the event wasn't for it. Edge-triggered is safe because the
+// waiter checks readiness itself after becoming a waiter, so an edge that came
+// before it doesn't need to come again.
+
+#define WAKE_TAG UINT64_MAX
+
+// Not an address: user space never has the top bits set, so these can't
+// collide with a condvar or lock key in the wait table.
+static const void *io_key(int fd, int want_write) {
+    return (const void *)(uintptr_t)(0xF000000000000000ULL |
+                                     ((uint64_t)(uint32_t)fd << 1) |
+                                     (uint64_t)(want_write != 0));
+}
+
+// Wake whatever waits on the sockets that became ready. Returns how many
+// socket events there were.
+static int netpoll(GreenScheduler *s, int timeout_ms) {
+    if (s->epfd < 0) return 0;
+    struct epoll_event evs[64];
+    int n = epoll_wait(s->epfd, evs, 64, timeout_ms);
+    int fired = 0;
+    for (int i = 0; i < n; i++) {
+        if (evs[i].data.u64 == WAKE_TAG) {
+            uint64_t drained;
+            ssize_t ignored = read(s->wakefd, &drained, sizeof(drained));
+            (void)ignored;
+            continue;
+        }
+        int fd = (int)evs[i].data.u64;
+        rask_fiber_notify(io_key(fd, 0), 1);
+        rask_fiber_notify(io_key(fd, 1), 1);
+        fired++;
+    }
+    return fired;
 }
 
 // ─── Worker loop ────────────────────────────────────────────
 
+static GreenTask *find_work(GreenScheduler *s, Worker *w) {
+    GreenTask *t = tq_pop(&w->inbox);
+    if (t) return t;
+    t = deque_pop(&w->deque);
+    if (t) return t;
+    int n = s->worker_count;
+    if (n > 1) {
+        int target = (int)(xorshift32() % (uint32_t)n);
+        if (target != w->id) {
+            t = deque_steal(&s->workers[target].deque);
+            if (t) return t;
+        }
+    }
+    return tq_pop(&s->global);
+}
+
 static void *worker_entry(void *arg) {
-    // The id comes from the caller, one slot per worker. It used to come from
-    // a process-global counter that nothing reset, so the workers of a second
-    // `using Multitasking` scope got ids 4..7 while their scheduler's deque
-    // array still had 4 entries — an out-of-bounds read, and a segfault the
-    // moment a program opened the scope twice.
-    WorkerArg *wa = (WorkerArg *)arg;
-    GreenScheduler *s = wa->sched;
-    int my_id = wa->id;
-    tl_worker_id = my_id;
-    tl_rng_state = (uint32_t)(my_id + 1) * 2654435761U;
+    Worker *w = (Worker *)arg;
+    GreenScheduler *s = w->sched;
+    tl_worker = w;
+    tl_rng_state = (uint32_t)(w->id + 1) * 2654435761U;
     rask_poison_stack();
+    rask_fiber_init_thread(&w->fiber);
+
+    stack_t alt;
+    alt.ss_size = 64 * 1024;
+    alt.ss_sp = malloc(alt.ss_size);
+    alt.ss_flags = 0;
+    if (alt.ss_sp) sigaltstack(&alt, NULL);
 
     int idle_spins = 0;
 
     while (!atomic_load_explicit(&s->shutdown, memory_order_acquire)) {
-        GreenTask *task = NULL;
-
-        // 1. Pop from local deque
-        task = deque_pop(&s->local[my_id]);
-
-        // 2. Steal from a random peer
-        if (!task) {
-            int live = atomic_load_explicit(&s->live_workers, memory_order_acquire);
-            int target = (int)(xorshift32() % (uint32_t)(live > 0 ? live : 1));
-            if (target != my_id) {
-                task = deque_steal(&s->local[target]);
-            }
-        }
-
-        // 3. Pop from global queue
-        if (!task) {
-            task = gq_pop(&s->global);
-        }
-
+        GreenTask *task = find_work(s, w);
         if (task) {
             idle_spins = 0;
-            execute_task(s, task);
+            atomic_fetch_add_explicit(&w->runs, 1, memory_order_relaxed);
+            run_task(s, w, task);
             continue;
         }
 
-        // 4. Poll I/O (non-blocking)
-        if (s->io) {
-            int fired = s->io->poll(s->io, 0);
-            if (fired > 0) {
-                idle_spins = 0;
-                continue;
-            }
+        int64_t next_timer = fire_timers(s);
+
+        if (netpoll(s, 0) > 0) {
+            idle_spins = 0;
+            continue;
         }
 
-        // 5. No work — spin briefly before parking
+        // No work — spin briefly before sleeping
         idle_spins++;
         if (idle_spins < 64) {
             sched_yield();
             continue;
         }
 
-        // 6. Park on condvar (with timeout to recheck I/O)
+        check_deadlock(s, w);
+
+        // Sleep until woken, or at most 1ms, or the next timer.
+        int64_t wait_ns = 1000000;
+        if (next_timer) {
+            int64_t until = next_timer - now_ns();
+            if (until < wait_ns) wait_ns = until > 0 ? until : 0;
+        }
+
+        // One sleeping worker is the poller: it sleeps in epoll_wait, so a
+        // socket becoming ready wakes its task at once. `polling` goes up
+        // before `sleeping`, so a waker that sees `sleeping` knows which way
+        // to wake it.
+        if (s->epfd >= 0 && !atomic_exchange_explicit(&s->poller_taken, 1, memory_order_acq_rel)) {
+            atomic_store_explicit(&w->polling, 1, memory_order_seq_cst);
+            atomic_store_explicit(&w->sleeping, 1, memory_order_seq_cst);
+            if (atomic_load_explicit(&w->inbox.len, memory_order_seq_cst) == 0 &&
+                atomic_load_explicit(&s->global.len, memory_order_seq_cst) == 0 &&
+                !atomic_load_explicit(&s->shutdown, memory_order_acquire)) {
+                netpoll(s, (int)((wait_ns + 999999) / 1000000));
+            }
+            atomic_store_explicit(&w->sleeping, 0, memory_order_release);
+            atomic_store_explicit(&w->polling, 0, memory_order_release);
+            atomic_store_explicit(&s->poller_taken, 0, memory_order_release);
+            idle_spins = 0;
+            continue;
+        }
+
         struct timespec ts;
         clock_gettime(CLOCK_REALTIME, &ts);
-        ts.tv_nsec += 1000000; // 1ms
-        if (ts.tv_nsec >= 1000000000L) {
+        ts.tv_nsec += wait_ns;
+        while (ts.tv_nsec >= 1000000000L) {
             ts.tv_sec += 1;
             ts.tv_nsec -= 1000000000L;
         }
-        pthread_mutex_lock(&s->park_lock);
-        pthread_cond_timedwait(&s->park_cond, &s->park_lock, &ts);
-        pthread_mutex_unlock(&s->park_lock);
+        pthread_mutex_lock(&w->sleep_lock);
+        atomic_store_explicit(&w->sleeping, 1, memory_order_seq_cst);
+        // Re-check after announcing, so a push that saw `sleeping == 0` a
+        // moment ago isn't missed.
+        if (atomic_load_explicit(&w->inbox.len, memory_order_seq_cst) == 0 &&
+            atomic_load_explicit(&s->global.len, memory_order_seq_cst) == 0 &&
+            !atomic_load_explicit(&s->shutdown, memory_order_acquire)) {
+            pthread_cond_timedwait(&w->sleep_cond, &w->sleep_lock, &ts);
+        }
+        atomic_store_explicit(&w->sleeping, 0, memory_order_release);
+        pthread_mutex_unlock(&w->sleep_lock);
         idle_spins = 0;
     }
 
+    if (alt.ss_sp) {
+        stack_t off = { .ss_flags = SS_DISABLE };
+        sigaltstack(&off, NULL);
+        free(alt.ss_sp);
+    }
+    tl_worker = NULL;
     return NULL;
 }
 
@@ -568,46 +809,57 @@ void rask_runtime_init(int64_t worker_count) {
     }
 
     s->worker_count = (int)worker_count;
-    // Room for the replacements a blocked join needs. The slots are allocated
-    // up front because a stealer indexes this array without a lock, so it must
-    // not move; only `live_workers` grows.
-    s->worker_slots = s->worker_count + JOIN_HELPER_SLOTS;
-    size_t slots = (size_t)s->worker_slots;
-    s->workers = (pthread_t *)calloc(slots, sizeof(pthread_t));
-    s->local   = (WorkDeque *)calloc(slots, sizeof(WorkDeque));
-    s->worker_args = (WorkerArg *)calloc(slots, sizeof(WorkerArg));
-    if (!s->workers || !s->local || !s->worker_args) {
+    s->workers = (Worker *)calloc((size_t)s->worker_count, sizeof(Worker));
+    if (!s->workers) {
         fprintf(stderr, "rask: scheduler arrays alloc failed\n");
         abort();
     }
 
-    for (int i = 0; i < s->worker_count; i++) {
-        deque_init(&s->local[i]);
-    }
-
-    gq_init(&s->global);
+    tq_init(&s->global);
     atomic_init(&s->active_tasks, 0);
     atomic_init(&s->shutdown, 0);
-    atomic_init(&s->blocked_in_join, 0);
-    atomic_init(&s->completions, 0);
-    atomic_init(&s->live_workers, s->worker_count);
-    pthread_mutex_init(&s->grow_lock, NULL);
-    pthread_mutex_init(&s->park_lock, NULL);
-    pthread_cond_init(&s->park_cond, NULL);
+    atomic_init(&s->timer_count, 0);
+    pthread_mutex_init(&s->timers_lock, NULL);
     pthread_mutex_init(&s->done_lock, NULL);
     pthread_cond_init(&s->done_cond, NULL);
+    pthread_mutex_init(&s->stuck_lock, NULL);
 
-    // Create I/O engine
-    s->io = rask_io_create();
-    // NULL is acceptable — scheduler works without I/O, tasks just can't yield on I/O
+    for (int i = 0; i < s->worker_count; i++) {
+        Worker *w = &s->workers[i];
+        w->sched = s;
+        w->id = i;
+        deque_init(&w->deque);
+        tq_init(&w->inbox);
+        pthread_mutex_init(&w->sleep_lock, NULL);
+        pthread_cond_init(&w->sleep_cond, NULL);
+        atomic_init(&w->sleeping, 0);
+        atomic_init(&w->polling, 0);
+        atomic_init(&w->runs, 0);
+    }
+
+    // Without epoll (or an eventfd to wake the poller) a task waiting on a
+    // socket blocks its worker instead of parking; everything else still works.
+    atomic_init(&s->poller_taken, 0);
+    atomic_init(&s->io_waiters, 0);
+    s->epfd = epoll_create1(EPOLL_CLOEXEC);
+    s->wakefd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (s->epfd >= 0 && s->wakefd >= 0) {
+        struct epoll_event ev = { .events = EPOLLIN, .data.u64 = WAKE_TAG };
+        if (epoll_ctl(s->epfd, EPOLL_CTL_ADD, s->wakefd, &ev) < 0) {
+            close(s->epfd);
+            s->epfd = -1;
+        }
+    } else if (s->epfd >= 0) {
+        close(s->epfd);
+        s->epfd = -1;
+    }
+
+    pthread_once(&overflow_once, install_overflow_handler);
 
     g_sched = s;
 
-    // Spawn worker threads
     for (int i = 0; i < s->worker_count; i++) {
-        s->worker_args[i].sched = s;
-        s->worker_args[i].id = i;
-        int err = pthread_create(&s->workers[i], NULL, worker_entry, &s->worker_args[i]);
+        int err = pthread_create(&s->workers[i].thread, NULL, worker_entry, &s->workers[i]);
         if (err != 0) {
             fprintf(stderr, "rask: failed to create worker thread %d: %d\n",
                     i, err);
@@ -620,7 +872,10 @@ void rask_runtime_shutdown(void) {
     GreenScheduler *s = g_sched;
     if (!s) return;
 
-    // Wait for all active tasks to complete
+    // Wait for all active tasks to complete. Timed only so a missed broadcast
+    // can't hang it; the thread can't wake anyone meanwhile, so it counts as
+    // waiting for the deadlock check.
+    rask_thread_wait_begin("the end of `using Multitasking`");
     pthread_mutex_lock(&s->done_lock);
     while (atomic_load_explicit(&s->active_tasks, memory_order_acquire) > 0) {
         struct timespec ts;
@@ -633,430 +888,316 @@ void rask_runtime_shutdown(void) {
         pthread_cond_timedwait(&s->done_cond, &s->done_lock, &ts);
     }
     pthread_mutex_unlock(&s->done_lock);
+    rask_thread_wait_end();
 
-    // Signal shutdown and wake all workers
+    // Signal shutdown and wake all workers, the poller through its eventfd.
     atomic_store_explicit(&s->shutdown, 1, memory_order_release);
-
-    pthread_mutex_lock(&s->park_lock);
-    pthread_cond_broadcast(&s->park_cond);
-    pthread_mutex_unlock(&s->park_lock);
-
-    // Join worker threads — including any replacement a blocked join started.
-    int live = atomic_load_explicit(&s->live_workers, memory_order_acquire);
-    for (int i = 0; i < live; i++) {
-        pthread_join(s->workers[i], NULL);
+    if (s->wakefd >= 0) {
+        uint64_t one = 1;
+        ssize_t ignored = write(s->wakefd, &one, sizeof(one));
+        (void)ignored;
+    }
+    for (int i = 0; i < s->worker_count; i++) {
+        Worker *w = &s->workers[i];
+        pthread_mutex_lock(&w->sleep_lock);
+        pthread_cond_signal(&w->sleep_cond);
+        pthread_mutex_unlock(&w->sleep_lock);
+    }
+    for (int i = 0; i < s->worker_count; i++) {
+        pthread_join(s->workers[i].thread, NULL);
     }
 
     // Cleanup
-    if (s->io) s->io->destroy(s->io);
-    gq_destroy(&s->global);
-    pthread_mutex_destroy(&s->park_lock);
-    pthread_cond_destroy(&s->park_cond);
+    if (s->epfd >= 0) close(s->epfd);
+    if (s->wakefd >= 0) close(s->wakefd);
+    for (int i = 0; i < s->worker_count; i++) {
+        Worker *w = &s->workers[i];
+        tq_destroy(&w->inbox);
+        pthread_mutex_destroy(&w->sleep_lock);
+        pthread_cond_destroy(&w->sleep_cond);
+    }
+    tq_destroy(&s->global);
+    pthread_mutex_destroy(&s->timers_lock);
     pthread_mutex_destroy(&s->done_lock);
     pthread_cond_destroy(&s->done_cond);
-    pthread_mutex_destroy(&s->grow_lock);
-    free(s->local);
-    free(s->worker_args);
+    pthread_mutex_destroy(&s->stuck_lock);
     free(s->workers);
     free(s);
     g_sched = NULL;
 }
 
+// ─── Parking ────────────────────────────────────────────────
+//
+// The primitive every wait is built on: park the running fiber on an address,
+// and let a notify on that address make it runnable again. The same shape as
+// sim mode's park/notify (sim.c), which is why sim.h's wrappers can route to
+// either.
+//
+// Waiters live in a small hash table of buckets keyed by address. Each bucket
+// counts its waiters so a notify with nobody waiting — every unlock of an
+// uncontended lock — costs one atomic load.
+
+#define WAIT_BUCKETS 64
+
+typedef struct {
+    pthread_mutex_t lock;
+    atomic_int      waiters;
+    GreenTask      *head;
+} WaitBucket;
+
+static WaitBucket g_wait[WAIT_BUCKETS] = {
+    [0 ... WAIT_BUCKETS - 1] = { .lock = PTHREAD_MUTEX_INITIALIZER },
+};
+
+static WaitBucket *bucket_for(const void *key) {
+    uintptr_t k = (uintptr_t)key;
+    k ^= k >> 17;
+    k *= 0x9E3779B97F4A7C15ULL;
+    return &g_wait[(k >> 32) % WAIT_BUCKETS];
+}
+
+// Append `t` as a waiter on `key`. Caller holds the bucket lock.
+static void bucket_add(WaitBucket *b, GreenTask *t, const void *key) {
+    t->wait_key = key;
+    t->wait_next = NULL;
+    GreenTask **link = &b->head;
+    while (*link) link = &(*link)->wait_next;
+    *link = t;
+    atomic_fetch_add_explicit(&b->waiters, 1, memory_order_seq_cst);
+}
+
+// Remove `t`; caller holds the bucket lock.
+static void bucket_remove(WaitBucket *b, GreenTask *t) {
+    GreenTask **link = &b->head;
+    while (*link && *link != t) link = &(*link)->wait_next;
+    if (*link) {
+        *link = t->wait_next;
+        t->wait_next = NULL;
+        atomic_fetch_sub_explicit(&b->waiters, 1, memory_order_relaxed);
+    }
+}
+
+int rask_fiber_active(void) {
+    return tl_current_task != NULL;
+}
+
+void rask_fiber_notify(const void *key, int all) {
+    WaitBucket *b = bucket_for(key);
+    atomic_thread_fence(memory_order_seq_cst);
+    if (atomic_load_explicit(&b->waiters, memory_order_seq_cst) == 0) return;
+
+    GreenTask *woken = NULL;
+    pthread_mutex_lock(&b->lock);
+    GreenTask **link = &b->head;
+    while (*link) {
+        GreenTask *t = *link;
+        if (t->wait_key == key) {
+            *link = t->wait_next;
+            atomic_fetch_sub_explicit(&b->waiters, 1, memory_order_relaxed);
+            t->wait_next = woken;
+            woken = t;
+            if (!all) break;
+        } else {
+            link = &t->wait_next;
+        }
+    }
+    pthread_mutex_unlock(&b->lock);
+
+    while (woken) {
+        GreenTask *t = woken;
+        woken = t->wait_next;
+        t->wait_next = NULL;
+        task_wake(t);
+    }
+}
+
+// Condition wait on a fiber: become a waiter on `c`, let go of `m`, park, and
+// take `m` back once woken. Like pthread_cond_wait, a caller loops on its own
+// condition — a wake can be spurious.
+void rask_fiber_cond_wait(pthread_cond_t *c, pthread_mutex_t *m, const char *what) {
+    GreenTask *t = tl_current_task;
+    WaitBucket *b = bucket_for(c);
+    t->wait_what = what;
+    pthread_mutex_lock(&b->lock);
+    atomic_store_explicit(&t->park, PARK_PARKING, memory_order_release);
+    bucket_add(b, t, c);
+    pthread_mutex_unlock(&b->lock);
+    pthread_mutex_unlock(m);
+    switch_to_worker(t, SWITCH_PARKED);
+    pthread_mutex_lock(m);
+}
+
+// Park until `try_take(obj)` succeeds. The retry happens after becoming a
+// waiter and before sleeping, so a release between the failed attempt and
+// the park still wakes us.
+static void park_until(const void *key, int (*try_take)(void *), void *obj,
+                       const char *what) {
+    GreenTask *t = tl_current_task;
+    WaitBucket *b = bucket_for(key);
+    t->wait_what = what;
+    for (;;) {
+        if (try_take(obj)) return;
+        pthread_mutex_lock(&b->lock);
+        atomic_store_explicit(&t->park, PARK_PARKING, memory_order_release);
+        bucket_add(b, t, key);
+        if (try_take(obj)) {
+            bucket_remove(b, t);
+            atomic_store_explicit(&t->park, PARK_RUNNING, memory_order_release);
+            pthread_mutex_unlock(&b->lock);
+            return;
+        }
+        pthread_mutex_unlock(&b->lock);
+        switch_to_worker(t, SWITCH_PARKED);
+    }
+}
+
+static int try_mutex(void *m) { return pthread_mutex_trylock((pthread_mutex_t *)m) == 0; }
+static int try_rd(void *l) { return pthread_rwlock_tryrdlock((pthread_rwlock_t *)l) == 0; }
+static int try_wr(void *l) { return pthread_rwlock_trywrlock((pthread_rwlock_t *)l) == 0; }
+
+void rask_fiber_mutex_lock(pthread_mutex_t *m, const char *what) {
+    park_until(m, try_mutex, m, what);
+}
+void rask_fiber_rwlock_rdlock(pthread_rwlock_t *l, const char *what) {
+    park_until(l, try_rd, l, what);
+}
+void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l, const char *what) {
+    park_until(l, try_wr, l, what);
+}
+
+// ─── Waiting on a socket ────────────────────────────────────
+
+typedef struct {
+    int   fd;
+    short events;
+} IoWait;
+
+static int io_ready(void *arg) {
+    IoWait *w = (IoWait *)arg;
+    struct pollfd p = { .fd = w->fd, .events = w->events };
+    // An error or a hang-up counts: the syscall the caller retries reports it.
+    return poll(&p, 1, 0) > 0;
+}
+
+// Ready, or the task was cancelled while waiting (conc.async/CN3).
+static int io_ready_or_cancelled(void *arg) {
+    return rask_cancel_requested() || io_ready(arg);
+}
+
+static void wake_io_waiter(RaskCancelWake *w) {
+    rask_fiber_notify(w->a, 1);
+}
+
+// Wait until a non-blocking socket can be read (or accepted on) or written.
+// On a fiber this parks and gives the worker to other tasks; anywhere else it
+// blocks the thread in poll. 1 means a cancel ended the wait.
+int rask_io_wait(int64_t fd, int64_t want_write) {
+    GreenTask *t = tl_current_task;
+    GreenScheduler *s = g_sched;
+    short events = want_write ? POLLOUT : POLLIN;
+    if (!t || !s || s->epfd < 0) {
+        return rask_thread_io_wait(fd, want_write);
+    }
+    struct epoll_event ev = {
+        .events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET,
+        .data.u64 = (uint64_t)(uint32_t)fd,
+    };
+    if (epoll_ctl(s->epfd, EPOLL_CTL_ADD, (int)fd, &ev) < 0 && errno != EEXIST) {
+        // Not something epoll can watch.
+        return rask_thread_io_wait(fd, want_write);
+    }
+    IoWait w = { .fd = (int)fd, .events = events };
+    const void *key = io_key((int)fd, (int)want_write);
+    RaskCancelWake wake = { .wake = wake_io_waiter, .a = (void *)key };
+    rask_cancel_wait_begin(&wake);
+    atomic_fetch_add_explicit(&s->io_waiters, 1, memory_order_seq_cst);
+    park_until(key, io_ready_or_cancelled, &w,
+               want_write ? "a socket to take a write" : "a socket to be readable");
+    atomic_fetch_sub_explicit(&s->io_waiters, 1, memory_order_seq_cst);
+    rask_cancel_wait_end();
+    return rask_cancel_requested();
+}
+
+// Every parked task and what it waits on, for the deadlock report.
+static void report_waits(FILE *out) {
+    for (int i = 0; i < WAIT_BUCKETS; i++) {
+        WaitBucket *b = &g_wait[i];
+        pthread_mutex_lock(&b->lock);
+        for (GreenTask *t = b->head; t; t = t->wait_next) {
+            fprintf(out, "  task %lld waiting on %s\n", (long long)rask_task_id(t->task),
+                    t->wait_what ? t->wait_what : "a wakeup");
+        }
+        pthread_mutex_unlock(&b->lock);
+    }
+}
+
+// A cancel ending a sleep: take the fiber off the timer list, so the timer
+// can't wake it a second time later, and make it runnable. If the timer got
+// there first it's already on its way.
+static void wake_sleeper(RaskCancelWake *w) {
+    GreenTask *t = (GreenTask *)w->a;
+    GreenScheduler *s = g_sched;
+    int found = 0;
+    pthread_mutex_lock(&s->timers_lock);
+    for (GreenTask **link = &s->timers; *link; link = &(*link)->timer_next) {
+        if (*link == t) {
+            *link = t->timer_next;
+            t->timer_next = NULL;
+            atomic_fetch_sub_explicit(&s->timer_count, 1, memory_order_relaxed);
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&s->timers_lock);
+    if (found) task_wake(t);
+}
+
+int rask_fiber_sleep_ns(int64_t ns) {
+    GreenTask *t = tl_current_task;
+    GreenScheduler *s = g_sched;
+    if (ns <= 0) {
+        fiber_yield();
+        return 0;
+    }
+    RaskCancelWake w = { .wake = wake_sleeper, .a = t };
+    if (rask_cancel_wait_begin(&w)) {
+        rask_cancel_wait_end();
+        return 1;
+    }
+    t->wake_at_ns = now_ns() + ns;
+    pthread_mutex_lock(&s->timers_lock);
+    atomic_store_explicit(&t->park, PARK_PARKING, memory_order_release);
+    t->timer_next = s->timers;
+    s->timers = t;
+    atomic_fetch_add_explicit(&s->timer_count, 1, memory_order_release);
+    pthread_mutex_unlock(&s->timers_lock);
+    // A sleeping worker may be waiting longer than this timer.
+    for (int i = 0; i < s->worker_count; i++) worker_wake(&s->workers[i]);
+    switch_to_worker(t, SWITCH_PARKED);
+    rask_cancel_wait_end();
+    return rask_cancel_requested();
+}
+
 // ─── Spawn / Join / Detach / Cancel ─────────────────────────
 
-void *rask_green_spawn(void *poll_fn, void *state, int64_t state_size) {
+// `result_owned` says the closure hands back a heap box rather than a plain
+// value — see `RaskTask::result_owned`. The compiler knows the payload type and
+// passes it; the runtime only needs to know whether to free.
+RaskTask *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
     GreenScheduler *s = g_sched;
     if (!s) {
         rask_panic("spawn outside `using Multitasking {}` block");
     }
-
-    GreenTask *t = task_new((rask_poll_fn)poll_fn, state, state_size);
-    atomic_fetch_add_explicit(&s->active_tasks, 1, memory_order_relaxed);
-    sched_enqueue(s, t);
-
-    GreenHandle *h = (GreenHandle *)malloc(sizeof(GreenHandle));
-    if (!h) {
-        fprintf(stderr, "rask: green handle alloc failed\n");
-        abort();
-    }
-    *h = (GreenHandle){ .task = t };
-    return h;
-}
-
-// Start a replacement worker, because every existing one is blocked in a join.
-//
-// A blocked worker isn't running anything, so the scope is short of runnable
-// workers for as long as the join lasts. The replacement is a whole thread
-// rather than a reused one: `execute_task` is not reentrant — one `jmp_buf` per
-// thread in panic.c, `tl_current_task` cleared rather than restored, ensure and
-// access stacks swapped without saving the outer task's — so running a nested
-// task on the blocked worker's stack is not the shortcut it looks like.
-//
-// It lives until the scope ends. Retiring it when the join returns would need a
-// handshake with a thread that may be mid-task, and there is nothing to gain:
-// an idle worker parks.
-//
-// Returns 0 when the slots are spent, which is when the report below is still
-// the answer.
-static int helper_spawn(GreenScheduler *s) {
-    pthread_mutex_lock(&s->grow_lock);
-    int id = atomic_load_explicit(&s->live_workers, memory_order_relaxed);
-    if (id >= s->worker_slots) {
-        pthread_mutex_unlock(&s->grow_lock);
-        return 0;
-    }
-    // Initialized before it is published: a stealer that sees the new count
-    // indexes straight into this deque.
-    deque_init(&s->local[id]);
-    s->worker_args[id].sched = s;
-    s->worker_args[id].id = id;
-    int err = pthread_create(&s->workers[id], NULL, worker_entry, &s->worker_args[id]);
-    if (err != 0) {
-        pthread_mutex_unlock(&s->grow_lock);
-        return 0;
-    }
-    atomic_store_explicit(&s->live_workers, id + 1, memory_order_release);
-    pthread_mutex_unlock(&s->grow_lock);
-    return 1;
-}
-
-// Wait for `t`, growing the pool rather than starving it.
-//
-// A worker that joins blocks here and stops taking work, so once every worker
-// is blocked in a join there is nothing left to run the tasks they are waiting
-// for. `using Multitasking(workers: 1)` with one nested spawn+join reached that
-// state on every run, and the program hung with no output and no exit — the
-// worst way for a scheduling bug to present.
-//
-// So when the worker about to block is the last runnable one, the scope starts
-// a replacement first (`helper_spawn`). The check is exact — every worker
-// blocked, counting this one — so a scope that never nests never grows.
-//
-// Suspending the joining task and reusing its thread is still the real fix, and
-// it needs the fiber switch that isn't built (#1130). This gives up a thread
-// per simultaneously-blocked join instead, and past `JOIN_HELPER_SLOTS` of them
-// the report below is what you get.
-//
-// Called with `t->done_lock` held and `t->done` false.
-static void join_wait(GreenTask *t) {
-    GreenScheduler *s = g_sched;
-    // The main thread joining is not a worker, so it blocking costs nothing.
-    if (!s || tl_worker_id < 0) {
-        while (!t->done) {
-            pthread_cond_wait(&t->done_cond, &t->done_lock);
-        }
-        return;
-    }
-
-    int blocked = atomic_fetch_add_explicit(&s->blocked_in_join, 1,
-                                            memory_order_acq_rel) + 1;
-    unsigned seen = atomic_load_explicit(&s->completions, memory_order_acquire);
-
-    // Nobody left to run what this join waits for.
-    if (blocked >= atomic_load_explicit(&s->live_workers, memory_order_acquire)) {
-        helper_spawn(s);
-    }
-
-    while (!t->done) {
-        struct timespec deadline;
-        clock_gettime(CLOCK_REALTIME, &deadline);
-        deadline.tv_sec += 2;
-        int rc = pthread_cond_timedwait(&t->done_cond, &t->done_lock, &deadline);
-        if (rc != ETIMEDOUT || t->done) {
-            continue;
-        }
-        // Timed out. Every worker blocked *and* nothing finished in the
-        // meantime means no one is left who could finish anything. A slow task
-        // doesn't reach here: a worker running it is not blocked.
-        blocked = atomic_load_explicit(&s->blocked_in_join, memory_order_acquire);
-        unsigned now = atomic_load_explicit(&s->completions, memory_order_acquire);
-        int live = atomic_load_explicit(&s->live_workers, memory_order_acquire);
-        if (blocked >= live && now == seen && !helper_spawn(s)) {
-            fprintf(stderr,
-                    "rask: deadlock — all %d worker(s) of `using Multitasking` are "
-                    "blocked in join, and the %d replacements a blocked join may "
-                    "start are spent, so nothing is left to run the tasks they wait "
-                    "for.\n"
-                    "  a join this deep needs a thread per level; restructure so "
-                    "fewer than %d tasks join at once.\n",
-                    s->worker_count, JOIN_HELPER_SLOTS, JOIN_HELPER_SLOTS);
-            abort();
-        }
-        seen = now;
-    }
-
-    atomic_fetch_sub_explicit(&s->blocked_in_join, 1, memory_order_acq_rel);
-}
-
-int64_t rask_green_join(void *handle, char **msg_out) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("join on consumed TaskHandle");
-    }
-
-    GreenTask *t = h->task;
-
-    // Block until task completes
-    pthread_mutex_lock(&t->done_lock);
-    if (!t->done) {
-        join_wait(t);
-    }
-    pthread_mutex_unlock(&t->done_lock);
-
-    int64_t result = t->result;
-    // Ownership of a boxed result moves to the caller here: clearing it stops
-    // `task_release` below from freeing what the caller is about to read.
-    t->result = 0;
-
-    // If task panicked, hand the message back instead of re-panicking here —
-    // the joiner decides what to do with it (matches thread.c's convention).
-    if (t->panic_msg) {
-        if (msg_out) {
-            *msg_out = t->panic_msg;
-        } else {
-            free(t->panic_msg);
-        }
-        t->panic_msg = NULL;
-        task_release(t); // handle's ref
-        free(h);
-        return -1;
-    }
-
-    if (msg_out) *msg_out = NULL;
-    task_release(t); // handle's ref
-    free(h);
-    return result;
-}
-
-int64_t rask_green_join_simple(void *handle) {
-    return rask_green_join(handle, NULL);
-}
-
-void rask_green_detach(void *handle) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("detach on consumed TaskHandle");
-    }
-    GreenTask *t = h->task;
-
-    pthread_mutex_lock(&t->done_lock);
-    t->detached = 1;
-    // O4: the task may have already panicked and finished before detach()
-    // ran — same "report now, nobody will join" rule applies.
-    if (t->done && t->panic_msg) {
-        fprintf(stderr, "task %lld panic at %s\n",
-                (long long)t->task_id, t->panic_msg);
-        free(t->panic_msg);
-        t->panic_msg = NULL;
-    }
-    pthread_mutex_unlock(&t->done_lock);
-
-    task_release(t); // drop handle's ref
-    free(h);
-}
-
-int64_t rask_green_cancel(void *handle, char **msg_out) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("cancel on consumed TaskHandle");
-    }
-
-    // Set cancel flag
-    atomic_store_explicit(&h->task->cancel_flag, 1, memory_order_release);
-
-    // Wait for completion
-    return rask_green_join(handle, msg_out);
-}
-
-int64_t rask_green_cancel_simple(void *handle) {
-    return rask_green_cancel(handle, NULL);
-}
-
-// Shared tail for the two outcome-reporting entry points. `cancelled` says
-// whether a cancel was requested, which is what separates "the task stopped
-// early because we asked it to" from "it finished normally".
-static int64_t green_join_outcome(void *handle, int cancelled,
-                                  int64_t *value_out, RaskStr *msg_out) {
-    char *msg = NULL;
-    int64_t value = rask_green_join(handle, &msg);
-
-    if (msg) {
-        rask_string_from(msg_out, msg);
-        free(msg);
-        if (value_out) *value_out = 0;
-        return RASK_JOIN_PANICKED;
-    }
-
-    rask_string_new(msg_out);
-    if (cancelled) {
-        if (value_out) *value_out = 0;
-        return RASK_JOIN_CANCELLED;
-    }
-    if (value_out) *value_out = value;
-    return RASK_JOIN_OK;
-}
-
-int64_t rask_green_join_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("join on consumed TaskHandle");
-    }
-    int cancelled = atomic_load_explicit(&h->task->cancel_flag, memory_order_acquire);
-    return green_join_outcome(handle, cancelled, value_out, msg_out);
-}
-
-int64_t rask_green_cancel_outcome(void *handle, int64_t *value_out, RaskStr *msg_out) {
-    GreenHandle *h = (GreenHandle *)handle;
-    if (!h || !h->task) {
-        rask_panic("cancel on consumed TaskHandle");
-    }
-    atomic_store_explicit(&h->task->cancel_flag, 1, memory_order_release);
-    return green_join_outcome(handle, 1, value_out, msg_out);
-}
-
-// ─── Yield helpers (called by state machines) ───────────────
-//
-// These submit an I/O op with a callback that re-enqueues the current task,
-// then the state machine returns PENDING. On next poll, it checks io_result.
-
-void rask_yield_read(int fd, void *buf, size_t len) {
-    GreenScheduler *s = g_sched;
-    GreenTask *t = tl_current_task;
-    if (!s || !s->io || !t) return;
-
-    s->io->submit_read(s->io, fd, buf, len, io_completion_cb, t);
-}
-
-void rask_yield_write(int fd, const void *buf, size_t len) {
-    GreenScheduler *s = g_sched;
-    GreenTask *t = tl_current_task;
-    if (!s || !s->io || !t) return;
-
-    s->io->submit_write(s->io, fd, buf, len, io_completion_cb, t);
-}
-
-void rask_yield_accept(int listen_fd) {
-    GreenScheduler *s = g_sched;
-    GreenTask *t = tl_current_task;
-    if (!s || !s->io || !t) return;
-
-    s->io->submit_accept(s->io, listen_fd, io_completion_cb, t);
-}
-
-void rask_yield_timeout(uint64_t ns) {
-    GreenScheduler *s = g_sched;
-    GreenTask *t = tl_current_task;
-    if (!s || !s->io || !t) return;
-
-    s->io->submit_timeout(s->io, ns, io_completion_cb, t);
-}
-
-void rask_yield(void) {
-    // Cooperative yield: re-enqueue via zero-timeout so the task gets
-    // polled again on the next I/O sweep. Falls back to direct re-enqueue
-    // if no I/O engine is available.
-    GreenScheduler *s = g_sched;
-    GreenTask *t = tl_current_task;
-    if (!s || !t) return;
-
-    if (s->io) {
-        s->io->submit_timeout(s->io, 0, io_completion_cb, t);
-    } else {
-        // No I/O engine — direct re-enqueue
-        sched_enqueue(s, t);
-    }
-}
-
-int rask_green_task_is_cancelled(void) {
-    GreenTask *t = tl_current_task;
-    if (!t) return 0;
-    return atomic_load_explicit(&t->cancel_flag, memory_order_acquire);
-}
-
-// ─── Closure-based spawn adapter ────────────────────────────
-//
-// For Phase A compatibility: wraps a closure (func_ptr | captures) as
-// a single-state poll function that calls the closure once and returns READY.
-// This is the bridge until the compiler generates state machines (Task 2).
-
-typedef struct {
-    int64_t (*func)(void *env);
-    void *env;
-    void *alloc_base; // closure allocation to free after task
-} ClosurePollState;
-
-static int closure_poll_fn(void *state, void *task_ctx) {
-    ClosurePollState *s = (ClosurePollState *)state;
+    GreenTask *t = task_new();
     // The closure's return value is the task's result — it's what `h.join()`
-    // hands back. Calling through a void signature dropped it, so every join
-    // on a value-returning task answered 0. A `spawn(|| { … })` with nothing
-    // to return leaves a junk value here, but its handle is TaskHandle<void>
-    // and the payload is never read.
-    int64_t r = s->func(s->env);
-    if (task_ctx) ((GreenTask *)task_ctx)->result = r;
-    // The closure allocation is the task's to free, not this frame's — see
-    // `GreenTask::closure_base`. Freeing it here as well would race the
-    // spawner, which can only name the task after `rask_green_spawn` has
-    // returned, by which time a short body may already have run.
-    s->alloc_base = NULL;
-    return RASK_POLL_READY;
-}
-
-// `result_owned` says the closure hands back a heap box rather than a plain
-// value — see `GreenTask::result_owned`. The compiler knows the payload type and
-// passes it; the runtime only needs to know whether to free.
-void *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned) {
-    int64_t (*func)(void *) = *(int64_t (**)(void *))(closure_ptr);
-    void *env = (char *)closure_ptr + 8;
-
-    ClosurePollState *ps = (ClosurePollState *)malloc(sizeof(ClosurePollState));
-    if (!ps) {
-        fprintf(stderr, "rask: closure poll state alloc failed\n");
-        abort();
-    }
-    *ps = (ClosurePollState){ .func = func, .env = env, .alloc_base = closure_ptr };
-
-    void *handle = rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
-    GreenHandle *h = (GreenHandle *)handle;
-    if (h && h->task) {
-        h->task->result_owned = result_owned;
-        h->task->closure_base = closure_ptr;
-    }
+    // hands back.
+    t->body = *(int64_t (**)(void *))(closure_ptr);
+    t->body_arg = (char *)closure_ptr + 8;
+    t->task = rask_task_new();
+    rask_task_adopt_closure(t->task, closure_ptr, result_owned);
+    // Held by the handle; the fiber keeps its own ref until it's done.
+    RaskTask *handle = t->task;
+    atomic_fetch_add_explicit(&s->active_tasks, 1, memory_order_relaxed);
+    sched_enqueue_new(s, t);
     return handle;
 }
-
-// ─── I/O wrappers ───────────────────────────────────────────
-//
-// Blocking syscall wrappers. Async I/O inside green tasks requires the
-// state machine to call rask_yield_read/write/accept directly and return
-// PENDING — the I/O completion callback re-enqueues the task with io_result
-// populated. These wrappers exist for non-green contexts and for use by
-// channel retry loops that handle yielding internally.
-
-int64_t rask_async_read(int fd, void *buf, int64_t len) {
-    ssize_t n = read(fd, buf, (size_t)len);
-    return (int64_t)n;
-}
-
-int64_t rask_async_write(int fd, const void *buf, int64_t len) {
-    ssize_t n = write(fd, buf, (size_t)len);
-    return (int64_t)n;
-}
-
-int64_t rask_async_accept(int listen_fd) {
-    int client = accept(listen_fd, NULL, NULL);
-    return (int64_t)client;
-}
-
-// ─── Green-aware sleep ──────────────────────────────────────
-//
-// State machine code calls rask_yield_timeout directly and returns PENDING.
-// This wrapper is for non-yielding contexts (closure-based spawns, OS threads).
-
-void rask_green_sleep_ns(int64_t ns) {
-    struct timespec ts;
-    ts.tv_sec  = ns / 1000000000LL;
-    ts.tv_nsec = ns % 1000000000LL;
-    nanosleep(&ts, NULL);
-}
-

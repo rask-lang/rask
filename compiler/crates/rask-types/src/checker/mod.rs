@@ -123,6 +123,16 @@ pub enum UnsafeCategory {
     UncheckedArith,
 }
 
+/// A name used somewhere a `spawn` might capture it. See `task_bound_uses`.
+pub(super) struct TaskBoundUse {
+    pub name: String,
+    pub ty: Type,
+    pub span: rask_ast::Span,
+    /// Depth of the local scope the name was found in. One declared inside the
+    /// spawned closure is deeper than the call and belongs to the task.
+    pub depth: usize,
+}
+
 pub struct TypeChecker {
     /// Symbol table from resolution.
     pub(super) resolved: ResolvedProgram,
@@ -369,11 +379,12 @@ pub struct TypeChecker {
     /// the receiver has a real type to answer from instead of the union of
     /// every stdlib method name (#928).
     pub(super) pending_self_mutations: Vec<PendingSelfMutation>,
-    /// Every use of a name that might turn out to be a `Shared`, with its type
-    /// and span. Checked after constraint solving for SH7 — during the walk the
+    /// Every use of a name that might turn out to be something a task can't
+    /// be handed — a `Local` box (SH7) or a value carrying a `Link` (T2) — with
+    /// its type and span. Checked after constraint solving: during the walk the
     /// type is usually still a variable, since `let c = Shared.new(0)` is solved
     /// later.
-    pub(super) local_shared_uses: Vec<(String, Type, rask_ast::Span)>,
+    pub(super) task_bound_uses: Vec<TaskBoundUse>,
     /// Suppressions from the enclosing function's `@allow(...)` attributes.
     /// Statements carry no attributes, so a per-site `@allow` isn't expressible;
     /// the function is the smallest scope the AST offers.
@@ -397,9 +408,16 @@ pub struct TypeChecker {
     /// `staged()` calls already reported. A body can be inferred more than once
     /// and the error is about where the call sits, not about a type.
     pub(super) staged_reported: std::collections::HashSet<rask_ast::NodeId>,
-    /// The argument spans of every `spawn` call seen. A use inside one of these
-    /// is a use in another task.
-    pub(super) spawn_arg_spans: Vec<rask_ast::Span>,
+    /// The argument spans of every `spawn` call seen, each with the local scope
+    /// depth at the call. A use inside one of these of a name from a scope no
+    /// deeper than that is a capture: the name is reached from another task.
+    pub(super) spawn_arg_spans: Vec<(rask_ast::Span, usize)>,
+    /// Closures bound to a name, keyed by the name and the depth of the scope
+    /// holding it, each with its span and the scope depth where it was
+    /// written. `spawn(f)` runs these as surely as `spawn(|| …)` runs its
+    /// argument, so they are checked for captures the same way.
+    pub(super) closure_bindings:
+        HashMap<(String, usize), Vec<(rask_ast::Span, usize)>>,
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
@@ -569,12 +587,13 @@ impl TypeChecker {
             pending_index: Vec::new(),
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),
-            local_shared_uses: Vec::new(),
+            task_bound_uses: Vec::new(),
             with_source_ids: std::collections::HashSet::new(),
             staged_reported: std::collections::HashSet::new(),
             allowed_warnings: Vec::new(),
             comptime_string_names: vec![HashMap::new()],
             spawn_arg_spans: Vec::new(),
+            closure_bindings: HashMap::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
@@ -755,8 +774,8 @@ impl TypeChecker {
         // Every recorded type, with inference's answers substituted in.
         //
         // Some still hold a variable inference never solved. They stay: a
-        // consumer reading the *head* of a type is right to — `TaskHandle<?>`
-        // is still a `TaskHandle`, and that's what the ownership checker needs
+        // consumer reading the *head* of a type is right to — `Handle<?>`
+        // is still a `Handle`, and that's what the ownership checker needs
         // to know a handle got dropped. What can't be done with one is compute
         // a layout, and that's guarded where layouts are made
         // (`MirContext::lookup_node_type`), not by throwing the type away here.

@@ -285,6 +285,14 @@ fn the_network_corners_answer_instead_of_hanging() {
 }
 
 #[test]
+fn a_select_nothing_can_satisfy_is_a_deadlock() {
+    let (out, code) = sim(&["--seed", "1", "select_deadlock.rk"]);
+    assert_eq!(code, 1, "{out}");
+    assert!(out.contains("deadlock: no task can make progress"), "{out}");
+    assert!(out.contains("waiting on select"), "{out}");
+}
+
+#[test]
 fn two_writers_with_full_windows_are_a_deadlock() {
     let (out, code) = sim(&["--seed", "1", "--seeds", "20", "window.rk"]);
     assert_eq!(code, 1, "{out}");

@@ -4,6 +4,7 @@
 //! Executes the AST directly without compilation.
 
 mod value;
+mod chan;
 mod ptr;
 mod rack;
 mod env;
@@ -55,7 +56,7 @@ pub mod build_context;
 ///
 /// Answers `Err` rather than panicking when the target has no threads at all.
 /// Every way a Rask program can ask for a thread funnels through here —
-/// `using Multitasking`, `using ThreadPool`, `Thread.spawn`, `spawn_raw`, a
+/// `using Multitasking`, `using ThreadPool`, `Thread.spawn`, a
 /// pool submission — so this is the one place that has to know, and the reason
 /// it's fallible: on wasm32 `Builder::spawn` answers `Unsupported`, and the
 /// `expect` this used to end with trapped the whole interpreter instead of
@@ -174,8 +175,8 @@ fn interp_stack_bytes() -> usize {
 /// It deliberately isn't a guard at the places a program asks for a thread.
 /// An earlier version of this put the check on the `using Multitasking` arm
 /// and claimed that covered every route to `spawn`. It didn't:
-/// `Thread.spawn`, `spawn_raw`, `using ThreadPool` and pool submissions each
-/// reach the spawn on their own, and all four still trapped.
+/// `Thread.spawn`, `using ThreadPool` and pool submissions each
+/// reach the spawn on their own, and all three still trapped.
 pub(crate) const HAS_THREADS: bool = !cfg!(target_arch = "wasm32");
 
 /// Does this target have a clock?

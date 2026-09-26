@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `ensure tx.close()` freed the sender twice. The frame's own scope-exit drop
+// ran first, then the ensure closed the handle it had just released:
+// `free(): double free detected in tcache 2` after the program's last line.
+// A value an ensure gives away is consumed exactly once, by the ensure or by
+// whatever consumed it first, so the frame adds no drop of its own.
+
+func close_later() -> i64 {
+    mut (tx, rx) = Channel<i64>.buffered(2)
+    ensure tx.close()
+    ensure rx.close()
+    tx.send(4)!
+    return rx.receive()!
+}
+
+// Closed explicitly first: the ensure stands down, and nothing frees it twice.
+func close_now() -> i64 {
+    mut (tx, rx) = Channel<i64>.buffered(1)
+    ensure tx.close()
+    tx.send(5)!
+    tx.close()!
+    let got = rx.receive()!
+    rx.close()!
+    return got
+}
+
+test "an ensure that closes a sender" {
+    assert close_later() == 4
+}
+
+test "an ensure that stands down" {
+    assert close_now() == 5
+}
+
+// Borrowed, not given away: the vector is still freed, after the ensure
+// reads it.
+func read_at_exit(mutate seen: Vec<i64>) {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    v.push(2)
+    ensure seen.push(v.len().wrap<i64>())
+}
+
+test "an ensure that only reads" {
+    mut seen: Vec<i64> = Vec.new()
+    read_at_exit(mutate seen)
+    assert seen[0] == 2
+}
+
+func main() {}

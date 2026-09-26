@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// Where tasks meet — the scheduling points of sim mode (sim/S3).
+// Where tasks meet — the scheduling points (sim/S3, conc.runtime).
 //
 // Every lock and condition variable that one task can wait on for another goes
-// through these wrappers. In an ordinary build they are the pthread calls and
-// nothing else (determinism/D2). Built with -DRASK_SIM, the same call sites
+// through these wrappers. In an ordinary build a wait on a green fiber parks it
+// and anything else is the pthread call (determinism/D2). Built with -DRASK_SIM, the same call sites
 // become the places the seeded scheduler decides who runs next: a wait parks
 // the task on a key, a signal marks one task parked on that key runnable (a
 // broadcast marks all of them), and the thread itself sleeps until the baton
@@ -30,6 +30,9 @@ void rask_sim_park(const void *key, const char *what);
 void rask_sim_notify(const void *key);
 void rask_sim_notify_one(const void *key);
 void rask_sim_sleep(int64_t ns);
+// The calling sim task, and ending another's sleep early (a cancel, CN3).
+void *rask_sim_self(void);
+void rask_sim_wake(void *task);
 int64_t rask_sim_now_ns(void);
 uint64_t rask_sim_random_seed(void);
 uint64_t rask_sim_fault_draw(void);
@@ -172,32 +175,85 @@ static inline void rask_task_rwlock_unlock(pthread_rwlock_t *l) {
 #define RASK_SIM_POINT() ((void)0)
 #define RASK_SIM_UNSIMULATED(...) ((void)0)
 
+// Outside sim, a wait on a green fiber parks the fiber and gives its worker
+// back (green.c); anywhere else — the scope's own thread, `Thread.spawn`, a
+// pool worker — it is the pthread call. A signal reaches both kinds of waiter,
+// so a fiber and a thread can wait on the same condvar or lock. Off Linux,
+// green_threads.c answers "not a fiber" and every wait is the pthread one.
+//
+// A thread blocking here says so (thread.c), so the scheduler can tell a
+// deadlock from a task waiting on a thread that is still working.
+int  rask_fiber_active(void);
+void rask_fiber_notify(const void *key, int all);
+void rask_fiber_cond_wait(pthread_cond_t *c, pthread_mutex_t *m, const char *what);
+void rask_fiber_mutex_lock(pthread_mutex_t *m, const char *what);
+void rask_fiber_rwlock_rdlock(pthread_rwlock_t *l, const char *what);
+void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l, const char *what);
+void rask_thread_wait_begin(const char *what);
+void rask_thread_wait_end(void);
+
 static inline void rask_task_cond_wait(pthread_cond_t *c, pthread_mutex_t *m,
                                        const char *what) {
-    (void)what;
+    if (rask_fiber_active()) {
+        rask_fiber_cond_wait(c, m, what);
+        return;
+    }
+    rask_thread_wait_begin(what);
     pthread_cond_wait(c, m);
+    rask_thread_wait_end();
 }
-static inline void rask_task_cond_signal(pthread_cond_t *c) { pthread_cond_signal(c); }
-static inline void rask_task_cond_broadcast(pthread_cond_t *c) { pthread_cond_broadcast(c); }
+static inline void rask_task_cond_signal(pthread_cond_t *c) {
+    pthread_cond_signal(c);
+    rask_fiber_notify(c, 0);
+}
+static inline void rask_task_cond_broadcast(pthread_cond_t *c) {
+    pthread_cond_broadcast(c);
+    rask_fiber_notify(c, 1);
+}
 
 static inline void rask_task_mutex_lock(pthread_mutex_t *m, const char *what) {
-    (void)what;
+    if (rask_fiber_active()) {
+        rask_fiber_mutex_lock(m, what);
+        return;
+    }
+    if (pthread_mutex_trylock(m) == 0) return;
+    rask_thread_wait_begin(what);
     pthread_mutex_lock(m);
+    rask_thread_wait_end();
 }
 static inline int rask_task_mutex_trylock(pthread_mutex_t *m) { return pthread_mutex_trylock(m); }
-static inline void rask_task_mutex_unlock(pthread_mutex_t *m) { pthread_mutex_unlock(m); }
+static inline void rask_task_mutex_unlock(pthread_mutex_t *m) {
+    pthread_mutex_unlock(m);
+    rask_fiber_notify(m, 0);
+}
 
 static inline void rask_task_rwlock_rdlock(pthread_rwlock_t *l, const char *what) {
-    (void)what;
+    if (rask_fiber_active()) {
+        rask_fiber_rwlock_rdlock(l, what);
+        return;
+    }
+    if (pthread_rwlock_tryrdlock(l) == 0) return;
+    rask_thread_wait_begin(what);
     pthread_rwlock_rdlock(l);
+    rask_thread_wait_end();
 }
 static inline void rask_task_rwlock_wrlock(pthread_rwlock_t *l, const char *what) {
-    (void)what;
+    if (rask_fiber_active()) {
+        rask_fiber_rwlock_wrlock(l, what);
+        return;
+    }
+    if (pthread_rwlock_trywrlock(l) == 0) return;
+    rask_thread_wait_begin(what);
     pthread_rwlock_wrlock(l);
+    rask_thread_wait_end();
 }
 static inline int rask_task_rwlock_tryrdlock(pthread_rwlock_t *l) { return pthread_rwlock_tryrdlock(l); }
 static inline int rask_task_rwlock_trywrlock(pthread_rwlock_t *l) { return pthread_rwlock_trywrlock(l); }
-static inline void rask_task_rwlock_unlock(pthread_rwlock_t *l) { pthread_rwlock_unlock(l); }
+static inline void rask_task_rwlock_unlock(pthread_rwlock_t *l) {
+    pthread_rwlock_unlock(l);
+    // Readers and a writer may all be waiting; each retries.
+    rask_fiber_notify(l, 1);
+}
 
 #endif // RASK_SIM
 

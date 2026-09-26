@@ -189,7 +189,7 @@ only way to append.
 
 | Component | API |
 |-----------|-----|
-| **Thread** | `rask_spawn_raw(func, env) -> ThreadHandle` |
+| **Thread** | `rask_spawn_raw(func, env) -> Handle` |
 | **Thread pool** | `rask_thread_pool_new(n)`, `rask_thread_pool_submit(pool, func, env)` |
 | **Channels** | `rask_channel_buffered(n)`, `rask_channel_unbuffered()` — MPSC, send transfers ownership |
 | **Join** | `rask_thread_join(handle) -> Result` |

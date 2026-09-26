@@ -125,7 +125,7 @@ whose meaning depends on what the compiler managed to look up is not a rule. `sp
 case that proves it: it is declared
 
 ```rask
-public func spawn(take f: func() -> T) -> TaskHandle<T>
+public func spawn(take f: func() -> T) -> Handle<T>
 ```
 
 and the `take` is not decoration. The task keeps the closure and runs it after the call

@@ -4,7 +4,9 @@
 // body, so a receive binding was never defined (#405); these keep both backends
 // on the same poll-then-fire shape.
 
-import async.Channel
+import async.{Channel, Handle, JoinError, Receiver}
+import time
+import time.Duration
 
 func main() {}
 
@@ -15,7 +17,7 @@ test "A1 — the ready receive arm fires, and its binding is the received value"
     let got = select {
         rx1 -> v: v * 2,
         rx2 -> v: v + 1000,
-    }
+    }!
     assert got == 14
 }
 
@@ -26,7 +28,7 @@ test "A1 — a later arm fires when the earlier channel is empty" {
     let got = select {
         rx1 -> v: v,
         rx2 -> v: v + 100,
-    }
+    }!
     assert got == 103
 }
 
@@ -85,7 +87,7 @@ test "select blocks until a spawned producer sends" {
         ensure h.detach()
         let got = select {
             rx -> v: v,
-        }
+        }!
         assert got == 5
         h.join()
     }
@@ -99,7 +101,7 @@ test "CL2 — a closed channel is skipped, the others keep firing" {
     let got = select {
         rx1 -> v: v,
         rx2 -> v: v,
-    }
+    }!
     assert got == 42
 }
 
@@ -119,7 +121,7 @@ test "P1 — a plain select doesn't starve a permanently-ready arm" {
         let got = select {
             rx1 -> v: v,
             rx2 -> v: v,
-        }
+        }!
         if got >= 1000 { arm2_count = arm2_count + 1 }
     }
     assert arm2_count == 60
@@ -140,8 +142,95 @@ test "select_priority still starves a later arm behind a busy earlier one" {
         let got = select_priority {
             rx1 -> v: v,
             rx2 -> v: v,
-        }
+        }!
         if got >= 1000 { arm2_count = arm2_count + 1 }
     }
     assert arm2_count == 0
+}
+
+// A select that can wait answers `T or SelectError`: it can end without an
+// arm running, and that used to be a panic on native and a stray value on the
+// interpreter.
+test "CL1 — every channel closed is an error, not a panic" {
+    let (tx1, rx1) = Channel<i64>.buffered(1)
+    let (tx2, rx2) = Channel<i64>.buffered(1)
+    tx1.close()!
+    tx2.close()!
+    mut what = ""
+    match select {
+        rx1 -> v: v,
+        rx2 -> v: v,
+    } {
+        i64 as v => { what = "value {v}" }
+        SelectError.Closed => { what = "closed" }
+        SelectError.Cancelled => { what = "cancelled" }
+    }
+    assert what == "closed"
+}
+
+func wait_on(rx: Receiver<i64>) -> string {
+    match select {
+        rx -> v: v,
+    } {
+        i64 as v => { return "value {v}" }
+        SelectError.Closed => { return "closed" }
+        SelectError.Cancelled => { return "cancelled" }
+    }
+}
+
+func cancel_later(take h: Handle<string>) -> string {
+    ensure h.detach()
+    time.sleep(Duration.millis(20))!
+    match h.cancel() {
+        string as s => { return s }
+        JoinError.Panicked(m) => { return "panicked {m}" }
+    }
+}
+
+test "CN1 — a cancel ends a select that is waiting" {
+    using Multitasking(workers: 2) {
+        mut (tx, rx) = Channel<i64>.buffered(1)
+        ensure tx.close()
+        assert cancel_later(spawn(|| { return wait_on(rx) })) == "cancelled"
+    }
+}
+
+test "a value already there wins over the cancel" {
+    using Multitasking(workers: 2) {
+        mut (tx, rx) = Channel<i64>.buffered(1)
+        ensure tx.close()
+        tx.send(8)!
+        assert cancel_later(spawn(|| { return wait_on(rx) })) == "value 8"
+    }
+}
+
+// `!` is the form for a select that isn't expected to fail.
+test "select { … }! panics when every channel is closed" {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(1)
+        tx.close()!
+        let h = spawn(|| {
+            return select {
+                rx -> v: v,
+            }!
+        })
+        match h.join() {
+            i64 as v => assert false
+            JoinError.Panicked(m) => assert m.contains("every channel in the select is closed")
+        }
+    }
+}
+
+// Inside `using`, the channel's type isn't known yet when the select is
+// checked. The arm's binding got a type variable nothing tied to the channel,
+// so native had no type for the select's value.
+test "a select checked before its channel's type is known" {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(1)
+        tx.send(5)!
+        let got = select {
+            rx -> v: v,
+        }!
+        assert got == 5
+    }
 }

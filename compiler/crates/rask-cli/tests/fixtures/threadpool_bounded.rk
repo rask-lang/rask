@@ -3,20 +3,21 @@
 // at once; a bounded pool runs them four at a time and every job still runs
 // exactly once.
 import thread.ThreadPool
+import async.Handles
 
 func main() {
     using ThreadPool(workers: 4) {
-        mut handles = Vec.new()
+        mut jobs = Handles<i64>.new()
+        ensure jobs.detach()
         for i in 0..800 {
-            let h = ThreadPool.spawn(|| {
+            jobs.add(ThreadPool.spawn(|| {
                 return i
-            })
-            handles.push(h)
+            }))
         }
         mut total = 0
         mut count = 0
-        for h in handles {
-            if h.join() is i64 as v {
+        for r in jobs.join_all() {
+            if r is i64 as v {
                 total = total + v
                 count = count + 1
             }

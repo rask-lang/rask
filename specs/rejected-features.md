@@ -135,7 +135,7 @@ sup.run()  // Monitors and restarts
 
 I considered making it a `using supervisor { }` block, but supervisors typically run for the lifetime of the application. Scoped blocks cleanup on exit. Wrong model.
 
-Also, how would the supervisor know which spawns to monitor? All of them? That breaks explicit tracking. Same reason TaskGroup is a struct and not a `with` block—you need explicit control over which tasks join.
+Also, how would the supervisor know which spawns to monitor? All of them? That breaks explicit tracking. Same reason `Handles` is a struct and not a `with` block—you need explicit control over which tasks join.
 
 ---
 
@@ -357,7 +357,7 @@ spawn(|| { work() }).detach()  // Explicit
 let h = spawn(|| { compute() }
 let result = try h.join()
 
-spawn(|| { work() }  // Compile error: unused TaskHandle
+spawn(|| { work() }  // Compile error: unused Handle
 ```
 
 Compiler catches forgotten tasks. Six extra characters (`.detach()`) to prevent real bugs.

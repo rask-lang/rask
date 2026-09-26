@@ -325,6 +325,17 @@ void rask_sim_sleep(int64_t ns) {
     pthread_mutex_unlock(&g.lock);
 }
 
+void *rask_sim_self(void) {
+    return self_or_die("a cancellable wait");
+}
+
+void rask_sim_wake(void *task) {
+    pthread_mutex_lock(&g.lock);
+    SimTask *t = (SimTask *)task;
+    if (t->state == SIM_SLEEPING) t->state = SIM_RUNNABLE;
+    pthread_mutex_unlock(&g.lock);
+}
+
 // A clock read is a scheduling step (sim/C3): observing time costs time.
 int64_t rask_sim_now_ns(void) {
     rask_sim_point();

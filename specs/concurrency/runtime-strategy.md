@@ -25,7 +25,7 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 | **A1: Thread per spawn** | `spawn(|| {})` creates an OS thread via `pthread_create` (`thread.c`) |
 | **A2: Blocking I/O** | All I/O blocks the calling thread. No reactor, no parking |
 | **A3: Real channels** | Channels use a ring buffer + mutex/condvar (`channel.c`). Blocking send/receive |
-| **A4: Affine handles** | `TaskHandle` wraps a refcounted `TaskState*`. Runtime panic on drop (same as interpreter) |
+| **A4: Linear handles** | `Handle` wraps a refcounted `TaskState*`. An unconsumed handle is a compile error |
 | **A5: Block installs process-global slot** | `using Multitasking { ... }` fills the process-global runtime slot (`conc.runtime/R1`) even in Phase A — implementations ignore the slot's contents and block threads for I/O, but the CC1/CC2 scope check and C1 single-active-block invariant are enforced |
 | **A6: ThreadPool real** | `ThreadPool` uses a real bounded thread pool |
 
@@ -42,42 +42,43 @@ Compiles to (pseudocode):
 
 ```c
 // Compiler output
-RaskTaskHandle h = rask_spawn(work_fn, arg_ptr);  // thread.c: pthread_create
+RaskHandle h = rask_spawn(work_fn, arg_ptr);  // thread.c: pthread_create
 int64_t result = rask_join(h);                     // thread.c: pthread_join
 ```
 
 The `using Multitasking` block installs the process-global runtime slot on entry, inserts `rask_block_wait()` on exit to drain all non-detached handles, and clears the slot. No hidden parameters anywhere — `spawn` and stdlib I/O read the slot directly.
 
-### Phase A runtime files
+### Runtime files
 
 All C files live in `compiler/runtime/`.
 
 | File | Provides | Notes |
 |------|----------|-------|
-| `thread.c` | `rask_spawn`, `rask_join`, `rask_detach`, `rask_cancel`, `rask_sleep` | pthreads, refcounted `TaskState` |
+| `green.c` | `spawn`, `join`, parking, timers | Linux: the M:N scheduler — see below |
+| `fiber.c` | Fiber stacks and the context switch | x86_64 and aarch64, ELF and Mach-O |
+| `green_threads.c` | The same entry points on OS threads | Off Linux (no reactor backend yet) and under `RASK_NO_GREEN` |
+| `thread.c` | `Thread.spawn`, `rask_sleep_ns` | pthreads; `Thread.spawn` stays an OS thread by design |
 | `channel.c` | `rask_channel_*` | Ring buffer + mutex/condvar; capacity=0 for unbuffered rendezvous |
 | `sync.c` | `rask_mutex_*`, `rask_shared_*` | The `Mutex` and `Readers` strategies of `Shared<T, S>` |
+| `sim.h` | The wait wrappers every task-to-task wait goes through | Park a fiber, park a sim task, or call pthreads |
 | `atomic.c` | `rask_atomic_*` | `Atomic<T>` load/store/CAS |
-| `green.c` | (stub) | Phase B target — work-stealing scheduler, not active |
 
-### What this validates
+## Where Phase B stands
 
-- Full `conc.async` API surface (S1-S4, H1-H4, C1-C4, CH1-CH4, CN1-CN3)
-- Process-global runtime slot install/uninstall (`conc.strategy/A5`, `conc.runtime/R1-R2`)
-- Affine handle enforcement (runtime)
-- Channel semantics (buffered, unbuffered, close-on-drop)
-- `select` statement compilation
-- `ensure` hooks on cancellation
-- Error propagation through task boundaries
+On Linux, `using Multitasking(workers: n)` runs tasks as stackful fibers on n worker threads. A task that waits in a join, a channel operation, a `Shared` lock or a sleep parks and gives its worker to another task. `tests/soak_gate.sh` holds five programs to `workers + 1` threads, including a 2^14-task join tree and a producer/consumer pair on one worker; `tests/tsan_gate.sh` runs the concurrency suite under ThreadSanitizer with every switch annotated.
 
-### What this defers
+Sockets park too. Every socket the runtime opens is non-blocking, and a read, write, accept or connect that would block waits in `rask_io_wait`: a task parks on the fd, one idle worker sleeps in `epoll_wait` as the poller, and a ready socket wakes its task. `tests/soak/s_idle_connections.rk` holds a hundred idle connections on two workers within budget.
 
-- Stackful fibers (runtime.md/T1-T3) — `green.c` stubbed, `fiber_switch` assembly not written
-- Work-stealing scheduler (runtime.md/S1-S4) — `green.c` has the skeleton
-- Reactor / epoll / io_uring (runtime.md/R1-R3) — `io_epoll_engine.c` and `io_uring_engine.c` exist but aren't wired
-- Transparent I/O pausing (tasks block their OS thread instead)
-- Timer wheel (uses `clock_nanosleep` for now)
-- 100k+ concurrent task scalability
+A deadlock ends the process instead of hanging it. Once every task is parked, nothing is queued or sleeping on a timer, and every thread outside the scheduler is itself blocked in a runtime wait, nothing can wake anyone. After a second of that, the runtime prints which task waits on what and exits 101.
+
+Not yet:
+
+- **File and stdin parking.** Sockets park (see above); a read of a file, a pipe or stdin still makes the blocking syscall and holds its worker for as long as it takes. epoll can't watch a regular file, so this waits on io_uring, which is also what `conc.runtime/R1.1` wants for disk I/O.
+- **Worker compensation for blocking FFI** (`conc.phase-b/FFI3`) — not built, so a long C call holds its worker too.
+- **Preemption** (`conc.runtime/P1-P3`). Switching is cooperative: a task that computes without waiting keeps its worker until it finishes.
+- **macOS.** `green.c` needs a kqueue backend; until then macOS runs `green_threads.c`. The aarch64 switch is assembled for both ELF and Mach-O; `tests/fiber_gate.sh` runs the ELF one under qemu, and the Mach-O one differs only in symbol names.
+- **Sim on fibers.** Sim mode still runs one OS thread per task with a baton.
+- **Stack overflow is an abort, not a panic.** Running into a fiber's guard page prints which task overflowed and aborts.
 
 ## Phase B: M:N Stackful Fibers
 
@@ -92,7 +93,7 @@ All C files live in `compiler/runtime/`.
 
 No source changes. The C runtime files swap internals:
 
-| Function | Phase A (current) | Phase B |
+| Function | Phase A | Phase B |
 |----------|-------------------|---------|
 | `rask_spawn` | `pthread_create` (`thread.c`) | Allocate fiber stack from pool, `Task` struct, push to worker queue |
 | `rask_join` | `pthread_join` + `TaskState` (`thread.c`) | Park fiber via `fiber_switch` or block thread (J1) |

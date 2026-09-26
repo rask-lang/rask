@@ -1142,12 +1142,6 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if name == "File" => {
                 self.resolve_file_method(&method, &args, &ret, span)
             }
-            Type::UnresolvedGeneric { name, args: type_args } if name == "ThreadHandle" => {
-                self.resolve_thread_handle_method(&type_args, &method, &args, &ret, span)
-            }
-            Type::UnresolvedGeneric { name, args: type_args } if name == "TaskHandle" => {
-                self.resolve_task_handle_method(&type_args, &method, &args, &ret, span)
-            }
             // Rack<T>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Rack" => {
                 self.resolve_rack_method(type_args, &method, &args, &ret, span)
@@ -1211,17 +1205,17 @@ impl TypeChecker {
                 let payload = self.atomic_payload(&ty).expect("just checked");
                 self.resolve_atomic_method(payload, &method, &args, &ret, span)
             }
-            // Thread.spawn(closure) → ThreadHandle<T>
+            // Thread.spawn(closure) → Handle<T>
             Type::UnresolvedNamed(name) if name == "Thread" || name == "ThreadPool" => {
                 if method == "spawn" && args.len() == 1 {
-                    // Extract closure return type for ThreadHandle<T>
+                    // Extract closure return type for Handle<T>
                     let inner = if let Type::Fn { ret: fn_ret, .. } = &args[0] {
                         *fn_ret.clone()
                     } else {
                         self.ctx.fresh_var()
                     };
                     let handle_ty = Type::UnresolvedGeneric {
-                        name: "ThreadHandle".to_string(),
+                        name: "Handle".to_string(),
                         args: vec![GenericArg::Type(Box::new(inner))],
                     };
                     self.unify(&ret, &handle_ty, span)
@@ -2225,88 +2219,6 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn resolve_thread_handle_method(
-        &mut self,
-        type_args: &[GenericArg],
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        // ThreadHandle<T> has two methods:
-        // - join(self) -> T or JoinError
-        // - detach(self) -> ()
-
-        match method {
-            "join" if args.is_empty() => {
-                // Extract the T type parameter
-                let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
-                    *t.clone()
-                } else {
-                    self.ctx.fresh_var()
-                };
-
-                // join returns Result<T, JoinError>
-                let result_type = Type::Result {
-                    ok: Box::new(inner_type),
-                    err: Box::new(Type::UnresolvedNamed("JoinError".to_string())),
-                };
-
-                self.unify(ret, &result_type, span)
-            }
-            "detach" if args.is_empty() => {
-                // detach returns ()
-                self.unify(ret, &Type::Unit, span)
-            }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::UnresolvedGeneric {
-                    name: "ThreadHandle".to_string(),
-                    args: type_args.to_vec(),
-                },
-                method: method.to_string(),
-                span,
-            }),
-        }
-    }
-
-    pub(super) fn resolve_task_handle_method(
-        &mut self,
-        type_args: &[GenericArg],
-        method: &str,
-        args: &[Type],
-        ret: &Type,
-        span: Span,
-    ) -> Result<bool, TypeError> {
-        match method {
-            "join" if args.is_empty() => {
-                let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
-                    *t.clone()
-                } else {
-                    self.ctx.fresh_var()
-                };
-                let result_type = Type::Result {
-                    ok: Box::new(inner_type),
-                    err: Box::new(Type::UnresolvedNamed("JoinError".to_string())),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            "detach" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            "cancel" if args.is_empty() => {
-                self.unify(ret, &Type::Unit, span)
-            }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::UnresolvedGeneric {
-                    name: "TaskHandle".to_string(),
-                    args: type_args.to_vec(),
-                },
-                method: method.to_string(),
-                span,
-            }),
-        }
-    }
-
     pub(super) fn resolve_runtime_method(
         &mut self,
         type_name: &str,
@@ -2445,26 +2357,22 @@ impl TypeChecker {
         }
     }
 
-    /// `s.read(|v| …)` and its three siblings: tie the closure to the box.
+    /// `s.try_read(|v| …)` and `try_write`: tie the closure to the box.
     ///
     /// The arms used to invent a fresh variable for the result and unify the
-    /// return with *that*, which relates the call to nothing. So the binding
-    /// was left open — `let doubled = s.read(|v| { return v * 2 })` reported
-    /// "couldn't work out the type of `doubled`" while the same line with
-    /// `: i64` written on it was fine, which reads like an inference hiccup
-    /// rather than a missing constraint (#1155).
+    /// return with *that*, which relates the call to nothing, so the binding
+    /// was left open unless annotated (#1155).
     ///
     /// Two constraints, both off the closure's own `Type::Fn`: its parameter is
     /// the box's `T`, so `|v| v * 2` knows `v` is an `i64` instead of guessing
-    /// from use, and its return is the call's `R`. `try_read`/`try_write` wrap
-    /// that `R` in an optional, which is the only difference between the four.
+    /// from use, and its return is the call's `R`, wrapped in an optional:
+    /// `try_read`/`try_write` can come back without the lock.
     fn unify_accessor_closure(
         &mut self,
         closure_ty: &Type,
         inner_type: &Type,
         ret: &Type,
         span: Span,
-        optional: bool,
     ) -> Result<bool, TypeError> {
         let result = match self.ctx.apply(closure_ty) {
             Type::Fn { params, ret: closure_ret } => {
@@ -2478,8 +2386,7 @@ impl TypeChecker {
             // is, which is what the old code was missing.
             _ => self.ctx.fresh_var(),
         };
-        let answer = if optional { Type::option(result) } else { result };
-        self.unify(ret, &answer, span)
+        self.unify(ret, &Type::option(result), span)
     }
 
     pub(super) fn resolve_concurrency_generic_method(
@@ -2518,13 +2425,17 @@ impl TypeChecker {
             ("Shared", "write") if args.is_empty() => {
                 self.unify(ret, &inner_type, span)
             }
-            // Shared<T>.read(|T| -> R) -> R  (closure-based, try_read)
-            ("Shared", "read") if args.len() == 1 => {
-                self.unify_accessor_closure(&args[0], &inner_type, ret, span, false)
-            }
-            // Shared<T>.write(|T| -> R) -> R  (closure-based, try_write)
-            ("Shared", "write") if args.len() == 1 => {
-                self.unify_accessor_closure(&args[0], &inner_type, ret, span, false)
+            // Blocking access is `with s.read() as v { … }` or `s.read().field`;
+            // a closure is the non-blocking `try_read`/`try_write` shape only
+            // (conc.sync, "Non-blocking variants"). The closure form of the
+            // blocking pair was accepted here, undeclared, and native compiled
+            // it to a read of a slot nobody wrote (#1311).
+            ("Shared", method @ ("read" | "write")) if !args.is_empty() => {
+                self.errors.push(TypeError::SharedAccessClosure {
+                    method: method.to_string(),
+                    span,
+                });
+                Ok(true)
             }
             // Shared<T>.staged() -> T  (ST1: a working copy under the
             // exclusive lock, committed as one move on any non-panic exit)
@@ -2533,11 +2444,11 @@ impl TypeChecker {
             }
             // Shared<T>.try_read(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_read") if args.len() == 1 => {
-                self.unify_accessor_closure(&args[0], &inner_type, ret, span, true)
+                self.unify_accessor_closure(&args[0], &inner_type, ret, span)
             }
             // Shared<T>.try_write(|T| -> R) -> Option<R>  (non-blocking, R3)
             ("Shared", "try_write") if args.len() == 1 => {
-                self.unify_accessor_closure(&args[0], &inner_type, ret, span, true)
+                self.unify_accessor_closure(&args[0], &inner_type, ret, span)
             }
             // The single-expression shorthands `Cell` had (conc.sync API table).
             ("Shared", "get" | "take") if args.is_empty() => {

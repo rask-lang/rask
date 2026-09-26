@@ -1062,6 +1062,68 @@ impl TypeTable {
         }
     }
 
+    /// Does a value of this type carry a `Link` — itself, in an option or a
+    /// container, or in a field of a struct or enum it holds?
+    ///
+    /// A link is a node's address, so a value carrying one can't go to another
+    /// task (`mem.ownership/T2`). A `Rack` is the exception and isn't walked:
+    /// moving the whole rack takes its nodes' links with the nodes they point
+    /// at, which is how `snapshot()` hands a graph over.
+    pub fn holds_link(&self, ty: &Type) -> bool {
+        self.holds_link_inner(ty, &mut Vec::new())
+    }
+
+    fn holds_link_inner(&self, ty: &Type, seen: &mut Vec<TypeId>) -> bool {
+        let generic = |base: &str, args: &[GenericArg], seen: &mut Vec<TypeId>| match base {
+            "Link" => true,
+            "Rack" => false,
+            _ => args
+                .iter()
+                .any(|a| matches!(a, GenericArg::Type(t) if self.holds_link_inner(t, seen))),
+        };
+        match ty {
+            Type::Named(id) => self.def_holds_link(*id, seen),
+            Type::UnresolvedNamed(name) => {
+                let base = name.split('<').next().unwrap_or(name);
+                self.type_names.get(base).is_some_and(|&id| self.def_holds_link(id, seen))
+            }
+            Type::Generic { base, args } => {
+                let full = self.type_name(*base);
+                let name = full.split('<').next().unwrap_or(&full);
+                generic(name, args, seen) || self.def_holds_link(*base, seen)
+            }
+            Type::UnresolvedGeneric { name, args } => {
+                let base = name.split('<').next().unwrap_or(name);
+                generic(base, args, seen)
+                    || self.type_names.get(base).is_some_and(|&id| self.def_holds_link(id, seen))
+            }
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().any(|t| self.holds_link_inner(t, seen))
+            }
+            Type::Array { elem, .. } => self.holds_link_inner(elem, seen),
+            Type::Result { ok, err } => {
+                self.holds_link_inner(ok, seen) || self.holds_link_inner(err, seen)
+            }
+            _ => false,
+        }
+    }
+
+    fn def_holds_link(&self, id: TypeId, seen: &mut Vec<TypeId>) -> bool {
+        if seen.contains(&id) {
+            return false;
+        }
+        seen.push(id);
+        match self.types.get(id.0 as usize) {
+            Some(TypeDef::Struct { fields, .. }) => {
+                fields.iter().any(|(_, t)| self.holds_link_inner(t, seen))
+            }
+            Some(TypeDef::Enum { variants, .. }) => variants
+                .iter()
+                .any(|(_, payload)| payload.iter().any(|t| self.holds_link_inner(t, seen))),
+            _ => false,
+        }
+    }
+
     /// Container wrappers that hold values without becoming linear themselves.
     /// A `Link` is a copyable reference; `Vec`/`Map`/`Rack` are handled by the
     /// outer walk.

@@ -183,6 +183,7 @@ fn flatten(
     for f in fields {
         let at = base + f.offset as i32;
         if let Some(payload) = heap_payload_name(&f.ty) {
+            let payload = layout_name(&payload, layouts, enums);
             // Only where a self-reference has a name to match. The
             // container-element path passes `None`, because a `retain` would
             // have to copy the block and a block carries no size to copy — so
@@ -208,9 +209,10 @@ fn flatten(
         }
         match &f.ty {
             RaskType::String => out.push(entry(at, KIND_STRING)),
-            RaskType::UnresolvedNamed(name) => {
+            RaskType::UnresolvedNamed(_) | RaskType::UnresolvedGeneric { .. } => {
                 // A nested struct flattens into the same list. A nested *enum*
                 // contributes its own guards, at this field's offset.
+                let name = &layout_name(&format!("{}", f.ty), layouts, enums);
                 if let Some(l) = layouts.iter().find(|l| &l.name == name) {
                     let nested = l.fields.clone();
                     flatten(&nested, at, layouts, enums, depth + 1, self_name, out)?;
@@ -247,10 +249,34 @@ pub fn heap_field_descriptor(
     layouts: &[StructLayout],
     enums: &[EnumLayout],
 ) -> Option<Vec<i32>> {
-    let payload = heap_payload_name(ty)?;
+    let payload = layout_name(&heap_payload_name(ty)?, layouts, enums);
     let mut out = Vec::new();
     describe_named(&payload, 0, layouts, enums, 0, Some(&payload), &mut out)?;
     Some(out)
+}
+
+/// A user generic field type as the layout it's laid out by: `Tasks<T>` in
+/// the shared `Group` layout is the `Tasks` layout, `Tasks<string>` in an
+/// instance is `Tasks$string`. `None` for anything else, including a generic
+/// no layout answers to (the stdlib's opaque containers).
+pub fn generic_as_layout(
+    ty: &RaskType,
+    layouts: &[StructLayout],
+    enums: &[EnumLayout],
+) -> Option<RaskType> {
+    if !matches!(ty, RaskType::UnresolvedGeneric { .. }) {
+        return None;
+    }
+    let name = layout_name(&format!("{}", ty), layouts, enums);
+    let known = layouts.iter().any(|l| l.name == name) || enums.iter().any(|l| l.name == name);
+    known.then(|| RaskType::UnresolvedNamed(name))
+}
+
+/// The layout name a written type goes by — see `rask_mono::layout_name_for`.
+fn layout_name(written: &str, layouts: &[StructLayout], enums: &[EnumLayout]) -> String {
+    rask_mono::layout_name_for(written, |n| {
+        layouts.iter().any(|l| l.name == n) || enums.iter().any(|l| l.name == n)
+    })
 }
 
 /// What a value of the named type owns, relative to `base`. A name that isn't a

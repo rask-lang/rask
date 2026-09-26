@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A payload bound by an error variant in a `T or E` match. The checker left
+// its type unsolved, so native couldn't lower a method call on it:
+// "method `contains` on receiver of unresolved type". Interpolating it worked,
+// which is why nobody noticed.
+
+enum Oops {
+    Bad(string)
+    Count(i64)
+}
+
+func fails(n: i64) -> i64 or Oops {
+    if n == 0 { return Oops.Bad("boom") }
+    return Oops.Count(n)
+}
+
+test "a string payload from the error side" {
+    mut seen = false
+    match fails(0) {
+        i64 as v => { seen = false }
+        Oops.Bad(m) => { seen = m.contains("oo") }
+        Oops.Count(c) => { seen = false }
+    }
+    assert seen
+}
+
+test "an integer payload from the error side" {
+    mut got: i64 = 0
+    match fails(4) {
+        i64 as v => { got = -1 }
+        Oops.Bad(m) => { got = m.len().wrap<i64>() }
+        Oops.Count(c) => { got = c.abs() + 1 }
+    }
+    assert got == 5
+}
+
+func main() {}

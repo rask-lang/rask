@@ -567,16 +567,24 @@ impl TypeChecker {
                     return ty;
                 }
                 if let Some(ty) = self.lookup_local(name) {
-                    // SH7 needs to know which names reached a task-local box and
-                    // where. Recorded here rather than re-walked at the `spawn`,
-                    // which would have to know every expression shape to be
-                    // right; judged after solving, because right now the type of
-                    // a `let c = Shared.new(0)` is usually still a variable.
+                    // A spawn needs to know which names reached a task-local box
+                    // or a link, and where. Recorded here rather than re-walked
+                    // at the `spawn`, which would have to know every expression
+                    // shape to be right; judged after solving, because right now
+                    // the type of a `let c = Shared.new(0)` is usually still a
+                    // variable.
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
                     if matches!(resolved, Type::Var(_))
                         || Self::type_is_shared(&resolved, &self.types)
+                        || self.types.holds_link(&resolved)
                     {
-                        self.local_shared_uses.push((name.clone(), ty.clone(), expr.span));
+                        let depth = self.local_depth(name).unwrap_or(0);
+                        self.task_bound_uses.push(super::TaskBoundUse {
+                            name: name.clone(),
+                            ty: ty.clone(),
+                            span: expr.span,
+                            depth,
+                        });
                     }
                     ty
                 } else if let Some(type_id) = self
@@ -2277,14 +2285,14 @@ impl TypeChecker {
                     match &arm.kind {
                         rask_ast::expr::SelectArmKind::Recv { channel, binding } => {
                             let chan_ty = self.infer_expr(channel);
-                            let elem = self
-                                .channel_element_type(&chan_ty)
-                                .unwrap_or_else(|| self.ctx.fresh_var());
+                            let elem = self.channel_end_element(&chan_ty, "Receiver", channel.span);
                             self.define_local(binding.clone(), elem);
                         }
                         rask_ast::expr::SelectArmKind::Send { channel, value } => {
-                            self.infer_expr(channel);
-                            self.infer_expr(value);
+                            let chan_ty = self.infer_expr(channel);
+                            let elem = self.channel_end_element(&chan_ty, "Sender", channel.span);
+                            let value_ty = self.infer_expr(value);
+                            let _ = self.unify(&elem, &value_ty, value.span);
                         }
                         rask_ast::expr::SelectArmKind::Default => {}
                     }
@@ -2296,7 +2304,18 @@ impl TypeChecker {
                         result_ty = Some(body_ty);
                     }
                 }
-                result_ty.unwrap_or(Type::Unit)
+                let arms_ty = result_ty.unwrap_or(Type::Unit);
+                // A select that can wait can end without running an arm: every
+                // channel closed, or the task cancelled. One with a `_:` arm
+                // never waits, so it always runs one.
+                let has_default = arms
+                    .iter()
+                    .any(|a| matches!(a.kind, rask_ast::expr::SelectArmKind::Default));
+                if has_default {
+                    arms_ty
+                } else {
+                    Type::Result { ok: Box::new(arms_ty), err: Box::new(self.select_error_type()) }
+                }
             }
 
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
@@ -2613,7 +2632,17 @@ impl TypeChecker {
         // conc.sync/SH7 applies to any call named `spawn`, however it reached
         // scope — a builtin, or the `async.spawn` import. Judged after solving.
         if matches!(&func.kind, ExprKind::Ident(n) if n == "spawn" || n.ends_with(".spawn")) {
-            self.spawn_arg_spans.extend(args.iter().map(|a| a.expr.span));
+            let depth = self.local_types.len();
+            for a in args {
+                self.spawn_arg_spans.push((a.expr.span, depth));
+                if let ExprKind::Ident(n) = &a.expr.kind {
+                    if let Some(d) = self.local_depth(n) {
+                        if let Some(bound) = self.closure_bindings.get(&(n.clone(), d)) {
+                            self.spawn_arg_spans.extend(bound.iter().copied());
+                        }
+                    }
+                }
+            }
         }
         if let ExprKind::Ident(_) = &func.kind {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
@@ -4919,12 +4948,28 @@ impl TypeChecker {
 
             let mut has_wildcard = false;
             let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut variants_hit: std::collections::HashMap<String, std::collections::HashSet<String>> =
+                std::collections::HashMap::new();
             for arm in arms {
-                self.collect_result_covered(&arm.pattern, &required, &mut covered, &mut has_wildcard);
+                self.collect_result_covered(
+                    &arm.pattern, &required, &mut covered, &mut variants_hit, &mut has_wildcard,
+                );
             }
 
             if has_wildcard {
                 return;
+            }
+
+            // An error enum is covered by an arm per variant as well as by
+            // naming it: `JoinError.Panicked(msg)` covers a `JoinError` that
+            // has no other variant.
+            for (leaf, name) in leaves.iter().zip(required.iter()) {
+                let Type::Named(id) = leaf else { continue };
+                let Some(TypeDef::Enum { variants, .. }) = self.types.get(*id) else { continue };
+                let Some(hit) = variants_hit.get(self.types.type_name(*id).as_str()) else { continue };
+                if variants.iter().all(|(v, _)| hit.contains(v)) {
+                    covered.insert(name.clone());
+                }
             }
 
             // A generic branch named without its arguments covers it —
@@ -5096,24 +5141,36 @@ impl TypeChecker {
         pattern: &Pattern,
         required: &[String],
         covered: &mut std::collections::HashSet<String>,
+        variants_hit: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
         has_wildcard: &mut bool,
     ) {
+        let mut hit = |qualified: &str| {
+            if let Some((enum_name, variant)) = qualified.rsplit_once('.') {
+                variants_hit.entry(enum_name.to_string()).or_default().insert(variant.to_string());
+            }
+        };
         match pattern {
             Pattern::Wildcard => *has_wildcard = true,
             Pattern::Ident(name) => {
-                // Bare ident that doesn't match a required type name → catch-all
                 if required.contains(name) {
                     covered.insert(name.clone());
+                } else if name.contains('.') {
+                    // `Fault.Timeout`: a fieldless variant, not a binding. It
+                    // used to read as a catch-all, so one such arm made any
+                    // match look exhaustive.
+                    hit(name);
                 } else {
+                    // A bare name that isn't a branch type binds everything.
                     *has_wildcard = true;
                 }
             }
             Pattern::TypePat { ty_name, .. } => {
                 covered.insert(ty_name.clone());
             }
+            Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => hit(name),
             Pattern::Or(alts) => {
                 for alt in alts {
-                    self.collect_result_covered(alt, required, covered, has_wildcard);
+                    self.collect_result_covered(alt, required, covered, variants_hit, has_wildcard);
                 }
             }
             _ => {}
@@ -5381,10 +5438,11 @@ impl TypeChecker {
     /// been inferred already — with-binding sources are.)
     /// Is this resolved type a `Shared<T>`? The by-type twin of `expr_is_shared`,
     /// for a place that already has the type in hand.
-    /// Report every task-local `Shared` a spawned closure reaches (SH7).
+    /// Report every task-local `Shared` (SH7) and every value carrying a link
+    /// (`mem.ownership/T2`) a spawned closure reaches.
     ///
-    /// The box is captured by naming it, so the names checked inside a `spawn`
-    /// argument's span are exactly the boxes that task can touch. Matching on
+    /// A value is captured by naming it, so the names checked inside a `spawn`
+    /// argument's span are exactly the values that task can touch. Matching on
     /// span containment beats re-walking the body, which would have to know
     /// every expression and statement shape to be right.
     ///
@@ -5396,26 +5454,52 @@ impl TypeChecker {
             return;
         }
         let spans = std::mem::take(&mut self.spawn_arg_spans);
-        let uses = std::mem::take(&mut self.local_shared_uses);
+        let uses = std::mem::take(&mut self.task_bound_uses);
         let mut reported: std::collections::HashSet<(String, usize)> =
             std::collections::HashSet::new();
-        for (name, ty, span) in uses {
-            let Some(i) = spans.iter().position(|s| {
-                s.file_id == span.file_id && span.start >= s.start && span.end <= s.end
-            }) else {
+        let within = |inner: rask_ast::Span, outer: &rask_ast::Span| {
+            inner.file_id == outer.file_id && inner.start >= outer.start && inner.end <= outer.end
+        };
+        for super::TaskBoundUse { name, ty, span, depth } in uses {
+            // Made inside the task — a `let` in the closure, a parameter, a
+            // pattern binding — sits deeper than the call. Only what the closure
+            // reaches from outside crosses.
+            let Some(i) = spans
+                .iter()
+                .position(|(s, call_depth)| within(span, s) && depth <= *call_depth)
+            else {
                 continue;
             };
             let resolved = self.resolve_named(&self.ctx.apply(&ty));
-            if !Self::type_is_shared(&resolved, &self.types) {
+            let error = if Self::type_is_shared(&resolved, &self.types) {
+                if self.shared_strategy_name(&resolved) != "Local" {
+                    continue;
+                }
+                TypeError::LocalSharedSent { name: name.clone(), span }
+            } else if self.types.holds_link(&resolved) {
+                TypeError::LinkSent { name: name.clone(), ty: self.types.resolve_type_names(&resolved), span }
+            } else {
                 continue;
-            }
-            if self.shared_strategy_name(&resolved) != "Local" {
-                continue;
-            }
-            if reported.insert((name.clone(), i)) {
-                self.errors.push(TypeError::LocalSharedSent { name, span });
+            };
+            if reported.insert((name, i)) {
+                self.errors.push(error);
             }
         }
+    }
+
+    /// Remember a closure bound to `name` by `let`, `mut` or `=`, for a later
+    /// `spawn(name)`. A name rebound several times keeps every closure it was
+    /// given: whichever one is live at the spawn, the check covers it.
+    pub(super) fn note_closure_binding(&mut self, name: &str, value: &Expr) {
+        if !matches!(value.kind, ExprKind::Closure { .. }) {
+            return;
+        }
+        let Some(holder) = self.local_depth(name) else { return };
+        let written = self.local_types.len();
+        self.closure_bindings
+            .entry((name.to_string(), holder))
+            .or_default()
+            .push((value.span, written));
     }
 
     /// W9: warn when a `with` block over a sync box assigns two or more fields
@@ -5652,6 +5736,36 @@ impl TypeChecker {
         match self.types.get_type_id("ConvertError") {
             Some(id) => Type::Named(id),
             None => Type::UnresolvedNamed("ConvertError".to_string()),
+        }
+    }
+
+    /// The element type of a select arm's channel end. An end whose type isn't
+    /// known yet is pinned to `end<T>` for a fresh `T`: a bare fresh variable
+    /// was tied to nothing, so an arm's value stayed unsolved and native had no
+    /// type for the select.
+    fn channel_end_element(&mut self, chan_ty: &Type, end: &str, span: Span) -> Type {
+        if let Some(elem) = self.channel_element_type(chan_ty) {
+            return elem;
+        }
+        let elem = self.ctx.fresh_var();
+        if matches!(self.ctx.apply(chan_ty), Type::Var(_)) {
+            let args = vec![GenericArg::Type(Box::new(elem.clone()))];
+            let end_ty = match self.types.get_type_id(end) {
+                Some(base) => Type::Generic { base, args },
+                None => Type::UnresolvedGeneric { name: end.to_string(), args },
+            };
+            let _ = self.unify(chan_ty, &end_ty, span);
+        }
+        elem
+    }
+
+    /// The `SelectError` a waiting `select` ends with (conc.select/CL1).
+    /// In `stdlib/builtins.rk` beside `ConvertError`, for the same reason:
+    /// `select` is syntax, so its error can't depend on an import.
+    fn select_error_type(&self) -> Type {
+        match self.types.get_type_id("SelectError") {
+            Some(id) => Type::Named(id),
+            None => Type::UnresolvedNamed("SelectError".to_string()),
         }
     }
 

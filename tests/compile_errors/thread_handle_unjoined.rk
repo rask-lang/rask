@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A thread handle nobody joins or detaches (#1360).
+//
+// The concurrency spec lists "unused handle: compile error" for every spawn
+// form, and a task handle has been linear since #797, but a thread's handle
+// was a separate type that wasn't `@resource`, so dropping one compiled. Every
+// spawn form returns the one `Handle` now. Several go in a `Handles`, since a
+// `Vec` can't hold a linear value.
+
+import thread.Thread
+import async.{Handle, Handles}
+
+func dropped() {
+    // ERROR: E0805
+    let t = Thread.spawn(|| {
+        return 5
+    })
+}
+
+func collected() {
+    // ERROR: E0820
+    mut handles: Vec<Handle<i64>> = Vec.new()
+}
+
+// Fine: joined, detached, or kept in a group.
+func handled() -> i64 {
+    let a = Thread.spawn(|| {
+        return 1
+    })
+    ensure a.detach()
+    let b = Thread.spawn(|| {
+        return 2
+    })
+    b.detach()
+    mut group = Handles<i64>.new()
+    ensure group.detach()
+    group.add(Thread.spawn(|| {
+        return 3
+    }))
+    mut total = 0
+    for r in group.join_all() {
+        if r is i64 as v { total += v }
+    }
+    if a.join() is i64 as v { total += v }
+    return total
+}
+
+func main() {
+    dropped()
+    collected()
+    println("{handled()}")
+}

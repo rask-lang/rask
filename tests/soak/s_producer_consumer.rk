@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A consumer blocked in `receive` and a producer, sharing one worker (#1353).
+//
+// The consumer is spawned first and blocks waiting for a value. A blocked task
+// that keeps its worker leaves nothing to run the producer, so this hangs.
+// A parked receive hands the worker to the producer, and back.
+//
+// soak-expect: 500500
+
+import async.spawn
+
+func main() {
+    using Multitasking(workers: 1) {
+        let (tx, rx) = Channel<i64>.unbuffered()
+        let consumer = spawn(|| {
+            mut total: i64 = 0
+            mut i: i64 = 0
+            while i < 1000 {
+                let v = rx.receive() catch e => { return -1 }
+                total = total + v
+                i = i + 1
+            }
+            return total
+        })
+        ensure consumer.detach()
+        let producer = spawn(|| {
+            mut i: i64 = 1
+            while i <= 1000 {
+                tx.send(i) catch e => { return -1 }
+                i = i + 1
+            }
+            return 0
+        })
+        ensure producer.detach()
+        let p = producer.join() catch e => { return }
+        let c = consumer.join() catch e => { return }
+        println("{c + p}")
+    }
+}

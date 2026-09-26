@@ -84,11 +84,9 @@ static inline int64_t rask_safe_add(int64_t a, int64_t b) {
 }
 
 // ─── Resource tracking ─────────────────────────────────────
-// Consumed-flag tracker for ensure consumption cancellation (C1/C2).
-int64_t rask_resource_register(int64_t scope_depth);
-void    rask_resource_consume(int64_t id);
-int64_t rask_resource_is_consumed(int64_t id);
-void    rask_resource_scope_check(int64_t scope_depth);
+// Reads an `ensure`'s consumed flag; `token` is the flag's address in the
+// owning frame (C1/C2).
+int64_t rask_resource_is_consumed(int64_t token);
 
 // ─── Vec ────────────────────────────────────────────────────
 // Growable array storing elements as raw bytes.
@@ -121,12 +119,13 @@ typedef struct {
 // container payload is a handle in the box's slot rather than bytes the box can
 // free, and only the runtime knows when the last reference goes.
 //
-// Same three integers as `elem_strs::BOX_PAYLOAD_*` on the compiler side; that
+// Same integers as `elem_strs::BOX_PAYLOAD_*` on the compiler side; that
 // comment names this one back.
 #define RASK_BOX_PAYLOAD_NONE 0
 #define RASK_BOX_PAYLOAD_VEC  1
 #define RASK_BOX_PAYLOAD_MAP  2
 #define RASK_BOX_PAYLOAD_CLOSURE 3
+#define RASK_BOX_PAYLOAD_BOX  4   // another box: freed through its own header
 
 #define RASK_OWNED_KIND_SHIFT 28
 #define RASK_OWNED_OFFSET_MASK 0x0FFFFFFF
@@ -251,6 +250,8 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
                                 const int32_t *str_offs, int64_t n_str_offs);
 RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
                               const int32_t *str_offs, int64_t n_str_offs);
+// A `Vec<u8>` of raw bytes, one 8-byte slot per byte like compiled code's.
+RaskVec *rask_vec_from_bytes(const void *data, int64_t n);
 // Releases every string the elements hold, then the vector itself.
 void     rask_vec_free(RaskVec *v);
 // Takes a reference to every string the elements hold. A container built by
@@ -1134,12 +1135,6 @@ void    rask_panic_set_task_id(int64_t id);
 #define RASK_HAS_GREEN 0
 #endif
 
-// What a task's poll function reports. The state machine the compiler
-// generates returns one of these, so both schedulers — green.c and the
-// thread-backed stand-in in green_threads.c — read the same two numbers.
-#define RASK_POLL_READY   0
-#define RASK_POLL_PENDING 1
-
 // Every name below is defined by green.c on a build that has the scheduler and
 // by green_threads.c on one that doesn't, so a caller needs neither to care.
 // Off Linux a task is an OS thread, which is what Phase A concurrency is
@@ -1148,74 +1143,98 @@ void    rask_panic_set_task_id(int64_t id);
 void      rask_runtime_init(int64_t worker_count);
 void      rask_runtime_shutdown(void);
 
-// Spawn a green task. poll_fn signature: int (*)(void *state, void *task_ctx).
-// state is heap-allocated, freed by scheduler on completion.
-void     *rask_green_spawn(void *poll_fn, void *state, int64_t state_size);
+// ─── Tasks and handles (thread.c) ──────────────────────────
+// Every spawn form — a green task, a thread, a pooled job — records how it
+// ended in one `RaskTask`, and the `Handle<T>` user code holds is a pointer to
+// it (conc.async/H5).
 
-// Block until the task finishes. Returns 0 on success, -1 on panic.
-// On panic, if msg_out is non-NULL, receives a heap-allocated panic message
-// (caller must free). Consumes the handle. Never re-panics in the joining
-// context — the caller decides what to do with the error (ctrl.panic/O1).
-int64_t   rask_green_join(void *handle, char **msg_out);
-void      rask_green_detach(void *handle);
-
-// Request cooperative cancellation, then wait for the task to finish.
-// Returns 0 on success, -1 on panic. Consumes the handle.
-int64_t   rask_green_cancel(void *handle, char **msg_out);
-
-// Simplified join/cancel: no panic message output. Returns 0 on success, -1 on panic.
-int64_t   rask_green_join_simple(void *handle);
-int64_t   rask_green_cancel_simple(void *handle);
-
-// Closure-based spawn (bridge for codegen before state machine transform).
-void     *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned);
-
-// Yield helpers — called by state machines to pause on I/O.
-void      rask_yield_read(int fd, void *buf, size_t len);
-void      rask_yield_write(int fd, const void *buf, size_t len);
-void      rask_yield_accept(int listen_fd);
-void      rask_yield_timeout(uint64_t ns);
-
-// Cooperative yield — re-enqueue current task for later polling.
-void      rask_yield(void);
-
-// Check cancel flag for the current green task.
-int       rask_green_task_is_cancelled(void);
-
-
-// ─── Threads ───────────────────────────────────────────────
-// Phase A concurrency: one OS thread per spawn (conc.strategy/A1).
-// TaskHandle is affine — must be joined, detached, or cancelled.
-
-typedef struct RaskTaskHandle RaskTaskHandle;
+typedef struct RaskTask RaskTask;
 
 // Function signature for spawned tasks: takes environment pointer, hands back
 // the task's return value. A task body that returns nothing still matches this
 // on every ABI Rask targets — the unused return register is simply garbage,
-// and join() on a `ThreadHandle<void>` never looks at it.
+// and join() on a `Handle<void>` never looks at it.
 typedef int64_t (*RaskTaskFn)(void *env);
 
-// Spawn a new OS thread running func(env). Caller must join/detach/cancel.
-RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env);
+// How a joined task ended. Codegen turns this into the Result tag, so the
+// numbering here is the only thing the two sides have to agree on besides the
+// offsets.
+#define RASK_JOIN_OK        0
+#define RASK_JOIN_PANICKED  1
 
-// Block until task finishes. Returns 0 on success, -1 on panic.
-// On panic, if msg_out is non-NULL, receives a heap-allocated panic message
-// (caller must free). Consumes the handle.
-int64_t rask_task_join(RaskTaskHandle *h, char **msg_out);
+// Wait, and report how it ended separately from the value, so a task that
+// legitimately returns -1 isn't mistaken for a panic. `*value_out` gets the
+// return value (0 when it panicked); `*msg_out` is always left a valid string:
+// the panic message, or empty. Consumes the handle.
+int64_t rask_handle_join(void *h, int64_t *value_out, RaskStr *msg_out);
 
-// Detach the task (fire-and-forget). Consumes the handle.
-void rask_task_detach(RaskTaskHandle *h);
+// Raise the cancel flag, then join. The body's own ending is the answer.
+int64_t rask_handle_cancel(void *h, int64_t *value_out, RaskStr *msg_out);
+
+// Let it run on. Consumes the handle.
+void rask_handle_detach(void *h);
+
+// Whether whatever is running the caller has been asked to stop.
+int8_t rask_handle_cancelled(void);
+
+// A wait a cancel ends (conc.async/CN3): a channel receive or send, a sleep, a
+// socket. The wait registers how to wake it, loops on its own condition and on
+// `rask_cancel_requested()`, and deregisters once it has let go of its locks.
+// `rask_cancel_wait_begin` answers whether the cancel came already. Outside a
+// task nothing can cancel the caller, and these do nothing.
+typedef struct RaskCancelWake {
+    void (*wake)(struct RaskCancelWake *w);
+    void *a;
+    void *b;
+} RaskCancelWake;
+int  rask_cancel_requested(void);
+int  rask_cancel_wait_begin(RaskCancelWake *w);
+void rask_cancel_wait_end(void);
+// The waker for a condvar wait: lock `mutex`, broadcast `cond`.
+RaskCancelWake rask_cancel_wake_cond(void *mutex, void *cond);
+// A thread (not a fiber) waiting on a socket; 1 means the task was cancelled.
+int  rask_thread_io_wait(int64_t fd, int64_t want_write);
+
+// For the runners (green.c, threadpool.c). A new task holds two refs: the
+// handle's and the runner's.
+RaskTask *rask_task_new(void);
+// The closure allocation the body runs out of, and whether its result is a
+// heap box. The task frees both if nobody takes them.
+void      rask_task_adopt_closure(RaskTask *t, void *closure_base, int64_t result_owned);
+// Record how the body ended and wake a joiner. `panic_msg` is NULL for a
+// normal return, else a `strdup`'d message the task now owns.
+void      rask_task_finish(RaskTask *t, int64_t result, char *panic_msg);
+void      rask_task_release(RaskTask *t);
+int64_t   rask_task_id(RaskTask *t);
+// What `cancelled()` reads on this thread. A green worker sets it around each
+// fiber it runs.
+void      rask_task_set_current(RaskTask *t);
+// Run a body on the calling thread, catching its panic, then finish the task.
+void      rask_task_run_body(RaskTask *t, RaskTaskFn func, void *env);
+
+// `spawn`: a green task where there's a scheduler, a thread where there isn't.
+RaskTask *rask_green_closure_spawn(void *closure_ptr, int64_t result_owned);
+
+// ─── Threads ───────────────────────────────────────────────
+// Phase A concurrency: one OS thread per spawn (conc.strategy/A1).
 
 // ctrl.panic/O4: block until every detached task has finished reporting, so a
 // detached panic can't be lost to process exit. Called from `main`.
 void rask_await_detached_tasks(void);
 
-// Request cooperative cancellation, then wait for the task to finish.
-// Returns 0 on success, -1 on panic. Consumes the handle.
-int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out);
+// Program threads outside the green scheduler, for its deadlock check
+// (thread.c). A thread this runtime creates counts itself in at start and out
+// at exit; the scope's own thread is counted from the beginning.
+void    rask_outside_thread_start(void);
+void    rask_outside_thread_exit(void);
+int64_t rask_outside_running(void);
+int64_t rask_outside_progress(void);
 
-// Check if the current task has been cancelled. Returns 1 if cancelled.
-int8_t rask_task_cancelled(void);
+// Wait until a non-blocking socket is readable (or has a connection to
+// accept), or writable. A green task parks; any other caller blocks in poll.
+// 1 when a cancel ended the wait (conc.async/CN3); the caller fails the
+// operation with ECANCELED.
+int  rask_io_wait(int64_t fd, int64_t want_write);
 
 // `using Multitasking(workers: n)` on a build with no green scheduler: the
 // scope installs the count and a task body waits for one of the slots. Inert
@@ -1225,18 +1244,13 @@ void rask_task_slots_clear(void);
 int  rask_task_slot_release(void);
 void rask_task_slot_retake(int released);
 
-// Raise the cancel flag without joining. `rask_task_cancel` does both, and a
-// caller that wants the outcome shape (RASK_JOIN_CANCELLED and the value) needs
-// the flag raised before `rask_task_join_outcome` reads it.
-void rask_task_request_cancel(void *h);
-
 // Sleep the current thread for the given number of nanoseconds.
 int64_t rask_sleep_ns(int64_t ns);
 
-// Codegen wrapper: spawn a task from a closure pointer [func_ptr | captures...].
-// Extracts func/env, runs the task, and frees the closure allocation on completion.
-RaskTaskHandle *rask_closure_spawn(void *closure_ptr, int64_t result_owned);
-RaskTaskHandle *rask_thread_spawn(void *closure_ptr, int64_t result_owned);
+// Spawn a thread running a closure [func_ptr | captures...].
+RaskTask *rask_closure_spawn(void *closure_ptr, int64_t result_owned);
+// `Thread.spawn`: the same, refused under sim.
+RaskTask *rask_thread_spawn(void *closure_ptr, int64_t result_owned);
 
 // ─── Worker pool (threadpool.c) ────────────────────────────
 // `using ThreadPool(workers: n)` brackets its block with these. Workers are
@@ -1249,35 +1263,9 @@ void rask_threadpool_init(int64_t worker_count);
 // Drain the queue, stop the workers, join them. Idempotent.
 void rask_threadpool_shutdown(void);
 
-// ThreadPool.spawn — enqueues a job and hands back the same handle shape
-// Thread.spawn gives, so join/detach/cancel are unchanged. Outside a
-// `using ThreadPool` block there is no pool, so it falls back to one thread.
-RaskTaskHandle *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
-struct RaskTaskState;
-void rask_task_state_set_result_owned(struct RaskTaskState *state, int64_t owned);
-
-// Simplified join: no panic message output. Returns 0 on success, -1 on panic.
-int64_t rask_task_join_simple(void *h);
-
-// ─── Join outcome (T or JoinError) ─────────────────────────
-// How a joined task ended. Codegen turns this into the Result tag and, for the
-// two failure cases, the JoinError variant tag — so the numbering here is the
-// only thing the two sides have to agree on besides the offsets.
-#define RASK_JOIN_OK        0
-#define RASK_JOIN_PANICKED  1
-#define RASK_JOIN_CANCELLED 2
-
-// Join and report the outcome separately from the value, so a task that
-// legitimately returns -1 isn't mistaken for a panic. `*value_out` gets the
-// task's return value (0 when it failed); `*msg_out` is always left a valid
-// string — the panic message, or empty. Consumes the handle.
-int64_t rask_task_join_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
-
-// Same for the green scheduler's task handles.
-int64_t rask_green_join_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
-
-// Cancel-then-join. Reports CANCELLED unless the task panicked on its way out.
-int64_t rask_green_cancel_outcome(void *h, int64_t *value_out, RaskStr *msg_out);
+// ThreadPool.spawn — enqueues a job. Outside a `using ThreadPool` block there
+// is no pool, so it falls back to one thread.
+RaskTask *rask_threadpool_spawn(void *closure_ptr, int64_t result_owned);
 
 // ─── Channels ──────────────────────────────────────────────
 // Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).
@@ -1292,6 +1280,10 @@ typedef struct RaskRecver  RaskRecver;
 #define RASK_CHAN_CLOSED -1
 #define RASK_CHAN_FULL   -2
 #define RASK_CHAN_EMPTY  -3
+// The task was cancelled while it waited (conc.async/CN3). The same code
+// ends a sleep early.
+#define RASK_CHAN_CANCELLED -4
+#define RASK_CANCELLED RASK_CHAN_CANCELLED
 
 // Create a channel. capacity=0 for rendezvous (unbuffered).
 // Returns sender and receiver through out-params.
@@ -1299,7 +1291,7 @@ void rask_channel_new(int64_t elem_size, int64_t capacity,
                       RaskSender **tx_out, RaskRecver **rx_out);
 
 // Blocking send. Copies elem_size bytes from data into the channel.
-// Returns RASK_CHAN_OK or RASK_CHAN_CLOSED.
+// Returns RASK_CHAN_OK, RASK_CHAN_CLOSED or RASK_CHAN_CANCELLED.
 int64_t rask_channel_send(RaskSender *tx, const void *data);
 
 // Blocking receive. Copies elem_size bytes from channel into data_out.
@@ -1365,26 +1357,20 @@ void     rask_process_release(int64_t handle);
 // Round-robin starting offset for a native `select` with num_arms arms
 // (conc.select/P1) — see rask-mir's lower_select.
 int64_t rask_select_rotate(int64_t num_arms);
+// A select with nothing ready: read the epoch before probing the arms, and
+// if none was ready, wait for it to move (channel.c).
+int64_t rask_select_epoch(void);
+int64_t rask_select_wait(int64_t seen);  // 1 = cancelled
 
-// ─── Async I/O (dual-path: green task or blocking) ──────────
-// Inside a green task, these submit async ops and return PENDING.
-// Outside a green task, they fall back to blocking syscalls.
+// Park the running green fiber for `ns` (green.c). Only valid on a fiber —
+// check rask_fiber_active() first.
+int  rask_fiber_sleep_ns(int64_t ns);  // 1 = a cancel ended it
+int  rask_fiber_active(void);
 
-int64_t rask_async_read(int fd, void *buf, int64_t len);
-int64_t rask_async_write(int fd, const void *buf, int64_t len);
-int64_t rask_async_accept(int listen_fd);
-
-// ─── Async channels (yield-based) ──────────────────────────
-// Non-blocking try + yield loop for green tasks.
-// Outside green tasks, falls back to blocking channel ops.
-
-int64_t rask_channel_send_async(int64_t tx, int64_t value);
-int64_t rask_channel_recv_async(int64_t rx);
-
-// ─── Green-aware sleep ──────────────────────────────────────
-// Yields to scheduler in green tasks, blocking nanosleep otherwise.
-
-void rask_green_sleep_ns(int64_t ns);
+// A task's share of the runtime's thread-local state, swapped on and off a
+// worker thread as the task's fiber switches (panic.c).
+size_t rask_task_tls_size(void);
+void   rask_task_tls_swap(void *blob);
 
 // ─── Ensure hooks (LIFO cleanup) ───────────────────────────
 // Per-task cleanup stack. Hooks run LIFO on cancel or panic.
@@ -1535,8 +1521,6 @@ int64_t rask_shared_try_write_ptr(int64_t shared, int64_t closure);
 int64_t rask_channel_new_ptr(int64_t elem_size, int64_t capacity);
 int64_t rask_channel_send_ptr(int64_t tx, int64_t data_ptr);
 int64_t rask_channel_recv_ptr(int64_t rx, int64_t out_ptr);
-int64_t rask_channel_send_async_ptr(int64_t tx, int64_t data_ptr);
-int64_t rask_channel_recv_async_ptr(int64_t rx, int64_t out_ptr);
 
 // ── Error origin (ER15/ER16) ────────────────────────────────────
 // Set the source file name for error origin formatting.

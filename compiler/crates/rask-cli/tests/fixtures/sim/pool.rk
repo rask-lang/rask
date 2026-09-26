@@ -4,6 +4,7 @@
 // to give every job its own task, so `workers: 1` ran four jobs at once.
 
 import thread.ThreadPool
+import async.Handles
 import sync.Atomic
 import sync.SeqCst
 
@@ -21,13 +22,12 @@ func body() -> i64 {
 
 test "a pool of one runs one job at a time" {
     using ThreadPool(workers: 1) {
-        mut handles = Vec.new()
+        mut jobs = Handles<i64>.new()
+        ensure jobs.detach()
         for i in 0..4 {
-            handles.push(ThreadPool.spawn(|| { return body() }))
+            jobs.add(ThreadPool.spawn(|| { return body() }))
         }
-        for h in handles {
-            let _ = h.join()
-        }
+        let _ = jobs.join_all()
         assert PEAK.load(SeqCst) == 1
     }
 }
@@ -36,10 +36,12 @@ test "a job waiting on the job behind it" {
     using ThreadPool(workers: 1) {
         let (tx, rx) = Channel<i64>.buffered(1)
         let a = ThreadPool.spawn(|| { return rx.receive()! })
+        ensure a.detach()
         let b = ThreadPool.spawn(|| {
             let _ = tx.send(1)
             return 0
         })
+        ensure b.detach()
         let _ = a.join()
         let _ = b.join()
     }

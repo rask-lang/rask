@@ -8,7 +8,7 @@
 import time.Timer
 import os.SysError
 import json.JsonValue
-import async.TaskGroup
+import async.Handles
 import time
 import http
 import time.Duration

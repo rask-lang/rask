@@ -105,6 +105,19 @@ pub struct OwnershipChecker<'a> {
     /// A borrow can't be given away, so consuming one is an error rather than a
     /// move (#804).
     borrowed_params: HashMap<String, (Span, bool)>,
+    /// Pattern bindings that are parts of a borrowed value: name → (where the
+    /// pattern matched, what was borrowed). `match s { Full(c) => … }` with `s`
+    /// only lent gives `c` on the same loan, so `c` is neither owed nor
+    /// the arm's to give away. Scoped to the arm that bound it.
+    borrowed_parts: HashMap<String, (Span, String)>,
+    /// Loops being walked, innermost last: the label, and the join of the
+    /// binding states at every `break` that leaves it. What a `break` path
+    /// consumed is consumed after the loop too.
+    loop_exits: Vec<(Option<String>, Option<HashMap<String, BindingState>>)>,
+    /// How many times each linear name has been assigned a new value. The
+    /// commit window reads it: `rest = *next` means the old `rest` was
+    /// consumed, which is the commitment, and the new one starts its own.
+    refills: HashMap<String, u32>,
     /// Linear values a non-`own` closure captured: name → where the closure is.
     /// `mem.closures`' edge-case table says a non-`own` closure *borrows* a
     /// resource, and L3 says a borrow isn't a consumption — so a `close()` in
@@ -288,6 +301,9 @@ impl<'a> OwnershipChecker<'a> {
             owned_bindings: HashSet::new(),
             lent_locals: HashMap::new(),
             borrowed_params: HashMap::new(),
+            borrowed_parts: HashMap::new(),
+            loop_exits: Vec::new(),
+            refills: HashMap::new(),
             borrowed_captures: HashMap::new(),
             mutate_params: HashMap::new(),
             ensure_registered: HashSet::new(),
@@ -631,6 +647,9 @@ impl<'a> OwnershipChecker<'a> {
         self.coarse_resources.clear();
         self.resource_field_debts.clear();
         self.borrowed_params.clear();
+        self.borrowed_parts.clear();
+        self.loop_exits.clear();
+        self.refills.clear();
         self.mutate_params.clear();
         self.exit_reported.clear();
         self.deleting_params.clear();
@@ -908,10 +927,22 @@ impl<'a> OwnershipChecker<'a> {
     /// body with those pre-moved to catch the second-iteration use. `exclude`
     /// names the loop's own per-iteration bindings (for/while-let), which are
     /// freshly bound each iteration and are not carried.
-    fn check_loop_body(&mut self, body: &[Stmt], exclude: &[String]) {
+    ///
+    /// `only_break_leaves` is a bare `loop`: no condition to fall out of, so
+    /// the state after it is exactly the join of its `break`s. Draining a list
+    /// of resources is that shape — the arm that finds the end breaks, and
+    /// by then the list is gone.
+    fn check_loop_body(
+        &mut self,
+        body: &[Stmt],
+        exclude: &[String],
+        label: Option<&String>,
+        only_break_leaves: bool,
+    ) {
         let pre_loop = self.bindings.clone();
         let saved_errors = self.errors.len();
         self.loop_entry_resources.push(self.resource_bindings.clone());
+        self.loop_exits.push((label.cloned(), None));
 
         // Pass 1: discover which pre-loop bindings the body consumes.
         self.check_block(body);
@@ -932,6 +963,9 @@ impl<'a> OwnershipChecker<'a> {
             // errors — pass 2 sees a strict superset (stricter entry state).
             self.errors.truncate(saved_errors);
             self.bindings = pre_loop;
+            if let Some(top) = self.loop_exits.last_mut() {
+                top.1 = None;
+            }
             for (name, at) in &carried {
                 self.bindings
                     .insert(name.clone(), BindingState::MaybeMoved { at: *at });
@@ -939,6 +973,15 @@ impl<'a> OwnershipChecker<'a> {
             self.check_block(body);
         }
 
+        let breaks = self.loop_exits.pop().and_then(|(_, b)| b);
+        self.loop_entry_resources.pop();
+        if only_break_leaves {
+            // No `break` at all: nothing after the loop runs.
+            if let Some(breaks) = breaks {
+                self.bindings = breaks;
+            }
+            return;
+        }
         // After the loop, a value the body consumes is only maybe-consumed —
         // the loop may run zero times (mem.linear/L1, ctrl.ensure/C3). Don't
         // clobber loop-local binding states.
@@ -946,7 +989,32 @@ impl<'a> OwnershipChecker<'a> {
             self.bindings
                 .insert(name.clone(), BindingState::MaybeMoved { at: *at });
         }
-        self.loop_entry_resources.pop();
+        if let Some(breaks) = breaks {
+            self.merge_branch_bindings(&breaks);
+        }
+    }
+
+    /// A `break` leaves its loop with the state it has here.
+    fn record_loop_exit(&mut self, label: Option<&String>) {
+        let target = match label {
+            Some(l) => self.loop_exits.iter().rposition(|(name, _)| name.as_ref() == Some(l)),
+            None => self.loop_exits.len().checked_sub(1),
+        };
+        let Some(i) = target else { return };
+        let here = self.bindings.clone();
+        let joined = match self.loop_exits[i].1.take() {
+            None => here,
+            Some(mut acc) => {
+                for (name, state) in &here {
+                    if let Some(prev) = acc.get(name) {
+                        let merged = Self::join_binding_states(prev, state);
+                        acc.insert(name.clone(), merged);
+                    }
+                }
+                acc
+            }
+        };
+        self.loop_exits[i].1 = Some(joined);
     }
 
     /// E4: `let x = collection[key]` copies when the element is Copy and is a
@@ -1013,6 +1081,11 @@ impl<'a> OwnershipChecker<'a> {
             return;
         };
         if !self.definitely_not_copy(&ty) {
+            return;
+        }
+        // A linear field isn't viewed, it's moved out: the obligation goes with
+        // it, and the move rules decide whether the root was ours to take from.
+        if self.type_is_resource(&ty) {
             return;
         }
         self.errors.push(OwnershipError {
@@ -1214,7 +1287,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(expr);
                 // H1/L1: a resource-typed value with nothing to bind it to is
                 // dropped the instant it's produced — e.g. `spawn(f)` used as
-                // a bare statement, with the TaskHandle never joined/detached.
+                // a bare statement, with the Handle never joined/detached.
                 // A bare `Ident` is never a *fresh* value — it names an
                 // existing binding, which the end-of-scope check (E0805)
                 // already tracks; flagging it here too would double-report
@@ -1306,6 +1379,10 @@ impl<'a> OwnershipChecker<'a> {
                             && !self.borrowed_params.contains_key(target_name)
                         {
                             self.resource_bindings.insert(target_name.clone());
+                            // A new value, so a new window: the old one had to
+                            // be gone for the name to take this one.
+                            self.resource_acquired_at.insert(target_name.clone(), stmt.span);
+                            *self.refills.entry(target_name.clone()).or_default() += 1;
                         }
                     }
                 }
@@ -1407,19 +1484,27 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_exit_obligations(stmt.span);
                 }
             }
-            StmtKind::While { cond, body, .. } => {
+            StmtKind::While { label, cond, body } => {
                 self.check_expr(cond);
-                self.check_loop_body(body, &[]);
+                self.check_loop_body(body, &[], label.as_ref(), false);
             }
-            StmtKind::WhileLet { pattern, expr, body, .. } => {
+            StmtKind::WhileLet { label, pattern, expr, body } => {
                 self.check_expr(expr);
                 let scrutinee_ty = self.program.node_types.get(&expr.id).cloned();
-                self.register_pattern_bindings_typed(pattern, scrutinee_ty.as_ref(), expr.span);
+                let saved_parts = self.borrowed_parts.clone();
+                let lender = self.borrowed_source(expr);
+                self.register_pattern_bindings_typed(
+                    pattern,
+                    scrutinee_ty.as_ref(),
+                    expr.span,
+                    lender.as_deref(),
+                );
                 let mut bound = Vec::new();
                 Self::collect_pattern_binding_names(pattern, &mut bound);
-                self.check_loop_body(body, &bound);
+                self.check_loop_body(body, &bound, label.as_ref(), false);
+                self.borrowed_parts = saved_parts;
             }
-            StmtKind::For { label: _, binding, mutate, iter, body, .. } => {
+            StmtKind::For { label, binding, mutate, iter, body, .. } => {
                 self.check_expr(iter);
                 let binding_names: Vec<String> = binding.names().iter().map(|s| s.to_string()).collect();
                 match binding {
@@ -1464,7 +1549,7 @@ impl<'a> OwnershipChecker<'a> {
                         });
                     }
                 }
-                self.check_loop_body(body, &binding_names);
+                self.check_loop_body(body, &binding_names, label.as_ref(), false);
                 if *mutate {
                     self.active_for_mutates.pop();
                 }
@@ -1472,14 +1557,15 @@ impl<'a> OwnershipChecker<'a> {
                     self.rack_iterations.pop();
                 }
             }
-            StmtKind::Loop { label: _, body } => {
-                self.check_loop_body(body, &[]);
+            StmtKind::Loop { label, body } => {
+                self.check_loop_body(body, &[], label.as_ref(), true);
             }
-            StmtKind::Break { value, .. } => {
+            StmtKind::Break { label, value } => {
                 if let Some(v) = value {
                     self.check_expr(v);
                 }
                 self.check_loop_exit_obligations(stmt.span);
+                self.record_loop_exit(label.as_ref());
             }
             StmtKind::Continue(_) => {
                 self.check_loop_exit_obligations(stmt.span);
@@ -1590,8 +1676,17 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(left);
                 self.check_expr(right);
             }
-            ExprKind::Unary { op: _, operand } => {
+            ExprKind::Unary { op, operand } => {
                 self.check_expr(operand);
+                // `Heap(x)` moves `x` into the box (mem.heap/HP4), wherever it
+                // sits: a binding, an argument, a variant's payload. Only the
+                // plain-binding case was ever recorded — by the binding, not by
+                // the `Heap` — so `Conns.More(c, Heap(rest))` left `rest` owing
+                // after it had gone into the list, and a linked list of
+                // resources couldn't be built one node at a time.
+                if matches!(op, UnaryOp::Heap) {
+                    self.consume_owned_into_aggregate(operand);
+                }
             }
             ExprKind::Call { func, args } => {
                 self.check_expr(func);
@@ -2198,8 +2293,16 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(scrutinee);
                 let pre_branch = self.bindings.clone();
                 let scrutinee_ty = self.program.node_types.get(&scrutinee.id).cloned();
-                self.register_pattern_bindings_typed(pattern, scrutinee_ty.as_ref(), scrutinee.span);
+                let saved_parts = self.borrowed_parts.clone();
+                let lender = self.borrowed_source(scrutinee);
+                self.register_pattern_bindings_typed(
+                    pattern,
+                    scrutinee_ty.as_ref(),
+                    scrutinee.span,
+                    lender.as_deref(),
+                );
                 self.check_expr(then_branch);
+                self.borrowed_parts = saved_parts;
                 let then_terminal = Self::is_terminal_expr(then_branch);
                 if let Some(else_branch) = else_branch {
                     let after_then = self.bindings.clone();
@@ -2251,7 +2354,10 @@ impl<'a> OwnershipChecker<'a> {
                 // (returns/breaks) contributes nothing to the join.
                 let pre_arms = self.bindings.clone();
                 let mut merged: Option<HashMap<String, BindingState>> = None;
+                let lender = self.borrowed_source(scrutinee);
+                let saved_parts = self.borrowed_parts.clone();
                 for arm in arms {
+                    self.borrowed_parts = saved_parts.clone();
                     self.bindings = pre_arms.clone();
                     // A pattern's bindings belong to their own arm. Left on the
                     // books they were still owed while the *next* arm was being
@@ -2262,6 +2368,7 @@ impl<'a> OwnershipChecker<'a> {
                         &arm.pattern,
                         scrutinee_ty.as_ref(),
                         scrutinee.span,
+                        lender.as_deref(),
                     );
                     if let Some(guard) = &arm.guard {
                         self.check_expr(guard);
@@ -2282,6 +2389,7 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     });
                 }
+                self.borrowed_parts = saved_parts;
                 // All arms diverge → code after is unreachable; keep pre-match.
                 self.bindings = merged.unwrap_or(pre_arms);
             }
@@ -2380,8 +2488,8 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Comptime { body } => {
                 self.check_block(body);
             }
-            ExprKind::Loop { body, .. } => {
-                self.check_loop_body(body, &[]);
+            ExprKind::Loop { label, body } => {
+                self.check_loop_body(body, &[], label.as_ref(), true);
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
                 self.check_expr(condition);
@@ -3661,7 +3769,7 @@ impl<'a> OwnershipChecker<'a> {
         matches!(base_name,
             "Vec" | "Map" | "Wide" | "Cell"
             | "Rack" | "Link"
-            | "TaskHandle" | "TaskGroup" | "Sender" | "Receiver" | "ThreadHandle")
+            | "Handle" | "Sender" | "Receiver")
     }
 
     /// Map a generic struct/enum's own type parameter names to the concrete
@@ -4190,16 +4298,21 @@ impl<'a> OwnershipChecker<'a> {
     /// to `resource_bindings`. The `pattern_span` is the scrutinee/match-arm
     /// span used for diagnostics. `scrutinee_ty: None` skips ER42/ER43 checks
     /// at the top level — callers without a known type pass None.
+    /// `lender` is set when the scrutinee is a borrowed value: its bindings
+    /// are parts on the same loan, owed by nobody here, and a `_` over a
+    /// linear part discards nothing.
     fn register_pattern_bindings_typed(
         &mut self,
         pattern: &Pattern,
         scrutinee_ty: Option<&Type>,
         pattern_span: Span,
+        lender: Option<&str>,
     ) {
+        let owned = lender.is_none();
         match pattern {
             Pattern::Wildcard => {
                 if let Some(ty) = scrutinee_ty {
-                    if self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
+                    if owned && self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
                         self.errors.push(OwnershipError {
                             kind: OwnershipErrorKind::LinearWildcardDiscard {
                                 position: error::LinearDiscardPosition::Scrutinee,
@@ -4220,9 +4333,18 @@ impl<'a> OwnershipChecker<'a> {
                     return;
                 }
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                match lender {
+                    Some(from) => {
+                        self.borrowed_parts
+                            .insert(name.clone(), (pattern_span, from.to_string()));
+                    }
+                    None => {
+                        self.borrowed_parts.remove(name);
+                    }
+                }
                 if let Some(ty) = scrutinee_ty {
                     self.binding_types.insert(name.clone(), ty.clone());
-                    if self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
+                    if owned && self.type_is_resource(ty) && !self.pattern_payload_is_borrowed(ty) {
                         self.resource_bindings.insert(name.clone());
                     }
                 }
@@ -4238,7 +4360,7 @@ impl<'a> OwnershipChecker<'a> {
                 });
                 for (i, pat) in pats.iter().enumerate() {
                     let pos_ty = elem_tys.as_ref().and_then(|tys| tys.get(i));
-                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span);
+                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, lender);
                 }
             }
             Pattern::Struct { name, fields, rest } => {
@@ -4250,7 +4372,7 @@ impl<'a> OwnershipChecker<'a> {
                         .as_ref()
                         .and_then(|fs| fs.iter().find(|(n, _)| n == field_name))
                         .map(|(_, t)| t.clone());
-                    self.register_pattern_bindings_typed(pat, pos_ty.as_ref(), pattern_span);
+                    self.register_pattern_bindings_typed(pat, pos_ty.as_ref(), pattern_span, lender);
                 }
                 // ER43: `..` rest discards every unmentioned linear field.
                 if *rest {
@@ -4258,7 +4380,8 @@ impl<'a> OwnershipChecker<'a> {
                         let mentioned: std::collections::HashSet<&str> =
                             fields.iter().map(|(n, _)| n.as_str()).collect();
                         for (fname, fty) in &struct_fields {
-                            if !mentioned.contains(fname.as_str())
+                            if owned
+                                && !mentioned.contains(fname.as_str())
                                 && self.type_is_resource(fty)
                                 && !self.pattern_payload_is_borrowed(fty)
                             {
@@ -4289,7 +4412,8 @@ impl<'a> OwnershipChecker<'a> {
                     let pos_ty = payload_tys.as_ref().and_then(|tys| tys.get(i));
                     if let Pattern::Wildcard = pat {
                         if let Some(ty) = pos_ty {
-                            if self.type_is_resource(ty)
+                            if owned
+                                && self.type_is_resource(ty)
                                 && !self.pattern_payload_is_borrowed(ty)
                             {
                                 self.errors.push(OwnershipError {
@@ -4310,26 +4434,35 @@ impl<'a> OwnershipChecker<'a> {
                         }
                         continue;
                     }
-                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span);
+                    self.register_pattern_bindings_typed(pat, pos_ty, pattern_span, lender);
                 }
             }
             Pattern::Or(pats) => {
                 // Each alternative binds the same names; let the typed walk
                 // mark resources on the first, then de-dup with the rest.
                 for pat in pats {
-                    self.register_pattern_bindings_typed(pat, scrutinee_ty, pattern_span);
+                    self.register_pattern_bindings_typed(pat, scrutinee_ty, pattern_span, lender);
                 }
             }
             Pattern::TypePat { ty_name, binding } => {
                 if let Some(name) = binding {
                     self.bindings.insert(name.clone(), BindingState::Owned);
+                    match lender {
+                        Some(from) => {
+                            self.borrowed_parts
+                                .insert(name.clone(), (pattern_span, from.to_string()));
+                        }
+                        None => {
+                            self.borrowed_parts.remove(name);
+                        }
+                    }
                     // Resolve the narrowed type to determine linearity. Strip
                     // generic args ("FileError<T>" → "FileError") for lookup.
                     let base = ty_name.split('<').next().unwrap_or(ty_name);
                     if let Some(id) = self.program.types.get_type_id(base) {
                         let narrow_ty = Type::Named(id);
                         self.binding_types.insert(name.clone(), narrow_ty.clone());
-                        if self.type_is_resource(&narrow_ty) {
+                        if owned && self.type_is_resource(&narrow_ty) {
                             self.resource_bindings.insert(name.clone());
                         }
                     }
@@ -4609,7 +4742,7 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Whether this method call starts a task: `Thread.spawn`,
-    /// `ThreadPool.spawn`, or `spawn` on a `TaskGroup`.
+    /// `ThreadPool.spawn`, or `spawn` on a `Handles`.
     ///
     /// The receiver decides, not the name. A program may have a `Runner` with a
     /// synchronous `spawn(cb)` that just calls what it was handed, and matching
@@ -4628,7 +4761,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Ident(name) if name == "Thread" || name == "ThreadPool" => true,
             _ => self
                 .receiver_type_name(object)
-                .is_some_and(|t| t == "Thread" || t == "ThreadPool" || t == "TaskGroup"),
+                .is_some_and(|t| t == "Thread" || t == "ThreadPool"),
         }
     }
 
@@ -5475,7 +5608,7 @@ impl<'a> OwnershipChecker<'a> {
     }
     /// Best-effort display name for a resource-typed value, recursing through
     /// `T or E` to name whichever side is actually linear (E0834: a bare
-    /// statement whose type is `TaskHandle<T> or E` still leaks the handle).
+    /// statement whose type is `Handle<T> or E` still leaks the handle).
     fn resource_type_display(&self, ty: &Type) -> String {
         match ty {
             Type::Named(id) | Type::Generic { base: id, .. } => self.program.types.type_name(*id),
@@ -5559,12 +5692,16 @@ impl<'a> OwnershipChecker<'a> {
     /// `ensure` pays them one at a time — so "is it still on the list" can't
     /// tell the first of two `ensure`s from a statement that committed nothing.
     /// The count can.
-    fn commit_state(&self) -> Vec<(String, usize)> {
+    ///
+    /// Paired with how many times the name was refilled, so a statement that
+    /// consumed the value and put a new one in counts as the commitment.
+    fn commit_state(&self) -> Vec<(String, usize, u32)> {
         self.uncommitted_linears()
             .into_iter()
             .map(|n| {
                 let debts = self.resource_field_debts.get(&n).map_or(0, |d| d.len());
-                (n, debts)
+                let refills = self.refills.get(&n).copied().unwrap_or(0);
+                (n, debts, refills)
             })
             .collect()
     }
@@ -5591,7 +5728,7 @@ impl<'a> OwnershipChecker<'a> {
     /// LIFO teardown come out right.
     fn check_commit_window(
         &mut self,
-        pending_before: &[(String, usize)],
+        pending_before: &[(String, usize, u32)],
         errors_before: usize,
         stmt: &Stmt,
     ) {
@@ -5613,10 +5750,10 @@ impl<'a> OwnershipChecker<'a> {
             return;
         }
         let still = self.commit_state();
-        let progressed = pending_before.iter().any(|(name, debts)| {
-            match still.iter().find(|(n, _)| n == name) {
+        let progressed = pending_before.iter().any(|(name, debts, refills)| {
+            match still.iter().find(|(n, _, _)| n == name) {
                 None => true,
-                Some((_, now)) => now < debts,
+                Some((_, now, now_refills)) => now < debts || now_refills != refills,
             }
         });
         if progressed {
@@ -5629,7 +5766,7 @@ impl<'a> OwnershipChecker<'a> {
         {
             return;
         }
-        for (name, _) in pending_before {
+        for (name, _, _) in pending_before {
             if !self.exit_reported.insert(format!("commit:{}", name)) {
                 continue;
             }
@@ -5867,6 +6004,18 @@ impl<'a> OwnershipChecker<'a> {
             });
             return;
         }
+        if let Some((matched_at, from)) = self.borrowed_parts.get(name).cloned() {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ConsumeBorrowedPart {
+                    name: name.to_string(),
+                    from,
+                    matched_at,
+                    sink: sink.map(str::to_string),
+                },
+                span,
+            });
+            return;
+        }
         if let Some(&closure_at) = self.borrowed_captures.get(name) {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::ConsumeBorrowedCapture {
@@ -6044,6 +6193,22 @@ impl<'a> OwnershipChecker<'a> {
 
     fn type_is_resource(&self, ty: &Type) -> bool {
         self.program.types.is_linear_value(ty)
+    }
+
+    /// The borrowed value a scrutinee is part of, if it is one: a borrowed
+    /// parameter, a part matched out of one, or a field path under either.
+    fn borrowed_source(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if self.borrowed_params.contains_key(name) {
+                    Some(name.clone())
+                } else {
+                    self.borrowed_parts.get(name).map(|(_, from)| from.clone())
+                }
+            }
+            ExprKind::Field { object, .. } => self.borrowed_source(object),
+            _ => None,
+        }
     }
 
     /// Is a value of this type, read out of an aggregate by a pattern, the

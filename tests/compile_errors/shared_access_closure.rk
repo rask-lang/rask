@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A blocking `Shared` access handed a closure (E0900, #1311).
+//
+// Blocking access is a `with` block or one expression; a closure is the shape
+// of the non-blocking `try_read`/`try_write`, which can come back without the
+// lock (conc.sync, "Non-blocking variants"). The checker used to accept
+// `s.read(|v| …)` anyway, undeclared, and native compiled it to a read of a
+// slot nobody wrote — a different number every run, on all three strategies.
+
+import sync.Shared
+
+func main() {
+    let readers = Shared<i64>.new(5)
+    let mutexed = Shared<i64>.mutex(5)
+    let local = Shared<i64>.local(5)
+
+    // ERROR: E0900 — `read` takes no closure
+    let a: i64 = readers.read(|v| { return v * 2 })
+    // ERROR: E0900 — nor does `write`
+    let b: i64 = mutexed.write(|v| { return v * 3 })
+    // ERROR: E0900 — whatever the strategy
+    let c: i64 = local.read(|v| { return v * 4 })
+
+    // The forms that exist, which must still compile:
+    let d = with readers.read() as v { v * 2 }
+    let e = with mutexed.write() as v { v * 3 }
+    let f = readers.try_read(|v| { return v }) ?? 0
+    println("{a} {b} {c} {d} {e} {f}")
+}

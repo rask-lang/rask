@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A vector made after an early `return` is freed once on the way out.
+//
+//     ensure log.close()
+//     while … { let x = step(i) catch e => { return -1 } }
+//     for r in make_vec() { … }
+//     return total
+//
+// The drop pass frees a fresh vector before every return its definition
+// dominates, and also where control leaves the region the definition rules.
+// A `cleanup_return` runs the ensure blocks on its way out, and the early
+// `catch` return reaches those blocks too, so they sat outside the vector's
+// region: the final return counted both as a return and as an edge out, and
+// freed the vector twice. Found as a double free in `Handles.join_all` on the
+// first program that had an early return before it.
+
+struct Closer {
+    closed: i64
+}
+
+extend Closer {
+    func close(take self) {}
+}
+
+enum StepError {
+    TooFar
+}
+
+extend StepError {
+    func message(self) -> string {
+        return "too far"
+    }
+}
+
+func step(i: i64) -> i64 or StepError {
+    if i > 100 {
+        return StepError.TooFar
+    }
+    return i
+}
+
+func make_vec(n: i64) -> Vec<i64> {
+    mut v: Vec<i64> = Vec.new()
+    mut i = 0
+    while i < n {
+        v.push(i)
+        i += 1
+    }
+    return v
+}
+
+func run(n: i64) -> i64 {
+    let c = Closer { closed: 0 }
+    ensure c.close()
+    mut i = 0
+    while i < n {
+        let x = step(i) catch e => { return -1 }
+        i += 1
+    }
+    mut total = 0
+    for r in make_vec(n) {
+        total += r
+    }
+    return total
+}
+
+test "a vector after an early return is freed once" {
+    mut round = 0
+    mut sum = 0
+    while round < 200 {
+        sum += run(10)
+        round += 1
+    }
+    assert sum == 200 * 45
+}
+
+func main() {}

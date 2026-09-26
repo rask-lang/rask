@@ -147,7 +147,7 @@ Releases: https://github.com/rask-lang/rask/releases
 
 **Debugging codegen:** If a compiled binary segfaults, use `--dump-mir` to inspect the MIR and `RASK_RUNTIME_CHECKS=1 ./binary` to turn null-deref segfaults into panics with messages. Compile the C runtime with `-DRASK_DEBUG` for unconditional checks.
 
-`RASK_POISON_STACK=1 ./binary` fills the stack with `0xAA` before `main` and before each worker thread's tasks. A slot codegen forgot to write reads as zero on a fresh stack and looks fine, so those bugs only appear once a program has run a while — and vanish the moment you reduce them. Poisoning makes them fire on the first call instead. That's what turned #577 from 40% flaky into 10/10.
+`RASK_POISON_STACK=1 ./binary` fills the stack with `0xAA` before `main`, on each worker thread, and on each task's fiber stack. A slot codegen forgot to write reads as zero on a fresh stack and looks fine, so those bugs only appear once a program has run a while — and vanish the moment you reduce them. Poisoning makes them fire on the first call instead. That's what turned #577 from 40% flaky into 10/10.
 
 If the compiler panics saying a name "belongs to `Vec`" but nothing declares it, MIR has minted an internal spelling nobody accounted for. `INTERNAL_SPELLINGS` in `rask-stdlib/src/mir_metadata.rs` says what each one stands for, and the panic is deliberate — the alternative answer, "no declaration, so the caller owns what came back", frees a string the container still holds. `RASK_LIST_UNMAPPED_SPELLINGS=1` reports each one and carries on instead of stopping at the first, so one sweep over the corpus lists them all.
 

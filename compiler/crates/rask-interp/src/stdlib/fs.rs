@@ -15,7 +15,7 @@ use crate::value::Value;
 /// side used to be a bare string, so `if result is IoError as e` never matched
 /// and the program silently took the success path. The variant comes from the
 /// OS error kind; anything without a spelled-out variant lands in `Other(msg)`.
-fn io_error_result(e: &std::io::Error) -> Value {
+pub(crate) fn io_error_result(e: &std::io::Error) -> Value {
     use std::io::ErrorKind;
     let msg = e.to_string();
     let (variant, index, carries_msg) = match e.kind() {

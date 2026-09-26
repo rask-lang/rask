@@ -914,7 +914,7 @@ mod tests {
                 ret_ty: None,
                 body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
                 is_pub: false, is_private: false, is_comptime: false, is_unsafe: false,
-                abi: None, attrs: vec![], doc: None, span: sp(),
+                abi: None, attrs: vec![], doc: None, span: sp(), decl_start: sp().start,
             }),
             span: sp(),
         };
@@ -967,7 +967,7 @@ mod tests {
                 name: "main".to_string(), type_params: vec![], params: vec![], ret_ty: None,
                 body: vec![Stmt { id: NodeId(0), kind: StmtKind::Expr(lit), span: sp() }],
                 is_pub: false, is_private: false, is_comptime: false, is_unsafe: false,
-                abi: None, attrs: vec![], doc: None, span: sp(),
+                abi: None, attrs: vec![], doc: None, span: sp(), decl_start: sp().start,
             }),
             span: sp(),
         };

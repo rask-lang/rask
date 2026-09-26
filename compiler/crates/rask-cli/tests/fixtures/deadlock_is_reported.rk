@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Two tasks that each receive from the other's channel before sending, and the
+// scope's thread joining both. Nothing can ever wake any of them (#1354).
+import async.{spawn, Channel}
+
+func main() {
+    using Multitasking(workers: 2) {
+        let (tx_a, rx_a) = Channel<i64>.buffered(1)
+        let (tx_b, rx_b) = Channel<i64>.buffered(1)
+        let a = spawn(|| {
+            let v = rx_b.receive() catch e => { return 0 }
+            try tx_a.send(v + 1)
+            return v
+        })
+        ensure a.detach()
+        let b = spawn(|| {
+            let v = rx_a.receive() catch e => { return 0 }
+            try tx_b.send(v + 1)
+            return v
+        })
+        ensure b.detach()
+        let x = a.join() catch e => 0
+        let y = b.join() catch e => 0
+        println("{x} {y}")
+    }
+}

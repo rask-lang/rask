@@ -168,6 +168,21 @@ pub struct FnDecl {
     pub doc: Option<String>,
     /// Span covering `func` keyword through closing `}`
     pub span: Span,
+    /// Where the declaration's text begins: its first attribute or modifier,
+    /// else `span.start`. Only the formatter needs it — the blank line and the
+    /// comments before a method belong before its `@attr` or `public`.
+    pub decl_start: usize,
+}
+
+impl FnDecl {
+    /// Declared without a Rask body: the backend implements it (`@native`,
+    /// `@builtin`) or nothing does yet (`@unimplemented`). An empty `{}`
+    /// without one of those is a real body that does nothing.
+    pub fn body_lives_elsewhere(&self) -> bool {
+        self.attrs.iter().any(|a| {
+            a == "native" || a.starts_with("native(") || a == "builtin" || a == "unimplemented"
+        })
+    }
 }
 
 /// A function parameter.

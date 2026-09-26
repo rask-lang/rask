@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An `ensure` stands down when its value was consumed, however many ensures
+// the program has run before it.
+//
+// Natively, "was it consumed" was an index into one process-wide table of 256
+// flags. Indexes were never reused, so from the 256th `ensure` in a program's
+// life every value read as not consumed and its cleanup ran anyway: a second
+// `close` here, and a `detach` of a task handle `join` had already freed in a
+// spawn loop, which is a double free. The flag lives in the frame that owns
+// the value now.
+//
+// Each case counts closes, because a second close has no symptom of its own.
+
+import sync.Atomic
+import sync.SeqCst
+
+const CLOSES: Atomic<i64> = Atomic<i64>.new(0)
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func open(id: i64) -> Conn {
+        return Conn { id: id }
+    }
+
+    func close(take self) -> i64 {
+        CLOSES.fetch_add(1, SeqCst)
+        return self.id
+    }
+}
+
+func use_once(i: i64) -> i64 {
+    let c = Conn.open(i)
+    ensure c.close()
+    return c.close()
+}
+
+test "a consumed value's ensure stands down past the 256th ensure" {
+    CLOSES.store(0, SeqCst)
+    mut i = 0
+    mut sum = 0
+    while i < 1000 {
+        sum = sum + use_once(i)
+        i = i + 1
+    }
+    assert sum == 499500
+    assert CLOSES.load(SeqCst) == 1000
+}
+
+test "an unconsumed value's ensure still runs, past the 256th" {
+    CLOSES.store(0, SeqCst)
+    mut i = 0
+    while i < 600 {
+        let c = Conn.open(i)
+        ensure c.close()
+        i = i + 1
+    }
+    assert CLOSES.load(SeqCst) == 600
+}

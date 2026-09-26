@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A consuming call owns its value from the moment it's made, even when what it
+// returns sends control out early.
+//
+//     let h = spawn(|| { panic("boom") })
+//     ensure h.detach()
+//     let v = h.join() catch e => { return -1 }
+//
+// `join` frees the handle whatever the task did. Native marked the handle
+// consumed only once the whole `let` had finished, so the catch arm's
+// `return` ran `ensure h.detach()` on the freed handle: a double free, every
+// time a joined task panicked. The mark goes in right after the call now, so
+// `catch`, `!`, `try` and a `match` arm all find the ensure already stood down.
+//
+// Each case runs many times: one double free can pass unnoticed, a few
+// hundred can't.
+
+import async.spawn
+
+func joined_after_panic() -> i64 {
+    let h = spawn(|| {
+        panic("boom")
+        return 1
+    })
+    ensure h.detach()
+    let v = h.join() catch e => { return -1 }
+    return v
+}
+
+func joined_in_a_match() -> i64 {
+    let h = spawn(|| {
+        panic("boom")
+        return 1
+    })
+    ensure h.detach()
+    match h.join() {
+        i64 as v => { return v },
+        JoinError.Panicked(msg) => { return -2 },
+    }
+}
+
+test "a catch arm that returns after join doesn't detach the handle again" {
+    using Multitasking(workers: 2) {
+        mut i = 0
+        mut total = 0
+        while i < 200 {
+            total = total + joined_after_panic()
+            i = i + 1
+        }
+        assert total == -200
+    }
+}
+
+test "a match arm that returns after join doesn't detach it either" {
+    using Multitasking(workers: 2) {
+        mut i = 0
+        mut total = 0
+        while i < 200 {
+            total = total + joined_in_a_match()
+            i = i + 1
+        }
+        assert total == -400
+    }
+}

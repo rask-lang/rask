@@ -79,9 +79,8 @@ pub enum ArgAdapt {
     /// returning a pointer into freed storage.
     OptionOutParam,
     /// join/cancel: append two out-params — the task's value and a 16-byte
-    /// message string. The call returns how the task ended (ok/panicked/
-    /// cancelled), which becomes the `T or JoinError` tag and, when it failed,
-    /// the JoinError variant.
+    /// message string. The call returns how the task ended (ok/panicked),
+    /// which becomes the `T or JoinError` tag.
     JoinOutcomeOutParams,
     /// Complex case handled by hand-written code
     Custom,
@@ -117,6 +116,9 @@ pub enum RetAdapt {
     /// belongs to the entry, and a name missing from a list four deep is how
     /// this went wrong the first time.
     BoxPayloadPtr,
+    /// The return is a status: 0 for Ok, or a `RASK_CHAN_*` failure the
+    /// destination's error enum names a variant for (`Closed`, `Cancelled`).
+    Status,
 }
 
 /// A stdlib function entry: MIR name → C runtime function + adaptation.
@@ -160,7 +162,7 @@ impl StdlibEntry {
         Self { mir_name, c_name, params, ret_ty, can_panic, arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::NegErr }
     }
 
-    /// For `TaskHandle.join` / `.cancel` and their OS-thread twins: the C side
+    /// For `Handle.join` / `.cancel`: the C side
     /// hands back (outcome, value, message) and codegen assembles the
     /// `T or JoinError` from all three.
     const fn join_outcome(mir_name: &'static str, c_name: &'static str) -> Self {
@@ -1325,61 +1327,48 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── ThreadPool ─────────────────────────────────────────────
         StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::join_outcome("ThreadHandle_join", "rask_task_join_outcome"),
-        StdlibEntry::join_outcome("Thread_join", "rask_task_join_outcome"),
-        StdlibEntry::simple("ThreadHandle_detach", "rask_task_detach", &[types::I64], None, false),
-        StdlibEntry::simple("Thread_detach", "rask_task_detach", &[types::I64], None, false),
-        StdlibEntry::simple("time_sleep", "rask_sleep_ns", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "time_sleep", c_name: "rask_sleep_ns",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::Status,
+        },
 
-        // ── Concurrency: spawn/join/detach (green scheduler) ────────
-        // join/cancel report how the task ended alongside its value, same as
-        // the OS-thread path — a panicked task no longer re-panics in the
+        // ── Concurrency: spawn/join/detach ──────────────────────────
+        // join/cancel report how the task ended alongside its value — a
+        // panicked task doesn't re-panic in the
         // joiner, it comes back as Err(JoinError.Panicked(msg)) (ctrl.panic/O1).
         // Two args: the closure, then whether its result is a heap box the task
         // owns and must free if no join ever comes for it (#963).
         StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::join_outcome("join", "rask_green_join_outcome"),
-        StdlibEntry::simple("detach", "rask_green_detach", &[types::I64], None, true),
-        StdlibEntry::join_outcome("cancel", "rask_green_cancel_outcome"),
-        // TaskHandle qualified names (same C functions as unqualified)
-        StdlibEntry::join_outcome("TaskHandle_join", "rask_green_join_outcome"),
-        StdlibEntry::simple("TaskHandle_detach", "rask_green_detach", &[types::I64], None, true),
-        StdlibEntry::join_outcome("TaskHandle_cancel", "rask_green_cancel_outcome"),
-        StdlibEntry::simple("rask_task_cancelled", "rask_green_task_is_cancelled", &[], Some(types::I32), false),
-        StdlibEntry::simple("rask_sleep_ns", "rask_green_sleep_ns", &[types::I64], None, false),
+        // One handle for every spawn form (conc.async/H5); the runtime reads
+        // which kind it is.
+        StdlibEntry::join_outcome("join", "rask_handle_join"),
+        StdlibEntry::simple("detach", "rask_handle_detach", &[types::I64], None, true),
+        StdlibEntry::join_outcome("cancel", "rask_handle_cancel"),
+        StdlibEntry::join_outcome("Handle_join", "rask_handle_join"),
+        StdlibEntry::simple("Handle_detach", "rask_handle_detach", &[types::I64], None, true),
+        StdlibEntry::join_outcome("Handle_cancel", "rask_handle_cancel"),
+        StdlibEntry::simple("cancelled", "rask_handle_cancelled", &[], Some(types::I8), false),
+        StdlibEntry::simple("rask_sleep_ns", "rask_sleep_ns", &[types::I64], None, false),
 
         // ── Concurrency: runtime init/shutdown ───────────────────────
         StdlibEntry::simple("rask_runtime_init", "rask_runtime_init", &[types::I64], None, false),
         StdlibEntry::simple("rask_runtime_shutdown", "rask_runtime_shutdown", &[], None, false),
         StdlibEntry::simple("rask_threadpool_init", "rask_threadpool_init", &[types::I64], None, false),
         StdlibEntry::simple("rask_threadpool_shutdown", "rask_threadpool_shutdown", &[], None, false),
-        StdlibEntry::simple("rask_green_spawn", "rask_green_spawn", &[types::I64, types::I64, types::I64], Some(types::I64), true),
 
         // ── Concurrency: yield helpers ───────────────────────────────
-        StdlibEntry::simple("rask_yield", "rask_yield", &[], None, false),
-        StdlibEntry::simple("rask_yield_timeout", "rask_yield_timeout", &[types::I64], None, false),
-        StdlibEntry::simple("rask_yield_read", "rask_yield_read", &[types::I32, types::I64, types::I64], None, false),
-        StdlibEntry::simple("rask_yield_write", "rask_yield_write", &[types::I32, types::I64, types::I64], None, false),
-        StdlibEntry::simple("rask_yield_accept", "rask_yield_accept", &[types::I32], None, false),
 
         // ── Async I/O ─────────────────────────────────────────────────
-        StdlibEntry::simple("rask_async_read", "rask_async_read", &[types::I32, types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_async_write", "rask_async_write", &[types::I32, types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_async_accept", "rask_async_accept", &[types::I32], Some(types::I64), false),
 
         // ── Async channels ─────────────────────────────────────────
-        StdlibEntry::simple("rask_channel_send_async", "rask_channel_send_async", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_channel_recv_async", "rask_channel_recv_async", &[types::I64], Some(types::I64), true),
 
         // ── Ensure hooks ──────────────────────────────────────────
         StdlibEntry::simple("rask_ensure_push", "rask_ensure_push", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("rask_ensure_pop", "rask_ensure_pop", &[], None, false),
 
         // ── Resource tracking (C1/C2 consumption cancellation) ───
-        StdlibEntry::simple("rask_resource_register", "rask_resource_register", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_resource_consume", "rask_resource_consume", &[types::I64], None, false),
         StdlibEntry::simple("rask_resource_is_consumed", "rask_resource_is_consumed", &[types::I64], Some(types::I64), false),
-        StdlibEntry::simple("rask_resource_scope_check", "rask_resource_scope_check", &[types::I64], None, false),
 
         // ── Memory allocation ─────────────────────────────────────
         StdlibEntry::simple("rask_alloc", "rask_alloc", &[types::I64], Some(types::I64), false),
@@ -1399,7 +1388,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "Sender_send", c_name: "rask_channel_send_ptr",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::NegErr,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::Status,
         },
         StdlibEntry::neg_err("Sender_try_send", "rask_channel_try_send_i64", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::neg_err("Sender_close", "rask_sender_close_i64", &[types::I64], Some(types::I64), false),
@@ -1408,7 +1397,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "send", c_name: "rask_channel_send_ptr",
             params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
+            arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::Status,
         },
         StdlibEntry::simple("sender_clone", "rask_sender_clone_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("sender_drop", "rask_sender_drop_i64", &[types::I64], None, false),
@@ -1429,6 +1418,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         // Rotating start offset for a plain `select`'s probe order (conc.select/P1).
         StdlibEntry::simple("rask_select_rotate", "rask_select_rotate", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("rask_select_epoch", "rask_select_epoch", &[], Some(types::I64), false),
+        StdlibEntry::simple("rask_select_wait", "rask_select_wait", &[types::I64], Some(types::I64), false),
         StdlibEntry::neg_err("Receiver_close", "rask_recver_close_i64", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Receiver_drop", "rask_recver_drop_i64", &[types::I64], None, false),
         StdlibEntry::simple("receive", "rask_channel_recv_i64", &[types::I64], Some(types::I64), true),
@@ -1936,8 +1927,6 @@ mod tests {
     ("Map.modify",                Ok_("t_native_reach_map_math_json")),
     ("Map.modify_with_default",   Ok_("t_native_reach_map_math_json")),
     ("Map.read",                  Ok_("t_native_reach_map_math_json")),
-    ("TaskGroup.join_all",        Gap("#1288")),
-    ("TaskGroup.new",             Gap("#1288")),
     ("Vec.all",                   Ok_("t_native_reach_vec")),
     ("Vec.any",                   Ok_("t_native_reach_vec")),
     ("Vec.find",                  Ok_("t_native_reach_vec")),

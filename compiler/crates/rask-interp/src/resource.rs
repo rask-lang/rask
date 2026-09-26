@@ -30,7 +30,7 @@ pub struct ResourceTracker {
     entries: HashMap<u64, ResourceEntry>,
     /// Map Arc pointer addresses to resource IDs (for Value::File).
     file_ids: HashMap<usize, u64>,
-    /// Map Arc pointer addresses to resource IDs (for TaskHandle/ThreadHandle).
+    /// Map Arc pointer addresses to resource IDs (for Handle).
     handle_ids: HashMap<usize, u64>,
     next_id: u64,
 }
@@ -123,13 +123,16 @@ impl ResourceTracker {
     }
 
     /// Transfer a resource to a different scope depth (for returns/moves).
-    pub fn transfer_to_scope(&mut self, id: u64, new_scope_depth: usize) {
+    /// `outward_only` leaves an entry already owned further out alone.
+    pub fn transfer_to_scope(&mut self, id: u64, new_scope_depth: usize, outward_only: bool) {
         if let Some(entry) = self.entries.get_mut(&id) {
-            entry.scope_depth = new_scope_depth;
+            if !outward_only || new_scope_depth < entry.scope_depth {
+                entry.scope_depth = new_scope_depth;
+            }
         }
     }
 
-    /// Register a TaskHandle/ThreadHandle using its Arc pointer address (conc.async/H1).
+    /// Register a Handle using its Arc pointer address (conc.async/H1).
     pub fn register_handle(&mut self, ptr: usize, type_name: &str, scope_depth: usize) -> u64 {
         let id = self.register(type_name, scope_depth);
         self.handle_ids.insert(ptr, id);

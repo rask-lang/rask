@@ -34,10 +34,12 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 539 green, 8 registered red | `tests/differential.sh` |
-| Programs that leak | 3, holding 4 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
-| Matrix cells clean on both backends | 281 of 283, 5 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 541 | `tests/memcheck_gate.sh` |
+| Suite programs agreeing on both backends | 561 green, 6 registered red | `tests/differential.sh` |
+| Programs that leak | 5, holding 7 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 0 of 557 | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 72 | `tests/tsan_gate.sh` |
+| Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
 | Open bugs | 39 of 85 open issues | issue search |
@@ -275,29 +277,115 @@ only kind that closes.
 
 ## v0.5 — Concurrency you can trust
 
-**Done when a concurrency-and-panic stress gate runs in CI without deadlocking.**
+**Done when two numbers hold in CI:**
 
-One gate, covering both, because they're the same programs: a task that panics
-while another is blocked joining it is where
-[#299](https://github.com/rask-lang/rask/issues/299)'s panic semantics and
-[#1130](https://github.com/rask-lang/rask/issues/1130)'s deadlock meet.
+- **The stress gate finds no deadlock, race or lost panic** across its seeds and
+  its soak.
+- **OS threads never exceed the worker count** under the soak: 100k tasks,
+  nested joins, `workers: 1`, panics mixed in. It holds on Linux since the
+  fiber switch. Before it, a worker blocked in join got a replacement thread
+  (up to 32), which is how [#1130](https://github.com/rask-lang/rask/issues/1130)
+  was first fixed, and a blocked receive kept its worker
+  ([#1353](https://github.com/rask-lang/rask/issues/1353)).
 
-[#1130](https://github.com/rask-lang/rask/issues/1130) was the one that
-mattered: a task that joined another deadlocked when every worker was blocked
-in join. A language whose pitch includes "no function coloring" cannot have
-that. It runs now — a blocked worker isn't running anything, so the scope
-starts a replacement for the duration — which buys correctness at one OS thread
-per simultaneously-blocked join. Reusing the blocked worker's thread is the
-fiber switch, and that is what the rest of this milestone is about.
+Fibers are in this version, not after it. Writing them is cheap; knowing they
+work is what costs, so the bench comes first and has to fail on today's runtime
+before any fiber code lands. "Fibers work" then means those checks turned green.
 
-[#298](https://github.com/rask-lang/rask/issues/298) ·
-[#299](https://github.com/rask-lang/rask/issues/299) ·
-[#830](https://github.com/rask-lang/rask/issues/830) ·
-[#890](https://github.com/rask-lang/rask/issues/890) ·
-[#891](https://github.com/rask-lang/rask/issues/891) ·
-[#1111](https://github.com/rask-lang/rask/issues/1111) ·
-[#1130](https://github.com/rask-lang/rask/issues/1130) ·
-[#1180](https://github.com/rask-lang/rask/issues/1180)
+The payoff is one scheduler instead of three. `green.c` ran spawned closures
+as poll functions that ran to completion (it runs fibers now), `thread.c`
+gives `Thread.spawn` a pthread, and `green_threads.c` stands in with threads
+off Linux. Sim mode
+([#1337](https://github.com/rask-lang/rask/pull/1337)) adds a fourth shape: it
+builds without `green.c` and passes a baton between OS threads. With fibers,
+sim is the real scheduler with one worker and a seeded pick of the next fiber,
+so the deterministic tests run the code that ships.
+
+### The bench
+
+1. **Sim over many seeds.** Every concurrency and panic suite file, with the
+   deadlock report and a replay line on failure. `rask test --sim` is most of it.
+2. **The thread-count soak.** Real runtime, reads `/proc/self/task`, fails the
+   moment the count passes the worker count.
+3. **Fiber-aware checkers.** The runtime under TSan, with each switch announced
+   (`__tsan_switch_to_fiber`), and fiber stacks registered with valgrind so
+   `tests/memcheck_gate.sh` doesn't drown. This is the leg that catches deque
+   races.
+4. **Hostile cases.** Overflow on a fiber stack hits a guard page and panics
+   instead of segfaulting. A C call made from a fiber stack. A fiber that moves
+   workers mid-function still sees its own `errno` and runtime thread-locals.
+   `RASK_POISON_STACK` covers each new fiber stack.
+5. **Both architectures.** `fiber_switch` is assembly per target. Linux CI is
+   x86_64 and the macOS job is aarch64, but that job only builds and links one
+   program today. The fiber tests have to run there too. **Switch done:**
+   `tests/fiber_gate.sh` checks every callee-saved register and the float
+   control state across switches on x86_64 and, under qemu, aarch64 Linux, in
+   CI; deleting any one register's save makes it fail. Running whole programs
+   on macOS waits on the kqueue poller.
+
+### Order
+
+1. Bench legs 2 and 3, failing on today's runtime. Done: the soak held 1 of
+   5 programs in budget on the thread-per-join runtime, and `tests/tsan_gate.sh`
+   was clean. Both run in CI as `gates-concurrency`.
+2. Cooperative fibers. **Done on Linux:** a task parks in join, channel, lock
+   and sleep, and on a socket (one idle worker sleeps in `epoll_wait` as the
+   poller); the join helper threads are gone; the soak holds 6 of 6, including
+   a hundred idle connections on two workers, and TSan is clean with every
+   switch annotated. A started fiber stays on its worker
+   (`conc.runtime/S3a`). The dead poll-function path is deleted
+   ([#1336](https://github.com/rask-lang/rask/issues/1336)). Still to go in
+   this step: macOS, which needs a kqueue backend before `green_threads.c` can
+   go. Files and stdin still block their worker (that waits on io_uring). The
+   aarch64 switch runs under qemu in the fiber gate.
+3. Sim on fibers, replacing the baton.
+4. Preemption last. Codegen puts a flag check in every function prologue, and
+   a loop that never calls anything gets a signal instead (`conc.runtime/P2`),
+   so it touches the compiler, not only the runtime. Its test: a task spinning
+   in a loop doesn't stop another task from finishing.
+
+### Bugs in the theme
+
+What the bench finds joins this list. Fixed in #1344: #1311 (the closure form
+of a blocking `Shared` access is rejected, E0900), #1335 (`rask compile` hung
+on a reassigned closure), #1342 (select parks), #1353 (a blocked receive held
+its worker), #1302 (a box inside a box leaked), #830 (a link
+captured by `spawn` is rejected, E0901), #891 and #1288 (a group of handles
+runs natively, and is plain Rask: a linked list of handles, the shape anyone
+holding a run-time count of linear values writes; the uncallable free
+`join_all`/`select_first` are gone), #890 (its
+program is a compile error now, E0882), #1354 (a deadlock is reported instead
+of hanging), and five found on the way: an
+`ensure` running after its value was consumed, past the 256th ensure and after
+a `join` whose result returned early; E0353 on recursion through a spawned
+closure; the interpreter skipping every `ensure` inside a `using` or `with`
+block; and a `Thread` handle freed twice by `ensure t.detach()` after its
+join. Writing the group in Rask turned up more: matching a borrowed value
+demanded its parts be consumed (E0899 now covers giving one away), `Heap(x)`
+didn't move `x`, a `break` didn't count as consuming, a generic list inside a
+generic struct got a one-word slot and freed nothing, a generic `take self`
+didn't cancel its `ensure`, `Vec.reverse` overflowed on wide elements, a
+vector returned past an `ensure` was never freed, and the interpreter lost
+track of a resource stored into `mutate self` or closed by an empty method.
+Then the handle types went from two to one: `spawn`, `Thread.spawn` and
+`ThreadPool.spawn` all return `Handle<T>`, and one `Handles<T>` (`new`, `add`,
+`join_all`, `detach`) replaces `TaskGroup` and `ThreadGroup`. `cancel` works on
+threads and pool jobs now, and `cancelled()` works at all: the interpreter
+always said false, and native couldn't compile a call to it.
+Open:
+
+- [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
+  tasks over one `Shared` plus a channel.
+- [#1357](https://github.com/rask-lang/rask/issues/1357): freeing a
+  `Vec<T or E>` doesn't release an error element's payload, so each panicked
+  handle in a `Handles` leaks its message.
+- [#1356](https://github.com/rask-lang/rask/issues/1356): a closure that reaches
+  `spawn` through a return or a field isn't checked for a captured link or
+  `Local` box. Written in place or bound to a local, it is.
+- [#298](https://github.com/rask-lang/rask/issues/298) and
+  [#299](https://github.com/rask-lang/rask/issues/299): panic leftovers,
+  `staged()` the main one. #298's last case goes when Pool does
+  ([#1296](https://github.com/rask-lang/rask/issues/1296)).
 
 ## v0.6 — The stdlib matches its own spec
 

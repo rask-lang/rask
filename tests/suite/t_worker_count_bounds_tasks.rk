@@ -11,8 +11,8 @@
 // The bound is the same rule on both backends now: n tasks *running*. A task
 // blocked in `join` isn't running anything, so it gives its slot up for the
 // duration — which is what lets `workers: 1` run a task that joins another
-// (see `t_nested_join_one_worker.rk`), and natively is a replacement thread
-// while the join lasts.
+// (see `t_nested_join_one_worker.rk`). Natively the joining task parks and
+// its worker runs something else.
 //
 // A module-level atomic, not a `Shared`: `spawn` moves what it captures, so a
 // local can only reach one task, and reading a `Shared` through a closure is a

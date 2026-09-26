@@ -133,6 +133,13 @@ fn collect_type_deps(ty: &Type, out: &mut HashSet<String>) {
             collect_type_deps(ok, out);
             collect_type_deps(err, out);
         }
+        ty if ty.is_option() => collect_type_deps(ty.as_option().unwrap(), out),
+        Type::Tuple(elems) => {
+            for e in elems {
+                collect_type_deps(e, out);
+            }
+        }
+        Type::Array { elem, .. } => collect_type_deps(elem, out),
         _ => {}
     }
 }
@@ -143,9 +150,10 @@ fn collect_type_deps(ty: &Type, out: &mut HashSet<String>) {
 /// Every layout a declaration list defines on its own, plus the size/align
 /// cache they were computed against.
 ///
-/// Concrete types first, in dependency order, so a struct holding another sees
-/// its real size rather than a guess; then one layout per generic declaration,
-/// with a word standing in for each type parameter.
+/// One pass in dependency order, so a type holding another sees its real size
+/// rather than a guess — generic ones included: `Group<T>` holding a
+/// `Tasks<T>` needs the enum's size first. A generic declaration gets one
+/// layout with a word standing in for each type parameter.
 ///
 /// Public because the interpreter needs the same answers. `reflect.fields<T>()`
 /// reports each field's offset and size, and the interpreter had no layouts at
@@ -165,6 +173,7 @@ pub fn compute_declared_layouts(
     let mut enum_layouts = Vec::new();
 
     let sorted = topo_sort_type_decls(decls);
+    let concrete = concrete_type_names(decls);
     for idx in sorted {
         let decl = &decls[idx];
         match &decl.kind {
@@ -176,6 +185,27 @@ pub fn compute_declared_layouts(
             DeclKind::Enum(e) if e.type_params.is_empty() => {
                 let layout = compute_enum_layout(decl, &[], &layout_cache);
                 layout_cache.insert(e.name.clone(), (layout.size, layout.align));
+                enum_layouts.push(layout);
+            }
+            // The 8-byte-everything model means every scalar argument gives the
+            // same field sizes, so a word stands in for each type parameter.
+            DeclKind::Struct(s) => {
+                let mut layout = layout::compute_shared_struct_layout(decl, &layout_cache);
+                // Strip type params from name so struct literals ("Box") match
+                let base_name = bare_type_name(&s.name);
+                layout.name = base_name.clone();
+                if !concrete.contains(&base_name) {
+                    layout_cache.insert(base_name, (layout.size, layout.align));
+                }
+                struct_layouts.push(layout);
+            }
+            DeclKind::Enum(e) => {
+                let mut layout = layout::compute_shared_enum_layout(decl, &layout_cache);
+                let base_name = bare_type_name(&e.name);
+                layout.name = base_name.clone();
+                if !concrete.contains(&base_name) {
+                    layout_cache.insert(base_name, (layout.size, layout.align));
+                }
                 enum_layouts.push(layout);
             }
             DeclKind::Union(u) => {
@@ -199,38 +229,18 @@ pub fn compute_declared_layouts(
         }
     }
 
-    // Compute layouts for generic struct/enum types. The 8-byte-everything
-    // layout model means all scalar type parameters produce the same field
-    // sizes, so a single layout per generic struct suffices. Use i64 as the
-    // placeholder type for each type parameter.
-    for decl in decls {
-        match &decl.kind {
-            DeclKind::Struct(s) if !s.type_params.is_empty() => {
-                let placeholder_args: Vec<Type> = s.type_params.iter()
-                    .map(|_| Type::I64)
-                    .collect();
-                let mut layout = compute_struct_layout(decl, &placeholder_args, &layout_cache);
-                // Strip type params from name so struct literals ("Box") match
-                let base_name = s.name.split('<').next().unwrap_or(&s.name).to_string();
-                layout.name = base_name.clone();
-                layout_cache.insert(base_name, (layout.size, layout.align));
-                struct_layouts.push(layout);
-            }
-            DeclKind::Enum(e) if !e.type_params.is_empty() => {
-                let placeholder_args: Vec<Type> = e.type_params.iter()
-                    .map(|_| Type::I64)
-                    .collect();
-                let mut layout = compute_enum_layout(decl, &placeholder_args, &layout_cache);
-                let base_name = e.name.split('<').next().unwrap_or(&e.name).to_string();
-                layout.name = base_name.clone();
-                layout_cache.insert(base_name, (layout.size, layout.align));
-                enum_layouts.push(layout);
-            }
-            _ => {}
-        }
-    }
-
     (struct_layouts, enum_layouts, layout_cache)
+}
+
+fn concrete_type_names(decls: &[Decl]) -> HashSet<String> {
+    decls
+        .iter()
+        .filter_map(|d| match &d.kind {
+            DeclKind::Struct(s) if s.type_params.is_empty() => Some(s.name.clone()),
+            DeclKind::Enum(e) if e.type_params.is_empty() => Some(e.name.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
@@ -238,14 +248,23 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
     let mut name_to_idx: HashMap<String, usize> = HashMap::new();
     let mut type_indices: Vec<usize> = Vec::new();
 
+    // A concrete declaration owns its name over a generic one spelled the same:
+    // a program's own `struct Wide` beside the stdlib's `Wide<T>`.
+    let concrete = concrete_type_names(decls);
     for (i, decl) in decls.iter().enumerate() {
         match &decl.kind {
-            DeclKind::Struct(s) if s.type_params.is_empty() => {
-                name_to_idx.insert(s.name.clone(), i);
+            DeclKind::Struct(s) => {
+                let name = bare_type_name(&s.name);
+                if s.type_params.is_empty() || !concrete.contains(&name) {
+                    name_to_idx.insert(name, i);
+                }
                 type_indices.push(i);
             }
-            DeclKind::Enum(e) if e.type_params.is_empty() => {
-                name_to_idx.insert(e.name.clone(), i);
+            DeclKind::Enum(e) => {
+                let name = bare_type_name(&e.name);
+                if e.type_params.is_empty() || !concrete.contains(&name) {
+                    name_to_idx.insert(name, i);
+                }
                 type_indices.push(i);
             }
             DeclKind::Union(u) => {
@@ -355,6 +374,36 @@ pub fn generic_instance_name(
         parts.push(type_arg_key(arg, type_names)?);
     }
     Some(format!("{}${}", base, parts.join("$")))
+}
+
+/// The layout a written type is laid out by: `Tagged<string>` is
+/// `Tagged$string` when that instance was made, else the shared `Tagged`.
+/// Codegen describes what a value owns by reading layouts by name, and a field
+/// type is written text — so without this a generic's nodes matched no layout
+/// and a `Heap` holding one freed nothing inside it.
+pub fn layout_name_for(written: &str, exists: impl Fn(&str) -> bool) -> String {
+    if exists(written) {
+        return written.to_string();
+    }
+    if let Type::UnresolvedGeneric { name, args } = layout::parse_field_type(written) {
+        let tys: Vec<Type> = args
+            .iter()
+            .filter_map(|a| match a {
+                rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                _ => None,
+            })
+            .collect();
+        if let Some(instance) = generic_instance_name(&name, &tys, &HashMap::new()) {
+            if exists(&instance) {
+                return instance;
+            }
+        }
+        let base = bare_type_name(&name);
+        if exists(&base) {
+            return base;
+        }
+    }
+    written.to_string()
 }
 
 fn bare_type_name(name: &str) -> String {
@@ -826,9 +875,25 @@ fn monomorphize_inner(
         }
 
         // Shallowest first. `One<One<Big>>` can only be sized once `One$Big` is in
-        // the cache, and depth is enough of an order for that — a type argument is
-        // always shallower than the instantiation that holds it.
-        instances.sort_by_key(|(_, args)| args.iter().map(type_depth).max().unwrap_or(0));
+        // the cache — a type argument is always shallower than the instantiation
+        // that holds it. At equal depth, declaration order: `Group<string>` holding
+        // a `Tasks<string>` field needs `Tasks$string` first, and both have the
+        // same arguments.
+        let rank: HashMap<String, usize> = topo_sort_type_decls(decls)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(pos, idx)| match &decls[idx].kind {
+                DeclKind::Struct(s) => Some((bare_type_name(&s.name), pos)),
+                DeclKind::Enum(e) => Some((bare_type_name(&e.name), pos)),
+                _ => None,
+            })
+            .collect();
+        instances.sort_by_key(|(base, args)| {
+            (
+                args.iter().map(type_depth).max().unwrap_or(0),
+                rank.get(base).copied().unwrap_or(usize::MAX),
+            )
+        });
 
         let mut emitted: HashSet<String> = HashSet::new();
         for (base, args) in instances {
@@ -1046,6 +1111,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: sp(),
+                decl_start: sp().start,
             }),
             span: sp(),
         }
@@ -1093,6 +1159,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: sp(),
+                decl_start: sp().start,
             }),
             span: sp(),
         }
@@ -1553,6 +1620,7 @@ mod tests {
             attrs: vec![],
             doc: None,
             span: sp(),
+            decl_start: 0,
         }
     }
 

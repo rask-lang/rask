@@ -27,6 +27,7 @@ enum IoError {
     TimedOut
     UnexpectedEof
     Other(string)
+    Cancelled           // the task was cancelled while the call waited (conc.async/CN3)
 }
 ```
 

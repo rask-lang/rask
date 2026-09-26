@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `ensure t.detach()` stands down once `t.join()` has run, for a `Thread`
+// handle the same as a task handle.
+//
+//     let t = Thread.spawn(|| { return 5 })
+//     ensure t.detach()
+//     let z = t.join() catch e => 0
+//
+// Native freed the handle twice: once in the join, again in the ensure. MIR
+// read the binding's type off the call's shape, `Type.method()`, and took the
+// handle for a `Thread`. `Thread_join` isn't a method that consumes anything,
+// so the join never told the ensure. It asks the checker for the type now,
+// which says `Handle`.
+//
+// Runs many times: one double free can go unnoticed, a few hundred can't.
+
+import thread.Thread
+
+func joined_once() -> i64 {
+    let t = Thread.spawn(|| { return 5 })
+    ensure t.detach()
+    let z = t.join() catch e => 0
+    return z
+}
+
+test "a joined Thread handle isn't detached again" {
+    mut i = 0
+    mut total = 0
+    while i < 200 {
+        total += joined_once()
+        i += 1
+    }
+    assert total == 1000
+}
+
+func main() {}

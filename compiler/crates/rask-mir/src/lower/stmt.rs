@@ -376,9 +376,6 @@ impl<'a> MirLowerer<'a> {
         match &stmt.kind {
             StmtKind::Expr(e) => {
                 self.lower_expr(e)?;
-                // C1/C2: if this is a consuming method call on an ensure receiver,
-                // emit ResourceConsume so the ensure is cancelled at cleanup time.
-                self.check_resource_consume(e);
                 Ok(())
             }
 
@@ -387,9 +384,6 @@ impl<'a> MirLowerer<'a> {
                 // `value.(name)` before, it doesn't now.
                 self.comptime_strings.remove(name);
                 let r = self.lower_binding(name, ty.as_deref(), init);
-                // The initializer can be the consuming call — `mut v = try
-                // c.finish()` — and then the ensure it cancels is this one.
-                self.check_resource_consume(init);
                 self.check_resource_moved(init);
                 r
             }
@@ -457,9 +451,6 @@ impl<'a> MirLowerer<'a> {
                     return Ok(());
                 }
                 let r = self.lower_binding(name, ty.as_deref(), init);
-                // The initializer can be the consuming call — `let v = try
-                // c.finish()` — and then the ensure it cancels is this one.
-                self.check_resource_consume(init);
                 self.check_resource_moved(init);
                 r
             }
@@ -468,13 +459,10 @@ impl<'a> MirLowerer<'a> {
                 let mut returned_ty = None;
                 let value = if let Some(e) = opt_expr {
                     let (op, op_ty) = self.lower_expr(e)?;
-                    // `return c.finish()` consumes `c` on the way out, so the
-                    // ensure is cancelled before the cleanup chain runs. `return
-                    // c` hands the value itself to the caller, which is the same
-                    // cancellation for a name rather than a call — without it the
-                    // cleanup ran as part of returning and the caller was given a
-                    // closed handle.
-                    self.check_resource_consume(e);
+                    // `return c` hands the value itself to the caller, so the
+                    // ensure is cancelled before the cleanup chain runs —
+                    // without it the cleanup ran as part of returning and the
+                    // caller was given a closed handle.
                     self.check_resource_moved(e);
                     returned_ty = Some(op_ty.clone());
                     // Wrap a bare value into whatever the return type asks for:
@@ -532,12 +520,10 @@ impl<'a> MirLowerer<'a> {
                 // was dropped on the floor — native printed the old value back
                 // with no error at all (#737).
                 let target = self.peel_owned_deref(target);
-                let (val_op, val_ty) = self.lower_expr(value)?;
-                // `v = try c.finish()` consumes `c` exactly as `let v = …`
-                // does, so the ensure it cancels is the same one. Wiring this
-                // into the bindings and `return` and not into plain assignment
-                // left the same double consume one spelling away (#1216).
-                self.check_resource_consume(value);
+                let (val_op, val_ty) = match &target.kind {
+                    ExprKind::Ident(name) => self.lower_value_for_name(&name.clone(), value)?,
+                    _ => self.lower_expr(value)?,
+                };
                 self.check_resource_moved(value);
                 // OPT6/#380: widen a bare `T` into `Some(T)` when the lvalue is an
                 // `Option<T>` place (reassignment or index/field store). The checker
@@ -1087,7 +1073,6 @@ impl<'a> MirLowerer<'a> {
                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ResourceRegister {
                             dst: resource_id,
                             type_name: name.clone(),
-                            scope_depth: 0,
                             slot: Some(*local_id),
                         }));
                         self.ensure_receivers.insert(cleanup_block, (name.clone(), resource_id));
@@ -1540,27 +1525,37 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Lower `value` to be stored in `name` — by a binding or a reassignment.
+    ///
+    /// A closure this function later hands to `spawn(name)` is lowered as a
+    /// spawn closure here: the wrapper that boxes a result too wide for the
+    /// task's one word is built while the closure is lowered, and the `spawn`
+    /// comes later (#1094). The body is scanned for spawned names up front, so
+    /// the name is what's known. Every store to the name has to agree with it,
+    /// not only the first: a reassignment lowered as an ordinary stack closure
+    /// handed `spawn` something other than the box it expected, and the task
+    /// hung (#1335).
+    fn lower_value_for_name(&mut self, name: &str, value: &Expr) -> Result<super::TypedOperand, LoweringError> {
+        let spawned = matches!(&value.kind, ExprKind::Closure { .. })
+            && self.spawned_closure_names.contains(name);
+        if !spawned {
+            return self.lower_expr(value);
+        }
+        let ExprKind::Closure { params, ret_ty, body, .. } = &value.kind else {
+            unreachable!("checked by `spawned` above")
+        };
+        let lowered = self.lower_closure_expecting(
+            params, ret_ty.as_deref(), body, true, &[],
+            Some(value.id), true,
+        )?;
+        self.spawn_boxed_bindings.insert(name.to_string(), self.spawn_result_boxed);
+        Ok(lowered)
+    }
+
     /// Lower a let/const binding: evaluate init, assign to a new local.
     fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
-        // A closure this function later hands to `spawn` is lowered as one, here
-        // — the wrapper that boxes a result too wide for the task's one word is
-        // built while the closure is lowered, and the `spawn` comes later (#1094).
-        let spawned = is_closure && self.spawned_closure_names.contains(name);
-        let (init_op, inferred_ty) = if spawned {
-            let ExprKind::Closure { params, ret_ty, body, .. } = &init.kind else {
-                unreachable!("checked by `is_closure` above")
-            };
-            let carries = self.closure_carries(Some(init.id));
-            let lowered = self.lower_closure_expecting(
-                params, ret_ty.as_deref(), body, carries || spawned, &[],
-                Some(init.id), true,
-            )?;
-            self.spawn_boxed_bindings.insert(name.to_string(), self.spawn_result_boxed);
-            lowered
-        } else {
-            self.lower_expr(init)?
-        };
+        let (init_op, inferred_ty) = self.lower_value_for_name(name, init)?;
 
         // `let b = Heap(Big { … })` takes over the block rather than copying out
         // of it. A struct-typed destination copies its bytes on assignment,
@@ -1685,7 +1680,26 @@ impl<'a> MirLowerer<'a> {
         };
         if let ExprKind::MethodCall { object, method, .. } = &init_inner.kind {
             if let ExprKind::Ident(obj_name) = &object.kind {
-                if super::is_type_constructor_name(obj_name) {
+                // What `Type.method()` returns is whatever the checker says it
+                // is. `Thread.spawn` hands back a `Handle`, not a
+                // `Thread`, and reading the prefix off the type name gave the
+                // handle `Thread_join`, which isn't known to consume it — so an
+                // `ensure t.detach()` ran after the join and freed the handle
+                // twice. The type name is the fallback for a call the checker
+                // left no type on.
+                //
+                // Not for a `T or E` or `T?`: the binding holds the wrapper, and
+                // the code that later unwraps it reads the prefix as the payload's.
+                let checked = self
+                    .ctx
+                    .lookup_raw_type(init_inner.id)
+                    .filter(|ty| !matches!(ty, rask_types::Type::Result { .. })
+                        && !ty.is_option())
+                    .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+                    .map(|p| p.split('<').next().unwrap_or(&p).to_string());
+                if let (true, Some(prefix)) = (super::is_type_constructor_name(obj_name), checked) {
+                    self.meta_mut(name).type_prefix = Some(prefix);
+                } else if super::is_type_constructor_name(obj_name) {
                     // Type.method() → prefix is the type name.
                     // Covers stdlib (Vec, Map, string) and user types (Person, Document).
                     // Strip generic args: Map<string, JsonValue> → Map
@@ -3136,7 +3150,6 @@ impl<'a> MirLowerer<'a> {
             // `break a` carries the resource out of the loop, so the loop's own
             // `ensure` must not still close it on the way past. Emitted before
             // `emit_loop_cleanup` below, which is the chain that would.
-            self.check_resource_consume(val_expr);
             self.check_resource_moved(val_expr);
             if let Some(result) = result_local {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

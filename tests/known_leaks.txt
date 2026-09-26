@@ -436,12 +436,6 @@ t_shared_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hands ba
 # `Vec.from([…])` spelling that already compiled leaks identically.
 t_collection_literal_takes_its_slot.rk  # 2 allocations — a Vec behind an option tag, #1305
 
-# A box holding a box — #1302. The payload kind the runtime keeps on a box says
-# `Vec`, `Map` or closure; a nested box isn't among them, because freeing one
-# means calling the release for *its* strategy and the outer box carries a kind,
-# not a strategy. The rest of this file's leaks were #1253's and are gone.
-t_function_type_in_a_slot.rk  # 2 allocations — a Shared holding a Shared, #1302
-
 # A closure that outlives its frame carries its captures into a heap
 # environment, and freeing that block doesn't yet release what's inside it —
 # #1045, and mem.closures says so in the implementation section. The four
@@ -451,3 +445,5 @@ t_function_type_in_a_slot.rk  # 2 allocations — a Shared holding a Shared, #13
 t_returned_closure_captures.rk  # 2 allocations — a carried Vec in a closure env, #1045
 t_fs_list_dir.rk  # 2 allocations — the IoError message in each error arm; a match over
                         # `Vec<T> or E` drops the Vec side only (#1338).
+t_handles.rk  # 1 allocation — a panicked task's message in `Vec<T or JoinError>`; freeing
+                        # a Vec of results doesn't release an error element's payload (#1357).

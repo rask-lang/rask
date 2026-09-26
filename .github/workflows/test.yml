@@ -8,8 +8,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Eight jobs that all start at once, on nine runners — gates-memcheck is a
-# two-way matrix. Six of them run the gates that need a rask binary, one runs
+# Nine jobs that all start at once, on ten runners — gates-memcheck is a
+# two-way matrix. Seven of them run the gates that need a rask binary, one runs
 # cargo test, one builds and runs on Darwin.
 #
 # The shape is "everything in parallel, nothing waits". No job needs another, so
@@ -369,6 +369,56 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/agentbench_gate.sh
 
+  # ── Concurrency: whether the runtime is race-free under ThreadSanitizer, and
+  # what a blocked task costs in OS threads. The soak is v0.5's second number:
+  # its known-red programs are the fiber switch's to turn green.
+  gates-concurrency:
+    name: gates-concurrency (tsan, thread-count soak, fiber switch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RASK_RUNTIME_DIR: ${{ github.workspace }}/compiler/runtime
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+    - uses: actions/checkout@v4
+    # The context switch on x86_64 and, under qemu, aarch64 — the one place
+    # the aarch64 switch runs at all. Needs no compiler, so it goes first.
+    - name: Fiber switch (x86_64, aarch64 under qemu)
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends \
+          qemu-user gcc-aarch64-linux-gnu libc6-dev-arm64-cross > /dev/null
+        FIBER_GATE_REQUIRE_AARCH64=1 tests/fiber_gate.sh
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+    - name: Compiler cache (sccache)
+      uses: mozilla-actions/sccache-action@v0.0.11
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-gates-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-gates-
+    - name: Build compiler (release)
+      id: compiler
+      run: cargo build --release -p rask-cli
+      working-directory: compiler
+
+    - name: Data-race gate (ThreadSanitizer)
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/tsan_gate.sh
+
+    - name: Thread-count soak
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      run: tests/soak_gate.sh
+
   # ── Everything that is about the surface we publish: formatting, packages,
   # prose, and the C the runtime is written in.
   gates-surface:
@@ -521,7 +571,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     if: ${{ always() }}
-    needs: [gates-suite, gates-matrix, gates-memory, gates-memcheck, gates-names, gates-surface]
+    needs: [gates-suite, gates-matrix, gates-memory, gates-memcheck, gates-names, gates-surface, gates-concurrency]
     steps:
     - name: Every gate passed
       env:
@@ -532,6 +582,7 @@ jobs:
           gates-memcheck=${{ needs.gates-memcheck.result }}
           gates-names=${{ needs.gates-names.result }}
           gates-surface=${{ needs.gates-surface.result }}
+          gates-concurrency=${{ needs.gates-concurrency.result }}
       run: |
         echo "$RESULTS"
         failed=0

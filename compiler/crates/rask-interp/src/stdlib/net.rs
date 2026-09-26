@@ -35,12 +35,121 @@ fn make_result_err(msg: &str) -> Value {
             variant: "Other".to_string(),
             fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
             // NotFound(0) PermissionDenied(1) AlreadyExists(2) BrokenPipe(3)
-            // ConnectionReset(4) TimedOut(5) UnexpectedEof(6) Other(7)
+            // ConnectionReset(4) TimedOut(5) UnexpectedEof(6) Other(7) Cancelled(8)
             variant_index: 7,
             origin: None,
         }],
         variant_index: 1, origin: None,
     }
+}
+
+/// `IoError` for a failed socket call, `Cancelled` when a cancel ended it.
+fn io_err(e: &std::io::Error) -> Value {
+    if !e.get_ref().is_some_and(|inner| inner.is::<Cancelled>()) {
+        return make_result_err(&e.to_string());
+    }
+    Value::Enum {
+        name: "Result".to_string(),
+        variant: "Err".to_string(),
+        fields: vec![Value::Enum {
+            name: "IoError".to_string(),
+            variant: "Cancelled".to_string(),
+            fields: vec![],
+            variant_index: 8,
+            origin: None,
+        }],
+        variant_index: 1, origin: None,
+    }
+}
+
+#[derive(Debug)]
+struct Cancelled;
+impl std::fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("cancelled")
+    }
+}
+impl std::error::Error for Cancelled {}
+
+/// How long a socket wait in a task goes between looks at its cancel token.
+const CANCEL_POLL: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// A socket a cancel can interrupt (conc.async/CN3). In a task it's
+/// non-blocking while this is alive, and a call that would block waits on the
+/// task's token between tries; outside one it's the plain blocking socket.
+struct Cancellable {
+    s: std::net::TcpStream,
+    token: Option<Arc<crate::value::CancelToken>>,
+}
+
+impl Cancellable {
+    fn new(s: &std::net::TcpStream) -> std::io::Result<Self> {
+        let s = s.try_clone()?;
+        let token = crate::value::current_cancel();
+        if token.is_some() {
+            s.set_nonblocking(true)?;
+        }
+        Ok(Cancellable { s, token })
+    }
+
+    fn retry<T>(&mut self, mut op: impl FnMut(&mut std::net::TcpStream) -> std::io::Result<T>) -> std::io::Result<T> {
+        loop {
+            match op(&mut self.s) {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    let cancelled = self.token.as_ref().is_some_and(|t| t.wait(CANCEL_POLL));
+                    if cancelled {
+                        return Err(std::io::Error::other(Cancelled));
+                    }
+                }
+                r => return r,
+            }
+        }
+    }
+}
+
+impl Drop for Cancellable {
+    fn drop(&mut self) {
+        if self.token.is_some() {
+            let _ = self.s.set_nonblocking(false);
+        }
+    }
+}
+
+impl Read for Cancellable {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.retry(|s| s.read(buf))
+    }
+}
+
+impl Write for Cancellable {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.retry(|s| s.write(buf))
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.retry(|s| s.flush())
+    }
+}
+
+/// `accept`, ended by a cancel the same way.
+fn accept_cancellable(l: &std::net::TcpListener) -> std::io::Result<std::net::TcpStream> {
+    let Some(token) = crate::value::current_cancel() else {
+        return l.accept().map(|(s, _)| s);
+    };
+    l.set_nonblocking(true)?;
+    let got = loop {
+        match l.accept() {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if token.wait(CANCEL_POLL) {
+                    break Err(std::io::Error::other(Cancelled));
+                }
+            }
+            r => break r.map(|(s, _)| s),
+        }
+    };
+    let _ = l.set_nonblocking(false);
+    let s = got?;
+    s.set_nonblocking(false)?;
+    Ok(s)
 }
 
 /// The same address rules `net.check_addr` applies in stdlib/net.rk, so both
@@ -134,15 +243,15 @@ impl Interpreter {
                 let l = guard.as_ref().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpListener".to_string(), operation: "accept on".to_string() }
                 })?;
-                match l.accept() {
-                    Ok((stream, _addr)) => {
+                match accept_cancellable(l) {
+                    Ok(stream) => {
                         let arc = Arc::new(Mutex::new(Some(stream)));
                         let ptr = Arc::as_ptr(&arc) as usize;
                         self.resource_tracker
                             .register_file(ptr, self.env.scope_depth());
                         Ok(make_result_ok(Value::TcpConnection(arc)))
                     }
-                    Err(e) => Ok(make_result_err(&e.to_string())),
+                    Err(e) => Ok(io_err(&e)),
                 }
             }
             "close" => {
@@ -189,10 +298,13 @@ impl Interpreter {
                 let s = guard.as_mut().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
                 })?;
-                let mut buf = String::new();
-                match s.read_to_string(&mut buf) {
-                    Ok(_) => Ok(make_result_ok(Value::String(Arc::new(Mutex::new(buf))))),
-                    Err(e) => Ok(make_result_err(&e.to_string())),
+                let mut bytes = Vec::new();
+                match Cancellable::new(s).and_then(|mut c| c.read_to_end(&mut bytes)) {
+                    Ok(_) => match String::from_utf8(bytes) {
+                        Ok(buf) => Ok(make_result_ok(Value::String(Arc::new(Mutex::new(buf))))),
+                        Err(_) => Ok(make_result_err("stream did not contain valid UTF-8")),
+                    },
+                    Err(e) => Ok(io_err(&e)),
                 }
             }
             "read_bytes" => {
@@ -201,12 +313,12 @@ impl Interpreter {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
                 })?;
                 let mut buf = Vec::new();
-                match s.read_to_end(&mut buf) {
+                match Cancellable::new(s).and_then(|mut c| c.read_to_end(&mut buf)) {
                     Ok(_) => {
                         let bytes: Vec<Value> = buf.into_iter().map(|b| Value::int(b as i64)).collect();
                         Ok(make_result_ok(Value::vec(bytes)))
                     }
-                    Err(e) => Ok(make_result_err(&e.to_string())),
+                    Err(e) => Ok(io_err(&e)),
                 }
             }
             "write_text" => {
@@ -215,9 +327,9 @@ impl Interpreter {
                 let s = guard.as_mut().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
                 })?;
-                match s.write_all(data.as_bytes()).and_then(|_| s.flush()) {
+                match Cancellable::new(s).and_then(|mut c| c.write_all(data.as_bytes()).and_then(|_| c.flush())) {
                     Ok(()) => Ok(make_result_ok(Value::Unit)),
-                    Err(e) => Ok(make_result_err(&e.to_string())),
+                    Err(e) => Ok(io_err(&e)),
                 }
             }
             "write_bytes" => {
@@ -235,9 +347,9 @@ impl Interpreter {
                 let s = guard.as_mut().ok_or_else(|| {
                     RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
                 })?;
-                match s.write_all(&bytes).and_then(|_| s.flush()) {
+                match Cancellable::new(s).and_then(|mut c| c.write_all(&bytes).and_then(|_| c.flush())) {
                     Ok(()) => Ok(make_result_ok(Value::Unit)),
-                    Err(e) => Ok(make_result_err(&e.to_string())),
+                    Err(e) => Ok(io_err(&e)),
                 }
             }
             "remote_addr" => {

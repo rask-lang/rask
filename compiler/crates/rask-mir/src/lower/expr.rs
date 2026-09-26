@@ -851,7 +851,7 @@ impl<'a> MirLowerer<'a> {
     /// `find_enum_written` rather than `find_enum` so `Holder<i64>.Empty`
     /// resolves too: the parser folds the written type arguments into the name
     /// (#782).
-    fn lower_enum_variant_path(&mut self, enum_name: &str, variant: &str) -> Option<TypedOperand> {
+    pub(super) fn lower_enum_variant_path(&mut self, enum_name: &str, variant: &str) -> Option<TypedOperand> {
         let (idx, layout) = self.ctx.find_enum_written(enum_name)?;
         let v = layout.variants.iter().find(|v| v.name == variant)?;
         let (tag, tag_offset) = (v.tag as i64, layout.tag_offset);
@@ -1315,10 +1315,12 @@ impl<'a> MirLowerer<'a> {
             if step == expr.id {
                 self.pending_try_step = None;
                 let (op, ty) = self.lower_expr_inner(expr)?;
+                self.mark_consumed_by(expr);
                 return self.emit_try_branch(try_id, expr, op, ty);
             }
         }
         let (op, ty) = self.lower_expr_inner(expr)?;
+        self.mark_consumed_by(expr);
         // Lowering works each expression's type out as it goes, and lands on
         // `Ptr` — "some address, contents unknown" — whenever it can't. The
         // checker already answered the question; ask it here, once, instead of
@@ -1547,7 +1549,7 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Comptime { body } => self.lower_comptime(body),
 
             // Select (channel multiplexing)
-            ExprKind::Select { arms, is_priority } => self.lower_select(arms, *is_priority),
+            ExprKind::Select { arms, is_priority } => self.lower_select(expr, arms, *is_priority),
 
             // Assert
             ExprKind::Assert { condition, message } => self.lower_assert(condition, message.as_deref()),
@@ -6212,7 +6214,7 @@ impl<'a> MirLowerer<'a> {
             // Qualified first. `Type_method` names exactly one function;
             // the bare method name is whatever else in the program shares it,
             // so consulting it first let an unrelated `join` answer for
-            // `ThreadHandle_join`.
+            // `Handle_join`.
             .sig_ret_ty(&qualified_name)
             .or_else(|| self.sig_ret_ty(&method))
             .unwrap_or_else(|| self.call_ret_ty(&qualified_name, expr.id)));
@@ -10256,11 +10258,6 @@ impl<'a> MirLowerer<'a> {
             if i == stmts.len() - 1 {
                 if let StmtKind::Expr(e) = &stmt.kind {
                     let (val, ty) = self.lower_expr(e)?;
-                    // The tail is lowered here rather than through `lower_stmt`,
-                    // so the consumption check has to be repeated — without it
-                    // a block ending in `c.close()` never cancelled the `ensure`
-                    // that scheduled the same cleanup, and both ran.
-                    self.check_resource_consume(e);
                     last_val = val;
                     last_ty = ty;
                     continue;

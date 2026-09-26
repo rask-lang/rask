@@ -362,6 +362,19 @@ pub enum OwnershipErrorKind {
         context: String,
     },
 
+    /// A part matched out of a borrowed value was given away. `match s {
+    /// Full(c) => close(c) }` with `s` only lent: `c` is the caller's too,
+    /// so consuming it closes a handle they still hold.
+    #[error("cannot give away `{name}` — it's part of `{from}`, which is borrowed")]
+    ConsumeBorrowedPart {
+        name: String,
+        /// The borrowed value the pattern took `name` out of.
+        from: String,
+        /// The scrutinee of the match that bound it.
+        matched_at: Span,
+        sink: Option<String>,
+    },
+
     /// A non-`own` closure consumed a linear value it only borrowed.
     ///
     /// The parameter version of this is `ConsumeBorrowedParam` (#804). Same

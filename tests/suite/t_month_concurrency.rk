@@ -79,8 +79,11 @@ test "conc.async — three threads, each joined, results drained" {
     let tb = tx.clone()
     let tc = tx.clone()
     let h1 = Thread.spawn(|| { let _ = ta.send(100); return })
+    ensure h1.detach()
     let h2 = Thread.spawn(|| { let _ = tb.send(200); return })
+    ensure h2.detach()
     let h3 = Thread.spawn(|| { let _ = tc.send(300); return })
+    ensure h3.detach()
     h1.join()
     h2.join()
     h3.join()
@@ -105,6 +108,7 @@ test "conc.async — a handle joined after other work" {
         let _ = tx.send(9)
         return
     })
+    ensure h.detach()
     // Independent work while the thread runs.
     let local = sum_to(4)
     h.join()

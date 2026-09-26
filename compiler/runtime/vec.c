@@ -273,6 +273,24 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
     return v;
 }
 
+// A `Vec<u8>` holding `n` raw bytes, laid out the way compiled code lays one
+// out: an 8-byte slot per element, zero-extended (the slot-size rule in
+// rask-mir's lower/collections.rs). The runtime used to pack them one byte per
+// element, so the same type had two layouts: an optional read (`v.get(i)`)
+// copied a whole slot and ran seven bytes past the end of the buffer, and a
+// `CString`'s bytes came back with elements as wide as the string.
+RaskVec *rask_vec_from_bytes(const void *data, int64_t n) {
+    RaskVec *v = rask_vec_new(8, NULL, 0);
+    if (n <= 0) return v;
+    v->data = (char *)rask_alloc(rask_safe_mul(8, n));
+    v->cap = n;
+    v->len = n;
+    const unsigned char *src = (const unsigned char *)data;
+    int64_t *slots = (int64_t *)(void *)v->data;
+    for (int64_t i = 0; i < n; i++) slots[i] = src[i];
+    return v;
+}
+
 // elem_size comes from the caller: a static array of fat pointers (trait
 // objects, slices) has 16-byte elements, not 8.
 RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
@@ -1161,18 +1179,24 @@ void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator) {
     rask_realloc(order, rask_safe_mul(n, (int64_t)sizeof(int64_t)), 0);
 }
 
-// reverse(vec) — in-place reversal.
+static void swap_bytes(char *a, char *b, int64_t n) {
+    for (int64_t k = 0; k < n; k++) {
+        char t = a[k];
+        a[k] = b[k];
+        b[k] = t;
+    }
+}
+
+// reverse(vec) — in-place reversal. Any element size: a `T or E` is wider
+// than the 16 bytes a stack buffer here used to allow for.
 void rask_vec_reverse(RaskVec *v) {
     vec_check_no_borrows(v, "reverse");
     if (!v || v->len <= 1) return;
-    char tmp[16]; // max elem_size we support for stack swap
     int64_t es = v->elem_size;
     char *lo = v->data;
     char *hi = v->data + (v->len - 1) * es;
     while (lo < hi) {
-        memcpy(tmp, lo, (size_t)es);
-        memcpy(lo, hi, (size_t)es);
-        memcpy(hi, tmp, (size_t)es);
+        swap_bytes(lo, hi, es);
         lo += es;
         hi -= es;
     }
@@ -1189,13 +1213,7 @@ void rask_vec_swap(RaskVec *v, int64_t i, int64_t j) {
     }
     if (i == j) return;
     int64_t es = v->elem_size;
-    char *a = v->data + i * es;
-    char *b = v->data + j * es;
-    for (int64_t k = 0; k < es; k++) {
-        char t = a[k];
-        a[k] = b[k];
-        b[k] = t;
-    }
+    swap_bytes(v->data + i * es, v->data + j * es, es);
 }
 
 // contains(vec, value) — returns 1 if any element equals value.

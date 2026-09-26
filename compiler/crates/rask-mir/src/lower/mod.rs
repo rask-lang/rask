@@ -1453,8 +1453,8 @@ impl<'a> MirContext<'a> {
     /// them can (#1020).
     ///
     /// `lookup_raw_type` deliberately hands both over: reading the *head* of a
-    /// type is fine with an open argument. `TaskHandle<?>` is still a
-    /// `TaskHandle`, which is how the ownership checker knows a handle was
+    /// type is fine with an open argument. `Handle<?>` is still a
+    /// `Handle`, which is how the ownership checker knows a handle was
     /// dropped.
     pub fn lookup_node_type(&self, node_id: NodeId) -> Option<MirType> {
         let found = self.node_types.get(&node_id);
@@ -2927,73 +2927,29 @@ impl<'a> MirLowerer<'a> {
     /// Copies statements from ensures registered after `depth` in LIFO order.
     /// For simple ensures (Unreachable terminator): copies statements inline.
     /// For branching ensures (else handler): creates block copies at the exit point.
-    /// C1/C2: check if an expression is a consuming method call on an ensure
-    /// receiver. If so, emit ResourceConsume to cancel the ensure at cleanup time.
-    fn check_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
-        // An ensure body *is* the deferred consumption, so a consuming call in
-        // it cancels nothing — and the resource's slot belongs to the function
-        // that registered it, not to the thunk. Emitting one here made codegen
-        // look up a local the thunk's frame doesn't have.
+    /// C1/C2: `expr` has just been lowered. If it is the call (or aggregate)
+    /// that consumes an ensure's value, mark the value consumed now, so the
+    /// ensure stands down.
+    ///
+    /// Now, and not when the enclosing statement ends. A consuming call owns
+    /// its receiver from the moment it is made, whatever it returns, and code
+    /// can leave between the call and the end of the statement: `let v =
+    /// h.join() catch e => { return -1 }` returns from the catch arm with the
+    /// handle already freed by `join`. The mark used to be emitted after the
+    /// whole statement, so that return ran `ensure h.detach()` on a freed
+    /// handle, and `!`, `try` and a `match` arm did the same. Hooking every
+    /// lowered expression also retires the old statement-level walk and its
+    /// list of shapes to look inside, which had been one spelling behind the
+    /// AST four times (#1216, #1224, #1231).
+    ///
+    /// An ensure body *is* the deferred consumption, so a consuming call in it
+    /// cancels nothing — and the resource's slot belongs to the function that
+    /// registered it, not to the thunk.
+    pub(super) fn mark_consumed_by(&mut self, expr: &rask_ast::expr::Expr) {
         if self.in_ensure_thunk {
             return;
         }
-        self.walk_for_resource_consume(expr);
-    }
-
-    /// The consuming call can be anywhere in the expression, not only at its
-    /// root: `(ha.join() catch _ => 0) + (hb.join() catch _ => 0)` consumes both
-    /// handles from inside a sum, and `Wrapper { value: c.close() }` consumes
-    /// one from inside a struct literal.
-    ///
-    /// This used to name the shapes it looked inside — a method call, a plain
-    /// call, the operands of a binary, a cast — and every shape it forgot was a
-    /// double free: the `ensure` fired on a handle the program had already
-    /// closed (#1216, #1224, #1231). A list like that can only ever be behind
-    /// the AST, so there isn't one any more. The walk visits every
-    /// subexpression and stops only where a boundary says to.
-    ///
-    /// Emitting for a call the program might not reach would be wrong, and
-    /// can't happen: `ctrl.ensure/C4` rejects an ensured value that is consumed
-    /// on some paths and not others, so whatever is here runs.
-    fn walk_for_resource_consume(&mut self, expr: &rask_ast::expr::Expr) {
-        use rask_ast::expr::ExprKind;
-        let mut consuming = Vec::new();
-        let mut heads = Vec::new();
-        rask_ast::visit::walk_expr_pruned(expr, &mut |e| {
-            match &e.kind {
-                // Their own functions, with their own obligations — a consume
-                // in there is not this frame's.
-                ExprKind::Closure { .. } => return false,
-                // Statements. They run through `lower_block`, which asks about
-                // each of them on its own; walking in from here would emit the
-                // cancellation at the wrong point — before the block, whether
-                // or not it is reached.
-                ExprKind::Block(_)
-                | ExprKind::BlockCall { .. }
-                | ExprKind::Unsafe { .. }
-                | ExprKind::Comptime { .. }
-                | ExprKind::Loop { .. } => return false,
-                // Body as above, but the head is lowered here, so it keeps its
-                // walk: `using open(p) as f` evaluates `open(p)` in this frame.
-                ExprKind::UsingBlock { args, .. } => {
-                    heads.extend(args.iter().map(|a| &a.expr));
-                    return false;
-                }
-                ExprKind::WithAs { bindings, .. } => {
-                    heads.extend(bindings.iter().map(|b| &b.source));
-                    return false;
-                }
-                _ => {}
-            }
-            consuming.push(e);
-            true
-        });
-        for e in consuming {
-            self.emit_resource_consume(e);
-        }
-        for e in heads {
-            self.walk_for_resource_consume(e);
-        }
+        self.emit_resource_consume(expr);
     }
 
     /// This whole expression is being moved somewhere else, so a bare name in
@@ -3875,6 +3831,7 @@ impl<'a> MirLowerer<'a> {
                 attrs: Vec::new(),
                 doc: None,
                 span: Span::new(0, 0),
+                decl_start: 0,
             }),
         };
         Self::lower_function_inner(
@@ -4066,7 +4023,7 @@ impl<'a> MirLowerer<'a> {
         // ensure receiver, the ensure is cancelled.
         let mut take_self_methods = std::collections::HashSet::new();
         // The stdlib's own `take self` methods, which are declarations in
-        // `stdlib/*.rk` rather than decls in this program. `TaskHandle.join`
+        // `stdlib/*.rk` rather than decls in this program. `Handle.join`
         // consumes its handle exactly the way a user method does, and not
         // knowing that let a registered `ensure h.detach()` run after it and
         // detach a handle that was already gone (#1216).
@@ -4105,9 +4062,9 @@ impl<'a> MirLowerer<'a> {
                         if m.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
                             take_self_methods
                                 .insert(format!("{}_{}", impl_decl.target_ty, m.name));
-                            // `extend TaskHandle<T>` gives a target of
-                            // `TaskHandle<T>`, and what a call site dispatches
-                            // through is `TaskHandle`. Without the base name
+                            // `extend Handle<T>` gives a target of
+                            // `Handle<T>`, and what a call site dispatches
+                            // through is `Handle`. Without the base name
                             // `join` wasn't known to consume its receiver, so a
                             // registered `ensure h.detach()` ran after it and
                             // detached a handle that was already gone (#1216).
@@ -4132,16 +4089,29 @@ impl<'a> MirLowerer<'a> {
                 }
                 DeclKind::Fn(f) => {
                     // After monomorphization, impl methods become standalone functions
-                    // named "Type_method" with a `take self` first parameter.
-                    if f.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
-                        take_self_methods.insert(f.name.clone());
-                    }
+                    // named "Type_method" with a `take self` first parameter. An
+                    // instance is `Group_join_all$i64`, and a call site asks with
+                    // the receiver's type name — `Group_join_all` — so both go in,
+                    // or `join_all` wasn't known to consume a `Group<i64>` and its
+                    // `ensure g.detach()` ran after it.
+                    let names: Vec<&str> = match f.name.split_once('$') {
+                        Some((base, _)) => vec![f.name.as_str(), base],
+                        None => vec![f.name.as_str()],
+                    };
+                    let take_self =
+                        f.params.first().map_or(false, |p| p.name == "self" && p.is_take);
                     let takes = take_positions(&f.params);
-                    if !takes.is_empty() {
-                        take_param_positions.insert(f.name.clone(), takes);
-                    }
-                    if method_mutates_self(f, ctx) {
-                        mutate_self_methods.insert(f.name.clone());
+                    let mutates = method_mutates_self(f, ctx);
+                    for name in names {
+                        if take_self {
+                            take_self_methods.insert(name.to_string());
+                        }
+                        if !takes.is_empty() {
+                            take_param_positions.insert(name.to_string(), takes.clone());
+                        }
+                        if mutates {
+                            mutate_self_methods.insert(name.to_string());
+                        }
                     }
                 }
                 _ => {}
@@ -6320,7 +6290,7 @@ pub fn builtin_method_prefix_for_name(name: &str) -> Option<&'static str> {
 /// Extract type prefix from a type annotation string.
 ///
 /// Handles generic types like "Vec<i64>" → "Vec", "Map<K,V>" → "Map",
-/// plain named types like "ThreadHandle" → "ThreadHandle",
+/// plain named types like "Handle" → "Handle",
 /// and module-qualified types like "time.Instant" → "Instant".
 /// Returns None for primitives (i64, f64, bool, string, etc.).
 pub fn type_prefix_from_str(s: &str) -> Option<String> {
@@ -6679,6 +6649,7 @@ mod tests {
                 attrs: vec![],
                 doc: None,
                 span: sp(),
+                decl_start: sp().start,
             }),
             span: sp(),
         }

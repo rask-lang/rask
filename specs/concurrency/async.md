@@ -42,10 +42,11 @@ func handle_connection(conn: TcpConnection) -> void or Error {
 
 | Rule | Description |
 |------|-------------|
-| **H1: Must consume** | `TaskHandle<T>` must be joined or detached — compile error if unused |
+| **H1: Must consume** | Every spawn form returns `Handle<T>`, which must be joined or detached — compile error if unused |
 | **H2: Join** | `h.join()` waits for result, returns `T or JoinError`, consumes handle |
 | **H3: Detach** | `h.detach()` opts out of tracking (fire-and-forget), consumes handle |
-| **H4: Cancel** | `h.cancel()` requests cooperative cancellation, waits for exit, returns `T or JoinError` |
+| **H4: Cancel** | `h.cancel()` requests cooperative cancellation, waits for exit, returns `T or JoinError`: what the body returned, or its panic |
+| **H5: One handle type** | A green task, a pooled job and an OS thread all hand back the same `Handle<T>`. What ran the work is the spawn call's business; the caller only ever waits, lets go, or asks it to stop |
 
 <!-- test: skip -->
 ```rask
@@ -62,21 +63,21 @@ let h = spawn(|| { fallible_work() })
 match h.join() {
     T as val                   => process(val),
     JoinError.Panicked(msg)    => println("task panicked: {msg}"),
-    JoinError.Cancelled        => println("task was cancelled"),
 }
 
 spawn(|| { background_work() }).detach()
 
-spawn(|| { work() })  // ERROR [conc.async/H1]: unused TaskHandle
+spawn(|| { work() })  // ERROR [conc.async/H1]: unused Handle
 ```
 
 ### Handle API
 
 <!-- test: skip -->
 ```rask
-struct TaskHandle<T> { }
+@resource
+struct Handle<T> { }
 
-extend TaskHandle<T> {
+extend Handle<T> {
     func join(take self) -> T or JoinError
     func detach(take self)
     func cancel(take self) -> T or JoinError
@@ -84,31 +85,46 @@ extend TaskHandle<T> {
 
 enum JoinError {
     Panicked(string),  // task panicked with message
-    Cancelled,         // task was cancelled
 }
 ```
+
+I had `TaskHandle` and `ThreadHandle` for a long time. They did the same three
+things, and the split meant every piece of code that holds handles had to pick
+one or be written twice. So there is one.
 
 ## Multiple Tasks
 
 | Rule | Description |
 |------|-------------|
-| **M1: Join all** | `join_all(...)` waits for all tasks |
-| **M2: Select first** | `select_first(...)` returns first result, cancels remaining |
-| **M3: Task group** | `TaskGroup` for dynamic task counts |
+| **M1: Join each** | A fixed set of tasks is joined handle by handle |
+| **M2: Handle group** | `Handles<T>` holds handles for a count known only at run time: `new()`, `add(h)`, `join_all()`, `detach()`. `join_all` gives one `T or JoinError` per handle in add order; `detach` lets them all run on. The group is linear like the handles it holds: joined or detached exactly once |
+| **M3: Plain Rask** | `Handles<T>` is written in Rask (`stdlib/async.rk`): a linked list built from an enum and `Heap`. A group of any other linear type is written the same way |
 
 <!-- test: skip -->
 ```rask
-mut (a, b) = join_all(
-    spawn(|| { work1() }),
-    spawn(|| { work2() })
-)
+let h1 = spawn(|| { work1() })
+let h2 = spawn(|| { work2() })
+let a = try h1.join()
+let b = try h2.join()
 
-let group = TaskGroup.new()
+mut pages = Handles<Page>.new()
+ensure pages.detach()
 for url in urls {
-    group.spawn(|| { fetch(url) })
+    pages.add(spawn(|| { return fetch(url) }))
 }
-let results = try group.join_all()
+let results = pages.join_all()
 ```
+
+The group has no `spawn` of its own. `add` takes a handle from any spawn form,
+so one method covers tasks, threads and pool jobs, and the spawn stays visible
+at the call site.
+
+I dropped the free `join_all(a, b)` and `select_first(a, b)`. A call that takes
+any number of handles and hands back a tuple of their results can't be declared
+in Rask, and the `Vec<Handle<T>>` version couldn't be called, since a `Vec`
+can't hold a linear value. Joining two handles is two lines, and a loop is
+what `Handles` is for. Racing tasks for the first result is still open; a
+channel both send to covers it today.
 
 ## Runtime Scope
 
@@ -205,10 +221,11 @@ match h.join() { }    // explicit handling
 
 | Rule | Description |
 |------|-------------|
-| **CN1: Cooperative** | Cancellation sets a flag; task checks `cancelled()` |
+| **CN1: Cooperative** | Cancellation sets a flag; the work checks `cancelled()`. Same for a task, a pooled job and an OS thread: `cancelled()` reads the flag of whichever one is running it |
 | **CN2: Ensure runs** | `ensure` blocks always run, even on cancellation |
-| **CN3: I/O checks** | I/O operations check cancel flag and return `Cancelled` error if set |
+| **CN3: A cancel ends a wait** | A task parked in a channel `receive` or `send`, a `sleep`, or a socket call wakes when it's cancelled, and the call returns `Cancelled`: `ReceiveError.Cancelled`, `SendError.Cancelled`, `SysError.Cancelled`, `IoError.Cancelled`. A call that doesn't need to wait completes: a value already in the channel is received. Joins and lock waits keep waiting, since what they wait for ends by its own code anyway |
 | **CN4: No kill at pause points** | Cancellation never terminates a task at a suspension point. A cancelled task always resumes and exits through its own control flow — the flag check or the `Cancelled` error return. Preemption pauses tasks, never kills them |
+| **CN5: The body's ending is the answer** | `cancel()` and `join()` return what the body returned, or its panic. Cancellation is not a third way to end: a body that stops early says so in its own return type |
 
 CN4 is what keeps invisible suspension safe around locks: a lock held across a pause is released only by the holder's own block exit or panic unwind — there is no third "died while suspended" path (`ctrl.panic/LK4`).
 
@@ -218,15 +235,27 @@ let h = spawn(|| {
     let file = try File.open("data.txt")
     ensure file.close()
 
-    loop {
-        if cancelled() { break })
+    mut done = 0
+    while !cancelled() {
         do_work()
+        done += 1
     }
-}
+    return done
+})
 
 sleep(5.seconds)
-try h.cancel()
+let finished = try h.cancel()   // how far it got
 ```
+
+A cancel reaches a task that is waiting, not only one that polls: the wait
+ends with `Cancelled`, and the task carries on through its own code. Without
+that, `cancel()` on a task parked in a receive waited forever.
+
+`JoinError.Cancelled` used to exist, and `cancel()` answered with it whatever
+the body did. That threw away a value the task had already produced, and when
+that value is linear (a `File`, a `Handle`), nothing could close it. A body
+that sees `cancelled()` returns like any other; if the caller needs to tell
+"stopped early" from "finished", the body's return type says so.
 
 ## Channels
 
@@ -254,7 +283,8 @@ let consumer = spawn(|| {
     }
 })
 
-try join_all(producer, consumer)
+try producer.join()
+try consumer.join()
 ```
 
 ### Channel Operations
@@ -280,10 +310,10 @@ try join_all(producer, consumer)
 ## Error Messages
 
 ```
-ERROR [conc.async/H1]: unused TaskHandle
+ERROR [conc.async/H1]: unused Handle
    |
 12 |  spawn(|| { work() })
-   |  ^^^^^^^^^^^^^^^^ TaskHandle must be joined or detached
+   |  ^^^^^^^^^^^^^^^^ Handle must be joined or detached
 ```
 
 ```
@@ -331,11 +361,13 @@ Install a `using Multitasking { ... }` block that encloses the call.
 | Direct `spawn` in an ordinary function | CC2 | No error here — reported at each call site outside a block |
 | Call to function transitively reaching `spawn`, outside any block | CC2 | Compile error at the call |
 | Closure stored / interface object dispatch reaches `spawn` outside a block | CC3 | Runtime panic — target not statically known |
-| `.join()` on cancelled task | H2, CN1 | Returns `Cancelled` error |
+| `.join()` on cancelled task | H2, CN5 | Returns what the body returned when it stopped, or its panic |
 | Cancelled while parked on I/O | CN3, CN4 | Task resumes; the pending operation returns `Cancelled`; task exits via its own control flow, ensures run |
 | Cancelled while holding a lock | CN4 | No forced release — the lock releases when the task's own exit path leaves the block (`ctrl.panic/LK4`) |
 | Panic-unwind of `using` block with tasks still pending | C4 | Cancellation signalled, no drain. A task that never reaches another check point never runs again — its ensures are skipped and locks it held stay held. Teardown of a dying runtime, not a state the program continues from |
 | Channel send after all receivers closed | CH3 | Returns `Closed` error |
+| Cancelled while an unbuffered send waits for its receiver | CN3 | The offer is withdrawn and `send` returns `Cancelled`, unless a receiver already took the value, in which case it was sent |
+| Cancelled while `select` waits | CN3 | Ends with `SelectError.Cancelled` (conc.select/CL4) |
 | Nested `using Multitasking` blocks | C1 | Error — second `enter` aborts (compile error if lexically nested, runtime panic otherwise) |
 | Library opens `using Multitasking` while app already did | C6 | Falls under C1 — runtime panic |
 | Test block spawns | C6 | Tests are application code — the test opens its own `using Multitasking { }`; the runner serializes runtime-holding tests to respect C1 (`std.testing/T17–T19`) |
@@ -366,8 +398,8 @@ Install a `using Multitasking { ... }` block that encloses the call.
 
 <!-- test: parse -->
 ```rask
-enum SendError { Closed }
-enum ReceiveError { Closed }
+enum SendError { Closed, Cancelled }
+enum ReceiveError { Closed, Cancelled }
 enum CloseError { AlreadyClosed, FlushFailed }
 enum TrySendError { Full(T), Closed(T) }
 enum TryReceiveError { Empty, Closed }

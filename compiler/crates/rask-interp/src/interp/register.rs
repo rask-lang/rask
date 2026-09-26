@@ -25,8 +25,6 @@ fn strip_generics(name: &str) -> &str {
 pub(super) fn prelude_builtin(name: &str) -> Option<BuiltinKind> {
     match name {
         "spawn" => Some(BuiltinKind::AsyncSpawn),
-        "join_all" => Some(BuiltinKind::JoinAll),
-        "select_first" => Some(BuiltinKind::SelectFirst),
         "cancelled" => Some(BuiltinKind::Cancelled),
         _ => None,
     }
@@ -47,20 +45,8 @@ impl Interpreter {
             (ModuleKind::Async, "spawn") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawn));
             }
-            (ModuleKind::Async, "join_all") => {
-                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::JoinAll));
-            }
-            (ModuleKind::Async, "select_first") => {
-                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::SelectFirst));
-            }
             (ModuleKind::Async, "cancelled") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::Cancelled));
-            }
-            (ModuleKind::Async, "TaskGroup") => {
-                self.env.define(alias.to_string(), Value::TypeConstructor {
-                    kind: TypeConstructorKind::TaskGroup,
-                    type_param: None,
-                });
             }
             // Any exported type: `import http.Response`, `import time.Instant`.
             _ if module.exports_type(member) => {
@@ -97,7 +83,7 @@ impl Interpreter {
         for (name, decl) in rask_stdlib::modules::enum_decls() {
             let entry = self.enums.entry(name.clone()).or_insert_with(|| {
                 let mut implemented = decl.clone();
-                implemented.methods.retain(|m| !m.body.is_empty());
+                implemented.methods.retain(|m| !m.body_lives_elsewhere());
                 implemented
             });
             let methods = entry.methods.clone();

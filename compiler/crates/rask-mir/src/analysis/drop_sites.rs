@@ -39,6 +39,12 @@ use crate::{BlockId, LocalId, MirFunction};
 ///     first guard says. The back-edge rule each pass already has frees there,
 ///     and freeing twice is a double free: `while i < 4 { mut v = Vec.new() … }`
 ///     segfaulted on the second turn.
+///   - a return is never an exit edge, even a `cleanup_return`, whose
+///     successors are the `ensure` blocks it runs on the way out. Each pass's
+///     return rule already frees there. Once a second path also reached those
+///     blocks, such as an early `catch … => { return … }`, they fell outside
+///     the region and the return got a second free; `for r in
+///     group.join_all()` after an early return freed its vector twice.
 pub fn where_control_leaves(
     func: &MirFunction,
     dom: &DominatorTree,
@@ -57,6 +63,13 @@ pub fn where_control_leaves(
         .iter()
         .enumerate()
         .filter(|(_, block)| dom.dominates(def, block.id))
+        .filter(|(_, block)| {
+            !matches!(
+                block.terminator.kind,
+                crate::MirTerminatorKind::Return { .. }
+                    | crate::MirTerminatorKind::CleanupReturn { .. }
+            )
+        })
         .filter(|(_, block)| {
             let succs = crate::analysis::cfg::successors(&block.terminator);
             !succs.is_empty()
