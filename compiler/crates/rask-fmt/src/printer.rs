@@ -1174,6 +1174,12 @@ impl<'a> Printer<'a> {
 
     fn format_impl_decl(&mut self, imp: &ImplDecl) {
         self.emit_indent();
+        if imp.is_pub {
+            self.emit("public ");
+        }
+        if imp.is_unsafe {
+            self.emit("unsafe ");
+        }
         if imp.is_scoped {
             self.emit("scoped ");
         }

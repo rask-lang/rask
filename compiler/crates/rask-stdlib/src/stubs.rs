@@ -695,6 +695,7 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
                 assoc_bindings: Vec::new(),
                 is_unsafe: false,
                 is_scoped: false,
+                is_pub: false,
                 where_bounds: Vec::new(),
                 doc: None,
             }),

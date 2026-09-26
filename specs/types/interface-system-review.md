@@ -210,7 +210,7 @@ The comma-list header (`T implements A, B, C`) was accepted here and later rever
 
 | Rule | Description |
 |------|-------------|
-| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public extend`, `scoped extend`) apply to the block |
+| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public`, `unsafe`, `scoped`) go in front of the type name and apply to the block |
 | **CD2: The block is the contract** | An `implements` block holds only the methods its interface declares (its parent interfaces' included). Any other method in it is an error (E0893): a plain method belongs in `extend T { }`, so reading the block shows exactly what the interface asks of the type |
 | **CD3: One condition per block** | On generic types, the inferred condition (CC2) is computed for the block's interface. An explicit `where` clause (public, CC3) applies to the whole block |
 

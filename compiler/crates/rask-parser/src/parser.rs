@@ -754,7 +754,7 @@ impl Parser {
 
         let is_conformance = self.at_conformance_header();
         let kind = if is_conformance {
-            self.parse_conformance_decl(is_unsafe, is_scoped, doc)?
+            self.parse_conformance_decl(is_pub, is_unsafe, is_scoped, doc)?
         } else { match self.current_kind() {
             TokenKind::Func => {
                 self.reject_keyword_fn_name()?;
@@ -764,7 +764,7 @@ impl Parser {
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
             TokenKind::Interface => self.parse_interface_decl(is_pub, is_unsafe, is_duck, attrs, doc)?,
-            TokenKind::Extend => self.parse_extend_decl(is_unsafe, is_scoped, doc)?,
+            TokenKind::Extend => self.parse_extend_decl(is_pub, is_unsafe, is_scoped, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub, attrs, doc)?,
@@ -2149,15 +2149,15 @@ impl Parser {
     }
 
     /// `extend T { … }`: the type's own methods.
-    fn parse_extend_decl(&mut self, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_extend_decl(&mut self, is_pub: bool, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Extend)?;
         let target_ty = self.parse_type_name()?;
-        self.parse_impl_body(target_ty, None, is_unsafe, is_scoped, doc)
+        self.parse_impl_body(target_ty, None, is_pub, is_unsafe, is_scoped, doc)
     }
 
     /// `T implements I { … }`: one interface per block (CD1), so the block is
     /// exactly that interface's contract.
-    fn parse_conformance_decl(&mut self, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_conformance_decl(&mut self, is_pub: bool, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         let target_ty = self.parse_type_name()?;
         self.expect(&TokenKind::Implements)?;
         self.skip_newlines();
@@ -2171,7 +2171,7 @@ impl Parser {
                 why: Some("the block is the interface's contract, so a reader can see which methods belong to it".to_string()),
             });
         }
-        self.parse_impl_body(target_ty, Some(name), is_unsafe, is_scoped, doc)
+        self.parse_impl_body(target_ty, Some(name), is_pub, is_unsafe, is_scoped, doc)
     }
 
     /// Does a `T implements I` header start here? Reads a type name and looks
@@ -2190,6 +2190,7 @@ impl Parser {
         &mut self,
         target_ty: String,
         interface_name: Option<String>,
+        is_pub: bool,
         is_unsafe: bool,
         is_scoped: bool,
         doc: Option<String>,
@@ -2256,7 +2257,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Impl(ImplDecl { interface_name, target_ty, methods, is_unsafe, is_scoped, where_bounds, assoc_bindings, doc }))
+        Ok(DeclKind::Impl(ImplDecl { interface_name, target_ty, methods, is_unsafe, is_scoped, is_pub, where_bounds, assoc_bindings, doc }))
     }
 
     /// AT2: `type Out = Meters` inside a `T implements I` block.

@@ -127,7 +127,7 @@ func caller() {
 
 | Rule | Description |
 |------|-------------|
-| **UT1: Explicit unsafe extend** | Implementing unsafe interface requires `unsafe extend` |
+| **UT1: Explicit unsafe conformance** | Implementing an unsafe interface requires `unsafe T implements I` |
 | **UT2: Contract obligation** | Implementer guarantees interface's safety contract |
 | **UT3: Compiler trust** | Compiler trusts extend; soundness is implementer's responsibility |
 
@@ -403,7 +403,7 @@ FIX: Add to clobber list or declare as output:
 | Use-after-free | U1 | UB in release; panic if detectable in debug |
 | Data race | — | UB even in unsafe; use atomics |
 | Calling unsafe func without unsafe block | U1 | Compile error |
-| Implementing safe interface unsafely | UT1 | Compile error (use `unsafe extend`) |
+| Implementing an unsafe interface without `unsafe` | UT1 | Compile error (write `unsafe T implements I`) |
 | Nested unsafe blocks | U2 | Redundant but allowed |
 | Unsafe in comptime | U1 | Not allowed (no pointers at compile time) |
 

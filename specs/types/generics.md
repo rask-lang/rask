@@ -16,7 +16,7 @@ Interface conformance is declared — `Type implements Interface` says the type 
 | **G2: Checked at use site** | The compiler verifies interface matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before interface checking |
-| **G5: Verified clone** | Compiler ensures clone produces deep copy; types with pointers require unsafe extend |
+| **G5: Verified clone** | Compiler ensures clone produces deep copy; types with pointers require an `unsafe` conformance |
 | **G6: Code specialization** | Each `<T>` usage generates specialized code (monomorphization) — fast calls, but increases binary size |
 | **G6a: Methods specialize with their type** | A method declared in `extend One<A>` is specialized per receiver instantiation, same as a generic function: `One<i64>.get()` and `One<Big>.get()` are two bodies. That's what lets each instantiation have a layout that fits its type argument — a struct or tuple argument *is* its bytes, so one shared body couldn't take both an 8-byte and a 24-byte `self`. A method with its own parameters specializes on the receiver's arguments and then its own |
 | **G7: Runtime polymorphism opt-in** | `any Interface` for heterogeneous collections; dispatch through function pointer table (vtable) |
@@ -176,7 +176,7 @@ For `duck interface`, the same signature check runs at the use site against the 
 
 | Rule | Description |
 |------|-------------|
-| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public extend`, `scoped extend`) apply to the block |
+| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public`, `unsafe`, `scoped`) go in front of the type name and apply to the block |
 | **CD2: The block is the contract** | An `implements` block holds only the methods its interface declares (its parent interfaces' included). Any other method in it is an error (E0893): a plain method belongs in `extend T { }`, so reading the block shows exactly what the interface asks of the type |
 | **CD3: Composite chain** | Declaring a composite (`T implements HashKey {}`) checks the full parent interface chain (TD3); auto-derived parent interfaces satisfy automatically, missing methods error at the declaration |
 
@@ -409,7 +409,7 @@ The compiler auto-derives Cloneable where all fields implement Cloneable and no 
 | Rule | Description |
 |------|-------------|
 | **CL1: Auto-derive** | Primitives, structs with all Cloneable fields, arrays/Vec of Cloneable, handles: auto-derived |
-| **CL2: Pointer block** | Struct with raw pointer is NOT Cloneable unless `unsafe extend` |
+| **CL2: Pointer block** | Struct with raw pointer is NOT Cloneable unless `unsafe T implements Cloneable` |
 
 ```rask
 interface Cloneable {
@@ -421,7 +421,7 @@ interface Cloneable {
 |------|------------------|
 | Primitives (i32, bool, f64) | Auto-derived (bitwise copy) |
 | Struct with all Cloneable fields | Auto-derived (deep copy) |
-| Struct with raw pointer | NOT Cloneable unless `unsafe extend` |
+| Struct with raw pointer | NOT Cloneable unless `unsafe T implements Cloneable` |
 | Array/Vec of Cloneable | Auto-derived (element-wise clone) |
 | Handle types | Auto-derived (handle copy, not referent) |
 

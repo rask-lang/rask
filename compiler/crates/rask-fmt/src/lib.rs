@@ -535,6 +535,23 @@ func main() {
             "duck interface Frobber",
             "the duck modifier",
         );
+        // The modifiers in front of a block used to be parsed and dropped, so
+        // `rask fmt` quietly removed them.
+        keeps(
+            "public Point implements Named {\n    func name(self) -> string {\n        return \"p\"\n    }\n}\n",
+            "public Point implements Named",
+            "public on a conformance",
+        );
+        keeps(
+            "unsafe Point implements Raw {\n    func raw(self) -> i64 {\n        return 1\n    }\n}\n",
+            "unsafe Point implements Raw",
+            "unsafe on a conformance",
+        );
+        keeps(
+            "scoped extend Point {\n    func name(self) -> string {\n        return \"p\"\n    }\n}\n",
+            "scoped extend Point",
+            "scoped on a block",
+        );
     }
 
     #[test]

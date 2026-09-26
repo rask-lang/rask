@@ -491,6 +491,9 @@ pub struct ImplDecl {
     pub is_unsafe: bool,
     /// `scoped extend` — methods stay out of the type's inherent namespace (MN4).
     pub is_scoped: bool,
+    /// `public` in front of the block. Parsed and printed back; the checker
+    /// treats every conformance as declared, public or not.
+    pub is_pub: bool,
     /// CC1/CC2: `where` condition for conditional conformance on a generic
     /// target (`Ring<T> implements Displayable where T: Displayable`). Each
     /// entry is a type param and its required interface bounds.

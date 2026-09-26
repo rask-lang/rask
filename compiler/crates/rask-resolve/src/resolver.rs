@@ -3325,6 +3325,7 @@ mod tests {
                     methods: vec![method],
                     is_unsafe: false,
                     is_scoped: false,
+                    is_pub: false,
                     where_bounds: vec![],
                     doc: None,
                     assoc_bindings: Vec::new(),
