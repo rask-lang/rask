@@ -49,6 +49,9 @@ struct RaskChannel {
     // Lifecycle
     atomic_int sender_count;
     atomic_int recver_count;
+    // Every end, of either kind. The drop that takes it to zero frees the
+    // channel, after it is done with the mutex.
+    atomic_int ends;
     int        closed;       // protected by mutex
 };
 
@@ -84,6 +87,7 @@ static RaskChannel *channel_alloc(int64_t elem_size, int64_t capacity) {
 
     atomic_init(&ch->sender_count, 1);
     atomic_init(&ch->recver_count, 1);
+    atomic_init(&ch->ends, 2);
     ch->closed = 0;
 
     return ch;
@@ -97,11 +101,11 @@ static void channel_destroy(RaskChannel *ch) {
     rask_free(ch);
 }
 
-// Try to destroy if both sides are gone
-static void channel_maybe_destroy(RaskChannel *ch) {
-    int s = atomic_load_explicit(&ch->sender_count, memory_order_acquire);
-    int r = atomic_load_explicit(&ch->recver_count, memory_order_acquire);
-    if (s == 0 && r == 0) {
+// Drop one end. It used to free once it read both counts as zero, but the
+// last sender and the last receiver dropping together could both read that,
+// and one could free while the other still held the mutex.
+static void channel_end_gone(RaskChannel *ch) {
+    if (atomic_fetch_sub_explicit(&ch->ends, 1, memory_order_acq_rel) == 1) {
         channel_destroy(ch);
     }
 }
@@ -498,6 +502,7 @@ int64_t rask_channel_try_recv(RaskRecver *rx, void *data_out) {
 
 RaskSender *rask_sender_clone(RaskSender *tx) {
     atomic_fetch_add_explicit(&tx->chan->sender_count, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&tx->chan->ends, 1, memory_order_relaxed);
     RaskSender *clone = (RaskSender *)rask_alloc(sizeof(RaskSender));
     *clone = (RaskSender){ .chan = tx->chan };
     return clone;
@@ -514,8 +519,8 @@ void rask_sender_drop(RaskSender *tx) {
         ch->closed = 1;
         chan_broadcast(&ch->not_empty);
         pthread_mutex_unlock(&ch->mutex);
-        channel_maybe_destroy(ch);
     }
+    channel_end_gone(ch);
 }
 
 void rask_recver_drop(RaskRecver *rx) {
@@ -529,8 +534,8 @@ void rask_recver_drop(RaskRecver *rx) {
         ch->closed = 1;
         chan_broadcast(&ch->not_full);
         pthread_mutex_unlock(&ch->mutex);
-        channel_maybe_destroy(ch);
     }
+    channel_end_gone(ch);
 }
 
 // ─── i64-based codegen wrappers ────────────────────────────
