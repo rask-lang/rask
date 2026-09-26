@@ -220,3 +220,17 @@ test "select { … }! panics when every channel is closed" {
         }
     }
 }
+
+// Inside `using`, the channel's type isn't known yet when the select is
+// checked. The arm's binding got a type variable nothing tied to the channel,
+// so native had no type for the select's value.
+test "a select checked before its channel's type is known" {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(1)
+        tx.send(5)!
+        let got = select {
+            rx -> v: v,
+        }!
+        assert got == 5
+    }
+}

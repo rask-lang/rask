@@ -2285,14 +2285,14 @@ impl TypeChecker {
                     match &arm.kind {
                         rask_ast::expr::SelectArmKind::Recv { channel, binding } => {
                             let chan_ty = self.infer_expr(channel);
-                            let elem = self
-                                .channel_element_type(&chan_ty)
-                                .unwrap_or_else(|| self.ctx.fresh_var());
+                            let elem = self.channel_end_element(&chan_ty, "Receiver", channel.span);
                             self.define_local(binding.clone(), elem);
                         }
                         rask_ast::expr::SelectArmKind::Send { channel, value } => {
-                            self.infer_expr(channel);
-                            self.infer_expr(value);
+                            let chan_ty = self.infer_expr(channel);
+                            let elem = self.channel_end_element(&chan_ty, "Sender", channel.span);
+                            let value_ty = self.infer_expr(value);
+                            let _ = self.unify(&elem, &value_ty, value.span);
                         }
                         rask_ast::expr::SelectArmKind::Default => {}
                     }
@@ -5720,6 +5720,26 @@ impl TypeChecker {
             Some(id) => Type::Named(id),
             None => Type::UnresolvedNamed("ConvertError".to_string()),
         }
+    }
+
+    /// The element type of a select arm's channel end. An end whose type isn't
+    /// known yet is pinned to `end<T>` for a fresh `T`: a bare fresh variable
+    /// was tied to nothing, so an arm's value stayed unsolved and native had no
+    /// type for the select.
+    fn channel_end_element(&mut self, chan_ty: &Type, end: &str, span: Span) -> Type {
+        if let Some(elem) = self.channel_element_type(chan_ty) {
+            return elem;
+        }
+        let elem = self.ctx.fresh_var();
+        if matches!(self.ctx.apply(chan_ty), Type::Var(_)) {
+            let args = vec![GenericArg::Type(Box::new(elem.clone()))];
+            let end_ty = match self.types.get_type_id(end) {
+                Some(base) => Type::Generic { base, args },
+                None => Type::UnresolvedGeneric { name: end.to_string(), args },
+            };
+            let _ = self.unify(chan_ty, &end_ty, span);
+        }
+        elem
     }
 
     /// The `SelectError` a waiting `select` ends with (conc.select/CL1).
