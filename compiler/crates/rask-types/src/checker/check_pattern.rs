@@ -710,8 +710,9 @@ impl TypeChecker {
             // `MyErr.Bad(m)` against an `i64 or MyErr`: the pattern is about
             // one branch, so its payload types come from that branch. It fell
             // to the fresh-variable path, and native couldn't resolve a method
-            // call on `m`.
-            Type::Result { .. } => match self.enum_id_from_pattern_name(name) {
+            // call on `m`. A bare `r is MyErr.Worse` binds nothing and is a
+            // tag test, whatever the variant carries.
+            Type::Result { .. } if !fields.is_empty() => match self.enum_id_from_pattern_name(name) {
                 Some((id, params)) => {
                     let leaves = two_branch_leaves(&mut self.ctx, &self.types, &resolved_scrutinee);
                     let args = leaves.iter().find_map(|leaf| match leaf {
