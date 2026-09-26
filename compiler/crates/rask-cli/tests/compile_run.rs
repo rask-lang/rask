@@ -1494,7 +1494,7 @@ fn error_bad_interpolation() {
     );
 }
 
-// #551, T10: honouring a nominal newtype's `with (…)` list means the list has
+// #551, T10: honouring a nominal newtype's `implements` list means the list has
 // to stay a list — an unlisted trait is still not inherited.
 #[test]
 fn error_nominal_trait_not_listed() {
@@ -1502,7 +1502,7 @@ fn error_nominal_trait_not_listed() {
     assert!(failed, "an unlisted interface must not be inherited: {}", out);
     // The arithmetic is named by its operator rather than by the method
     // desugaring produced: `+` resolves against a declared `Add`, and the
-    // newtype's `with (…)` list doesn't have one.
+    // newtype's `implements` list doesn't have one.
     assert!(
         out.contains("no method `lt`") && out.contains("no `+` between `OnlyEq`"),
         "should reject both the unlisted ordering and the arithmetic: {}", out,
@@ -6132,7 +6132,7 @@ fn a_map_key_that_is_not_hashable_is_rejected_per_kind() {
     // The newtype is told about its clause, the float about its bits, the struct
     // about a declared conformance.
     assert!(out.contains("`Id` is not Hashable"), "{}", out);
-    assert!(out.contains("with (Equal, Hashable)"), "{}", out);
+    assert!(out.contains("implements Equal, Hashable"), "{}", out);
     assert!(out.contains("`f64` is not Hashable"), "{}", out);
     assert!(out.contains("`map.insert(x.to_bits(), v)`"), "{}", out);
     assert!(out.contains("`Floaty` is not Hashable"), "{}", out);

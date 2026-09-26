@@ -2538,7 +2538,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0358")
                     .with_primary(*span, format!("{} = {}", param, arg))
                     .with_help(format!(
-                        "newtype one side, e.g. `type Cached{arg} = {arg} with (…)`, and pass that instead"
+                        "newtype one side, e.g. `type Cached{arg} = {arg} implements …`, and pass that instead"
                     ))
                     .with_why(format!(
                         "`{callee}` returns `{param} or {other}`; the compiler picks the branch from the value's \
@@ -2820,10 +2820,10 @@ impl ToDiagnostic for rask_types::TypeError {
                     }
                     MapKeyFix::NominalClause => d
                         .with_fix(format!(
-                            "list it where the type is declared: `type {key} = … with (Equal, Hashable)`"
+                            "list it where the type is declared: `type {key} = … implements Equal, Hashable`"
                         ))
                         .with_why(
-                            "a nominal newtype inherits exactly the interfaces its `with (…)` clause names — it deliberately doesn't pick up the wrapped type's, so a Map key has to be asked for [type.aliases/T11, type.generics/HA1]"
+                            "a nominal newtype inherits exactly the interfaces its `implements` clause names — it deliberately doesn't pick up the wrapped type's, so a Map key has to be asked for [type.aliases/T11, type.generics/HA1]"
                                 .to_string(),
                         ),
                     MapKeyFix::ExtendBlock => d

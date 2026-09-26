@@ -177,7 +177,7 @@ impl<'a> TraitChecker<'a> {
     /// The registered TypeId behind a type name, whatever kind it is.
     ///
     /// `user_type_id` narrows to structs and enums, which is what conformance
-    /// lookup wants. A nominal newtype has to be reachable too — its `with (…)`
+    /// lookup wants. A nominal newtype has to be reachable too — its `implements`
     /// clause is a conformance declaration of a different shape.
     fn named_type_id(&self, ty: &Type) -> Option<crate::types::TypeId> {
         match ty {
@@ -281,7 +281,7 @@ impl<'a> TraitChecker<'a> {
             }
         }
 
-        // T11: a nominal newtype inherits exactly the traits its `with (…)`
+        // T11: a nominal newtype inherits exactly the traits its `implements`
         // clause lists, delegating to the value it wraps. Method resolution
         // already honoured that, so `UserId(1) == UserId(2)` worked — but this
         // check didn't, so `implements_trait(UserId, "Hashable")` said no for a

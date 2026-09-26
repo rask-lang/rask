@@ -180,5 +180,5 @@ test "summable measurements" {
 func main() {
     let sun = Star { name: "Sol", mass_solar: 1.0 }
     print_description(sun)
-    println("Run 'rask test 12_traits.rk' to check your puzzles")
+    println("Run 'rask test 12_interfaces.rk' to check your puzzles")
 }

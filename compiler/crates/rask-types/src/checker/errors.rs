@@ -12,7 +12,7 @@ use crate::types::{Type, TypeVarId};
 pub enum MapKeyFix {
     /// HA4: `f32`/`f64` are excluded outright. Key on the bits instead.
     Float,
-    /// A nominal newtype — the traits it inherits are the ones its `with (…)`
+    /// A nominal newtype — the traits it inherits are the ones its `implements`
     /// clause names.
     NominalClause,
     /// Anything else — an `extend T implements Hashable` block declares it.

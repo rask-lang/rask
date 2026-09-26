@@ -481,7 +481,7 @@ impl TypeChecker {
             Type::Result { .. } => false,
             Type::Named(id) | Type::Generic { base: id, .. } => {
                 // A nominal newtype inherits nothing it didn't ask for
-                // (type.aliases/T10), so its `with (…)` list is the answer —
+                // (type.aliases/T10), so its `implements` list is the answer —
                 // and an `extend` block that writes `to_string` counts too.
                 if let Some(TypeDef::NominalAlias { with_traits, methods, .. }) = self.types.get(*id) {
                     return with_traits.iter().any(|t| t == "Displayable")
@@ -507,7 +507,7 @@ impl TypeChecker {
     }
 
     /// The signature `method` gets on a nominal newtype from one of the traits
-    /// its `with (…)` clause lists (type.aliases/T11).
+    /// its `implements` clause lists (type.aliases/T11).
     ///
     /// The trait signatures write `Self` as type variable 0, so binding that to
     /// the newtype is the whole of T12's delegation: `Id`'s `eq` takes an `Id`,
@@ -911,7 +911,7 @@ impl TypeChecker {
                     }
                     Some(TypeDef::NominalAlias { methods, with_traits, .. }) => {
                         // T11/T12: a nominal newtype inherits the traits its
-                        // `with (…)` clause lists, and they delegate to the
+                        // `implements` clause lists, and they delegate to the
                         // value underneath. The list was recorded and never
                         // read, so `type Id = u64 implements Equal` gave `Id` no
                         // `eq` at all and `a == b` didn't compile (#551).

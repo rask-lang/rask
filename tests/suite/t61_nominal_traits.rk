@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// type.aliases/T10–T12 — a nominal newtype inherits the interfaces its `with (…)`
+// type.aliases/T10–T12 — a nominal newtype inherits the interfaces its `implements`
 // clause lists, and only those, and they delegate to the value it wraps.
 
 type UserId = u64 implements Equal, Hashable, Comparable, Displayable
