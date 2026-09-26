@@ -12,6 +12,7 @@ Open work, grouped by theme. Bugs are tracked as [GitHub issues](https://github.
 - [ ] **Linear resource commitment (L1–L3)** — Ownership checker tracks it, codegen doesn't enforce.
 - [ ] **Panic unwinding (ctrl.panic)** — Panic path runs no ensures and aborts the process; `staged()` and the ensure-cancellation definiteness analysis unimplemented. Tracking issue with all sub-issues: #299.
 - [ ] **Origin tracking opt-in (ER33/ER34)** — Compiler currently tracks origin on every error (always-on). Spec revised to opt-in via `@traced` + `any Error`. Codegen and runtime need to gate origin capture on the annotation, drop the 16-byte field from non-traced types.
+- [ ] **MIR re-derives types the checker already worked out** — 41 fallback sites guess a type instead of reading the checker's answer, plus a 7-step guessing chain and a hardcoded method-name→type table for ambiguous receivers. #725.
 
 ## Build
 
@@ -41,6 +42,8 @@ Percentages are rough coverage vs spec.
 
 - [ ] **Grow the agent benchmark** — `agentbench/` exists and scores 19 tasks (7 day, 7 week, 5 month) with `tests/agentbench_gate.sh` keeping the references honest. What it still needs: a wider task set (nothing yet exercises concurrency, `with` blocks, Rack+Link, or the encoding path), a stored baseline so a run can be compared against the last one instead of read in isolation, and a second axis measuring the model with the compiler's docs available rather than only the language card. See `agentbench/README.md`.
 
+- [ ] **Backends can silently diverge** — 39% of open bugs are native/interp divergences, but only 5% of `compile_run.rs` tests actually run both backends and compare. No CI job runs every example on both backends and diffs. #724.
+
 - [ ] **`rask annotate` (tool.annotate)** — materialize ghost text for diffs/review; spec proposed, nothing implemented. Cheapest first slice: effect labels — `Effects::label()` in rask-effects already renders the ghost strings and has zero callers. Command shape precedent: `rask unsafe --json`.
 
 ## Design questions
@@ -52,3 +55,6 @@ Percentages are rough coverage vs spec.
 - [ ] **Small string optimization (SSO)** — Hybrid layout: inline ≤15 bytes (no heap, no refcount), refcounted heap for larger. Eliminates atomic overhead for the common case. See `comp.string-refcount-elision` for the heap path.
 - [ ] **`pool.remove_with(h, |val| { ... })`** — cascading `@resource` cleanup.
 - [ ] **Style guideline** — max 3 context clauses per function.
+- [ ] **`if x?` narrowing** — spec says there's no flow typing and the checker agrees, but both backends narrow `x` to the payload type inside the block anyway. Needs a decision: change the spec, or make the checker narrow too. #773.
+- [ ] **Sim mode design** — `specs/determinism.md` states the promise (seed determinism); the design of `rask test --sim` itself (virtual clock, fault injection, seeded scheduling) isn't written yet. #625.
+- [ ] **Memory model / UB catalog** — no spec defines the atomics memory model or what unsafe code may assume. #527.

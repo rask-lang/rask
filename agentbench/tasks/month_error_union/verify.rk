@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-import string.ParseError
 
 func why(r: i64 or ReadError|ParseError) -> string {
     if r is ReadError as e { return e.message() }
