@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-import traitpkg.Doc
+import interfacepkg.Doc
 
-// XC1 says `Hashable` for `Doc` belongs to `traitpkg`. This is the way out it
+// XC1 says `Hashable` for `Doc` belongs to `interfacepkg`. This is the way out it
 // names: a nominal type of our own (type.aliases/T2, T13), which carries its
 // own conformance and shares the layout.
 public type Tagged = Doc

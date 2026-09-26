@@ -176,7 +176,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
     ("bits.rk", include_str!("../../../../stdlib/bits.rk")),
     ("num.rk", include_str!("../../../../stdlib/num.rk")),
-    // OR2: the operator traits. After num.rk so the numeric roster is in
+    // OR2: the operator interfaces. After num.rk so the numeric roster is in
     // place; nothing here has a body, so load order is otherwise free.
     ("ops.rk", include_str!("../../../../stdlib/ops.rk")),
     ("reflect.rk", include_str!("../../../../stdlib/reflect.rk")),
@@ -248,7 +248,7 @@ pub struct MethodStub {
     /// Declared `comptime func` — evaluated by the comptime engine, so the
     /// keyword already says where the body lives. `Vec.freeze` is one.
     pub is_comptime: bool,
-    /// Trait bounds on the method's own type parameters: `decode<T: Decode>`
+    /// Interface bounds on the method's own type parameters: `decode<T: Decode>`
     /// gives `[("T", "Decode")]`. Carried because nothing else does — the
     /// checker builds module signatures from these stubs, and without the bound
     /// `json.decode<WithPtr>` type-checked clean and failed later, in MIR
@@ -362,7 +362,7 @@ impl StubRegistry {
                 match &decl.kind {
                     DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Extern(_)
                     | DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Import(_)
-                    | DeclKind::TypeAlias(_) | DeclKind::Trait(_) => {
+                    | DeclKind::TypeAlias(_) | DeclKind::Interface(_) => {
                         decls.push(decl);
                     }
                     _ => {}
@@ -406,16 +406,16 @@ impl StubRegistry {
                         DeclKind::Struct(_) | DeclKind::Enum(_) => true,
                         DeclKind::Import(_) => true,
                         DeclKind::TypeAlias(_) => true,
-                        DeclKind::Trait(_) => true,
+                        DeclKind::Interface(_) => true,
                         _ => false,
                     }
                 } else {
                     // Files without function bodies still contribute struct/enum
                     // definitions — types must be visible for resolution even when
-                    // their methods aren't implemented yet. Traits are the same:
+                    // their methods aren't implemented yet. Interfaces are the same:
                     // no body to strip, but the type checker still needs them to
-                    // validate `extend T implements Trait` conformance (#320).
-                    matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Trait(_))
+                    // validate `extend T implements Interface` conformance (#320).
+                    matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Interface(_))
                 };
                 if dominated {
                     // Strip empty-body methods from Impl blocks so they
@@ -569,7 +569,7 @@ impl StubRegistry {
                 // stdlib-implemented — `extend char { … }` in char.rk is where
                 // their methods come from — so an inherent block on a primitive
                 // still files the type it's written on.
-                if i.trait_name.is_some() && rask_ast::primitives::is_scalar(&base_name) {
+                if i.interface_name.is_some() && rask_ast::primitives::is_scalar(&base_name) {
                     if let Some(entry) = self.types.get_mut(&base_name) {
                         for m in &i.methods {
                             entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
@@ -689,7 +689,7 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
             id: decl.id,
             span: decl.span,
             kind: DeclKind::Impl(rask_ast::decl::ImplDecl {
-                trait_name: None,
+                interface_name: None,
                 target_ty,
                 methods,
                 assoc_bindings: Vec::new(),
@@ -1149,11 +1149,11 @@ mod boundary_tests {
     #[test]
     fn every_stdlib_file_is_listed_or_deliberately_left_out() {
         // Empty, and the last two entries are worth the note: `fmt.rk` and
-        // `encoding.rk` were out because they declare a trait the compiler
+        // `encoding.rk` were out because they declare an interface the compiler
         // already provides, and a declaration made `Displayable` look like a
-        // trait a program had written — which is gated on `extend T implements Trait`,
+        // interface a program had written — which is gated on `extend T implements Interface`,
         // so every inherent `to_string` in the stdlib stopped counting. The gate
-        // asks what kind of trait it is now rather than whether a declaration
+        // asks what kind of interface it is now rather than whether a declaration
         // exists, so `stdlib/` is the source of truth for all 29 files (#990).
         const DELIBERATELY_ABSENT: &[&str] = &[];
 

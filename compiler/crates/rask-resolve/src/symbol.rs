@@ -57,12 +57,12 @@ pub enum SymbolKind {
         /// The enum this variant belongs to.
         enum_id: SymbolId,
     },
-    /// A trait.
-    Trait {
+    /// An interface.
+    Interface {
         /// Method SymbolIds.
         methods: Vec<SymbolId>,
-        /// Super-trait names.
-        super_traits: Vec<String>,
+        /// Super-interface names.
+        super_interfaces: Vec<String>,
     },
     /// A struct field.
     Field {

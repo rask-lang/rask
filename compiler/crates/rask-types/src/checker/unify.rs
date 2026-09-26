@@ -236,7 +236,7 @@ impl TypeChecker {
     /// primitive and a `Mutex`/`Sender`/`Vec` have no coercion between them in
     /// either direction, so the constraint is a mismatch rather than something
     /// still settling. Two *named* types are left alone — union members, enum
-    /// variants, trait objects and nominal aliases all legitimately unify across
+    /// variants, interface objects and nominal aliases all legitimately unify across
     /// names, and judging those from here reported the stdlib's own source as
     /// broken (#730).
     fn primitive_against_container(&self, a: &Type, b: &Type) -> bool {
@@ -830,7 +830,7 @@ impl TypeChecker {
         match ty {
             Type::Result { .. } => true,
             // Nothing pinned it yet, or it's already poisoned by an earlier
-            // error. Neither is a reason to add a second diagnostic. A trait
+            // error. Neither is a reason to add a second diagnostic. An interface
             // object is in the same class: the concrete type behind it is what
             // decides, and it isn't known here.
             Type::Var(_)
@@ -838,7 +838,7 @@ impl TypeChecker {
             | Type::Never
             | Type::UnresolvedNamed(_)
             | Type::UnresolvedGeneric { .. }
-            | Type::TraitObject { .. } => true,
+            | Type::InterfaceObject { .. } => true,
             // `Option<T>` written the long way, or a bare `none`.
             Type::None => true,
             Type::Named(id) => Some(*id) == self.types.get_option_type_id(),
@@ -1158,9 +1158,9 @@ impl TypeChecker {
                     }
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
-                        // ER32: `any Interface` error — concrete types implementing the trait go to err
-                        Type::TraitObject { trait_name } => {
-                            crate::traits::implements_trait(&self.types, &resolved_ret, trait_name)
+                        // ER32: `any Interface` error — concrete types implementing the interface go to err
+                        Type::InterfaceObject { interface_name } => {
+                            crate::interfaces::implements_interface(&self.types, &resolved_ret, interface_name)
                         }
                         other => other == &resolved_ret,
                     };
@@ -1175,11 +1175,11 @@ impl TypeChecker {
                     // `i64 or any Error` came back as a *success* holding 0 on
                     // native while the interpreter reported the error (#708).
                     if is_err_branch {
-                        if let (Type::TraitObject { trait_name }, Some(node)) =
+                        if let (Type::InterfaceObject { interface_name }, Some(node)) =
                             (&resolved_err, value_node)
                         {
-                            if !matches!(resolved_ret, Type::TraitObject { .. }) {
-                                self.trait_coercions.insert(node, trait_name.clone());
+                            if !matches!(resolved_ret, Type::InterfaceObject { .. }) {
+                                self.interface_coercions.insert(node, interface_name.clone());
                             }
                         }
                     }
@@ -1648,12 +1648,12 @@ impl TypeChecker {
                 Ok(false)
             }
 
-            // Trait object coercion: concrete → any Interface (TR5)
-            (concrete, Type::TraitObject { ref trait_name })
-            | (Type::TraitObject { ref trait_name }, concrete)
-                if !matches!(concrete, Type::TraitObject { .. }) =>
+            // Interface object coercion: concrete → any Interface (TR5)
+            (concrete, Type::InterfaceObject { ref interface_name })
+            | (Type::InterfaceObject { ref interface_name }, concrete)
+                if !matches!(concrete, Type::InterfaceObject { .. }) =>
             {
-                if crate::traits::implements_trait(&self.types, concrete, trait_name) {
+                if crate::interfaces::implements_interface(&self.types, concrete, interface_name) {
                     Ok(false)
                 } else {
                     Err(TypeError::Mismatch {

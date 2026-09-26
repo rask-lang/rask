@@ -204,7 +204,7 @@ extend Container {
 
 ### Rationale
 
-**TR1–TR4 (per-method restrictions):** Rust rejects entire traits from `dyn` if any method is incompatible — "trait is not object-safe." I think that's too coarse. An interface with nine compatible methods and one `Self`-returning method should work with `any` — you just can't call that one method. The error appears at the call site where the problem is, not at the coercion site where it isn't.
+**TR1–TR4 (per-method restrictions):** Rust rejects entire interfaces from `dyn` if any method is incompatible — "trait is not object-safe." I think that's too coarse. An interface with nine compatible methods and one `Self`-returning method should work with `any` — you just can't call that one method. The error appears at the call site where the problem is, not at the coercion site where it isn't.
 
 **TR5 (explicit conversion):** This flipped. The original design converted implicitly whenever the target type was `any Interface`, arguing the `any` in the type was signal enough. But the type can sit far from the conversion — a struct field in another file, a parameter in a signature you're not looking at — so the allocation happened at lines that showed nothing. That's a straight violation of transparency-of-cost: allocations are supposed to be visible in code where they occur. The cast is ceremony, and it's ceremony at exactly the sites where N allocations are happening — the place paying attention is the point. If the full requirement proves too heavy in real code, the candidate relaxation is narrow: implicit conversion only when the annotation is on the same line (`let w: any Widget = button`), explicit everywhere else. Decide from usage, not in the abstract.
 

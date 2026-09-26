@@ -734,7 +734,7 @@ fn monomorphize_inner(
 
     let mut mono = Monomorphizer::with_typed_program(decls, program);
     mono.set_package_modules(package_modules);
-    mono.set_trait_coercions(&program.trait_coercions);
+    mono.set_interface_coercions(&program.interface_coercions);
 
     if !mono.add_entry("main") {
         if !entryless {
@@ -779,7 +779,7 @@ fn monomorphize_inner(
                 let name = match def {
                     rask_types::TypeDef::Struct { name, .. }
                     | rask_types::TypeDef::Enum { name, .. }
-                    | rask_types::TypeDef::Trait { name, .. }
+                    | rask_types::TypeDef::Interface { name, .. }
                     | rask_types::TypeDef::Union { name, .. }
                     | rask_types::TypeDef::NominalAlias { name, .. }
                     | rask_types::TypeDef::Primitive { name, .. } => name.clone(),
@@ -1109,7 +1109,7 @@ mod tests {
             call_type_args: std::collections::HashMap::new(),
             call_targets: std::collections::HashMap::new(),
             operator_targets: std::collections::HashMap::new(),
-            trait_coercions: std::collections::HashMap::new(),
+            interface_coercions: std::collections::HashMap::new(),
             file_packages: std::collections::HashMap::new(),
             conformance_disambiguation: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
@@ -1615,7 +1615,7 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    trait_name: None,
+                    interface_name: None,
                     target_ty: "Point".to_string(),
                     methods: vec![
                         make_method("distance", vec![("self", "Point")], Some("f64"), vec![return_stmt(None)]),
@@ -1657,7 +1657,7 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    trait_name: None,
+                    interface_name: None,
                     target_ty: "Counter".to_string(),
                     methods: vec![
                         make_method("increment", vec![("self", "Counter")], None, vec![return_stmt(None)]),

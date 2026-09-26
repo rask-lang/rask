@@ -84,14 +84,14 @@ pub fn owned_fields(
     out
 }
 
-/// Is this a trait object, however the type happens to be spelled?
+/// Is this an interface object, however the type happens to be spelled?
 ///
 /// A field written `any Interface` reaches the layout as a *name* rather than a
-/// parsed `TraitObject` (#474), so asking for the parsed form alone answers no
+/// parsed `InterfaceObject` (#474), so asking for the parsed form alone answers no
 /// for every field — which is exactly where the question matters.
-pub fn is_trait_object(ty: &RaskType) -> bool {
+pub fn is_interface_object(ty: &RaskType) -> bool {
     match ty {
-        RaskType::TraitObject { .. } => true,
+        RaskType::InterfaceObject { .. } => true,
         RaskType::UnresolvedNamed(name) => name.starts_with("any "),
         _ => false,
     }

@@ -99,26 +99,26 @@ pub enum MirStmtKind {
         dst: LocalId,
         name: String,
     },
-    /// Box a concrete value into a trait object: heap-allocate, copy data, build fat pointer.
-    TraitBox {
+    /// Box a concrete value into an interface object: heap-allocate, copy data, build fat pointer.
+    InterfaceBox {
         dst: LocalId,
         value: MirOperand,
         concrete_type: String,
-        trait_name: String,
+        interface_name: String,
         concrete_size: u32,
         vtable_name: String,
     },
-    /// Call a method through a trait object's vtable.
-    TraitCall {
+    /// Call a method through an interface object's vtable.
+    InterfaceCall {
         dst: Option<LocalId>,
-        trait_object: LocalId,
+        interface_object: LocalId,
         method_name: String,
         vtable_offset: u32,
         args: Vec<MirOperand>,
     },
-    /// Drop a trait object: call vtable drop_fn, then free heap allocation.
-    TraitDrop {
-        trait_object: LocalId,
+    /// Drop an interface object: call vtable drop_fn, then free heap allocation.
+    InterfaceDrop {
+        interface_object: LocalId,
     },
     /// SSA phi node — selects a value based on which predecessor block was executed.
     /// Always appears at the start of a block; removed by de-SSA before codegen.

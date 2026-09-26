@@ -85,13 +85,13 @@
     ],
     "description": "Test block"
   },
-  "Trait": {
+  "Interface": {
     "prefix": "interface",
     "body": [
       "interface ${1:Name} {",
       "\tfunc ${2:method}(self${3}) -> ${4:ReturnType}",
       "}"
     ],
-    "description": "Trait declaration"
+    "description": "Interface declaration"
   }
 }

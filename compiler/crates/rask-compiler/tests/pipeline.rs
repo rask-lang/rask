@@ -783,7 +783,7 @@ fn fd4_defaults_and_spread_satisfy_construction() {
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
-fn dt1_public_duck_trait_errors() {
+fn dt1_public_duck_interface_errors() {
     let path = tmp_rk(r#"
         public duck interface Frobber {
             func frobnicate(self) -> i32
@@ -804,9 +804,9 @@ fn dt1_public_duck_trait_errors() {
 }
 
 #[test]
-fn dt1_package_internal_duck_trait_is_fine() {
-    // Without `public` the trait stays in the package, which is where duck
-    // traits live — shape matching still satisfies the bound with no
+fn dt1_package_internal_duck_interface_is_fine() {
+    // Without `public` the interface stays in the package, which is where duck
+    // interfaces live — shape matching still satisfies the bound with no
     // conformance declaration.
     let path = tmp_rk(r#"
         duck interface Frobber {
@@ -832,9 +832,9 @@ fn dt1_package_internal_duck_trait_is_fine() {
 }
 
 #[test]
-fn dt1_public_nominal_trait_is_fine() {
-    // Dropping `duck` is the fix DT1 points at — the same trait as `public
-    // trait` is legal, with conformance declared.
+fn dt1_public_nominal_interface_is_fine() {
+    // Dropping `duck` is the fix DT1 points at — the same interface as `public
+    // interface` is legal, with conformance declared.
     let path = tmp_rk(r#"
         public interface Frobber {
             func frobnicate(self) -> i32

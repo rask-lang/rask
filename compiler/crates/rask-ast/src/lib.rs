@@ -10,7 +10,7 @@ pub mod expr;
 pub mod stmt;
 pub mod decl;
 pub mod coercion;
-pub mod traits;
+pub mod interfaces;
 pub mod operators;
 pub mod fmt_spec;
 pub mod primitives;

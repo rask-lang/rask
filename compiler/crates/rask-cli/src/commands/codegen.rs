@@ -224,12 +224,12 @@ pub fn cmd_mir(path: &str, format: Format) {
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let type_names: std::collections::HashMap<rask_types::TypeId, String> =
         typed.types.type_name_map();
-    let trait_methods: std::collections::HashMap<String, Vec<String>> = typed.types.iter()
+    let interface_methods: std::collections::HashMap<String, Vec<String>> = typed.types.iter()
         .filter_map(|def| {
-            if let rask_types::TypeDef::Trait { name, .. } = def {
+            if let rask_types::TypeDef::Interface { name, .. } = def {
                 // Object-compatible methods only (TR1–TR3) — match vtable layout.
                 // Through the shared helper, not the TypeDef's own list: a
-                // super-trait's methods belong in the sub-trait's vtable too.
+                // super-interface's methods belong in the sub-interface's vtable too.
                 Some((
                     name.clone(),
                     rask_types::object_compatible_methods(&typed.types, name),
@@ -262,7 +262,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     )
         .with_comptime_globals(&comptime_globals)
         .with_extern_funcs(&extern_funcs)
-        .with_trait_methods(trait_methods)
+        .with_interface_methods(interface_methods)
         .with_call_rewrites(&mono.call_rewrites)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
@@ -322,7 +322,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let (mono, typed, decls, comptime_globals, source, package_names) = run_pipeline(path, format);
     let _ = release;
     let type_names = super::compile::build_type_names(&typed);
-    let trait_methods = super::compile::build_trait_methods(&typed);
+    let interface_methods = super::compile::build_interface_methods(&typed);
     let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
@@ -348,7 +348,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         .with_comptime_globals(&comptime_globals)
         .with_extern_funcs(&extern_funcs)
         .with_package_modules(&package_modules)
-        .with_trait_methods(trait_methods.clone())
+        .with_interface_methods(interface_methods.clone())
         .with_call_rewrites(&mono.call_rewrites)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();

@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An `implements` block is the contract (type.generics/CD2): it holds the
+// methods the interface declares and nothing else. A helper the interface never
+// asked for is a plain method, and plain methods live in `extend T { }`.
+
+interface Reader {
+    func read(mutate self) -> i64
+}
+
+struct LogSource {
+    pos: i64
+}
+
+extend LogSource implements Reader {
+    func read(mutate self) -> i64 {
+        self.pos = self.pos + 1
+        return self.pos
+    }
+
+    // ERROR: `rewind` is not part of `Reader` (E0893)
+    func rewind(mutate self) {
+        self.pos = 0
+    }
+}
+
+func main() {
+    mut src = LogSource { pos: 0 }
+    println("{src.read()}")
+}

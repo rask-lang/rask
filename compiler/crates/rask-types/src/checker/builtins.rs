@@ -146,16 +146,16 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         }
     }
 
-    // `any Interface` — a trait object. Without this it came back as the *name*
+    // `any Interface` — an interface object. Without this it came back as the *name*
     // "any Reader", which prints exactly like the real type, so a module
     // function's `any Interface` parameter looked perfectly fine and nothing
     // recorded the TR5 coercion its argument needed. `io.copy(buf, out)` handed
     // over a raw struct pointer, and the first dispatch through it jumped to
     // address zero (#860). Same shape as the `*T` case above (#696).
-    if let Some(trait_name) = s.strip_prefix("any ") {
-        let trait_name = trait_name.trim();
-        if !trait_name.is_empty() {
-            return Type::TraitObject { trait_name: trait_name.to_string() };
+    if let Some(interface_name) = s.strip_prefix("any ") {
+        let interface_name = interface_name.trim();
+        if !interface_name.is_empty() {
+            return Type::InterfaceObject { interface_name: interface_name.to_string() };
         }
     }
 

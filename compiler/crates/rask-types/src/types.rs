@@ -4,7 +4,7 @@
 use std::fmt;
 use std::hash::Hash;
 
-/// Unique identifier for user-defined types (structs, enums, traits).
+/// Unique identifier for user-defined types (structs, enums, interfaces).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeId(pub u32);
 
@@ -96,9 +96,9 @@ pub enum Type {
         elem: Box<Type>,
         lanes: usize,
     },
-    /// Trait object: `any TraitName` — heap-boxed, vtable-dispatched.
-    TraitObject {
-        trait_name: std::string::String,
+    /// Interface object: `any InterfaceName` — heap-boxed, vtable-dispatched.
+    InterfaceObject {
+        interface_name: std::string::String,
     },
     /// Never type (for return, panic, etc.)
     Never,
@@ -357,7 +357,7 @@ impl fmt::Display for Type {
             }
             Type::RawPtr(inner) => write!(f, "*{}", inner),
             Type::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
-            Type::TraitObject { trait_name } => write!(f, "any {}", trait_name),
+            Type::InterfaceObject { interface_name } => write!(f, "any {}", interface_name),
             Type::Assoc { base, name } => write!(f, "{}.{}", base, name),
             Type::Var(_) => write!(f, "_"),
             Type::Never => write!(f, "!"),

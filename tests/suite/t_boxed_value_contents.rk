@@ -8,12 +8,12 @@
 // this is most of them.
 //
 // The obvious fix is a two-line change to the vtable's drop glue and it double
-// frees. `TraitBox` copies the value *shallowly*, so the box and the frame's
+// frees. `InterfaceBox` copies the value *shallowly*, so the box and the frame's
 // own local hold the same container handle, and two boxes of one value hold it
 // twice. A container's release is a free, so it has to happen exactly once, and
 // the box is not a place where "exactly once" can be arranged.
 //
-// So the frame keeps them: one release however many boxes exist. `TraitDrop` is
+// So the frame keeps them: one release however many boxes exist. `InterfaceDrop` is
 // to a box what `ClosureDrop` is to a closure, and the pass that emits it runs
 // first, so the drop's presence is the answer to "does the frame outlive this
 // box".

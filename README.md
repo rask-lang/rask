@@ -108,7 +108,7 @@ That's most of the cost. What you get back: no lifetime annotations in signature
 
 ## Inspiration
 
-Rust for ownership, Results, traits. Go for simplicity (if Rask needs three lines where Go needs one, I've probably designed it wrong). Zig for `comptime` and cost transparency. Jai for build scripts as real code. Swift's `defer` is where `ensure` came from. Kotlin for `extend` blocks and `T?`. Hylo for value semantics. Vale for generational references. Erlang for bitmatch.
+Rust for ownership, Results, interfaces. Go for simplicity (if Rask needs three lines where Go needs one, I've probably designed it wrong). Zig for `comptime` and cost transparency. Jai for build scripts as real code. Swift's `defer` is where `ensure` came from. Kotlin for `extend` blocks and `T?`. Hylo for value semantics. Vale for generational references. Erlang for bitmatch.
 
 ---
 

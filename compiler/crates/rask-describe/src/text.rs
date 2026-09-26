@@ -19,9 +19,9 @@ pub fn format_text(desc: &ModuleDescription) -> String {
         format_enum(&mut out, e);
     }
 
-    for t in &desc.traits {
+    for t in &desc.interfaces {
         out.push('\n');
-        format_trait(&mut out, t);
+        format_interface(&mut out, t);
     }
 
     for f in &desc.functions {
@@ -152,7 +152,7 @@ fn format_enum(out: &mut String, e: &EnumDesc) {
     }
 }
 
-fn format_trait(out: &mut String, t: &TraitDesc) {
+fn format_interface(out: &mut String, t: &InterfaceDesc) {
     format_doc(out, &t.doc, "  ");
     if t.public {
         out.push_str("  public interface ");

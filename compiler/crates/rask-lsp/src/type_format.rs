@@ -91,7 +91,7 @@ impl<'a> TypeFormatter<'a> {
                     .join(" | ")
             }
             Type::SimdVector { elem, lanes } => format!("{}x{}", self.format(elem), lanes),
-            Type::TraitObject { trait_name } => format!("any {}", trait_name),
+            Type::InterfaceObject { interface_name } => format!("any {}", interface_name),
             Type::Var(_) => "_".to_string(),
             Type::None => "none".to_string(),
             Type::UnresolvedNamed(name) => name.clone(),

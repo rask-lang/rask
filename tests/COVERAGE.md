@@ -60,7 +60,7 @@ surface stays gated instead of hiding behind a known-fail line.
 | `T?`, `??`, `!`, `is … as`, `?.` | `t_week_optionals.rk` | 14/14 | 14/14 | |
 | `T or E`, `try`, `catch` | `t_week_results.rk` | 13/13 | 13/13 | |
 | methods via `extend` | `t_week_methods.rk` | 13/13 | 13/13 | |
-| interfaces, `any Interface` dispatch | `t_week_traits.rk` | 11/11 | 11/11 | |
+| interfaces, `any Interface` dispatch | `t_week_interfaces.rk` | 11/11 | 11/11 | |
 | generic functions and types | `t_week_generics.rk` | 11/11 | 11/11 | |
 | closures, higher-order collection methods | `t_week_closures.rk` | 16/16 | 16/16 | |
 | tuples | `t_week_tuples.rk` | 14/14 | 14/14 | #914 |

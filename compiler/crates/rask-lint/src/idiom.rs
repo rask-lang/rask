@@ -3,7 +3,7 @@
 //!
 //! - unwrap-production: Flag .unwrap() outside test blocks
 //! - missing-ensure: Flag @resource creation without ensure
-//! - duck-trait: Flag `duck interface` declarations — sketching tool, nudge to harden
+//! - duck-interface: Flag `duck interface` declarations — sketching tool, nudge to harden
 
 use rask_ast::decl::*;
 use rask_ast::expr::{BinOp, Expr, ExprKind};
@@ -248,16 +248,16 @@ fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mu
     }
 }
 
-/// idiom/duck-trait: Flag `duck interface` declarations (DT3).
+/// idiom/duck-interface: Flag `duck interface` declarations (DT3).
 ///
 /// Shape-matching is for code you're still sketching: nothing states the
 /// contract, so a type can start or stop matching silently. A warning, not a
-/// gate — DT1 already keeps duck traits out of the public API.
-pub fn check_duck_trait(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+/// gate — DT1 already keeps duck interfaces out of the public API.
+pub fn check_duck_interface(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
 
     for decl in decls {
-        let DeclKind::Trait(t) = &decl.kind else { continue };
+        let DeclKind::Interface(t) = &decl.kind else { continue };
         if !t.is_duck {
             continue;
         }

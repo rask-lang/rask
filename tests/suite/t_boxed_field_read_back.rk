@@ -6,14 +6,14 @@
 // inside the boxed value come back too. Reading the field to call a method is a
 // borrow: the block is still the struct's.
 //
-// That read used to get a `TraitDrop` of its own. The rule it matched was
+// That read used to get a `InterfaceDrop` of its own. The rule it matched was
 // written for a *wrapper* — a `T?` or a `T or E` holds its payload and nothing
 // else releases it, so the frame has to — and a struct is the other way round.
 // Two owners, and the weaker one ran first:
 //
 //     *(_0+0) = _10           // the box, into the field
 //     _12 = _11.0             // and out again, to call through
-//     trait_drop(_12)         // the frame frees the block...
+//     interface_drop(_12)         // the frame frees the block...
 //     rc_dec_contents(_11)    // ...and the struct's release reads it after
 //
 // The `Vec` inside the boxed value was freed by nobody, and the release walk

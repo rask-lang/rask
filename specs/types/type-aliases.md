@@ -38,7 +38,7 @@ Nominal types don't automatically inherit interfaces from the underlying type. D
 | Rule | Description |
 |------|-------------|
 | **T10: No auto-inherit** | Interfaces from underlying type are NOT inherited by default |
-| **T11: Explicit with** | `type Name = Type implements Trait1, Trait2` inherits listed interfaces |
+| **T11: Explicit with** | `type Name = Type implements Interface1, Interface2` inherits listed interfaces |
 | **T12: Delegated impl** | Inherited interfaces delegate to underlying value — no manual impl needed |
 | **T13: Manual extend** | `extend` blocks work normally for adding custom behavior |
 

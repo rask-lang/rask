@@ -15,7 +15,7 @@
 //
 // The vtable's `owned_release` is how the second half happens, and it is only
 // reached from the paths where the box owns — a container element's release, a
-// struct field's, a wrapper payload's. `TraitDrop`, which is emitted for the
+// struct field's, a wrapper payload's. `InterfaceDrop`, which is emitted for the
 // borrowed case alone, passes a nullptr hook. Getting that asymmetry wrong is what
 // #1144 was: the slot used to run for every box and release the value's
 // strings, so a borrowed box decremented a buffer the frame still held and the
@@ -36,7 +36,7 @@
 // `t_boxed_value_contents.rk` passed with a double decrement still in it.
 //
 // A box in a *struct field* is a move too, and is deliberately not here: the
-// struct's release is placed before the last read of the box, and `trait_drop`
+// struct's release is placed before the last read of the box, and `interface_drop`
 // drops the view read back out of the field, so two paths release one block
 // (#1161). Container elements are the shape that works, and the shape this
 // pins.

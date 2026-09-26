@@ -377,7 +377,7 @@ impl TypeChecker {
                 DeclKind::Fn(f) => (&f.attrs, f.span),
                 DeclKind::Struct(s) => (&s.attrs, decl.span),
                 DeclKind::Enum(e) => (&e.attrs, decl.span),
-                DeclKind::Trait(t) => (&t.attrs, decl.span),
+                DeclKind::Interface(t) => (&t.attrs, decl.span),
                 DeclKind::Test(t) => (&t.attrs, decl.span),
                 DeclKind::Benchmark(b) => (&b.attrs, decl.span),
                 DeclKind::Const(c) => (&c.attrs, decl.span),

@@ -182,7 +182,7 @@ impl Interpreter {
                         // whichever block was registered last.
                         let name = rask_ast::operators::conformance_method_name(
                             &impl_decl.target_ty,
-                            impl_decl.trait_name.as_deref(),
+                            impl_decl.interface_name.as_deref(),
                             &method.name,
                         )
                         .unwrap_or_else(|| method.name.clone());

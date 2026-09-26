@@ -6,11 +6,11 @@
 // back looked only at structs, enums and interfaces. Every method came back
 // missing on a block that had them all.
 
-import traitpkg
+import interfacepkg
 import liba
 
 func main() {
-    let d = traitpkg.make_doc(7)
+    let d = interfacepkg.make_doc(7)
     let t = liba.tag(d)
     println("{t.hash()}")
     return

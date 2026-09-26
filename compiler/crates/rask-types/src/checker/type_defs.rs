@@ -79,25 +79,25 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
         Type::U128 => Some("u128".to_string()),
         Type::F32 => Some("f32".to_string()),
         Type::F64 => Some("f64".to_string()),
-        Type::TraitObject { trait_name } => Some(trait_name.clone()),
+        Type::InterfaceObject { interface_name } => Some(interface_name.clone()),
         _ => None,
     }
 }
 
 /// Information about a user-defined type.
-/// GT1/GT4/GT5: a trait's type parameter as declared.
+/// GT1/GT4/GT5: an interface's type parameter as declared.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TraitTypeParam {
+pub struct InterfaceTypeParam {
     pub name: String,
     /// GT5: what a conformance's argument must satisfy.
     pub bounds: Vec<String>,
-    /// GT4: what the bare trait name means. `None` makes the argument required.
+    /// GT4: what the bare interface name means. `None` makes the argument required.
     pub default: Option<String>,
 }
 
 /// AT1/AT4/AT5: an associated type a conformance supplies.
 #[derive(Debug, Clone, PartialEq)]
-pub struct TraitAssocType {
+pub struct InterfaceAssocType {
     pub name: String,
     /// AT5: what the conformance's binding must satisfy.
     pub bounds: Vec<String>,
@@ -151,14 +151,14 @@ pub enum TypeDef {
         no_encode: bool,
         no_decode: bool,
     },
-    Trait {
+    Interface {
         name: String,
-        /// GT1: `trait Scale<Rhs>` — bound by the conformance header.
-        type_params: Vec<TraitTypeParam>,
-        super_traits: Vec<String>,
+        /// GT1: `interface Scale<Rhs>` — bound by the conformance header.
+        type_params: Vec<InterfaceTypeParam>,
+        super_interfaces: Vec<String>,
         methods: Vec<MethodSig>,
         /// AT1: types a conformance supplies.
-        assoc_types: Vec<TraitAssocType>,
+        assoc_types: Vec<InterfaceAssocType>,
         /// TR3: names of methods that declare their own type parameters.
         /// These can't be dispatched through `any` — no vtable slot.
         generic_methods: Vec<String>,
@@ -189,7 +189,7 @@ pub enum TypeDef {
     NominalAlias {
         name: String,
         underlying: Type,
-        with_traits: Vec<String>,
+        with_interfaces: Vec<String>,
         /// Methods from `extend` blocks. A nominal newtype has its own identity,
         /// so it carries its own methods like structs and enums.
         methods: Vec<MethodSig>,
@@ -204,8 +204,8 @@ pub enum TypeDef {
 /// the call emits has to be the name the body is emitted under.
 ///
 /// `~` because nothing else in a generated name uses it. `_` is how a
-/// dependency's declarations are qualified (`Doc` in `traitpkg` is
-/// `Doc_traitpkg`), so `Doc_label_liba` is also what a method named `label_liba`
+/// dependency's declarations are qualified (`Doc` in `interfacepkg` is
+/// `Doc_interfacepkg`), so `Doc_label_liba` is also what a method named `label_liba`
 /// would produce; `$` is monomorphization's type-argument separator, so
 /// `Doc_label$liba` reads as an instantiation; `<`, `>`, `.`, `?` and `,` all
 /// appear in type spellings, and `@` means a symbol version to an ELF linker.
@@ -222,20 +222,20 @@ pub(crate) fn method_base(name: &str) -> &str {
 }
 
 impl TypeDef {
-    /// TR3: true if `method` is a generic method of this trait (can't dispatch through `any`).
-    /// Trait method names carry their type params (`convert<T>`); the call site does
+    /// TR3: true if `method` is a generic method of this interface (can't dispatch through `any`).
+    /// Interface method names carry their type params (`convert<T>`); the call site does
     /// not, so compare on the base name.
-    pub fn is_generic_trait_method(&self, method: &str) -> bool {
-        matches!(self, TypeDef::Trait { generic_methods, .. }
+    pub fn is_generic_interface_method(&self, method: &str) -> bool {
+        matches!(self, TypeDef::Interface { generic_methods, .. }
             if generic_methods.iter().any(|m| method_base(m) == method_base(method)))
     }
 
-    /// TR1–TR3: names of trait methods callable through `any`, in declaration order.
+    /// TR1–TR3: names of interface methods callable through `any`, in declaration order.
     /// Skips Self-returning (TR2) and generic (TR3) methods — these have no vtable slot,
     /// so the vtable layout and the MIR dispatch offset both index this list.
     pub fn object_compatible_method_names(&self) -> Vec<String> {
         match self {
-            TypeDef::Trait { methods, generic_methods, .. } => methods
+            TypeDef::Interface { methods, generic_methods, .. } => methods
                 .iter()
                 .filter(|m| {
                     let returns_self = matches!(&m.ret, Type::UnresolvedNamed(n) if n == "Self");
@@ -283,7 +283,7 @@ pub struct MethodSig {
     /// open however concrete the receiver was (#1046).
     ///
     /// Empty for a method with no generic receiver, and for the derived and
-    /// trait-supplied signatures, which have no header to read.
+    /// interface-supplied signatures, which have no header to read.
     pub owner_patterns: Vec<String>,
 }
 
@@ -310,7 +310,7 @@ pub struct ModuleMethodSig {
     pub name: String,
     pub params: Vec<Type>,
     pub ret: Type,
-    /// Trait bounds on the method's own type parameters, as the stub wrote them
+    /// Interface bounds on the method's own type parameters, as the stub wrote them
     /// (`decode<T: Decode>` → `[("T", "Decode")]`). Checked against the written
     /// type argument at the call site.
     pub type_param_bounds: Vec<(String, String)>,
@@ -405,8 +405,8 @@ pub struct TypedProgram {
     /// backends read the answer here rather than each deciding again from the
     /// receiver alone.
     pub operator_targets: HashMap<NodeId, super::operators::OperatorTarget>,
-    /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
-    pub trait_coercions: HashMap<NodeId, String>,
+    /// TR5: implicit interface coercion sites. NodeId of expression → interface name.
+    pub interface_coercions: HashMap<NodeId, String>,
     /// XC4: which package wrote each source file, by file id. A span carries
     /// its file id, so this answers "whose code is this?" for anything after
     /// the checker — the merged decl list has no packages left in it.

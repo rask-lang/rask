@@ -1,0 +1,1 @@
+only `interfacepkg` can declare `Hashable` for `interfacepkg.Doc`

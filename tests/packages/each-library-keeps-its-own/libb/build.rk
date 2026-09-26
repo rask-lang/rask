@@ -3,5 +3,5 @@
 package "libb" "0.1.0" {
     description: "Conforms a foreign type to a foreign interface"
     license: "MIT OR Apache-2.0"
-    dep "traitpkg" { path: "../traitpkg" }
+    dep "interfacepkg" { path: "../interfacepkg" }
 }

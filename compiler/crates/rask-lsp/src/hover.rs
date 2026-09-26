@@ -4,7 +4,7 @@
 //! Builds a Markdown tooltip with:
 //!   - the symbol kind + name + type
 //!   - stdlib docs if available
-//!   - struct fields / enum variants / trait methods for user types
+//!   - struct fields / enum variants / interface methods for user types
 
 use tower_lsp::lsp_types::*;
 
@@ -94,7 +94,7 @@ fn kind_label(kind: &rask_resolve::SymbolKind) -> &'static str {
         rask_resolve::SymbolKind::Struct { .. } => "Struct",
         rask_resolve::SymbolKind::Enum { .. } => "Enum",
         rask_resolve::SymbolKind::Field { .. } => "Field",
-        rask_resolve::SymbolKind::Trait { .. } => "Interface",
+        rask_resolve::SymbolKind::Interface { .. } => "Interface",
         rask_resolve::SymbolKind::EnumVariant { .. } => "Enum Variant",
         rask_resolve::SymbolKind::BuiltinType { .. } => "Built-in Type",
         rask_resolve::SymbolKind::BuiltinFunction { .. } => "Built-in Function",

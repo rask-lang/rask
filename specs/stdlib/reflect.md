@@ -128,7 +128,7 @@ struct MethodInfo {
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `implements<T, Interface>()` | `-> bool` | Whether T satisfies Interface (structural or explicit) |
-| `trait_names<T>()` | `-> Vec<string>` | Names of interfaces T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
+| `interface_names<T>()` | `-> Vec<string>` | Names of interfaces T explicitly extends. Name-only — unlike `fields`/`methods`/`variants` there's no Info struct |
 
 `implements` checks whether T has the required methods. Does NOT scan the codebase for all implementors (R2).
 

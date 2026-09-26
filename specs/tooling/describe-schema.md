@@ -52,7 +52,7 @@
 | `imports` | `Import[]` | Module imports |
 | `types` | `StructType[]` | Struct definitions |
 | `enums` | `EnumType[]` | Enum definitions |
-| `interfaces` | `TraitType[]` | Interface definitions |
+| `interfaces` | `InterfaceType[]` | Interface definitions |
 | `functions` | `Function[]` | Top-level functions |
 | `constants` | `Constant[]` | Top-level constants |
 | `externs` | `ExternFunc[]` | External function declarations |
@@ -174,7 +174,7 @@
 | `variants` | `Variant[]` | Enum variants |
 | `methods` | `Function[]` | Methods from extend blocks |
 
-## TraitType
+## InterfaceType
 
 ```json
 {

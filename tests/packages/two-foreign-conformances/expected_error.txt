@@ -1,1 +1,1 @@
-two conformances of `traitpkg.Doc` to `traitpkg.Labeled` are in scope
+two conformances of `interfacepkg.Doc` to `interfacepkg.Labeled` are in scope

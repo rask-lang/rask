@@ -6,7 +6,7 @@
 
 use crate::{MiriError, MiriValue};
 
-/// Dispatch trait for stdlib function calls.
+/// Dispatch interface for stdlib function calls.
 ///
 /// The MIR interpreter calls this when it encounters a `Call` to a function
 /// that isn't in its function table (i.e., not user-defined MIR).

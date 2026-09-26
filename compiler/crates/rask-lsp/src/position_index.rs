@@ -91,8 +91,8 @@ fn visit_decl(decl: &Decl, index: &mut PositionIndex) {
                 }
             }
         }
-        DeclKind::Trait(trait_decl) => {
-            for method in &trait_decl.methods {
+        DeclKind::Interface(interface_decl) => {
+            for method in &interface_decl.methods {
                 // Track parameter names for hover support
                 for param in &method.params {
                     index.idents.push((param.name_span, decl.id, param.name.clone()));

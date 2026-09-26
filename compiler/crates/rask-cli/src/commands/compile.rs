@@ -64,16 +64,16 @@ pub(super) fn build_nominal_underlying(
         .collect()
 }
 
-/// Extract trait method lists for trait object dispatch.
-pub(super) fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<String>> {
+/// Extract interface method lists for interface object dispatch.
+pub(super) fn build_interface_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<String>> {
     let mut methods: HashMap<String, Vec<String>> = typed.types.iter()
         .filter_map(|def| {
-            if let rask_types::TypeDef::Trait { name, .. } = def {
+            if let rask_types::TypeDef::Interface { name, .. } = def {
                 // Object-compatible methods only (TR1–TR3): the vtable holds
                 // slots for exactly these, and MIR dispatch offsets index the
                 // same list, so both sides agree.
                 // Through the shared helper, not the TypeDef's own list: a
-                // super-trait's methods belong in the sub-trait's vtable too.
+                // super-interface's methods belong in the sub-interface's vtable too.
                 Some((
                     name.clone(),
                     rask_types::object_compatible_methods(&typed.types, name),
@@ -83,9 +83,9 @@ pub(super) fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<S
             }
         })
         .collect();
-    // A trait the compiler provides has no declaration to read, so `any Error`
+    // An interface the compiler provides has no declaration to read, so `any Error`
     // got a box with no vtable behind it and dispatch fell through to the
-    // static path (#708). A program that declares a trait of the same name
+    // static path (#708). A program that declares an interface of the same name
     // keeps its own — the entry is already there and isn't overwritten.
     for name in rask_types::COMPILER_PROVIDED_TRAITS {
         methods.entry(name.to_string()).or_insert_with(|| {
@@ -292,7 +292,7 @@ pub fn compile_to_object(
     let all_mono_decls = build_mono_decls(mono, decls, true);
     let line_map = source_text.map(rask_ast::LineMap::new);
     let type_names = build_type_names(typed);
-    let trait_methods = build_trait_methods(typed);
+    let interface_methods = build_interface_methods(typed);
     let extern_funcs = super::codegen::collect_extern_func_names(decls, &typed.symbols);
 
     let comptime_interp = cfg.map(|c| {
@@ -322,7 +322,7 @@ pub fn compile_to_object(
     .with_comptime_globals(comptime_globals)
     .with_extern_funcs(&extern_funcs)
     .with_package_modules(package_modules)
-    .with_trait_methods(trait_methods.clone())
+    .with_interface_methods(interface_methods.clone())
     .with_call_rewrites(&mono.call_rewrites)
     .with_nominal_underlying(&nominal_underlying);
     // These three arrive as already-built Options from the caller rather than as
@@ -361,8 +361,8 @@ pub fn compile_to_object(
         codegen.set_inline_regions(pipeline_result.inline_regions);
     }
 
-    // Build and register vtables for trait objects
-    let vtables = collect_vtables(&mir_functions, &trait_methods, mono);
+    // Build and register vtables for interface objects
+    let vtables = collect_vtables(&mir_functions, &interface_methods, mono);
     if !vtables.is_empty() {
         codegen.register_vtables(&vtables)
             .map_err(|e| vec![e.to_string()])?;
@@ -376,10 +376,10 @@ pub fn compile_to_object(
     Ok(())
 }
 
-/// Scan MIR functions for TraitBox statements and build VTableInfo for each unique pair.
+/// Scan MIR functions for InterfaceBox statements and build VTableInfo for each unique pair.
 fn collect_vtables(
     mir_functions: &[rask_mir::MirFunction],
-    trait_methods: &HashMap<String, Vec<String>>,
+    interface_methods: &HashMap<String, Vec<String>>,
     mono: &MonoProgram,
 ) -> Vec<rask_codegen::vtable::VTableInfo> {
     let mut seen = HashSet::new();
@@ -388,11 +388,11 @@ fn collect_vtables(
     for mir_fn in mir_functions {
         for block in &mir_fn.blocks {
             for stmt in &block.statements {
-                if let rask_mir::MirStmtKind::TraitBox {
-                    concrete_type, trait_name, concrete_size, vtable_name, ..
+                if let rask_mir::MirStmtKind::InterfaceBox {
+                    concrete_type, interface_name, concrete_size, vtable_name, ..
                 } = &stmt.kind {
                     if seen.insert(vtable_name.clone()) {
-                        let methods = trait_methods.get(trait_name)
+                        let methods = interface_methods.get(interface_name)
                             .cloned()
                             .unwrap_or_default();
 
@@ -422,7 +422,7 @@ fn collect_vtables(
                         vtables.push(rask_codegen::vtable::VTableInfo {
                             data_name: vtable_name.clone(),
                             concrete_type: concrete_type.clone(),
-                            trait_name: trait_name.clone(),
+                            interface_name: interface_name.clone(),
                             concrete_size: *concrete_size,
                             concrete_align,
                             methods: vt_methods,
@@ -620,7 +620,7 @@ pub fn compile_tests_to_object(
     let all_mono_decls = build_mono_decls(mono, decls, true);
     let line_map = source_text.map(rask_ast::LineMap::new);
     let type_names = build_type_names(typed);
-    let trait_methods = build_trait_methods(typed);
+    let interface_methods = build_interface_methods(typed);
     let extern_funcs = super::codegen::collect_extern_func_names(decls, &typed.symbols);
 
     let comptime_interp = cfg.map(|c| {
@@ -648,7 +648,7 @@ pub fn compile_tests_to_object(
     )
         .with_comptime_globals(comptime_globals)
         .with_extern_funcs(&extern_funcs)
-        .with_trait_methods(trait_methods)
+        .with_interface_methods(interface_methods)
         .with_call_rewrites(&mono.call_rewrites)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
@@ -682,9 +682,9 @@ pub fn compile_tests_to_object(
         codegen.set_debug_context(src_file, lm.clone());
     }
 
-    // Build and register vtables for trait objects used by test bodies.
-    let test_trait_methods = build_trait_methods(typed);
-    let vtables = collect_vtables(&mir_functions, &test_trait_methods, mono);
+    // Build and register vtables for interface objects used by test bodies.
+    let test_interface_methods = build_interface_methods(typed);
+    let vtables = collect_vtables(&mir_functions, &test_interface_methods, mono);
     if !vtables.is_empty() {
         codegen.register_vtables(&vtables)
             .map_err(|e| vec![e.to_string()])?;
@@ -822,7 +822,7 @@ pub fn compile_benchmarks_to_object(
     let all_mono_decls = build_mono_decls(mono, decls, false);
     let line_map = source_text.map(rask_ast::LineMap::new);
     let type_names = build_type_names(typed);
-    let trait_methods = build_trait_methods(typed);
+    let interface_methods = build_interface_methods(typed);
     let extern_funcs = super::codegen::collect_extern_func_names(decls, &typed.symbols);
 
     let comptime_interp = cfg.map(|c| {
@@ -850,7 +850,7 @@ pub fn compile_benchmarks_to_object(
     )
         .with_comptime_globals(comptime_globals)
         .with_extern_funcs(&extern_funcs)
-        .with_trait_methods(trait_methods)
+        .with_interface_methods(interface_methods)
         .with_call_rewrites(&mono.call_rewrites)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();

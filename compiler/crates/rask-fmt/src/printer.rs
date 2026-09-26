@@ -556,7 +556,7 @@ impl<'a> Printer<'a> {
             DeclKind::Fn(f) => self.format_fn_decl(f, false, false),
             DeclKind::Struct(s) => self.format_struct_decl(s, decl.span),
             DeclKind::Enum(e) => self.format_enum_decl(e, decl.span),
-            DeclKind::Trait(t) => self.format_trait_decl(t),
+            DeclKind::Interface(t) => self.format_interface_decl(t),
             DeclKind::Impl(i) => self.format_impl_decl(i),
             DeclKind::Import(i) => self.format_import_decl(i),
             DeclKind::Export(e) => self.format_export_decl(e),
@@ -593,7 +593,7 @@ impl<'a> Printer<'a> {
         }
     }
 
-    fn format_fn_decl(&mut self, f: &FnDecl, is_method: bool, is_trait_decl: bool) {
+    fn format_fn_decl(&mut self, f: &FnDecl, is_method: bool, is_interface_decl: bool) {
         // A method inside an `extend` block is not a statement or an expression, so
         // without this its body's comment drain was bounded only by the whole
         // `extend` — and pulled the comments out of every method after it.
@@ -602,11 +602,11 @@ impl<'a> Printer<'a> {
         if f.span.end > 0 {
             self.block_end = f.span.end;
         }
-        self.format_fn_decl_inner(f, is_method, is_trait_decl);
+        self.format_fn_decl_inner(f, is_method, is_interface_decl);
         self.block_end = outer_block_end;
     }
 
-    fn format_fn_decl_inner(&mut self, f: &FnDecl, is_method: bool, is_trait_decl: bool) {
+    fn format_fn_decl_inner(&mut self, f: &FnDecl, is_method: bool, is_interface_decl: bool) {
         if !is_method {
             self.emit_indent();
         }
@@ -668,8 +668,8 @@ impl<'a> Printer<'a> {
             self.emit(&ty);
         }
 
-        if f.body.is_empty() && is_trait_decl {
-            // Trait method declaration with no body — no braces
+        if f.body.is_empty() && is_interface_decl {
+            // Interface method declaration with no body — no braces
         } else if f.body.is_empty() && self.comments_within(f.span) {
             // A body that holds nothing but a comment. `{}` would drop the comment
             // out of the braces entirely — it escaped to column 0 below the
@@ -1085,10 +1085,10 @@ impl<'a> Printer<'a> {
         est < 60
     }
 
-    fn format_trait_decl(&mut self, t: &TraitDecl) {
+    fn format_interface_decl(&mut self, t: &InterfaceDecl) {
         self.emit_indent();
 
-        // Attributes, `unsafe`, `duck` and super-traits were all dropped. Losing
+        // Attributes, `unsafe`, `duck` and super-interfaces were all dropped. Losing
         // `duck` is the one that changes the program: a duck interface matches by
         // shape and a plain one has to be declared, so the conformance the
         // source relied on stopped existing (#805).
@@ -1111,12 +1111,12 @@ impl<'a> Printer<'a> {
         self.emit(&t.name);
         // GT1: the parameter list. Dropping it changes the program the same way
         // dropping `duck` does — the conformance the source declared stops
-        // being the one the trait asks for.
+        // being the one the interface asks for.
         if !t.type_params.is_empty() {
             let params: Vec<String> = t.type_params.iter().map(Self::type_param_text).collect();
             self.emit(&format!("<{}>", params.join(", ")));
         }
-        for (i, sup) in t.super_traits.iter().enumerate() {
+        for (i, sup) in t.super_interfaces.iter().enumerate() {
             self.emit(if i == 0 { ": " } else { ", " });
             self.emit(sup);
         }
@@ -1146,14 +1146,14 @@ impl<'a> Printer<'a> {
         self.emit("}");
     }
 
-    /// The members of an `extend` or `trait` body.
+    /// The members of an `extend` or `interface` body.
     ///
     /// Comments between them belong where they were written. Nothing consumed
     /// them here, so a `///` on a method stayed unclaimed until the body's first
     /// statement picked it up — and the doc comment ended up *inside* the method
     /// it documented. Blank lines follow the source too, instead of one being
     /// inserted between every pair of members (#805).
-    fn format_block_members(&mut self, methods: &[FnDecl], is_trait_decl: bool) {
+    fn format_block_members(&mut self, methods: &[FnDecl], is_interface_decl: bool) {
         let mut is_first = true;
         for method in methods {
             let comments = self.emit_comments_before(method.span.start, !is_first);
@@ -1166,7 +1166,7 @@ impl<'a> Printer<'a> {
                 self.emit_blank_line();
             }
             self.emit_indent();
-            self.format_fn_decl(method, true, is_trait_decl);
+            self.format_fn_decl(method, true, is_interface_decl);
             self.emit_newline();
             is_first = false;
         }
@@ -1179,7 +1179,7 @@ impl<'a> Printer<'a> {
         }
         self.emit("extend ");
         self.emit(&imp.target_ty);
-        if let Some(name) = &imp.trait_name {
+        if let Some(name) = &imp.interface_name {
             self.emit(" implements ");
             self.emit(name);
         }
@@ -1283,9 +1283,9 @@ impl<'a> Printer<'a> {
         // said nothing at all (#805).
         let target = self.format_type(&t.target);
         self.emit(&target);
-        if !t.with_traits.is_empty() {
+        if !t.with_interfaces.is_empty() {
             self.emit(" implements ");
-            self.emit(&t.with_traits.join(", "));
+            self.emit(&t.with_interfaces.join(", "));
         }
     }
 

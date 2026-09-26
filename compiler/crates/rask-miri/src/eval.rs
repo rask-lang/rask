@@ -291,10 +291,10 @@ impl MiriEngine {
                 ));
             }
 
-            // Trait objects — not in initial scope
-            MirStmtKind::TraitBox { .. }
-            | MirStmtKind::TraitCall { .. }
-            | MirStmtKind::TraitDrop { .. } => {
+            // Interface objects — not in initial scope
+            MirStmtKind::InterfaceBox { .. }
+            | MirStmtKind::InterfaceCall { .. }
+            | MirStmtKind::InterfaceDrop { .. } => {
                 return Err(MiriError::UnsupportedOperation(
                     "interface objects are not yet supported in compile-time evaluation".to_string(),
                 ));

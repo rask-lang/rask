@@ -227,7 +227,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             (8, 8)
         }
         // A field written `any Interface` reaches here as a name, not a parsed
-        // TraitObject. It's still a fat pointer, and sizing it at 8 gave a
+        // InterfaceObject. It's still a fat pointer, and sizing it at 8 gave a
         // struct field half the room for one — the vtable half landed in
         // whatever followed (#474).
         // AT6: projections resolve during type checking. One that got here
@@ -350,7 +350,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         }
         Type::Never => (0, 1),
         Type::None => (0, 1),
-        Type::TraitObject { .. } => (16, 8), // Fat pointer: data_ptr + vtable_ptr
+        Type::InterfaceObject { .. } => (16, 8), // Fat pointer: data_ptr + vtable_ptr
         Type::RawPtr(_) => (8, 8), // Pointer-sized
         Type::Error => {
             eprintln!("warning: Error type in layout computation, defaulting to (8, 8)");

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-import traitpkg.Labeled
+import interfacepkg.Labeled
 
 // Neither `Doc` nor `Labeled` is ours. type.generics/XC2 says that's allowed,
 // and the body has to be able to read `Doc`'s fields for it to mean anything.
-public extend traitpkg.Doc implements Labeled {
+public extend interfacepkg.Doc implements Labeled {
     public func label(self) -> string {
         return "a:{self.n}"
     }

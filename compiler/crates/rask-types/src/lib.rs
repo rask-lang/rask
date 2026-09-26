@@ -5,20 +5,20 @@
 
 mod types;
 mod checker;
-mod traits;
+mod interfaces;
 pub mod reflect;
 
 pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{
     typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, TypeTable, TypeDef,
-    TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, TraitBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
+    TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
     ParamMode, Callee, ErrorWrap, receiver_name, conformance_symbol, BoundFrom, TypeBinding,
-    OperatorTarget, operator_trait, primitive_spelling,
+    OperatorTarget, operator_interface, primitive_spelling,
     parse_type_string, signature_type_param_names, struct_type_param_names,
     enum_type_param_names, UnsafeCategory, binary_field_runtime_type,
 };
-pub use traits::{
-    TraitBound, TraitChecker, TraitError,
-    verify_instantiation, implements_trait, implemented_traits,
-    COMPILER_PROVIDED_TRAITS, builtin_trait_method_names, object_compatible_methods,
+pub use interfaces::{
+    InterfaceBound, InterfaceChecker, InterfaceError,
+    verify_instantiation, implements_interface, implemented_interfaces,
+    COMPILER_PROVIDED_TRAITS, builtin_interface_method_names, object_compatible_methods,
 };

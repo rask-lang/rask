@@ -387,7 +387,7 @@ fn container_handles_from(
                             // here pushes the release to that local's last use,
                             // which cost four suite files a small leak each.
                             //
-                            // A trait object joins them: it is a 16-byte fat
+                            // An interface object joins them: it is a 16-byte fat
                             // pointer read out of the struct's own storage, not
                             // a scalar copied out of it, and `r.inner` passed
                             // on to something else is read long after the read
@@ -397,7 +397,7 @@ fn container_handles_from(
                                     ty_of.get(dst),
                                     Some(MirType::Option(_))
                                         | Some(MirType::Result { .. })
-                                        | Some(MirType::TraitObject { .. })
+                                        | Some(MirType::InterfaceObject { .. })
                                 ))
                             .then_some(&base))
                             .copied();
@@ -519,13 +519,13 @@ fn insert_aggregate_release(
     }
     let holds_one: HashSet<LocalId> = holding_closures.iter().map(|(c, _)| *c).collect();
 
-    // A trait box the frame drops doesn't take the value away either, and for
-    // the same reason: `TraitDrop` is what `trait_drop` emits for a box the
+    // An interface box the frame drops doesn't take the value away either, and for
+    // the same reason: `InterfaceDrop` is what `interface_drop` emits for a box the
     // frame owns, this pass runs after it, so the drop's presence answers "does
     // the frame outlive this box".
     //
     // The frame owns a boxed value's contents; the box borrows them
-    // (mem.shared-rack-heap, #1144). `TraitBox` copies the value *shallowly*, so the box
+    // (mem.shared-rack-heap, #1144). `InterfaceBox` copies the value *shallowly*, so the box
     // and the frame's own local hold the same container handle, and two boxes
     // of one value hold it twice — a free has to happen exactly once and the
     // box is not a place where "exactly once" can be arranged. Calling the
@@ -539,7 +539,7 @@ fn insert_aggregate_release(
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::TraitDrop { trait_object } => Some(*trait_object),
+            MirStmtKind::InterfaceDrop { interface_object } => Some(*interface_object),
             _ => None,
         })
         .collect();
@@ -558,7 +558,7 @@ fn insert_aggregate_release(
     // Every name the box reaches that the frame drops. The *dropped* name is
     // what has to hold the group live, not the boxing site's: `_22`'s last use
     // is the copy into `_32`, so registering `_22` put the release after the
-    // first `TraitDrop` while a later box of the same value was still reading
+    // first `InterfaceDrop` while a later box of the same value was still reading
     // it — `two.counts.len()` came back 12209367259287946116.
     let drops_reached = |start: LocalId| {
         let mut seen: HashSet<LocalId> = HashSet::new();
@@ -580,7 +580,7 @@ fn insert_aggregate_release(
     let mut holding_boxes: Vec<(LocalId, LocalId)> = Vec::new();
     let mut boxes_one: HashSet<LocalId> = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-        let MirStmtKind::TraitBox { dst, value, .. } = &stmt.kind else { continue };
+        let MirStmtKind::InterfaceBox { dst, value, .. } = &stmt.kind else { continue };
         let dropped = drops_reached(*dst);
         if dropped.is_empty() {
             continue;
@@ -815,7 +815,7 @@ fn insert_aggregate_release(
                 // A box the frame drops leaves the value the frame's — see
                 // `holding_boxes` above. One it doesn't own can outlive the
                 // frame, so that still blocks.
-                MirStmtKind::TraitBox { dst, value, .. } => {
+                MirStmtKind::InterfaceBox { dst, value, .. } => {
                     if boxes_one.contains(dst) {
                         continue;
                     }
@@ -907,8 +907,8 @@ fn insert_aggregate_release(
                 }
             }
         }
-        // And a trait box holding one of the group's names, so the group stays
-        // live until the `TraitDrop` and the release lands after it.
+        // And an interface box holding one of the group's names, so the group stays
+        // live until the `InterfaceDrop` and the release lands after it.
         for (boxed, member) in &holding_boxes {
             if let Some(&gi) = member_of.get(member) {
                 if !groups[gi].contains(boxed) {

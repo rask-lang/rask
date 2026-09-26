@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-import traitpkg.Labeled
+import interfacepkg.Labeled
 
-public extend traitpkg.Doc implements Labeled {
+public extend interfacepkg.Doc implements Labeled {
     public func label(self) -> string {
         return "a:{self.n}"
     }
@@ -11,7 +11,7 @@ public extend traitpkg.Doc implements Labeled {
 // XC4: `libb` isn't in `liba`'s dependency graph, so this call sees exactly
 // one conformance and runs it — whatever else the program linking `liba`
 // pulls in.
-public func describe(d: traitpkg.Doc) -> string {
+public func describe(d: interfacepkg.Doc) -> string {
     return d.label()
 }
 
@@ -23,6 +23,6 @@ func shown_a<T: Labeled>(x: T) -> string {
     return x.label()
 }
 
-public func describe_generic(d: traitpkg.Doc) -> string {
+public func describe_generic(d: interfacepkg.Doc) -> string {
     return shown_a(d)
 }

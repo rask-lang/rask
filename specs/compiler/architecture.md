@@ -98,9 +98,9 @@ These features resolve in the frontend or lower to existing MIR constructs. They
 
 | Rule | Description |
 |------|-------------|
-| **TD1: Heap-allocated fat pointer** | `any Interface` values are heap-allocated. `TraitBox` MIR statement packages a concrete value into a fat pointer (data pointer + vtable pointer). Already implemented |
+| **TD1: Heap-allocated fat pointer** | `any Interface` values are heap-allocated. `InterfaceBox` MIR statement packages a concrete value into a fat pointer (data pointer + vtable pointer). Already implemented |
 | **TD2: Vtable layout** | Fixed layout: `[size: i64, align: i64, drop: fn_ptr, methods...]`. One static vtable per (concrete_type, interface) pair. Codegen emits vtable data sections with function address relocations |
-| **TD3: Indirect dispatch** | `TraitCall` loads the method pointer from the vtable at a known offset, then emits an indirect call. Already implemented |
+| **TD3: Indirect dispatch** | `InterfaceCall` loads the method pointer from the vtable at a known offset, then emits an indirect call. Already implemented |
 | **TD4: Move-only** | `any Interface` is move-only, not refcounted. Interface objects can have `mutate self` methods — shared RC ownership would create data race risk. Single owner, explicit `.clone()` for copies |
 | **TD5: Devirtualization** | Future optimization: when the concrete type behind `any Interface` is statically known (e.g., created and called in the same function), replace indirect call with direct call. Enables subsequent inlining. Not implemented — requires escape analysis + type propagation |
 

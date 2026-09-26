@@ -188,19 +188,19 @@ impl<'a> MirLowerer<'a> {
         //
         // Unless it arrived erased already: `try g(n)` inside a
         // `-> i64 or any Error` whose `g` returns one too. Boxing a box asks
-        // for the concrete type's name and a trait object hasn't got one, so
+        // for the concrete type's name and an interface object hasn't got one, so
         // the vtable came out `.vtable.unknown__Error` and the first
         // `.message()` on it failed to link (#1106). The value is forwarded
         // whole instead — it already carries the right vtable.
         let already_boxed = |err: &MirType| matches!(
             (&err_ty, err),
-            (MirType::TraitObject { trait_name: have }, MirType::TraitObject { trait_name: want })
+            (MirType::InterfaceObject { interface_name: have }, MirType::InterfaceObject { interface_name: want })
                 if have == want
         );
-        let box_trait: Option<String> = match (&handler, &wrap, self.builder.ret_ty()) {
+        let box_interface: Option<String> = match (&handler, &wrap, self.builder.ret_ty()) {
             (None, None, MirType::Result { err, .. }) => match &**err {
-                MirType::TraitObject { trait_name } if !already_boxed(err) => {
-                    Some(trait_name.clone())
+                MirType::InterfaceObject { interface_name } if !already_boxed(err) => {
+                    Some(interface_name.clone())
                 }
                 _ => None,
             },
@@ -210,7 +210,7 @@ impl<'a> MirLowerer<'a> {
         // from for the same reason a wrapped or freshly boxed error does.
         let forwarding_box = matches!(
             (&err_ty, self.builder.ret_ty()),
-            (MirType::TraitObject { .. }, MirType::Result { err, .. }) if already_boxed(err)
+            (MirType::InterfaceObject { .. }, MirType::Result { err, .. }) if already_boxed(err)
         );
         let err_val = match &handler {
             Some(frame) => frame.err_val,
@@ -229,7 +229,7 @@ impl<'a> MirLowerer<'a> {
                 // Wrapping copies the error into an enum slot and boxing
                 // memcpies it onto the heap, so an aggregate one has to come
                 // back as an address either way.
-                access: if wrap.is_some() || box_trait.is_some() || forwarding_box {
+                access: if wrap.is_some() || box_interface.is_some() || forwarding_box {
                     aggregate_payload_access(&err_ty)
                 } else {
                     FieldAccess::Word
@@ -279,12 +279,12 @@ impl<'a> MirLowerer<'a> {
 
         // ER32: box after any ER31a wrap, so the two compose in the one order
         // that makes sense — the enum names the error, the box erases it.
-        let (err_val, err_store_size) = match &box_trait {
-            Some(trait_name) => {
-                let (boxed, boxed_ty): (MirOperand, MirType) = self.emit_trait_box(
+        let (err_val, err_store_size) = match &box_interface {
+            Some(interface_name) => {
+                let (boxed, boxed_ty): (MirOperand, MirType) = self.emit_interface_box(
                     MirOperand::Local(err_val),
                     &err_ty,
-                    trait_name,
+                    interface_name,
                 );
                 match boxed {
                     MirOperand::Local(id) => (id, Some(boxed_ty.size())),

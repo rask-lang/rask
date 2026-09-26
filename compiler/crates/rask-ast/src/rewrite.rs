@@ -76,8 +76,8 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
                 rewrite_fn(m, r);
             }
         }
-        DeclKind::Trait(t) => {
-            for s in &mut t.super_traits {
+        DeclKind::Interface(t) => {
+            for s in &mut t.super_interfaces {
                 r.ty(s);
             }
             for m in &mut t.methods {
@@ -85,7 +85,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
             }
         }
         DeclKind::Impl(i) => {
-            if let Some(t) = &mut i.trait_name {
+            if let Some(t) = &mut i.interface_name {
                 r.ty(t);
             }
             r.ty(&mut i.target_ty);

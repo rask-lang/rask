@@ -30,7 +30,7 @@
 //! byte. Structural `==` compares the whole slot, so a narrow store leaves the
 //! rest undefined and equality turns on whatever the stack held — three
 //! identical asserts passed in `main` and the third failed inside a `test`
-//! block. `t55_ordering`, `t61_nominal_traits` and `t_sort_by_closure` are the
+//! block. `t55_ordering`, `t61_nominal_interfaces` and `t_sort_by_closure` are the
 //! suites that catch all of this; run `tests/differential.sh`.
 
 /// Comparison results (ORD1) and atomic memory orderings, in tag order.

@@ -199,7 +199,7 @@ let w: any Widget = button
 
 Layout:
 ```
-struct TraitObject {
+struct InterfaceObject {
     data: *u8,       // pointer to actual object
     vtable: *VTable, // pointer to vtable
 }

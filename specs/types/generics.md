@@ -177,15 +177,17 @@ For `duck interface`, the same signature check runs at the use site against the 
 | Rule | Description |
 |------|-------------|
 | **CD1: One interface per block** | `extend T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public extend`, `scoped extend`) apply to the block |
-| **CD2: Block body unrestricted** | The block may mix the interface's methods and ordinary non-interface methods. `implements` is a header on a normal extend block, not a sealed container |
+| **CD2: The block is the contract** | An `implements` block holds only the methods its interface declares (its parent interfaces' included). Any other method in it is an error (E0893): a plain method belongs in `extend T { }`, so reading the block shows exactly what the interface asks of the type |
 | **CD3: Composite chain** | Declaring a composite (`extend T implements HashKey {}`) checks the full parent interface chain (TD3); auto-derived parent interfaces satisfy automatically, missing methods error at the declaration |
 
 <!-- test: skip -->
 ```rask
-// One block per interface; a plain method may share a block with a contract
+// One block per interface, and only that interface's methods in it
 extend LogSource implements Reader {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
-    func rewind(mutate self) { ... }            // plain method, same block
+}
+extend LogSource {
+    func rewind(mutate self) { ... }            // plain method, own block
 }
 extend LogSource implements Displayable {
     func display(self) -> string { ... }
@@ -282,23 +284,23 @@ for `Vec<i64>`` — and matters more, because `Vec`, `Map` and `string` are the
 types a program actually puts in containers.
 
 ```
-error[E0409]: only `traitpkg` can declare `Hashable` for `traitpkg.Doc`
+error[E0409]: only `interfacepkg` can declare `Hashable` for `interfacepkg.Doc`
    |
 4  |  public extend Doc implements Hashable {
    |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this block is in `liba`
    |
 7  |  public struct Doc {
-   |  ----------------- `traitpkg.Doc` belongs to `traitpkg`
+   |  ----------------- `interfacepkg.Doc` belongs to `interfacepkg`
 
 FIX: put the behaviour you want on a type of your own:
-       type MyDoc = traitpkg.Doc
+       type MyDoc = interfacepkg.Doc
        extend MyDoc implements Hashable { … }
 
 WHY: `Hashable` is one answer per type — `Map`, `Set` and every sort built
-     on them assume `traitpkg.Doc` answers the same way everywhere. A second
+     on them assume `interfacepkg.Doc` answers the same way everywhere. A second
      answer from another package doesn't conflict loudly; it makes lookups
-     miss entries the container holds. Only `traitpkg` can change the one
-     `traitpkg.Doc` already has (type.generics/XC1).
+     miss entries the container holds. Only `interfacepkg` can change the one
+     `interfacepkg.Doc` already has (type.generics/XC1).
 ```
 
 `Encode`/`Decode` are the same rule and a different sentence — there is no
@@ -308,20 +310,20 @@ annotation: the rule is who decides, and a type with no annotation is one
 whose owner hasn't decided yet.
 
 ```
-error[E0409]: only `traitpkg` can make `traitpkg.Secret` encodable
+error[E0409]: only `interfacepkg` can make `interfacepkg.Secret` encodable
    |
 4  |  public extend Secret implements Encode {
    |  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this block is in `liba`
    |
 5  |  public struct Secret {
-   |  -------------------- `traitpkg.Secret` belongs to `traitpkg`, which
+   |  -------------------- `interfacepkg.Secret` belongs to `interfacepkg`, which
    |                       decides whether its data goes on a wire
 
 FIX: if you need these fields on a wire, carry them in a type `liba` owns:
        struct SecretWire { … }
 
 WHY: `Encode` has no methods — declaring it doesn't change how
-     `traitpkg.Secret` serializes, it changes whether it does. That is the
+     `interfacepkg.Secret` serializes, it changes whether it does. That is the
      declaring package's call, and a type its owner marked `@no_encode`
      would be overruled from outside (type.generics/XC1).
 ```
@@ -341,7 +343,7 @@ WHY: Picking one would come down to link order. Which `label()` runs has
 
 FIX: Give the collision a type of its own, and say what it does:
 
-  type MyDoc = traitpkg.Doc
+  type MyDoc = interfacepkg.Doc
   extend MyDoc implements Labeled {
       func label(self) -> string { return "doc {self.value.n}" }
   }
@@ -650,7 +652,7 @@ So a block on a type its package doesn't own carries that package in the symbol 
 
 Deciding it per block rather than per collision is what makes the rest work. A rule that fires only when *someone else* also declared the method has to be computed over the whole program, renames symbols when a dependency is added or removed, and — the reason it was wrong rather than merely awkward — has no answer inside a generic body, where the receiver is a type parameter and there is no concrete type to look a collision up against. `func shown<T: Labeled>(x: T) { x.label() }` in `liba` is exactly the case this rule is named for, and it emitted the unsuffixed name, so `liba`'s and `libb`'s instantiations both ran whichever body was read last. Asking "which package is this source in" instead has an answer everywhere.
 
-The separator is `~` because nothing else in a generated name uses it. `_` already means "qualified by a package" (`Doc` in `traitpkg` is `Doc_traitpkg`), so `Doc_label_liba` is also what a method *named* `label_liba` would produce; `$` is the type-argument separator, so `Doc_label$liba` reads as an instantiation. A Rask identifier can't contain `~`, so nothing a program declares can collide with it.
+The separator is `~` because nothing else in a generated name uses it. `_` already means "qualified by a package" (`Doc` in `interfacepkg` is `Doc_interfacepkg`), so `Doc_label_liba` is also what a method *named* `label_liba` would produce; `$` is the type-argument separator, so `Doc_label$liba` reads as an instantiation. A Rask identifier can't contain `~`, so nothing a program declares can collide with it.
 
 XC6 admits what it can't do: there is no syntax for "use liba's". Adding one would mean naming conformances, which means a second identity for something that already has a type and an interface. The cases that need it are served by structure — put the use in a package that sees one conformance — and the case that doesn't want either writes its own. I'd rather ship the gap than the naming scheme.
 

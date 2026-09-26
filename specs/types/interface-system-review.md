@@ -211,7 +211,7 @@ The comma-list header (`extend T implements A, B, C`) was accepted here and late
 | Rule | Description |
 |------|-------------|
 | **CD1: One interface per block** | `extend T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public extend`, `scoped extend`) apply to the block |
-| **CD2: Block body unrestricted** | The block may mix the interface's methods and ordinary non-interface methods. `implements` is a header on a normal extend block, not a sealed container |
+| **CD2: The block is the contract** | An `implements` block holds only the methods its interface declares (its parent interfaces' included). Any other method in it is an error (E0893): a plain method belongs in `extend T { }`, so reading the block shows exactly what the interface asks of the type |
 | **CD3: One condition per block** | On generic types, the inferred condition (CC2) is computed for the block's interface. An explicit `where` clause (public, CC3) applies to the whole block |
 
 <!-- test: skip -->
@@ -219,10 +219,12 @@ The comma-list header (`extend T implements A, B, C`) was accepted here and late
 extend Ring<T> implements Countable {}               // one claim per block
 extend Ring<T> implements Sizable {}
 
-// One block per interface; a plain method may share a block with a contract
+// One block per interface, and only that interface's methods in it
 extend LogSource implements Reader {
     func read(mutate self, buf: Buffer) -> usize or IoError { ... }
-    func rewind(mutate self) { ... }            // plain method, same block
+}
+extend LogSource {
+    func rewind(mutate self) { ... }            // plain method, own block
 }
 extend LogSource implements Displayable {
     func to_string(self) -> string { ... }
@@ -269,7 +271,7 @@ Rejected after survey: `Copy` (16-byte threshold, not an interface), `Sendable` 
 
 ### Cross-check against Rust's trait traffic
 
-Rust's most-derived and most-implemented traits, mapped: `Debug`/`Clone`/`Eq`/`Hash`/`Ord`/`Default`/serde → all auto-derived here (and the `Partial*` splits collapse — they were float-driven; HA4/CO4 exclude floats instead of doubling every trait). Two findings with teeth:
+Rust's most-derived and most-implemented interfaces, mapped: `Debug`/`Clone`/`Eq`/`Hash`/`Ord`/`Default`/serde → all auto-derived here (and the `Partial*` splits collapse — they were float-driven; HA4/CO4 exclude floats instead of doubling every trait). Two findings with teeth:
 
 - **thiserror validates the Error proposal.** One of Rust's most popular crates exists solely to derive error messages for enums — the ecosystem already voted for this feature. The corpus survey (48 mechanical impls) and Rust's dependency graph point at the same gap independently.
 - **`From`/`Into` — Rust's most hand-written trait — stays out, on record.** Its three jobs are dissolved at the language level: error conversion for `?` (Rask `try` widens error *unions* structurally — the `impl From<LibError> for MyError` ceremony class never exists), flexible string params (one `string` type, no `String`/`&str`/`Cow` to abstract), general conversion (residue covered by opt-in `Convert<From, To>`). Rust immigrants will ask; this is the answer.
@@ -297,7 +299,7 @@ Every row is zero-or-one lines in the common case; the special cases are opt-in,
 
 All findings ruled on. Accepted: **MN1–MN5** (single namespace, `scoped` opt-in for collisions, interface-qualified calls), **OC1–OC3** (override cancels dependents, hard error), **IS1–IS3** (mixed inference, exact promotion with generate-interface assist, honest ghost text) plus the structural-as-prototype-dial guidance, **CC1–CC3** (conditional conformance, condition inferred, public states it), **OP1** (concrete operators are authored sugar), and the Finding 6 fixes.
 
-Also accepted: **CD1–CD3** (one interface per block, unrestricted block bodies, one condition per block).
+Also accepted: **CD1–CD3** (one interface per block, the block is the contract, one condition per block).
 
 Also accepted: **auto-derived `Error` for enums**, overridable (corpus survey; thiserror cross-check), and the **elimination of `Default`** — declared field defaults (#311) make omitted-field and zero-field construction (`Config {}`) the mechanism; core five → core four.
 

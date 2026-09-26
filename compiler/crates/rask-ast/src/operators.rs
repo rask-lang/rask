@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! The operator traits, and the name a conformance's method is filed under.
+//! The operator interfaces, and the name a conformance's method is filed under.
 //!
-//! `type.operator-resolution/OR2` lists twelve traits and OR4 lets a type carry
+//! `type.operator-resolution/OR2` lists twelve interfaces and OR4 lets a type carry
 //! one conformance per `(Self, Rhs)` pair — so `Meters` may answer both
 //! `Mul<f64>` and `Mul<Meters>`, and both blocks declare a method called `mul`.
 //! One name for two bodies is a symbol collision at every layer that keys
-//! methods by `{Type}_{method}`, so the applied trait's argument goes into the
+//! methods by `{Type}_{method}`, so the applied interface's argument goes into the
 //! name: `mul$f64` and `mul$Meters`.
 //!
 //! Three registries need that rule — the checker's method table,
@@ -14,7 +14,7 @@
 //! three near-identical string joins. The suffix never reaches the reader:
 //! `method_display` takes it back off for diagnostics.
 
-/// OR2: the declared operator traits, as `(desugared method, trait)`.
+/// OR2: the declared operator interfaces, as `(desugared method, interface)`.
 ///
 /// `Equal` and `Comparable` are absent on purpose — OR9 keeps comparison
 /// same-type on both sides, so `eq`/`lt`/… are not resolved on the pair and
@@ -34,26 +34,26 @@ pub const OPERATOR_TRAITS: &[(&str, &str)] = &[
     ("shr", "Shr"),
 ];
 
-/// The operator trait a desugared method name belongs to.
-pub fn operator_trait(method: &str) -> Option<&'static str> {
+/// The operator interface a desugared method name belongs to.
+pub fn operator_interface(method: &str) -> Option<&'static str> {
     OPERATOR_TRAITS
         .iter()
         .find(|(m, _)| *m == method_display(method))
         .map(|(_, t)| *t)
 }
 
-/// The method an operator trait requires.
-pub fn operator_trait_method(trait_base: &str) -> Option<&'static str> {
+/// The method an operator interface requires.
+pub fn operator_interface_method(interface_base: &str) -> Option<&'static str> {
     OPERATOR_TRAITS
         .iter()
-        .find(|(_, t)| *t == trait_base)
+        .find(|(_, t)| *t == interface_base)
         .map(|(m, _)| *m)
 }
 
-/// The two unary operator traits. They take no `Rhs`, so a type can carry only
+/// The two unary operator interfaces. They take no `Rhs`, so a type can carry only
 /// one of each and the name needs no suffix.
-pub fn is_unary_operator_trait(trait_base: &str) -> bool {
-    matches!(trait_base, "Neg" | "BitNot")
+pub fn is_unary_operator_interface(interface_base: &str) -> bool {
+    matches!(interface_base, "Neg" | "BitNot")
 }
 
 /// The name a conformance's method is filed under, or `None` when the block
@@ -63,19 +63,19 @@ pub fn is_unary_operator_trait(trait_base: &str) -> bool {
 /// (`type.generics/GT4`): `extend Point implements Add` is `Add<Point>`.
 pub fn conformance_method_name(
     target_ty: &str,
-    trait_ref: Option<&str>,
+    interface_ref: Option<&str>,
     method: &str,
 ) -> Option<String> {
     let self_base = base_name(target_ty);
-    let trait_ref = trait_ref?;
-    let base = base_name(trait_ref);
-    if operator_trait_method(base) != Some(method) {
+    let interface_ref = interface_ref?;
+    let base = base_name(interface_ref);
+    if operator_interface_method(base) != Some(method) {
         return None;
     }
-    if is_unary_operator_trait(base) {
+    if is_unary_operator_interface(base) {
         return None;
     }
-    let rhs = trait_ref_arg(trait_ref).unwrap_or(self_base);
+    let rhs = interface_ref_arg(interface_ref).unwrap_or(self_base);
     let rhs = if rhs == "Self" { self_base } else { rhs };
     Some(format!("{}${}", method, base_name(rhs)))
 }
@@ -83,7 +83,7 @@ pub fn conformance_method_name(
 /// The operator method a filed name stands for: `mul$f64` → `mul`.
 pub fn method_display(name: &str) -> &str {
     match name.split_once('$') {
-        Some((base, _)) if operator_trait_method_exists(base) => base,
+        Some((base, _)) if operator_interface_method_exists(base) => base,
         _ => name,
     }
 }
@@ -91,18 +91,18 @@ pub fn method_display(name: &str) -> &str {
 /// The `Rhs` a filed operator method names: `mul$f64` → `f64`.
 pub fn method_rhs(name: &str) -> Option<&str> {
     match name.split_once('$') {
-        Some((base, rhs)) if operator_trait_method_exists(base) => Some(rhs),
+        Some((base, rhs)) if operator_interface_method_exists(base) => Some(rhs),
         _ => None,
     }
 }
 
-fn operator_trait_method_exists(method: &str) -> bool {
+fn operator_interface_method_exists(method: &str) -> bool {
     OPERATOR_TRAITS.iter().any(|(m, _)| *m == method)
 }
 
-/// The written type argument of a trait reference: `Mul<f64>` → `f64`.
-fn trait_ref_arg(trait_ref: &str) -> Option<&str> {
-    let (_, rest) = trait_ref.split_once('<')?;
+/// The written type argument of an interface reference: `Mul<f64>` → `f64`.
+fn interface_ref_arg(interface_ref: &str) -> Option<&str> {
+    let (_, rest) = interface_ref.split_once('<')?;
     let inner = rest.trim().strip_suffix('>')?;
     let first = inner.split(',').next()?.trim();
     (!first.is_empty()).then_some(first)
@@ -141,7 +141,7 @@ mod tests {
     }
 
     #[test]
-    fn a_method_the_trait_did_not_ask_for_keeps_its_name() {
+    fn a_method_the_interface_did_not_ask_for_keeps_its_name() {
         let iface = Some("Mul<f64>");
         assert_eq!(conformance_method_name("Meters", iface, "scaled"), None);
     }

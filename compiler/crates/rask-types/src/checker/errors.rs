@@ -12,7 +12,7 @@ use crate::types::{Type, TypeVarId};
 pub enum MapKeyFix {
     /// HA4: `f32`/`f64` are excluded outright. Key on the bits instead.
     Float,
-    /// A nominal newtype — the traits it inherits are the ones its `implements`
+    /// A nominal newtype — the interfaces it inherits are the ones its `implements`
     /// clause names.
     NominalClause,
     /// Anything else — an `extend T implements Hashable` block declares it.
@@ -478,28 +478,28 @@ pub enum TypeError {
         ty: String,
         span: Span,
     },
-    #[error("method `{method}` returns Self and cannot be called through `any {trait_name}`")]
-    TraitObjectSelfReturn {
-        trait_name: String,
+    #[error("method `{method}` returns Self and cannot be called through `any {interface_name}`")]
+    InterfaceObjectSelfReturn {
+        interface_name: String,
         method: String,
         span: Span,
     },
-    #[error("generic method `{method}` cannot be called through `any {trait_name}`")]
-    TraitObjectGenericMethod {
-        trait_name: String,
+    #[error("generic method `{method}` cannot be called through `any {interface_name}`")]
+    InterfaceObjectGenericMethod {
+        interface_name: String,
         method: String,
         span: Span,
     },
     /// `Error.NotFound` — picking a variant off the erased error type.
     ///
-    /// `Error` is a trait, so it has no variants to pick. Nothing said so: the
+    /// `Error` is an interface, so it has no variants to pick. Nothing said so: the
     /// name resolved to a builtin symbol with no type behind it, the access
     /// handed back an open type variable, and the variable then unified with
     /// whatever the surrounding code expected. `Error.CompletelyMadeUp` passed
     /// the checker, ran to `0` natively and died on the interpreter with
     /// "undefined variable `Error`" (#1095).
     #[error("`Error` is an interface, not an enum — `{member}` is not one of its variants")]
-    ErrorTraitMember {
+    ErrorInterfaceMember {
         member: String,
         span: Span,
     },
@@ -537,17 +537,17 @@ pub enum TypeError {
         ty: String,
         span: Span,
     },
-    #[error("`{ty}` does not implement `{trait_name}`")]
-    TraitNotSatisfied {
+    #[error("`{ty}` does not implement `{interface_name}`")]
+    InterfaceNotSatisfied {
         ty: String,
-        trait_name: String,
+        interface_name: String,
         /// Where the requirement came from. The advice differs completely: a
-        /// failed `as any Interface` is fixed by implementing the trait, a failed
+        /// failed `as any Interface` is fixed by implementing the interface, a failed
         /// generic bound is usually fixed by passing a different type, and a
         /// `Numeric`/`Integer` bound can't be implemented at all. One message
         /// for all three told everyone to "implement `Integer` for `Marker`"
-        /// and explained itself in terms of trait objects (#713).
-        context: TraitBoundContext,
+        /// and explained itself in terms of interface objects (#713).
+        context: InterfaceBoundContext,
         /// The first method the type doesn't have, where one is known. A
         /// conformance header that says "missing methods" and stops sends the
         /// author looking through a block that may be one method short —
@@ -556,39 +556,39 @@ pub enum TypeError {
         missing: Option<(String, String)>,
         span: Span,
     },
-    /// A bound, conformance header or cast naming a trait that doesn't exist.
+    /// A bound, conformance header or cast naming an interface that doesn't exist.
     ///
-    /// Used to be reported as `TraitNotSatisfied` with `_` standing in for the
-    /// type, because an unknown trait has no type to blame — so a typo in a
+    /// Used to be reported as `InterfaceNotSatisfied` with `_` standing in for the
+    /// type, because an unknown interface has no type to blame — so a typo in a
     /// bound read as a mysterious failure of the type system rather than as a
     /// name nobody had declared.
-    #[error("no interface named `{trait_name}`")]
-    NoSuchTrait {
-        trait_name: String,
-        /// Declared trait names, for a did-you-mean.
+    #[error("no interface named `{interface_name}`")]
+    NoSuchInterface {
+        interface_name: String,
+        /// Declared interface names, for a did-you-mean.
         known: Vec<String>,
         span: Span,
     },
 
-    /// G1: the block has the method, with a signature the trait doesn't ask
-    /// for. Distinct from `TraitNotSatisfied` because "you're missing methods"
+    /// G1: the block has the method, with a signature the interface doesn't ask
+    /// for. Distinct from `InterfaceNotSatisfied` because "you're missing methods"
     /// pointing at a block that plainly has them is the worst kind of wrong
     /// (#1164) — the answer is which signature, not which method.
-    #[error("`{ty}.{method}` doesn't match what `{trait_name}` requires")]
+    #[error("`{ty}.{method}` doesn't match what `{interface_name}` requires")]
     ConformanceSignatureMismatch {
         ty: String,
-        trait_name: String,
+        interface_name: String,
         method: String,
         expected: String,
         found: String,
         span: Span,
     },
 
-    /// MN3/GT3: two conformances of one generic trait to one type, asking for
+    /// MN3/GT3: two conformances of one generic interface to one type, asking for
     /// the same method with different signatures. The conformances are each
     /// well-formed; what has no answer is which `mul` a `m.mul(x)` means.
     #[error("`{ty}` conforms to both `{first}` and `{second}`, and they want different `{method}`s")]
-    OverlappingTraitConformance {
+    OverlappingInterfaceConformance {
         ty: String,
         first: String,
         second: String,
@@ -596,11 +596,21 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// GT2: a bound or conformance header giving a generic trait the wrong
+    /// CD2: an `implements` block holds only the interface's methods. A plain
+    /// method in it belongs in `extend T { }`.
+    #[error("`{method}` is not part of `{interface_name}`")]
+    MethodOutsideInterface {
+        ty: String,
+        interface_name: String,
+        method: String,
+        span: Span,
+    },
+
+    /// GT2: a bound or conformance header giving a generic interface the wrong
     /// number of arguments, or leaving an undefaulted one out.
-    #[error("`{trait_name}` takes {expected} type argument(s), found {found}")]
-    TraitArity {
-        trait_name: String,
+    #[error("`{interface_name}` takes {expected} type argument(s), found {found}")]
+    InterfaceArity {
+        interface_name: String,
         /// Parameters as declared, for the message: `["Rhs"]`.
         params: Vec<String>,
         expected: usize,
@@ -609,10 +619,10 @@ pub enum TypeError {
     },
 
     /// AT2: a conformance that doesn't say what an associated type answers with.
-    #[error("`{ty}`'s `{trait_name}` conformance doesn't say what `{assoc}` is")]
+    #[error("`{ty}`'s `{interface_name}` conformance doesn't say what `{assoc}` is")]
     MissingAssocType {
         ty: String,
-        trait_name: String,
+        interface_name: String,
         assoc: String,
         span: Span,
     },
@@ -635,8 +645,8 @@ pub enum TypeError {
         right: Option<String>,
         /// The operator as written (`*`), not the desugared method name.
         op: String,
-        /// The trait the pair would conform to (`Mul`).
-        trait_name: String,
+        /// The interface the pair would conform to (`Mul`).
+        interface_name: String,
         /// The header the left operand wants, with `Rhs` read off the right.
         header: String,
         /// The left operand already has a method by this name, without a
@@ -653,24 +663,24 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// AT1: `type X = ...` or `Self.X` naming something no trait declares.
-    #[error("no associated type `{assoc}` on `{trait_name}`")]
+    /// AT1: `type X = ...` or `Self.X` naming something no interface declares.
+    #[error("no associated type `{assoc}` on `{interface_name}`")]
     UnknownAssocType {
         assoc: String,
-        trait_name: String,
+        interface_name: String,
         /// Declared associated types, for a did-you-mean.
         known: Vec<String>,
         span: Span,
     },
 
     /// std.encoding/E12: an `Encode`/`Decode` bound that fails because of a
-    /// specific field. Separate from `TraitNotSatisfied` because the advice is
+    /// specific field. Separate from `InterfaceNotSatisfied` because the advice is
     /// different — these markers are derived from the shape, not written out,
     /// so the fix is to change the field, and the message has to name it.
     #[error("`{ty}` cannot be {verb}")]
     NotSerializable {
         ty: String,
-        trait_name: String,
+        interface_name: String,
         /// `verb` reads in the message: "encoded" or "decoded".
         verb: String,
         /// Dotted path to the offending field, when one can be pinned down.
@@ -695,7 +705,7 @@ pub enum TypeError {
 
     /// type.generics/DT1: `duck interface` is scratchpad-only — it can't be public.
     #[error("`duck interface {name}` cannot be public")]
-    PublicDuckTrait {
+    PublicDuckInterface {
         name: String,
         span: Span,
     },
@@ -951,7 +961,7 @@ pub enum TypeError {
 
     /// ER4: error type must implement `Error` — `message(self) -> string`.
     #[error("error type `{ty}` must implement `Error` — needs `func message(self) -> string`")]
-    ErrorTraitMissing {
+    ErrorInterfaceMissing {
         ty: Type,
         span: Span,
     },
@@ -1071,7 +1081,7 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// `as` to a target that is neither a number nor a trait object. There is
+    /// `as` to a target that is neither a number nor an interface object. There is
     /// no third meaning for `as`, and accepting one silently let
     /// `[1, 2, 3] as Vec<i64>` through as a pointer reinterpretation (#862).
     #[error("`as` doesn't convert to `{target_name}`")]
@@ -1159,37 +1169,37 @@ pub enum TypeError {
         /// The type that refused.
         ty: String,
         /// `Encode` or `Decode`.
-        trait_name: String,
+        interface_name: String,
         /// The annotation as written: `no_encode` or `no_decode`.
         attr: String,
         span: Span,
     },
 
-    /// type.generics/XC3: a second `extend T implements Trait` for a pair that
+    /// type.generics/XC3: a second `extend T implements Interface` for a pair that
     /// already has one. The set this used to be filed in absorbed the second
     /// declaration, so the last block parsed silently supplied the methods.
-    #[error("`{ty}` already declares conformance to `{trait_name}`")]
+    #[error("`{ty}` already declares conformance to `{interface_name}`")]
     DuplicateConformance {
         /// The type both blocks extend.
         ty: String,
-        /// The trait both blocks claim, base name only.
-        trait_name: String,
+        /// The interface both blocks claim, base name only.
+        interface_name: String,
         /// Where the first declaration is — the one that stays.
         first: Span,
         /// The duplicate, which is what the error points at.
         span: Span,
     },
 
-    /// type.generics/XC1: one of the six auto-derived traits declared for a
+    /// type.generics/XC1: one of the six auto-derived interfaces declared for a
     /// type by a package that doesn't own it. Four of them decide what happens
     /// to the type's data inside a container and two decide whether it goes on
     /// a wire at all — both are answers a type gets once, from its owner.
-    #[error("`{trait_name}` for `{ty}` belongs to whoever declares `{ty}`")]
+    #[error("`{interface_name}` for `{ty}` belongs to whoever declares `{ty}`")]
     ForeignCoreConformance {
         /// The type being extended.
         ty: String,
-        /// The trait, spelled as the block writes it.
-        trait_name: String,
+        /// The interface, spelled as the block writes it.
+        interface_name: String,
         /// The package that declares the type. `None` is the standard library,
         /// which owns every builtin — that is what makes `extend Vec<i64> implements
         /// Hashable` in a program an error rather than a shrug.
@@ -1211,10 +1221,10 @@ pub enum TypeError {
     /// packages' declarations of the same conformance, and needs one of them.
     /// Reported at the use rather than at either declaration — neither is wrong
     /// on its own, and a collision nobody uses costs nothing (XC4).
-    #[error("two conformances of `{ty}` to `{trait_name}` are in scope")]
+    #[error("two conformances of `{ty}` to `{interface_name}` are in scope")]
     AmbiguousConformance {
         ty: String,
-        trait_name: String,
+        interface_name: String,
         /// Each declaring package and where its block is, in declaration order.
         sites: Vec<(String, Span)>,
         span: Span,
@@ -1271,18 +1281,18 @@ pub enum IndexErrorKind {
     NoSliceType,
 }
 
-/// Where a trait requirement came from — drives the advice.
+/// Where an interface requirement came from — drives the advice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TraitBoundContext {
+pub enum InterfaceBoundContext {
     /// `value as any Interface` — the box needs a vtable, so the concrete type has
     /// to have the methods.
-    TraitObjectCast,
-    /// `f<T: Trait>(…)` at a call site — the type argument doesn't qualify.
+    InterfaceObjectCast,
+    /// `f<T: Interface>(…)` at a call site — the type argument doesn't qualify.
     GenericBound,
-    /// `extend T implements Trait { … }` — the block claims a conformance it doesn't
+    /// `extend T implements Interface { … }` — the block claims a conformance it doesn't
     /// deliver.
     ConformanceHeader,
-    /// A bound on one of the numeric traits (NT1–NT3). These are sets of
+    /// A bound on one of the numeric interfaces (NT1–NT3). These are sets of
     /// primitive types rather than method lists, so "implement it" is not
     /// advice anyone can act on.
     NumericBound,
@@ -1327,7 +1337,7 @@ impl TypeError {
         match self {
             DiscardCopyType { ty, .. }
             | DiscardResourceType { ty, .. }
-            | ErrorTraitMissing { ty, .. }
+            | ErrorInterfaceMissing { ty, .. }
             | InfiniteType { ty, .. }
             | IntLiteralOutOfRange { ty, .. }
             | NoSuchField { ty, .. }
@@ -1481,17 +1491,18 @@ impl TypeError {
             | WithNeedsElementOrBox { .. }
             | UnsafeRequired { .. }
             | CStructReturn { .. }
-            | TraitObjectSelfReturn { .. }
-            | TraitObjectGenericMethod { .. }
-            | ErrorTraitMember { .. }
+            | InterfaceObjectSelfReturn { .. }
+            | InterfaceObjectGenericMethod { .. }
+            | ErrorInterfaceMember { .. }
             | MatchNeedsWildcard { .. }
             | BreakValueFromStatementLoop { .. }
             | ComptimeFieldNameNotString { .. }
-            | TraitNotSatisfied { .. }
-            | NoSuchTrait { .. }
+            | InterfaceNotSatisfied { .. }
+            | NoSuchInterface { .. }
             | ConformanceSignatureMismatch { .. }
-            | OverlappingTraitConformance { .. }
-            | TraitArity { .. }
+            | OverlappingInterfaceConformance { .. }
+            | MethodOutsideInterface { .. }
+            | InterfaceArity { .. }
             | MissingAssocType { .. }
             | UnknownAssocType { .. }
             | InherentMethodOnPrimitive { .. }
@@ -1500,7 +1511,7 @@ impl TypeError {
             | NotSerializable { .. }
             | ExcludedFieldNeedsDefault { .. }
             | StringAddForbidden { .. }
-            | PublicDuckTrait { .. }
+            | PublicDuckInterface { .. }
             | PublicInferredError { .. }
             | NonExhaustiveMatch { .. }
             | UndefinedName { .. }

@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_optional_trait_object_in_parens() {
+    fn parse_optional_interface_object_in_parens() {
         // `(any Shape)?` — the parenthesized form must parse (#606); the ambiguous
         // bare `any Shape?` stays rejected on purpose.
         let result = parse("interface Shape { func area(self) -> f64 }\nfunc f() -> (any Shape)? { return none }");
@@ -1459,7 +1459,7 @@ mod tests {
         assert_eq!(v.bounds, vec!["Clone".to_string()]);
     }
 
-    // Generic trait bound inside a where clause: `where T: Iterator<Item>`.
+    // Generic interface bound inside a where clause: `where T: Iterator<Item>`.
     #[test]
     fn where_clause_generic_bound() {
         let f = parse_fn("func run(x: T) where T: Iterator<Item> { }");
@@ -1483,7 +1483,7 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
-                assert_eq!(i.trait_name.as_deref(), Some("Countable"));
+                assert_eq!(i.interface_name.as_deref(), Some("Countable"));
                 assert_eq!(i.target_ty, "Bag");
             }
             _ => panic!("expected extend block"),
@@ -1496,16 +1496,16 @@ mod tests {
         let result = parse("extend Bag { }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Impl(ref i) => assert!(i.trait_name.is_none()),
+            DeclKind::Impl(ref i) => assert!(i.interface_name.is_none()),
             _ => panic!("expected impl"),
         }
     }
 
-    // A non-method member in a trait body used to spin the body loop forever —
+    // A non-method member in an interface body used to spin the body loop forever —
     // nothing consumed the token and the loop condition stayed true (#1164).
     // Each of these has to report and then recover onto the method below it.
     #[test]
-    fn trait_body_member_errors_instead_of_hanging() {
+    fn interface_body_member_errors_instead_of_hanging() {
         // Each case is one bad member followed by one real method. The method
         // list matters as much as the error count: recovery that stops mid-way
         // through the bad member parses its remainder as another signature and
@@ -1524,7 +1524,7 @@ mod tests {
             assert!(!result.is_ok(), "expected an error for:\n{src}");
             assert_eq!(result.errors.len(), 1, "expected one error for:\n{src}\ngot {:?}", result.errors);
             match result.decls[0].kind {
-                DeclKind::Trait(ref t) => {
+                DeclKind::Interface(ref t) => {
                     let names: Vec<&str> = t.methods.iter().map(|m| m.name.as_str()).collect();
                     assert_eq!(names.len(), 1, "invented a method for:\n{src}\ngot {names:?}");
                 }
@@ -1533,18 +1533,18 @@ mod tests {
         }
     }
 
-    // AT1/AT4/AT5: `type Out`, with its bound and its default, is a trait
+    // AT1/AT4/AT5: `type Out`, with its bound and its default, is an interface
     // member the parser keeps. It used to hang the body loop, then (once that
     // was guarded) report as unimplemented.
     #[test]
-    fn trait_body_holds_associated_types() {
+    fn interface_body_holds_associated_types() {
         let result = parse(
             "interface Mul {\n    type Out\n    type Key: Comparable\n    type Same = Self\n\
              \n    func mul(self, rhs: f64) -> Self.Out\n}",
         );
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Trait(ref t) => {
+            DeclKind::Interface(ref t) => {
                 let names: Vec<&str> = t.assoc_types.iter().map(|a| a.name.as_str()).collect();
                 assert_eq!(names, ["Out", "Key", "Same"]);
                 assert_eq!(t.assoc_types[1].bounds, ["Comparable"]);
@@ -1556,16 +1556,16 @@ mod tests {
         }
     }
 
-    // GT1/GT4/GT5: a trait's type parameters, with bounds and defaults. These
+    // GT1/GT4/GT5: an interface's type parameters, with bounds and defaults. These
     // used to be skipped without being recorded, so the name resolved to
     // nothing in the signatures and every conformance failed claiming a missing
     // method the block plainly had (#1164).
     #[test]
-    fn trait_records_its_type_params() {
+    fn interface_records_its_type_params() {
         let result = parse("interface Mul<Rhs = Self, K: Comparable> {\n    func mul(self, rhs: Rhs) -> Self\n}");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Trait(ref t) => {
+            DeclKind::Interface(ref t) => {
                 assert_eq!(t.name, "Mul");
                 let names: Vec<&str> = t.type_params.iter().map(|p| p.name.as_str()).collect();
                 assert_eq!(names, ["Rhs", "K"]);
@@ -1588,7 +1588,7 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
-                assert_eq!(i.trait_name.as_deref(), Some("Mul<f64>"));
+                assert_eq!(i.interface_name.as_deref(), Some("Mul<f64>"));
                 assert_eq!(i.assoc_bindings.len(), 1);
                 assert_eq!(i.assoc_bindings[0].name, "Out");
                 assert_eq!(i.assoc_bindings[0].ty, "Meters");
@@ -1600,11 +1600,11 @@ mod tests {
 
     // `duck interface` sets the structural flag.
     #[test]
-    fn duck_trait_flag() {
+    fn duck_interface_flag() {
         let result = parse("duck interface Frobber { func frob(self) -> i64 }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Trait(ref t) => {
+            DeclKind::Interface(ref t) => {
                 assert!(t.is_duck);
                 assert_eq!(t.name, "Frobber");
             }
@@ -1612,18 +1612,18 @@ mod tests {
         }
     }
 
-    // A plain trait is not duck.
+    // A plain interface is not duck.
     #[test]
-    fn plain_trait_not_duck() {
+    fn plain_interface_not_duck() {
         let result = parse("interface Greeter { func greet(self) -> string }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Trait(ref t) => assert!(!t.is_duck),
+            DeclKind::Interface(ref t) => assert!(!t.is_duck),
             _ => panic!("expected interface"),
         }
     }
 
-    // MN4: `scoped extend T implements Trait` sets the scoped flag.
+    // MN4: `scoped extend T implements Interface` sets the scoped flag.
     #[test]
     fn scoped_extend_flag() {
         let result = parse("scoped extend Dog implements Announcer { func greet(self, v: i32) -> string { return \"x\" } }");
@@ -1631,7 +1631,7 @@ mod tests {
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
                 assert!(i.is_scoped);
-                assert_eq!(i.trait_name.as_deref(), Some("Announcer"));
+                assert_eq!(i.interface_name.as_deref(), Some("Announcer"));
             }
             _ => panic!("expected impl"),
         }
@@ -1689,7 +1689,7 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
-                assert_eq!(i.trait_name.as_deref(), Some("Show"));
+                assert_eq!(i.interface_name.as_deref(), Some("Show"));
                 let t = i.where_bounds.iter().find(|tp| tp.name == "T").expect("T bound");
                 assert_eq!(t.bounds, vec!["Show".to_string()]);
             }

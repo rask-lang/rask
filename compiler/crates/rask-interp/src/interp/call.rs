@@ -657,10 +657,10 @@ impl Interpreter {
     /// `i64 or any Error` came back to the caller as an ok value holding the
     /// error, and `catch` never fired (#708).
     ///
-    /// A trait object matches when the value's type provides the trait's
+    /// An interface object matches when the value's type provides the interface's
     /// methods. ER4 already restricts an error side to `Error`, so the
     /// compiler-provided method lists cover every case that can legally appear
-    /// here — a user trait can't be an error type on its own.
+    /// here — a user interface can't be an error type on its own.
     fn value_matches_any_err(&self, value: &Value, names: &[String]) -> bool {
         if value_matches_any_type(value, names) {
             return true;
@@ -675,12 +675,12 @@ impl Interpreter {
             // Only the long spelling matched, so an `i64 or Error` function
             // returning a concrete error handed it back as the *ok* branch —
             // the same #708 bug, in the spelling most of the corpus uses.
-            let trait_name = match rask_ast::traits::trait_object_name(n) {
+            let interface_name = match rask_ast::interfaces::interface_object_name(n) {
                 Some(t) => t,
-                None if rask_ast::traits::is_bare_error(n) => "Error",
+                None if rask_ast::interfaces::is_bare_error(n) => "Error",
                 None => return false,
             };
-            let required = rask_types::builtin_trait_method_names(trait_name);
+            let required = rask_types::builtin_interface_method_names(interface_name);
             if required.is_empty() {
                 return false;
             }

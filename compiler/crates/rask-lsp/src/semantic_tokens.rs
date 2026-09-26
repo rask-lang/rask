@@ -24,7 +24,7 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::STRUCT,         // 4
             SemanticTokenType::ENUM,           // 5
             SemanticTokenType::ENUM_MEMBER,    // 6
-            SemanticTokenType::INTERFACE,      // 7 (trait)
+            SemanticTokenType::INTERFACE,      // 7 (interface)
             SemanticTokenType::TYPE,           // 8
             SemanticTokenType::NAMESPACE,      // 9
             SemanticTokenType::PROPERTY,       // 10 (field)
@@ -117,7 +117,7 @@ fn classify(kind: &SymbolKind) -> (u32, u32) {
         SymbolKind::Struct { .. } => (TYPE_STRUCT, 0),
         SymbolKind::Enum { .. } => (TYPE_ENUM, 0),
         SymbolKind::EnumVariant { .. } => (TYPE_ENUM_MEMBER, 0),
-        SymbolKind::Trait { .. } => (TYPE_TRAIT, 0),
+        SymbolKind::Interface { .. } => (TYPE_TRAIT, 0),
         SymbolKind::Field { .. } => (TYPE_PROPERTY, 0),
         SymbolKind::BuiltinType { .. } => (TYPE_TYPE, MOD_STDLIB),
         SymbolKind::BuiltinFunction { .. } => (TYPE_FUNCTION, MOD_STDLIB),

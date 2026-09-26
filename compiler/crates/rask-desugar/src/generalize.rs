@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Generalizing an inferred parameter whose only constraint is an operator.
 //!
-//! `type.gradual/IN3` — "constraints from trait methods, operators, or calls
+//! `type.gradual/IN3` — "constraints from interface methods, operators, or calls
 //! needing bounds produce generic" — with `func double(x) { x * 2 }` as the
 //! spec's own worked example, inferred as `<T: Numeric>(x: T) -> T`.
 //!
@@ -27,14 +27,14 @@
 //! Anything else pins the type, or might, and keeps IN2's concrete answer: a
 //! string literal on the other side of `==` means the parameter is a `string`
 //! and `T: Numeric` would be wrong; a method call says something this pass
-//! can't map to a trait; a field access or an index says a specific shape.
+//! can't map to an interface; a field access or an index says a specific shape.
 //! `a + b` on two inferred parameters says the two are the same type and
 //! nothing about which, so it stays concrete as well.
 //!
 //! `func count(items) { items.len() }` is not this, and it isn't a fix either.
 //! The spec's example table wants `<T>(items: Vec<T>) -> usize` and GC3 wants a
 //! structural requirement, and neither can be written from here: `.len()` names
-//! no trait to read a nominal type out of, and a synthesized `duck interface` would
+//! no interface to read a nominal type out of, and a synthesized `duck interface` would
 //! need `len`'s return type, which this pass runs too early to know. #1141 has
 //! the options.
 
@@ -168,9 +168,9 @@ fn shape_name(shape: Shape, param: &str) -> String {
 }
 
 /// The bounds `name`'s uses require, or `None` when a use pins the type or says
-/// something this pass can't name a trait for.
+/// something this pass can't name an interface for.
 fn bounds_from_body(body: &[Stmt], name: &str) -> Option<Vec<String>> {
-    let mut traits: Vec<String> = Vec::new();
+    let mut interfaces: Vec<String> = Vec::new();
     let mut covered: HashSet<NodeId> = HashSet::new();
     let mut ok = true;
 
@@ -178,7 +178,7 @@ fn bounds_from_body(body: &[Stmt], name: &str) -> Option<Vec<String>> {
     // and operators. Nested ones are classified too and add nothing new: the
     // bounds are a union, and the node set is a set.
     rask_ast::visit::walk_body(body, &mut |expr| {
-        if shape_of(expr, name, &mut traits).is_none() {
+        if shape_of(expr, name, &mut interfaces).is_none() {
             return;
         }
         if !mentions(expr, name) {
@@ -189,7 +189,7 @@ fn bounds_from_body(body: &[Stmt], name: &str) -> Option<Vec<String>> {
         });
     });
 
-    if traits.is_empty() {
+    if interfaces.is_empty() {
         return None;
     }
 
@@ -207,7 +207,7 @@ fn bounds_from_body(body: &[Stmt], name: &str) -> Option<Vec<String>> {
     });
 
     if ok {
-        Some(traits)
+        Some(interfaces)
     } else {
         None
     }
@@ -217,18 +217,18 @@ fn bounds_from_body(body: &[Stmt], name: &str) -> Option<Vec<String>> {
 /// literals and operators. `None` for anything else — including an expression
 /// that mentions a *different* name, which could be any type.
 ///
-/// Traits the operators need are pushed onto `traits` as they are met. A `None`
+/// Interfaces the operators need are pushed onto `interfaces` as they are met. A `None`
 /// answer can leave some behind; the caller only reads them for an expression
 /// that classified.
-fn shape_of(expr: &Expr, name: &str, traits: &mut Vec<String>) -> Option<Shape> {
+fn shape_of(expr: &Expr, name: &str, interfaces: &mut Vec<String>) -> Option<Shape> {
     match &expr.kind {
         ExprKind::Ident(id) if id == name => Some(Shape::Same),
         // Still open, which is what lets `x * 2` mean `x * 2.0` for an `f64`.
         ExprKind::Int(_, None) | ExprKind::Float(_, None) => Some(Shape::OpenLiteral),
         ExprKind::Unary { op: UnaryOp::Neg, operand } => {
-            match shape_of(operand, name, traits)? {
+            match shape_of(operand, name, interfaces)? {
                 Shape::Same => {
-                    note(traits, "Numeric");
+                    note(interfaces, "Numeric");
                     Some(Shape::Same)
                 }
                 Shape::OpenLiteral => Some(Shape::OpenLiteral),
@@ -236,8 +236,8 @@ fn shape_of(expr: &Expr, name: &str, traits: &mut Vec<String>) -> Option<Shape> 
             }
         }
         ExprKind::Binary { op, left, right } => {
-            let l = shape_of(left, name, traits)?;
-            let r = shape_of(right, name, traits)?;
+            let l = shape_of(left, name, interfaces)?;
+            let r = shape_of(right, name, interfaces)?;
             if l == Shape::Bool || r == Shape::Bool {
                 return None;
             }
@@ -246,7 +246,7 @@ fn shape_of(expr: &Expr, name: &str, traits: &mut Vec<String>) -> Option<Shape> 
                 return Some(Shape::OpenLiteral);
             }
             let bound = bound_for(*op)?;
-            note(traits, bound);
+            note(interfaces, bound);
             match bound {
                 "Numeric" => Some(Shape::Same),
                 _ => Some(Shape::Bool),
@@ -256,16 +256,16 @@ fn shape_of(expr: &Expr, name: &str, traits: &mut Vec<String>) -> Option<Shape> 
     }
 }
 
-fn note(traits: &mut Vec<String>, bound: &str) {
-    if !traits.iter().any(|t| t == bound) {
-        traits.push(bound.to_string());
+fn note(interfaces: &mut Vec<String>, bound: &str) {
+    if !interfaces.iter().any(|t| t == bound) {
+        interfaces.push(bound.to_string());
     }
 }
 
-/// The trait an operator needs of its operands.
+/// The interface an operator needs of its operands.
 ///
 /// Only the ones whose bound is unambiguous. `&`, `|`, `<<` and friends are
-/// integer-only in practice but have no trait to name, and `and`/`or` are
+/// integer-only in practice but have no interface to name, and `and`/`or` are
 /// `bool`, which is a concrete type rather than a bound.
 fn bound_for(op: BinOp) -> Option<&'static str> {
     match op {

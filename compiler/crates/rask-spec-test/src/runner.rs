@@ -318,7 +318,7 @@ fn run_parse_fail_test(test: SpecTest) -> TestResult {
 
 /// Wrap code in a main function, keeping declarations at top level.
 ///
-/// Detects enum, struct, func, extend, trait declarations and keeps them
+/// Detects enum, struct, func, extend, interface declarations and keeps them
 /// outside main. Remaining statements go inside main.
 fn wrap_in_main(code: &str) -> String {
     // Already has main or @entry - use as-is

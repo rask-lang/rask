@@ -202,20 +202,20 @@ fn a_nested_join_runs_with_one_worker() {
     let _ = std::fs::remove_file(&bin_path);
 }
 
-/// Trait type parameters and associated types, on both backends.
+/// Interface type parameters and associated types, on both backends.
 ///
-/// `trait Mul<Rhs> { type Out … }` is what operator resolution is built on and
+/// `interface Mul<Rhs> { type Out … }` is what operator resolution is built on and
 /// neither half worked: the parameter was parsed and dropped, so every
 /// conformance failed claiming a missing method the block plainly had, and
-/// `type Out` in a trait body hung the parser outright (#1164, #1165).
+/// `type Out` in an interface body hung the parser outright (#1164, #1165).
 #[test]
-fn generic_traits_and_associated_types_run() {
+fn generic_interfaces_and_associated_types_run() {
     let expected = "6\n12\n6\n8\n15\n10\n";
-    let (native, code) = run_native("trait_generic_and_assoc.rk");
+    let (native, code) = run_native("interface_generic_and_assoc.rk");
     assert_eq!(code, 0, "native: {native}");
     assert_eq!(native, expected, "native");
 
-    let (interp, code) = run_interp("trait_generic_and_assoc.rk");
+    let (interp, code) = run_interp("interface_generic_and_assoc.rk");
     assert_eq!(code, 0, "interp: {interp}");
     assert_eq!(interp, expected, "interp");
 }
@@ -875,7 +875,7 @@ fn compile_vec_basic() {
     assert_eq!(stdout, "3\n");
 }
 
-// ─── Trait-object vtable dispatch (task 1.4, issue #194) ─────
+// ─── Interface-object vtable dispatch (task 1.4, issue #194) ─────
 //
 // `Shape` declares an incompatible method (returns Self, TR2) before the
 // compatible ones, so the vtable holds compatible slots at 0/1 while the naive
@@ -883,13 +883,13 @@ fn compile_vec_basic() {
 // interpreter's by-name dispatch can't catch a wrong-slot miscompile, so this
 // has to run the compiled binary.
 #[test]
-fn compile_trait_object_dispatch() {
-    let (stdout, code) = compile_and_run("trait_object_dispatch.rk");
+fn compile_interface_object_dispatch() {
+    let (stdout, code) = compile_and_run("interface_object_dispatch.rk");
     assert_eq!(code, 0);
     assert_eq!(stdout, "square=16\ncircle=75\n");
 }
 
-// XC2/XC3: a program overriding a non-core trait the stdlib hand-wrote for one
+// XC2/XC3: a program overriding a non-core interface the stdlib hand-wrote for one
 // of its own types. E0407 first shipped guarding on the *current* pass's stdlib
 // mode, which says nothing about where the already-kept registration came from
 // — so every stdlib type with a hand-written conformance became un-overridable.
@@ -1004,7 +1004,7 @@ fn error_annotation_against_a_container_initializer() {
     // was dropped in silence. So `let probe: string = m` on a sync box passed.
     // Reported for a primitive against a stdlib container only: two *named*
     // types legitimately unify across names (union members, enum variants,
-    // trait objects, nominal aliases) and judging those reported the stdlib's
+    // interface objects, nominal aliases) and judging those reported the stdlib's
     // own source as broken.
     let (failed, out) = compile_error_output("annotation_vs_container.rk");
     assert!(failed, "an annotation must be checked against a container init: {}", out);
@@ -1101,14 +1101,14 @@ fn a_type_that_contains_itself_is_rejected() {
 }
 
 #[test]
-fn an_optional_trait_object_is_rejected_with_its_own_reason() {
+fn an_optional_interface_object_is_rejected_with_its_own_reason() {
     // #1159 made the parse after `any` share the real type-name parse, so
     // `any io.Reader` works. Sharing it whole would also have admitted
     // `any Shape?`, which type-checks and then segfaults natively — the value
     // is never boxed into the option's payload (#1308). The suffix stays
     // refused, but with a message about the feature rather than the old
     // "Expected ')', found '?'".
-    let (failed, out) = compile_error_output("optional_trait_object.rk");
+    let (failed, out) = compile_error_output("optional_interface_object.rk");
     assert!(failed, "`any Interface?` must be rejected: {}", out);
     assert!(
         out.contains("an optional interface object isn't built yet"),
@@ -1305,15 +1305,15 @@ fn error_keyword_fn_name() {
     );
 }
 
-// #713: one error variant covers four different trait requirements, and it
-// used to give all four the same advice — "implement `Trait` for `Type`",
-// explained in terms of trait objects. That is not advice anyone can take on a
+// #713: one error variant covers four different interface requirements, and it
+// used to give all four the same advice — "implement `Interface` for `Type`",
+// explained in terms of interface objects. That is not advice anyone can take on a
 // numeric bound (`Integer` is a set of primitive types, not a list of methods),
-// and at a call site it points at the wrong file. A bound naming a trait that
+// and at a call site it points at the wrong file. A bound naming an interface that
 // doesn't exist had no type to blame at all and reported `_`.
 #[test]
-fn error_trait_bound_messages() {
-    let (failed, out) = compile_error_output("trait_bound_messages.rk");
+fn error_interface_bound_messages() {
+    let (failed, out) = compile_error_output("interface_bound_messages.rk");
     assert!(failed, "unsatisfied interface requirements must be rejected: {}", out);
     assert!(
         !out.contains("`_` does not implement"),
@@ -1495,10 +1495,10 @@ fn error_bad_interpolation() {
 }
 
 // #551, T10: honouring a nominal newtype's `implements` list means the list has
-// to stay a list — an unlisted trait is still not inherited.
+// to stay a list — an unlisted interface is still not inherited.
 #[test]
-fn error_nominal_trait_not_listed() {
-    let (failed, out) = compile_error_output("nominal_trait_not_listed.rk");
+fn error_nominal_interface_not_listed() {
+    let (failed, out) = compile_error_output("nominal_interface_not_listed.rk");
     assert!(failed, "an unlisted interface must not be inherited: {}", out);
     // The arithmetic is named by its operator rather than by the method
     // desugaring produced: `+` resolves against a declared `Add`, and the
@@ -2580,18 +2580,29 @@ fn error_nonexhaustive_match() {
 }
 
 #[test]
-fn error_trait_bound_unsatisfied() {
-    assert!(compile_error("trait_bound_unsatisfied.rk"), "should reject a type that doesn't implement the bound's interface (#314)");
+fn error_interface_bound_unsatisfied() {
+    assert!(compile_error("interface_bound_unsatisfied.rk"), "should reject a type that doesn't implement the bound's interface (#314)");
 }
 
 #[test]
-fn error_trait_bound_missing_method() {
-    assert!(compile_error("trait_bound_missing_method.rk"), "should reject a method the bounds don't provide (#314)");
+fn error_interface_bound_missing_method() {
+    assert!(compile_error("interface_bound_missing_method.rk"), "should reject a method the bounds don't provide (#314)");
 }
 
 #[test]
 fn error_nominal_conformance_required() {
     assert!(compile_error("nominal_conformance_required.rk"), "should reject a structural match with no declared conformance (G1/#283)");
+}
+
+// type.generics/CD2: an `implements` block is the contract. A method the
+// interface never asked for is a plain method and belongs in `extend T { }`.
+#[test]
+fn a_plain_method_inside_an_interface_block_is_rejected() {
+    let (failed, out) = compile_error_output("method_outside_interface.rk");
+    assert!(failed, "a helper inside a conformance block must be rejected: {}", out);
+    assert!(out.contains("E0893"), "{}", out);
+    assert!(out.contains("`rewind` is not part of `Reader`"), "{}", out);
+    assert!(out.contains("extend LogSource { func rewind(…) }"), "the fix names the block it belongs in: {}", out);
 }
 
 #[test]
@@ -2791,10 +2802,10 @@ fn error_cross_task_ownership() {
 }
 
 #[test]
-fn error_trait_object_generic() {
-    // TR3: a generic trait method has no vtable slot; calling it through
+fn error_interface_object_generic() {
+    // TR3: a generic interface method has no vtable slot; calling it through
     // `any Interface` must be rejected at the call site.
-    assert!(compile_error("trait_object_generic.rk"),
+    assert!(compile_error("interface_object_generic.rk"),
         "should reject calling a generic method through `any Interface` (TR3)");
 }
 
@@ -5686,7 +5697,7 @@ trunc_inf inf
 fn method_dispatch_never_falls_back_to_guessing() {
     const ALLOWED: &[&str] = &["0_checker_recorded", "1_synthetic_local"];
     // Between them: primitives and floats, enums behind a `T or E`, a `.lock()`
-    // guard receiver, a multi-parameter generic with a trait bound, a comptime
+    // guard receiver, a multi-parameter generic with an interface bound, a comptime
     // block, a slice receiver, and collections.
     let files: &[&str] = &[
         "primitive_methods.rk",
@@ -6408,13 +6419,13 @@ msg3: over 10
 
 // Three native `any Interface` bugs in one program (#764 and neighbours):
 // `let a: (any Shape)? = c as any Shape` read back as `none` because MIR's type
-// resolver made a trait object named "Shape?" instead of an Option; `return none`
+// resolver made an interface object named "Shape?" instead of an Option; `return none`
 // from a `-> (any Shape)?` (and `return Nope {}` from a `-> (any Shape) or Nope`)
-// asked for a vtable on a value that doesn't implement the trait; and a trait
+// asked for a vtable on a value that doesn't implement the interface; and an interface
 // object declared after a loop was dropped on the loop's back-edge, so the second
 // iteration double-freed.
 #[test]
-fn a_trait_object_in_an_optional_survives_on_both_backends() {
+fn a_interface_object_in_an_optional_survives_on_both_backends() {
     let expected = "\
 a = circle 12.56
 b = none
@@ -6426,7 +6437,7 @@ d = nope
 e = shape
 ";
     for mode in ["--interp", "--native"] {
-        let (stdout, stderr, code) = run_capture(mode, "trait_object_optional.rk");
+        let (stdout, stderr, code) = run_capture(mode, "interface_object_optional.rk");
         assert_eq!(code, 0, "{}: {}", mode, stderr);
         assert_eq!(stdout, expected, "{}", mode);
     }

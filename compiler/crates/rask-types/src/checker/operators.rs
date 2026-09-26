@@ -22,11 +22,11 @@ use crate::types::{Type, TypeId};
 /// OR2/OR9: `Equal` and `Comparable` are absent from the operator table on
 /// purpose — comparison stays same-type on both sides, so `eq`/`lt`/… are not
 /// resolved on the pair.
-pub use rask_ast::operators::{is_unary_operator_trait, operator_trait};
+pub use rask_ast::operators::{is_unary_operator_interface, operator_interface};
 
 /// True for the two unary operators, which take no `Rhs`.
 pub fn is_unary_operator(method: &str) -> bool {
-    operator_trait(method).is_some_and(is_unary_operator_trait)
+    operator_interface(method).is_some_and(is_unary_operator_interface)
 }
 
 /// What one operand contributes to a conformance key — the spelling a header
@@ -45,7 +45,7 @@ pub fn conformance_spelling(ty: &Type, types: &super::TypeTable) -> Option<Strin
 pub(super) enum PairOutcome {
     /// A conformance covers it.
     Found(OperatorMatch),
-    /// Nothing here is an operator conformance's business — no operator trait,
+    /// Nothing here is an operator conformance's business — no operator interface,
     /// no receiver to key on, or no conformance of this operator at all.
     NotAnOperator,
     /// The receiver carries more than one conformance of this operator and the
@@ -62,7 +62,7 @@ pub(super) struct OperatorMatch {
     pub out: Type,
     /// The name the conformance's method is filed under (`mul$f64`).
     pub filed: String,
-    /// The applied trait as the conformance table holds it (`Mul<Meters>`),
+    /// The applied interface as the conformance table holds it (`Mul<Meters>`),
     /// for diagnostics and for the symbol the backends dispatch to.
     pub applied: String,
     /// OR12: the conformance has no body — the compiler answers this pair.
@@ -78,13 +78,13 @@ impl TypeChecker {
         args: &[Type],
         written_as_operator: bool,
     ) -> PairOutcome {
-        let Some(trait_base) = operator_trait(method) else {
+        let Some(interface_base) = operator_interface(method) else {
             return PairOutcome::NotAnOperator;
         };
         let Some(self_id) = self.types.conformance_target(recv) else {
             return PairOutcome::NotAnOperator;
         };
-        let declared = self.types.applied_conformances(self_id, trait_base);
+        let declared = self.types.applied_conformances(self_id, interface_base);
         if declared.is_empty() {
             // OR1: an operator answers to a conformance. A primitive receiver
             // is the exception — `i64 + i64` is the language's own pair, and
@@ -112,7 +112,7 @@ impl TypeChecker {
             if !args.is_empty() {
                 return PairOutcome::NotAnOperator;
             }
-            trait_base.to_string()
+            interface_base.to_string()
         } else {
             let [arg] = args else { return PairOutcome::NotAnOperator };
             let rhs = self.resolve_named(&self.ctx.apply(arg));
@@ -158,7 +158,7 @@ impl TypeChecker {
             let Some(spelling) = conformance_spelling(&rhs, &self.types) else {
                 return PairOutcome::NotAnOperator;
             };
-            format!("{}<{}>", trait_base, spelling)
+            format!("{}<{}>", interface_base, spelling)
         };
 
         if !self.types.declares_conformance(self_id, &applied) {
@@ -187,7 +187,7 @@ impl TypeChecker {
         args: &[Type],
         span: Span,
     ) -> super::TypeError {
-        let trait_name = operator_trait(method).unwrap_or("Add").to_string();
+        let interface_name = operator_interface(method).unwrap_or("Add").to_string();
         let left = self.render_type(recv);
         let right = args
             .first()
@@ -195,8 +195,8 @@ impl TypeChecker {
         // `extend Meters implements Mul<f64>` — the argument's own type is the `Rhs`
         // the author wants, and when it's the receiver's the default covers it.
         let header = match &right {
-            Some(r) if *r != left => format!("{}<{}>", trait_name, r),
-            _ => trait_name.clone(),
+            Some(r) if *r != left => format!("{}<{}>", interface_name, r),
+            _ => interface_name.clone(),
         };
         let has_inherent = self
             .types
@@ -213,7 +213,7 @@ impl TypeChecker {
             left,
             right,
             op: Self::operator_spelling(method).to_string(),
-            trait_name,
+            interface_name,
             header,
             has_inherent,
             span,
@@ -238,7 +238,7 @@ impl TypeChecker {
         method: &str,
         args: &[Type],
     ) -> Result<Option<Type>, Vec<String>> {
-        let Some(trait_base) = operator_trait(method) else { return Ok(None) };
+        let Some(interface_base) = operator_interface(method) else { return Ok(None) };
         let [arg] = args else { return Ok(None) };
         let rhs = self.resolve_named(&self.ctx.apply(arg));
         // A number on the right settles the literal the ordinary way.
@@ -248,7 +248,7 @@ impl TypeChecker {
             return Ok(None);
         }
         let Some(spelling) = conformance_spelling(&rhs, &self.types) else { return Ok(None) };
-        let applied = format!("{}<{}>", trait_base, spelling);
+        let applied = format!("{}<{}>", interface_base, spelling);
 
         let mut found: Vec<Type> = Vec::new();
         for id in self.types.conformers_of(&applied) {
@@ -273,7 +273,7 @@ impl TypeChecker {
     fn applied_rhs_type(&self, applied: &str) -> Option<Type> {
         let rhs = rask_ast::operators::method_rhs(&format!(
             "{}${}",
-            rask_ast::operators::operator_trait_method(
+            rask_ast::operators::operator_interface_method(
                 applied.split('<').next().unwrap_or(applied)
             )?,
             applied.split_once('<')?.1.trim_end_matches('>').trim(),
@@ -326,7 +326,7 @@ impl TypeChecker {
         }
     }
 
-    /// The conformance's method, once the applied trait is known.
+    /// The conformance's method, once the applied interface is known.
     fn matched(
         &self,
         self_id: TypeId,
@@ -494,7 +494,7 @@ pub struct OperatorTarget {
     pub recv: Type,
     /// The conformance method as it is filed (`mul$f64`).
     pub method: String,
-    /// The applied trait the pair resolved to (`Mul<Meters>`).
+    /// The applied interface the pair resolved to (`Mul<Meters>`).
     pub applied: String,
     /// OR12: the conformance declares what the pair answers with and leaves the
     /// arithmetic to the compiler — `instant - instant` is a machine
