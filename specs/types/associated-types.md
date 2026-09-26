@@ -57,7 +57,7 @@ Meters implements Mul<Meters> { type Out = SquareMeters }
 
 never get confused for each other. `m.mul(x)` used to have no answer, though: `MN1` gives a type one `mul` and both conformances want it, so the second block was rejected where it was written.
 
-`type.operator-resolution/OR1` is what settled it — the argument's type picks the conformance, and each one's `mul` is filed under the argument it takes, so the two bodies keep separate symbols. It holds for the operator interfaces, where the argument is something to go on. For every other generic interface `MN1` still applies, and `MN4`'s `scoped extend` is the general answer for a conformance whose methods stay out of the namespace.
+`type.operator-resolution/OR1` is what settled it — the argument's type picks the conformance, and each one's `mul` is filed under the argument it takes, so the two bodies keep separate symbols. It holds for the operator interfaces, where the argument is something to go on. For every other generic interface `MN1` still applies, and a nominal type of its own is the answer when two conformances want one name (`MN3`).
 
 One thing the pair doesn't reach is the projection: `T.Out` in a generic signature doesn't record which bound it came through, so on a type carrying two `Mul`s there are two `Out`s and no way to say which ([#1330](https://github.com/rask-lang/rask/issues/1330)).
 

@@ -2594,6 +2594,29 @@ fn error_nominal_conformance_required() {
     assert!(compile_error("nominal_conformance_required.rk"), "should reject a structural match with no declared conformance (G1/#283)");
 }
 
+// type.generics/MN1: an interface's methods run on a value, never on the
+// interface's own name. `Labeled.label(d)` used to die in MIR lowering.
+#[test]
+fn a_method_called_on_an_interface_name_is_rejected() {
+    let (failed, out) = compile_error_output("interface_static_call.rk");
+    assert!(failed, "{}", out);
+    assert!(out.contains("E0897"), "{}", out);
+    assert!(out.contains("`Labeled` is an interface"), "{}", out);
+    assert!(out.contains("`value.label(…)`"), "the fix shows the call on a value: {}", out);
+}
+
+// type.generics/MN2: one definition per name. The block read last used to win
+// without a word, so reordering two files changed what a program did.
+#[test]
+fn two_blocks_defining_one_method_are_rejected() {
+    let (failed, out) = compile_error_output("method_name_clash.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("E0898").count(), 2, "one per second definition: {}", out);
+    assert!(out.contains("`Doc` already defines `label`"), "{}", out);
+    assert!(out.contains("`Counter` already defines `bump`"), "{}", out);
+    assert!(out.contains("type Doc2 = Doc"), "the fix names the newtype: {}", out);
+}
+
 // type.generics/CD2: an `implements` block is the contract. A method the
 // interface never asked for is a plain method and belongs in `extend T { }`.
 #[test]

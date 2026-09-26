@@ -1180,9 +1180,6 @@ impl<'a> Printer<'a> {
         if imp.is_unsafe {
             self.emit("unsafe ");
         }
-        if imp.is_scoped {
-            self.emit("scoped ");
-        }
         if let Some(name) = &imp.interface_name {
             self.emit(&imp.target_ty);
             self.emit(" implements ");

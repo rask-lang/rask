@@ -176,7 +176,7 @@ For `duck interface`, the same signature check runs at the use site against the 
 
 | Rule | Description |
 |------|-------------|
-| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public`, `unsafe`, `scoped`) go in front of the type name and apply to the block |
+| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public`, `unsafe`) go in front of the type name and apply to the block |
 | **CD2: The block is the contract** | An `implements` block holds only the methods its interface declares (its parent interfaces' included). Any other method in it is an error (E0893): a plain method belongs in `extend T { }`, so reading the block shows exactly what the interface asks of the type |
 | **CD3: Composite chain** | Declaring a composite (`T implements HashKey {}`) checks the full parent interface chain (TD3); auto-derived parent interfaces satisfy automatically, missing methods error at the declaration |
 
@@ -199,28 +199,27 @@ LogSource implements Error {
 
 ## Method Namespace
 
-One type, one method name, one meaning — with an opt-out scoped to the collision.
+One type, one method name, one meaning. A collision gets a second type, not a second meaning.
 
 | Rule | Description |
 |------|-------------|
 | **MN1: Single namespace** | Methods defined in `T implements Interface { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
-| **MN2: Shared implementation** | Two conformances requiring the same method name share the one implementation — legal iff both signatures match it. One implementation means one definition: two blocks each defining `label` on the same type is a duplicate method, whichever interfaces they name (XC3) |
-| **MN3: Conflict needs scoping** | If the signatures disagree, the second conformance declaration is a compile error naming both interfaces — unless it is declared `scoped`. This covers two applied forms of one generic interface (`Mul<f64>` and `Mul<Meters>` on the same type) as much as two different interfaces. `scoped` is parsed but not yet honoured ([#1303](https://github.com/rask-lang/rask/issues/1303)), so today the error stands either way |
-| **MN4: Scoped conformance** | `scoped T implements Interface { ... }` — methods in a scoped conformance do not enter T's inherent namespace. Reachable through interface dispatch (generic bounds, `any Interface`) and interface-qualified calls |
-| **MN5: Interface-qualified call** | `Interface.method(value, args)` — mirrors `Type.method()` static-call syntax. Legal for any conformance, needed only for scoped ones |
+| **MN2: Shared implementation** | Two conformances requiring the same method name share the one implementation — legal iff both signatures match it. One implementation means one definition: two blocks each defining `label` on the same type is a duplicate method (E0898), whichever interfaces they name, plain `extend` blocks included |
+| **MN3: Conflict means a second type** | If the signatures disagree, the second conformance is a compile error (E0889) naming both interfaces. The way out is a nominal type of its own: `type Loud = Doc` then `Loud implements Tagged { ... }`, one line, same layout. This covers two applied forms of one generic interface (`Mul<f64>` and `Mul<Meters>` on the same type) as much as two different interfaces. It is a rule about one name, not about ownership: who declared the type or the interface never matters here (XC2), and there is no orphan rule anywhere in Rask |
 
 <!-- test: skip -->
 ```rask
-Dog implements Greeter {
-    func greet(self) -> string { ... }               // ordinary method: dog.greet()
+interface Labeled { func label(self) -> string }
+interface Tagged  { func label(self) -> i64 }
+
+Doc implements Labeled {
+    func label(self) -> string { ... }               // doc.label()
 }
 
-scoped Dog implements Announcer {
-    func greet(self, volume: i32) -> string { ... }  // interface-only
+type TaggedDoc = Doc                                 // its own name, same bytes
+TaggedDoc implements Tagged {
+    func label(self) -> i64 { ... }                  // TaggedDoc(doc).label()
 }
-
-dog.greet()                 // Greeter's — the inherent one
-Announcer.greet(dog, 5)     // Announcer's — qualified
 ```
 
 ## Override Coherence
@@ -596,7 +595,7 @@ func increment<T: Numeric>(val: T) -> T {
 | Zero usages | G2 | Function body syntax-checked; type errors may be deferred |
 | Recursive generics | G6 | `Vec<Vec<T>>` allowed; compiler prevents infinite expansion |
 | Interface visibility | TD1 | Package-visible by default, `public interface` exports — same rule as structs and functions (`struct.modules/V1`) |
-| Same method required by two interfaces | MN2/MN3 | Same signature: shared implementation. Different: `scoped` or error |
+| Same method required by two interfaces | MN2/MN3 | Same signature: shared implementation. Different: error; conform a nominal newtype instead |
 | Third party declares `Hashable` or `Encode` for a foreign type | XC1 | Compile error (E0409) at the `extend`, whatever the body. Wrap in a nominal type instead |
 | Third party declares any other interface for a foreign type | XC2 | Legal, no wrapper needed |
 | Two packages declare the same (type, interface), nobody uses it | XC3 | Not an error — the check is where the conformance is required |
@@ -620,7 +619,7 @@ func increment<T: Numeric>(val: T) -> T {
 
 **G1 (declared conformance):** This flipped. The original design matched by shape by default, with `explicit interface` as the opt-out — chosen to avoid global impl tracking. Two things overturned it: accidental conformance is silent-wrong (a `compare()` that isn't a total order satisfies `Comparable` structurally and misbehaves instead of erroring), and the declaration's cost dropped — one line that states intent is cheap, especially when most code is machine-written and human-reviewed. Checking stays local: a declaration is checked where it's written, and bounds are still checked at the use site — no whole-program analysis either way. `duck interface` keeps shape-matching available for sketching, package-internal by DT1.
 
-**MN1–MN5 (single namespace):** Under shape-matching, one method satisfied every matching interface by construction; nominal conformance created the "which interface owns this method" question. Single namespace matches how people think ("Dog has a greet method") and keeps `dog.greet()` working when `greet` was defined inside a conformance block. The collision case is rare, and `scoped` puts the ceremony exactly on the declaration that collides — no Rust-style qualified-call syntax tax on everyone.
+**MN1–MN3 (single namespace):** Under shape-matching, one method satisfied every matching interface by construction; nominal conformance created the "which interface owns this method" question. Single namespace matches how people think ("Dog has a greet method") and keeps `dog.greet()` working when `greet` was defined inside a conformance block. The collision case is rare, and the answer is the one Rask already gives for a cross-package collision: a nominal type of its own. A `scoped` modifier and an interface-qualified call (`Announcer.greet(dog, 5)`) were specced for this and never built; two features for a case the corpus never hit, so they went (#1303). None of this is an orphan rule: the newtype is for two methods wanting one name, never for who owns what.
 
 **OC1 (override cancels dependents):** Auto-derive keeps the eq/hash/compare contracts consistent by construction; a declared Equal override paired with an untouched auto-derived hash is the one guaranteed-inconsistent state (Map entries silently vanish). Cancellation plus a loud error removes it. The compiler can't verify a hand-written hash is consistent — no compiler can — but it can refuse to pair your eq with a hash you never looked at.
 

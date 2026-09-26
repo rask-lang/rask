@@ -547,11 +547,6 @@ func main() {
             "unsafe Point implements Raw",
             "unsafe on a conformance",
         );
-        keeps(
-            "scoped extend Point {\n    func name(self) -> string {\n        return \"p\"\n    }\n}\n",
-            "scoped extend Point",
-            "scoped on a block",
-        );
     }
 
     #[test]

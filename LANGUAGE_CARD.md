@@ -314,7 +314,7 @@ duck interface Sketchy { func poke(self) }       // opt-in shape-matching — pr
 ```
 
 - Auto-derived (no declaration needed): **Equal, Hashable, Comparable, Cloneable** for eligible field types, `Debug` for all types, `Encode`/`Decode` markers, `Error` for enums. Structs and enums only — a nominal newtype (`type TaskId = u64`) inherits nothing from what it wraps and opts in with `implements …` (`type.aliases/T10`, T11). Overriding `Equal` cancels auto-derived `Hashable`/`Comparable` — redeclare them consistently (OC1).
-- Method-name collision between two conformances: mark the second `scoped T implements I`; call it as `Interface.method(value, args)` (MN3–MN5).
+- Method-name collision between two conformances: compile error; put the second conformance on a nominal type of its own, `type Loud = Doc` (MN3). Not an orphan rule: who owns the type never matters.
 - Generics monomorphize (`func max<T: Comparable>(a: T, b: T) -> T`). Public functions declare bounds; private functions may omit types and bounds entirely — inferred from the body, still fully static (`type.gradual`). Error unions infer too: `-> Config or _`.
 - Operators are authored sugar on concrete types: `a + b` calls `a.add(b)` — write the method, get the operator. Arithmetic operators require Copy types (no allocating `+`); `+=` has no such limit. Generic operator use goes through nominal bounds (OP1). There is no `From`/`Into` — `try` widens error unions structurally, and there's one string type.
 - Runtime polymorphism: `any Interface` boxes the value (heap allocation + vtable). Conversion is always explicit — `button as any Widget` — including in collections and arguments (TR5). Methods returning `Self` or generic methods can't be called through `any`.

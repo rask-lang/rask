@@ -489,8 +489,6 @@ pub struct ImplDecl {
     pub methods: Vec<FnDecl>,
     /// Whether this is an `unsafe extend`.
     pub is_unsafe: bool,
-    /// `scoped extend` — methods stay out of the type's inherent namespace (MN4).
-    pub is_scoped: bool,
     /// `public` in front of the block. Parsed and printed back; the checker
     /// treats every conformance as declared, public or not.
     pub is_pub: bool,

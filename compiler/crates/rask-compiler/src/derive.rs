@@ -70,7 +70,6 @@ pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
                                 target_ty: name.clone(),
                                 methods: vec![fn_decl],
                                 is_unsafe: false,
-                                is_scoped: false,
                                 is_pub: false,
                                 where_bounds: vec![],
                                 doc: None,

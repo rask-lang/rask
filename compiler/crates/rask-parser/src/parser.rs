@@ -694,22 +694,12 @@ impl Parser {
 
         let doc = self.take_doc();
 
-        // Contextual modifiers: `duck interface` (G1 shape-matched) and
-        // `scoped extend` (MN4). Both are plain identifiers followed by the
-        // real keyword, so no lexer keyword is needed.
+        // Contextual modifier: `duck interface` (G1 shape-matched). A plain
+        // identifier followed by the real keyword, so no lexer keyword is needed.
         let is_duck = matches!(self.current_kind(), TokenKind::Ident(s) if s == "duck")
             && matches!(self.peek(1), TokenKind::Interface);
         if is_duck {
             self.advance();
-        }
-        let mut is_scoped = false;
-        if matches!(self.current_kind(), TokenKind::Ident(s) if s == "scoped") {
-            let saved = self.pos;
-            self.advance();
-            is_scoped = matches!(self.current_kind(), TokenKind::Extend) || self.at_conformance_header();
-            if !is_scoped {
-                self.pos = saved;
-            }
         }
 
         // Contextual: `annotation @name { ... }` (type.annotations/AN1). Plain
@@ -754,7 +744,7 @@ impl Parser {
 
         let is_conformance = self.at_conformance_header();
         let kind = if is_conformance {
-            self.parse_conformance_decl(is_pub, is_unsafe, is_scoped, doc)?
+            self.parse_conformance_decl(is_pub, is_unsafe, doc)?
         } else { match self.current_kind() {
             TokenKind::Func => {
                 self.reject_keyword_fn_name()?;
@@ -764,7 +754,7 @@ impl Parser {
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
             TokenKind::Interface => self.parse_interface_decl(is_pub, is_unsafe, is_duck, attrs, doc)?,
-            TokenKind::Extend => self.parse_extend_decl(is_pub, is_unsafe, is_scoped, doc)?,
+            TokenKind::Extend => self.parse_extend_decl(is_pub, is_unsafe, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub, attrs, doc)?,
@@ -2149,15 +2139,15 @@ impl Parser {
     }
 
     /// `extend T { … }`: the type's own methods.
-    fn parse_extend_decl(&mut self, is_pub: bool, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_extend_decl(&mut self, is_pub: bool, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Extend)?;
         let target_ty = self.parse_type_name()?;
-        self.parse_impl_body(target_ty, None, is_pub, is_unsafe, is_scoped, doc)
+        self.parse_impl_body(target_ty, None, is_pub, is_unsafe, doc)
     }
 
     /// `T implements I { … }`: one interface per block (CD1), so the block is
     /// exactly that interface's contract.
-    fn parse_conformance_decl(&mut self, is_pub: bool, is_unsafe: bool, is_scoped: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_conformance_decl(&mut self, is_pub: bool, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         let target_ty = self.parse_type_name()?;
         self.expect(&TokenKind::Implements)?;
         self.skip_newlines();
@@ -2171,7 +2161,7 @@ impl Parser {
                 why: Some("the block is the interface's contract, so a reader can see which methods belong to it".to_string()),
             });
         }
-        self.parse_impl_body(target_ty, Some(name), is_pub, is_unsafe, is_scoped, doc)
+        self.parse_impl_body(target_ty, Some(name), is_pub, is_unsafe, doc)
     }
 
     /// Does a `T implements I` header start here? Reads a type name and looks
@@ -2192,7 +2182,6 @@ impl Parser {
         interface_name: Option<String>,
         is_pub: bool,
         is_unsafe: bool,
-        is_scoped: bool,
         doc: Option<String>,
     ) -> Result<DeclKind, ParseError> {
 
@@ -2257,7 +2246,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Impl(ImplDecl { interface_name, target_ty, methods, is_unsafe, is_scoped, is_pub, where_bounds, assoc_bindings, doc }))
+        Ok(DeclKind::Impl(ImplDecl { interface_name, target_ty, methods, is_unsafe, is_pub, where_bounds, assoc_bindings, doc }))
     }
 
     /// AT2: `type Out = Meters` inside a `T implements I` block.

@@ -76,25 +76,9 @@ Common case (no override) unaffected. The rare case gets an error instead of a h
 |------|-------------|
 | **MN1: Single namespace** | Methods defined in `T implements Interface { }` are ordinary methods of T, same namespace as plain `extend T` blocks |
 | **MN2: Shared implementation** | Two conformances requiring the same method name share the one implementation — legal iff both signatures match it |
-| **MN3: Conflict needs scoping** | If the signatures disagree, the second conformance declaration is a compile error naming both interfaces — unless it is declared `scoped` |
-| **MN4: Scoped conformance** | `scoped T implements Interface { ... }` — methods in a scoped conformance do not enter T's inherent namespace. Reachable through interface dispatch (generic bounds, `any Interface`) and interface-qualified calls |
-| **MN5: Interface-qualified call** | `Interface.method(value, args)` — mirrors the existing `Type.method()` static-call syntax. Legal for any conformance, needed only for scoped ones |
+| **MN3: Conflict means a second type** | If the signatures disagree, the second conformance is a compile error naming both interfaces; the way out is a nominal type of its own (`type Loud = Doc`), the same answer as a cross-package collision. Not an orphan rule: ownership never enters into it |
 
-<!-- test: skip -->
-```rask
-Dog implements Greeter {
-    func greet(self) -> string { ... }            // ordinary method: dog.greet()
-}
-
-scoped Dog implements Announcer {
-    func greet(self, volume: i32) -> string { ... }  // interface-only
-}
-
-dog.greet()                 // Greeter's — the inherent one
-Announcer.greet(dog, 5)     // Announcer's — qualified
-```
-
-Common case: nothing to learn, `dog.greet()` works even when `greet` was defined inside a conformance block. Collision case: one keyword, at the declaration where the special case lives — the scoping is visible in source. (Exact spelling of `scoped` is bikesheddable; the prefix position parallels the planned `public extend` from #283.)
+Common case: nothing to learn, `dog.greet()` works even when `greet` was defined inside a conformance block. Collision case: one newtype, which the language already asks for whenever two conformances meet. (A `scoped` modifier and an `Interface.method(value)` call were accepted here first and later dropped unbuilt: two features for a case nobody hit.)
 
 ## Finding 3: Generic containers can't conform conditionally
 
@@ -210,7 +194,7 @@ The comma-list header (`T implements A, B, C`) was accepted here and later rever
 
 | Rule | Description |
 |------|-------------|
-| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public`, `unsafe`, `scoped`) go in front of the type name and apply to the block |
+| **CD1: One interface per block** | `T implements I { ... }` declares that `T` conforms to `I`. A block names exactly one interface; a second name after `implements` is a parse error, so the block is the whole contract a reader sees. The signature check runs against the block plus the type's existing methods. Modifiers (`public`, `unsafe`) go in front of the type name and apply to the block |
 | **CD2: The block is the contract** | An `implements` block holds only the methods its interface declares (its parent interfaces' included). Any other method in it is an error (E0893): a plain method belongs in `extend T { }`, so reading the block shows exactly what the interface asks of the type |
 | **CD3: One condition per block** | On generic types, the inferred condition (CC2) is computed for the block's interface. An explicit `where` clause (public, CC3) applies to the whole block |
 
@@ -291,13 +275,13 @@ Deliberate absences confirmed against Rust's remaining heavy hitters: `Deref` (n
 | Prototype an interface | `structural interface`; harden by deleting the keyword + accepting generated declarations |
 | Operator on a math type | write the methods (OP1) |
 | Interface for someone else's type | one extend block; collision errors loudly (#312) |
-| Two interfaces fighting over a name | one `scoped` keyword on the second conformance (MN4) |
+| Two interfaces fighting over a name | a nominal type of its own for the second conformance (MN3) |
 
 Every row is zero-or-one lines in the common case; the special cases are opt-in, and each opt-in is visible at the declaration that needs it.
 
 ## Status
 
-All findings ruled on. Accepted: **MN1–MN5** (single namespace, `scoped` opt-in for collisions, interface-qualified calls), **OC1–OC3** (override cancels dependents, hard error), **IS1–IS3** (mixed inference, exact promotion with generate-interface assist, honest ghost text) plus the structural-as-prototype-dial guidance, **CC1–CC3** (conditional conformance, condition inferred, public states it), **OP1** (concrete operators are authored sugar), and the Finding 6 fixes.
+All findings ruled on. Accepted: **MN1–MN3** (single namespace, a newtype for collisions; `scoped` and the qualified call were dropped later), **OC1–OC3** (override cancels dependents, hard error), **IS1–IS3** (mixed inference, exact promotion with generate-interface assist, honest ghost text) plus the structural-as-prototype-dial guidance, **CC1–CC3** (conditional conformance, condition inferred, public states it), **OP1** (concrete operators are authored sugar), and the Finding 6 fixes.
 
 Also accepted: **CD1–CD3** (one interface per block, the block is the contract, one condition per block).
 
@@ -305,7 +289,6 @@ Also accepted: **auto-derived `Error` for enums**, overridable (corpus survey; t
 
 Remaining open details (bikeshed-level, decide during spec fold-in):
 - ~~Renaming `structural`~~ — **decided: `duck interface`**, and the stdlib ships zero of them: `Reader`/`Writer`/`Error` go nominal (ER4/ER6 rewrite at fold-in). One block per interface (CD1); a type with five conformances writes five blocks, and each block is one contract.
-- Exact spelling of the `scoped` modifier (keyword prefix vs `@`-attribute).
 - Whether IS2's generate-a-interface action lives in the compiler diagnostic or LSP-only.
 - CC3 wording depends on #283's final `public extend` syntax.
 

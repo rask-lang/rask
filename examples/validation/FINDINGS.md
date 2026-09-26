@@ -45,7 +45,7 @@ Last pass, five spec constructs didn't parse. Now:
 | Construct | Before | Now |
 |-----------|--------|-----|
 | `duck interface` | ✗ | **✓ parses + checks** |
-| `scoped extend` | ✗ | **✓ parses + checks** |
+| `scoped extend` | ✗ | removed: a name clash gets a newtype (MN3) |
 | comma-list `T implements A, B` | ✗ | **✓ parses + checks** |
 | struct field defaults `f: T = expr` | ✗ | **✓ parses + runs** |
 | field annotations `@rename/@no_serialize/@default` | ✗ | ✗ still unimplemented |

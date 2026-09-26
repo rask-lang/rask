@@ -508,10 +508,8 @@ impl TypeChecker {
     }
 
     fn check_overlapping_conformances(&mut self, i: &ImplDecl, span: rask_ast::Span) {
-        // `scoped extend` is MN4's answer to exactly this and would be the
-        // escape hatch, but nothing outside the parser reads the flag yet — a
-        // scoped block's methods still land in the inherent namespace and
-        // segfault the same way. Don't offer a door that isn't there.
+        // MN3: two conformances wanting different methods of one name is an
+        // error; the way out is a nominal type of its own.
         let Some(type_id) = self.impl_target_id(&i.target_ty) else {
             return;
         };
@@ -934,8 +932,8 @@ impl TypeChecker {
             }
         };
         self.types.record_method_decl(type_id, decl_id);
-        // G1: record each declared conformance. `scoped` methods stay out of the
-        // inherent namespace (MN4) but the conformance is still declared.
+        // G1: record each declared conformance.
+        let mut dup_pair = false;
         // CC1/CC2: a `where` clause makes every listed conformance conditional
         // (CD3: one condition per block).
         let condition: Vec<(String, Vec<String>)> = i.where_bounds.iter()
@@ -984,6 +982,7 @@ impl TypeChecker {
                 self.types
                     .record_conformance_span(type_id, interface_name, decl_id, span, here);
             if let Some(first) = first {
+                dup_pair = true;
                 self.errors.push(TypeError::DuplicateConformance {
                     ty: base_name.to_string(),
                     interface_name: TypeTable::conformance_display(interface_name),
@@ -1112,6 +1111,35 @@ impl TypeChecker {
                     name,
                     span,
                 });
+            }
+        }
+        // MN2: one definition per name. Keyed on the filed name so `Mul<f64>`
+        // and `Mul<Meters>` keep their separate `mul`s (OR4). Only the
+        // program's own blocks count; the stdlib registers first, in its own
+        // mode, and a program block over a stdlib method is XC2's question.
+        // A pair declared twice (E0407) or two applied forms of one interface
+        // wanting one method (E0889) are each already reported with a message
+        // that names the real problem, so they are not reported again here.
+        let same_base_sibling = i.interface_name.as_deref().map_or(false, |n| {
+            let base = n.split('<').next().unwrap_or(n).trim().to_string();
+            self.types
+                .applied_conformances(type_id, &base)
+                .iter()
+                .any(|k| !self.same_applied_interface(k, n, &i.target_ty))
+        });
+        if !self.types.stdlib_mode && !dup_pair && !same_base_sibling {
+            for (m, sig) in i.methods.iter().zip(new_methods.iter()) {
+                let key = (type_id, sig.name.clone());
+                if let Some(first) = self.declared_methods.get(&key).copied() {
+                    self.errors.push(TypeError::DuplicateMethod {
+                        ty: i.target_ty.clone(),
+                        method: m.name.clone(),
+                        first,
+                        span: m.span,
+                    });
+                } else {
+                    self.declared_methods.insert(key, m.span);
+                }
             }
         }
         // XC5: a block on someone else's type carries the package that wrote it,

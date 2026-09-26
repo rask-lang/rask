@@ -3485,6 +3485,23 @@ impl TypeChecker {
             }
         }
 
+        // MN1: `Labeled.label(d)` names the interface where a value belongs.
+        // Without this it type-checked as a static call and died in lowering.
+        if let ExprKind::Ident(name) = &object.kind {
+            let spelled = name.split('<').next().unwrap_or(name);
+            if self.lookup_local(spelled).is_none() {
+                if let Some(id) = self.types.get_type_id(spelled) {
+                    if matches!(self.types.get(id), Some(TypeDef::Interface { .. })) {
+                        self.errors.push(TypeError::StaticCallOnInterface {
+                            interface_name: spelled.to_string(),
+                            method: method.to_string(),
+                            span: object.span,
+                        });
+                        return Type::Error;
+                    }
+                }
+            }
+        }
         // Type-level namespaces: Vec.new(), Map.new(), Rng.new(), Pool.new()
         // These are type names, not variables — skip ESAD borrow check and
         // emit UnresolvedNamed directly instead of calling infer_expr

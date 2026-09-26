@@ -527,7 +527,7 @@ LogSource implements Error {
 }
 ```
 
-**Name collisions:** two interfaces demanding the same method name with the same signature share one implementation. Different signatures: declare the second conformance `scoped` — its methods stay out of the type's namespace, reachable via interface-qualified calls (`Announcer.greet(dog, 5)`, mirroring `Type.method()` statics).
+**Name collisions:** two interfaces demanding the same method name with the same signature share one implementation. Different signatures: a compile error, and the second conformance goes on a nominal type of its own (`type Loud = Dog`, then `Loud implements Announcer`). Ownership never matters here; this is not an orphan rule (`type.generics/MN3`).
 
 **Runtime polymorphism:** Use `any Interface` for heterogeneous collections. Conversion is explicit — it heap-allocates, and the cast marks where (`type.interfaces/TR5`):
 ```rask

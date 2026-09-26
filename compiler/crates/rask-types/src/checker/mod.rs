@@ -159,6 +159,9 @@ pub struct TypeChecker {
     /// because the block is on a type that package doesn't own. Filled as each
     /// block registers — the answer is a property of that block alone.
     pub(super) conformance_disambiguation: HashMap<NodeId, String>,
+    /// MN2: where each method name on a type was first defined by a block in
+    /// this program, so a second block defining it is reported as a duplicate.
+    pub(super) declared_methods: HashMap<(crate::types::TypeId, String), rask_ast::Span>,
     pub(super) reported_ambiguous_conformances:
         std::collections::HashSet<(crate::types::TypeId, String, String)>,
     /// Current function's return type (for checking return statements).
@@ -499,6 +502,7 @@ impl TypeChecker {
         Self {
             resolved,
             conformance_disambiguation: HashMap::new(),
+            declared_methods: HashMap::new(),
             reported_ambiguous_conformances: std::collections::HashSet::new(),
             types: TypeTable::new(),
             ctx: InferenceContext::new(),

@@ -596,6 +596,26 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// MN2: one definition per name. Two blocks each defining `label` on one
+    /// type, whichever interfaces they name, is a duplicate; the last one read
+    /// used to win silently.
+    #[error("`{ty}` already defines `{method}`")]
+    DuplicateMethod {
+        ty: String,
+        method: String,
+        first: Span,
+        span: Span,
+    },
+
+    /// MN1: an interface names what a type can do; its methods run on a value
+    /// of a conforming type, never on the interface's own name.
+    #[error("`{interface_name}` is an interface, and an interface has no static methods")]
+    StaticCallOnInterface {
+        interface_name: String,
+        method: String,
+        span: Span,
+    },
+
     /// CD2: an `implements` block holds only the interface's methods. A plain
     /// method in it belongs in `extend T { }`.
     #[error("`{method}` is not part of `{interface_name}`")]
@@ -1502,6 +1522,8 @@ impl TypeError {
             | ConformanceSignatureMismatch { .. }
             | OverlappingInterfaceConformance { .. }
             | MethodOutsideInterface { .. }
+            | StaticCallOnInterface { .. }
+            | DuplicateMethod { .. }
             | InterfaceArity { .. }
             | MissingAssocType { .. }
             | UnknownAssocType { .. }

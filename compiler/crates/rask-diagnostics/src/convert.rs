@@ -2022,10 +2022,27 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_code("E0889")
                 .with_primary(*span, format!("the second `{}` has nowhere to live", method))
                 .with_fix(format!(
-                    "keep one of them — or give this one its own interface, so the two `{}`s have different names to answer to",
-                    method
+                    "give the second conformance a type of its own, same bytes, its own name:\n    type {ty}2 = {ty}\n    {ty}2 implements {second} {{ … }}",
+                    ty = ty, second = second
                 ))
-                .with_why("a type has one method per name (type.generics/MN1), so two conformances asking for different `{method}`s leave `x.{method}(…)` with no answer. Choosing from the argument's type is operator resolution's job, and that isn't built yet [type.generics/MN3]".replace("{method}", method))
+                .with_why("a type has one method per name (type.generics/MN1), so two conformances asking for different `{method}`s leave `x.{method}(…)` with no answer. This is about the name, not about who owns the type or the interface: there is no orphan rule [type.generics/MN3]".replace("{method}", method))
+            }
+
+            DuplicateMethod { ty, method, first, span } => {
+                Diagnostic::error(format!("`{}` already defines `{}`", ty, method))
+                    .with_code("E0898")
+                    .with_primary(*span, "defined again here")
+                    .with_secondary(*first, "first defined here")
+                    .with_fix(format!("a type has one `{m}`. If two interfaces want a `{m}` with the same signature, one block defines it and the other leaves it out; if they want different ones, the second conformance goes on a nominal type of its own:\n    type {t}2 = {t}", m = method, t = ty))
+                    .with_why("a type has one method per name (type.generics/MN1), and the block read last used to win without a word, so reordering two files changed what a program did. This is a rule about one name, not about who owns the type or the interface: there is no orphan rule [type.generics/MN2]")
+            }
+
+            StaticCallOnInterface { interface_name, method, span } => {
+                Diagnostic::error(format!("`{}` is an interface, and an interface has no static methods", interface_name))
+                    .with_code("E0897")
+                    .with_primary(*span, "names the interface, not a value")
+                    .with_fix(format!("call it on a value of a conforming type: `value.{}(…)`", method))
+                    .with_why(format!("an interface says what a type can do; `{}` runs on a value of a type that implements `{}`, and every conformance method is an ordinary method of that type [type.generics/MN1]", method, interface_name))
             }
 
             MethodOutsideInterface { ty, interface_name, method, span } => {

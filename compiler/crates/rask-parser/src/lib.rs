@@ -1623,21 +1623,7 @@ mod tests {
         }
     }
 
-    // MN4: `scoped T implements Interface` sets the scoped flag.
-    #[test]
-    fn scoped_extend_flag() {
-        let result = parse("scoped Dog implements Announcer { func greet(self, v: i32) -> string { return \"x\" } }");
-        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
-        match result.decls[0].kind {
-            DeclKind::Impl(ref i) => {
-                assert!(i.is_scoped);
-                assert_eq!(i.interface_name.as_deref(), Some("Announcer"));
-            }
-            _ => panic!("expected impl"),
-        }
-    }
-
-    // `duck` and `scoped` stay usable as ordinary identifiers.
+    // `duck` is an ordinary identifier anywhere but in front of `interface`.
     #[test]
     fn duck_scoped_still_identifiers() {
         let stmts = parse_body("let duck = 3\nlet scoped = duck + 1");

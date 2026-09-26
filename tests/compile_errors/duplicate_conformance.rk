@@ -6,10 +6,6 @@
 // per block, the last block read supplied them. Reordering two files changed
 // which `label()` the program ran, with nothing reported.
 //
-// `scoped` doesn't change the answer. It keeps the methods out of the type's
-// inherent namespace (MN4), which is about how you call them; the conformance
-// is still declared and there is still only room for one.
-//
 // Two blocks naming *different* interfaces is the ordinary case and stays legal,
 // as does one block naming several (CD1) — both are below the marker's span on
 // purpose, so a diagnostic that over-fires shows up as a failure here.
@@ -48,13 +44,6 @@ struct Memo {
 Memo implements Labeled {
     func label(self) -> string {
         return "memo {self.n}"
-    }
-}
-
-// ERROR: a `scoped` block is still a declaration (E0407)
-scoped Memo implements Labeled {
-    func label(self) -> string {
-        return "scoped"
     }
 }
 

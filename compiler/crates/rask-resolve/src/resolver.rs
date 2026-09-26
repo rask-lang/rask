@@ -3324,7 +3324,6 @@ mod tests {
                     target_ty: "Job".to_string(),
                     methods: vec![method],
                     is_unsafe: false,
-                    is_scoped: false,
                     is_pub: false,
                     where_bounds: vec![],
                     doc: None,
