@@ -34,16 +34,16 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 561 green, 6 registered red | `tests/differential.sh` |
+| Suite programs agreeing on both backends | 568 green, 6 registered red | `tests/differential.sh` |
 | Programs that leak | 5, holding 7 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 557 | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 72 | `tests/tsan_gate.sh` |
-| Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
+| Programs memcheck finds an error in | 0 of 557 *(not re-run this week)* | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 72 *(not re-run this week)* | `tests/tsan_gate.sh` |
+| Soak programs within their thread budget | 6 of 6 *(not re-run this week)* | `tests/soak_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 39 of 85 open issues | issue search |
-| Open design questions | 22 | issue search |
+| Open bugs | 57 of 102 open issues | issue search |
+| Open design questions | 20 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
 agent benchmark, internal spellings, formatter round-trips and the HTTP server.
@@ -395,7 +395,7 @@ That gate doesn't exist yet, and building it is the first deliverable. It
 compares each module's spec'd surface against what exists and runs; a function
 reaches 100% by being implemented or by the spec dropping it.
 
-Today [TODO.md](TODO.md) claims coverage per module between 40% and 90%. Those
+Today [TODO.md](TODO.md) claims coverage per module between 0% and 90%. Those
 numbers are typed by hand and checked by nobody, which is the same shape as the
 leak gate before it measured. The first deliverable here is the gate, not the
 missing functions; the percentages will move on their own once they're real.
