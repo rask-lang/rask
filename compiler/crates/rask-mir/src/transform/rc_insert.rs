@@ -843,11 +843,23 @@ fn insert_aggregate_release(
                 _ => {}
             }
         }
-        // Returned: ownership moves to the caller.
+        // Returned: ownership moves to the caller, on this path. A hand-over
+        // like the store above, not a reason to refuse the release on every
+        // path. Blocking the group outright leaked the ok side of a `T or E`
+        // whose error path returns part of the error:
+        //
+        //     let raw = make(n) catch e => { return e.inner() }
+        //
+        // hands `e`'s payload back, which is the same group as the result
+        // `make` returned, so the string on the ok path was never released.
+        // `TcpConnection.read_http_request` leaked every request it read that
+        // way.
         match &block.terminator.kind {
             MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
             | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
-                block_local(&mut blocked, id);
+                if let Some(gi) = group_of.get(id) {
+                    handed_over_in.entry(*gi).or_default().insert(block.id);
+                }
             }
             _ => {}
         }

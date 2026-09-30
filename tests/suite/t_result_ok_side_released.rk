@@ -1,0 +1,75 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The ok side of a `T or E` is released even when the error path returns part
+// of the error.
+//
+//     let raw = make(n) catch e => { return e.inner() }
+//
+// hands `e`'s payload back to the caller, and `e` is the same group of names
+// as the result `make` returned. A return anywhere in a group used to stop it
+// being released on every path, so the string on the ok side leaked on every
+// call. `TcpConnection.read_http_request` read each request that way. A return
+// is a hand-over on its own path now, the same as a store into the result.
+
+enum Inner {
+    Reset
+    Other(string)
+}
+
+enum Failure {
+    Io(Inner)
+    Bad(string)
+}
+
+extend Failure {
+    func inner(take self) -> Inner {
+        match self {
+            Failure.Io(e) => return e
+            Failure.Bad(m) => return Inner.Other(m)
+        }
+    }
+}
+
+enum Refused {
+    Empty
+}
+
+extend Refused {
+    public func message(self) -> string {
+        return "empty"
+    }
+}
+
+func make(n: i64) -> string or Failure {
+    if n < 0 {
+        return Failure.Io(Inner.Reset)
+    }
+    return "a value long enough that it has to live on the heap: {n}"
+}
+
+func parse(s: string) -> i64 or Refused {
+    if s.is_empty() {
+        return Refused.Empty
+    }
+    return s.len().wrap<i64>()
+}
+
+func use(n: i64) -> i64 or Inner {
+    let raw = make(n) catch e => {
+        return e.inner()
+    }
+    let v = parse(raw) catch e => {
+        return Inner.Other(e.message())
+    }
+    return v
+}
+
+test "the ok side of a result is released when the error path returns part of the error" {
+    mut total: i64 = 0
+    for i in 0..50 {
+        total += use(i) catch _ => 0
+    }
+    assert total > 0
+    assert use(-1) is Inner
+}
+
+func main() {}
