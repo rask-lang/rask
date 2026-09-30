@@ -1314,8 +1314,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Map_clone", "rask_map_clone", &[types::I64], Some(types::I64), false),
 
         // ── ThreadPool ─────────────────────────────────────────────
-        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("ThreadPool_spawn", "rask_threadpool_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        StdlibEntry::simple("Thread_spawn", "rask_thread_spawn", &[types::I64, types::I64], Some(types::I64), true),
         StdlibEntry {
             mir_name: "time_sleep", c_name: "rask_sleep_ns",
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
@@ -1328,7 +1328,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // joiner, it comes back as Err(JoinError.Panicked(msg)) (ctrl.panic/O1).
         // Two args: the closure, then whether its result is a heap box the task
         // owns and must free if no join ever comes for it (#963).
-        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), false),
+        // Panics when the closure is bound to its task (#1356), so the call
+        // records where it is; without that the report named the last line
+        // that happened to record one.
+        StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), true),
         // One handle for every spawn form (conc.async/H5); the runtime reads
         // which kind it is.
         StdlibEntry::join_outcome("join", "rask_handle_join"),

@@ -4277,9 +4277,12 @@ fn panic_in_a_lock_closure_releases_the_lock() {
 // flagged one when it starts the task.
 #[test]
 fn a_task_bound_closure_is_refused_at_spawn() {
-    for fixture in [
-        "spawn_returned_closure_with_link.rk",
-        "spawn_field_closure_with_local_box.rk",
+    // The report names the spawn's own line. Natively `spawn` didn't record a
+    // location, so the report named whatever line last had: none at all, or
+    // an earlier spawn that succeeded.
+    for (fixture, line) in [
+        ("spawn_returned_closure_with_link.rk", 21),
+        ("spawn_field_closure_with_local_box.rk", 19),
     ] {
         for mode in ["--interp", "--native"] {
             let (stdout, stderr, code) = run_capture(mode, fixture);
@@ -4289,6 +4292,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
                 stderr.contains("this closure captured a link or a `Local` box"),
                 "{mode} {fixture}: {stderr}",
             );
+            assert!(stderr.contains(&format!("{fixture}:{line}:")), "{mode} {fixture}: {stderr}");
         }
     }
     // And one that captured only plain values still crosses.
@@ -4307,6 +4311,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
             stderr.contains("this closure captured a link or a `Local` box"),
             "{mode}: {stderr}",
         );
+        assert!(stderr.contains("spawn_generic_closure_with_link.rk:26:"), "{mode}: {stderr}");
         let (stdout, stderr, code) = run_capture(mode, "spawn_generic_closure_that_may_cross.rk");
         assert_eq!(code, 0, "{mode}: {stderr}");
         assert_eq!(stdout, "1\n", "{mode}");
