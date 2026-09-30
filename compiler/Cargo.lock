@@ -1477,6 +1477,7 @@ name = "rask-interp"
 version = "0.4.0"
 dependencies = [
  "indexmap",
+ "libc",
  "rask-ast",
  "rask-comptime",
  "rask-lexer",

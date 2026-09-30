@@ -20,3 +20,8 @@ thiserror.workspace = true
 unicode-normalization = "0.1"
 unicode-segmentation = "1"
 unicode-width = "0.2"
+
+# `poll` and a non-blocking `connect`, so a cancel can end a socket wait
+# (conc.async/CN3) instead of the wait checking for one on a timer.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
