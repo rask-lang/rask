@@ -34,13 +34,13 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 573 green, 6 registered red | `tests/differential.sh` |
-| Programs that leak | 4, holding 6 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Suite programs agreeing on both backends | 575 green, 6 registered red | `tests/differential.sh` |
+| Programs that leak | 5, holding 6 allocations this milestone and 3 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 575 | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 80 | `tests/tsan_gate.sh` |
+| Programs memcheck finds an error in | 0 of 577 | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 81 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
-| Concurrency files clean under sim, 100 seeds in CI | 80 of 80, 43 tests exempt | `tests/sim_gate.sh` |
+| Concurrency files clean under sim, 100 seeds in CI | 81 of 81, 43 tests exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
 | Open bugs | 64 of 106 open issues | issue search |

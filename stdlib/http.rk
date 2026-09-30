@@ -479,7 +479,7 @@ func read_message(conn: TcpConnection, max_bytes: i64, is_response: bool) -> str
     while head_end < 0 {
         let have = buf.len().wrap<i64>()
         let from = if have >= 3 { have - 3 } else { 0 }
-        if !try read_more(conn, mutate buf, max_bytes) {
+        if !(try read_more(conn, mutate buf, max_bytes)) {
             return ReadFailure.Io(IoError.Other("the connection ended before the whole message arrived"))
         }
         head_end = find_head_end(buf, from) ?? -1
@@ -498,7 +498,7 @@ func read_message(conn: TcpConnection, max_bytes: i64, is_response: bool) -> str
     mut want: i64 = head_end + 4
     mut to_close = false
     if header_value(head, "content-length")? as text {
-        want = head_end + 4 + try content_length(text, max_bytes)
+        want = head_end + 4 + (try content_length(text, max_bytes))
         if want > max_bytes {
             return ReadFailure.Malformed("message larger than {max_bytes} bytes")
         }
@@ -506,7 +506,7 @@ func read_message(conn: TcpConnection, max_bytes: i64, is_response: bool) -> str
         to_close = true
     }
     while to_close || buf.len().wrap<i64>() < want {
-        if !try read_more(conn, mutate buf, max_bytes) {
+        if !(try read_more(conn, mutate buf, max_bytes)) {
             if to_close {
                 want = buf.len().wrap<i64>()
                 break
