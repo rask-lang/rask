@@ -34,16 +34,17 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 561 green, 6 registered red | `tests/differential.sh` |
-| Programs that leak | 5, holding 7 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Suite programs agreeing on both backends | 573 green, 6 registered red | `tests/differential.sh` |
+| Programs that leak | 4, holding 6 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 557 | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 72 | `tests/tsan_gate.sh` |
+| Programs memcheck finds an error in | 0 of 575 | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 80 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
+| Concurrency files clean under sim, 100 seeds in CI | 80 of 80, 43 tests exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 39 of 85 open issues | issue search |
-| Open design questions | 22 | issue search |
+| Open bugs | 64 of 106 open issues | issue search |
+| Open design questions | 20 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
 agent benchmark, internal spellings, formatter round-trips and the HTTP server.
@@ -275,7 +276,7 @@ matrix work, rather than left to stall it:
 disagreement, not a value kind failing in a position — a narrow theme is the
 only kind that closes.
 
-## v0.5 — Concurrency you can trust
+## v0.5 — Concurrency you can trust — **shipped 2026-09-30**
 
 **Done when two numbers hold in CI:**
 
@@ -377,20 +378,23 @@ Then the handle types went from two to one: `spawn`, `Thread.spawn` and
 `join_all`, `detach`) replaces `TaskGroup` and `ThreadGroup`. `cancel` works on
 threads and pool jobs now, and `cancelled()` works at all: the interpreter
 always said false, and native couldn't compile a call to it.
-Open:
+Fixed in #1376: #1357 (a `Vec<T or E>` freed its error payloads), #1356 (a
+closure holding a link or a `Local` box is refused at spawn however it gets
+there), #1371 (cancel wakes a simulated socket), #1375 (sim resets module
+state per test), #1377 (native `read_http_request`), and a loop that rebuilt a
+value from itself releasing the old one early, which crashed
+`cli_calculator` once preemption moved its stack frame. #298 and #299 close:
+#298's last case was a `Pool` container, and `Pool` is gone.
+
+Ships open:
 
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
-  tasks over one `Shared` plus a channel.
-- [#1357](https://github.com/rask-lang/rask/issues/1357): freeing a
-  `Vec<T or E>` doesn't release an error element's payload, so each panicked
-  handle in a `Handles` leaks its message.
-- [#1356](https://github.com/rask-lang/rask/issues/1356): a closure that reaches
-  `spawn` through a return or a field isn't checked for a captured link or
-  `Local` box. Written in place or bound to a local, it is.
-- [#298](https://github.com/rask-lang/rask/issues/298) and
-  [#299](https://github.com/rask-lang/rask/issues/299): panic leftovers,
-  `staged()` the main one. #298's last case goes when Pool does
-  ([#1296](https://github.com/rask-lang/rask/issues/1296)).
+  tasks over one `Shared` plus a channel. It wouldn't reproduce on demand.
+- [#1378](https://github.com/rask-lang/rask/issues/1378): the interpreter's
+  HTTP stack is a Rust copy of `http.rk`.
+- [#1379](https://github.com/rask-lang/rask/issues/1379): `cli_calculator`
+  leaks its expression tree.
+- macOS runs tasks on threads until it has a kqueue poller.
 
 ## v0.6 — The stdlib matches its own spec
 
