@@ -1384,6 +1384,8 @@ void   rask_task_tls_swap(void *blob);
 extern int32_t rask_preempt_requested;
 void rask_preempt_point(void);
 int  rask_preempt_unsafe(void);
+// A `with` block or inline sync access still holds its lock.
+int  rask_access_held(void);
 int  rask_print_lock_held(void);
 // The parts of it thread.c and random.c keep, swapped by the call above.
 size_t rask_thread_tls_size(void);

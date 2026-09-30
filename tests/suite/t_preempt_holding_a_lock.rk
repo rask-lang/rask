@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A task isn't preempted while it holds a lock (conc.runtime/P2.4).
+//
+// Where a task holds one of the `workers: n` slots (sim, and a build without
+// the green scheduler), preempting it hands its slot to a waiting task. If the
+// first task holds a mutex and the second wants it, the second blocks on the
+// mutex while holding the only slot, and the first waits for a slot it will
+// never get back: under sim, "task 1 waiting on a free worker slot, task 2
+// waiting on Mutex lock". The fiber scheduler doesn't have the problem, since
+// a fiber waiting on a lock parks and frees its worker, but the rule is the
+// same everywhere.
+
+import async.{Handles, JoinError}
+import sync.{Shared, Mutex}
+
+// Module-level so both tasks reach it without a `clone()`: the handle a clone
+// hands back is a leak the leak gate already carries (t_shared_freed.rk).
+const TOTAL: Shared<i64, Mutex> = Shared.mutex(0)
+
+func add_slowly() -> i64 {
+    with TOTAL.write() as t {
+        mut i: i64 = 0
+        while i < 200000 {
+            t += 1
+            i += 1
+        }
+    }
+    return 0
+}
+
+func add_one() -> i64 {
+    with TOTAL.write() as t {
+        t += 1
+    }
+    return 0
+}
+
+test "a task holding a lock keeps its worker until it lets go" {
+    using Multitasking(workers: 1) {
+        mut group = Handles<i64>.new()
+        ensure group.detach()
+        group.add(spawn(|| { return add_slowly() }))
+        group.add(spawn(|| { return add_one() }))
+        for r in group.join_all() {
+            match r {
+                i64 as v => assert v == 0
+                JoinError.Panicked(m) => assert false
+            }
+        }
+    }
+    with TOTAL.read() as t {
+        assert t == 200001
+    }
+}
+
+func main() {}

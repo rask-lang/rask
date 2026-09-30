@@ -442,6 +442,8 @@ static void fiber_main(void *arg) {
     rask_fiber_switch_final(&t->fiber, t->worker_fiber);
 }
 
+static void preempt_flag_recompute(GreenScheduler *s);
+
 static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
     if (!t->started) {
         t->started = 1;
@@ -457,7 +459,13 @@ static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
     atomic_store_explicit(&w->running_since, now_ns(), memory_order_release);
     rask_fiber_switch(&w->fiber, &t->fiber);
     atomic_store_explicit(&w->running_since, 0, memory_order_release);
-    atomic_store_explicit(&w->preempt, 0, memory_order_relaxed);
+    // A mark the fiber never reached a safe point for (it parked, finished, or
+    // was inside a long C call) goes with it. The global flag has to follow,
+    // or every check in every thread takes the slow path until some other
+    // fiber happens to be preempted.
+    if (atomic_exchange_explicit(&w->preempt, 0, memory_order_acq_rel)) {
+        preempt_flag_recompute(w->sched);
+    }
     rask_task_tls_swap(t->tls);
     tl_current_task = NULL;
 
