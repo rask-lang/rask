@@ -18,8 +18,21 @@ I know the compiler pipeline — MIR, lowering, codegen, and the rest aren't the
 Chat is my interface. Reading diffs and files on a phone is painful — never point me at a diff as the explanation. The explanation in chat IS the deliverable.
 
 - Bring code to me, don't send me to it: quote the 10–20 relevant lines in chat with your commentary when a decision needs my eyes.
-- End every substantial piece of work with a **judgment digest**: the 2–4 most questionable calls you made, each with the few lines of code that embody it, framed so I can react in one word ("keep / wrong / show me more"). Put decisions you need from me first, not buried after the summary.
 - The durable record lives in **commit messages and issues** — write those to stand alone, they're what future sessions read. PR bodies get one sentence plus the closing keywords (`Closes #N`); nobody reads more than that there.
+
+### One recap, at the end
+
+Long sessions bury the state under rolling summaries and check-in chatter. I read the last message, not the scrollback.
+
+- **No interim summaries.** Mid-task, speak only to ask a decision or report a blocker. Progress lives in commits.
+- **Quiet check-ins are silent.** A PR check-in or event that finds nothing new ends the turn with no text. If the harness insists on output, one line: `#N: nothing new.` No "no reviews, rearming", no restated status.
+- **Hand back with a recap** whenever you stop after substantial work, and whenever I say "recap". Write it for someone who saw none of the session. It replaces every earlier summary and digest, so repeat what still matters rather than saying "as above". Sections, in order:
+  1. **Decisions for me**: the judgment digest. The 2–4 most questionable calls, each with the problem in a sentence, what you picked, the alternative, and the few lines of code that embody it. Framed so I can answer in one word ("keep / wrong / show me more"). Empty is fine; say so.
+  2. **Status**: branch, PR link, CI on the head, what it's waiting on.
+  3. **Done**: one line per change, with the commit. Say what broke and what now works, not which files moved.
+  4. **Decided along the way**: calls you made without asking and why, so I don't reopen them by accident.
+  5. **Left open**: filed issues, dead ends and what they taught, anything skipped.
+- If state changes after a recap (review lands, CI goes red and you fix it), send a fresh full recap, not a delta.
 
 Prefer long term proper fixes over quick-fixes.
 
