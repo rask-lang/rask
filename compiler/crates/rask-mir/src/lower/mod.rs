@@ -1682,10 +1682,12 @@ pub(crate) struct LocalMeta {
     /// C1/C2: resource_id local for consumption cancellation.
     /// Set when an ensure registers this variable as its receiver.
     pub resource_id: Option<LocalId>,
-    /// Function parameter declared `mutate`. Whole-value reassignment must
-    /// flow back through the param's pointer (mem.borrowing/M-rules), so
-    /// `p = expr` lowers to a Store(*p, ...) instead of Assign(p, ...).
-    pub is_mutate_param: bool,
+    /// The name stands for a place this frame doesn't own: a `mutate`
+    /// parameter (mem.borrowing/M-rules), or a `with` binding on a box whose
+    /// payload is bound by address. Whole-value reassignment has to land in
+    /// that place, so `p = expr` lowers to a Store(*p, ...) instead of
+    /// Assign(p, ...).
+    pub assigns_through: bool,
     /// This local holds an *address*, and the scalar at it has this type. Reads
     /// of the bare name load through it, writes store through it, and the size
     /// of the access comes from here. `None` for a normal local and for an
@@ -4213,7 +4215,7 @@ impl<'a> MirLowerer<'a> {
                     .or_else(|| type_prefix_from_str(param_ty_str));
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
                 if param.is_mutate {
-                    meta.is_mutate_param = true;
+                    meta.assigns_through = true;
                 }
                 if scalar_mutate {
                     meta.scalar_through_ptr = Some(param_ty.clone());

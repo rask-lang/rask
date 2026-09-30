@@ -9,10 +9,11 @@
 // checks its exit code. What is testable here is every exit that *does* commit,
 // which is ST2's whole list — and the commit is the part a wrong implementation
 // gets wrong silently.
-import sync.Mutex
-import sync.Readers
-import sync.Shared
-
+//
+// Each test sets the boxes it reads to a known value first. They used to build
+// on the balance the previous test left, which is true of `rask test` but not
+// of `rask test --sim`, where every test starts from the initializers
+// (sim/I7).
 
 import sync.Shared
 import sync.Mutex
@@ -25,6 +26,18 @@ struct Ledger9 {
 
 const BOOKS: Shared<Ledger9, Mutex> = Shared.mutex(Ledger9 { checking: 100, savings: 0 })
 const POT: Shared<Ledger9, Readers> = Shared.new(Ledger9 { checking: 50, savings: 5 })
+
+func reset_books() {
+    with BOOKS.write() as b {
+        b = Ledger9 { checking: 100, savings: 0 }
+    }
+}
+
+func reset_pot() {
+    with POT.write() as p {
+        p = Ledger9 { checking: 50, savings: 5 }
+    }
+}
 
 func transfer(amount: i64) {
     with BOOKS.staged() as b {
@@ -61,6 +74,7 @@ func drain_in_loop(times: i64) -> i64 {
 }
 
 test "ST2: a clean exit commits both fields as one move" {
+    reset_books()
     transfer(10)
     with BOOKS.read() as b {
         assert b.checking == 90
@@ -69,24 +83,27 @@ test "ST2: a clean exit commits both fields as one move" {
 }
 
 test "ST2: a `return` out of the block still commits" {
+    reset_books()
     let got = transfer_then_return(15)
-    assert got == 25
+    assert got == 15
     with BOOKS.read() as b {
-        assert b.checking == 75
-        assert b.savings == 25
+        assert b.checking == 85
+        assert b.savings == 15
     }
 }
 
 test "ST2: `continue` out of the block commits that iteration" {
+    reset_books()
     let moved = drain_in_loop(3)
     assert moved == 3
     with BOOKS.read() as b {
-        assert b.checking == 72
-        assert b.savings == 28
+        assert b.checking == 97
+        assert b.savings == 3
     }
 }
 
 test "ST1: the Readers strategy stages the same way" {
+    reset_pot()
     with POT.staged() as p {
         p.checking = p.checking - 5
         p.savings = p.savings + 5
@@ -98,6 +115,10 @@ test "ST1: the Readers strategy stages the same way" {
 }
 
 test "ST1: the copy starts as the committed value, not a blank" {
+    reset_pot()
+    with POT.write() as p {
+        p = Ledger9 { checking: 45, savings: 10 }
+    }
     with POT.staged() as p {
         assert p.checking == 45
         assert p.savings == 10
@@ -105,6 +126,7 @@ test "ST1: the copy starts as the committed value, not a blank" {
 }
 
 test "a staged block reads back its own writes inside the block" {
+    reset_pot()
     with POT.staged() as p {
         p.checking = 200
         assert p.checking == 200
