@@ -65,6 +65,9 @@ pub enum MirStmtKind {
         func_name: String,
         captures: Vec<ClosureCapture>,
         heap: bool,
+        /// It captured a link or a `Local` box, so it may not reach another
+        /// task. Stored on a heap closure, where `spawn` checks it (#1356).
+        task_bound: bool,
     },
     /// Call through a closure value (indirect call with env_ptr prepended).
     ClosureCall {

@@ -2293,6 +2293,7 @@ impl<'a> MirLowerer<'a> {
             func_name: wrapper_name,
             captures: Vec::new(),
             heap: false,
+            task_bound: false,
         }));
         MirOperand::Local(block)
     }

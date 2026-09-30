@@ -1739,6 +1739,7 @@ impl TypeChecker {
             }
 
             ExprKind::Closure { params, ret_ty: declared_ret, body, .. } => {
+                self.closure_spans.push((expr.id, expr.span, self.local_types.len()));
                 let param_types: Vec<_> = params
                     .iter()
                     .map(|p| {
@@ -5450,11 +5451,12 @@ impl TypeChecker {
     /// `validate_pending_mutations` does: during the walk, the type of a
     /// `let c = Shared.new(0)` is usually still a variable.
     pub(super) fn validate_spawn_captures(&mut self) {
+        let uses = std::mem::take(&mut self.task_bound_uses);
+        self.mark_task_bound_closures(&uses);
         if self.spawn_arg_spans.is_empty() {
             return;
         }
         let spans = std::mem::take(&mut self.spawn_arg_spans);
-        let uses = std::mem::take(&mut self.task_bound_uses);
         let mut reported: std::collections::HashSet<(String, usize)> =
             std::collections::HashSet::new();
         let within = |inner: rask_ast::Span, outer: &rask_ast::Span| {
@@ -5483,6 +5485,39 @@ impl TypeChecker {
             };
             if reported.insert((name, i)) {
                 self.errors.push(error);
+            }
+        }
+    }
+
+    /// Is a value of this resolved type bound to its task: a `Local` box, or
+    /// anything holding a link?
+    fn is_task_bound(&self, resolved: &Type) -> bool {
+        if Self::type_is_shared(resolved, &self.types) {
+            return self.shared_strategy_name(resolved) == "Local";
+        }
+        self.types.holds_link(resolved)
+    }
+
+    /// Every closure that captures a task-bound value, by the same rule the
+    /// spawn check uses: a use inside the closure of a name from a scope no
+    /// deeper than the closure's own.
+    fn mark_task_bound_closures(&mut self, uses: &[super::TaskBoundUse]) {
+        let closures = std::mem::take(&mut self.closure_spans);
+        if closures.is_empty() {
+            return;
+        }
+        let within = |inner: rask_ast::Span, outer: &rask_ast::Span| {
+            inner.file_id == outer.file_id && inner.start >= outer.start && inner.end <= outer.end
+        };
+        for u in uses {
+            let resolved = self.resolve_named(&self.ctx.apply(&u.ty));
+            if !self.is_task_bound(&resolved) {
+                continue;
+            }
+            for (id, span, depth) in &closures {
+                if within(u.span, span) && u.depth <= *depth {
+                    self.task_bound_closures.insert(*id);
+                }
             }
         }
     }

@@ -1055,6 +1055,8 @@ pub enum Value {
         params: Vec<String>,
         body: Expr,
         captured_env: HashMap<String, crate::env::Slot>,
+        /// Captured a link or a `Local` box, so `spawn` refuses it (#1356).
+        task_bound: bool,
     },
     /// Duration (time span in nanoseconds)
     Duration(u64),
@@ -1478,13 +1480,13 @@ impl Value {
                 let inner = c.lock().unwrap().deep_clone();
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
-            Value::Closure { params, body, captured_env } => {
+            Value::Closure { params, body, captured_env, task_bound } => {
                 // Deep-cloning a closure detaches it from what it borrowed, so
                 // each capture gets storage of its own.
                 let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
                     .map(|(k, v)| (k.clone(), crate::env::slot(v.lock().unwrap().deep_clone())))
                     .collect();
-                Value::Closure { params: params.clone(), body: body.clone(), captured_env: deep_env }
+                Value::Closure { params: params.clone(), body: body.clone(), captured_env: deep_env, task_bound: *task_bound }
             }
             Value::Map(m) => {
                 let map = m.lock().unwrap();

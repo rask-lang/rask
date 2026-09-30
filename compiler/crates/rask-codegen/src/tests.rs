@@ -1331,6 +1331,7 @@ mod tests {
                         func_name: "main__closure_0".to_string(),
                         captures: vec![],
                         heap: false,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(1)),
@@ -1416,6 +1417,7 @@ mod tests {
                             },
                         ],
                         heap: false,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
@@ -1498,6 +1500,7 @@ mod tests {
                             ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false },
                         ],
                         heap: true,
+                        task_bound: false,
                     }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1588,6 +1591,7 @@ mod tests {
                             ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false },
                         ],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureDrop {
                         closure: LocalId(1),
@@ -1670,6 +1674,7 @@ mod tests {
                             ClosureCapture { local_id: LocalId(1), offset: 0, size: 8, by_ref: false },
                         ],
                         heap: false,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(3)),
@@ -1702,6 +1707,7 @@ mod tests {
                             ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false },
                         ],
                         heap: false,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
@@ -1789,6 +1795,7 @@ mod tests {
                         func_name: "main__closure_0".to_string(),
                         captures: vec![],
                         heap: false,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
@@ -1901,6 +1908,7 @@ mod tests {
                         func_name: "main__closure_0".to_string(),
                         captures: vec![],
                         heap: false,
+                        task_bound: false,
                     }),
                 ], goto(3)),
                 // block2: arm 2 — sub closure
@@ -1910,6 +1918,7 @@ mod tests {
                         func_name: "main__closure_1".to_string(),
                         captures: vec![],
                         heap: false,
+                        task_bound: false,
                     }),
                 ], goto(3)),
                 // block3: merge — call whichever closure was created

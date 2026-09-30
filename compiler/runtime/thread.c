@@ -126,6 +126,16 @@ RaskTask *rask_task_new(void) {
 }
 
 void rask_task_adopt_closure(RaskTask *t, void *closure_base, int64_t result_owned) {
+    // Every spawn form hands its closure over here, so this is the one place
+    // a closure that got to `spawn` by a return, a field or a container is
+    // seen at all. The checker catches the ones written at the spawn.
+    if (rask_closure_task_bound(closure_base)) {
+        rask_panic("spawn: this closure captured a link or a `Local` box, and "
+                   "another task would then reach what this one still can "
+                   "[mem.ownership/T2, conc.sync/SH7]. Copy the values the "
+                   "task needs out before spawning, or use a Mutex or Readers "
+                   "box");
+    }
     t->closure_base = closure_base;
     t->result_owned = result_owned;
 }

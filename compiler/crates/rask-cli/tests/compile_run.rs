@@ -4270,6 +4270,35 @@ fn panic_in_a_lock_closure_releases_the_lock() {
     }
 }
 
+// A closure that captured a link or a `Local` box can't reach another task,
+// however it gets to the spawn (#1356). Written at the spawn, the checker
+// rejects it; returned from a function or read out of a field, the spawn site
+// shows nothing, so the closure carries a flag and every spawn form refuses a
+// flagged one when it starts the task.
+#[test]
+fn a_task_bound_closure_is_refused_at_spawn() {
+    for fixture in [
+        "spawn_returned_closure_with_link.rk",
+        "spawn_field_closure_with_local_box.rk",
+    ] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_ne!(code, 0, "{mode} {fixture}: the spawn has to fail; stdout: {stdout}");
+            assert!(stdout.starts_with("before"), "{mode} {fixture}: {stdout}");
+            assert!(
+                stderr.contains("this closure captured a link or a `Local` box"),
+                "{mode} {fixture}: {stderr}",
+            );
+        }
+    }
+    // And one that captured only plain values still crosses.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "spawn_returned_closure_that_may_cross.rk");
+        assert_eq!(code, 0, "{mode}: {stderr}");
+        assert_eq!(stdout, "15\n", "{mode}");
+    }
+}
+
 // A real deadlock is reported instead of hanging (#1354). Every task is parked
 // and the scope's thread is waiting in `join`, so nothing can move again; the
 // scheduler says which task waits on what and ends the process. Native only:

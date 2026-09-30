@@ -80,13 +80,15 @@ impl ClosureEnvLayout {
     }
 }
 
-/// Heap-allocate a closure: `[func_ptr | captures...]`, behind two header
-/// words — the block's size and the glue that releases what it owns.
+/// Heap-allocate a closure: `[func_ptr | captures...]`, behind header words
+/// for the block's size, the glue that releases what it owns, a count, and
+/// flags.
 ///
-/// `rask_closure_alloc(8 + env_size, env_drop)` writes both. Whoever frees the
-/// block is usually not the frame that built it, so neither the byte count nor
-/// the capture layout is available there; the header carries both. `env_drop`
-/// is zero for a closure that owns nothing.
+/// `rask_closure_alloc(8 + env_size, env_drop, flags)` writes them. Whoever
+/// frees the block is usually not the frame that built it, so neither the byte
+/// count nor the capture layout is available there; the header carries both.
+/// `env_drop` is zero for a closure that owns nothing. `task_bound` says it
+/// captured a link or a `Local` box, which `spawn` refuses (#1356).
 pub fn allocate_closure_heap(
     builder: &mut FunctionBuilder,
     func_ptr: Value,
@@ -94,11 +96,13 @@ pub fn allocate_closure_heap(
     var_map: &HashMap<LocalId, Variable>,
     alloc_func: FuncRef,
     env_drop: Value,
+    task_bound: bool,
 ) -> CodegenResult<Value> {
     let total_size = 8 + layout.size as i64;
 
     let size_val = builder.ins().iconst(types::I64, total_size);
-    let call_inst = builder.ins().call(alloc_func, &[size_val, env_drop]);
+    let flags = builder.ins().iconst(types::I64, task_bound as i64);
+    let call_inst = builder.ins().call(alloc_func, &[size_val, env_drop, flags]);
     let closure_ptr = builder.inst_results(call_inst)[0];
 
     store_closure_data(builder, closure_ptr, func_ptr, layout, var_map)

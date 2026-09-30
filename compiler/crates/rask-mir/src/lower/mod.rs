@@ -330,6 +330,7 @@ impl<'a> MirContext<'a> {
             error_wraps: &typed.error_wraps,
             fallback_keeps_shape: &typed.fallback_keeps_shape,
             escaping_closures: &typed.escaping_closures,
+            task_bound_closures: &typed.task_bound_closures,
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
@@ -471,6 +472,8 @@ pub struct MirContext<'a> {
     /// CM1: closure literals that outlive the frame that built them. Those
     /// carry their captures; the rest hold the address and write through it.
     pub escaping_closures: &'a std::collections::HashSet<NodeId>,
+    /// Closures that captured a link or a `Local` box (#1356).
+    pub task_bound_closures: &'a std::collections::HashSet<NodeId>,
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
     /// goes there, and the rest of the chain works on the payload.
     pub try_chain_placement: &'a HashMap<NodeId, NodeId>,
@@ -591,6 +594,7 @@ impl<'a> MirContext<'a> {
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             escaping_closures: &EMPTY_ESCAPING,
+            task_bound_closures: &EMPTY_ESCAPING,
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
@@ -7386,6 +7390,7 @@ mod tests {
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
+            task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
@@ -7465,6 +7470,7 @@ mod tests {
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
+            task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
@@ -7553,6 +7559,7 @@ mod tests {
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
+            task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,

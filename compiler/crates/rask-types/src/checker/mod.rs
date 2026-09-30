@@ -385,6 +385,8 @@ pub struct TypeChecker {
     /// type is usually still a variable, since `let c = Shared.new(0)` is solved
     /// later.
     pub(super) task_bound_uses: Vec<TaskBoundUse>,
+    /// Filled in by `validate_spawn_captures`; see `TypedProgram`.
+    pub(super) task_bound_closures: std::collections::HashSet<NodeId>,
     /// Suppressions from the enclosing function's `@allow(...)` attributes.
     /// Statements carry no attributes, so a per-site `@allow` isn't expressible;
     /// the function is the smallest scope the AST offers.
@@ -418,6 +420,12 @@ pub struct TypeChecker {
     /// argument, so they are checked for captures the same way.
     pub(super) closure_bindings:
         HashMap<(String, usize), Vec<(rask_ast::Span, usize)>>,
+    /// Every closure expression, with its span and the scope depth it was
+    /// written at. A closure that captures a link or a `Local` box can't cross
+    /// a task however it gets to a `spawn`, and one that gets there by a
+    /// return or a field is invisible at the spawn site, so each closure is
+    /// judged on its own (#1356).
+    pub(super) closure_spans: Vec<(NodeId, rask_ast::Span, usize)>,
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
@@ -588,12 +596,14 @@ impl TypeChecker {
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),
             task_bound_uses: Vec::new(),
+            task_bound_closures: std::collections::HashSet::new(),
             with_source_ids: std::collections::HashSet::new(),
             staged_reported: std::collections::HashSet::new(),
             allowed_warnings: Vec::new(),
             comptime_string_names: vec![HashMap::new()],
             spawn_arg_spans: Vec::new(),
             closure_bindings: HashMap::new(),
+            closure_spans: Vec::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
@@ -981,6 +991,7 @@ impl TypeChecker {
             fallback_keeps_shape,
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::mem::take(&mut self.task_bound_closures),
             try_chain_placement,
             unsafe_ops,
             span_types,

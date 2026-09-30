@@ -36,7 +36,11 @@ void  rask_alloc_stats(RaskAllocStats *out);
 void *rask_alloc(int64_t size);
 void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size);
 void  rask_free(void *ptr);
-void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *));
+void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t flags);
+// Closure flags. Codegen passes the same bit (`task_bound` on ClosureCreate).
+#define RASK_CLOSURE_TASK_BOUND 1
+// Whether a heap closure captured a link or a `Local` box.
+int   rask_closure_task_bound(const void *ptr);
 void  rask_closure_free(void *ptr);
 void  rask_closure_retain(void *ptr);
 

@@ -268,7 +268,8 @@ void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size) {
 
 // ─── Closure blocks ────────────────────────────────────────
 //
-// A closure block is `[block_size | env_drop | refs | func_ptr | captures...]`
+// A closure block is `[block_size | env_drop | refs | flags | func_ptr |
+// captures...]`
 // and the closure value points at `func_ptr`, so the environment is still
 // `closure + 8`. Every header word is there for the same reason: whoever frees
 // the block usually didn't build it. `let tick = counter()` hands the caller a
@@ -290,28 +291,43 @@ void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size) {
 // runs once, and nobody needs to know what's inside. Eight bytes per closure,
 // against the alternative of refusing `.clone()` on a `Vec<func>`.
 //
+// `flags` is the fourth. `RASK_CLOSURE_TASK_BOUND` marks a closure that
+// captured a link or a `Local` box, which may not reach another task. The
+// checker rejects a `spawn` it can see the closure in; one that got there by a
+// return, a field or a container is invisible at the spawn, so the block says
+// so itself and `rask_task_adopt_closure` refuses it (#1356).
+//
 // A *stack*-allocated closure has no header — a non-escaping closure is just
 // `[func_ptr | captures]` in a frame — so neither of these may be called on
 // one. Nothing does: a closure that can't escape can't reach a container.
 
-void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *)) {
-    int64_t total = block_size + 24;
+#define CLOSURE_HEADER_WORDS 4
+
+void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t flags) {
+    int64_t total = block_size + CLOSURE_HEADER_WORDS * 8;
     int64_t *base = (int64_t *)rask_alloc(total);
     base[0] = total;
     base[1] = (int64_t)(intptr_t)env_drop;
     base[2] = 1;
-    return (void *)(base + 3);
+    base[3] = flags;
+    return (void *)(base + CLOSURE_HEADER_WORDS);
 }
 
 void rask_closure_retain(void *ptr) {
     if (!ptr) return;
-    int64_t *base = ((int64_t *)ptr) - 3;
+    int64_t *base = ((int64_t *)ptr) - CLOSURE_HEADER_WORDS;
     base[2] += 1;
+}
+
+int rask_closure_task_bound(const void *ptr) {
+    if (!ptr) return 0;
+    const int64_t *base = ((const int64_t *)ptr) - CLOSURE_HEADER_WORDS;
+    return (base[3] & RASK_CLOSURE_TASK_BOUND) != 0;
 }
 
 void rask_closure_free(void *ptr) {
     if (!ptr) return;
-    int64_t *base = ((int64_t *)ptr) - 3;
+    int64_t *base = ((int64_t *)ptr) - CLOSURE_HEADER_WORDS;
     if ((base[2] -= 1) > 0) return;
     void (*env_drop)(void *) = (void (*)(void *))(intptr_t)base[1];
     // The environment starts one word past the closure value, which is where

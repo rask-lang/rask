@@ -192,6 +192,8 @@ pub struct Interpreter {
     /// ownership pass. Those snapshot their captures; the rest share the live
     /// slots so a write reaches the enclosing variable (MC4).
     pub(crate) escaping_closures: std::collections::HashSet<rask_ast::NodeId>,
+    /// Closures that captured a link or a `Local` box (#1356).
+    pub(crate) task_bound_closures: std::collections::HashSet<rask_ast::NodeId>,
     /// XC4/XC5: which package each source file belongs to, and which `extend`
     /// blocks carry their package in the method name because the block is on a
     /// type that package doesn't own.
@@ -291,6 +293,12 @@ pub struct SourceInfo {
     pub line_map: LineMap,
 }
 
+/// What every spawn form says to a closure that captured a link or a `Local`
+/// box. Worded as native's `rask_task_adopt_closure` words it.
+const TASK_BOUND_SPAWN: &str = "spawn: this closure captured a link or a `Local` box, and \
+another task would then reach what this one still can [mem.ownership/T2, conc.sync/SH7]. \
+Copy the values the task needs out before spawning, or use a Mutex or Readers box";
+
 impl Interpreter {
     pub fn new() -> Self {
         Self {
@@ -313,6 +321,7 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::collections::HashSet::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
@@ -348,6 +357,7 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::collections::HashSet::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
@@ -389,6 +399,7 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::collections::HashSet::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
@@ -502,6 +513,7 @@ impl Interpreter {
         self.fallback_keeps_shape = typed.fallback_keeps_shape.clone();
         self.operator_targets = typed.operator_targets.clone();
         self.escaping_closures = typed.escaping_closures.clone();
+        self.task_bound_closures = typed.task_bound_closures.clone();
         // XC4/XC5: which package wrote each file, and which `extend` blocks
         // carry their package in the method name.
         self.file_packages = typed.file_packages.clone();
@@ -637,6 +649,7 @@ impl Interpreter {
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
         child.escaping_closures = self.escaping_closures.clone();
+        child.task_bound_closures = self.task_bound_closures.clone();
         child.operator_targets = self.operator_targets.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
@@ -699,11 +712,15 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                task_bound,
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(
                         "Thread.spawn closure must take no parameters".to_string(),
                     ));
+                }
+                if *task_bound {
+                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
                 }
 
                 let body = body.clone();
@@ -746,11 +763,15 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                task_bound,
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(
                         "spawn() closure must take no parameters".to_string(),
                     ));
+                }
+                if *task_bound {
+                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
                 }
 
                 let body = body.clone();
@@ -792,11 +813,15 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                task_bound,
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(
                         "ThreadPool.spawn closure must take no parameters".to_string(),
                     ));
+                }
+                if *task_bound {
+                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
                 }
 
                 // Check for thread pool context

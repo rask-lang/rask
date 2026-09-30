@@ -710,7 +710,9 @@ fn remap_stmt(
             func_name,
             captures,
             heap,
+            task_bound,
         } => MirStmtKind::ClosureCreate {
+            task_bound: *task_bound,
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             func_name: func_name.clone(),
             captures: captures

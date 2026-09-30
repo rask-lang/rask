@@ -1053,7 +1053,7 @@ impl<'a> FunctionBuilder<'a> {
 
             // ── Closure support ──────────────────────────────────────────
 
-            MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => Self::lower_closure_create(builder, dst, func_name, captures, heap, ctx)?,
+            MirStmtKind::ClosureCreate { dst, func_name, captures, heap, task_bound } => Self::lower_closure_create(builder, dst, func_name, captures, *heap, *task_bound, ctx)?,
 
             MirStmtKind::ClosureCall { dst, closure, args } => Self::lower_closure_call(builder, dst, closure, args, ctx)?,
 
@@ -2721,7 +2721,8 @@ impl<'a> FunctionBuilder<'a> {
         dst: &LocalId,
         func_name: &String,
         captures: &[rask_mir::ClosureCapture],
-        heap: &bool,
+        heap: bool,
+        task_bound: bool,
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
         // Build environment layout from captures, using real aggregate
@@ -2757,7 +2758,7 @@ impl<'a> FunctionBuilder<'a> {
             .ok_or_else(|| CodegenError::FunctionNotFound(func_name.clone()))?;
         let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
 
-        let closure_ptr = if *heap {
+        let closure_ptr = if heap {
             // Escaping closure: heap-allocate behind a size header, so
             // whoever frees it can account for the bytes without knowing the
             // capture layout.
@@ -2773,7 +2774,7 @@ impl<'a> FunctionBuilder<'a> {
                 None => builder.ins().iconst(types::I64, 0),
             };
             crate::closures::allocate_closure_heap(
-                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref, env_drop,
+                builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref, env_drop, task_bound,
             )?
         } else {
             // Non-escaping closure: stack-allocate

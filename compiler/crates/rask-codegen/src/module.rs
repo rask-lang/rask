@@ -822,10 +822,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_free".to_string(), id);
         }
 
-        // rask_closure_alloc(block_size: i64, env_drop: i64) -> i64
-        // (pointer past the two header words)
+        // rask_closure_alloc(block_size: i64, env_drop: i64, flags: i64) -> i64
+        // (pointer past the header words)
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));

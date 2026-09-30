@@ -2414,6 +2414,7 @@ impl Interpreter {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
                     captured_env: captured,
+                    task_bound: self.task_bound_closures.contains(&expr.id),
                 })
             }
 

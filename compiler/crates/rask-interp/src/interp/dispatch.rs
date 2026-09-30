@@ -29,7 +29,7 @@ impl Interpreter {
         func: Value,
         args: Vec<Value>,
     ) -> Result<(Value, Option<Value>), RuntimeError> {
-        if let Value::Closure { params, body, captured_env } = func {
+        if let Value::Closure { params, body, captured_env, .. } = func {
             self.env.push_scope();
             for (name, cell) in captured_env {
                 self.env.define_slot(name, cell);
@@ -131,6 +131,7 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                ..
             } => {
                 self.env.push_scope();
                 for (name, cell) in captured_env {
@@ -852,7 +853,7 @@ impl Interpreter {
 
             // Run the closure body
             let result = match closure {
-                Value::Closure { params, body, captured_env } => {
+                Value::Closure { params, body, captured_env, .. } => {
                     if !params.is_empty() {
                         return Err(RuntimeError::TypeError(
                             "step body closure must take no parameters".into(),
@@ -883,7 +884,7 @@ impl Interpreter {
         } else {
             // No cache dir configured — always run
             match closure {
-                Value::Closure { params, body, captured_env } => {
+                Value::Closure { params, body, captured_env, .. } => {
                     if !params.is_empty() {
                         return Err(RuntimeError::TypeError(
                             "step body closure must take no parameters".into(),

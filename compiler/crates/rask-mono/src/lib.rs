@@ -1182,6 +1182,7 @@ mod tests {
             error_wraps: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::collections::HashSet::new(),
             try_chain_placement: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),

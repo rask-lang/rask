@@ -176,6 +176,7 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                ..
             } => {
                 self.env.push_scope();
                 for (k, cell) in captured_env {
@@ -209,6 +210,7 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                ..
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(format!(
@@ -333,6 +335,7 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                ..
             } => {
                 let mut guard = mutex.lock().map_err(|e| {
                     RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))

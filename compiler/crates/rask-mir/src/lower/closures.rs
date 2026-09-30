@@ -82,6 +82,7 @@ impl<'a> MirLowerer<'a> {
             func_name: wrapper_name,
             captures: Vec::new(),
             heap: false,
+            task_bound: false,
         }));
         Some((MirOperand::Local(result_local), MirType::Ptr))
     }
@@ -156,6 +157,7 @@ impl<'a> MirLowerer<'a> {
             func_name: wrapper_name,
             captures: Vec::new(),
             heap: false,
+            task_bound: false,
         }));
         Some((MirOperand::Local(result_local), MirType::Ptr))
     }
@@ -458,6 +460,7 @@ impl<'a> MirLowerer<'a> {
             func_name: entry_name,
             captures,
             heap: carries,
+            task_bound: closure_id.is_some_and(|id| self.ctx.task_bound_closures.contains(&id)),
         }));
 
         Ok((MirOperand::Local(result_local), MirType::Ptr))
@@ -735,6 +738,7 @@ impl<'a> MirLowerer<'a> {
             func_name: closure_name,
             captures,
             heap: false,
+            task_bound: false,
         }));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
             dst: None,

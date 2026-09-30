@@ -1096,6 +1096,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(1)),
@@ -1131,6 +1132,7 @@ mod tests {
                         func_name: "make__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(0))))),
             ],
@@ -1160,6 +1162,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
@@ -1214,6 +1217,7 @@ mod tests {
                         func_name: "main__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: Some(LocalId(1)),
@@ -1270,6 +1274,7 @@ mod tests {
                         func_name: "main__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
@@ -1307,6 +1312,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
@@ -1367,6 +1373,7 @@ mod tests {
                         func_name: "f__closure_1".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
@@ -1392,6 +1399,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(1)),
@@ -1452,6 +1460,7 @@ mod tests {
                         func_name: "f__closure_1".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),  // return inner
             ],
@@ -1476,6 +1485,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(1)),
@@ -1552,6 +1562,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
@@ -1607,6 +1618,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: None,
@@ -1673,6 +1685,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
@@ -1686,6 +1699,7 @@ mod tests {
                         func_name: "f__closure_1".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(4)),
@@ -1743,6 +1757,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
                 block(2, vec![],
@@ -1801,6 +1816,7 @@ mod tests {
                         func_name: "f__closure_0".to_string(),
                         captures: vec![],
                         heap: true,
+                        task_bound: false,
                     }),
                     MirStmt::dummy(MirStmtKind::Call {
                         dst: None,

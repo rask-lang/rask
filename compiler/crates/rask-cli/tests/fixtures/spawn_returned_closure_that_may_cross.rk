@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The control for spawn_returned_closure_with_link.rk: a returned closure
+// that captured only plain values may cross to another task, and the check
+// that refuses a link must not refuse this.
+
+func adder(base: i64, step: i64) -> func() -> i64 {
+    return || { return base + step }
+}
+
+func main() {
+    using Multitasking {
+        let f = adder(5, 10)
+        println("{spawn(f).join()!}")
+    }
+}

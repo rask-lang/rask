@@ -333,7 +333,7 @@ fn env_drop_glue(
             .collect();
         for block in &func.blocks {
             for stmt in &block.statements {
-                let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true } = &stmt.kind
+                let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true, .. } = &stmt.kind
                 else {
                     continue;
                 };
