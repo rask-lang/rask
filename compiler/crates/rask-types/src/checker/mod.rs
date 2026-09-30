@@ -30,7 +30,7 @@ mod validate;
 pub(crate) mod resolved_types;
 
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, receiver_name, conformance_symbol};
-pub use type_table::{primitive_spelling, TypeTable};
+pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
@@ -131,6 +131,9 @@ pub(super) struct TaskBoundUse {
     /// Depth of the local scope the name was found in. One declared inside the
     /// spawned closure is deeper than the call and belongs to the task.
     pub depth: usize,
+    /// The type parameters in scope at the use. A closure capturing a name
+    /// whose type mentions one is judged per instantiation.
+    pub type_params: Vec<String>,
 }
 
 pub struct TypeChecker {
@@ -387,6 +390,8 @@ pub struct TypeChecker {
     pub(super) task_bound_uses: Vec<TaskBoundUse>,
     /// Filled in by `validate_spawn_captures`; see `TypedProgram`.
     pub(super) task_bound_closures: std::collections::HashSet<NodeId>,
+    /// Filled in by `validate_spawn_captures`; see `TypedProgram`.
+    pub(super) generic_closure_captures: HashMap<NodeId, Vec<(String, Type)>>,
     /// Suppressions from the enclosing function's `@allow(...)` attributes.
     /// Statements carry no attributes, so a per-site `@allow` isn't expressible;
     /// the function is the smallest scope the AST offers.
@@ -597,6 +602,7 @@ impl TypeChecker {
             pending_self_mutations: Vec::new(),
             task_bound_uses: Vec::new(),
             task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: HashMap::new(),
             with_source_ids: std::collections::HashSet::new(),
             staged_reported: std::collections::HashSet::new(),
             allowed_warnings: Vec::new(),
@@ -992,6 +998,7 @@ impl TypeChecker {
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::mem::take(&mut self.task_bound_closures),
+            generic_closure_captures: std::mem::take(&mut self.generic_closure_captures),
             try_chain_placement,
             unsafe_ops,
             span_types,

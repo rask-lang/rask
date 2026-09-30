@@ -305,18 +305,12 @@ pub fn compile_to_object(
     let nominal_underlying = build_nominal_underlying(typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
-    let all_node_types = mono.all_node_types(typed);
-    let all_call_targets = mono.all_call_targets(typed);
-    let all_operator_targets = mono.all_operator_targets(typed);
-    let all_error_wraps = mono.all_error_wraps(typed);
-    let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(typed);
+    let records = mono.node_records(typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
         typed,
         &mono.struct_layouts,
         &mono.enum_layouts,
-        &all_node_types,
-        &all_call_targets,
-        &all_operator_targets,
+        &records,
         &type_names,
     )
     .with_comptime_globals(comptime_globals)
@@ -330,11 +324,6 @@ pub fn compile_to_object(
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
     mir_ctx.comptime_interp = comptime_interp;
-    // error_wraps / fallback_keeps_shape: the merged forms, which include the
-    // monomorphizer's instantiated bodies. MirContext::new takes the checker's
-    // own; override with the merged ones.
-    mir_ctx.error_wraps = &all_error_wraps;
-    mir_ctx.fallback_keeps_shape = &all_fallback_keeps_shape;
     let mir_ctx = mir_ctx;
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
@@ -635,18 +624,12 @@ pub fn compile_tests_to_object(
     let nominal_underlying = build_nominal_underlying(typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
-    let all_node_types = mono.all_node_types(typed);
-    let all_call_targets = mono.all_call_targets(typed);
-    let all_operator_targets = mono.all_operator_targets(typed);
-    let all_error_wraps = mono.all_error_wraps(typed);
-    let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(typed);
+    let records = mono.node_records(typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
         typed,
         &mono.struct_layouts,
         &mono.enum_layouts,
-        &all_node_types,
-        &all_call_targets,
-        &all_operator_targets,
+        &records,
         &type_names,
     )
         .with_comptime_globals(comptime_globals)
@@ -657,8 +640,6 @@ pub fn compile_tests_to_object(
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
     mir_ctx.comptime_interp = comptime_interp;
-    mir_ctx.error_wraps = &all_error_wraps;
-    mir_ctx.fallback_keeps_shape = &all_fallback_keeps_shape;
     let mir_ctx = mir_ctx;
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
@@ -839,18 +820,12 @@ pub fn compile_benchmarks_to_object(
     let nominal_underlying = build_nominal_underlying(typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
-    let all_node_types = mono.all_node_types(typed);
-    let all_call_targets = mono.all_call_targets(typed);
-    let all_operator_targets = mono.all_operator_targets(typed);
-    let all_error_wraps = mono.all_error_wraps(typed);
-    let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(typed);
+    let records = mono.node_records(typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
         typed,
         &mono.struct_layouts,
         &mono.enum_layouts,
-        &all_node_types,
-        &all_call_targets,
-        &all_operator_targets,
+        &records,
         &type_names,
     )
         .with_comptime_globals(comptime_globals)
@@ -861,8 +836,6 @@ pub fn compile_benchmarks_to_object(
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
     mir_ctx.comptime_interp = comptime_interp;
-    mir_ctx.error_wraps = &all_error_wraps;
-    mir_ctx.fallback_keeps_shape = &all_fallback_keeps_shape;
     let mir_ctx = mir_ctx;
 
     let (mut mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;

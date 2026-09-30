@@ -299,11 +299,12 @@ impl<'a> MirContext<'a> {
     /// effect was a `comptime { }` block lowering with method dispatch blanked
     /// out while the same code lowered by the main pipeline had it (#425, #727).
     ///
-    /// The five tables that come straight off `TypedProgram` are read here, so
-    /// they can't be forgotten or blanked. `node_types` and `call_targets` stay
-    /// explicit: the real pipeline passes versions merged with the
-    /// monomorphizer's instantiated bodies, and silently taking the unmerged
-    /// ones off `typed` would lose every generic instantiation.
+    /// The tables that come straight off `TypedProgram` are read here, so
+    /// they can't be forgotten or blanked. The per-node records come from
+    /// `records` instead, which the real pipeline builds merged with the
+    /// monomorphizer's instantiated bodies (`MonoProgram::node_records`):
+    /// taking the unmerged ones off `typed` would lose every generic
+    /// instantiation.
     ///
     /// Everything else defaults to empty, with a `with_*` to set it. A new field
     /// is one edit here, and no call site can miss it.
@@ -311,26 +312,24 @@ impl<'a> MirContext<'a> {
         typed: &'a rask_types::TypedProgram,
         struct_layouts: &'a [StructLayout],
         enum_layouts: &'a [EnumLayout],
-        node_types: &'a HashMap<NodeId, Type>,
-        call_targets: &'a HashMap<NodeId, rask_types::Callee>,
-        operator_targets: &'a HashMap<NodeId, rask_types::OperatorTarget>,
+        records: &'a rask_mono::NodeRecords,
         type_names: &'a HashMap<rask_types::TypeId, String>,
     ) -> Self {
         Self {
             struct_layouts,
             enum_layouts,
-            node_types,
-            call_targets,
-            operator_targets,
+            node_types: &records.node_types,
+            call_targets: &records.call_targets,
+            operator_targets: &records.operator_targets,
+            error_wraps: &records.error_wraps,
+            fallback_keeps_shape: &records.fallback_keeps_shape,
+            escaping_closures: &records.escaping_closures,
+            task_bound_closures: &records.task_bound_closures,
             type_names,
             // Straight off the checker — never optional.
             type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
             interface_coercions: &typed.interface_coercions,
-            error_wraps: &typed.error_wraps,
-            fallback_keeps_shape: &typed.fallback_keeps_shape,
-            escaping_closures: &typed.escaping_closures,
-            task_bound_closures: &typed.task_bound_closures,
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.

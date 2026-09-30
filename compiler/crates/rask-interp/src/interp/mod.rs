@@ -194,6 +194,13 @@ pub struct Interpreter {
     pub(crate) escaping_closures: std::collections::HashSet<rask_ast::NodeId>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub(crate) task_bound_closures: std::collections::HashSet<rask_ast::NodeId>,
+    /// Closures in a generic body, with the captures whose type is a type
+    /// parameter's. Task-bound if one of those holds a link or a `Local` box
+    /// when the closure is built.
+    pub(crate) generic_closure_captures: HashMap<rask_ast::NodeId, Vec<String>>,
+    /// Structs and enums every value of which holds a link: the ones with a
+    /// link-typed field or payload, whatever that field holds right now.
+    pub(crate) task_bound_types: std::collections::HashSet<String>,
     /// XC4/XC5: which package each source file belongs to, and which `extend`
     /// blocks carry their package in the method name because the block is on a
     /// type that package doesn't own.
@@ -300,6 +307,41 @@ another task would then reach what this one still can [mem.ownership/T2, conc.sy
 Copy the values the task needs out before spawning, or use a Mutex or Readers box";
 
 impl Interpreter {
+    /// Does this value have to stay on the task that made it: is it a `Local`
+    /// box, or does it hold a link? For a closure in a generic body, where the
+    /// capture's type is a type parameter and only the value says which.
+    ///
+    /// Same answer as `TypeTable::task_bound` wherever the value names its
+    /// type: a struct or enum with a link-typed field is task-bound even while
+    /// that field is `none`. A container is judged by what it holds, so an
+    /// empty `Vec<Link<Node>>` may cross here and not on native, which decides
+    /// from the type (#1382). A `Rack` takes its links along with the nodes, and a
+    /// `Readers` or `Mutex` box may cross whatever is in it, so neither is
+    /// looked into.
+    pub(crate) fn value_is_task_bound(&self, v: &Value) -> bool {
+        let named = |name: &str| self.task_bound_types.contains(name.split('<').next().unwrap_or(name));
+        match v {
+            Value::Link { .. } | Value::Cell(_) => true,
+            Value::Struct(s) => {
+                let s = s.lock().unwrap();
+                named(&s.name) || s.fields.values().any(|f| self.value_is_task_bound(f))
+            }
+            Value::Enum { name, fields, .. } => {
+                named(name) || fields.iter().any(|f| self.value_is_task_bound(f))
+            }
+            Value::Tuple(items) => items.iter().any(|i| self.value_is_task_bound(i)),
+            Value::Vec(items) => {
+                items.lock().unwrap().items.iter().any(|i| self.value_is_task_bound(i))
+            }
+            Value::Map(m) => m
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(k, v)| self.value_is_task_bound(&k.0) || self.value_is_task_bound(v)),
+            _ => false,
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             env: Environment::new(),
@@ -322,6 +364,8 @@ impl Interpreter {
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: HashMap::new(),
+            task_bound_types: std::collections::HashSet::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
@@ -358,6 +402,8 @@ impl Interpreter {
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: HashMap::new(),
+            task_bound_types: std::collections::HashSet::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
@@ -400,6 +446,8 @@ impl Interpreter {
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: HashMap::new(),
+            task_bound_types: std::collections::HashSet::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
@@ -514,6 +562,18 @@ impl Interpreter {
         self.operator_targets = typed.operator_targets.clone();
         self.escaping_closures = typed.escaping_closures.clone();
         self.task_bound_closures = typed.task_bound_closures.clone();
+        self.generic_closure_captures = typed
+            .generic_closure_captures
+            .iter()
+            .map(|(id, captures)| (*id, captures.iter().map(|(name, _)| name.clone()).collect()))
+            .collect();
+        self.task_bound_types = typed
+            .types
+            .type_name_map()
+            .into_iter()
+            .filter(|(id, _)| typed.types.task_bound(&rask_types::Type::Named(*id)).is_some())
+            .map(|(_, name)| name)
+            .collect();
         // XC4/XC5: which package wrote each file, and which `extend` blocks
         // carry their package in the method name.
         self.file_packages = typed.file_packages.clone();
@@ -650,6 +710,8 @@ impl Interpreter {
         child.node_types = self.node_types.clone();
         child.escaping_closures = self.escaping_closures.clone();
         child.task_bound_closures = self.task_bound_closures.clone();
+        child.generic_closure_captures = self.generic_closure_captures.clone();
+        child.task_bound_types = self.task_bound_types.clone();
         child.operator_targets = self.operator_targets.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();

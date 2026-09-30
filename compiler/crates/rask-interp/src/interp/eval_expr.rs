@@ -2410,11 +2410,21 @@ impl Interpreter {
                 } else {
                     self.env.capture_shared()
                 };
+                // In a generic body the checker can't say: `x: T` is a link in
+                // one call and an `i64` in the next. The value can.
+                let task_bound = self.task_bound_closures.contains(&expr.id)
+                    || self.generic_closure_captures.get(&expr.id).is_some_and(|names| {
+                        names.iter().any(|name| {
+                            captured
+                                .get(name)
+                                .is_some_and(|slot| self.value_is_task_bound(&slot.lock().unwrap()))
+                        })
+                    });
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
                     captured_env: captured,
-                    task_bound: self.task_bound_closures.contains(&expr.id),
+                    task_bound,
                 })
             }
 

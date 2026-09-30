@@ -4297,6 +4297,20 @@ fn a_task_bound_closure_is_refused_at_spawn() {
         assert_eq!(code, 0, "{mode}: {stderr}");
         assert_eq!(stdout, "15\n", "{mode}");
     }
+    // A closure in a generic body captures a `T`, so it's decided per
+    // instantiation: `keep<i64>`'s crosses, `keep<Link<Node>>`'s doesn't.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "spawn_generic_closure_with_link.rk");
+        assert_ne!(code, 0, "{mode}: the link spawn has to fail; stdout: {stdout}");
+        assert_eq!(stdout, "1\nbefore\n", "{mode}");
+        assert!(
+            stderr.contains("this closure captured a link or a `Local` box"),
+            "{mode}: {stderr}",
+        );
+        let (stdout, stderr, code) = run_capture(mode, "spawn_generic_closure_that_may_cross.rk");
+        assert_eq!(code, 0, "{mode}: {stderr}");
+        assert_eq!(stdout, "1\n", "{mode}");
+    }
 }
 
 // A real deadlock is reported instead of hanging (#1354). Every task is parked
