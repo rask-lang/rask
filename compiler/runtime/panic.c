@@ -302,6 +302,13 @@ static __thread const char *panic_loc_file;
 static __thread int32_t     panic_loc_line;
 static __thread int32_t     panic_loc_col;
 
+// Whether a preemption safe point should leave the fiber alone: it is
+// unwinding, running under a C caller's frames (ctrl.panic/A1), or half way
+// through a line of output (conc.runtime/P2.4).
+int rask_preempt_unsafe(void) {
+    return tl_in_unwind || ffi_boundary_depth > 0 || rask_print_lock_held();
+}
+
 // ─── Task-owned thread state ───────────────────────────────
 //
 // Everything above that belongs to the task running on a thread rather than

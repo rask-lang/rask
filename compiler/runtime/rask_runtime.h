@@ -1247,6 +1247,8 @@ void rask_task_slots_install(int64_t n);
 void rask_task_slots_clear(void);
 int  rask_task_slot_release(void);
 void rask_task_slot_retake(int released);
+// Hand the slot to a waiting task if this one is past its budget.
+void rask_task_slot_preempt(void);
 
 // Sleep the current thread for the given number of nanoseconds.
 int64_t rask_sleep_ns(int64_t ns);
@@ -1375,6 +1377,14 @@ int  rask_fiber_active(void);
 // worker thread as the task's fiber switches (panic.c).
 size_t rask_task_tls_size(void);
 void   rask_task_tls_swap(void *blob);
+
+// Preemption (conc.runtime/P1-P3). Codegen checks the flag at every function
+// entry and loop back-edge and calls the point when it's set. Only the green
+// scheduler ever sets it; elsewhere it stays zero and the point does nothing.
+extern int32_t rask_preempt_requested;
+void rask_preempt_point(void);
+int  rask_preempt_unsafe(void);
+int  rask_print_lock_held(void);
 // The parts of it thread.c and random.c keep, swapped by the call above.
 size_t rask_thread_tls_size(void);
 void   rask_thread_tls_swap(void *blob);

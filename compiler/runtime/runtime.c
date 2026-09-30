@@ -95,6 +95,11 @@ void rask_print_unlock(void)  { if (print_lock_depth > 0) { print_lock_depth--; 
 void rask_eprint_lock(void)   { flockfile(stderr); eprint_lock_depth++; }
 void rask_eprint_unlock(void) { if (eprint_lock_depth > 0) { eprint_lock_depth--; funlockfile(stderr); } }
 
+// A line is half printed: another fiber on this thread would splice into it.
+int rask_print_lock_held(void) {
+    return print_lock_depth > 0 || eprint_lock_depth > 0;
+}
+
 // Drop whatever this thread still holds. Called before a panic longjmps past
 // the matching unlock, and before the panic reporter writes to stderr.
 void rask_print_unlock_all(void) {

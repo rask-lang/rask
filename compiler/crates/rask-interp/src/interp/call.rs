@@ -325,6 +325,7 @@ impl Interpreter {
 
     /// Runs ensure blocks in LIFO order on block exit.
     pub(super) fn exec_stmts(&mut self, stmts: &[Stmt]) -> Result<Value, RuntimeDiagnostic> {
+        crate::preempt_point();
         let mut last_value = Value::Unit;
         let mut ensures: Vec<&Stmt> = Vec::new();
         let mut exit_error: Option<RuntimeDiagnostic> = None;

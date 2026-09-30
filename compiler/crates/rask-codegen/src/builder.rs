@@ -355,6 +355,10 @@ pub struct FunctionBuilder<'a> {
 
     /// C functions taking a struct by value, and how each argument goes.
     c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
+
+    /// `rask_preempt_requested`, when the runtime provides it. Every function
+    /// entry and loop back-edge checks it (conc.runtime/P3).
+    preempt_flag: Option<GlobalValue>,
 }
 
 /// No C function in this program takes a struct by value.
@@ -404,13 +408,37 @@ impl<'a> FunctionBuilder<'a> {
             line_map: None,
             adapt_table: crate::dispatch::build_adapt_table(),
             c_abi_args: &NO_C_ABI_ARGS,
+            preempt_flag: None,
         })
+    }
+
+    /// Check for preemption at function entry and on loop back-edges.
+    pub fn set_preempt_flag(&mut self, flag: GlobalValue) {
+        self.preempt_flag = Some(flag);
     }
 
     /// The C-ABI argument plans, when the program imports a header whose
     /// functions take a struct by value.
     pub fn set_c_abi_args(&mut self, plans: &'a HashMap<String, Vec<crate::c_abi::CArg>>) {
         self.c_abi_args = plans;
+    }
+
+    /// `if rask_preempt_requested { rask_preempt_point() }`, leaving the builder
+    /// in the block after it. The flag is zero unless a fiber has run past its
+    /// budget, so this is a load and a branch not taken.
+    fn emit_preempt_check(builder: &mut ClifFunctionBuilder, flag: GlobalValue, point: FuncRef) {
+        let addr = builder.ins().global_value(types::I64, flag);
+        let up = builder.ins().load(types::I32, MemFlags::trusted(), addr, 0);
+        let slow = builder.create_block();
+        let cont = builder.create_block();
+        builder.set_cold_block(slow);
+        builder.ins().brif(up, slow, &[], cont, &[]);
+        builder.switch_to_block(slow);
+        builder.seal_block(slow);
+        builder.ins().call(point, &[]);
+        builder.ins().jump(cont, &[]);
+        builder.switch_to_block(cont);
+        builder.seal_block(cont);
     }
 
     /// Set the line map for converting byte offsets to line:col in assert messages.
@@ -679,8 +707,21 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
 
+        // Preemption safe points (conc.runtime/P3). One at entry, so a task
+        // that keeps calling is caught at its next call. One on every edge
+        // back to a block already laid out, which is every loop's back edge,
+        // so a loop that calls nothing is caught at its next iteration.
+        let preempt = self.preempt_flag.zip(self.func_refs.get("rask_preempt_point").copied());
+        let position: HashMap<BlockId, usize> = self.mir_fn.blocks.iter()
+            .enumerate()
+            .map(|(i, b)| (b.id, i))
+            .collect();
+        if let Some((flag, point)) = preempt {
+            Self::emit_preempt_check(&mut builder, flag, point);
+        }
+
         // Lower each block (skip cleanup-only blocks)
-        for mir_block in &self.mir_fn.blocks {
+        for (here, mir_block) in self.mir_fn.blocks.iter().enumerate() {
             if cleanup_only.contains(&mir_block.id) {
                 continue;
             }
@@ -706,6 +747,14 @@ impl<'a> FunctionBuilder<'a> {
 
             // Lower terminator
             Self::apply_srcloc(&mut builder, mir_block.terminator.span);
+            if let Some((flag, point)) = preempt {
+                let loops_back = rask_mir::analysis::cfg::successors(&mir_block.terminator)
+                    .into_iter()
+                    .any(|s| position.get(&s).is_some_and(|&p| p <= here));
+                if loops_back {
+                    Self::emit_preempt_check(&mut builder, flag, point);
+                }
+            }
             Self::lower_terminator(&mut builder, &mir_block.terminator, &ctx, &cleanup_chain_blocks)?;
         }
 

@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A task that computes without ever parking doesn't keep its worker from the
+// others (conc.runtime/P1).
+//
+// With one worker and no preemption, the spinner below runs first and never
+// gives the worker up: it waits for a flag only the second task sets, and the
+// second task never gets to run, so the program hangs. Every function entry
+// and loop back-edge now checks for a fiber that has run past its budget and
+// yields it, so the second task gets its turn and the spinner sees the flag.
+
+import async.{Handles, JoinError}
+import sync.{Atomic, SeqCst}
+
+const SPIN_DONE: Atomic<bool> = Atomic<bool>.new(false)
+const COUNT_DONE: Atomic<bool> = Atomic<bool>.new(false)
+
+func spin_until_set() -> i64 {
+    mut turns: i64 = 0
+    while !SPIN_DONE.load(SeqCst) {
+        turns += 1
+    }
+    return turns
+}
+
+// Most iterations make no call at all: only the back-edge check sees them.
+func count_until_set() -> i64 {
+    mut n: i64 = 0
+    mut seen = false
+    while !seen {
+        n += 1
+        if n % 100000 == 0 {
+            seen = COUNT_DONE.load(SeqCst)
+        }
+    }
+    return n
+}
+
+func all_ok(results: Vec<i64 or JoinError>) -> bool {
+    for r in results {
+        match r {
+            i64 as v => {
+                if v < 0 { return false }
+            }
+            JoinError.Panicked(m) => { return false }
+        }
+    }
+    return true
+}
+
+test "a spinning task doesn't starve another on the same worker" {
+    using Multitasking(workers: 1) {
+        mut group = Handles<i64>.new()
+        ensure group.detach()
+        group.add(spawn(|| { return spin_until_set() }))
+        group.add(spawn(|| {
+            SPIN_DONE.store(true, SeqCst)
+            return 0
+        }))
+        assert all_ok(group.join_all())
+    }
+}
+
+test "a loop between checks of the flag is caught at its back edge" {
+    using Multitasking(workers: 1) {
+        mut group = Handles<i64>.new()
+        ensure group.detach()
+        group.add(spawn(|| { return count_until_set() }))
+        group.add(spawn(|| {
+            COUNT_DONE.store(true, SeqCst)
+            return 0
+        }))
+        assert all_ok(group.join_all())
+    }
+}
+
+func main() {}

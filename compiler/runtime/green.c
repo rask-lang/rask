@@ -68,7 +68,7 @@
 enum { PARK_RUNNING = 0, PARK_PARKING, PARK_PARKED, PARK_WOKEN };
 
 // Why a fiber switched back to its worker.
-enum { SWITCH_DONE = 1, SWITCH_PARKED, SWITCH_YIELD };
+enum { SWITCH_DONE = 1, SWITCH_PARKED, SWITCH_YIELD, SWITCH_PREEMPTED };
 
 typedef struct GreenTask {
     // The body: the closure's function and its environment.
@@ -221,6 +221,17 @@ typedef struct {
     int             id;
     WorkDeque       deque;      // unstarted tasks, stealable
     TaskQueue       inbox;      // started tasks resuming here
+    // Tasks this worker took off the CPU for running past their budget. Run
+    // after everything else it has, so a spinning task can't keep a woken or
+    // unstarted one waiting (conc.runtime/P1). Not stealable: a started fiber
+    // stays on its worker (S3a).
+    TaskQueue       preempted;
+    // When the fiber running here was switched in, or 0 while none is. The
+    // preemption timer reads it from whatever thread the signal lands on.
+    atomic_llong    running_since;
+    // Set by the timer when that fiber is over budget; the next safe point
+    // it reaches yields.
+    atomic_int      preempt;
     RaskFiber       fiber;      // this worker thread's own stack
     // Sleeping: waits on `cond` until something lands in its queues.
     pthread_mutex_t sleep_lock;
@@ -443,7 +454,10 @@ static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
     // it goes first and the task is named after it.
     rask_task_tls_swap(t->tls);
     rask_task_set_current(t->task);
+    atomic_store_explicit(&w->running_since, now_ns(), memory_order_release);
     rask_fiber_switch(&w->fiber, &t->fiber);
+    atomic_store_explicit(&w->running_since, 0, memory_order_release);
+    atomic_store_explicit(&w->preempt, 0, memory_order_relaxed);
     rask_task_tls_swap(t->tls);
     tl_current_task = NULL;
 
@@ -469,6 +483,9 @@ static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
     }
     case SWITCH_YIELD:
         tq_push(&w->inbox, t);
+        break;
+    case SWITCH_PREEMPTED:
+        tq_push(&w->preempted, t);
         break;
     }
 }
@@ -504,6 +521,114 @@ static int64_t fire_timers(GreenScheduler *s) {
         task_wake(t);
     }
     return next;
+}
+
+// ─── Preemption (conc.runtime/P1–P3) ────────────────────────
+//
+// A fiber that computes without parking would keep its worker until it
+// finished. Every Rask function entry and every loop back-edge checks
+// `rask_preempt_requested` (codegen); it is zero unless some fiber has run past
+// its budget, so the check is a load and a branch not taken. A timer signal
+// every PREEMPT_TICK_NS looks at each worker, and when the fiber on one has
+// been running for PREEMPT_BUDGET_NS it marks that worker and raises the flag.
+// The next check on that fiber calls `rask_preempt_point`, which yields.
+//
+// The signal only reads a clock and stores atomics, so it is safe wherever it
+// lands, and no thread is added for it: the thread-count soak still holds.
+//
+// A loop that calls nothing is covered by its back-edge check. conc.runtime/P2.3
+// describes a signal that switches the fiber from inside the handler instead;
+// that can stop runtime C code holding a lock the next fiber needs, and the
+// check can't, because it only switches where codegen put it.
+
+#define PREEMPT_BUDGET_NS (10LL * 1000000LL)
+#define PREEMPT_TICK_NS   (5LL * 1000000LL)
+
+int32_t rask_preempt_requested;
+
+static timer_t              preempt_timer;
+static int                  preempt_timer_armed;
+static _Atomic(GreenScheduler *) preempt_sched;
+static atomic_int           preempt_in_handler;
+
+static void preempt_tick(int sig) {
+    (void)sig;
+    int saved = errno;
+    atomic_fetch_add_explicit(&preempt_in_handler, 1, memory_order_acq_rel);
+    GreenScheduler *s = atomic_load_explicit(&preempt_sched, memory_order_acquire);
+    if (s) {
+        int64_t now = now_ns();
+        for (int i = 0; i < s->worker_count; i++) {
+            Worker *w = &s->workers[i];
+            int64_t since = atomic_load_explicit(&w->running_since, memory_order_acquire);
+            if (since && now - since >= PREEMPT_BUDGET_NS) {
+                atomic_store_explicit(&w->preempt, 1, memory_order_release);
+                __atomic_store_n(&rask_preempt_requested, 1, __ATOMIC_RELEASE);
+            }
+        }
+    }
+    atomic_fetch_sub_explicit(&preempt_in_handler, 1, memory_order_acq_rel);
+    errno = saved;
+}
+
+static void preempt_timer_start(GreenScheduler *s) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = preempt_tick;
+    // Restarted, so a read the tick interrupts carries on instead of failing.
+    sa.sa_flags = SA_RESTART | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGURG, &sa, NULL) != 0) return;
+    atomic_store_explicit(&preempt_sched, s, memory_order_release);
+    struct sigevent sev;
+    memset(&sev, 0, sizeof(sev));
+    sev.sigev_notify = SIGEV_SIGNAL;
+    sev.sigev_signo = SIGURG;
+    if (timer_create(CLOCK_MONOTONIC, &sev, &preempt_timer) != 0) return;
+    struct itimerspec its = {
+        .it_interval = { 0, PREEMPT_TICK_NS },
+        .it_value = { 0, PREEMPT_TICK_NS },
+    };
+    if (timer_settime(preempt_timer, 0, &its, NULL) != 0) {
+        timer_delete(preempt_timer);
+        return;
+    }
+    preempt_timer_armed = 1;
+}
+
+// Before the scheduler is freed: no tick may still be reading it.
+static void preempt_timer_stop(void) {
+    if (preempt_timer_armed) {
+        timer_delete(preempt_timer);
+        preempt_timer_armed = 0;
+    }
+    atomic_store_explicit(&preempt_sched, NULL, memory_order_release);
+    while (atomic_load_explicit(&preempt_in_handler, memory_order_acquire) != 0) {
+        sched_yield();
+    }
+    __atomic_store_n(&rask_preempt_requested, 0, __ATOMIC_RELEASE);
+}
+
+// The flag is process-wide, so it stays up while any worker is marked.
+static void preempt_flag_recompute(GreenScheduler *s) {
+    for (int i = 0; i < s->worker_count; i++) {
+        if (atomic_load_explicit(&s->workers[i].preempt, memory_order_acquire)) return;
+    }
+    __atomic_store_n(&rask_preempt_requested, 0, __ATOMIC_RELEASE);
+}
+
+void rask_preempt_point(void) {
+    Worker *w = tl_worker;
+    GreenTask *t = tl_current_task;
+    if (!w || !t) return;
+    if (!atomic_exchange_explicit(&w->preempt, 0, memory_order_acq_rel)) {
+        return;
+    }
+    preempt_flag_recompute(w->sched);
+    // Not in the middle of something another fiber on this thread could walk
+    // into: an unwind, a C caller's frames, or a line being printed.
+    if (rask_preempt_unsafe()) return;
+    switch_to_worker(t, SWITCH_PREEMPTED);
 }
 
 // ─── Stack overflow ─────────────────────────────────────────
@@ -591,6 +716,7 @@ static int nothing_can_move(GreenScheduler *s, Worker *self) {
         Worker *w = &s->workers[i];
         if (w != self && !atomic_load_explicit(&w->sleeping, memory_order_seq_cst)) return 0;
         if (atomic_load_explicit(&w->inbox.len, memory_order_seq_cst) != 0) return 0;
+        if (atomic_load_explicit(&w->preempted.len, memory_order_seq_cst) != 0) return 0;
         long top = atomic_load_explicit(&w->deque.top, memory_order_seq_cst);
         long bottom = atomic_load_explicit(&w->deque.bottom, memory_order_seq_cst);
         if (bottom > top) return 0;
@@ -693,7 +819,9 @@ static GreenTask *find_work(GreenScheduler *s, Worker *w) {
             if (t) return t;
         }
     }
-    return tq_pop(&s->global);
+    t = tq_pop(&s->global);
+    if (t) return t;
+    return tq_pop(&w->preempted);
 }
 
 static void *worker_entry(void *arg) {
@@ -831,6 +959,9 @@ void rask_runtime_init(int64_t worker_count) {
         w->id = i;
         deque_init(&w->deque);
         tq_init(&w->inbox);
+        tq_init(&w->preempted);
+        atomic_init(&w->running_since, 0);
+        atomic_init(&w->preempt, 0);
         pthread_mutex_init(&w->sleep_lock, NULL);
         pthread_cond_init(&w->sleep_cond, NULL);
         atomic_init(&w->sleeping, 0);
@@ -858,6 +989,7 @@ void rask_runtime_init(int64_t worker_count) {
     pthread_once(&overflow_once, install_overflow_handler);
 
     g_sched = s;
+    preempt_timer_start(s);
 
     for (int i = 0; i < s->worker_count; i++) {
         int err = pthread_create(&s->workers[i].thread, NULL, worker_entry, &s->workers[i]);
@@ -891,6 +1023,8 @@ void rask_runtime_shutdown(void) {
     pthread_mutex_unlock(&s->done_lock);
     rask_thread_wait_end();
 
+    preempt_timer_stop();
+
     // Signal shutdown and wake all workers, the poller through its eventfd.
     atomic_store_explicit(&s->shutdown, 1, memory_order_release);
     if (s->wakefd >= 0) {
@@ -914,6 +1048,7 @@ void rask_runtime_shutdown(void) {
     for (int i = 0; i < s->worker_count; i++) {
         Worker *w = &s->workers[i];
         tq_destroy(&w->inbox);
+        tq_destroy(&w->preempted);
         pthread_mutex_destroy(&w->sleep_lock);
         pthread_cond_destroy(&w->sleep_cond);
     }

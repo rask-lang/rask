@@ -342,10 +342,12 @@ so the deterministic tests run the code that ships.
    the test's own thread, so a sim run is one OS thread however many tasks it
    spawns, and the switch, stacks and per-task state swap that ship are what
    the sim gate exercises.
-4. Preemption last. Codegen puts a flag check in every function prologue, and
-   a loop that never calls anything gets a signal instead (`conc.runtime/P2`),
-   so it touches the compiler, not only the runtime. Its test: a task spinning
-   in a loop doesn't stop another task from finishing.
+4. Preemption. **Done:** a SIGURG timer marks a fiber past its 10 ms budget,
+   and codegen checks for that at every function entry and loop back edge, so
+   a loop that never calls anything still yields (`conc.runtime/P2`). The
+   interpreter hands its worker slot over at the same budget. Test: a task
+   spinning on a flag another task sets finishes on one worker
+   (`tests/suite/t_preemption.rk`).
 
 ### Bugs in the theme
 

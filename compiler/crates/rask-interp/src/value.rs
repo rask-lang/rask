@@ -794,8 +794,15 @@ pub struct MultitaskingRuntime {
     pub workers: usize,
     /// Slots left. `Mutex` + `Condvar` rather than an atomic, because a task
     /// that finds none has to wait for one.
-    free: Mutex<usize>,
+    free: Mutex<Slots>,
     slot_freed: Condvar,
+    /// A task handing its slot over waits here until a waiter has it.
+    slot_taken: Condvar,
+}
+
+struct Slots {
+    free: usize,
+    waiting: usize,
 }
 
 impl MultitaskingRuntime {
@@ -810,25 +817,48 @@ impl MultitaskingRuntime {
         }
         Ok(Self {
             workers,
-            free: Mutex::new(workers.max(1)),
+            free: Mutex::new(Slots { free: workers.max(1), waiting: 0 }),
             slot_freed: Condvar::new(),
+            slot_taken: Condvar::new(),
         })
     }
 
     /// Wait for a slot to run in.
     pub fn take_slot(&self) {
-        let mut free = self.free.lock().unwrap();
-        while *free == 0 {
-            free = self.slot_freed.wait(free).unwrap();
+        let mut slots = self.free.lock().unwrap();
+        slots.waiting += 1;
+        while slots.free == 0 {
+            slots = self.slot_freed.wait(slots).unwrap();
         }
-        *free -= 1;
+        slots.waiting -= 1;
+        slots.free -= 1;
+        self.slot_taken.notify_all();
     }
 
     /// Hand a slot back.
     pub fn give_slot(&self) {
-        let mut free = self.free.lock().unwrap();
-        *free += 1;
+        let mut slots = self.free.lock().unwrap();
+        slots.free += 1;
         self.slot_freed.notify_one();
+    }
+
+    /// Let a waiting task have this slot, then queue for one again.
+    ///
+    /// Waits for the waiter to take it before queueing: `give_slot` then
+    /// `take_slot` would usually hand the slot straight back to the thread that
+    /// just gave it up, since nothing makes a mutex fair. No waiter, no yield.
+    pub fn yield_slot(&self) {
+        let mut slots = self.free.lock().unwrap();
+        if slots.waiting == 0 {
+            return;
+        }
+        slots.free += 1;
+        self.slot_freed.notify_one();
+        while slots.free > 0 && slots.waiting > 0 {
+            slots = self.slot_taken.wait(slots).unwrap();
+        }
+        drop(slots);
+        self.take_slot();
     }
 
     /// Wait for every task the block started, which is what block exit means

@@ -25,25 +25,26 @@ import async.spawn
 const RUNNING: Atomic<i64> = Atomic<i64>.new(0)
 const PEAK: Atomic<i64> = Atomic<i64>.new(0)
 
-// The spin is long enough that the tasks overlap if they're allowed to — with
-// the bound gone, six of them under `workers: 2` peaked at six. A sleep would
-// be the obvious way to hold a task open and isn't available to a spawned body
-// on both backends. Sized so the interpreter, which runs the loop one
-// expression at a time, still finishes in a couple of seconds.
+// A task counts as running inside a burst: the lines between `fetch_add` and
+// `fetch_sub` hold no loop and call no Rask function, so they hold no safe
+// point either, and a task can't be preempted in the middle of one. Counting
+// from a task's start to its end measured something else once preemption
+// landed: a task past its budget steps aside mid-loop, so more than two had
+// started and not finished while only two ran.
+//
+// Enough bursts that the tasks overlap if they're allowed to, sized so the
+// interpreter still finishes in a couple of seconds. With the bound gone, six
+// tasks under `workers: 2` peaked at six.
 func busy() -> i64 {
-    let now = RUNNING.fetch_add(1, SeqCst) + 1
-    mut seen = PEAK.load(SeqCst)
-    while now > seen {
-        PEAK.store(now, SeqCst)
-        seen = PEAK.load(SeqCst)
-    }
-    mut spin: i64 = 0
     mut total: i64 = 0
-    while spin < 400000 {
-        total = total + spin
-        spin = spin + 1
+    mut round: i64 = 0
+    while round < 40000 {
+        let now = RUNNING.fetch_add(1, SeqCst) + 1
+        PEAK.fetch_max(now, SeqCst)
+        total = total + now
+        RUNNING.fetch_sub(1, SeqCst)
+        round = round + 1
     }
-    RUNNING.fetch_sub(1, SeqCst)
     return total
 }
 

@@ -2860,6 +2860,8 @@ impl Interpreter {
             // Acquire locks and bind values
             self.env.push_scope();
 
+            // Declared before the guards so it outlives them.
+            let _no_preempt = crate::NoPreempt::enter();
             // Hold lock guards in scope for Mutex/Shared
             let mut mutex_guards: Vec<(String, std::sync::MutexGuard<'_, Value>)> = Vec::new();
             let mut rw_read_guards: Vec<std::sync::RwLockReadGuard<'_, Value>> = Vec::new();

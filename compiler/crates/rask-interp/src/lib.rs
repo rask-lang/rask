@@ -95,6 +95,72 @@ where
 /// give it up, hence the flag.
 thread_local! {
     static HOLDS_TASK_SLOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// When this thread last took its slot.
+    static SLOT_SINCE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    /// Safe points since the clock was last read.
+    static SAFE_POINTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Locks held by a `with` block or a lock closure on this thread.
+    static NO_PREEMPT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// How long a task keeps its slot while another waits (conc.runtime/P1).
+/// Native preempts a fiber on the same budget.
+const PREEMPT_BUDGET: std::time::Duration = std::time::Duration::from_millis(10);
+
+fn slot_taken_now() {
+    HOLDS_TASK_SLOT.with(|h| h.set(true));
+    SLOT_SINCE.with(|s| s.set(Some(std::time::Instant::now())));
+}
+
+fn slot_given_up() {
+    HOLDS_TASK_SLOT.with(|h| h.set(false));
+    SLOT_SINCE.with(|s| s.set(None));
+}
+
+/// A task that computes without ever blocking would otherwise keep its slot
+/// until it finished, and with `workers: 1` a task spinning on a flag another
+/// task sets never finishes. Called at the start of every statement block,
+/// which every loop iteration and function body passes through, the same
+/// places native checks.
+///
+/// Not while a lock is held: the task that gets the slot may want that lock,
+/// and it would block holding the only slot the owner needs to release it.
+pub(crate) fn preempt_point() {
+    if !HOLDS_TASK_SLOT.with(|h| h.get()) {
+        return;
+    }
+    let n = SAFE_POINTS.with(|c| {
+        let n = c.get().wrapping_add(1);
+        c.set(n);
+        n
+    });
+    if n % 256 != 0 || NO_PREEMPT.with(|c| c.get()) > 0 {
+        return;
+    }
+    let Some(since) = SLOT_SINCE.with(|s| s.get()) else { return };
+    if since.elapsed() < PREEMPT_BUDGET {
+        return;
+    }
+    let runtime = value::ACTIVE_RUNTIME.read().unwrap().clone();
+    let Some(runtime) = runtime else { return };
+    runtime.yield_slot();
+    slot_taken_now();
+}
+
+/// Holds off `preempt_point` on this thread while alive.
+pub(crate) struct NoPreempt;
+
+impl NoPreempt {
+    pub(crate) fn enter() -> Self {
+        NO_PREEMPT.with(|c| c.set(c.get() + 1));
+        NoPreempt
+    }
+}
+
+impl Drop for NoPreempt {
+    fn drop(&mut self) {
+        NO_PREEMPT.with(|c| c.set(c.get() - 1));
+    }
 }
 
 /// Run a spawned task's body under the `using Multitasking(workers: n)` bound.
@@ -105,9 +171,9 @@ pub(crate) fn with_task_slot<T>(body: impl FnOnce() -> T) -> T {
     let runtime = value::ACTIVE_RUNTIME.read().unwrap().clone();
     let Some(runtime) = runtime else { return body() };
     runtime.take_slot();
-    HOLDS_TASK_SLOT.with(|h| h.set(true));
+    slot_taken_now();
     let out = body();
-    HOLDS_TASK_SLOT.with(|h| h.set(false));
+    slot_given_up();
     runtime.give_slot();
     out
 }
@@ -122,11 +188,11 @@ pub(crate) fn without_task_slot<T>(wait: impl FnOnce() -> T) -> T {
     }
     let runtime = value::ACTIVE_RUNTIME.read().unwrap().clone();
     let Some(runtime) = runtime else { return wait() };
-    HOLDS_TASK_SLOT.with(|h| h.set(false));
+    slot_given_up();
     runtime.give_slot();
     let out = wait();
     runtime.take_slot();
-    HOLDS_TASK_SLOT.with(|h| h.set(true));
+    slot_taken_now();
     out
 }
 

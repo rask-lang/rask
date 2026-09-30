@@ -68,6 +68,7 @@ impl Interpreter {
                     expected: 1,
                     got: 0,
                 })?;
+                let _no_preempt = crate::NoPreempt::enter();
                 match shared.try_write() {
                     Ok(mut guard) => {
                         let result = self.call_closure_with_arg(&closure, guard.clone())?;
@@ -337,6 +338,7 @@ impl Interpreter {
                 captured_env,
                 ..
             } => {
+                let _no_preempt = crate::NoPreempt::enter();
                 let mut guard = mutex.lock().map_err(|e| {
                     RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
                 })?;
