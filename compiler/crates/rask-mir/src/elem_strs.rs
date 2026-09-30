@@ -22,6 +22,9 @@
 //!   4            the element *is* a closure — a pointer to its block
 //!   5            the element *is* an interface box — a `[data, vtable]` fat pointer
 //!   6 + index    a struct with that layout
+//!   -1 - index   an enum with that layout
+//!   bit 62 set   a `T or E` or a tagged `T?`, with a tag for each side packed
+//!                below it (`wrapper_tag`)
 
 use crate::MirType;
 
@@ -51,6 +54,62 @@ pub const ELEM_STRUCT_BASE: i64 = 6;
 /// as a guard per variant rather than a flat list — `RASK_OWNED_TAG_IF` in
 /// `rask_runtime.h`.
 pub const ELEM_ENUM_BASE: i64 = -1;
+
+/// A `T or E` or tagged `T?` element: bit 62, which wrapper in bit 56, and the
+/// tag of each side in 28 bits each below that.
+///
+/// Where a side's string sits depends on the wrapper's own tag, the same
+/// problem an enum has, so codegen describes each side under a guard. Before
+/// this a `Vec<i64 or Oops>` described its elements as owning nothing, and
+/// every `Oops.Bad(msg)` in it leaked its message when the vector went (#1357).
+const WRAPPER_FLAG: i64 = 1 << 62;
+const WRAPPER_KIND_SHIFT: u32 = 56;
+const SIDE_BITS: u32 = 28;
+const SIDE_MASK: i64 = (1 << SIDE_BITS) - 1;
+/// Added to a side's tag so an enum's negative tag packs as a positive field.
+const SIDE_BIAS: i64 = 1 << (SIDE_BITS - 1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wrapper {
+    /// `T or E`: tag 0 holds `T`, tag 1 holds `E`.
+    Result,
+    /// A tagged `T?`: tag 0 holds `T`, tag 1 is `none`.
+    Option,
+}
+
+/// The tag for a wrapper element whose sides have tags `ok` and `err`.
+///
+/// `ELEM_NONE` when neither side owns anything, and also when a side is itself
+/// a wrapper: one tag can't hold two levels, so a `T? or E` element is left
+/// undescribed. That leaks rather than frees the wrong bytes.
+pub fn wrapper_tag(kind: Wrapper, ok: i64, err: i64) -> i64 {
+    if ok == ELEM_NONE && err == ELEM_NONE {
+        return ELEM_NONE;
+    }
+    let fits = |t: i64| decode_wrapper(t).is_none() && (-SIDE_BIAS..SIDE_BIAS).contains(&t);
+    if !fits(ok) || !fits(err) {
+        return ELEM_NONE;
+    }
+    let kind_bit = match kind {
+        Wrapper::Result => 0,
+        Wrapper::Option => 1,
+    };
+    WRAPPER_FLAG
+        | (kind_bit << WRAPPER_KIND_SHIFT)
+        | (((ok + SIDE_BIAS) & SIDE_MASK) << SIDE_BITS)
+        | ((err + SIDE_BIAS) & SIDE_MASK)
+}
+
+/// The wrapper and the two side tags `wrapper_tag` packed, if `tag` is one.
+pub fn decode_wrapper(tag: i64) -> Option<(Wrapper, i64, i64)> {
+    if tag < 0 || tag & WRAPPER_FLAG == 0 {
+        return None;
+    }
+    let kind = if (tag >> WRAPPER_KIND_SHIFT) & 1 == 0 { Wrapper::Result } else { Wrapper::Option };
+    let ok = ((tag >> SIDE_BITS) & SIDE_MASK) - SIDE_BIAS;
+    let err = (tag & SIDE_MASK) - SIDE_BIAS;
+    Some((kind, ok, err))
+}
 
 /// The tag for an element that *is* a container.
 ///
@@ -180,6 +239,14 @@ pub fn tag_of(ty: Option<&MirType>) -> i64 {
         Some(MirType::InterfaceObject { .. }) => ELEM_TRAITBOX,
         Some(MirType::Struct(id)) => ELEM_STRUCT_BASE + id.id as i64,
         Some(MirType::Enum(id)) => ELEM_ENUM_BASE - id.id as i64,
+        Some(MirType::Result { ok, err }) => {
+            wrapper_tag(Wrapper::Result, tag_of(Some(ok)), tag_of(Some(err)))
+        }
+        // A niche option is the payload's own word with `none` reserved: no
+        // tag, and nothing it points at is the container's.
+        Some(MirType::Option(inner)) if !inner.is_niche_payload() => {
+            wrapper_tag(Wrapper::Option, tag_of(Some(inner)), ELEM_NONE)
+        }
         _ => ELEM_NONE,
     }
 }
