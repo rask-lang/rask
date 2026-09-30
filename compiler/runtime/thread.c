@@ -148,6 +148,7 @@ void rask_task_set_current(RaskTask *t) {
     current_task = t;
 }
 
+
 void rask_task_release(RaskTask *t) {
     if (atomic_fetch_sub_explicit(&t->refcount, 1, memory_order_acq_rel) == 1) {
         // `strdup`'d by panic.c, so not ours to hand to `rask_free`.
@@ -223,6 +224,24 @@ static pthread_cond_t  slot_freed = PTHREAD_COND_INITIALIZER;
 static int64_t         slots_total;   // 0 = no bound installed
 static int64_t         slots_free;
 static __thread int    slot_held;
+
+// This file's share of a task's thread-local state (rask_task_tls_swap).
+typedef struct {
+    RaskTask *current;
+    int       slot_held;
+} ThreadTls;
+
+size_t rask_thread_tls_size(void) {
+    return sizeof(ThreadTls);
+}
+
+void rask_thread_tls_swap(void *blob) {
+    ThreadTls *t = (ThreadTls *)blob;
+    ThreadTls live = { current_task, slot_held };
+    current_task = t->current;
+    slot_held = t->slot_held;
+    *t = live;
+}
 
 // `n <= 0` is `using Multitasking` with no count, which the green scheduler
 // reads as one worker per CPU. It used to install a single slot here, so a
@@ -317,28 +336,29 @@ void rask_task_run_body(RaskTask *t, RaskTaskFn func, void *env) {
     slot_give();
 }
 
-static void *task_thread_entry(void *arg) {
-    TaskEntry *entry = (TaskEntry *)arg;
+// The body and the runner's share of the task, on whatever runs it.
+static void task_entry_run(TaskEntry *entry) {
     RaskTask *t = entry->task;
-    rask_outside_thread_start();
-#ifdef RASK_SIM
-    // Before anything else: under sim this thread may not run until picked.
-    void *sim = t->sim;
-    if (sim) rask_sim_task_enter(sim);
-#endif
     RaskTaskFn func = entry->func;
     void *env = entry->env;
     rask_free(entry);
-
     rask_task_run_body(t, func, env);
-
     rask_task_release(t);
-#ifdef RASK_SIM
-    if (sim) rask_sim_task_exit();
-#endif
+}
+
+static void *task_thread_entry(void *arg) {
+    rask_outside_thread_start();
+    task_entry_run((TaskEntry *)arg);
     rask_outside_thread_exit();
     return NULL;
 }
+
+#ifdef RASK_SIM
+// Under sim a task is a fiber the seeded scheduler switches to (sim.c).
+static void task_fiber_entry(void *arg) {
+    task_entry_run((TaskEntry *)arg);
+}
+#endif
 
 // ─── Threads ───────────────────────────────────────────────
 
@@ -352,15 +372,14 @@ static RaskTask *task_spawn_thread(RaskTaskFn func, void *env, void *closure_bas
     *entry = (TaskEntry){ .func = func, .env = env, .task = t };
 
 #ifdef RASK_SIM
-    if (rask_sim_active()) t->sim = rask_sim_task_new(t->task_id);
+    if (rask_sim_active()) {
+        t->sim = rask_sim_task_spawn(t->task_id, task_fiber_entry, entry);
+        RASK_SIM_POINT();
+        return t;
+    }
 #endif
     int err = pthread_create(&t->thread, NULL, task_thread_entry, entry);
     if (err != 0) {
-#ifdef RASK_SIM
-        // The task was registered as runnable; with no thread behind it the
-        // baton would be handed to nobody.
-        if (t->sim) rask_sim_task_abandon(t->sim);
-#endif
         rask_free(entry);
         // The closure was never run, and the caller still thinks it's theirs.
         t->closure_base = NULL;
@@ -395,9 +414,11 @@ static void wait_done(RaskTask *t) {
     pthread_mutex_unlock(&t->report_lock);
     if (t->own_thread) {
 #ifdef RASK_SIM
-        // The thread is about to exit once its task is done, and holds no lock
-        // on the way out, so the real join after this doesn't wait on anyone.
-        if (t->sim) rask_sim_task_join(t->sim);
+        // A sim task is a fiber, with no thread to join; its stack goes back
+        // when it finishes.
+        if (t->sim) {
+            rask_sim_task_join(t->sim);
+        } else
 #endif
         pthread_join(t->thread, NULL);
     }
@@ -471,7 +492,7 @@ void rask_handle_detach(void *h) {
     }
     pthread_mutex_unlock(&t->report_lock);
 
-    if (t->own_thread) pthread_detach(t->thread);
+    if (t->own_thread && !t->sim) pthread_detach(t->thread);
     rask_task_release(t);
 }
 

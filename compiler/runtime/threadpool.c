@@ -59,13 +59,8 @@ static PoolJob *dequeue_locked(void) {
     return job;
 }
 
-static void *pool_worker(void *arg) {
-#ifdef RASK_SIM
-    if (arg) rask_sim_task_enter(arg);
-#else
-    (void)arg;
-#endif
-    rask_outside_thread_start();
+// Run jobs until shutdown and the queue is empty.
+static void pool_worker_loop(void) {
     for (;;) {
         pthread_mutex_lock(&g_pool.lock);
         while (!g_pool.head && !g_pool.shutting_down) {
@@ -76,11 +71,7 @@ static void *pool_worker(void *arg) {
         PoolJob *job = dequeue_locked();
         if (!job && g_pool.shutting_down) {
             pthread_mutex_unlock(&g_pool.lock);
-#ifdef RASK_SIM
-            if (arg) rask_sim_task_exit();
-#endif
-            rask_outside_thread_exit();
-            return NULL;
+            return;
         }
         pthread_mutex_unlock(&g_pool.lock);
 
@@ -91,6 +82,22 @@ static void *pool_worker(void *arg) {
         rask_free(job);
     }
 }
+
+static void *pool_worker(void *arg) {
+    (void)arg;
+    rask_outside_thread_start();
+    pool_worker_loop();
+    rask_outside_thread_exit();
+    return NULL;
+}
+
+#ifdef RASK_SIM
+// Under sim a worker is a fiber the seeded scheduler switches to (sim.c).
+static void pool_worker_fiber(void *arg) {
+    (void)arg;
+    pool_worker_loop();
+}
+#endif
 
 // ─── Public API ────────────────────────────────────────────
 
@@ -124,17 +131,13 @@ void rask_threadpool_init(int64_t worker_count) {
 #endif
 
     for (int i = 0; i < g_pool.worker_count; i++) {
-        void *arg = NULL;
 #ifdef RASK_SIM
         if (g_pool.sim_workers) {
-            arg = g_pool.sim_workers[i] = rask_sim_worker_new();
+            g_pool.sim_workers[i] = rask_sim_worker_spawn(pool_worker_fiber, NULL);
+            continue;
         }
 #endif
-        if (pthread_create(&g_pool.workers[i], NULL, pool_worker, arg) != 0) {
-#ifdef RASK_SIM
-            // A worker that never started can't be left for sim to pick.
-            if (arg) rask_sim_task_abandon(arg);
-#endif
+        if (pthread_create(&g_pool.workers[i], NULL, pool_worker, NULL) != 0) {
             // Fewer workers than asked for is survivable — none is not, since
             // every later spawn would enqueue into a queue nobody drains.
             g_pool.worker_count = i;
@@ -167,7 +170,10 @@ void rask_threadpool_shutdown(void) {
 
     for (int i = 0; i < g_pool.worker_count; i++) {
 #ifdef RASK_SIM
-        if (g_pool.sim_workers) rask_sim_task_join(g_pool.sim_workers[i]);
+        if (g_pool.sim_workers) {
+            rask_sim_task_join(g_pool.sim_workers[i]);
+            continue;
+        }
 #endif
         pthread_join(g_pool.workers[i], NULL);
     }

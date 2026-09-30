@@ -50,13 +50,12 @@ int64_t rask_sim_wall_jump_ns(void);
 const char *rask_sim_sick_log(void);
 const char *rask_sim_fault_log(void);
 
-// Task lifecycle, called from thread.c.
-void *rask_sim_task_new(int64_t task_id);
-void rask_sim_task_enter(void *task);
-void rask_sim_task_exit(void);
+// Task lifecycle, called from thread.c and threadpool.c. A task is a fiber
+// that runs `entry(arg)` when the seed first picks it and is done when that
+// returns.
+void *rask_sim_task_spawn(int64_t task_id, void (*entry)(void *), void *arg);
+void *rask_sim_worker_spawn(void (*entry)(void *), void *arg);
 void rask_sim_task_join(void *task);
-void *rask_sim_worker_new(void);
-void rask_sim_task_abandon(void *task);
 
 // Test lifecycle, called from test.c. A sim test runs alone in its process,
 // so the failure paths report and exit rather than unwind.

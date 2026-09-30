@@ -439,11 +439,12 @@ static void run_task(GreenScheduler *s, Worker *w, GreenTask *t) {
     }
     t->worker_fiber = &w->fiber;
     tl_current_task = t;
-    rask_task_set_current(t->task);
+    // The swap carries the running task too (thread.c's part of the blob), so
+    // it goes first and the task is named after it.
     rask_task_tls_swap(t->tls);
+    rask_task_set_current(t->task);
     rask_fiber_switch(&w->fiber, &t->fiber);
     rask_task_tls_swap(t->tls);
-    rask_task_set_current(NULL);
     tl_current_task = NULL;
 
     switch (t->switch_reason) {

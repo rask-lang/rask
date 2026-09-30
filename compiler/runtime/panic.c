@@ -313,7 +313,10 @@ static __thread int32_t     panic_loc_col;
 // A zeroed blob is a task that hasn't started.
 //
 // Anything added to this file as `__thread` has the same question to answer:
-// the thread's, or the task's? The task's goes in here.
+// the thread's, or the task's? The task's goes in here. Two other files keep
+// task state of their own, the running task and its worker slot (thread.c)
+// and its `random` generator (random.c), and swap it through the tail of the
+// same blob, so one call covers a task wherever its state lives.
 
 typedef struct TaskTls {
     struct RaskPanicCtx panic;
@@ -330,8 +333,13 @@ typedef struct TaskTls {
 
 extern void *rask_staged_stack_swap(void *head);
 
+// The tail parts, each 16-byte aligned after the one before.
+#define TLS_ALIGN(n) (((n) + 15) & ~(size_t)15)
+static size_t thread_part_at(void) { return TLS_ALIGN(sizeof(TaskTls)); }
+static size_t random_part_at(void) { return thread_part_at() + TLS_ALIGN(rask_thread_tls_size()); }
+
 size_t rask_task_tls_size(void) {
-    return sizeof(TaskTls);
+    return random_part_at() + rask_random_tls_size();
 }
 
 #define SWAP(a, b) do { __typeof__(a) tmp_ = (a); (a) = (b); (b) = tmp_; } while (0)
@@ -348,6 +356,8 @@ void rask_task_tls_swap(void *blob) {
     SWAP(panic_loc_line, t->loc_line);
     SWAP(panic_loc_col, t->loc_col);
     t->staged = rask_staged_stack_swap(t->staged);
+    rask_thread_tls_swap((char *)blob + thread_part_at());
+    rask_random_tls_swap((char *)blob + random_part_at());
 }
 
 #undef SWAP

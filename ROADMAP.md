@@ -338,7 +338,10 @@ so the deterministic tests run the code that ships.
    this step: macOS, which needs a kqueue backend before `green_threads.c` can
    go. Files and stdin still block their worker (that waits on io_uring). The
    aarch64 switch runs under qemu in the fiber gate.
-3. Sim on fibers, replacing the baton.
+3. Sim on fibers, replacing the baton. **Done:** every sim task is a fiber on
+   the test's own thread, so a sim run is one OS thread however many tasks it
+   spawns, and the switch, stacks and per-task state swap that ship are what
+   the sim gate exercises.
 4. Preemption last. Codegen puts a flag check in every function prologue, and
    a loop that never calls anything gets a signal instead (`conc.runtime/P2`),
    so it touches the compiler, not only the runtime. Its test: a task spinning

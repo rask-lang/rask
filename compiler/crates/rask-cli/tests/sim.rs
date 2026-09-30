@@ -284,6 +284,15 @@ fn the_network_corners_answer_instead_of_hanging() {
     assert_eq!(code, 0, "{out}");
 }
 
+// Every task is a fiber on the test's own thread (#1376): nested spawns and a
+// worker bound still leave the process with one thread.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sim_run_is_one_thread() {
+    let (out, code) = sim(&["--seed", "1", "--seeds", "5", "one_thread.rk"]);
+    assert_eq!(code, 0, "{out}");
+}
+
 #[test]
 fn a_select_nothing_can_satisfy_is_a_deadlock() {
     let (out, code) = sim(&["--seed", "1", "select_deadlock.rk"]);

@@ -1375,6 +1375,11 @@ int  rask_fiber_active(void);
 // worker thread as the task's fiber switches (panic.c).
 size_t rask_task_tls_size(void);
 void   rask_task_tls_swap(void *blob);
+// The parts of it thread.c and random.c keep, swapped by the call above.
+size_t rask_thread_tls_size(void);
+void   rask_thread_tls_swap(void *blob);
+size_t rask_random_tls_size(void);
+void   rask_random_tls_swap(void *blob);
 
 // ─── Ensure hooks (LIFO cleanup) ───────────────────────────
 // Per-task cleanup stack. Hooks run LIFO on cancel or panic.
