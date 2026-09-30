@@ -127,6 +127,53 @@ fn module_kind(name: &str) -> ModuleKind {
     }
 }
 
+// A type written in Rask has no Rust implementation in the interpreter: every
+// method its stdlib declaration has must fall through the Rust layer to the
+// Rask body. Read off the stub registry, so a method added to `stdlib/*.rk` is
+// covered with no list to update here. The walk below covers only the
+// registered primitive types, which is how a whole Rust copy of the HTTP
+// module stood unnoticed (#1378).
+#[test]
+fn rask_implemented_types_have_no_rust_copy() {
+    let mut interp = Interpreter::new();
+    let reg = rask_stdlib::StubRegistry::load();
+    for &type_name in rask_stdlib::registry::RASK_IMPLEMENTED_TYPES {
+        let ty = reg
+            .get_type(type_name)
+            .unwrap_or_else(|| panic!("{type_name} is marked Rask-implemented but stdlib/*.rk doesn't declare it"));
+        // The Rust layer answers some methods for every struct and enum
+        // (`to_string`, `clone`, the derived comparisons). A type nobody
+        // declared, of the same shape, says which: those aren't a copy.
+        let shaped = |name: &str| {
+            if type_name == "Method" {
+                Value::Enum {
+                    name: name.to_string(),
+                    variant: "Get".to_string(),
+                    fields: vec![],
+                    variant_index: 0,
+                    origin: None,
+                }
+            } else {
+                Value::new_struct(name.to_string(), IndexMap::new(), None)
+            }
+        };
+        let dummy = shaped(type_name);
+        let control = shaped("NotAStdlibType");
+        for m in &ty.methods {
+            if interp.has_rust_method(control.clone(), &m.name) {
+                continue;
+            }
+            assert!(
+                !interp.has_rust_method(dummy.clone(), &m.name),
+                "{type_name}.{} is implemented in stdlib/*.rk, but the interpreter also \
+                 has a Rust implementation — that's the two implementations this is \
+                 meant to prevent",
+                m.name
+            );
+        }
+    }
+}
+
 #[test]
 fn all_registered_type_methods_implemented() {
     use rask_stdlib::registry::{is_codegen_only_type, codegen_only_methods};
@@ -139,18 +186,9 @@ fn all_registered_type_methods_implemented() {
         }
         let dummy = dummy_value(type_name);
         let skip = codegen_only_methods(type_name);
-        // A type written in Rask is implemented once, in `stdlib/*.rk`, and both
-        // backends run that source. A Rust implementation here would be a second
-        // one — so for these the assertion is inverted.
+        // Written in Rask: `rask_implemented_types_have_no_rust_copy` checks
+        // the opposite for these.
         if rask_stdlib::registry::is_rask_implemented(type_name) {
-            for &method in rask_stdlib::registry::type_method_names(type_name) {
-                assert!(
-                    !interp.has_method_dispatch(dummy.clone(), method),
-                    "{type_name}.{method} is implemented in stdlib/*.rk, but the \
-                     interpreter also has a Rust implementation — that's the two \
-                     implementations this is meant to prevent"
-                );
-            }
             continue;
         }
         for &method in rask_stdlib::registry::type_method_names(type_name) {

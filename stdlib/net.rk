@@ -185,6 +185,14 @@ extend TcpConnection {
     // `read_http_request` and `write_http_response` are in http.rk, next to
     // the parser and formatter they're written over.
 
+    /// One read of whatever has arrived, up to `max` bytes: empty at the end
+    /// of the stream, `none` when the read failed, with the error left for
+    /// `IoError.last_os_error()`. What a caller needs to build a framing of its
+    /// own on (http.rk's messages), which `read_bytes` can't be: it waits for
+    /// the peer to close.
+    @native("rask_net_read_some")
+    func read_some_raw(self, max: i64) -> Vec<u8>? {}
+
     /// Close the connection.
     @native("rask_net_close")
     public func close(take self) -> void or IoError {}

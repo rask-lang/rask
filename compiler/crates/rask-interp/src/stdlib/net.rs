@@ -75,6 +75,116 @@ impl std::fmt::Display for Cancelled {
 }
 impl std::error::Error for Cancelled {}
 
+// ─── The last error, for `IoError.last_os_error()` ────────────
+//
+// stdlib/io.rk asks three natives about the last failure: its errno, which
+// `IoError` variant that is, and its message. Native answers from errno; the
+// interpreter answers from the last error one of its I/O natives recorded on
+// this thread, so the Rask that builds an `IoError` runs on both.
+
+thread_local! {
+    static LAST_OS_ERROR: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
+/// Record why an I/O native failed. A cancelled wait is `ECANCELED`, which is
+/// what native's waits leave in errno.
+fn set_last_os_error(e: &std::io::Error) {
+    let code = if is_cancelled(e) {
+        libc::ECANCELED
+    } else {
+        e.raw_os_error().unwrap_or(libc::EIO)
+    };
+    LAST_OS_ERROR.with(|c| c.set(code));
+}
+
+/// The `IoError` variant index for an errno, in stdlib/io.rk declaration
+/// order. Rust's own reading of the errno, so there's no table to keep beside
+/// runtime.c's; `ECANCELED` is the one it has no kind for.
+fn error_kind(code: i32) -> i32 {
+    use std::io::ErrorKind as K;
+    if code == libc::ECANCELED {
+        return 8;
+    }
+    match std::io::Error::from_raw_os_error(code).kind() {
+        K::NotFound => 0,
+        K::PermissionDenied => 1,
+        K::AlreadyExists => 2,
+        K::BrokenPipe => 3,
+        K::ConnectionReset => 4,
+        K::TimedOut => 5,
+        _ => 7,
+    }
+}
+
+impl Interpreter {
+    /// The `@native` symbols net.rk and io.rk declare that need a socket or
+    /// the last I/O error. Receiver first, as in the C signature.
+    pub(crate) fn call_net_native(
+        &mut self,
+        symbol: &str,
+        args: &[Value],
+    ) -> Option<Result<Value, RuntimeError>> {
+        let int_arg = |i: usize| match args.get(i) {
+            Some(Value::Int(n, _)) => Ok(*n),
+            _ => Err(RuntimeError::TypeError(format!("{symbol}: expected an integer argument"))),
+        };
+        Some(match symbol {
+            "rask_io_errno" => Ok(Value::Int(LAST_OS_ERROR.with(|c| c.get()) as i64, crate::value::IntKind::I32)),
+            "rask_io_error_kind" => int_arg(0)
+                .map(|code| Value::Int(error_kind(code as i32) as i64, crate::value::IntKind::I32)),
+            "rask_io_error_message" => int_arg(0).map(|code| {
+                Value::String(Arc::new(Mutex::new(
+                    std::io::Error::from_raw_os_error(code as i32).to_string(),
+                )))
+            }),
+            "rask_net_read_some" => {
+                let Some(Value::TcpConnection(stream)) = args.first() else {
+                    return Some(Err(RuntimeError::TypeError(
+                        "rask_net_read_some: expected a TcpConnection".to_string(),
+                    )));
+                };
+                let max = match int_arg(1) {
+                    Ok(n) => n.max(0) as usize,
+                    Err(e) => return Some(Err(e)),
+                };
+                let guard = stream.lock().unwrap();
+                let Some(s) = guard.as_ref() else {
+                    return Some(Err(RuntimeError::ResourceClosed {
+                        resource_type: "TcpConnection".to_string(),
+                        operation: "read from".to_string(),
+                    }));
+                };
+                let mut buf = vec![0u8; max];
+                match Cancellable::new(s).and_then(|mut c| c.read(&mut buf)) {
+                    Ok(n) => {
+                        buf.truncate(n);
+                        let bytes: Vec<Value> =
+                            buf.into_iter().map(|b| Value::Int(b as i64, crate::value::IntKind::U8)).collect();
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![Value::vec(bytes)],
+                            variant_index: 0,
+                            origin: None,
+                        })
+                    }
+                    Err(e) => {
+                        set_last_os_error(&e);
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "None".to_string(),
+                            fields: vec![],
+                            variant_index: 1,
+                            origin: None,
+                        })
+                    }
+                }
+            }
+            _ => return None,
+        })
+    }
+}
+
 // ─── Waiting on a socket, and being cancelled while waiting ──
 //
 // A task parked on a socket ends its wait when it is cancelled
@@ -184,7 +294,10 @@ impl Cancellable {
             match op(&mut self.s) {
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     let Some(token) = &self.token else { return Err(e) };
-                    if wait_ready(self.s.as_raw_fd(), want_write, token)? {
+                    // Waiting on the socket isn't running, so the task's slot
+                    // goes back for the wait (conc.runtime/P2.5).
+                    let fd = self.s.as_raw_fd();
+                    if crate::without_task_slot(|| wait_ready(fd, want_write, token))? {
                         return Err(std::io::Error::other(Cancelled));
                     }
                 }
@@ -536,15 +649,6 @@ impl Interpreter {
                     Err(e) => Ok(make_result_err(&e.to_string())),
                 }
             }
-            "read_http_request" => {
-                self.read_http_request(stream)
-            }
-            "write_http_response" => {
-                let response = args.into_iter().next().ok_or(
-                    RuntimeError::ArityMismatch { expected: 1, got: 0 },
-                )?;
-                self.write_http_response(stream, &response)
-            }
             "close" => {
                 if stream.lock().unwrap().is_none() {
                     return Ok(make_result_ok(Value::Unit));
@@ -566,210 +670,4 @@ impl Interpreter {
         }
     }
 
-    /// Parse an HTTP/1.1 request from a TCP stream.
-    pub(crate) fn read_http_request(
-        &self,
-        stream: &Arc<Mutex<Option<std::net::TcpStream>>>,
-    ) -> Result<Value, RuntimeError> {
-        let mut guard = stream.lock().unwrap();
-        let tcp = guard.as_mut().ok_or_else(|| {
-            RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read HTTP request from".to_string() }
-        })?;
-
-        // A failed read is the `IoError` the declaration promises, not a
-        // panic, and a cancel ends the wait the way it ends any other read.
-        let read_stream = match Cancellable::new(tcp) {
-            Ok(c) => c,
-            Err(e) => return Ok(io_err(&e)),
-        };
-        let mut reader = BufReader::new(read_stream);
-
-        // Request line: METHOD /path HTTP/1.1
-        let mut request_line = String::new();
-        if let Err(e) = reader.read_line(&mut request_line) {
-            return Ok(io_err(&e));
-        }
-        let parts: Vec<&str> = request_line.trim().splitn(3, ' ').collect();
-        let method = parts.first().unwrap_or(&"GET").to_string();
-        let path = parts.get(1).unwrap_or(&"/").to_string();
-
-        // Headers until empty line
-        let mut headers = Vec::new();
-        let mut content_length: usize = 0;
-        loop {
-            let mut line = String::new();
-            if let Err(e) = reader.read_line(&mut line) {
-                return Ok(io_err(&e));
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                break;
-            }
-            if let Some((key, val)) = trimmed.split_once(':') {
-                let key = key.trim().to_string();
-                let val = val.trim().to_string();
-                if key.eq_ignore_ascii_case("content-length") {
-                    content_length = val.parse().unwrap_or(0);
-                }
-                headers.push((key, val));
-            }
-        }
-
-        // Body (per Content-Length)
-        let body = if content_length > 0 {
-            let mut buf = vec![0u8; content_length];
-            if let Err(e) = reader.read_exact(&mut buf) {
-                return Ok(io_err(&e));
-            }
-            String::from_utf8_lossy(&buf).to_string()
-        } else {
-            String::new()
-        };
-
-        // Build headers as Map
-        let header_map: MapData = headers
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    MapKey(Value::String(Arc::new(Mutex::new(k)))),
-                    Value::String(Arc::new(Mutex::new(v))),
-                )
-            })
-            .collect();
-
-        // Map HTTP method string to Method enum variant
-        let method_value = Value::Enum {
-            name: "Method".to_string(),
-            variant: match method.as_str() {
-                "GET" => "Get",
-                "HEAD" => "Head",
-                "POST" => "Post",
-                "PUT" => "Put",
-                "DELETE" => "Delete",
-                "PATCH" => "Patch",
-                "OPTIONS" => "Options",
-                _ => "Get",
-            }.to_string(),
-            fields: vec![],
-            variant_index: match method.as_str() {
-                "GET" => 0,
-                "HEAD" => 1,
-                "POST" => 2,
-                "PUT" => 3,
-                "DELETE" => 4,
-                "PATCH" => 5,
-                "OPTIONS" => 6,
-                _ => 0,
-            },
-            origin: None,
-        };
-
-        let mut fields = IndexMap::new();
-        fields.insert(
-            "method".to_string(),
-            method_value,
-        );
-        fields.insert(
-            "url".to_string(),
-            Value::String(Arc::new(Mutex::new(path))),
-        );
-        fields.insert(
-            "headers".to_string(),
-            Value::Map(Arc::new(Mutex::new(header_map))),
-        );
-        fields.insert(
-            "body".to_string(),
-            Value::String(Arc::new(Mutex::new(body))),
-        );
-
-        Ok(make_result_ok(Value::new_struct(
-            "Request".to_string(),
-            fields,
-            None,
-        )))
-    }
-
-    /// Write an HTTP/1.1 response to a TCP stream.
-    pub(crate) fn write_http_response(
-        &self,
-        stream: &Arc<Mutex<Option<std::net::TcpStream>>>,
-        response: &Value,
-    ) -> Result<Value, RuntimeError> {
-        let (status, headers, body) = match response {
-            Value::Struct(ref s) => {
-                let guard = s.lock().unwrap();
-                let status = match guard.fields.get("status") {
-                    Some(Value::Int(n, _)) => *n as i32,
-                    _ => 200,
-                };
-                let body = match guard.fields.get("body") {
-                    Some(Value::String(s)) => s.lock().unwrap().clone(),
-                    _ => String::new(),
-                };
-                let headers = match guard.fields.get("headers") {
-                    Some(Value::Map(m)) => {
-                        let map = m.lock().unwrap();
-                        map.iter()
-                            .filter_map(|(k, v)| {
-                                let k_str = match &k.0 {
-                                    Value::String(s) => s.lock().unwrap().clone(),
-                                    _ => return None,
-                                };
-                                let v_str = match v {
-                                    Value::String(s) => s.lock().unwrap().clone(),
-                                    _ => return None,
-                                };
-                                Some((k_str, v_str))
-                            })
-                            .collect::<Vec<_>>()
-                    }
-                    _ => vec![],
-                };
-                (status, headers, body)
-            }
-            _ => {
-                return Err(RuntimeError::TypeError(
-                    "expected Response struct with `status`, `headers`, and `body` fields".to_string(),
-                ));
-            }
-        };
-
-        let status_text = match status {
-            200 => "OK",
-            201 => "Created",
-            204 => "No Content",
-            301 => "Moved Permanently",
-            302 => "Found",
-            400 => "Bad Request",
-            401 => "Unauthorized",
-            403 => "Forbidden",
-            404 => "Not Found",
-            405 => "Method Not Allowed",
-            500 => "Internal Server Error",
-            _ => "Unknown",
-        };
-
-        // The response says `Connection: close`, so sending it ends the
-        // connection, as `write_http_response(take self)` does natively. Left
-        // open, a client waiting for the end of the stream never saw it (#1055).
-        let mut tcp = stream.lock().unwrap().take().ok_or_else(|| {
-            RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write HTTP response to".to_string() }
-        })?;
-
-        // Workaround: a second copy of `format_http_response` in stdlib/http.rk,
-        // until the interpreter runs that instead (#1378).
-        let mut output = format!("HTTP/1.1 {} {}\r\n", status, status_text);
-        for (key, val) in &headers {
-            output.push_str(&format!("{}: {}\r\n", key, val));
-        }
-        output.push_str("Connection: close\r\n");
-        output.push_str(&format!("Content-Length: {}\r\n", body.len()));
-        output.push_str("\r\n");
-        output.push_str(&body);
-
-        match tcp.write_all(output.as_bytes()).and_then(|_| tcp.flush()) {
-            Ok(()) => Ok(make_result_ok(Value::Unit)),
-            Err(e) => Ok(make_result_err(&e.to_string())),
-        }
-    }
 }

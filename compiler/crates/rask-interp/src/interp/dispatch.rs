@@ -325,14 +325,23 @@ impl Interpreter {
                 match Self::nominal_type_name(&receiver) {
                     // Report the primitive layer's error, not the lookup's — it
                     // names the receiver type the user wrote.
-                    Some(name) => self
-                        .call_rask_method(&name, method, receiver, args)
-                        .map_err(|e| match e {
-                            RuntimeError::NoSuchMethod { .. } => {
-                                RuntimeError::NoSuchMethod { ty, method: m }
+                    Some(name) => {
+                        match self.call_rask_method(&name, method, receiver.clone(), args.clone()) {
+                            Err(RuntimeError::NoSuchMethod { .. }) => {}
+                            other => return other,
+                        }
+                        // A bodiless `@native` method on a stdlib type: the
+                        // interpreter's half of the symbol table native codegen
+                        // keeps, receiver first as in the C signature.
+                        if let Some(symbol) = Self::stdlib_native_symbol(&name, method) {
+                            let mut all = vec![receiver];
+                            all.extend(args);
+                            if let Some(out) = self.call_native_symbol(&symbol, &all) {
+                                return out;
                             }
-                            other => other,
-                        }),
+                        }
+                        Err(RuntimeError::NoSuchMethod { ty, method: m })
+                    }
                     None => Err(RuntimeError::NoSuchMethod { ty, method: m }),
                 }
             }
@@ -400,16 +409,6 @@ impl Interpreter {
             Value::Struct(ref s) if s.lock().unwrap().name == "Args" => {
                 let guard = s.lock().unwrap();
                 self.call_args_method(&guard.fields, method, args)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct(ref s) if s.lock().unwrap().name == "Request" => {
-                let guard = s.lock().unwrap();
-                self.call_request_instance_method(&guard.fields, method, args)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct(ref s) if s.lock().unwrap().name == "Response" => {
-                drop(s.lock().unwrap());
-                self.call_response_instance_method(receiver, method, args)
             }
             Value::Struct(ref s) if s.lock().unwrap().name == "BuildContext" => {
                 if method == "step" {
@@ -916,6 +915,15 @@ impl Interpreter {
         !matches!(result, Ok(Err(RuntimeError::NoSuchMethod { .. })))
     }
 
+    /// Does the Rust layer answer this method itself, without falling back to
+    /// a Rask body?
+    pub(crate) fn has_rust_method(&mut self, value: Value, method: &str) -> bool {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.call_primitive_method(value, method, vec![])
+        }));
+        !matches!(result, Ok(Err(RuntimeError::NoSuchMethod { .. })))
+    }
+
     /// Check if a module method is recognized by the interpreter dispatch.
     /// Uses name-only matching — never executes the method body — so it
     /// won't block on I/O (stdin, network, etc.).
@@ -954,7 +962,7 @@ impl Interpreter {
             Path => false, // Path module has no module-level methods
             Async => matches!(method, "spawn"),
             Thread => matches!(method, "Thread" | "ThreadPool"),
-            Http => matches!(method, "serve"),
+            Http => false,
             Env => matches!(method, "var" | "vars"),
             Cli => matches!(method, "args" | "parse"),
             Reflect => false,

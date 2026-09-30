@@ -1068,23 +1068,17 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("io_read_std_bytes", "rask_io_std_read_bytes", &[types::I64], Some(types::I64), false),
 
         // ── I/O primitives ─────────────────────────────────────────
+        // `IoError.last_os_error()`'s three questions about the last failure.
+        StdlibEntry::simple("IoError_errno_now", "rask_io_errno", &[], Some(types::I32), false),
+        StdlibEntry::simple("IoError_kind_of", "rask_io_error_kind", &[types::I32], Some(types::I32), false),
         StdlibEntry {
-            mir_name: "io_read_string", c_name: "rask_io_read_until_close",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            mir_name: "IoError_text_of", c_name: "rask_io_error_message",
+            params: &[types::I64, types::I32], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry {
-            mir_name: "rask_io_http_take", c_name: "rask_io_http_take",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry {
-            mir_name: "rask_io_read_until_close", c_name: "rask_io_read_until_close",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry::simple("io_write_string", "rask_io_write_string", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("io_close_fd", "rask_io_close_fd", &[types::I64], None, false),
+        // One read of whatever has arrived: a Vec<u8> pointer, or -1 with errno
+        // set, the same convention as `read_bytes_raw`.
+        StdlibEntry::neg_none("TcpConnection_read_some_raw", "rask_net_read_some", &[types::I64, types::I64], Some(types::I64), false),
 
         // ── Net module ──────────────────────────────────────────────
         // Plain handle returns, not `neg_err`. The adapter that turns a negative
@@ -1120,9 +1114,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("TcpConnection_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpConnection_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
-
-        // ── HTTP server close (linear resource cleanup) ─────────────
-        StdlibEntry::simple("HttpServer_close", "rask_http_server_close", &[types::I64], None, false),
 
         // ── os module: environment ──────────────────────────────────
         // env returns `string?` — the string header is written into the

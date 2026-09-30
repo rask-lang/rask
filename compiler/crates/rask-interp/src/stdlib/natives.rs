@@ -21,6 +21,9 @@ impl Interpreter {
             // stdlib/sim.rk: is this run under sim? The interpreter has no sim
             // mode, so `sim.require` skips the test as sim-only (sim/F3).
             "rask_sim_enable_faults" => Some(Ok(Value::Bool(false))),
+            #[cfg(not(target_arch = "wasm32"))]
+            _ => self.call_net_native(symbol, _args),
+            #[cfg(target_arch = "wasm32")]
             _ => None,
         }
     }

@@ -810,6 +810,7 @@ int64_t     rask_file_close(int64_t file);
 // thing. Defined further down runtime.c; declared here because the string-out
 // calls above it need it.
 const char *rask_io_error_text(int32_t err);
+void rask_io_error_message(RaskStr *out, int32_t err);
 
 #define RASK_STROUT_OK    0
 #define RASK_STROUT_ERROR 1   // *err_out holds the message → IoError.Other(msg)
@@ -859,11 +860,11 @@ int64_t rask_net_tcp_listen(const RaskStr *addr);
 int64_t rask_net_tcp_connect(const RaskStr *addr);
 int64_t rask_net_tcp_accept(int64_t listen_fd);
 void    rask_net_close(int64_t fd);
-void    rask_http_server_close(int64_t server_ptr);
 int64_t rask_net_clone(int64_t fd);
 int64_t rask_net_read_all(int64_t fd, int64_t out_ptr);
 int64_t rask_net_write_all(int64_t fd, int64_t str_ptr);
 int64_t rask_net_read_bytes(int64_t fd);
+int64_t rask_net_read_some(int64_t fd, int64_t max);
 int64_t rask_net_write_bytes(int64_t fd, int64_t vec_ptr);
 void    rask_net_remote_addr(RaskStr *out, int64_t fd);
 void    rask_net_local_addr(RaskStr *out, int64_t fd);
@@ -885,9 +886,6 @@ int64_t rask_args_positional(int64_t args_ptr);
 int64_t rask_args_program(int64_t args_ptr);
 
 // Response reading (reads until EOF for Connection: close pattern).
-void    rask_io_read_until_close(RaskStr *out, int64_t fd, int64_t max_len);
-int64_t rask_io_http_read(int64_t fd, int64_t max_len, int64_t is_response);
-void    rask_io_http_take(RaskStr *out, int64_t handle);
 
 // ─── JSON module ────────────────────────────────────────────
 // Encode helpers — used by codegen-generated struct serialization.

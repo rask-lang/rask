@@ -5,8 +5,8 @@
 // Natively these went to a C parser that built its result laid out unlike
 // `Request`: every request arrived with an empty url and a body that printed
 // as nothing, and a connection cut off mid-body came back as a successful
-// blank `GET /`. They're Rask now, over the reader and parser `HttpServer`
-// uses.
+// blank `GET /`. The interpreter had a Rust copy of its own (#1378). Both
+// backends run stdlib/http.rk now, so the error messages match too.
 
 import net
 import io.IoError
@@ -37,7 +37,18 @@ test "a whole request keeps its method, url and body" {
 
 test "a request cut off before its body is an error" {
     let got = request_from("POST /items HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc")
-    assert got is IoError
+    match got {
+        Request as r => assert false
+        IoError as e => assert e.message() == "the connection ended before the whole message arrived"
+    }
+}
+
+test "a request too large to read is an error, not a truncated request" {
+    let got = request_from("POST /items HTTP/1.1\r\nContent-Length: 99999999\r\n\r\nabc")
+    match got {
+        Request as r => assert false
+        IoError as e => assert e.message() == "message larger than 65536 bytes"
+    }
 }
 
 test "a response goes out whole and the connection closes" {
