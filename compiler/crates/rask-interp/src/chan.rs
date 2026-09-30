@@ -77,8 +77,19 @@ impl Chan {
     }
 
     /// Wait on the channel, woken by a change or by the task's cancel.
-    fn wait<'a>(&self, guard: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
-        self.changed.wait(guard).unwrap()
+    ///
+    /// Without the task's slot, which comes back before the channel's lock
+    /// does: a task queueing for a slot with the lock held would block every
+    /// running task that touches this channel.
+    fn wait<'a>(&'a self, guard: MutexGuard<'a, State>) -> MutexGuard<'a, State> {
+        let released = crate::release_task_slot();
+        let guard = self.changed.wait(guard).unwrap();
+        if released.is_none() {
+            return guard;
+        }
+        drop(guard);
+        crate::retake_task_slot(released);
+        self.state.lock().unwrap()
     }
 
     pub fn send(self: &Arc<Self>, value: Value) -> Result<(), SendError> {
@@ -369,11 +380,13 @@ pub fn select_wait(seen: u64, token: Option<&Arc<CancelToken>>) -> bool {
     });
     let cancelled = || token.is_some_and(|t| t.is_cancelled());
     SELECT_WAITERS.fetch_add(1, Ordering::SeqCst);
+    let released = crate::release_task_slot();
     let mut held = SELECT_LOCK.lock().unwrap();
     while SELECT_EPOCH.load(Ordering::SeqCst) == seen && !cancelled() {
         held = SELECT_MOVED.wait(held).unwrap();
     }
     drop(held);
+    crate::retake_task_slot(released);
     SELECT_WAITERS.fetch_sub(1, Ordering::SeqCst);
     cancelled()
 }

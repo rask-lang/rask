@@ -473,6 +473,15 @@ const char *rask_sim_fault_log(void) {
 
 // Short reads, latencies and injected errors all draw here, so none of them
 // can shift the schedule (sim/SD2).
+// How many safe points a task gets before it steps aside for a waiting one
+// (thread.c). From the schedule's stream, so different seeds preempt at
+// different places and a replay preempts at the same ones. Anywhere from one
+// to a couple of thousand: short enough to cut into a small critical section,
+// long enough that a spinning test still makes progress.
+int64_t rask_sim_preempt_budget(void) {
+    return 1 + (int64_t)(splitmix64(&g.sched) % 2048);
+}
+
 uint64_t rask_sim_fault_draw(void) {
     return splitmix64(&g.fault);
 }

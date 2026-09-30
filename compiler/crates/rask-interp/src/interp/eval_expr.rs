@@ -2860,8 +2860,6 @@ impl Interpreter {
             // Acquire locks and bind values
             self.env.push_scope();
 
-            // Declared before the guards so it outlives them.
-            let _no_preempt = crate::NoPreempt::enter();
             // Hold lock guards in scope for Mutex/Shared
             let mut mutex_guards: Vec<(String, std::sync::MutexGuard<'_, Value>)> = Vec::new();
             let mut rw_read_guards: Vec<std::sync::RwLockReadGuard<'_, Value>> = Vec::new();
@@ -2875,7 +2873,7 @@ impl Interpreter {
                         self.env.define(info.name.clone(), elem);
                     }
                     WithSource::Mutex(m) => {
-                        let guard = m.lock().map_err(|e| RuntimeDiagnostic::new(
+                        let guard = crate::lock_waiting(m).map_err(|e| RuntimeDiagnostic::new(
                             RuntimeError::Panic(format!("Mutex.lock: poisoned: {}", e)),
                             expr.span,
                         ))?;
@@ -2899,7 +2897,7 @@ impl Interpreter {
                         mutex_guards.push((info.name.clone(), guard));
                     }
                     WithSource::SharedRead(s) => {
-                        let guard = s.read().map_err(|e| RuntimeDiagnostic::new(
+                        let guard = crate::read_waiting(s).map_err(|e| RuntimeDiagnostic::new(
                             RuntimeError::Panic(format!("Shared.read: poisoned: {}", e)),
                             expr.span,
                         ))?;
@@ -2907,7 +2905,7 @@ impl Interpreter {
                         rw_read_guards.push(guard);
                     }
                     WithSource::SharedWrite(s) => {
-                        let guard = s.write().map_err(|e| RuntimeDiagnostic::new(
+                        let guard = crate::write_waiting(s).map_err(|e| RuntimeDiagnostic::new(
                             RuntimeError::Panic(format!("Shared.write: poisoned: {}", e)),
                             expr.span,
                         ))?;

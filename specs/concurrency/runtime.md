@@ -355,7 +355,8 @@ Rask preempts fibers at safe points, like Go since 1.14. No CW1-style linter war
 | **P2.1: Budget per fiber** | Each fiber starts with a budget of 10 ms of wall time. A SIGURG timer ticking every 5 ms marks each worker whose fiber is past it and raises one process-wide flag |
 | **P2.2: Safe points** | Every function entry and every loop back edge checks the flag. If it's set, the fiber yields to the scheduler via `fiber_switch` and goes to the back of its worker's queue, behind anything ready |
 | **P2.3: No yield from the signal handler** | The handler only marks. A loop with no call in it still yields, at its back edge, so parking a fiber at an arbitrary instruction buys nothing |
-| **P2.4: No unsafe preemption points** | A safe point doesn't yield while the fiber is unwinding, inside FFI, or holding a runtime-internal lock such as the print lock. Where a task holds a worker slot rather than being a fiber (sim, a build without the green scheduler, the interpreter), it also doesn't yield while it holds a lock: the task taking its slot could block on that lock holding the only slot |
+| **P2.4: No unsafe preemption points** | A safe point doesn't yield while the fiber is unwinding, inside FFI, or holding a runtime-internal lock such as the print lock |
+| **P2.5: A waiting task holds no worker** | Where a task holds a worker slot rather than being a fiber (sim, a build without the green scheduler, the interpreter), it gives the slot back for any wait (join, a lock, a condition, a channel, a sleep, a socket) and queues for one after, as a fiber gives back its worker. Slots are handed out first come, first served, so a task that steps aside goes behind whoever was already waiting. A task preempted inside a lock is then harmless: whoever blocks on the lock gives its slot back |
 
 ### Safe-point instrumentation (P3)
 
@@ -369,7 +370,7 @@ Codegen inserts the check at function entry and before each jump back to an earl
 
 Cost per call or iteration: one cache-resident load, a test and a predicted-not-taken branch. The flag is process-wide, so the common case never touches the current task.
 
-The interpreter runs a task on an OS thread holding one of the `workers: n` slots. At the start of every statement block, which every loop iteration and function body passes through, a task that has held its slot past the same budget while another task waits hands the slot over and queues for one again. Not while a `with` block or lock closure holds a lock: the task taking the slot could need that lock.
+The interpreter runs a task on an OS thread holding one of the `workers: n` slots. At the start of every statement block, which every loop iteration and function body passes through, a task that has held its slot past the same budget while another task waits gives the slot back and queues for one again (P2.5). Under sim the budget is a number of safe points drawn from the seed each time a task takes a slot, so different seeds step tasks aside at different places and a replay steps them aside at the same ones.
 
 ### Rationale
 

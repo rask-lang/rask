@@ -243,11 +243,6 @@ void rask_access_push(RaskReleaseFn fn, int64_t handle) {
     tl_held_access = held;
 }
 
-// Does this task hold a lock through a `with` block or an inline access?
-int rask_access_held(void) {
-    return tl_held_access != NULL;
-}
-
 void rask_access_pop(int64_t handle) {
     HeldAccess **link = &tl_held_access;
     while (*link) {

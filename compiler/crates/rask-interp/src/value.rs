@@ -792,17 +792,17 @@ impl fmt::Debug for ThreadPoolInner {
 /// hundred spawns ran two hundred tasks at once here and two natively (#1111).
 pub struct MultitaskingRuntime {
     pub workers: usize,
-    /// Slots left. `Mutex` + `Condvar` rather than an atomic, because a task
-    /// that finds none has to wait for one.
-    free: Mutex<Slots>,
+    slots: Mutex<Slots>,
     slot_freed: Condvar,
-    /// A task handing its slot over waits here until a waiter has it.
-    slot_taken: Condvar,
 }
 
+/// A queue, not a count: each taker draws a ticket and runs once its ticket is
+/// below `granted`. First come, first served, so a task that steps aside at a
+/// safe point goes behind whoever was already waiting instead of racing them
+/// for the slot it just gave up — nothing makes a `Mutex` fair.
 struct Slots {
-    free: usize,
-    waiting: usize,
+    next: u64,
+    granted: u64,
 }
 
 impl MultitaskingRuntime {
@@ -817,48 +817,33 @@ impl MultitaskingRuntime {
         }
         Ok(Self {
             workers,
-            free: Mutex::new(Slots { free: workers.max(1), waiting: 0 }),
+            slots: Mutex::new(Slots { next: 0, granted: workers.max(1) as u64 }),
             slot_freed: Condvar::new(),
-            slot_taken: Condvar::new(),
         })
     }
 
     /// Wait for a slot to run in.
     pub fn take_slot(&self) {
-        let mut slots = self.free.lock().unwrap();
-        slots.waiting += 1;
-        while slots.free == 0 {
+        let mut slots = self.slots.lock().unwrap();
+        let ticket = slots.next;
+        slots.next += 1;
+        while ticket >= slots.granted {
             slots = self.slot_freed.wait(slots).unwrap();
         }
-        slots.waiting -= 1;
-        slots.free -= 1;
-        self.slot_taken.notify_all();
     }
 
     /// Hand a slot back.
     pub fn give_slot(&self) {
-        let mut slots = self.free.lock().unwrap();
-        slots.free += 1;
-        self.slot_freed.notify_one();
+        let mut slots = self.slots.lock().unwrap();
+        slots.granted += 1;
+        // Every waiter checks its own ticket, so all of them hear it.
+        self.slot_freed.notify_all();
     }
 
-    /// Let a waiting task have this slot, then queue for one again.
-    ///
-    /// Waits for the waiter to take it before queueing: `give_slot` then
-    /// `take_slot` would usually hand the slot straight back to the thread that
-    /// just gave it up, since nothing makes a mutex fair. No waiter, no yield.
-    pub fn yield_slot(&self) {
-        let mut slots = self.free.lock().unwrap();
-        if slots.waiting == 0 {
-            return;
-        }
-        slots.free += 1;
-        self.slot_freed.notify_one();
-        while slots.free > 0 && slots.waiting > 0 {
-            slots = self.slot_taken.wait(slots).unwrap();
-        }
-        drop(slots);
-        self.take_slot();
+    /// Is a task queued behind the running ones?
+    pub fn has_waiters(&self) -> bool {
+        let slots = self.slots.lock().unwrap();
+        slots.next > slots.granted
     }
 
     /// Wait for every task the block started, which is what block exit means

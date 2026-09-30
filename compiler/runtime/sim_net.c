@@ -282,7 +282,9 @@ static int sim_wait(SimWait *sw, const void *key, const char *what) {
         if (rask_cancel_wait_begin(&sw->wake)) return 1;
     }
     if (rask_cancel_requested()) return 1;
+    int released = rask_task_slot_release();
     rask_sim_park(key, what);
+    rask_task_slot_retake(released);
     return 0;
 }
 

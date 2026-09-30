@@ -50,8 +50,16 @@ impl Interpreter {
                     return Err(no_clock("time.sleep()"));
                 }
                 // A task's sleep is a wait its cancel ends (conc.async/CN3).
-                match crate::value::current_cancel() {
-                    Some(token) if token.wait(duration) => Ok(Value::Enum {
+                // Asleep isn't running, so the slot goes back for the sleep.
+                let cancelled = crate::without_task_slot(|| match crate::value::current_cancel() {
+                    Some(token) => Some(token.wait(duration)),
+                    None => {
+                        std::thread::sleep(duration);
+                        None
+                    }
+                });
+                match cancelled {
+                    Some(true) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::Enum {
@@ -63,11 +71,7 @@ impl Interpreter {
                         }],
                         variant_index: 1, origin: None,
                     }),
-                    Some(_) => Ok(sleep_ok()),
-                    None => {
-                        std::thread::sleep(duration);
-                        Ok(sleep_ok())
-                    }
+                    Some(false) | None => Ok(sleep_ok()),
                 }
             }
             _ => Err(RuntimeError::NoSuchMethod {

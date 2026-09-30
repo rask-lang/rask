@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// A task isn't preempted while it holds a lock (conc.runtime/P2.4).
+// A task preempted while it holds a lock doesn't take the program down with it.
 //
-// Where a task holds one of the `workers: n` slots (sim, and a build without
-// the green scheduler), preempting it hands its slot to a waiting task. If the
-// first task holds a mutex and the second wants it, the second blocks on the
-// mutex while holding the only slot, and the first waits for a slot it will
-// never get back: under sim, "task 1 waiting on a free worker slot, task 2
-// waiting on Mutex lock". The fiber scheduler doesn't have the problem, since
-// a fiber waiting on a lock parks and frees its worker, but the rule is the
-// same everywhere.
+// Where a task holds one of the `workers: n` slots (sim, a build without the
+// green scheduler, the interpreter), preempting it hands its slot to a waiting
+// task. That task wants the same mutex. It used to block on the mutex holding
+// the only slot, while the owner waited for a slot it never got back: under
+// sim, "task 1 waiting on a free worker slot, task 2 waiting on Mutex lock".
+// A task waiting on a lock gives its slot back now, the way a fiber waiting on
+// a lock gives back its worker, so the owner gets one to finish in.
 
 import async.{Handles, JoinError}
 import sync.{Shared, Mutex}

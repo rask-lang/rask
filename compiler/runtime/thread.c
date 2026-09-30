@@ -219,16 +219,20 @@ typedef struct {
 // `Thread.spawn` and a pooled job included — they aren't Multitasking tasks and
 // the green build wouldn't count them, which is the one place the two differ.
 
+// A queue, not a count: each taker draws a ticket and runs when its ticket is
+// among the first `slots_total` not yet finished. First come, first served, so
+// a task that steps aside at a safe point (below) goes behind whoever was
+// already waiting instead of racing them for the slot it just gave up.
 static pthread_mutex_t slot_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  slot_freed = PTHREAD_COND_INITIALIZER;
-static pthread_cond_t  slot_taken = PTHREAD_COND_INITIALIZER;
 static int64_t         slots_total;   // 0 = no bound installed
-static int64_t         slots_free;
-static int64_t         slot_waiters;
+static uint64_t        slot_next;     // tickets drawn
+static uint64_t        slot_granted;  // tickets below this may run
 static __thread int    slot_held;
-// Safe points since the slot was taken, and when, for preemption below.
+// Safe points since the slot was taken, when, and how many this turn gets.
 static __thread int64_t slot_points;
 static __thread int64_t slot_since_ns;
+static __thread int64_t slot_budget_points;
 
 // This file's share of a task's thread-local state (rask_task_tls_swap).
 typedef struct {
@@ -236,6 +240,7 @@ typedef struct {
     int       slot_held;
     int64_t   slot_points;
     int64_t   slot_since_ns;
+    int64_t   slot_budget_points;
 } ThreadTls;
 
 size_t rask_thread_tls_size(void) {
@@ -244,11 +249,12 @@ size_t rask_thread_tls_size(void) {
 
 void rask_thread_tls_swap(void *blob) {
     ThreadTls *t = (ThreadTls *)blob;
-    ThreadTls live = { current_task, slot_held, slot_points, slot_since_ns };
+    ThreadTls live = { current_task, slot_held, slot_points, slot_since_ns, slot_budget_points };
     current_task = t->current;
     slot_held = t->slot_held;
     slot_points = t->slot_points;
     slot_since_ns = t->slot_since_ns;
+    slot_budget_points = t->slot_budget_points;
     *t = live;
 }
 
@@ -266,6 +272,14 @@ static int64_t monotonic_ns(void) {
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
 }
 
+// Someone is queued behind the running tasks. The flag codegen checks follows
+// it, so a task holding a slot reaches `rask_task_slot_preempt` at its next
+// safe point only while there is someone to hand the slot to.
+static void slot_flag_update_locked(void) {
+    int waiting = slots_total > 0 && slot_next > slot_granted;
+    __atomic_store_n(&rask_preempt_requested, waiting, __ATOMIC_RELEASE);
+}
+
 // `n <= 0` is `using Multitasking` with no count, which the green scheduler
 // reads as one worker per CPU. It used to install a single slot here, so a
 // default scope on this path ran one task body at a time.
@@ -281,38 +295,40 @@ void rask_task_slots_install(int64_t n) {
     }
     pthread_mutex_lock(&slot_lock);
     slots_total = n;
-    slots_free = slots_total;
+    slot_granted = slot_next + (uint64_t)n;
+    slot_flag_update_locked();
     pthread_mutex_unlock(&slot_lock);
 }
 
 void rask_task_slots_clear(void) {
     pthread_mutex_lock(&slot_lock);
     slots_total = 0;
+    slot_flag_update_locked();
+    rask_task_cond_broadcast(&slot_freed);
     pthread_mutex_unlock(&slot_lock);
 }
 
+// The bound is observable — at most n bodies running — so sim keeps it too,
+// and waiting for a slot is a scheduling point like any other wait.
 static void slot_take(void) {
     pthread_mutex_lock(&slot_lock);
     if (slots_total == 0) {
         pthread_mutex_unlock(&slot_lock);
         return;
     }
-    // The bound is observable — at most n bodies in flight — so sim keeps it
-    // too, and waiting for a slot is a scheduling point like any other wait.
-    //
-    // A waiter raises the flag codegen checks, so the task holding a slot
-    // reaches `rask_task_slot_preempt` at its next safe point.
-    if (slot_waiters++ == 0) __atomic_store_n(&rask_preempt_requested, 1, __ATOMIC_RELEASE);
-    while (slots_free == 0) {
+    uint64_t ticket = slot_next++;
+    slot_flag_update_locked();
+    while (ticket >= slot_granted && slots_total != 0) {
         rask_task_cond_wait(&slot_freed, &slot_lock, "a free worker slot");
     }
-    if (--slot_waiters == 0) __atomic_store_n(&rask_preempt_requested, 0, __ATOMIC_RELEASE);
-    slots_free--;
-    rask_task_cond_broadcast(&slot_taken);
+    slot_flag_update_locked();
     pthread_mutex_unlock(&slot_lock);
     slot_held = 1;
     slot_points = 0;
     slot_since_ns = under_sim() ? 0 : monotonic_ns();
+#ifdef RASK_SIM
+    slot_budget_points = under_sim() ? rask_sim_preempt_budget() : 0;
+#endif
 }
 
 // Returns 1 when a slot was given back.
@@ -320,8 +336,10 @@ static int slot_give(void) {
     if (!slot_held) return 0;
     slot_held = 0;
     pthread_mutex_lock(&slot_lock);
-    slots_free++;
-    rask_task_cond_signal(&slot_freed);
+    slot_granted++;
+    slot_flag_update_locked();
+    // Every waiter checks its own ticket, so all of them hear it.
+    rask_task_cond_broadcast(&slot_freed);
     pthread_mutex_unlock(&slot_lock);
     return 1;
 }
@@ -329,47 +347,45 @@ static int slot_give(void) {
 // Preemption without a green scheduler (conc.runtime/P1). A task is a thread
 // holding one of the slots, and one that computes without ever waiting kept it
 // to the end: under `workers: 1` a task spinning on a flag another task sets
-// never finished. Past its budget, with another task waiting, it hands its
-// slot over at a safe point and queues for one again.
+// never finished. Past its budget, with another task waiting, it gives its slot
+// back at a safe point and queues for one again, behind the waiters.
 //
 // The budget is the green scheduler's 10 ms, except under sim, where it is a
-// count of safe points: a replay can't depend on how fast the machine is.
+// count of safe points drawn from the seed each turn: a replay can't depend on
+// how fast the machine is, and different seeds step tasks aside at different
+// places.
 #define SLOT_BUDGET_NS     (10LL * 1000000LL)
-#define SLOT_BUDGET_POINTS 1024
 #define SLOT_CLOCK_EVERY   256
 
 void rask_task_slot_preempt(void) {
     if (!slot_held) return;
     slot_points++;
     if (under_sim()) {
-        if (slot_points < SLOT_BUDGET_POINTS) return;
+        if (slot_points < slot_budget_points) return;
     } else {
         if (slot_points % SLOT_CLOCK_EVERY != 0) return;
         if (monotonic_ns() - slot_since_ns < SLOT_BUDGET_NS) return;
     }
     pthread_mutex_lock(&slot_lock);
-    if (slot_waiters == 0) {
-        pthread_mutex_unlock(&slot_lock);
+    int waiting = slot_next > slot_granted;
+    pthread_mutex_unlock(&slot_lock);
+    if (!waiting) {
+        slot_points = 0;
+        slot_since_ns = under_sim() ? 0 : monotonic_ns();
         return;
     }
-    // Wait for a waiter to have the slot before queueing again. Taking it
-    // straight back would usually win: nothing makes the lock fair.
-    slot_held = 0;
-    slots_free++;
-    rask_task_cond_signal(&slot_freed);
-    while (slots_free > 0 && slot_waiters > 0) {
-        rask_task_cond_wait(&slot_taken, &slot_lock, "another task to take its worker slot");
-    }
-    pthread_mutex_unlock(&slot_lock);
+    slot_give();
     slot_take();
 }
 
-// A task blocked in `join` isn't running anything, so it gives its slot up for
-// the duration — without which `workers: 1` could not run a task that joins
-// another. The green build answers the same case by starting a replacement
-// worker. Only a slot that was given up is taken back: the block's own body
-// isn't a task and never held one, and taking one after its join starved a
-// task of the only slot (#1346).
+// A task that waits isn't running, so it gives its slot back for the length of
+// the wait, the way a green fiber gives back its worker: `join`, a lock, a
+// condition, a sleep, a socket (`rask_task_cond_wait` and friends in sim.h).
+// Without it `workers: 1` couldn't run a task that another waits on, and a task
+// stepped aside inside a lock would leave the next one blocked on that lock
+// holding the only slot. Only a slot that was given up is taken back: the
+// block's own body isn't a task and never held one, and taking one after its
+// join starved a task of the only slot (#1346).
 int  rask_task_slot_release(void) { return slot_give(); }
 void rask_task_slot_retake(int released) { if (released) slot_take(); }
 
@@ -470,9 +486,6 @@ static RaskTask *handle_task(void *h, const char *op) {
 // Wait for the body to finish. A green joiner parks rather than holding its
 // worker; `rask_task_cond_wait` knows which it is.
 static void wait_done(RaskTask *t) {
-    // Waiting isn't running: a joiner that kept its slot would leave
-    // `workers: 1` with nothing free to run the task it waits for.
-    int released = rask_task_slot_release();
     // Read by the deadlock report while this waits, so it names the task.
     char what[48];
     snprintf(what, sizeof(what), "join(task %lld)", (long long)t->task_id);
@@ -491,7 +504,6 @@ static void wait_done(RaskTask *t) {
 #endif
         pthread_join(t->thread, NULL);
     }
-    rask_task_slot_retake(released);
 }
 
 // Join, splitting "how it ended" from "what it produced". Folding both into one
@@ -649,6 +661,7 @@ int rask_thread_io_wait(int64_t fd, int64_t want_write) {
         { .fd = t->wake_pipe[0], .events = POLLIN },
     };
     rask_thread_wait_begin(want_write ? "a socket to take a write" : "a socket to be readable");
+    int released = rask_task_slot_release();
     while (!cancelled) {
         int n = poll(p, 2, -1);
         if (n < 0 && errno == EINTR) continue;
@@ -661,6 +674,7 @@ int rask_thread_io_wait(int64_t fd, int64_t want_write) {
     }
     rask_thread_wait_end();
     rask_cancel_wait_end();
+    rask_task_slot_retake(released);
     return cancelled;
 }
 
@@ -682,6 +696,7 @@ static int thread_sleep_cancellable(int64_t ns) {
 
     RaskCancelWake w = rask_cancel_wake_cond(&m, &c);
     int cancelled = rask_cancel_wait_begin(&w);
+    int released = rask_task_slot_release();
     pthread_mutex_lock(&m);
     rask_thread_wait_begin("a sleep");
     while (!cancelled) {
@@ -691,6 +706,7 @@ static int thread_sleep_cancellable(int64_t ns) {
     rask_thread_wait_end();
     pthread_mutex_unlock(&m);
     rask_cancel_wait_end();
+    rask_task_slot_retake(released);
     pthread_cond_destroy(&c);
     pthread_mutex_destroy(&m);
     return cancelled;
@@ -704,7 +720,9 @@ int64_t rask_sleep_ns(int64_t ns) {
         RaskCancelWake w = { .wake = wake_sim_sleeper, .a = rask_sim_self() };
         cancelled = rask_cancel_wait_begin(&w);
         if (!cancelled) {
+            int released = rask_task_slot_release();
             rask_sim_sleep(ns);
+            rask_task_slot_retake(released);
             cancelled = rask_cancel_requested();
         }
         rask_cancel_wait_end();
