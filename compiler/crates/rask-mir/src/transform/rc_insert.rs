@@ -1161,23 +1161,6 @@ fn aggregate_edge_releases(
                 if gone[gi].contains(&succ) {
                     continue;
                 }
-                // And the successor must not still need the value. Liveness
-                // answers that per *group*, so a block that builds the next
-                // version while reading the current one — two names, one
-                // group — has the write hide the read and reads as dead on
-                // entry:
-                //
-                //     bb12:
-                //       *(_34+0)  = 1      // the new node: a write
-                //       *(_44+0)  = _41    // the old list: a read of another name
-                //
-                // That put an `rc_dec_contents` at the top of a loop body, on a
-                // name nothing had written yet the first time round (#1213).
-                // Asking the block itself is cheap and exact where the group
-                // answer is not.
-                if reads_before_writing(func, succ, group) {
-                    continue;
-                }
                 out.push((succ, name));
             }
         }
@@ -1185,45 +1168,6 @@ fn aggregate_edge_releases(
     out.sort_by_key(|(b, l)| (b.0, l.0));
     out.dedup_by_key(|(b, l)| (b.0, l.0));
     out
-}
-
-/// Does `block` read one of the group's names before writing that same name?
-///
-/// The precise half of "is the group live on entry here". `aggregate_liveness`
-/// answers it for the group as a whole, which is enough for placing a release
-/// inside a block and not enough for putting one at the top of one.
-fn reads_before_writing(func: &MirFunction, block: BlockId, group: &HashSet<LocalId>) -> bool {
-    let Some(b) = func.blocks.iter().find(|b| b.id == block) else { return false };
-    let mut written: HashSet<LocalId> = HashSet::new();
-    for stmt in &b.statements {
-        let stored_into = match &stmt.kind {
-            MirStmtKind::Store { addr, .. } if group.contains(addr) => Some(*addr),
-            _ => None,
-        };
-        // A store's destination address is the write, not a read of what was
-        // there before; its *value* is an ordinary read.
-        let reads = match (&stmt.kind, stored_into) {
-            (MirStmtKind::Store { value, .. }, Some(_)) => uses::operand_local(value)
-                .is_some_and(|v| group.contains(&v) && !written.contains(&v)),
-            _ => group
-                .iter()
-                .any(|l| !written.contains(l) && uses::stmt_reads(stmt, *l)),
-        };
-        if reads {
-            return true;
-        }
-        if let Some(addr) = stored_into {
-            written.insert(addr);
-        }
-        if let Some(d) = uses::stmt_def(stmt) {
-            if group.contains(&d) {
-                written.insert(d);
-            }
-        }
-    }
-    group
-        .iter()
-        .any(|l| !written.contains(l) && uses::terminator_reads(&b.terminator, *l))
 }
 
 /// A store that moves a value from one of a group's names to another, rather
@@ -1461,6 +1405,20 @@ fn already_released(func: &MirFunction, group: &HashSet<LocalId>) -> bool {
 /// of the body is dead by the bottom, because the next turn writes it again
 /// before reading it.
 ///
+/// Per name, and a group is live while any of its names is. A group is one
+/// value's line of descent, not one slot: in
+///
+/// ```text
+/// loop { … left = Expr.Binary(left: left, …) }
+/// ```
+///
+/// `_31` is the node being built and `_40` the `left` it's built from, two
+/// slots with one group between them. Asked of the group as a whole, the store
+/// into `_31` that starts the next node hid the read of `_40` right after it,
+/// so the group read as dead on entry to the loop body and was released at the
+/// top of it: stack garbage the first time round, the old `left`'s children
+/// every time after (#1213 was the same fault caught in one block only).
+///
 /// Indexed `[block index][group index]`.
 /// Per block, per group: live on entry and live on exit.
 fn aggregate_liveness(
@@ -1472,95 +1430,185 @@ fn aggregate_liveness(
     let n_groups = groups.len();
     let index_of: HashMap<BlockId, usize> =
         func.blocks.iter().enumerate().map(|(i, b)| (b.id, i)).collect();
+    let succs: Vec<Vec<usize>> = func
+        .blocks
+        .iter()
+        .map(|b| {
+            crate::analysis::cfg::successors(&b.terminator)
+                .iter()
+                .filter_map(|s| index_of.get(s).copied())
+                .collect()
+        })
+        .collect();
 
-    // Upward-exposed use, and whether the block writes the group at all.
-    let mut gen = vec![vec![false; n_groups]; n_blocks];
-    let mut kill = vec![vec![false; n_groups]; n_blocks];
+    let mut live_in = vec![vec![false; n_groups]; n_blocks];
+    let mut live_out = vec![vec![false; n_groups]; n_blocks];
 
-    // How big the value each group names is, so "did this block write all of
-    // it" has an answer.
-    for (bi, block) in func.blocks.iter().enumerate() {
-        // Slots this block gives back before writing over them. A store that
-        // follows one is a *replacement*, not the end of the value: what was
-        // there has just been freed by name, and what lands next is the group's
-        // as much as the old one was. Counting it as a kill is what put the
-        // release one statement after the literal in `parse_args` (#1198).
-        let released_here: HashSet<(LocalId, u32)> = block
-            .statements
+    for (gi, group) in groups.iter().enumerate() {
+        // The group's own names, then the views reading through it.
+        let mut names: Vec<LocalId> = group.iter().copied().collect();
+        names.sort_by_key(|l| l.0);
+        let mut views: Vec<LocalId> =
+            reaches[gi].iter().copied().filter(|l| !group.contains(l)).collect();
+        views.sort_by_key(|l| l.0);
+        let n_own = names.len();
+        names.extend(views);
+        let n = names.len();
+
+        // A phi taking one of the group's names or views carries the value
+        // across the edge rather than ending it, so the group is live on entry
+        // to the phi's block. Asked per name, the phi's destination starts
+        // there and its operands end on the edges, and two loops read as the
+        // group's death at their header: one merging `left` from before the
+        // loop and from the last turn (the release landed at the top of the
+        // loop), and a walk `cur = list.root; while cur? as n { … }` whose
+        // links point into the rack the group holds (released nowhere).
+        //
+        // It's one more column in the dataflow, after the views, and it ends
+        // where a view does: where the group is written.
+        let carried: Vec<bool> = func
+            .blocks
             .iter()
-            .filter_map(|st| match &st.kind {
-                MirStmtKind::ReleaseSlot { addr, offset, .. } => Some((*addr, *offset)),
-                _ => None,
+            .map(|b| {
+                b.statements.iter().any(|st| match &st.kind {
+                    MirStmtKind::Phi { args, .. } => args.iter().any(|(_, op)| {
+                        uses::operand_local(op).is_some_and(|v| names.contains(&v))
+                    }),
+                    _ => false,
+                })
             })
             .collect();
-        for (gi, group) in groups.iter().enumerate() {
-            let mut written = false;
+
+        // Upward-exposed use and write, per block, per name, plus the carried
+        // column at index `n`.
+        let mut gen = vec![vec![false; n + 1]; n_blocks];
+        let mut kill = vec![vec![false; n + 1]; n_blocks];
+        for (bi, block) in func.blocks.iter().enumerate() {
+            // Slots this block gives back before writing over them. A store that
+            // follows one is a *replacement*, not the end of the value: what was
+            // there has just been freed by name, and what lands next is the
+            // group's as much as the old one was. Counting it as a kill is what
+            // put the release one statement after the literal in `parse_args`
+            // (#1198).
+            let released_here: HashSet<(LocalId, u32)> = block
+                .statements
+                .iter()
+                .filter_map(|st| match &st.kind {
+                    MirStmtKind::ReleaseSlot { addr, offset, .. } => Some((*addr, *offset)),
+                    _ => None,
+                })
+                .collect();
+            // Whether one of the group's own names has been written yet in
+            // this block, which is what ends a view (below).
+            let mut member_written = false;
             for stmt in &block.statements {
                 // A store names the aggregate as its destination address. That
                 // is the write, not a use of what was there before — counting
                 // it as a read made every group look upward-exposed, so nothing
                 // was ever dead and nothing was ever released.
-                let stores_into = matches!(
-                    &stmt.kind,
-                    MirStmtKind::Store { addr, .. } if group.contains(addr)
-                );
-                let reads = if stores_into {
-                    match &stmt.kind {
-                        MirStmtKind::Store { value, .. } => uses::operand_local(value)
-                            .is_some_and(|v| group.contains(&v)),
-                        _ => false,
+                let store = match &stmt.kind {
+                    MirStmtKind::Store { addr, offset, value, .. } if group.contains(addr) => {
+                        Some((*addr, *offset, value))
                     }
-                } else {
-                    group.iter().any(|l| uses::stmt_reads(stmt, *l))
-                        || reaches[gi].iter().any(|l| uses::stmt_reads(stmt, *l))
+                    _ => None,
                 };
-                if reads && !written {
-                    gen[bi][gi] = true;
+                let mut wrote_member = false;
+                for (ni, name) in names.iter().enumerate() {
+                    // A phi reads each operand on the edge from its own
+                    // predecessor, not on entry to this block (`phi_out`).
+                    let reads = match store {
+                        _ if matches!(stmt.kind, MirStmtKind::Phi { .. }) => false,
+                        Some((_, _, value)) => uses::operand_local(value) == Some(*name),
+                        None => uses::stmt_reads(stmt, *name),
+                    };
+                    if ni >= n_own {
+                        // A view isn't ended by its own definition. One name
+                        // can read through the group on one path and hold
+                        // something else on another (`_7 = "none"` against
+                        // `_7 = v[0].name`), and ending it at the definition
+                        // released the group on the path that doesn't read it
+                        // and again where the two paths meet. What ends a view
+                        // is the group being written.
+                        if reads && !member_written {
+                            gen[bi][ni] = true;
+                        }
+                        continue;
+                    }
+                    if reads && !kill[bi][ni] {
+                        gen[bi][ni] = true;
+                    }
+                    let writes = match store {
+                        Some((addr, offset, _)) => {
+                            addr == *name
+                                && !released_here.contains(&(addr, offset))
+                                && !store_is_narrow(stmt)
+                        }
+                        None => uses::stmt_def(stmt) == Some(*name),
+                    };
+                    if writes {
+                        kill[bi][ni] = true;
+                        wrote_member = true;
+                    }
                 }
-                let replaced = match &stmt.kind {
-                    MirStmtKind::Store { addr, offset, .. } => {
-                        released_here.contains(&(*addr, *offset))
+                if wrote_member {
+                    member_written = true;
+                    for ni in n_own..=n {
+                        kill[bi][ni] = true;
                     }
-                    _ => false,
-                };
-                let writes = (stores_into && !replaced && !store_is_narrow(stmt))
-                    || uses::stmt_def(stmt).is_some_and(|d| group.contains(&d));
-                if writes {
-                    written = true;
-                    kill[bi][gi] = true;
                 }
             }
-            if !written && group.iter().any(|l| uses::terminator_reads(&block.terminator, *l)) {
-                gen[bi][gi] = true;
+            // A phi sits at the top of its block, ahead of any write.
+            if carried[bi] {
+                gen[bi][n] = true;
+            }
+            for (ni, name) in names.iter().enumerate() {
+                if !kill[bi][ni] && uses::terminator_reads(&block.terminator, *name) {
+                    gen[bi][ni] = true;
+                }
             }
         }
-    }
 
-    let mut live_in = vec![vec![false; n_groups]; n_blocks];
-    let mut live_out = vec![vec![false; n_groups]; n_blocks];
-    loop {
-        let mut changed = false;
-        for bi in 0..n_blocks {
-            for gi in 0..n_groups {
-                let mut out = false;
-                for succ in crate::analysis::cfg::successors(&func.blocks[bi].terminator) {
-                    if let Some(si) = index_of.get(&succ) {
-                        out |= live_in[*si][gi];
+        // Names a successor's phi reads on the edge from this block. Counting
+        // them on entry to the phi's block made the success value of a
+        // `catch` look needed on the error path too, where it was never built,
+        // and nothing on that path was released.
+        let mut phi_out = vec![vec![false; n + 1]; n_blocks];
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                let MirStmtKind::Phi { args, .. } = &stmt.kind else { continue };
+                for (pred, operand) in args {
+                    let (Some(&pi), Some(v)) = (index_of.get(pred), uses::operand_local(operand))
+                    else {
+                        continue;
+                    };
+                    if let Some(ni) = names.iter().position(|l| *l == v) {
+                        phi_out[pi][ni] = true;
                     }
-                }
-                if out != live_out[bi][gi] {
-                    live_out[bi][gi] = out;
-                    changed = true;
-                }
-                let inn = gen[bi][gi] || (out && !kill[bi][gi]);
-                if inn != live_in[bi][gi] {
-                    live_in[bi][gi] = inn;
-                    changed = true;
                 }
             }
         }
-        if !changed {
-            break;
+
+        let mut name_in = vec![vec![false; n + 1]; n_blocks];
+        loop {
+            let mut changed = false;
+            for bi in 0..n_blocks {
+                for ni in 0..=n {
+                    let out = phi_out[bi][ni] || succs[bi].iter().any(|&si| name_in[si][ni]);
+                    let inn = gen[bi][ni] || (out && !kill[bi][ni]);
+                    if inn != name_in[bi][ni] {
+                        name_in[bi][ni] = inn;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        for bi in 0..n_blocks {
+            live_in[bi][gi] = name_in[bi].iter().any(|&l| l);
+            live_out[bi][gi] = phi_out[bi].iter().any(|&l| l)
+                || succs[bi].iter().any(|&si| name_in[si].iter().any(|&l| l));
         }
     }
     (live_in, live_out)

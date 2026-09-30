@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A loop that builds each value out of the one before it keeps the one before
+// it until the new one holds it.
+//
+//     loop { left = Expr.Add(left: left, right: …) }
+//
+// The node being built and `left` are two slots holding one value's line of
+// descent. The release analysis asked "is this value still needed" of both at
+// once, so the store that starts the new node hid the read of `left` right
+// after it. The value read as dead on the way into the loop body and was
+// released at the top of it: stack garbage the first time round, the old
+// `left`'s children after that. examples/cli_calculator.rk crashed on it once
+// a change elsewhere moved what the garbage was.
+
+import memory.Heap
+
+enum Expr {
+    Num(i64)
+    Add(left: Heap<Expr>, right: Heap<Expr>)
+}
+
+func eval(e: Expr) -> i64 {
+    match e {
+        Expr.Num(n) => return n
+        Expr.Add(left, right) => return eval(left) + eval(right)
+    }
+}
+
+func sum_of(n: i64) -> Expr {
+    mut left = Expr.Num(1)
+    mut i: i64 = 2
+    loop {
+        if i > n {
+            break
+        }
+        left = Expr.Add(left: left, right: Expr.Num(i))
+        i += 1
+    }
+    return left
+}
+
+test "each turn builds on the one before" {
+    assert eval(sum_of(1)) == 1
+    assert eval(sum_of(2)) == 3
+    assert eval(sum_of(10)) == 55
+}
+
+func main() {}
