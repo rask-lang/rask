@@ -25,7 +25,7 @@ Chat is my interface. Reading diffs and files on a phone is painful — never po
 Long sessions bury the state under rolling summaries and check-in chatter. I read the last message, not the scrollback.
 
 - **No interim summaries.** Mid-task, speak only to ask a decision or report a blocker. Progress lives in commits.
-- **Quiet check-ins are silent.** A PR check-in or event that finds nothing new ends the turn with no text. No "no reviews, rearming".
+- **Quiet check-ins are silent.** A PR check-in or event that finds nothing new ends the turn with no text. If the harness insists on output, one line: `#N: nothing new.` No "no reviews, rearming", no restated status.
 - **Hand back with a recap** whenever you stop after substantial work, and whenever I say "recap". Write it for someone who saw none of the session. It replaces every earlier summary and digest, so repeat what still matters rather than saying "as above". Sections, in order:
   1. **Decisions for me**: the judgment digest. The 2–4 most questionable calls, each with the problem in a sentence, what you picked, the alternative, and the few lines of code that embody it. Framed so I can answer in one word ("keep / wrong / show me more"). Empty is fine; say so.
   2. **Status**: branch, PR link, CI on the head, what it's waiting on.
