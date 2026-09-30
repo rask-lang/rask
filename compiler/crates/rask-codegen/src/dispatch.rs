@@ -1118,8 +1118,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::neg_err("TcpConnection_read_http_request", "rask_net_read_http_request", &[types::I64], Some(types::I64), false),
-        StdlibEntry::neg_err("TcpConnection_write_http_response", "rask_net_write_http_response", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpConnection_close", "rask_net_close", &[types::I64], None, false),
         StdlibEntry::simple("TcpConnection_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
 

@@ -749,16 +749,21 @@ impl Interpreter {
             _ => "Unknown",
         };
 
-        let mut guard = stream.lock().unwrap();
-        let tcp = guard.as_mut().ok_or_else(|| {
+        // The response says `Connection: close`, so sending it ends the
+        // connection, as `write_http_response(take self)` does natively. Left
+        // open, a client waiting for the end of the stream never saw it (#1055).
+        let mut tcp = stream.lock().unwrap().take().ok_or_else(|| {
             RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write HTTP response to".to_string() }
         })?;
 
+        // Workaround: a second copy of `format_http_response` in stdlib/http.rk,
+        // until the interpreter runs that instead (#1378).
         let mut output = format!("HTTP/1.1 {} {}\r\n", status, status_text);
-        output.push_str(&format!("Content-Length: {}\r\n", body.len()));
         for (key, val) in &headers {
             output.push_str(&format!("{}: {}\r\n", key, val));
         }
+        output.push_str("Connection: close\r\n");
+        output.push_str(&format!("Content-Length: {}\r\n", body.len()));
         output.push_str("\r\n");
         output.push_str(&body);
 

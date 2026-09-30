@@ -413,7 +413,16 @@ func format_http_response(resp: Response) -> string {
     out.push(reason_phrase(resp.status))
     out.push("\r\n")
 
-    // Content-Length + end of headers
+    for (name, value) in resp.headers.entries {
+        out.push(name)
+        out.push(": ")
+        out.push(value)
+        out.push("\r\n")
+    }
+
+    // Every response is the connection's last: whoever sends it closes the
+    // socket, and says so, so a client doesn't wait for a second one.
+    out.push("Connection: close\r\n")
     out.push("Content-Length: ")
     out.push(resp.body.len().to_string())
     out.push("\r\n\r\n")
@@ -444,21 +453,30 @@ extern "C" {
 // to the end of the stream. One read is not a message, and a connection that
 // ends or resets before the last byte is an error, never a shorter body.
 func read_message(conn_fd: i64, max_bytes: i64, is_response: bool) -> string or HttpError {
+    let raw = read_message_io(conn_fd, max_bytes, is_response) catch e => {
+        return HttpError.Io(e.message())
+    }
+    return raw
+}
+
+// `read_message` for a caller that answers `IoError`, so a reset or a cancel
+// keeps its variant.
+func read_message_io(conn_fd: i64, max_bytes: i64, is_response: bool) -> string or IoError {
     let got = unsafe rask_io_http_read(conn_fd, max_bytes, if is_response { 1 } else { 0 })
     if got == -1 {
-        return HttpError.Io(IoError.last_os_error().message())
+        return IoError.last_os_error()
     }
     if got == -2 {
-        return HttpError.Io("the connection ended before the whole message arrived")
+        return IoError.Other("the connection ended before the whole message arrived")
     }
     if got == -3 {
-        return HttpError.InvalidResponse("message larger than {max_bytes} bytes")
+        return IoError.Other("message larger than {max_bytes} bytes")
     }
     if got == -4 {
-        return HttpError.InvalidResponse("Content-Length is not a number")
+        return IoError.Other("Content-Length is not a number")
     }
     if got == -5 {
-        return HttpError.InvalidResponse("chunked transfer encoding isn't supported")
+        return IoError.Other("chunked transfer encoding isn't supported")
     }
     return unsafe rask_io_http_take(got)
 }
@@ -680,48 +698,38 @@ func _send_request_impl(method: Method, url: string, body: string, extra_headers
 }
 
 // ─── Server Integration ──────────────────────────────────────────
-//
-// These functions wire the pure-Rask parser/formatter into the
-// TcpConnection method dispatch, replacing the C HTTP parser.
 
-// Parse HTTP/1.1 request from a TCP connection.
-// Shadows the dispatch entry for TcpConnection_read_http_request — the name
-// has to be the mangled `Type_method` spelling to land on it, so snake_case
-// is not available here.
-@allow(style/snake-case-func)
-func TcpConnection_read_http_request(conn_fd: i64) -> i64 or HttpError {
-    let raw = try read_message(conn_fd, 65536, false)
-    let request = try parse_http_request(raw)
-
-    // Build the legacy struct layout: [method_str, path, body, headers_map]
-    // This matches what the codegen expects for HttpRequest struct access.
-    // Once the compiler handles the new Request type natively, this shim
-    // can be replaced with a direct return.
-    return request as i64
-}
-
-// Write HTTP/1.1 response to a TCP connection.
-// Shadows the dispatch entry for TcpConnection_write_http_response — same
-// mangled spelling as the reader above, same reason.
-@allow(style/snake-case-func)
-func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or HttpError {
-    // The dispatch entry hands the response over as a raw pointer, so reading
-    // it back as a `Response` is a reinterpretation, not a conversion. Same
-    // shim as `read_http_request` above, in the other direction.
-    let resp = unsafe {
-        resp_ptr as Response
+extend TcpConnection {
+    /// Read one HTTP/1.1 request from the connection.
+    ///
+    /// The reader and parser `HttpServer.accept` uses. Natively this was a C
+    /// parser of its own that laid its result out unlike `Request`, so every
+    /// request arrived with an empty url, and a failed or cut-off read came
+    /// back as a blank `GET /` instead of an error (#1377).
+    public func read_http_request(self) -> Request or IoError {
+        let raw = try read_message_io(self as i64, 65536, false)
+        let request = parse_http_request(raw) catch e => {
+            return IoError.Other(e.message())
+        }
+        return request
     }
-    let raw = format_http_response(resp)
-    let sent = write_raw(conn_fd, raw)
-    // The response says `Connection: close`, so close it — the same promise
-    // `Responder.respond` keeps. Without this a caller using the low-level
-    // `TcpConnection.write_http_response` got the #1055 bug on a second path:
-    // client hangs waiting for an EOF, descriptor held for the process's life.
-    close_raw(conn_fd)
-    if !sent {
-        return HttpError.Io("could not send the response")
+
+    /// Write an HTTP response to the connection, and close it.
+    ///
+    /// Takes the connection because `format_http_response` always writes
+    /// `Connection: close`: a response that says the socket is closing has to
+    /// be sent by something that then closes it, or the client waits for an EOF
+    /// that never comes and the server keeps the descriptor (#1055). Same shape
+    /// as `Responder.respond`, which is the path `HttpServer.accept` hands out.
+    public func write_http_response(take self, response: Response) -> void or IoError {
+        let fd = self as i64
+        let sent = write_raw(fd, format_http_response(response))
+        close_raw(fd)
+        if !sent {
+            return IoError.Other("could not send the response")
+        }
+        return
     }
-    return 0
 }
 
 // ─── Server Types ────────────────────────────────────────────────

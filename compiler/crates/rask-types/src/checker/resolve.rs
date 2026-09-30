@@ -2275,21 +2275,6 @@ impl TypeChecker {
                 };
                 self.unify(ret, &result_type, span)
             }
-            // TcpConnection
-            ("TcpConnection", "read_http_request") if args.is_empty() => {
-                let result_type = Type::Result {
-                    ok: Box::new(Type::UnresolvedNamed("Request".to_string())),
-                    err: Box::new(error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            ("TcpConnection", "write_http_response") if args.len() == 1 => {
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
-                    err: Box::new(error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
             // Response — allow method-style access for chaining
             ("Response", "status") if args.is_empty() => {
                 self.unify(ret, &Type::U16, span)

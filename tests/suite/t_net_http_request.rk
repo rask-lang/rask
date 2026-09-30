@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `TcpConnection.read_http_request` and `write_http_response`, on both
+// backends (#1377).
+//
+// Natively these went to a C parser that built its result laid out unlike
+// `Request`: every request arrived with an empty url and a body that printed
+// as nothing, and a connection cut off mid-body came back as a successful
+// blank `GET /`. They're Rask now, over the reader and parser `HttpServer`
+// uses.
+
+import net
+import io.IoError
+import http.{Request, Response, Method}
+
+// Send `raw` from a client, close it, and read it back as a request.
+func request_from(raw: string) -> Request or IoError {
+    mut listener = try net.tcp_listen("127.0.0.1:0")
+    let addr = listener.local_addr()
+    mut client = try net.tcp_connect(addr)
+    mut server = try listener.accept()
+
+    try client.write_text(raw)
+    let _ = client.close()
+
+    let got = server.read_http_request()
+    let _ = server.close()
+    let _ = listener.close()
+    return try got
+}
+
+test "a whole request keeps its method, url and body" {
+    let req = request_from("POST /items HTTP/1.1\r\nContent-Length: 3\r\n\r\nabc")!
+    assert req.method == Method.Post
+    assert req.url == "/items"
+    assert req.body == "abc"
+}
+
+test "a request cut off before its body is an error" {
+    let got = request_from("POST /items HTTP/1.1\r\nContent-Length: 10\r\n\r\nabc")
+    assert got is IoError
+}
+
+test "a response goes out whole and the connection closes" {
+    mut listener = net.tcp_listen("127.0.0.1:0")!
+    let addr = listener.local_addr()
+    mut client = net.tcp_connect(addr)!
+    let server = listener.accept()!
+
+    server.write_http_response(Response.new(201, "made"))!
+    let text = client.read_text()!
+    let _ = client.close()
+    let _ = listener.close()
+    assert text.starts_with("HTTP/1.1 201 Created\r\n")
+    assert text.ends_with("\r\n\r\nmade")
+}
+
+func main() {}
