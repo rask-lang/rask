@@ -381,7 +381,8 @@ always said false, and native couldn't compile a call to it.
 Fixed in #1376: #1357 (a `Vec<T or E>` freed its error payloads), #1356 (a
 closure holding a link or a `Local` box is refused at spawn however it gets
 there), #1371 (cancel wakes a simulated socket), #1375 (sim resets module
-state per test), #1377 (native `read_http_request`), and a loop that rebuilt a
+state per test), #1377 (native `read_http_request`), #1378 (the interpreter
+runs `http.rk` instead of a Rust copy), and a loop that rebuilt a
 value from itself releasing the old one early, which crashed
 `cli_calculator` once preemption moved its stack frame. #298 and #299 close:
 #298's last case was a `Pool` container, and `Pool` is gone.
@@ -390,8 +391,10 @@ Ships open:
 
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
   tasks over one `Shared` plus a channel. It wouldn't reproduce on demand.
-- [#1378](https://github.com/rask-lang/rask/issues/1378): the interpreter's
-  HTTP stack is a Rust copy of `http.rk`.
+- [#1381](https://github.com/rask-lang/rask/issues/1381): sim picks the next
+  task itself rather than driving green.c's queues from the seed.
+- [#1382](https://github.com/rask-lang/rask/issues/1382): a generic body's
+  closure is judged by value on the interpreter, by type natively.
 - [#1379](https://github.com/rask-lang/rask/issues/1379): `cli_calculator`
   leaks its expression tree.
 - macOS runs tasks on threads until it has a kqueue poller.
