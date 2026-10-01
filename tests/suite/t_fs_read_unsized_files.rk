@@ -5,10 +5,12 @@
 
 import fs
 
+// `/proc/version`, not `/proc/self/status`: the status file is live (memory
+// use, context switches), so two reads can differ in length.
 test "a proc file reports size 0 and still has contents" {
-    let text = try fs.read_text("/proc/self/status")
-    assert text.contains("Name:")
-    let bytes = try fs.read_bytes("/proc/self/status")
+    let text = try fs.read_text("/proc/version")
+    assert text.starts_with("Linux version")
+    let bytes = try fs.read_bytes("/proc/version")
     assert bytes.len() == text.len()
 }
 
