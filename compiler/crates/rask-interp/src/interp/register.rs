@@ -160,12 +160,12 @@ impl Interpreter {
                     // second block read overwrites the first and one library
                     // runs the other's body.
                     let suffix = self.conformance_disambiguation.get(&decl.id).cloned();
-                    let header_params = rask_mono::extend_header_params(&impl_decl.target_ty);
-                    if !header_params.is_empty() {
+                    let header = rask_types::extend_target_args(&impl_decl.target_ty);
+                    if !header.is_empty() {
                         for method in &impl_decl.methods {
-                            self.extend_header_params.insert(
+                            self.extend_header_patterns.insert(
                                 (base_name.clone(), method.name.clone()),
-                                header_params.clone(),
+                                header.clone(),
                             );
                         }
                     }
@@ -631,7 +631,7 @@ impl Interpreter {
 
         let outer_capture = self.begin_output_capture();
 
-        match self.call_function(func, vec![]) {
+        match self.call_function(func, vec![], None) {
             Ok(_) => {}
             Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {}
             Err(diag) if matches!(&diag.error, RuntimeError::CheckFailed(_) | RuntimeError::AssertionFailed(_)) => {

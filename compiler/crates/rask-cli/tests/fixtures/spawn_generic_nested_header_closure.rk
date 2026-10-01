@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Same for a header that names a parameter inside another generic:
+// `extend Wrap<Wrap<U>>` on `Wrap<Wrap<Vec<Link<Node>>>>` gives `U` the vector,
+// not the inner `Wrap` (#1382).
+import memory.{Rack, Link}
+
+struct Node {
+    id: i64
+}
+
+struct Wrap<T> {
+    v: T
+}
+
+extend Wrap<Wrap<U>> {
+    func inner_keep(self) -> func() -> i64 {
+        let u = self.v.v
+        return || {
+            let y = u
+            return 1
+        }
+    }
+}
+
+func main() {
+    using Multitasking {
+        let plain = Wrap { v: Wrap { v: 3 } }
+        println("{spawn(plain.inner_keep()).join()!}")
+        let w = Wrap { v: Wrap { v: Vec<Link<Node>>.new() } }
+        let f = w.inner_keep()
+        println("before")
+        println("{spawn(f).join()!}")
+    }
+}

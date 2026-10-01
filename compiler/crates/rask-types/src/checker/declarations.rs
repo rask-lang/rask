@@ -1059,7 +1059,7 @@ impl TypeChecker {
         //
         // A header that omits them (`extend Wrapper` on a `Wrapper<T>`) or whose
         // arity doesn't line up keeps the declaration's own names, same as before.
-        let header_args = Self::target_type_args(&i.target_ty);
+        let header_args = super::generics::extend_target_args(&i.target_ty);
         let owner_patterns = if header_args.len() == decl_params.len() {
             header_args
         } else {
@@ -1606,25 +1606,6 @@ impl TypeChecker {
     ///
     /// An `extend` block names its receiver as a string, so this is the only
     /// place the owner's parameters can be read back out.
-    /// The extend header's target arguments as written, nesting kept:
-    /// `["(K, V)"]` for `Sequence<(K, V)>`, `["K", "V"]` for `Map<K, V>`.
-    ///
-    /// Unlike `target_type_params` this drops nothing — a concrete argument
-    /// (`extend Holder<i64>`) is an argument too, and the caller has to line the
-    /// list up one-for-one with what the type declares.
-    pub(super) fn target_type_args(target_ty: &str) -> Vec<String> {
-        let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
-        // Exactly one `>`, not every trailing one: `Vec<Vec<T>>` closes the
-        // outer bracket here and the inner one belongs to the argument.
-        // `trim_end_matches` took both and left `Vec<T`, a name nothing has.
-        let Some(inner) = rest.trim_end().strip_suffix('>') else { return Vec::new() };
-        super::parse_type::split_type_args(inner)
-            .into_iter()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    }
-
     pub(super) fn target_type_params(target_ty: &str) -> Vec<String> {
         let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
         let Some(inner) = rest.trim_end().strip_suffix('>') else { return Vec::new() };

@@ -4320,11 +4320,18 @@ fn a_task_bound_closure_is_refused_at_spawn() {
     // `Link<Node>?` hold no link and still may not cross. The interpreter used
     // to look at the value and let both through (#1382). `none_link` reaches
     // `keep` through another generic function, and `method_closure` binds `T`
-    // from the receiver's type.
+    // from the receiver's type. The two `header` fixtures bind it from an
+    // `extend` header that takes the receiver's argument apart, and the two
+    // `fn_value` ones pass a generic function as a value, so its type arguments
+    // come from where it was named, not from the call that runs it.
     for (file, line) in [
         ("spawn_generic_closure_empty_vec.rk", 24),
         ("spawn_generic_closure_none_link.rk", 30),
         ("spawn_generic_method_closure.rk", 32),
+        ("spawn_generic_tuple_header_closure.rk", 33),
+        ("spawn_generic_nested_header_closure.rk", 32),
+        ("spawn_generic_fn_value_apply.rk", 30),
+        ("spawn_generic_fn_value_map.rk", 16),
     ] {
         for mode in ["--interp", "--native"] {
             let (stdout, stderr, code) = run_capture(mode, file);

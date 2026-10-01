@@ -1032,6 +1032,10 @@ pub enum Value {
     /// Function reference
     Function {
         name: String,
+        /// What a generic function's type parameters stand for in the use
+        /// that named it (`v.map(keep)`), `None` for a plain one. A call
+        /// through the value runs the body under these.
+        generics: GenericFrame,
     },
     /// Built-in function
     Builtin(BuiltinKind),
@@ -1625,7 +1629,7 @@ impl fmt::Display for Value {
                 }
                 Ok(())
             }
-            Value::Function { name } => write!(f, "<func {}>", name),
+            Value::Function { name, .. } => write!(f, "<func {}>", name),
             Value::Builtin(kind) => write!(f, "<builtin {:?}>", kind),
             Value::Vec(v) => {
                 let vec = v.lock().unwrap();

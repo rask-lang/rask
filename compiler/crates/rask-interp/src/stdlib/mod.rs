@@ -233,7 +233,7 @@ impl Interpreter {
                             .map(|p| p.name != "self")
                             .unwrap_or(true);
                         if is_static && has_body {
-                            return self.call_function(&method_fn, args).map_err(|diag| diag.error);
+                            return self.call_function(&method_fn, args, None).map_err(|diag| diag.error);
                         }
                     }
                 }

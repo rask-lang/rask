@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic function passed as a value to a higher-order function. `hold`'s
+// `X` is fixed where `hold` is named, and the closure it builds is judged by
+// that: an `i64` crosses, an empty `Vec<Link<Node>>` doesn't. The interpreter
+// used to hand `hold` whatever type arguments were parked for the next call,
+// here none, and native couldn't name a generic function as a value (#1382).
+import memory.{Rack, Link}
+
+struct Node {
+    id: i64
+}
+
+func hold<X>(x: X) -> func() -> i64 {
+    return || {
+        let y = x
+        return 1
+    }
+}
+
+func apply<A, R>(f: func(A) -> R, a: A) -> R {
+    return f(a)
+}
+
+func main() {
+    using Multitasking {
+        let plain = apply(hold, 7)
+        println("{spawn(plain).join()!}")
+        let f = apply(hold, Vec<Link<Node>>.new())
+        println("before")
+        println("{spawn(f).join()!}")
+    }
+}

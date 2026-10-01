@@ -727,7 +727,13 @@ impl Interpreter {
                     return Ok(val.clone());
                 }
                 if self.functions.contains_key(name) {
-                    return Ok(Value::Function { name: name.clone() });
+                    // Named as a value, a generic function carries the types
+                    // the checker gave this use; in call position the call
+                    // carries them instead, and this finds nothing.
+                    return Ok(Value::Function {
+                        name: name.clone(),
+                        generics: self.call_generics(expr.id),
+                    });
                 }
                 // Check for generic type constructors (e.g., Pool<Node>)
                 let (base_name, type_param) = if let Some(lt_pos) = name.find('<') {
@@ -808,9 +814,12 @@ impl Interpreter {
                 // the bare one, so an explicitly instantiated call went looking
                 // for a function literally called `make<i32>` (#712). The
                 // arguments themselves are already handled: the checker bound
-                // them, and `push_call_type_params` carries them into the body.
+                // them at the call, and the call hands them to the body.
                 if base_name != name && self.functions.contains_key(base_name) {
-                    return Ok(Value::Function { name: base_name.to_string() });
+                    return Ok(Value::Function {
+                        name: base_name.to_string(),
+                        generics: self.call_generics(expr.id),
+                    });
                 }
                 // Prelude free functions from stdlib/async.rk. These are usable
                 // unqualified inside `using Multitasking`, without an import.
@@ -850,7 +859,8 @@ impl Interpreter {
                             match variant.as_str() {
                                 "Ok" => {
                                     let inner = fields.first().cloned().unwrap_or(Value::Unit);
-                                    return self.with_call_generics(expr.id, |this| this.call_method(inner, field, arg_vals))
+                                    let generics = self.call_generics(expr.id);
+                                    return self.call_method(inner, field, arg_vals, generics)
                                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                                 }
                                 "Err" => {
@@ -862,7 +872,8 @@ impl Interpreter {
                             match variant.as_str() {
                                 "Some" => {
                                     let inner = fields.first().cloned().unwrap_or(Value::Unit);
-                                    let result = self.with_call_generics(expr.id, |this| this.call_method(inner, field, arg_vals))
+                                    let generics = self.call_generics(expr.id);
+                                    let result = self.call_method(inner, field, arg_vals, generics)
                                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
                                     return Ok(Value::Enum {
                                         name: "Option".to_string(),
@@ -885,7 +896,8 @@ impl Interpreter {
                     }
 
                     let outer = self.failed_call_span.take();
-                    let result = self.with_call_generics(expr.id, |this| this.call_method(obj_val, field, arg_vals));
+                    let generics = self.call_generics(expr.id);
+                    let result = self.call_method(obj_val, field, arg_vals, generics);
                     let inner = self.failed_call_span.take();
                     self.failed_call_span = outer;
                     return result
@@ -913,26 +925,16 @@ impl Interpreter {
                 // Clear any writebacks left by sub-calls during arg evaluation, so
                 // only this call's `mutate` finals are applied below.
                 self.mutate_writebacks.clear();
-                // #968: `count<Plain>()` — the written type arguments are folded
-                // into the callee's name by the parser, and nothing had read them
-                // back, so a call with no arguments to infer from left `T`
-                // unbound. Set after the arguments are evaluated so a nested call
-                // can't consume it, and cleared after so a callee that never
-                // reaches `call_function` — a builtin, a closure — doesn't leave
-                // them for whatever calls next.
-                let outer_type_args = self.pending_type_args.take();
-                self.pending_type_args = match &func.kind {
-                    ExprKind::Ident(written) => written_type_args(written),
-                    _ => None,
-                };
+                // What the callee's type parameters stand for here, written
+                // (`count<Plain>()`, #968) or inferred: the checker recorded
+                // both under this call.
+                let generics = self.call_generics(expr.id);
                 // The callee's own line when it has one — a panic several
                 // frames down belongs where it happened, not at the outermost
                 // call (#1110).
                 let result = self
-                    .with_call_generics(expr.id, |this| this.call_value_spanned(func_val, arg_vals))
-                    .map_err(|(e, at)| RuntimeDiagnostic::new(e, at.unwrap_or(expr.span)));
-                self.pending_type_args = outer_type_args;
-                let result = result?;
+                    .call_value_spanned(func_val, arg_vals, generics)
+                    .map_err(|(e, at)| RuntimeDiagnostic::new(e, at.unwrap_or(expr.span)))?;
                 // mem.parameters/PM2: write each `mutate` param's final value back
                 // to its argument place. For a plain call, param index i is args[i].
                 self.apply_mutate_writebacks(args)
@@ -1119,9 +1121,8 @@ impl Interpreter {
                                     .iter()
                                     .map(|a| self.eval_expr(&a.expr))
                                     .collect::<Result<_, _>>()?;
-                                return self.with_call_generics(expr.id, |this| {
-                                    this.call_function(method_fn, arg_vals)
-                                });
+                                let generics = self.call_generics(expr.id);
+                                return self.call_function(method_fn, arg_vals, generics);
                             }
                         }
                     }
@@ -1263,7 +1264,8 @@ impl Interpreter {
                 if let Value::Package(pkg_name) = &receiver {
                     let prefixed = format!("{}${}", pkg_name, method);
                     if let Some(func) = self.functions.get(&prefixed).cloned() {
-                        return self.with_call_generics(expr.id, |this| this.call_function(&func, arg_vals));
+                        let generics = self.call_generics(expr.id);
+                        return self.call_function(&func, arg_vals, generics);
                     }
                     // A bodiless `@native` declaration in the stdlib: answered
                     // by symbol, the way native codegen's dispatch table does.
@@ -1322,9 +1324,8 @@ impl Interpreter {
                 // and restored around the call so an error swallowed inside it
                 // can't leave a stale span for something later (#1110).
                 let outer = self.failed_call_span.take();
-                let result = self.with_method_call_generics(expr.id, object.id, &method, |this| {
-                    this.call_method(receiver, &method, arg_vals)
-                });
+                let generics = self.method_call_generics(expr.id, object.id, &method);
+                let result = self.call_method(receiver, &method, arg_vals, generics);
                 let inner = self.failed_call_span.take();
                 self.failed_call_span = outer;
                 result.map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)))
@@ -1847,7 +1848,7 @@ impl Interpreter {
                             return Ok(Value::Type(prefixed));
                         }
                         if let Some(func) = self.functions.get(&prefixed) {
-                            return Ok(Value::Function { name: func.name.clone() });
+                            return Ok(Value::Function { name: func.name.clone(), generics: None });
                         }
                         Err(RuntimeDiagnostic::new(
                             RuntimeError::UndefinedVariable(field.clone()),
@@ -3273,18 +3274,3 @@ fn annotation_value(text: &str, ty: &str) -> Value {
     }
 }
 
-/// The type arguments written at a call, read off the callee's name.
-///
-/// The parser folds them in — `count<Plain>()` arrives as the identifier
-/// `count<Plain>` — so this is where they still exist by the time the
-/// interpreter dispatches (#968, and mono does the same in `reachability.rs`).
-/// `None` when the name carries none.
-fn written_type_args(name: &str) -> Option<Vec<String>> {
-    // Angle brackets nest, and `split_top_level` doesn't count them — it is
-    // written for annotation arguments, where `<` is a comparison rather than a
-    // bracket. So `describe<Both<string, i64>>` split at the inner comma and
-    // bound `T` to the string `Both<string`, which then named no struct.
-    let (_, args) = rask_ast::type_str::split_generic_name(name)?;
-    let args: Vec<String> = args.into_iter().map(|a| a.to_string()).collect();
-    (!args.is_empty()).then_some(args)
-}

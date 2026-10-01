@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use rask_ast::decl::FnDecl;
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::Value;
+use crate::value::{GenericFrame, Value};
 
 /// Methods the interpreter derives for every struct and enum. An `extend`
 /// block that defines one of these replaces the derived version.
@@ -100,7 +100,7 @@ impl Interpreter {
         let display = if matches!(spec.ty, rask_ast::fmt_spec::SpecType::Debug) {
             String::new()
         } else {
-            match self.call_builtin_method(receiver.clone(), "to_string", vec![])? {
+            match self.call_builtin_method(receiver.clone(), "to_string", vec![], None)? {
                 Value::String(s) => s.lock().unwrap().clone(),
                 other => format!("{}", other),
             }
@@ -111,11 +111,15 @@ impl Interpreter {
 
     /// Dispatch a method call on a built-in type.
     /// Returns the result, or falls back to user-defined methods.
+    ///
+    /// `generics` is for `method`'s own Rask body when the call lands on one;
+    /// any other body reached on the way gets nothing.
     pub(crate) fn call_builtin_method(
         &mut self,
         receiver: Value,
         method: &str,
         args: Vec<Value>,
+        generics: GenericFrame,
     ) -> Result<Value, RuntimeError> {
         // ER16: .origin() on any value returns the error origin string.
         if method == "origin" {
@@ -146,7 +150,7 @@ impl Interpreter {
             if let Some(method_fn) = self.user_method(&receiver, method) {
                 let mut all_args = vec![receiver];
                 all_args.extend(args);
-                return self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
+                return self.call_function(&method_fn, all_args, generics).map_err(|diag| diag.error);
             }
         }
 
@@ -275,7 +279,7 @@ impl Interpreter {
                 return Ok(Value::Bool(false));
             }
             Value::Enum { .. } if method == "ne" => {
-                let eq_result = self.call_builtin_method(receiver, "eq", args)?;
+                let eq_result = self.call_builtin_method(receiver, "eq", args, None)?;
                 if let Value::Bool(b) = eq_result {
                     return Ok(Value::Bool(!b));
                 }
@@ -302,7 +306,7 @@ impl Interpreter {
                 return Ok(Value::Bool(false));
             }
             Value::Struct(..) if method == "ne" => {
-                let eq_result = self.call_builtin_method(receiver, "eq", args)?;
+                let eq_result = self.call_builtin_method(receiver, "eq", args, None)?;
                 if let Value::Bool(b) = eq_result {
                     return Ok(Value::Bool(!b));
                 }
@@ -384,14 +388,14 @@ impl Interpreter {
                     .or_else(|| self.methods.get(base_name).and_then(|m| m.get("to_string")));
                 if let Some(method_fn) = has_to_string.filter(|f| !f.body_lives_elsewhere()) {
                     let method_fn = method_fn.clone();
-                    return self.call_function(&method_fn, vec![receiver]).map_err(|diag| diag.error);
+                    return self.call_function(&method_fn, vec![receiver], generics).map_err(|diag| diag.error);
                 }
                 let has_message = self.methods.get(tn)
                     .and_then(|m| m.get("message"))
                     .or_else(|| self.methods.get(base_name).and_then(|m| m.get("message")));
                 if let Some(method_fn) = has_message.filter(|f| !f.body_lives_elsewhere()) {
                     let method_fn = method_fn.clone();
-                    return self.call_function(&method_fn, vec![receiver]).map_err(|diag| diag.error);
+                    return self.call_function(&method_fn, vec![receiver], None).map_err(|diag| diag.error);
                 }
             }
             return Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))));
@@ -451,7 +455,7 @@ impl Interpreter {
             }
             let mut all_args = vec![receiver];
             all_args.extend(args);
-            let answer = self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
+            let answer = self.call_function(&method_fn, all_args, generics).map_err(|diag| diag.error);
             if let Some(id) = taken {
                 // Whatever the body did with it, the caller gave it up.
                 let _ = self.resource_tracker.mark_consumed(id);
@@ -473,7 +477,7 @@ impl Interpreter {
                     other => other,
                 })
                 .collect();
-            return self.call_builtin_method((**inner).clone(), method, args);
+            return self.call_builtin_method((**inner).clone(), method, args, generics);
         }
 
         Err(RuntimeError::NoSuchMethod {

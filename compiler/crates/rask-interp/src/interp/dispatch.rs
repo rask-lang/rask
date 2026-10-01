@@ -3,7 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::value::{BuiltinKind, FloatKind, Value};
+use crate::value::{BuiltinKind, FloatKind, GenericFrame, Value};
 
 use super::{Interpreter, RuntimeError};
 
@@ -67,15 +67,21 @@ impl Interpreter {
     /// and the surviving one was the outermost call in `main`: a panic in
     /// `inner()` two frames down was reported at `println("{middle()}")`
     /// (#1110).
+    ///
+    /// `call_generics` is the frame the call site recorded, for a generic
+    /// function named right there (`keep(x)`). A function value that carries
+    /// its own, from where it was named, runs under those instead.
     pub(crate) fn call_value_spanned(
         &mut self,
         func: Value,
         args: Vec<Value>,
+        call_generics: GenericFrame,
     ) -> Result<Value, (RuntimeError, Option<rask_ast::Span>)> {
-        if let Value::Function { name } = &func {
+        if let Value::Function { name, generics } = &func {
             if let Some(decl) = self.functions.get(name).cloned() {
+                let generics = generics.clone().or(call_generics);
                 return self
-                    .call_function(&decl, args)
+                    .call_function(&decl, args, generics)
                     .map_err(|diag| (diag.error, Some(diag.span)));
             }
         }
@@ -84,9 +90,9 @@ impl Interpreter {
 
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match func {
-            Value::Function { name } => {
+            Value::Function { name, generics } => {
                 if let Some(decl) = self.functions.get(&name).cloned() {
-                    self.call_function(&decl, args).map_err(|diag| diag.error)
+                    self.call_function(&decl, args, generics).map_err(|diag| diag.error)
                 } else {
                     Err(RuntimeError::UndefinedFunction(name))
                 }
@@ -309,19 +315,24 @@ impl Interpreter {
     /// natively, was unreachable on the interpreter however the source read
     /// (#689). One fallback here covers every type, so migrating a module to
     /// Rask needs no interpreter change at all.
+    ///
+    /// `generics` is the frame for `method`'s body, from the call site. Only
+    /// that body gets it: a builtin that calls some other Rask function on the
+    /// way (`sort` reaching `compare`) hands that one nothing.
     pub(super) fn call_method(
         &mut self,
         receiver: Value,
         method: &str,
         args: Vec<Value>,
+        generics: GenericFrame,
     ) -> Result<Value, RuntimeError> {
-        match self.call_primitive_method(receiver.clone(), method, args.clone()) {
+        match self.call_primitive_method(receiver.clone(), method, args.clone(), generics.clone()) {
             Err(RuntimeError::NoSuchMethod { ty, method: m }) => {
                 match Self::nominal_type_name(&receiver) {
                     // Report the primitive layer's error, not the lookup's — it
                     // names the receiver type the user wrote.
                     Some(name) => {
-                        match self.call_rask_method(&name, method, receiver.clone(), args.clone()) {
+                        match self.call_rask_method(&name, method, receiver.clone(), args.clone(), generics) {
                             Err(RuntimeError::NoSuchMethod { .. }) => {}
                             other => return other,
                         }
@@ -385,6 +396,7 @@ impl Interpreter {
         receiver: Value,
         method: &str,
         args: Vec<Value>,
+        generics: GenericFrame,
     ) -> Result<Value, RuntimeError> {
         match &receiver {
             Value::Module(module) => self.call_module_method(module, method, args),
@@ -481,7 +493,7 @@ impl Interpreter {
                     }
                     unreachable!();
                 }
-                self.call_builtin_method(receiver, method, args)
+                self.call_builtin_method(receiver, method, args, generics)
             }
             // `Shared<T, Local>` — the strategy that takes no lock. `read` and
             // `write` are the same operation here; the verb is intent the
@@ -541,7 +553,7 @@ impl Interpreter {
                     method: method.to_string(),
                 }),
             },
-            _ => self.call_builtin_method(receiver, method, args),
+            _ => self.call_builtin_method(receiver, method, args, generics),
         }
     }
     /// Helper to extract an integer from args.
@@ -692,7 +704,7 @@ impl Interpreter {
             }
         }
         for name in names {
-            match self.call_rask_method(&ty, &name, receiver.clone(), args.clone()) {
+            match self.call_rask_method(&ty, &name, receiver.clone(), args.clone(), None) {
                 Err(RuntimeError::NoSuchMethod { .. }) => {}
                 other => return Some(other),
             }
@@ -706,6 +718,7 @@ impl Interpreter {
         method: &str,
         receiver: Value,
         args: Vec<Value>,
+        generics: GenericFrame,
     ) -> Result<Value, RuntimeError> {
         let Some(func) = self
             .methods
@@ -721,7 +734,7 @@ impl Interpreter {
         };
         let mut all = vec![receiver];
         all.extend(args);
-        self.call_function(&func, all).map_err(|d| d.error)
+        self.call_function(&func, all, generics).map_err(|d| d.error)
     }
 
     /// Call a Rask `extend`-block function that takes no `self` —
@@ -745,7 +758,7 @@ impl Interpreter {
                 method: method.to_string(),
             });
         };
-        self.call_function(&func, args).map_err(|d| d.error)
+        self.call_function(&func, args, None).map_err(|d| d.error)
     }
     /// Helper to extract an i128 from args.
     pub(crate) fn expect_int128(&self, args: &[Value], idx: usize) -> Result<i128, RuntimeError> {
@@ -899,7 +912,7 @@ impl Interpreter {
     /// was dispatched, it just has a bug with arg handling.
     pub(crate) fn has_method_dispatch(&mut self, value: Value, method: &str) -> bool {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.call_method(value, method, vec![])
+            self.call_method(value, method, vec![], None)
         }));
         !matches!(result, Ok(Err(RuntimeError::NoSuchMethod { .. })))
     }
@@ -908,7 +921,7 @@ impl Interpreter {
     /// a Rask body?
     pub(crate) fn has_rust_method(&mut self, value: Value, method: &str) -> bool {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.call_primitive_method(value, method, vec![])
+            self.call_primitive_method(value, method, vec![], None)
         }));
         !matches!(result, Ok(Err(RuntimeError::NoSuchMethod { .. })))
     }

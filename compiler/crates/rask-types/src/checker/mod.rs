@@ -35,6 +35,7 @@ pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
 pub use parse_type::parse_type_string;
+pub use generics::{bind_header_pattern, bind_header_patterns, extend_target_args};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
 use borrow::{ActiveBorrow, PersistentBorrow};
@@ -237,7 +238,13 @@ pub struct TypeChecker {
     /// Pending generic call sites: (call NodeId, one fresh type var per type
     /// parameter, named by that parameter). Resolved after constraint solving to
     /// populate TypedProgram.call_type_args.
+    ///
+    /// A generic function named as a value (`v.map(keep)`, `let f = keep`) is
+    /// an instantiation too, recorded under the name's own NodeId.
     pub(super) pending_call_type_args: Vec<(NodeId, Vec<(String, Type)>)>,
+    /// The callee name of the call being checked. A generic function in call
+    /// position is instantiated by the call; anywhere else, by its own node.
+    pub(super) callee_ident: Option<NodeId>,
     /// Type arguments written at a *method* call, keyed by the call's NodeId.
     ///
     /// `s.parse<i64>()` says what it wants and nothing carried it: the method's
@@ -556,6 +563,7 @@ impl TypeChecker {
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
+            callee_ident: None,
             written_method_type_args: HashMap::new(),
             pending_interface_elem_coercions: Vec::new(),
             try_block_errors: Vec::new(),

@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic function passed as a value to a stdlib adapter, which calls it
+// for each element. `launch` spawns a closure over its argument, so the spawn
+// is refused when `X` can hold a link (#1382).
+import memory.{Rack, Link}
+
+struct Node {
+    id: i64
+}
+
+func launch<X>(x: X) -> i64 {
+    let c = || {
+        let y = x
+        return 1
+    }
+    return spawn(c).join()!
+}
+
+func main() {
+    using Multitasking {
+        mut plain = Vec<i64>.new()
+        plain.push(5)
+        println("{plain.map(launch).to_vec()[0]}")
+        mut links = Vec<Vec<Link<Node>>>.new()
+        links.push(Vec<Link<Node>>.new())
+        println("before")
+        println("{links.map(launch).to_vec()[0]}")
+    }
+}

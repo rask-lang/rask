@@ -1286,7 +1286,7 @@ impl TypeChecker {
                 // of the declaration `subst` borrows from.
                 let header_bound: Vec<(String, Type)> = found
                     .map(|m| {
-                        Self::build_owner_pattern_subst(&m.owner_patterns, generic_args)
+                        self.build_owner_pattern_subst(&m.owner_patterns, generic_args)
                             .into_iter()
                             .collect()
                     })

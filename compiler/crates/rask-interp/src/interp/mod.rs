@@ -213,14 +213,10 @@ pub struct Interpreter {
     /// called, because it can run after the generic call that built it has
     /// returned, or on another task.
     pub(crate) generic_frames: Vec<GenericFrame>,
-    /// `(type, method)` → the type parameters its `extend` header names, for a
-    /// header that names any. A method call binds them from the receiver's
-    /// type; a header that leaves them out means the declaration's own.
-    pub(crate) extend_header_params: HashMap<(String, String), Vec<String>>,
-    /// The frame for the call about to be made. Set at the call site after the
-    /// arguments are evaluated and taken by the body it calls, like
-    /// `pending_type_args`.
-    pub(crate) pending_generic_frame: GenericFrame,
+    /// `(type, method)` → its `extend` header's target arguments as written
+    /// (`["(K, V)"]` for `extend Pairs<(K, V)>`), for a header that has any. A
+    /// method call matches them against the receiver's type.
+    pub(crate) extend_header_patterns: HashMap<(String, String), Vec<String>>,
     /// XC4/XC5: which package each source file belongs to, and which `extend`
     /// blocks carry their package in the method name because the block is on a
     /// type that package doesn't own.
@@ -236,27 +232,6 @@ pub struct Interpreter {
     /// runs the `f64 implements Mul<Meters>` body instead of asking the float
     /// layer to multiply a struct.
     pub(crate) operator_targets: HashMap<rask_ast::NodeId, rask_types::OperatorTarget>,
-    /// What each generic function's type parameters resolved to for the call
-    /// currently on the stack, innermost last.
-    ///
-    /// The interpreter doesn't monomorphize, so `T` inside a generic body is
-    /// just a name. Anything comptime that asks "what is `T` right now" —
-    /// `reflect.fields<T>()` above all — got the literal "T" and gave up (#699).
-    /// Inferred from the runtime argument bound to a parameter declared as that
-    /// bare name, and scoped like `env`.
-    pub(crate) type_bindings: Vec<HashMap<String, String>>,
-    /// Type arguments written at the call about to be made, in order.
-    ///
-    /// `type_bindings` is inferred from the arguments, which answers nothing for
-    /// a call that has none: `count<Plain>()` left `T` unbound, so
-    /// `reflect.name_of<T>()` returned the string "T" while native said "Plain"
-    /// (#968). The parser folds written type arguments into the callee's name,
-    /// so they're read off there and parked here for the callee to bind.
-    ///
-    /// Taken, not read — set immediately before the call, after the arguments
-    /// are evaluated, so a nested call during argument evaluation can't pick it
-    /// up and the next call can't inherit a stale one.
-    pub(crate) pending_type_args: Option<Vec<String>>,
     /// Nested Rask calls currently on the host stack.
     ///
     /// An interpreted call costs about 30 KB of Rust stack — `eval_expr` is one
@@ -354,73 +329,52 @@ impl Interpreter {
     }
 
     /// What a generic receiver type binds in the block `method` is declared
-    /// in: `Box<Vec<i64>>` gives `T = Vec<i64>` to `extend Box<T>`.
+    /// in: `Box<Vec<i64>>` gives `T = Vec<i64>` to `extend Box<T>`, and
+    /// `Pairs<(string, i64)>` gives `K = string, V = i64` to
+    /// `extend Pairs<(K, V)>`. The header is matched against the receiver's
+    /// type by `rask_types::bind_header_patterns`, the matcher the checker and
+    /// monomorphization use, so all three bind the same names to the same
+    /// types. Nothing binds when the shapes don't line up.
     fn receiver_type_params(
         &self,
         recv: &rask_types::Type,
         method: &str,
     ) -> Vec<(String, rask_types::Type)> {
-        use rask_types::{GenericArg, Type};
+        use rask_types::Type;
         let (base, args) = match recv {
             Type::Generic { base, args } => (self.types.type_name(*base), args),
             Type::UnresolvedGeneric { name, args } => (name.clone(), args),
             _ => return Vec::new(),
         };
         let base = register::strip_generics(&base);
-        let params = match self.extend_header_params.get(&(base.to_string(), method.to_string())) {
-            Some(params) => params.clone(),
+        // A header that leaves the arguments out (`extend Box`), and a method
+        // declared in the type's own body, mean the declaration's names.
+        let patterns = match self.extend_header_patterns.get(&(base.to_string(), method.to_string())) {
+            Some(patterns) => patterns.clone(),
             None => match (self.struct_decls.get(base), self.enums.get(base)) {
                 (Some(s), _) => rask_types::struct_type_param_names(s),
                 (None, Some(e)) => rask_types::enum_type_param_names(e),
                 (None, None) => return Vec::new(),
             },
         };
-        let types: Vec<&Type> = args
-            .iter()
-            .filter_map(|a| match a {
-                GenericArg::Type(t) => Some(t.as_ref()),
-                _ => None,
-            })
-            .collect();
-        // A tuple header (`Sequence<(K, V)>`) names more than the type has
-        // arguments; binding positionally would pair them wrongly.
-        if params.len() != types.len() {
-            return Vec::new();
-        }
-        params.into_iter().zip(types.into_iter().cloned()).collect()
+        rask_types::bind_header_patterns(&self.types, &patterns, args).unwrap_or_default()
     }
 
-    /// Make the call written at `call`, with its generic frame parked for the
-    /// body it reaches. Set after the arguments are evaluated, so a call among
-    /// them can't take it, and cleared after, so a callee that never takes it
-    /// (a builtin) can't leave it for the next call.
-    pub(crate) fn with_call_generics<R>(
-        &mut self,
-        call: rask_ast::NodeId,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        let frame = self.generic_frame_for_call(call, None);
-        self.with_generic_frame(frame, f)
+    /// The generic frame for a call written at `call` with no receiver.
+    pub(crate) fn call_generics(&self, call: rask_ast::NodeId) -> GenericFrame {
+        self.generic_frame_for_call(call, None)
     }
 
-    /// `with_call_generics` for `object.method(…)`, whose receiver's type also
-    /// binds the type parameters of the block the method is declared in.
-    pub(crate) fn with_method_call_generics<R>(
-        &mut self,
+    /// The generic frame for `object.method(…)` written at `call`, whose
+    /// receiver's type also binds the type parameters of the block the method
+    /// is declared in.
+    pub(crate) fn method_call_generics(
+        &self,
         call: rask_ast::NodeId,
         object: rask_ast::NodeId,
         method: &str,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        let frame = self.generic_frame_for_call(call, Some((object, method)));
-        self.with_generic_frame(frame, f)
-    }
-
-    fn with_generic_frame<R>(&mut self, frame: GenericFrame, f: impl FnOnce(&mut Self) -> R) -> R {
-        let outer = std::mem::replace(&mut self.pending_generic_frame, frame);
-        let result = f(self);
-        self.pending_generic_frame = outer;
-        result
+    ) -> GenericFrame {
+        self.generic_frame_for_call(call, Some((object, method)))
     }
 
     /// Does the closure literal `id`, built here, have to stay on this task?
@@ -453,8 +407,6 @@ impl Interpreter {
         for (name, slot) in captured_env {
             self.env.define_slot(name.clone(), slot.clone());
         }
-        // Not this closure's: it was parked for a call whose callee never took it.
-        self.pending_generic_frame = None;
         self.generic_frames.push(generics.clone());
     }
 
@@ -489,14 +441,11 @@ impl Interpreter {
             types: Arc::new(rask_types::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
-            pending_generic_frame: None,
-            extend_header_params: HashMap::new(),
+            extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
-            type_bindings: Vec::new(),
-            pending_type_args: None,
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -531,14 +480,11 @@ impl Interpreter {
             types: Arc::new(rask_types::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
-            pending_generic_frame: None,
-            extend_header_params: HashMap::new(),
+            extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
-            type_bindings: Vec::new(),
-            pending_type_args: None,
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -579,14 +525,11 @@ impl Interpreter {
             types: Arc::new(rask_types::TypeTable::default()),
             call_type_args: Arc::new(HashMap::new()),
             generic_frames: Vec::new(),
-            pending_generic_frame: None,
-            extend_header_params: HashMap::new(),
+            extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
-            type_bindings: Vec::new(),
-            pending_type_args: None,
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -736,15 +679,21 @@ impl Interpreter {
         }
     }
 
-    /// What `name` resolved to for the innermost generic call that bound it, or
-    /// `name` itself when nothing did.
+    /// What the type parameter `name` stands for in the body running now,
+    /// spelled the way native spells it for the same instantiation, or `name`
+    /// itself when it isn't one of the body's parameters.
+    ///
+    /// Read off the generic frame, which holds the checker's types for the
+    /// call. It used to be guessed from the argument values, so `T = i32`
+    /// read as `i64` because every integer value looks alike (#699, #968).
     pub(crate) fn resolve_type_param(&self, name: &str) -> String {
-        for frame in self.type_bindings.iter().rev() {
-            if let Some(concrete) = frame.get(name) {
-                return concrete.clone();
-            }
+        let frame = self.generic_frames.last().and_then(|f| f.as_deref());
+        match frame.and_then(|f| f.get(name)) {
+            Some(ty) => rask_mono::Monomorphizer::nameable_type(ty, &self.types)
+                .unwrap_or_else(|| ty.clone())
+                .to_string(),
+            None => name.to_string(),
         }
-        name.to_string()
     }
 
     /// How many optional layers a container's Nth type argument declares —
@@ -843,7 +792,7 @@ impl Interpreter {
         child.generic_closure_captures = self.generic_closure_captures.clone();
         child.types = self.types.clone();
         child.call_type_args = self.call_type_args.clone();
-        child.extend_header_params = self.extend_header_params.clone();
+        child.extend_header_patterns = self.extend_header_patterns.clone();
         child.operator_targets = self.operator_targets.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
@@ -1298,7 +1247,7 @@ impl Interpreter {
             // main thread's 8 MiB, so it managed ~245 nested Rask calls where a
             // task got ~450 on its 16 MiB — the same program, a different depth
             // depending on which thread ran it (#759).
-            let value = crate::on_interp_stack(|| self.call_function(&entry, vec![]));
+            let value = crate::on_interp_stack(|| self.call_function(&entry, vec![], None));
             // O4: a detached task's panic has to reach stderr, and a reaper
             // racing process exit doesn't satisfy that — the report just
             // vanishes, which is the failure O4 exists to prevent. Wait here,
@@ -1383,7 +1332,7 @@ impl Interpreter {
     /// type defines one, otherwise the value as printed.
     fn describe_error_value(&mut self, err: &Value) -> String {
         let owned = err.clone();
-        if let Ok(Value::String(s)) = self.call_method(owned.clone(), "message", vec![]) {
+        if let Ok(Value::String(s)) = self.call_method(owned.clone(), "message", vec![], None) {
             return s.lock().unwrap().clone();
         }
         format!("{}", owned)
@@ -1413,9 +1362,9 @@ impl Interpreter {
 
         // If func build takes a parameter, pass ctx; otherwise call with no args
         if build_fn.params.is_empty() {
-            self.call_function(&build_fn, vec![])
+            self.call_function(&build_fn, vec![], None)
         } else {
-            self.call_function(&build_fn, vec![ctx_value])
+            self.call_function(&build_fn, vec![ctx_value], None)
         }
     }
 

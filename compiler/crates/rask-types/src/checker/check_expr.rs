@@ -608,7 +608,11 @@ impl TypeChecker {
                     // answer the target (#1026).
                     Type::Named(type_id)
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
-                    self.get_symbol_type(sym_id)
+                    let ty = self.get_symbol_type(sym_id);
+                    if self.callee_ident == Some(expr.id) {
+                        return ty;
+                    }
+                    self.instantiate_fn_value(expr.id, sym_id, ty, expr.span)
                 } else if let Some(type_id) = self.types.get_type_id(name) {
                     // Imported type name (struct/enum) without resolver entry
                     Type::Named(type_id)
@@ -2756,7 +2760,9 @@ impl TypeChecker {
             None
         };
 
+        let outer_callee = self.callee_ident.replace(func.id);
         let func_ty = self.infer_expr(func);
+        self.callee_ident = outer_callee;
 
         // Substitute type param names with fresh vars in the function signature.
         // Applied first: a return type the checker inferred sits behind a

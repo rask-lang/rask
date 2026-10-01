@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure built in a method whose `extend` header takes the receiver's
+// argument apart: `extend Pairs<(K, V)>` on a `Pairs<(string, Vec<Link<Node>>)>`
+// gives `V` the vector. The interpreter used to pair the header's two names
+// with the type's one argument, give up, and let the closure cross (#1382).
+import memory.{Rack, Link}
+
+struct Node {
+    id: i64
+}
+
+struct Pairs<T> {
+    item: T
+}
+
+extend Pairs<(K, V)> {
+    func second(self) -> func() -> i64 {
+        let (k, v) = self.item
+        return || {
+            let y = v
+            return 1
+        }
+    }
+}
+
+func main() {
+    using Multitasking {
+        let plain = Pairs { item: ("a", 4) }
+        println("{spawn(plain.second()).join()!}")
+        let p = Pairs { item: ("b", Vec<Link<Node>>.new()) }
+        let f = p.second()
+        println("before")
+        println("{spawn(f).join()!}")
+    }
+}
