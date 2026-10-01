@@ -439,9 +439,9 @@ pub struct TypedProgram {
     pub task_bound_closures: std::collections::HashSet<NodeId>,
     /// Closure literals in a generic body that capture a name whose type
     /// mentions a type parameter, with each such capture's name and type.
-    /// Whether one is task-bound depends on the instantiation:
-    /// monomorphization decides it from the substituted types, the interpreter
-    /// from the values captured.
+    /// Whether one is task-bound depends on the instantiation, and both
+    /// backends decide it from the substituted types through
+    /// `TypeTable::generic_closure_task_bound`.
     pub generic_closure_captures: HashMap<NodeId, Vec<(String, Type)>>,
     /// ER16a: `try` node → the postfix-chain step it attaches to, when that
     /// isn't the operand itself. `try read_file(p).len()` maps the `try` to the

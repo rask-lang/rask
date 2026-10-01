@@ -176,17 +176,15 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                generics,
                 ..
             } => {
-                self.env.push_scope();
-                for (k, cell) in captured_env {
-                    self.env.define_slot(k.clone(), cell.clone());
-                }
+                self.enter_closure(captured_env, generics);
                 if let Some(param_name) = params.first() {
                     self.env.define(param_name.clone(), arg);
                 }
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
-                self.env.pop_scope();
+                self.leave_closure();
                 match result {
                     Ok(v) => Ok(v),
                     Err(RuntimeError::Return(v)) => Ok(v),
@@ -210,6 +208,7 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                generics,
                 ..
             } => {
                 if !params.is_empty() {
@@ -219,12 +218,9 @@ impl Interpreter {
                     )));
                 }
 
-                self.env.push_scope();
-                for (k, cell) in captured_env {
-                    self.env.define_slot(k.clone(), cell.clone());
-                }
+                self.enter_closure(captured_env, generics);
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
-                self.env.pop_scope();
+                self.leave_closure();
                 match result {
                     Ok(v) => Ok(v),
                     Err(RuntimeError::Return(v)) => Ok(v),
@@ -335,16 +331,14 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                generics,
                 ..
             } => {
                 let mut guard = crate::lock_waiting(mutex).map_err(|e| {
                     RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
                 })?;
 
-                self.env.push_scope();
-                for (k, cell) in captured_env {
-                    self.env.define_slot(k.clone(), cell.clone());
-                }
+                self.enter_closure(captured_env, generics);
                 let param_name = params
                     .first()
                     .cloned()
@@ -368,7 +362,7 @@ impl Interpreter {
                     }
                 }
 
-                self.env.pop_scope();
+                self.leave_closure();
                 match result {
                     Ok(v) => Ok(v),
                     Err(RuntimeError::Return(v)) => Ok(v),

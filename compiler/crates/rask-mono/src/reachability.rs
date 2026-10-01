@@ -217,6 +217,12 @@ fn parse_owner(type_name: &str) -> Option<MethodOwner> {
     })
 }
 
+/// The type parameters an `extend` header names, in order: `["T"]` for
+/// `Box<T>`, empty for `Box`, where the owning declaration's are meant.
+pub fn extend_header_params(target_ty: &str) -> Vec<String> {
+    parse_owner(target_ty).map(|owner| owner.params).unwrap_or_default()
+}
+
 /// What the checker's record says a method call dispatches to.
 ///
 /// See the call-site comment in `visit_expr`: the difference between "no body,
@@ -790,9 +796,8 @@ impl<'a> Monomorphizer<'a> {
             // and not in `keep<i64>`.
             let task_bound = typed.task_bound_closures.contains(&old_id)
                 || typed.generic_closure_captures.get(&old_id).is_some_and(|captures| {
-                    captures.iter().any(|(_, ty)| {
+                    typed.types.generic_closure_task_bound(captures, |ty| {
                         Self::concretize(ty, type_args, &bindings)
-                            .is_some_and(|ty| typed.types.task_bound(&ty).is_some())
                     })
                 });
             if task_bound {

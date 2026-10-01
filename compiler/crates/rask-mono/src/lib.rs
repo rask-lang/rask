@@ -19,7 +19,7 @@ pub use layout::{
     is_stdlib_span, ordering_layout, parse_field_type, type_size_align,
     EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
-pub use reachability::{mangle_name, Monomorphizer};
+pub use reachability::{extend_header_params, mangle_name, Monomorphizer};
 
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::NodeId;

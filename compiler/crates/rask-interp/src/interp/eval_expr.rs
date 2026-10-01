@@ -850,7 +850,7 @@ impl Interpreter {
                             match variant.as_str() {
                                 "Ok" => {
                                     let inner = fields.first().cloned().unwrap_or(Value::Unit);
-                                    return self.call_method(inner, field, arg_vals)
+                                    return self.with_call_generics(expr.id, |this| this.call_method(inner, field, arg_vals))
                                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                                 }
                                 "Err" => {
@@ -862,7 +862,7 @@ impl Interpreter {
                             match variant.as_str() {
                                 "Some" => {
                                     let inner = fields.first().cloned().unwrap_or(Value::Unit);
-                                    let result = self.call_method(inner, field, arg_vals)
+                                    let result = self.with_call_generics(expr.id, |this| this.call_method(inner, field, arg_vals))
                                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
                                     return Ok(Value::Enum {
                                         name: "Option".to_string(),
@@ -885,7 +885,7 @@ impl Interpreter {
                     }
 
                     let outer = self.failed_call_span.take();
-                    let result = self.call_method(obj_val, field, arg_vals);
+                    let result = self.with_call_generics(expr.id, |this| this.call_method(obj_val, field, arg_vals));
                     let inner = self.failed_call_span.take();
                     self.failed_call_span = outer;
                     return result
@@ -928,7 +928,8 @@ impl Interpreter {
                 // The callee's own line when it has one — a panic several
                 // frames down belongs where it happened, not at the outermost
                 // call (#1110).
-                let result = self.call_value_spanned(func_val, arg_vals)
+                let result = self
+                    .with_call_generics(expr.id, |this| this.call_value_spanned(func_val, arg_vals))
                     .map_err(|(e, at)| RuntimeDiagnostic::new(e, at.unwrap_or(expr.span)));
                 self.pending_type_args = outer_type_args;
                 let result = result?;
@@ -1118,7 +1119,9 @@ impl Interpreter {
                                     .iter()
                                     .map(|a| self.eval_expr(&a.expr))
                                     .collect::<Result<_, _>>()?;
-                                return self.call_function(method_fn, arg_vals);
+                                return self.with_call_generics(expr.id, |this| {
+                                    this.call_function(method_fn, arg_vals)
+                                });
                             }
                         }
                     }
@@ -1260,7 +1263,7 @@ impl Interpreter {
                 if let Value::Package(pkg_name) = &receiver {
                     let prefixed = format!("{}${}", pkg_name, method);
                     if let Some(func) = self.functions.get(&prefixed).cloned() {
-                        return self.call_function(&func, arg_vals);
+                        return self.with_call_generics(expr.id, |this| this.call_function(&func, arg_vals));
                     }
                     // A bodiless `@native` declaration in the stdlib: answered
                     // by symbol, the way native codegen's dispatch table does.
@@ -1319,7 +1322,9 @@ impl Interpreter {
                 // and restored around the call so an error swallowed inside it
                 // can't leave a stale span for something later (#1110).
                 let outer = self.failed_call_span.take();
-                let result = self.call_method(receiver, &method, arg_vals);
+                let result = self.with_method_call_generics(expr.id, object.id, &method, |this| {
+                    this.call_method(receiver, &method, arg_vals)
+                });
                 let inner = self.failed_call_span.take();
                 self.failed_call_span = outer;
                 result.map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)))
@@ -2410,21 +2415,12 @@ impl Interpreter {
                 } else {
                     self.env.capture_shared()
                 };
-                // In a generic body the checker can't say: `x: T` is a link in
-                // one call and an `i64` in the next. The value can.
-                let task_bound = self.task_bound_closures.contains(&expr.id)
-                    || self.generic_closure_captures.get(&expr.id).is_some_and(|names| {
-                        names.iter().any(|name| {
-                            captured
-                                .get(name)
-                                .is_some_and(|slot| self.value_is_task_bound(&slot.lock().unwrap()))
-                        })
-                    });
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
                     captured_env: captured,
-                    task_bound,
+                    task_bound: self.closure_is_task_bound(expr.id),
+                    generics: self.generic_frames.last().cloned().flatten(),
                 })
             }
 

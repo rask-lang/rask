@@ -11,6 +11,11 @@ use std::sync::LazyLock;
 
 use rask_ast::expr::Expr;
 
+/// What a generic body's type parameters stand for in the call running it,
+/// `None` for a body with none. Shared, since every closure built under it
+/// keeps a copy.
+pub type GenericFrame = Option<Arc<HashMap<String, rask_types::Type>>>;
+
 /// Width and signedness carried by `Value::Int`, so integer arithmetic is
 /// self-describing (type.overflow). `Untyped` means the width wasn't known at
 /// the value's creation (e.g. an internally-produced length or index) and is
@@ -1072,6 +1077,9 @@ pub enum Value {
         captured_env: HashMap<String, crate::env::Slot>,
         /// Captured a link or a `Local` box, so `spawn` refuses it (#1356).
         task_bound: bool,
+        /// The type arguments of the generic body it was built in, for
+        /// whatever generic calls and closures its own body makes.
+        generics: GenericFrame,
     },
     /// Duration (time span in nanoseconds)
     Duration(u64),
@@ -1495,13 +1503,19 @@ impl Value {
                 let inner = c.lock().unwrap().deep_clone();
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
-            Value::Closure { params, body, captured_env, task_bound } => {
+            Value::Closure { params, body, captured_env, task_bound, generics } => {
                 // Deep-cloning a closure detaches it from what it borrowed, so
                 // each capture gets storage of its own.
                 let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
                     .map(|(k, v)| (k.clone(), crate::env::slot(v.lock().unwrap().deep_clone())))
                     .collect();
-                Value::Closure { params: params.clone(), body: body.clone(), captured_env: deep_env, task_bound: *task_bound }
+                Value::Closure {
+                    params: params.clone(),
+                    body: body.clone(),
+                    captured_env: deep_env,
+                    task_bound: *task_bound,
+                    generics: generics.clone(),
+                }
             }
             Value::Map(m) => {
                 let map = m.lock().unwrap();

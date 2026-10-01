@@ -29,18 +29,15 @@ impl Interpreter {
         func: Value,
         args: Vec<Value>,
     ) -> Result<(Value, Option<Value>), RuntimeError> {
-        if let Value::Closure { params, body, captured_env, .. } = func {
-            self.env.push_scope();
-            for (name, cell) in captured_env {
-                self.env.define_slot(name, cell);
-            }
+        if let Value::Closure { params, body, captured_env, generics, .. } = func {
+            self.enter_closure(&captured_env, &generics);
             let first = params.first().cloned();
             for (param, arg) in params.iter().zip(args.into_iter()) {
                 self.env.define(param.clone(), arg.copy_on_bind());
             }
             let result = self.eval_expr(&body).map_err(|diag| diag.error);
             let final_arg = first.and_then(|name| self.env.get(&name));
-            self.env.pop_scope();
+            self.leave_closure();
             let value = match result {
                 Ok(v) => v,
                 Err(RuntimeError::Return(v)) => v,
@@ -131,19 +128,17 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                generics,
                 ..
             } => {
-                self.env.push_scope();
-                for (name, cell) in captured_env {
-                    self.env.define_slot(name, cell);
-                }
+                self.enter_closure(&captured_env, &generics);
                 for (param, arg) in params.iter().zip(args.into_iter()) {
                     // Closure params are by-value bindings (VS1) — copy so the
                     // body can't alias the caller's value.
                     self.env.define(param.clone(), arg.copy_on_bind());
                 }
                 let result = self.eval_expr(&body).map_err(|diag| diag.error);
-                self.env.pop_scope();
+                self.leave_closure();
                 match result {
                     Ok(v) => Ok(v),
                     Err(RuntimeError::Return(v)) => Ok(v),
@@ -852,18 +847,15 @@ impl Interpreter {
 
             // Run the closure body
             let result = match closure {
-                Value::Closure { params, body, captured_env, .. } => {
+                Value::Closure { params, body, captured_env, generics, .. } => {
                     if !params.is_empty() {
                         return Err(RuntimeError::TypeError(
                             "step body closure must take no parameters".into(),
                         ));
                     }
-                    self.env.push_scope();
-                    for (k, cell) in &captured_env {
-                        self.env.define_slot(k.clone(), cell.clone());
-                    }
+                    self.enter_closure(&captured_env, &generics);
                     let result = self.eval_expr(&body);
-                    self.env.pop_scope();
+                    self.leave_closure();
                     result
                 }
                 _ => return Err(RuntimeError::TypeError("step: body must be a closure".into())),
@@ -883,18 +875,15 @@ impl Interpreter {
         } else {
             // No cache dir configured — always run
             match closure {
-                Value::Closure { params, body, captured_env, .. } => {
+                Value::Closure { params, body, captured_env, generics, .. } => {
                     if !params.is_empty() {
                         return Err(RuntimeError::TypeError(
                             "step body closure must take no parameters".into(),
                         ));
                     }
-                    self.env.push_scope();
-                    for (k, cell) in &captured_env {
-                        self.env.define_slot(k.clone(), cell.clone());
-                    }
+                    self.enter_closure(&captured_env, &generics);
                     let result = self.eval_expr(&body);
-                    self.env.pop_scope();
+                    self.leave_closure();
                     result.map_err(|d| d.error)
                 }
                 _ => Err(RuntimeError::TypeError("step: body must be a closure".into())),

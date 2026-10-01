@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure built in a method of a generic type. Its capture has the `extend`
+// block's `T`, which the receiver's type decides: `Box<i64>`'s closure
+// crosses, `Box<Vec<Link<Node>>>`'s doesn't, however empty the vector (#1382).
+import memory.{Rack, Link}
+
+struct Node {
+    id: i64
+}
+
+struct Box<T> {
+    v: T
+}
+
+extend Box<T> {
+    func keep(self) -> func() -> i64 {
+        let v = self.v
+        return || {
+            let y = v
+            return 1
+        }
+    }
+}
+
+func main() {
+    using Multitasking {
+        let plain = Box { v: 4 }
+        println("{spawn(plain.keep()).join()!}")
+        let b = Box { v: Vec<Link<Node>>.new() }
+        let f = b.keep()
+        println("before")
+        println("{spawn(f).join()!}")
+    }
+}

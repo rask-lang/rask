@@ -12,7 +12,7 @@ use super::{Interpreter, RegisteredProgram, RuntimeError, TestResult, BenchmarkR
 
 /// Strip generic type parameters from a type name.
 /// "Box<T>" → "Box", "SpscRingBuffer<T, N>" → "SpscRingBuffer", "Point" → "Point"
-fn strip_generics(name: &str) -> &str {
+pub(crate) fn strip_generics(name: &str) -> &str {
     match name.find('<') {
         Some(pos) => &name[..pos],
         None => name,
@@ -160,6 +160,15 @@ impl Interpreter {
                     // second block read overwrites the first and one library
                     // runs the other's body.
                     let suffix = self.conformance_disambiguation.get(&decl.id).cloned();
+                    let header_params = rask_mono::extend_header_params(&impl_decl.target_ty);
+                    if !header_params.is_empty() {
+                        for method in &impl_decl.methods {
+                            self.extend_header_params.insert(
+                                (base_name.clone(), method.name.clone()),
+                                header_params.clone(),
+                            );
+                        }
+                    }
                     let type_methods = self.methods.entry(base_name).or_default();
                     for method in &impl_decl.methods {
                         // OR4: `Mul<f64>` and `Mul<Meters>` on one type both

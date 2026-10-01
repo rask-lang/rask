@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic closure over an empty `Vec<Link<Node>>`. The vector holds no link
+// yet, but its type says it can, so the closure may not cross to another
+// task. Decided from the type on both backends (#1382).
+import memory.{Rack, Link}
+
+struct Node {
+    id: i64
+}
+
+func keep<T>(x: T) -> func() -> i64 {
+    return || {
+        let y = x
+        return 1
+    }
+}
+
+func main() {
+    using Multitasking {
+        let plain = keep(7)
+        println("{spawn(plain).join()!}")
+        let f = keep(Vec<Link<Node>>.new())
+        println("before")
+        println("{spawn(f).join()!}")
+    }
+}

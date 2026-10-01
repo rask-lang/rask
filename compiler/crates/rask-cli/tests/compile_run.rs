@@ -4316,6 +4316,27 @@ fn a_task_bound_closure_is_refused_at_spawn() {
         assert_eq!(code, 0, "{mode}: {stderr}");
         assert_eq!(stdout, "1\n", "{mode}");
     }
+    // The type decides, not the value: an empty `Vec<Link<Node>>` and a `none`
+    // `Link<Node>?` hold no link and still may not cross. The interpreter used
+    // to look at the value and let both through (#1382). `none_link` reaches
+    // `keep` through another generic function, and `method_closure` binds `T`
+    // from the receiver's type.
+    for (file, line) in [
+        ("spawn_generic_closure_empty_vec.rk", 24),
+        ("spawn_generic_closure_none_link.rk", 30),
+        ("spawn_generic_method_closure.rk", 32),
+    ] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, file);
+            assert_ne!(code, 0, "{mode} {file}: the spawn has to fail; stdout: {stdout}");
+            assert_eq!(stdout, "1\nbefore\n", "{mode} {file}");
+            assert!(
+                stderr.contains("this closure captured a link or a `Local` box"),
+                "{mode} {file}: {stderr}",
+            );
+            assert!(stderr.contains(&format!("{file}:{line}:")), "{mode} {file}: {stderr}");
+        }
+    }
 }
 
 // A real deadlock is reported instead of hanging (#1354). Every task is parked

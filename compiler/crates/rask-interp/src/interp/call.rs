@@ -82,6 +82,9 @@ impl Interpreter {
     }
 
     fn call_function_at_depth(&mut self, func: &FnDecl, mut args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+        // Taken before anything else runs: a default argument can make a call
+        // of its own, which would park its frame over this one.
+        let generics = self.pending_generic_frame.take();
         // Fill in default values for missing trailing arguments
         if args.len() < func.params.len() {
             for i in args.len()..func.params.len() {
@@ -152,6 +155,7 @@ impl Interpreter {
             }
         }
         self.type_bindings.push(type_frame);
+        self.generic_frames.push(generics);
 
         for (param, arg) in func.params.iter().zip(args.into_iter()) {
             // A by-value parameter receives an independent copy (VS1): mutating
@@ -224,6 +228,7 @@ impl Interpreter {
                 self.report_secondary_panic(&guard_diag);
             } else {
                 self.type_bindings.pop();
+                self.generic_frames.pop();
                 self.env.pop_scope();
                 return Err(guard_diag);
             }
@@ -238,6 +243,7 @@ impl Interpreter {
             .collect();
 
         self.type_bindings.pop();
+        self.generic_frames.pop();
         self.env.pop_scope();
 
         let value = match result {

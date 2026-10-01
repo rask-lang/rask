@@ -55,7 +55,7 @@ pub(super) enum TypeOwner {
 }
 
 /// Central registry of all types in the program.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TypeTable {
     /// User-defined types indexed by TypeId.
     pub(super) types: Vec<TypeDef>,
@@ -1082,6 +1082,23 @@ impl TypeTable {
             return (self.shared_strategy_name(args) == "Local").then_some(TaskBound::LocalBox);
         }
         self.holds_link(ty).then_some(TaskBound::Link)
+    }
+
+    /// Is a closure in a generic body task-bound in one instantiation? Its
+    /// captures are the `generic_closure_captures` entry; `concrete` fills in
+    /// that instantiation's type arguments, `None` where it can't.
+    ///
+    /// Decided from types, never from the captured values: an empty
+    /// `Vec<Link<Node>>` holds no link yet, and still may not cross (#1382).
+    /// Monomorphization and the interpreter both ask here.
+    pub fn generic_closure_task_bound(
+        &self,
+        captures: &[(String, Type)],
+        concrete: impl Fn(&Type) -> Option<Type>,
+    ) -> bool {
+        captures
+            .iter()
+            .any(|(_, ty)| concrete(ty).is_some_and(|ty| self.task_bound(&ty).is_some()))
     }
 
     /// The type arguments of a `Shared<T, S>`, or `None` for any other type.
