@@ -608,7 +608,7 @@ fn insert_aggregate_release(
     // them — so `r`, `r.0`, and every SSA name of either are one thing that
     // dies once. Splitting them was how the wrapper's release ended up running
     // while a view into its payload was still live.
-    let mut groups = aggregate_value_groups(func, &aggregates, &ty_of);
+    let (mut groups, phi_handovers) = aggregate_value_groups(func, &aggregates, &ty_of);
     for (handle, base) in &handles {
         for g in groups.iter_mut() {
             if g.contains(base) {
@@ -712,6 +712,12 @@ fn insert_aggregate_release(
     // `blocks_past_a_consume`, and the same reason for the "may" answer:
     // refusing where the value is still ours only leaks.
     let mut handed_over_in: HashMap<usize, HashSet<BlockId>> = HashMap::new();
+    // A phi joining different values takes each one over on its own edge.
+    for (src, from) in &phi_handovers {
+        if let Some(gi) = group_of.get(src) {
+            handed_over_in.entry(*gi).or_default().insert(*from);
+        }
+    }
 
     for block in &func.blocks {
         for (si, stmt) in block.statements.iter().enumerate() {
@@ -1303,11 +1309,32 @@ fn blocks_past_a_handover(func: &MirFunction, sites: &HashSet<BlockId>) -> HashS
 /// and a payload read out of a wrapper (`v = r.0`, which doesn't copy the
 /// strings — it points at where they already are). All three go in one group,
 /// so the value is released once and not before the last of its names is done.
+///
+/// A join is a rename only when what arrives on each path is one value. When
+/// each path brings a different one, the joined name is a value of its own and
+/// each incoming one is handed over into it on its own path, which is the
+/// second thing this returns: `(incoming, block it arrives from)`. Aggregates
+/// live in memory rather than in SSA, so a join is as often a name written on
+/// two paths as it is a phi. Grouping them anyway made one allocation of two:
+///
+/// ```text
+/// bb14:  _53 = _46.0; _20 = _53                // Failure.Io(e) => return e
+/// bb15:  _54 = _46.0; _51 = Other(_54); _20 = _51  // Failure.Bad(m) => …
+/// bb16:  return _20
+/// ```
+///
+/// The new `Inner` and the old `Failure` read as one value that is returned,
+/// so the `Failure` was released on neither path and its string leaked on the
+/// second (#1383).
+///
+/// A join that one of its own writes can reach again is a loop carrying one
+/// value round, built from itself, and stays one group with everything that
+/// arrives. See `aggregate_liveness` on `left = Expr.Binary(left: …)`.
 fn aggregate_value_groups(
     func: &MirFunction,
     aggregates: &HashSet<LocalId>,
     ty_of: &HashMap<LocalId, MirType>,
-) -> Vec<HashSet<LocalId>> {
+) -> (Vec<HashSet<LocalId>>, Vec<(LocalId, BlockId)>) {
     let mut parent: HashMap<LocalId, LocalId> = HashMap::new();
 
     fn find(parent: &mut HashMap<LocalId, LocalId>, x: LocalId) -> LocalId {
@@ -1327,13 +1354,35 @@ fn aggregate_value_groups(
         }
     }
 
+    // Where each aggregate is written. Aggregates live in memory rather than
+    // in SSA, so a join of two values is as often a name copied into on both
+    // paths (`_20 = _53` in one block, `_20 = _51` in another) as it is a phi.
+    let mut def_blocks: HashMap<LocalId, Vec<BlockId>> = HashMap::new();
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            if let Some(dst) = uses::stmt_def(stmt) {
+                if aggregates.contains(&dst) {
+                    def_blocks.entry(dst).or_default().push(block.id);
+                }
+            }
+        }
+    }
+
+    // Each merge: the destination, and what arrives from where.
+    let mut merges: Vec<(LocalId, Vec<(BlockId, LocalId)>, bool)> = Vec::new();
+    let mut copied_into: HashMap<LocalId, Vec<(BlockId, LocalId)>> = HashMap::new();
+    let mut phi_merges: Vec<(BlockId, LocalId, Vec<(BlockId, LocalId)>)> = Vec::new();
     for block in &func.blocks {
         for stmt in &block.statements {
             match &stmt.kind {
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
                     if aggregates.contains(dst) && aggregates.contains(src) =>
                 {
-                    union(&mut parent, *dst, *src);
+                    if def_blocks.get(dst).is_some_and(|d| d.len() > 1) {
+                        copied_into.entry(*dst).or_default().push((block.id, *src));
+                    } else {
+                        union(&mut parent, *dst, *src);
+                    }
                 }
                 // A payload read: only when the payload is itself an aggregate.
                 // A *string* read out of one takes its own reference and is
@@ -1349,16 +1398,64 @@ fn aggregate_value_groups(
                     }
                 }
                 MirStmtKind::Phi { dst, args } if aggregates.contains(dst) => {
-                    for (_, arg) in args {
-                        if let MirOperand::Local(src) = arg {
-                            if aggregates.contains(src) {
-                                union(&mut parent, *dst, *src);
+                    let incoming = args
+                        .iter()
+                        .filter_map(|(from, op)| match op {
+                            MirOperand::Local(src) if aggregates.contains(src) => {
+                                Some((*from, *src))
                             }
-                        }
-                    }
+                            _ => None,
+                        })
+                        .collect();
+                    phi_merges.push((block.id, *dst, incoming));
                 }
                 _ => {}
             }
+        }
+    }
+
+    // A name written on two paths that can follow each other is a loop
+    // writing the next turn's value over this one's, not a join. So is a phi
+    // with an operand arriving from a block the phi itself leads to.
+    let succs: HashMap<BlockId, Vec<BlockId>> =
+        func.blocks.iter().map(|b| (b.id, cfg::successors(&b.terminator))).collect();
+    let reaches_a_def = |from: BlockId, defs: &[BlockId]| {
+        let mut seen: HashSet<BlockId> = HashSet::new();
+        let mut frontier: Vec<BlockId> = succs.get(&from).cloned().unwrap_or_default();
+        while let Some(b) = frontier.pop() {
+            if defs.contains(&b) {
+                return true;
+            }
+            if seen.insert(b) {
+                frontier.extend(succs.get(&b).into_iter().flatten().copied());
+            }
+        }
+        false
+    };
+    for (at, dst, incoming) in phi_merges {
+        let looped = incoming.iter().any(|(from, _)| *from == at || reaches_a_def(at, &[*from]));
+        merges.push((dst, incoming, looped));
+    }
+    let mut copy_merges: Vec<_> = copied_into.into_iter().collect();
+    copy_merges.sort_by_key(|(dst, _)| dst.0);
+    for (dst, incoming) in copy_merges {
+        let defs = &def_blocks[&dst];
+        let looped = defs.iter().any(|d| reaches_a_def(*d, defs));
+        merges.push((dst, incoming, looped));
+    }
+
+    // Joins after every rename, so "already one value" sees the whole function.
+    let mut handovers: Vec<(LocalId, BlockId)> = Vec::new();
+    for (dst, incoming, looped) in merges {
+        let dst_root = find(&mut parent, dst);
+        let roots: HashSet<LocalId> =
+            incoming.iter().map(|(_, src)| find(&mut parent, *src)).collect();
+        if looped || roots.len() <= 1 || roots.contains(&dst_root) {
+            for (_, src) in &incoming {
+                union(&mut parent, dst, *src);
+            }
+        } else {
+            handovers.extend(incoming.iter().map(|(from, src)| (*src, *from)));
         }
     }
 
@@ -1367,7 +1464,7 @@ fn aggregate_value_groups(
         let root = find(&mut parent, *local);
         groups.entry(root).or_default().insert(*local);
     }
-    groups.into_values().collect()
+    (groups.into_values().collect(), handovers)
 }
 
 /// Aggregate field reads: the local a nested aggregate was read out of.
@@ -1483,9 +1580,17 @@ fn aggregate_liveness(
             .iter()
             .map(|b| {
                 b.statements.iter().any(|st| match &st.kind {
-                    MirStmtKind::Phi { args, .. } => args.iter().any(|(_, op)| {
-                        uses::operand_local(op).is_some_and(|v| names.contains(&v))
-                    }),
+                    // Not into another value's name. A phi joining different
+                    // values takes the operand over on its edge
+                    // (`aggregate_value_groups`), and the group ends there.
+                    MirStmtKind::Phi { dst, args }
+                        if group.contains(dst)
+                            || !groups.iter().any(|g| g.contains(dst)) =>
+                    {
+                        args.iter().any(|(_, op)| {
+                            uses::operand_local(op).is_some_and(|v| names.contains(&v))
+                        })
+                    }
                     _ => false,
                 })
             })

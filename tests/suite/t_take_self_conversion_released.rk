@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `take self` method that turns one enum into another, where one arm hands
+// a payload back and the other builds a new value, releases what it consumed.
+//
+// After inlining, the two arms both write the value being returned. That
+// used to read as one value under three names (the old `Failure`, its
+// payload, the new `Inner`), and a value that's returned isn't released, so
+// the `Failure`'s message leaked on the arm that built a new one (#1383).
+
+enum Inner {
+    Reset
+    Other(string)
+}
+
+enum Failure {
+    Io(Inner)
+    Bad(string)
+}
+
+extend Failure {
+    func inner(take self) -> Inner {
+        match self {
+            Failure.Io(e) => return e
+            Failure.Bad(m) => return Inner.Other(m)
+        }
+    }
+}
+
+func limit(n: i64) -> i64 or Failure {
+    if n > 10 {
+        return Failure.Bad("larger than {n} and then some more text")
+    }
+    if n < 0 {
+        return Failure.Io(Inner.Other("negative, which is its own long message {n}"))
+    }
+    return n
+}
+
+func make(n: i64) -> string or Failure {
+    let total = 4 + (try limit(n))
+    return "a considerably longer value that has to live on the heap {total}"
+}
+
+func use(n: i64) -> i64 or Inner {
+    let raw = make(n) catch e => {
+        return e.inner()
+    }
+    return raw.len().wrap<i64>()
+}
+
+func message(r: i64 or Inner) -> string {
+    match r {
+        i64 as v => return "ok {v}"
+        Inner as e => {
+            match e {
+                Inner.Reset => return "reset"
+                Inner.Other(m) => return m
+            }
+        }
+    }
+}
+
+test "the arm that builds a new value" {
+    assert message(use(50)) == "larger than 50 and then some more text"
+}
+
+test "the arm that hands the payload back" {
+    assert message(use(-3)) == "negative, which is its own long message -3"
+}
+
+test "the ok side" {
+    assert message(use(5)) == "ok 58"
+}
+
+func main() {}
