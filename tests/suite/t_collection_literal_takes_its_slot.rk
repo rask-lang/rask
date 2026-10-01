@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //
-// `[a, b]` takes its shape from the slot it fills — std.collections/C4 (#1233).
+// `[a, b]` takes its shape from the slot it fills — std.collections/C9 (#1233).
 //
 // That worked for an annotated `let` and for a plain function parameter, and
 // nowhere else. Two positions that should say `Vec<i64>` didn't reach the

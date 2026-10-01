@@ -3682,7 +3682,7 @@ impl TypeChecker {
                     };
                     (fields, ty)
                 };
-                // C4: the slot picks the shape, and a declared payload is a
+                // C9: the slot picks the shape, and a declared payload is a
                 // slot. Inferring the argument on its own first made
                 // `Node.Branch([1, 2, 3])` a `[i32; 3]` against a `Vec<i32>`
                 // payload and rejected it — while the same literal filled a
@@ -3835,45 +3835,30 @@ impl TypeChecker {
             }
             _ => obj_ty,
         };
-        // std.collections/C4 says the slot picks a collection literal's shape,
-        // and for a method the slot is the parameter — which isn't known here:
-        // a method resolves through a deferred constraint, after the arguments
-        // have already been given types. So `vv.push([7, 42])` on a
-        // `Vec<Vec<i64>>` typed the literal from its own elements and then
-        // failed against the parameter: "expected `Vec<i64>`, found `[i32; 2]`"
-        // (#1233).
+        // std.collections/C9: the slot picks a collection literal's shape, and
+        // for a method the slot is the parameter. A method resolves through a
+        // deferred constraint, after the arguments have already been given
+        // types, so the parameter is read off the declaration here, with the
+        // receiver's type arguments substituted in. `vv.push([7, 42])` on a
+        // `Vec<Vec<i64>>` (#1233), `index.insert("a", [1, 2])` on a
+        // `Map<string, Vec<i64>>` (#1388) and `sink.feed([1, 2])` on a plain
+        // struct each typed the literal from its own elements and then failed
+        // against the parameter: "expected `Vec<i64>`, found `[i32; 2]`".
         //
-        // What *is* known here is the receiver. A `Vec<C>` deals in exactly one
-        // collection — its element type — so an array literal handed to any of
-        // its methods can only be meant as one of those, whatever position it
-        // sits in. That is the C4 rule read off the receiver instead of off the
-        // parameter, not a guess about which method it is.
-        //
-        // Only when the element is itself a collection shape: on a `Vec<i64>`
-        // an array-literal argument isn't an element and this says nothing. A
-        // `Map`'s value slot is positional and isn't covered — `Vec.from([…])`
-        // is still the spelling there.
-        let elem_shape = self
-            .first_type_arg(&self.ctx.apply(&obj_ty), "Vec")
-            .filter(|t| self.collection_elem_type(t).is_some());
-        // The other case where the slot *is* known here: the receiver's type is
-        // settled — it names the type (a static call) or is a value already
-        // typed — so the method is its declared one and the parameter types can
-        // be read off the declaration. `sim.require(faults: [Fault.IoError])`
-        // and `sink.feed([1, 2])` typed the literal as an array and then failed
-        // against `Vec<…>`, while the same call to a free function worked.
+        // A slot that still has unknowns in it, on a receiver whose element type
+        // hasn't been pinned yet, says nothing, and the literal types itself.
         let declared_params = self.declared_method_params(object, &obj_ty, method);
         let arg_types: Vec<_> = args
             .iter()
             .enumerate()
             .map(|(i, a)| {
-                let param = declared_params.as_ref().and_then(|p| p.get(i)).cloned();
-                match (&a.expr.kind, &elem_shape, param) {
-                    (ExprKind::Array(_), _, Some(want)) => self.infer_expr_expecting(&a.expr, &want),
-                    (ExprKind::Array(_), Some(want), None) => {
-                        let want = want.clone();
-                        self.infer_expr_expecting(&a.expr, &want)
-                    }
+                let slot = declared_params
+                    .as_ref()
+                    .and_then(|p| p.get(i))
+                    .map(|t| self.ctx.apply(t))
+                    .filter(|t| !t.has_unsolved_var());
+                match (&a.expr.kind, slot) {
+                    (ExprKind::Array(_), Some(want)) => self.infer_expr_expecting(&a.expr, &want),
                     _ => self.infer_expr(&a.expr),
                 }
             })
@@ -5375,20 +5360,36 @@ impl TypeChecker {
         method: &str,
     ) -> Option<Vec<Type>> {
         let names_type = matches!(&object.kind, ExprKind::Ident(name) if self.lookup_local(name).is_none());
-        let Type::Named(id) = self.ctx.apply(obj_ty) else { return None };
-        if !self.declared_type_params(id).is_empty() {
-            return None;
-        }
-        let methods = match self.types.get(id) {
-            Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => methods,
+        let applied = self.ctx.apply(obj_ty);
+        let (id, type_args): (_, &[GenericArg]) = match &applied {
+            Type::Named(id) => (*id, &[]),
+            Type::Generic { base, args } => (*base, args.as_slice()),
             _ => return None,
         };
+        let (methods, type_params) = match self.types.get(id) {
+            Some(TypeDef::Struct { methods, type_params, .. })
+            | Some(TypeDef::Enum { methods, type_params, .. }) => (methods, type_params),
+            _ => return None,
+        };
+        if type_params.len() != type_args.len() {
+            return None;
+        }
         let sig = methods.iter().find(|m| {
             m.name == method
                 && m.type_params.is_empty()
                 && names_type == matches!(m.self_param, crate::SelfParam::None)
         })?;
-        Some(sig.params.iter().map(|(t, _)| t.clone()).collect())
+        // The receiver's arguments stand in for the type's parameters, and an
+        // `extend` header's names for their parts: the same substitution the
+        // deferred resolution makes, so the slot read here is the one the
+        // argument is later checked against.
+        let mut subst = Self::build_type_param_subst(type_params, type_args);
+        let header: Vec<(String, Type)> =
+            self.build_owner_pattern_subst(&sig.owner_patterns, type_args).into_iter().collect();
+        for (name, bound) in &header {
+            subst.insert(name.as_str(), bound.clone());
+        }
+        Some(sig.params.iter().map(|(t, _)| Self::substitute_type_params(t, &subst)).collect())
     }
 
     /// ER47: bare `try` on a result needs a return with an error branch. False
