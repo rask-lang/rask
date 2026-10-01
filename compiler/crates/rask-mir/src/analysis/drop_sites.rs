@@ -17,7 +17,9 @@
 //! The answer is the same in all three: the last place the value is certainly
 //! alive and certainly finished with is the edge out of the region its
 //! definition dominates. Three passes needed it, all three got it wrong the
-//! same two ways first, so it lives here once.
+//! same two ways first, so it lives here once. `container_drop` has since
+//! moved to `analysis::ownership`, which finds the same edges as the last
+//! place a value is still certainly the frame's.
 
 use crate::analysis::dominators::DominatorTree;
 use crate::{BlockId, LocalId, MirFunction};

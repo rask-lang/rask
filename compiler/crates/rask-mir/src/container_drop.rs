@@ -1042,6 +1042,7 @@ fn is_container_shaped(func: &MirFunction, local: LocalId) -> bool {
         .is_some_and(|l| matches!(l.ty, MirType::Ptr))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_for_function(
     func: &mut MirFunction,
     all: &[MirFunction],
@@ -1052,133 +1053,65 @@ fn insert_for_function(
     targets: &crate::closure_targets::ClosureTargets,
     own: &HashSet<String>,
 ) {
-    let fresh =
-        collect_fresh_containers_with(func, all, handing_over, interface_handing, targets);
-    if fresh.is_empty() {
+    // Every name that may hold a container this frame made, and where each
+    // is made. Whether a given name holds one of this frame's on a given path
+    // is the ownership analysis's question, not a property of the name:
+    // `index.get(word) ?? Vec.new()` holds the map's vector on one path and a
+    // fresh one on the other, and only the second is this frame's.
+    let (tracked, made_here) =
+        containers_and_makers(func, all, handing_over, interface_handing, targets);
+    if made_here.is_empty() {
         return;
     }
-    let (mut escaping, consumed) = find_escaping(func, &fresh, kept, interface_kept);
-    escaping.extend(consumed_by_an_ensure(func, all, &fresh, kept, interface_kept));
-    let carried = carried_variables(func, &crate::analysis::dominators::DominatorTree::build(func));
-    let moved_away = find_moved_away(func, &fresh, &carried);
-    let already_freed = find_already_freed(func, &fresh, own);
-    let fresh: HashMap<LocalId, &'static str> = fresh
-        .into_iter()
-        .filter(|(id, _)| !already_freed.contains(id))
-        .collect();
-    if fresh.is_empty() {
-        return;
-    }
+    // The pruned answer, for the two rules below that still key on a name:
+    // a container captured by a closure the frame drops, and one in a cell.
+    let fresh = collect_fresh_containers_with(func, all, handing_over, interface_handing, targets);
+    let ensured = consumed_by_an_ensure(func, all, &fresh, kept, interface_kept);
 
-    let mut droppable: HashMap<LocalId, &'static str> = fresh
-        .iter()
-        .filter(|(id, _)| !escaping.contains(id) && !moved_away.contains(id))
-        .map(|(id, f)| (*id, *f))
-        .collect();
+    let facts = container_facts(func, &tracked, &made_here, &ensured, kept, interface_kept, own);
+    let plan = crate::analysis::ownership::plan(
+        func,
+        &facts,
+        crate::analysis::ownership::Placement::ScopeEnd,
+    );
 
-    // One allocation often has several names: copies, phi merges, the
-    // parameter local an inlined method copies its receiver into. Which name
-    // frees it is decided per site in `one_free_per_site`.
-    let groups = value_groups(func, &fresh);
-
-    // A name copied into another one is "moved away" because the copy owns the
-    // value from there on. That is a fact about the path through the copy, not
-    // about every path. `buf` copied into a fused `buf.take(n)` after a loop is
-    // dead after the copy, and still the only name for the vector on the path
-    // that returns from inside the loop — so that return freed nothing (#1384).
-    //
-    // So a moved-away name stays a candidate when the value never leaves its
-    // group. At a site a later copy also reaches, the latest name wins and the
-    // free happens once; at a site the copy never reached, the old name is what
-    // holds it. Not for a phi operand, whose merge can stand for a different
-    // allocation (#1209 frees those at the merge), nor for a name with two
-    // definitions. And not when the value flows on to a name outside the group
-    // or some name for it escapes: neither is tracked per path, so the old
-    // name can't tell whether the value is still this frame's.
-    let extended = moved_only_within_its_group(func, &fresh, &groups, &moved_away, &escaping);
-    for id in extended {
-        droppable.insert(id, fresh[&id]);
-    }
-
-    // A container packed into the aggregate this function returns is gone to
-    // the caller, under every name it has here. `for x in v` copies the vector
-    // into a loop-local, and one line later the original is stored into the
-    // `T or E` being returned — so one name was marked escaping and the other
-    // wasn't, and the free landed on the one that wasn't. It freed the vector
-    // the caller was then handed, and `v.len()` on it read whatever the
-    // allocator had written there (#1119).
-    //
-    //     func build(n: i64) -> Vec<i64> or Refused {
-    //         …
-    //         for x in v { total = total + x }   // _36 = _27
-    //         return v                           // *(_23+24) = _27
-    //     }                                      // Vec_free(_36)  ← the same one
-    //
-    // The same body returning a plain `Vec<i64>` was fine, which is what made
-    // this look like a wrapper bug rather than a grouping one. Only this
-    // relation propagates across a group; escaping in general does not, because
-    // most of what it marks is a store into an aggregate that never leaves.
-    let handed_over = packed_into_a_returned_aggregate(func, &fresh);
-    for group in &groups {
-        if group.iter().any(|id| handed_over.contains(id)) {
-            for id in group {
-                droppable.remove(id);
-            }
-        }
-    }
-
-    // A container in a capture cell is reached through a store, which the rule
-    // above reads as handing it over — so it never becomes droppable and its
-    // free goes in separately, keyed on the cell rather than on a name.
+    // A container in a capture cell is reached through a store, which reads
+    // as handing it over — so its free goes in separately, keyed on the cell
+    // rather than on a name.
     let cells = cells_this_frame_frees(func, all, &fresh, kept, interface_kept, interface_handing);
-    for (cell, _, _) in &cells {
-        for group in &groups {
-            if group.iter().any(|id| stores_into(func, *id, *cell)) {
-                for id in group {
-                    droppable.remove(id);
-                }
-            }
+
+    // A capture the frame frees itself, because it frees the closure too. The
+    // capture is a hand-over as far as the analysis is concerned, so the two
+    // never free one value on one path.
+    let with_closure = captures_freed_with_the_closure(func, &fresh);
+    let with_closure = one_free_per_group(func, with_closure, &value_groups(func, &fresh));
+
+    let free_of = |name: LocalId| tracked[&name];
+    let mut at_end: Vec<(usize, LocalId)> = Vec::new();
+    let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
+    for r in plan {
+        match r {
+            crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
+            crate::analysis::ownership::Release::OnEdge { from, to, name } => on_edges.push((
+                from,
+                to,
+                vec![MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal(free_of(name).to_string()),
+                    args: vec![MirOperand::Local(name)],
+                })],
+            )),
         }
     }
-
-    // Where each free goes, one per allocation per site. A name with nowhere
-    // to put one isn't a free at all, so it drops out of `droppable` here:
-    // `for x in v` inside a loop copies `v` into the loop body, and that copy's
-    // only candidate site was the back-edge, which it doesn't qualify for
-    // (#1071).
-    let plan = plan_drops(func, &droppable, &groups, &consumed);
-    let placed: HashSet<LocalId> = plan.iter().flat_map(|(_, ls)| ls.iter().copied()).collect();
-    droppable.retain(|id, _| placed.contains(id));
-
-    // A capture the frame frees itself, because it frees the closure too. Those
-    // names are already out of `droppable` — a capture is an escape — so this
-    // adds frees rather than moving any.
-    //
-    // Two guards, both about one value reaching two names. `capturers` inside
-    // that function counts by local, and inlining gives each copy of a chain
-    // its own name for the same vector:
-    //
-    //     let a = v.map(f)          // captures _25
-    //     let b = v.map(g)          // captures _48, the same vector
-    //
-    // so each looked like the only capturer and both freed it. And a group with
-    // a droppable member already has a free coming.
-    let mut with_closure = captures_freed_with_the_closure(func, &fresh);
-    with_closure.retain(|(_, _, local, _)| {
-        let group = groups.iter().find(|g| g.contains(local));
-        match group {
-            Some(g) => !g.iter().any(|id| droppable.contains_key(id)),
-            None => true,
-        }
-    });
-    with_closure = one_free_per_group(func, with_closure, &groups);
-
-    let at_merges = replaced_at_a_merge(func, &fresh, &groups, &droppable);
-
-    insert_drops(func, &droppable, plan);
-    if !at_merges.is_empty() {
-        insert_merge_drops(func, &at_merges);
+    at_end.sort_by_key(|(b, l)| (*b, l.0));
+    for (block, name) in at_end {
+        func.blocks[block].statements.push(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal(free_of(name).to_string()),
+            args: vec![MirOperand::Local(name)],
+        }));
     }
+    crate::analysis::ownership::insert_on_edges(func, on_edges);
     if !cells.is_empty() {
         insert_cell_drops(func, &cells);
     }
@@ -1187,114 +1120,172 @@ fn insert_for_function(
     }
 }
 
-/// A container replaced at a merge, and the block where it stops being the
-/// value: `(local, block to free it at the end of, free function)`.
+/// What each statement does to the containers this frame may hold.
 ///
-/// `v = w` inside a branch is a phi, and the two operands are two different
-/// vectors:
-///
-/// ```text
-/// bb1:  w_1 = Vec_new(…)          // the branch that assigns
-///       v_2 = w_1
-/// bb2:  (nothing)                 // the branch that doesn't
-/// bb3:  v_3 = phi [v_1 from bb2, v_2 from bb1]
-///       Vec_free(v_3)
-/// ```
-///
-/// `value_groups` unions the lot through the phi, and the rest of this pass
-/// reads a group as one allocation under several names — so it frees once, and
-/// on the bb1 path `v_1` is nobody's. `mut v: Vec<string> = []` before an `if`
-/// that replaces it leaked that empty vector's header, every time the branch
-/// was taken (#1209).
-///
-/// The operand that isn't the one arriving on an edge is the one being
-/// replaced, and that edge's own block is where it dies. Edge-aware liveness is
-/// what says so: the shared answer reads every operand in the phi's own block,
-/// so `v_1` comes out live on the very path that just replaced it — the same
-/// distinction #1200 needed for placement.
-///
-/// Three guards, each about freeing twice rather than once:
-///
-/// - The group has to be one this frame frees at all. Adding a free to a group
-///   that escapes hands the caller a dead handle.
-/// - The replaced name can't be one that already has a free of its own.
-/// - The edge's block can't reach itself. In a loop the header's phi takes the
-///   latch's value every turn, so the preheader's value is "replaced" on a
-///   block that runs again — and the second turn would free it twice. A loop
-///   reassignment is #1154 and has its own answer.
-fn replaced_at_a_merge(
+/// Given away: returned, stored, captured, boxed, handed to a call that keeps
+/// it, taken by a `take self` method, freed already by the lowering, or
+/// consumed by an `ensure`. A container method borrows its receiver; every
+/// other argument is asked whether the callee keeps it, because borrow is the
+/// default (`mem.parameters/PM1`) and treating a read as a hand-over left the
+/// container to nobody (#1047).
+#[allow(clippy::too_many_arguments)]
+fn container_facts(
     func: &MirFunction,
-    fresh: &HashMap<LocalId, &'static str>,
-    groups: &[HashSet<LocalId>],
-    droppable: &HashMap<LocalId, &'static str>,
-) -> Vec<(LocalId, BlockId, &'static str)> {
-    if droppable.is_empty() {
-        return Vec::new();
-    }
-    let dom = crate::analysis::dominators::DominatorTree::build(func);
-    let reach = strict_reach(func);
-    let live = crate::analysis::liveness::analyze_phis_on_edges(func);
-    let def_block: HashMap<LocalId, BlockId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter().map(move |st| (b.id, st)))
-        .filter_map(|(bid, st)| crate::analysis::uses::stmt_def(st).map(|d| (d, bid)))
-        .collect();
-
-    let mut out: Vec<(LocalId, BlockId, &'static str)> = Vec::new();
-    let mut seen: HashSet<(LocalId, BlockId)> = HashSet::new();
+    tracked: &HashMap<LocalId, &'static str>,
+    made_here: &HashSet<LocalId>,
+    ensured: &HashSet<LocalId>,
+    kept: &HashMap<String, Vec<bool>>,
+    interface_kept: &HashMap<String, Vec<bool>>,
+    own: &HashSet<String>,
+) -> crate::analysis::ownership::Facts {
+    use crate::analysis::ownership::Event;
+    use crate::analysis::uses;
+    let names: std::collections::BTreeSet<LocalId> = tracked.keys().copied().collect();
+    let is = |l: &LocalId| tracked.contains_key(l);
+    let mut facts = crate::analysis::ownership::Facts {
+        names: names.clone(),
+        events: Vec::new(),
+        terminator_events: Vec::new(),
+        reads: Vec::new(),
+        kills: Vec::new(),
+        terminator_reads: Vec::new(),
+        foreign: func.params.iter().map(|p| p.id).filter(|p| is(p)).collect(),
+    };
     for block in &func.blocks {
+        let mut events = Vec::new();
+        let mut reads = Vec::new();
+        let mut kills = Vec::new();
         for stmt in &block.statements {
-            let MirStmtKind::Phi { args, .. } = &stmt.kind else { continue };
-            for (edge, arriving) in args {
-                if reach.get(edge).is_some_and(|r| r.contains(edge)) {
-                    continue;
+            let mut ev: Vec<Event> = Vec::new();
+            let give = |ev: &mut Vec<Event>, op: &MirOperand| {
+                if let MirOperand::Local(id) = op {
+                    if is(id) {
+                        ev.push(Event::HandOver(*id));
+                    }
                 }
-                let arriving = crate::analysis::uses::operand_local(arriving);
-                for (_, other) in args {
-                    let Some(replaced) = crate::analysis::uses::operand_local(other) else {
-                        continue;
-                    };
-                    if Some(replaced) == arriving || droppable.contains_key(&replaced) {
-                        continue;
+            };
+            match &stmt.kind {
+                MirStmtKind::Phi { .. } => {}
+                MirStmtKind::Call { func: fref, args, dst } => {
+                    let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
+                    let base = head.split('$').next().unwrap_or(head);
+                    let borrows = rask_stdlib::mir_metadata::borrows_receiver(head) && !args.is_empty();
+                    let takes = rask_stdlib::mir_metadata::consumes_receiver(head) && !args.is_empty();
+                    // The lowering's own free of a scratch container. A name
+                    // the program declares is never one (#1248).
+                    let frees = !own.contains(&fref.name)
+                        && (base.ends_with("_free") || base.ends_with("_free_elems"));
+                    for (i, arg) in args.iter().enumerate() {
+                        if i == 0 && (takes || frees) {
+                            give(&mut ev, arg);
+                            continue;
+                        }
+                        if i == 0 && borrows {
+                            continue;
+                        }
+                        if call_keeps_argument(fref, i, kept) {
+                            give(&mut ev, arg);
+                        }
                     }
-                    let Some(free_fn) = fresh.get(&replaced) else { continue };
-                    let ours = groups
-                        .iter()
-                        .find(|g| g.contains(&replaced))
-                        .is_some_and(|g| g.iter().any(|id| droppable.contains_key(id)));
-                    if !ours {
-                        continue;
+                    if let Some(d) = dst.filter(|d| is(d)) {
+                        ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
                     }
-                    // It has to already hold something on this path, and be
-                    // finished with by the end of it.
-                    if !def_block.get(&replaced).is_some_and(|&d| dom.dominates(d, *edge)) {
-                        continue;
+                }
+                // An interface call names a method and a vtable slot, so the
+                // by-name answer has nothing to look up. `self` isn't in the
+                // argument list, so an implementation's parameters sit one to
+                // the right (#1199).
+                MirStmtKind::InterfaceCall { method_name, args, dst, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let keeps =
+                            interface_kept.get(method_name).and_then(|v| v.get(i)).copied().unwrap_or(true);
+                        if keeps {
+                            give(&mut ev, arg);
+                        }
                     }
-                    if live.live_at_exit(*edge, replaced) {
-                        continue;
+                    if let Some(d) = dst.filter(|d| is(d)) {
+                        ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
                     }
-                    if seen.insert((replaced, *edge)) {
-                        out.push((replaced, *edge, *free_fn));
+                }
+                MirStmtKind::ClosureCall { args, dst, .. } => {
+                    for arg in args {
+                        give(&mut ev, arg);
+                    }
+                    if let Some(d) = dst.filter(|d| is(d)) {
+                        ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
+                    }
+                }
+                MirStmtKind::Store { value, .. }
+                | MirStmtKind::ArrayStore { value, .. }
+                | MirStmtKind::InterfaceBox { value, .. } => give(&mut ev, value),
+                MirStmtKind::ClosureCreate { captures, .. } => {
+                    for cap in captures {
+                        if is(&cap.local_id) {
+                            ev.push(Event::HandOver(cap.local_id));
+                        }
+                    }
+                }
+                MirStmtKind::EnsureHookRegister { captures, .. } => {
+                    for cap in captures {
+                        if ensured.contains(&cap.local_id) {
+                            ev.push(Event::HandOver(cap.local_id));
+                        }
+                    }
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } => {
+                    if is(src) && !lent_for_the_call(func, *dst, kept) {
+                        ev.push(Event::HandOver(*src));
+                    }
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } if is(dst) => {
+                    ev.push(if is(src) { Event::Alias { dst: *dst, src: *src } } else { Event::Other(*dst) });
+                }
+                _ => {}
+            }
+            // Any other definition of a tracked name: made here (a container
+            // read out of a wrapper, a load out of a cell) or not ours.
+            if let Some(d) = uses::stmt_def(stmt).filter(|d| is(d)) {
+                let bound = ev.iter().any(|e| {
+                    matches!(e, Event::Make(n) | Event::Other(n) if *n == d)
+                        || matches!(e, Event::Alias { dst, .. } if *dst == d)
+                });
+                if !bound && !matches!(stmt.kind, MirStmtKind::Phi { .. }) {
+                    ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
+                }
+            }
+            let (mut r, mut k) = (Vec::new(), Vec::new());
+            if !matches!(stmt.kind, MirStmtKind::Phi { .. }) {
+                for n in &names {
+                    if uses::stmt_reads(stmt, *n) {
+                        r.push(*n);
+                    }
+                    if uses::stmt_def(stmt) == Some(*n) {
+                        k.push(*n);
                     }
                 }
             }
+            events.push(ev);
+            reads.push(r);
+            kills.push(k);
         }
+        facts.events.push(events);
+        facts.reads.push(reads);
+        facts.kills.push(kills);
+        let mut term = Vec::new();
+        if let MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+        | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } =
+            &block.terminator.kind
+        {
+            if is(id) {
+                term.push(Event::HandOver(*id));
+            }
+        }
+        facts.terminator_events.push(term);
+        facts
+            .terminator_reads
+            .push(names.iter().copied().filter(|n| uses::terminator_reads(&block.terminator, *n)).collect());
     }
-    out
-}
-
-/// Free each replaced container at the end of the block that replaced it,
-/// before the terminator takes the edge to the merge.
-fn insert_merge_drops(func: &mut MirFunction, drops: &[(LocalId, BlockId, &'static str)]) {
-    for (local, block, free_fn) in drops {
-        let Some(idx) = func.blocks.iter().position(|b| b.id == *block) else { continue };
-        func.blocks[idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
-            dst: None,
-            func: FunctionRef::internal(free_fn.to_string()),
-            args: vec![MirOperand::Local(*local)],
-        }));
-    }
+    facts
 }
 
 /// Captures this frame frees itself, because it also frees the closure holding
@@ -1541,17 +1532,6 @@ fn insert_capture_drops(
     }
 }
 
-/// Is `value` what gets stored into `cell`?
-fn stores_into(func: &MirFunction, value: LocalId, cell: LocalId) -> bool {
-    func.blocks.iter().flat_map(|b| b.statements.iter()).any(|stmt| {
-        matches!(
-            &stmt.kind,
-            MirStmtKind::Store { addr, value: MirOperand::Local(v), .. }
-                if *addr == cell && *v == value
-        )
-    })
-}
-
 /// Locals holding a container this frame owns, mapped to how to free it: the
 /// destination of a constructor, and of a call to a function that builds one
 /// and hands it back.
@@ -1562,6 +1542,47 @@ fn collect_fresh_containers_with(
     interface_handing: &HashMap<String, HandBack>,
     targets: &crate::closure_targets::ClosureTargets,
 ) -> HashMap<LocalId, &'static str> {
+    let (mut fresh, made_here) =
+        containers_and_makers(func, all, handing_over, interface_handing, targets);
+
+    // A name is only this frame's if *every* way of reaching it is. Following
+    // a copy forwards says "one path put a fresh container here"; it doesn't
+    // say the other path didn't put somebody else's there.
+    //
+    //     func lookup(index: Map<string, Vec<i64>>, word: string) -> Vec<i64> {
+    //         return index.get(word) ?? Vec.new()
+    //     }
+    //
+    // One name holds the map's own vector on one path and a fresh one on the
+    // other. Calling that name this frame's freed the map's vector, and the
+    // next lookup read memory that was already gone.
+    loop {
+        let doomed: Vec<LocalId> = fresh
+            .keys()
+            .copied()
+            .filter(|id| !made_here.contains(id) && !every_def_is_fresh(func, *id, &fresh))
+            .collect();
+        if doomed.is_empty() {
+            break;
+        }
+        for id in doomed {
+            fresh.remove(&id);
+        }
+    }
+    fresh
+}
+
+/// Every name that may hold a container this frame made, with the free that
+/// matches it, and the names a container is made under: a constructor's
+/// destination, a container read out of a wrapper a callee handed back, a
+/// load out of a cell only this frame filled.
+fn containers_and_makers(
+    func: &MirFunction,
+    all: &[MirFunction],
+    handing_over: &HashMap<String, HandBack>,
+    interface_handing: &HashMap<String, HandBack>,
+    targets: &crate::closure_targets::ClosureTargets,
+) -> (HashMap<LocalId, &'static str>, HashSet<LocalId>) {
     let mut fresh: HashMap<LocalId, &'static str> = HashMap::new();
     // Calls whose result is a wrapper holding the container, rather than the
     // container: the caller owns what it unwraps, and the wrapper is a value.
@@ -1650,7 +1671,7 @@ fn collect_fresh_containers_with(
         }
     }
     if fresh.is_empty() {
-        return fresh;
+        return (fresh, HashSet::new());
     }
 
     // The same value under a new name: follow it, so the name still holding it
@@ -1693,32 +1714,7 @@ fn collect_fresh_containers_with(
         // definition, not a copy of some other name.
         .chain(unwrapped)
         .collect();
-
-    // A name is only this frame's if *every* way of reaching it is. Following
-    // a copy forwards says "one path put a fresh container here"; it doesn't
-    // say the other path didn't put somebody else's there.
-    //
-    //     func lookup(index: Map<string, Vec<i64>>, word: string) -> Vec<i64> {
-    //         return index.get(word) ?? Vec.new()
-    //     }
-    //
-    // One name holds the map's own vector on one path and a fresh one on the
-    // other. Calling that name this frame's freed the map's vector, and the
-    // next lookup read memory that was already gone.
-    loop {
-        let doomed: Vec<LocalId> = fresh
-            .keys()
-            .copied()
-            .filter(|id| !made_here.contains(id) && !every_def_is_fresh(func, *id, &fresh))
-            .collect();
-        if doomed.is_empty() {
-            break;
-        }
-        for id in doomed {
-            fresh.remove(&id);
-        }
-    }
-    fresh
+    (fresh, made_here)
 }
 
 /// Does every definition of `local` put a container this frame made into it?
@@ -2379,78 +2375,6 @@ fn every_def_is_fresh(
     any
 }
 
-/// Containers the lowering already frees itself.
-///
-/// The iterator and sort lowerings build a scratch vector and free it when
-/// they're done. Adding a second free there is a double free — `sort_by_key`
-/// segfaulted on the way out of `main`. Anything with an explicit free on it
-/// is somebody else's business.
-///
-/// The recognition is by name, so it used to catch the program's own functions
-/// too: `func convert_free(list: Vec<Elem>, …)` reads as a free of `list`, and
-/// the caller stopped releasing the vector it lent (#1248). A name the program
-/// declares is never one of these frees, whatever it ends with.
-fn find_already_freed(
-    func: &MirFunction,
-    containers: &HashMap<LocalId, &'static str>,
-    own: &HashSet<String>,
-) -> HashSet<LocalId> {
-    let mut freed = HashSet::new();
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
-            if own.contains(&fref.name) {
-                continue;
-            }
-            let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
-            let base = head.split('$').next().unwrap_or(head);
-            if !base.ends_with("_free") && !base.ends_with("_free_elems") {
-                continue;
-            }
-            if let Some(MirOperand::Local(id)) = args.first() {
-                if containers.contains_key(id) {
-                    freed.insert(*id);
-                }
-            }
-        }
-    }
-    freed
-}
-
-/// Containers written into an aggregate that one of this function's `return`s
-/// hands back.
-///
-/// Distinct from `find_escaping`'s general store rule, which fires for a store
-/// into any aggregate — most of which stay in the frame and are freed here.
-fn packed_into_a_returned_aggregate(
-    func: &MirFunction,
-    containers: &HashMap<LocalId, &'static str>,
-) -> HashSet<LocalId> {
-    let returned: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .filter_map(|b| match &b.terminator.kind {
-            MirTerminatorKind::Return { value: Some(MirOperand::Local(id)), .. } => Some(*id),
-            _ => None,
-        })
-        .collect();
-    if returned.is_empty() {
-        return HashSet::new();
-    }
-    func.blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::Store { addr, value: MirOperand::Local(v), .. }
-                if returned.contains(addr) && containers.contains_key(v) =>
-            {
-                Some(*v)
-            }
-            _ => None,
-        })
-        .collect()
-}
-
 /// The names that hold one value: copies and phi merges.
 fn value_groups(
     func: &MirFunction,
@@ -2458,9 +2382,8 @@ fn value_groups(
 ) -> Vec<HashSet<LocalId>> {
     let mut parent: HashMap<LocalId, LocalId> = HashMap::new();
     // Loop-carried phis that hold a different allocation each turn — see
-    // `carried_variables`. Left out of every group, so each stands alone and
-    // the back-edge rule can free the turn's value (#1154).
-    let carried = carried_variables(func, &crate::analysis::dominators::DominatorTree::build(func));
+    // `carried_phis`. Left out of every group, so each stands alone.
+    let carried = carried_phis(func);
 
     fn find(parent: &mut HashMap<LocalId, LocalId>, x: LocalId) -> LocalId {
         let p = *parent.get(&x).unwrap_or(&x);
@@ -2485,12 +2408,12 @@ fn value_groups(
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
                     if containers.contains_key(dst)
                         && containers.contains_key(src)
-                        && !carried.is_carried(*src) =>
+                        && !carried.contains(src) =>
                 {
                     union(&mut parent, *dst, *src);
                 }
                 MirStmtKind::Phi { dst, args }
-                    if containers.contains_key(dst) && !carried.is_carried(*dst) =>
+                    if containers.contains_key(dst) && !carried.contains(dst) =>
                 {
                     for (_, op) in args {
                         if let MirOperand::Local(src) = op {
@@ -2526,85 +2449,31 @@ fn value_groups(
     groups.into_values().collect()
 }
 
-/// Loop-carried phis whose value is genuinely replaced each turn, so the name
-/// is a *variable* rather than one allocation under several names.
+/// Loop-carried phis: a name that holds a different allocation each turn, so
+/// it is a *variable* rather than one allocation under several names.
 ///
 /// `mut v = Vec.new()` before a loop that does `v = Vec.new()` inside it lowers
 /// to `_15 = phi [_12 from bb0, _19 from bb3]`, and `_12` and `_19` are two
-/// different vectors. Joining all three into one value group gave the group one
-/// free, so every turn but the last leaked (#1154). Left out of the group, the
-/// phi stands alone, its definition is the loop header, and the back-edge rule
-/// frees what the turn held — which is what that rule is for.
-///
-/// Returns every such phi, and separately the ones something inside the loop
-/// reads. That second set is what decides where the turn's value is freed:
-///
-/// ```text
-/// for i in 0..3 { v = Vec.new() }             // nothing names it — the back edge frees it
-/// for i in 0..3 { let t = v; v = Vec.new() }  // `t` holds it — `t`'s own free does
-/// ```
-///
-/// Freeing the phi on the back edge in the second shape is a use-after-free for
-/// `t`, and `t` is a name inside the loop body, so the same back-edge rule gives
-/// it a free of its own. The phi still gets the one after the loop, for whatever
-/// the last turn left in it.
-fn carried_variables(
-    func: &MirFunction,
-    dom: &crate::analysis::dominators::DominatorTree,
-) -> CarriedVars {
-    let loops = crate::analysis::loops::detect_loops(func, dom);
-    let mut out = CarriedVars::default();
+/// different vectors. Joining all three in `value_groups` would read two
+/// closures over different turns' vectors as one value (#1154).
+fn carried_phis(func: &MirFunction) -> HashSet<LocalId> {
+    let dom = crate::analysis::dominators::DominatorTree::build(func);
+    let loops = crate::analysis::loops::detect_loops(func, &dom);
+    let mut out = HashSet::new();
     for block in &func.blocks {
         for stmt in &block.statements {
             let MirStmtKind::Phi { dst, args } = &stmt.kind else { continue };
-            for lp in loops.iter().filter(|l| l.header == block.id) {
-                // Carried only if a back edge actually feeds it — a phi at a
-                // loop header can still be merging two values from outside.
-                let carried = args
-                    .iter()
-                    .any(|(from, _)| lp.back_edges.iter().any(|(tail, _)| tail == from));
-                if !carried {
-                    continue;
-                }
-                let read_inside = func
-                    .blocks
-                    .iter()
-                    .filter(|b| lp.blocks.contains(&b.id))
-                    .any(|b| {
-                        b.statements.iter().any(|st| {
-                            !matches!(st.kind, MirStmtKind::Phi { .. })
-                                && crate::analysis::uses::stmt_reads(st, *dst)
-                        }) || crate::analysis::uses::terminator_reads(&b.terminator, *dst)
-                    });
-                out.body.entry(*dst).or_default().extend(lp.blocks.iter().copied());
-                if read_inside {
-                    out.held_by_a_reader.insert(*dst);
-                }
+            // Carried only if a back edge actually feeds it — a phi at a loop
+            // header can still be merging two values from outside.
+            let carried = loops.iter().filter(|l| l.header == block.id).any(|lp| {
+                args.iter().any(|(from, _)| lp.back_edges.iter().any(|(tail, _)| tail == from))
+            });
+            if carried {
+                out.insert(*dst);
             }
         }
     }
     out
-}
-
-/// Loop-carried container variables: which loop each one turns in, and whether
-/// a name inside that loop takes the turn's value.
-#[derive(Default)]
-struct CarriedVars {
-    /// Phi → the blocks of the loop it is carried around.
-    body: HashMap<LocalId, HashSet<BlockId>>,
-    /// The ones something inside the loop copies out of.
-    held_by_a_reader: HashSet<LocalId>,
-}
-
-impl CarriedVars {
-    fn is_carried(&self, local: LocalId) -> bool {
-        self.body.contains_key(&local)
-    }
-
-    /// Is `block` inside the loop `local` is carried around?
-    fn inside_its_loop(&self, local: LocalId, block: BlockId) -> bool {
-        self.body.get(&local).is_some_and(|bs| bs.contains(&block))
-    }
 }
 
 /// Returned, stored, captured, or handed to something that keeps it.
@@ -2817,461 +2686,3 @@ fn consumed_by_an_ensure(
     out
 }
 
-/// Copied into another local, or merged through a phi: the new name owns it.
-fn find_moved_away(
-    func: &MirFunction,
-    containers: &HashMap<LocalId, &'static str>,
-    carried: &CarriedVars,
-) -> HashSet<LocalId> {
-    // A copy only ends the source's life if the source is finished with. In a
-    // loop it isn't: `for x in v` inside a `while` copies `v` into the body
-    // every turn, so `v` is live out of the block that copies it and holds the
-    // value the whole time. Calling that a move left every name in the group
-    // either moved-from or unplaceable, and the vector was freed by nobody —
-    // `t39_loop_backedge_container_free.rk`'s own subject, from the other side
-    // (#1047).
-    let dom = crate::analysis::dominators::DominatorTree::build(func);
-    let live = crate::analysis::liveness::analyze(func, &dom);
-    let mut moved = HashSet::new();
-    for block in &func.blocks {
-        for (si, stmt) in block.statements.iter().enumerate() {
-            match &stmt.kind {
-                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                    if containers.contains_key(src) && src != dst =>
-                {
-                    // Live on the way out, or read again below in this block:
-                    // either way the copy wasn't the end of it.
-                    let read_below = block.statements[si + 1..]
-                        .iter()
-                        .any(|st| crate::analysis::uses::stmt_reads(st, *src))
-                        || crate::analysis::uses::terminator_reads(&block.terminator, *src);
-                    if live.live_at_exit(block.id, *src) || read_below {
-                        continue;
-                    }
-                    // A loop-carried variable copied out of *inside* its own
-                    // loop is not finished with: the copy took this turn's
-                    // value, and the path that leaves the loop never ran it, so
-                    // whatever the last turn put there still needs a free
-                    // afterwards. Liveness says the name is dead here because
-                    // the header's phi redefines it, which is true of the name
-                    // and not of the variable (#1154).
-                    if carried.inside_its_loop(*src, block.id) {
-                        continue;
-                    }
-                    moved.insert(*src);
-                }
-                MirStmtKind::Phi { args, .. } => {
-                    for (_, op) in args {
-                        if let MirOperand::Local(id) = op {
-                            if containers.contains_key(id) {
-                                moved.insert(*id);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    moved
-}
-
-/// Moved-away names that only ever moved into other names of their own group,
-/// so the group still frees the value and the old name can free it where no
-/// copy reached. See the call site for why each exclusion is there.
-fn moved_only_within_its_group(
-    func: &MirFunction,
-    fresh: &HashMap<LocalId, &'static str>,
-    groups: &[HashSet<LocalId>],
-    moved_away: &HashSet<LocalId>,
-    escaping: &HashSet<LocalId>,
-) -> Vec<LocalId> {
-    let group_of: HashMap<LocalId, usize> = groups
-        .iter()
-        .enumerate()
-        .flat_map(|(gi, g)| g.iter().map(move |id| (*id, gi)))
-        .collect();
-    let mut defs: HashMap<LocalId, usize> = HashMap::new();
-    let mut phi_operands: HashSet<LocalId> = HashSet::new();
-    // Groups whose value flows on into a name outside the group. A
-    // loop-carried phi is kept out of every group (`carried_variables`), so
-    // `v = Vec.new()` inside a loop hands the new vector to the next turn's
-    // `v` and the group that made it never sees that name. The free is that
-    // name's business; an earlier one here would be a use-after-free.
-    let mut flows_out: HashSet<usize> = HashSet::new();
-    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-        if let Some(d) = crate::analysis::uses::stmt_def(stmt) {
-            *defs.entry(d).or_default() += 1;
-        }
-        match &stmt.kind {
-            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
-                if let Some(&g) = group_of.get(src) {
-                    if group_of.get(dst) != Some(&g) {
-                        flows_out.insert(g);
-                    }
-                }
-            }
-            MirStmtKind::Phi { dst, args } => {
-                for (_, op) in args {
-                    if let MirOperand::Local(id) = op {
-                        phi_operands.insert(*id);
-                        if let Some(&g) = group_of.get(id) {
-                            if group_of.get(dst) != Some(&g) {
-                                flows_out.insert(g);
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    let unsafe_groups: HashSet<usize> = groups
-        .iter()
-        .enumerate()
-        .filter(|(gi, g)| flows_out.contains(gi) || g.iter().any(|id| escaping.contains(id)))
-        .map(|(gi, _)| gi)
-        .collect();
-    let mut out: Vec<LocalId> = moved_away
-        .iter()
-        .copied()
-        .filter(|id| fresh.contains_key(id) && !phi_operands.contains(id))
-        .filter(|id| defs.get(id) == Some(&1))
-        .filter(|id| group_of.get(id).is_some_and(|g| !unsafe_groups.contains(g)))
-        .collect();
-    out.sort_by_key(|l| l.0);
-    out
-}
-
-/// Every block a consumed container might already be gone in: the consuming
-/// blocks and everything reachable from them.
-///
-/// A *may* answer on purpose. Freeing where the value is definitely still this
-/// frame's leaks nothing and frees nothing twice; the other way round is a
-/// double free, so a block with any consuming path into it is left alone.
-fn blocks_past_a_consume(func: &MirFunction, sites: &HashSet<BlockId>) -> HashSet<BlockId> {
-    let mut out: HashSet<BlockId> = sites.clone();
-    let mut frontier: Vec<BlockId> = sites.iter().copied().collect();
-    while let Some(bid) = frontier.pop() {
-        let Some(block) = func.blocks.iter().find(|b| b.id == bid) else { continue };
-        for succ in crate::analysis::cfg::successors(&block.terminator) {
-            if out.insert(succ) {
-                frontier.push(succ);
-            }
-        }
-    }
-    out
-}
-
-/// Emit the frees `plan_drops` decided on.
-fn insert_drops(
-    func: &mut MirFunction,
-    droppable: &HashMap<LocalId, &'static str>,
-    plan: Vec<(usize, Vec<LocalId>)>,
-) {
-    for (block_idx, locals) in plan {
-        for local in locals {
-            let free = droppable[&local];
-            func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal(free.to_string()),
-                args: vec![MirOperand::Local(local)],
-            }));
-        }
-    }
-}
-
-/// Why a name was given a free at a block.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Site {
-    Return,
-    BackEdge,
-    LeavesRegion,
-}
-
-/// Where each free goes: one entry per block that needs them.
-///
-/// Free before every return the container's definition dominates, before
-/// every loop back-edge it was built inside, and where control leaves the
-/// region its definition rules. Same placement rules as `interface_drop.rs`,
-/// and for the same reasons — see the comments there on why dominance is what
-/// decides it rather than block order. Then one free per allocation per site:
-/// see `one_free_per_site`.
-fn plan_drops(
-    func: &MirFunction,
-    droppable: &HashMap<LocalId, &'static str>,
-    groups: &[HashSet<LocalId>],
-    consumed: &HashMap<LocalId, HashSet<BlockId>>,
-) -> Vec<(usize, Vec<LocalId>)> {
-    if droppable.is_empty() {
-        return Vec::new();
-    }
-    let dom = crate::analysis::dominators::DominatorTree::build(func);
-    // A loop-carried variable something inside the loop copies out of: that
-    // copy owns the turn's value and gets the back-edge free, so the variable
-    // itself must not get one too (#1154). It still gets the one after the
-    // loop, for what the last turn left in it.
-    let carried = carried_variables(func, &dom);
-    // Where each container might already be gone. A consume under any name is
-    // a consume of the allocation, so the answer is shared across the group:
-    // `let b = a; take(b)` leaves `a` naming freed memory too. Blocks with no
-    // entry own nothing consumable and answer "no" for every local.
-    let mut gone: HashMap<LocalId, HashSet<BlockId>> = HashMap::new();
-    for (id, sites) in consumed {
-        let blocks = blocks_past_a_consume(func, sites);
-        let names: Vec<LocalId> = match groups.iter().find(|g| g.contains(id)) {
-            Some(g) => g.iter().copied().collect(),
-            None => vec![*id],
-        };
-        for name in names.into_iter().filter(|n| droppable.contains_key(n)) {
-            gone.entry(name).or_default().extend(blocks.iter().copied());
-        }
-    }
-    let still_ours = |id: &LocalId, at: BlockId| {
-        !gone.get(id).is_some_and(|blocks| blocks.contains(&at))
-    };
-
-    let mut defined_in_block: HashMap<LocalId, usize> = HashMap::new();
-    let mut def_at: HashMap<LocalId, (usize, usize)> = HashMap::new();
-    // Every local's defining block, not just the droppable ones: a back-edge
-    // has to ask where the *allocation* was made, and the name holding it
-    // there is usually a copy of one defined further out.
-    let mut def_of_any: HashMap<LocalId, usize> = HashMap::new();
-    for (idx, block) in func.blocks.iter().enumerate() {
-        for (si, stmt) in block.statements.iter().enumerate() {
-            if let Some(dst) = crate::analysis::uses::stmt_def(stmt) {
-                def_of_any.insert(dst, idx);
-                if droppable.contains_key(&dst) {
-                    defined_in_block.insert(dst, idx);
-                    def_at.insert(dst, (idx, si));
-                }
-            }
-        }
-    }
-
-    let mut sites: Vec<(usize, LocalId, Site)> = Vec::new();
-
-    for (block_idx, block) in func.blocks.iter().enumerate() {
-        match &block.terminator.kind {
-            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => {
-                for id in droppable.keys().copied() {
-                    let defined_before = defined_in_block
-                        .get(&id)
-                        .is_some_and(|&def_idx| dom.dominates(func.blocks[def_idx].id, block.id));
-                    if defined_before && still_ours(&id, block.id) {
-                        sites.push((block_idx, id, Site::Return));
-                    }
-                }
-            }
-            MirTerminatorKind::Goto { target } => backedge_drops(
-                &mut sites, block_idx, block.id, *target, &func.blocks, &dom,
-                &defined_in_block, &def_of_any, groups, &gone, &carried.held_by_a_reader,
-            ),
-            MirTerminatorKind::Branch { then_block, else_block, .. } => {
-                backedge_drops(
-                    &mut sites, block_idx, block.id, *then_block, &func.blocks, &dom,
-                    &defined_in_block, &def_of_any, groups, &gone, &carried.held_by_a_reader,
-                );
-                backedge_drops(
-                    &mut sites, block_idx, block.id, *else_block, &func.blocks, &dom,
-                    &defined_in_block, &def_of_any, groups, &gone, &carried.held_by_a_reader,
-                );
-            }
-            _ => {}
-        }
-    }
-
-    exit_edge_drops(func, droppable, &dom, &defined_in_block, &still_ours, &mut sites);
-
-    one_free_per_site(func, &dom, sites, groups, &def_at)
-}
-
-/// One allocation, one free per site, under the name that holds it there.
-///
-/// The names of one allocation can each be placed at the same site, and two
-/// frees of one pointer is a double free. `v.min()` and `v.max()` both copy the
-/// vector into their own parameter local, and both names reach the return
-/// (#1143). Or they reach different sites by different paths: `buf` read
-/// through a fused `buf.take(n)` inside a loop and again after it has one copy
-/// covering the return inside the loop, another covering the returns after it,
-/// and `buf` itself covering the return before either copy (#1384).
-///
-/// So the choice is made per site: the latest name whose definition comes
-/// before it. Every name placed at a return or back-edge dominates it, and the
-/// dominators of a block form a chain, so "latest" is always defined. An older
-/// name holds the same pointer, so the choice only matters for one thing: the
-/// latest is the one whose definition is guaranteed to have run.
-///
-/// The region-exit rule needs one more guard. It frees where control leaves
-/// the part of the function a name's definition rules — right when the name
-/// alone holds the value. Any other name of the group defined outside that
-/// region means the value outlives it: a name before it frees it later, and a
-/// name after it still reads it. A name defined inside a loop for a vector
-/// made outside the loop would otherwise free it on the first turn.
-fn one_free_per_site(
-    func: &MirFunction,
-    dom: &crate::analysis::dominators::DominatorTree,
-    mut sites: Vec<(usize, LocalId, Site)>,
-    groups: &[HashSet<LocalId>],
-    def_at: &HashMap<LocalId, (usize, usize)>,
-) -> Vec<(usize, Vec<LocalId>)> {
-    // Does `a`'s definition run before `b`'s on every path to `b`?
-    let comes_before = |a: LocalId, b: LocalId| match (def_at.get(&a), def_at.get(&b)) {
-        (Some(&(ba, sa)), Some(&(bb, sb))) if ba == bb => sa < sb,
-        (Some(&(ba, _)), Some(&(bb, _))) => {
-            dom.dominates(func.blocks[ba].id, func.blocks[bb].id)
-        }
-        _ => false,
-    };
-    let group_of = |id: LocalId| -> usize {
-        groups.iter().position(|g| g.contains(&id)).unwrap_or(usize::MAX - id.0 as usize)
-    };
-
-    let mut placed: HashMap<usize, Vec<LocalId>> = HashMap::new();
-    for (_, id, _) in &sites {
-        let names = placed.entry(group_of(*id)).or_default();
-        if !names.contains(id) {
-            names.push(*id);
-        }
-    }
-    sites.retain(|(_, id, site)| {
-        *site != Site::LeavesRegion
-            || placed[&group_of(*id)].iter().all(|o| o == id || comes_before(*id, *o))
-    });
-
-    // Lowest id first so ties and the output order don't depend on hashing.
-    sites.sort_by_key(|(idx, id, _)| (*idx, id.0));
-    let mut chosen: HashMap<(usize, usize), LocalId> = HashMap::new();
-    for (idx, id, _) in &sites {
-        chosen
-            .entry((*idx, group_of(*id)))
-            .and_modify(|cur| {
-                if comes_before(*cur, *id) {
-                    *cur = *id;
-                }
-            })
-            .or_insert(*id);
-    }
-
-    let mut by_block: HashMap<usize, Vec<LocalId>> = HashMap::new();
-    for ((idx, _), id) in chosen {
-        by_block.entry(idx).or_default().push(id);
-    }
-    let mut out: Vec<(usize, Vec<LocalId>)> = by_block.into_iter().collect();
-    for (_, locals) in &mut out {
-        locals.sort_by_key(|l| l.0);
-    }
-    out.sort_by_key(|(idx, _)| *idx);
-    out
-}
-
-/// Free where control leaves the region the definition rules.
-///
-/// A container made inside one arm of a branch never reaches a `return` its
-/// definition dominates, so the rule above finds no home for it:
-///
-/// ```text
-/// Node.Branch(m) => {
-///     for entry in entries(m) { … }   // a fresh Vec, made in this arm
-/// }
-/// ```
-///
-/// leaves `write` with the vector live on that arm only, and the join block
-/// the arm goes to is reachable from the other arm too. `JsonValue.to_string`
-/// on an object leaked one vector per object that way.
-///
-/// The definition dominates a region of the CFG. Control leaves it either at a
-/// `return` inside it — which the rule above covers — or across an edge to a
-/// block outside it, which is this one. Every path out crosses exactly one of
-/// those, so between them each allocation is freed once.
-fn exit_edge_drops(
-    func: &MirFunction,
-    droppable: &HashMap<LocalId, &'static str>,
-    dom: &crate::analysis::dominators::DominatorTree,
-    defined_in_block: &HashMap<LocalId, usize>,
-    still_ours: &impl Fn(&LocalId, BlockId) -> bool,
-    out: &mut Vec<(usize, LocalId, Site)>,
-) {
-    for (&id, &def_idx) in defined_in_block {
-        if !droppable.contains_key(&id) {
-            continue;
-        }
-        let def = func.blocks[def_idx].id;
-        let sites = crate::analysis::drop_sites::where_control_leaves(func, dom, def, id);
-        for idx in sites {
-            // And not where the value has already been handed over on this
-            // path — the one question the shared rule can't answer, because
-            // only this pass tracks it.
-            if still_ours(&id, func.blocks[idx].id) {
-                out.push((idx, id, Site::LeavesRegion));
-            }
-        }
-    }
-}
-
-fn backedge_drops(
-    out: &mut Vec<(usize, LocalId, Site)>,
-    block_idx: usize,
-    source: BlockId,
-    target: BlockId,
-    blocks: &[MirBlock],
-    dom: &crate::analysis::dominators::DominatorTree,
-    defined_in_block: &HashMap<LocalId, usize>,
-    def_of_any: &HashMap<LocalId, usize>,
-    groups: &[HashSet<LocalId>],
-    gone: &HashMap<LocalId, HashSet<BlockId>>,
-    held_by_a_reader: &HashSet<LocalId>,
-) {
-    if !dom.dominates(target, source) {
-        return;
-    }
-    let inside = |id: &LocalId| {
-        // No defining statement means a parameter, which the frame was handed
-        // and the loop certainly didn't make.
-        def_of_any.get(id).is_some_and(|&idx| {
-            let def = blocks[idx].id;
-            dom.dominates(target, def) && dom.dominates(def, source)
-        })
-    };
-    let drops: Vec<LocalId> = defined_in_block
-        .iter()
-        .filter(|(_, &def_idx)| {
-            let def = blocks[def_idx].id;
-            dom.dominates(target, def) && dom.dominates(def, source)
-        })
-        // The name is inside the loop; the allocation has to be too. `for x in v`
-        // inside a `while` copies `v` into a fresh name in the loop body, and
-        // freeing *that* freed `v` — so the second iteration walked memory that
-        // was already gone. A plain `for` over a vector, no adapter involved,
-        // segfaulted (#1061).
-        //
-        // One allocation under several names is one group, so the question is
-        // whether every name in it was made inside the loop. Any member from
-        // outside means the container predates the loop and belongs to the
-        // enclosing frame — leaving it alone leaks at worst, where freeing it
-        // is a use-after-free.
-        .filter(|(id, _)| {
-            groups
-                .iter()
-                .find(|g| g.contains(id))
-                .is_none_or(|g| g.iter().all(inside))
-        })
-        // And it has to still be this frame's here. A builder made and built in
-        // one turn of the loop is gone by the back-edge:
-        //
-        //     _403 = StringBuilder_build(_382)   // takes it away
-        //     _404 = Vec_push(_317, _80)
-        //     StringBuilder_free(_382)           // frees it again
-        //     goto bb5
-        //
-        // which is `markdown_renderer`'s fenced-code branch, and it segfaulted
-        // in `free` on the second block.
-        .filter(|(id, _)| !gone.get(id).is_some_and(|blocks| blocks.contains(&source)))
-        // A loop-carried variable whose turn-value a name inside the loop took:
-        // that name's own free covers it, and a second one here is a double
-        // free (#1154).
-        .filter(|(id, _)| !held_by_a_reader.contains(id))
-        .map(|(&id, _)| id)
-        .collect();
-    out.extend(drops.into_iter().map(|id| (block_idx, id, Site::BackEdge)));
-}

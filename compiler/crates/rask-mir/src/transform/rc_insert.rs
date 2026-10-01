@@ -661,7 +661,7 @@ fn insert_aggregate_release(
         );
     }
 
-    let plan = ownership::plan(func, &facts);
+    let plan = ownership::plan(func, &facts, ownership::Placement::LastUse);
 
     // Insert back to front so earlier indices stay put. Step over the retains
     // already sitting at the spot: the last use of a wrapper is usually the
@@ -704,7 +704,7 @@ fn insert_aggregate_release(
         }
     }
     // After the in-block ones: those index into the blocks as they were.
-    release_on_edges(func, on_edges);
+    ownership::insert_on_edges(func, on_edges);
 }
 
 /// Whether reading a field of `base` into `dst` gives a part of what `base`
@@ -907,7 +907,7 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
             (from, to, releases)
         })
         .collect();
-    release_on_edges(func, edges);
+    ownership::insert_on_edges(func, edges);
 }
 
 /// Where in `block` the value of `local` dies, as the index to insert its
@@ -1090,85 +1090,6 @@ fn assigned_on_exit(func: &MirFunction, locals: &[LocalId]) -> HashMap<BlockId, 
         }
     }
     out
-}
-
-/// Put each edge's releases on its edge: at the top of the successor when this
-/// is the only way into it, and otherwise in a new block between the two, so
-/// the release runs on this edge and no other.
-fn release_on_edges(func: &mut MirFunction, edges: Vec<(BlockId, BlockId, Vec<MirStmt>)>) {
-    if edges.is_empty() {
-        return;
-    }
-    let preds = cfg::predecessors(func);
-    let mut next_id = func.blocks.iter().map(|b| b.id.0).max().unwrap_or(0) + 1;
-    // One edge can carry several releases; they go in one block.
-    let mut merged: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
-    for (from, to, stmts) in edges {
-        match merged.iter_mut().find(|(f, t, _)| *f == from && *t == to) {
-            Some((_, _, all)) => all.extend(stmts),
-            None => merged.push((from, to, stmts)),
-        }
-    }
-    for (from, to, releases) in merged {
-        let only_way_in = preds
-            .get(&to)
-            .is_some_and(|ps| ps.iter().all(|p| *p == from));
-        let span = func
-            .blocks
-            .iter()
-            .find(|b| b.id == from)
-            .map(|b| b.terminator.span)
-            .unwrap_or(crate::Span::new(0, 0));
-        if only_way_in {
-            let Some(block) = func.blocks.iter_mut().find(|b| b.id == to) else { continue };
-            let at = block.statements.iter().take_while(|s| matches!(s.kind, MirStmtKind::Phi { .. })).count();
-            block.statements.splice(at..at, releases);
-            continue;
-        }
-        let between = BlockId(next_id);
-        next_id += 1;
-        if let Some(block) = func.blocks.iter_mut().find(|b| b.id == from) {
-            retarget(&mut block.terminator, to, between);
-        }
-        if let Some(block) = func.blocks.iter_mut().find(|b| b.id == to) {
-            for stmt in &mut block.statements {
-                if let MirStmtKind::Phi { args, .. } = &mut stmt.kind {
-                    for (pred, _) in args.iter_mut() {
-                        if *pred == from {
-                            *pred = between;
-                        }
-                    }
-                }
-            }
-        }
-        func.blocks.push(MirBlock {
-            id: between,
-            statements: releases,
-            terminator: MirTerminator::new(MirTerminatorKind::Goto { target: to }, span),
-        });
-    }
-}
-
-/// Point every arm of `term` that goes to `old` at `new`.
-fn retarget(term: &mut MirTerminator, old: BlockId, new: BlockId) {
-    let swap = |b: &mut BlockId| {
-        if *b == old {
-            *b = new;
-        }
-    };
-    match &mut term.kind {
-        MirTerminatorKind::Goto { target } => swap(target),
-        MirTerminatorKind::Branch { then_block, else_block, .. } => {
-            swap(then_block);
-            swap(else_block);
-        }
-        MirTerminatorKind::Switch { cases, default, .. } => {
-            cases.iter_mut().for_each(|(_, b)| swap(b));
-            swap(default);
-        }
-        MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => cleanup_chain.iter_mut().for_each(swap),
-        MirTerminatorKind::Return { .. } | MirTerminatorKind::Unreachable => {}
-    }
 }
 
 #[cfg(test)]

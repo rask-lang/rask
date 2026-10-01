@@ -607,9 +607,8 @@ fn insert_drops(func: &mut MirFunction, droppable: &HashSet<LocalId>) {
     //
     // A definition rules a region; control leaves it either at a `return`
     // inside it or across an edge out of it, and every path out crosses exactly
-    // one of the two. Same rule as `container_drop::exit_edge_drops`, ported
-    // rather than re-derived — including both of the guards that cost a
-    // segfault there.
+    // one of the two. `drop_sites::where_control_leaves` holds the rule and
+    // both of the guards that cost a segfault.
     {
         let mut extra: HashMap<usize, Vec<LocalId>> = HashMap::new();
         for id in droppable.iter().copied() {
