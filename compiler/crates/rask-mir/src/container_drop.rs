@@ -319,17 +319,12 @@ fn env_drop_glue(
             })
             .collect();
         follow_copies(func, &mut made_here);
-        // Closures this frame drops. `insert_closure_drops` emits one only for
-        // a closure the frame owns, so its presence says the frame will free
-        // what this closure swallowed and the glue must not.
-        let frame_drops: HashSet<LocalId> = func
-            .blocks
-            .iter()
-            .flat_map(|b| b.statements.iter())
-            .filter_map(|st| match &st.kind {
-                MirStmtKind::ClosureDrop { closure } => Some(*closure),
-                _ => None,
-            })
+        // Closures this frame drops. `closures::insert_drops` emits one only
+        // for a closure the frame owns, so its presence says the frame will
+        // free what this closure swallowed and the glue must not.
+        let frame_drops: HashSet<LocalId> = crate::closures::closure_drops_by_create(func)
+            .into_iter()
+            .map(|(create, _, _)| create)
             .collect();
         for block in &func.blocks {
             for stmt in &block.statements {
@@ -1316,16 +1311,11 @@ fn captures_freed_with_the_closure(
     func: &MirFunction,
     fresh: &HashMap<LocalId, &'static str>,
 ) -> Vec<(LocalId, u32, LocalId, &'static str)> {
-    // Closures this frame drops. `insert_closure_drops` emits one only for a
-    // closure the frame owns, so its presence is the answer.
-    let dropped: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::ClosureDrop { closure } => Some(*closure),
-            _ => None,
-        })
+    // Closures this frame drops. `closures::insert_drops` emits one only for
+    // a closure the frame owns, so its presence is the answer.
+    let dropped: HashSet<LocalId> = crate::closures::closure_drops_by_create(func)
+        .into_iter()
+        .map(|(create, _, _)| create)
         .collect();
     if dropped.is_empty() {
         return Vec::new();
@@ -1424,14 +1414,10 @@ fn one_free_per_group(
     with_closure: Vec<(LocalId, u32, LocalId, &'static str)>,
     groups: &[HashSet<LocalId>],
 ) -> Vec<(LocalId, u32, LocalId, &'static str)> {
-    // Where each closure is dropped, by the last `closure_drop` naming it.
+    // Where each closure is dropped, by the last `closure_drop` freeing it.
     let mut dropped_at: HashMap<LocalId, (usize, usize)> = HashMap::new();
-    for (bi, block) in func.blocks.iter().enumerate() {
-        for (si, stmt) in block.statements.iter().enumerate() {
-            if let MirStmtKind::ClosureDrop { closure } = &stmt.kind {
-                dropped_at.insert(*closure, (bi, si));
-            }
-        }
+    for (create, bi, si) in crate::closures::closure_drops_by_create(func) {
+        dropped_at.insert(create, (bi, si));
     }
 
     let reach = strict_reach(func);
@@ -1507,28 +1493,27 @@ fn insert_capture_drops(
     func: &mut MirFunction,
     freed: &[(LocalId, u32, LocalId, &'static str)],
 ) {
-    for block_idx in 0..func.blocks.len() {
-        let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
-        for (si, stmt) in func.blocks[block_idx].statements.iter().enumerate() {
-            let MirStmtKind::ClosureDrop { closure } = &stmt.kind else { continue };
-            for (owner, _, local, free) in freed.iter().filter(|(o, _, _, _)| o == closure) {
-                let _ = owner;
-                insertions.push((
-                    si + 1,
-                    MirStmt::new(
-                        MirStmtKind::Call {
-                            dst: None,
-                            func: FunctionRef::internal((*free).to_string()),
-                            args: vec![MirOperand::Local(*local)],
-                        },
-                        stmt.span,
-                    ),
-                ));
-            }
+    let mut insertions: Vec<(usize, usize, MirStmt)> = Vec::new();
+    for (create, bi, si) in crate::closures::closure_drops_by_create(func) {
+        let span = func.blocks[bi].statements[si].span;
+        for (_, _, local, free) in freed.iter().filter(|(owner, _, _, _)| *owner == create) {
+            insertions.push((
+                bi,
+                si + 1,
+                MirStmt::new(
+                    MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal((*free).to_string()),
+                        args: vec![MirOperand::Local(*local)],
+                    },
+                    span,
+                ),
+            ));
         }
-        for (idx, stmt) in insertions.into_iter().rev() {
-            func.blocks[block_idx].statements.insert(idx, stmt);
-        }
+    }
+    // Back to front, so an insertion never shifts one still to come.
+    for (bi, si, stmt) in insertions.into_iter().rev() {
+        func.blocks[bi].statements.insert(si, stmt);
     }
 }
 

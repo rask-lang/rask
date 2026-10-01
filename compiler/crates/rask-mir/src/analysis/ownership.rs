@@ -975,6 +975,16 @@ pub fn insert_on_edges(func: &mut MirFunction, edges: Vec<(BlockId, BlockId, Vec
             .find(|b| b.id == from)
             .map(|b| b.terminator.span)
             .unwrap_or(crate::Span::new(0, 0));
+        // The only way out of `from`: its end is this edge. A `goto` reads
+        // nothing, so the release can sit right before it.
+        let only_way_out = func.blocks.iter().find(|b| b.id == from).is_some_and(|b| {
+            matches!(b.terminator.kind, MirTerminatorKind::Goto { .. })
+        });
+        if only_way_out {
+            let Some(block) = func.blocks.iter_mut().find(|b| b.id == from) else { continue };
+            block.statements.extend(releases);
+            continue;
+        }
         if only_way_in {
             let Some(block) = func.blocks.iter_mut().find(|b| b.id == to) else { continue };
             let at = block.statements.iter().take_while(|s| matches!(s.kind, MirStmtKind::Phi { .. })).count();

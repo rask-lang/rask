@@ -45,7 +45,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    BlockId, LocalId, MirBlock, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind,
+    BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind,
     MirTerminatorKind, MirType,
 };
 
@@ -397,18 +397,139 @@ fn insert_for_function(
         }
     }
 
-    let escaping = find_escaping(func, &interface_locals, callee_escapes);
-    let moved_away = find_moved_away(func, &interface_locals);
-
-    let droppable: HashSet<LocalId> = interface_locals.iter()
-        .filter(|id| !escaping.contains(id) && !moved_away.contains(id))
-        .copied()
-        .collect();
-    if droppable.is_empty() {
-        return;
+    // Where a box is made: boxed here, handed back by a callee, or read out
+    // of a wrapper this frame parked it in. Everything else in the set is a
+    // copy of one of those.
+    let mut made: HashSet<LocalId> = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        if let MirStmtKind::InterfaceBox { dst, .. } = &stmt.kind {
+            made.insert(*dst);
+        }
     }
+    made.extend(boxes_handed_over(func, hands_back));
+    made.extend(boxes_parked_in_a_wrapper(func, &interface_locals));
 
-    insert_drops(func, &droppable);
+    let facts = box_facts(func, &interface_locals, &made, callee_escapes);
+    let plan = crate::analysis::ownership::plan(
+        func,
+        &facts,
+        crate::analysis::ownership::Placement::ScopeEnd,
+    );
+    let drop_of = |interface_object: LocalId| MirStmt::dummy(MirStmtKind::InterfaceDrop { interface_object });
+    let mut at_end: Vec<(usize, LocalId)> = Vec::new();
+    let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
+    for r in plan {
+        match r {
+            crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
+            crate::analysis::ownership::Release::OnEdge { from, to, name } => {
+                on_edges.push((from, to, vec![drop_of(name)]))
+            }
+        }
+    }
+    at_end.sort_by_key(|(b, l)| (*b, l.0));
+    for (block, name) in at_end {
+        func.blocks[block].statements.push(drop_of(name));
+    }
+    crate::analysis::ownership::insert_on_edges(func, on_edges);
+}
+
+/// What each statement does to the boxes this frame may hold.
+///
+/// Handed over: returned, stored, passed to a closure or through a vtable, or
+/// to a named callee whose body keeps it. A callee that demonstrably keeps
+/// nothing of the argument leaves the box to this frame; no answer means it
+/// might keep it. An interface call's receiver is a borrow.
+fn box_facts(
+    func: &MirFunction,
+    tracked: &HashSet<LocalId>,
+    made: &HashSet<LocalId>,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+) -> crate::analysis::ownership::Facts {
+    use crate::analysis::ownership::Event;
+    use crate::analysis::uses;
+    let names: std::collections::BTreeSet<LocalId> = tracked.iter().copied().collect();
+    let mut facts = crate::analysis::ownership::Facts {
+        names: names.clone(),
+        events: Vec::new(),
+        terminator_events: Vec::new(),
+        reads: Vec::new(),
+        kills: Vec::new(),
+        terminator_reads: Vec::new(),
+        foreign: func.params.iter().map(|p| p.id).filter(|p| tracked.contains(p)).collect(),
+    };
+    for block in &func.blocks {
+        let (mut events, mut reads, mut kills) = (Vec::new(), Vec::new(), Vec::new());
+        for stmt in &block.statements {
+            let mut ev: Vec<Event> = Vec::new();
+            let give = |ev: &mut Vec<Event>, op: &MirOperand| {
+                if let Some(id) = uses::operand_local(op).filter(|id| tracked.contains(id)) {
+                    ev.push(Event::HandOver(id));
+                }
+            };
+            match &stmt.kind {
+                MirStmtKind::Call { func: callee, args, .. } => {
+                    let keeps = callee_escapes.get(&callee.name);
+                    for (i, arg) in args.iter().enumerate() {
+                        let borrowed = keeps.and_then(|e| e.get(i)).is_some_and(|escapes| !escapes);
+                        if !borrowed {
+                            give(&mut ev, arg);
+                        }
+                    }
+                }
+                MirStmtKind::ClosureCall { args, .. } | MirStmtKind::InterfaceCall { args, .. } => {
+                    for arg in args {
+                        give(&mut ev, arg);
+                    }
+                }
+                MirStmtKind::Store { value, .. } | MirStmtKind::ArrayStore { value, .. } => {
+                    give(&mut ev, value)
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+                    if tracked.contains(dst) && tracked.contains(src) && !made.contains(dst) =>
+                {
+                    ev.push(Event::Alias { dst: *dst, src: *src });
+                }
+                _ => {}
+            }
+            if let Some(d) = uses::stmt_def(stmt).filter(|d| tracked.contains(d)) {
+                let bound = ev.iter().any(|e| matches!(e, Event::Alias { dst, .. } if *dst == d));
+                if !bound && !matches!(stmt.kind, MirStmtKind::Phi { .. }) {
+                    ev.push(if made.contains(&d) { Event::Make(d) } else { Event::Other(d) });
+                }
+            }
+            let (mut r, mut k) = (Vec::new(), Vec::new());
+            if !matches!(stmt.kind, MirStmtKind::Phi { .. }) {
+                for n in &names {
+                    if uses::stmt_reads(stmt, *n) {
+                        r.push(*n);
+                    }
+                    if uses::stmt_def(stmt) == Some(*n) {
+                        k.push(*n);
+                    }
+                }
+            }
+            events.push(ev);
+            reads.push(r);
+            kills.push(k);
+        }
+        facts.events.push(events);
+        facts.reads.push(reads);
+        facts.kills.push(kills);
+        let mut term = Vec::new();
+        if let MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+        | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } =
+            &block.terminator.kind
+        {
+            if tracked.contains(id) {
+                term.push(Event::HandOver(*id));
+            }
+        }
+        facts.terminator_events.push(term);
+        facts
+            .terminator_reads
+            .push(names.iter().copied().filter(|n| uses::terminator_reads(&block.terminator, *n)).collect());
+    }
+    facts
 }
 
 /// Locals that hold a fresh interface-object allocation: `InterfaceBox` destinations,
@@ -471,257 +592,10 @@ fn carry_through_moves(func: &MirFunction, held: &mut HashSet<LocalId>) {
     }
 }
 
-/// An interface object escapes if it's returned, stored, or passed as a call or
-/// method argument. Being read through `InterfaceCall`'s receiver position is a
-/// borrow, not an escape.
-fn find_escaping(
-    func: &MirFunction,
-    interface_locals: &HashSet<LocalId>,
-    callee_escapes: &HashMap<String, Vec<bool>>,
-) -> HashSet<LocalId> {
-    let mut escaping = HashSet::new();
-
-    let mark_args = |args: &[MirOperand], escaping: &mut HashSet<LocalId>| {
-        for arg in args {
-            if let MirOperand::Local(id) = arg {
-                if interface_locals.contains(id) {
-                    escaping.insert(*id);
-                }
-            }
-        }
-    };
-
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            match &stmt.kind {
-                // A named callee whose body says it keeps nothing of this
-                // argument leaves the box to this frame. Anything else — a
-                // bodiless native, a call through a closure — has no answer to
-                // read, and no answer means it might keep it.
-                MirStmtKind::Call { func: callee, args, .. } => {
-                    let keeps = callee_escapes.get(&callee.name);
-                    for (i, arg) in args.iter().enumerate() {
-                        let Some(id) = crate::analysis::uses::operand_local(arg) else {
-                            continue;
-                        };
-                        if !interface_locals.contains(&id) {
-                            continue;
-                        }
-                        let borrowed = keeps
-                            .and_then(|e| e.get(i))
-                            .map(|escapes| !escapes)
-                            .unwrap_or(false);
-                        if !borrowed {
-                            escaping.insert(id);
-                        }
-                    }
-                }
-                MirStmtKind::ClosureCall { args, .. } => {
-                    mark_args(args, &mut escaping);
-                }
-                MirStmtKind::InterfaceCall { args, .. } => {
-                    mark_args(args, &mut escaping);
-                }
-                MirStmtKind::Store { value: MirOperand::Local(id), .. }
-                | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. } => {
-                    if interface_locals.contains(id) {
-                        escaping.insert(*id);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        match &block.terminator.kind {
-            MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
-            | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
-                if interface_locals.contains(id) {
-                    escaping.insert(*id);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    escaping
-}
-
-/// An interface object is "moved away" when it's copied into a different local
-/// (a plain move — the new name owns the value now) or merged through a
-/// `Phi`. Either way, the old name's death isn't a drop point; whichever
-/// name still holds the value when *it* dies is the one that gets dropped.
-fn find_moved_away(func: &MirFunction, interface_locals: &HashSet<LocalId>) -> HashSet<LocalId> {
-    let mut moved = HashSet::new();
-
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            match &stmt.kind {
-                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                    if interface_locals.contains(src) && src != dst =>
-                {
-                    moved.insert(*src);
-                }
-                MirStmtKind::Phi { args, .. } => {
-                    for (_, op) in args {
-                        if let MirOperand::Local(id) = op {
-                            if interface_locals.contains(id) {
-                                moved.insert(*id);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    moved
-}
-
-/// Insert `InterfaceDrop` before every return and every loop back-edge, for each
-/// droppable interface object still alive at that point.
-fn insert_drops(func: &mut MirFunction, droppable: &HashSet<LocalId>) {
-    let dom = crate::analysis::dominators::DominatorTree::build(func);
-
-    let mut defined_in_block: HashMap<LocalId, usize> = HashMap::new();
-    for (idx, block) in func.blocks.iter().enumerate() {
-        for stmt in &block.statements {
-            if let Some(dst) = crate::analysis::uses::stmt_def(stmt) {
-                if droppable.contains(&dst) {
-                    defined_in_block.insert(dst, idx);
-                }
-            }
-        }
-    }
-
-    let mut drops_to_insert: Vec<(usize, Vec<LocalId>)> = Vec::new();
-
-    // Drop where control leaves the region the definition rules.
-    //
-    // The return rule above needs the definition to dominate the return, and a
-    // definition inside a `match` arm — or a `catch` — dominates none of them:
-    // the join block is reachable from the other arms too. Its own comment
-    // names the case and stops there, so the box was dropped nowhere.
-    // `classify(-1) catch e => -1` binds the error, so the payload read exists
-    // and owns the box; it just had no site.
-    //
-    // A definition rules a region; control leaves it either at a `return`
-    // inside it or across an edge out of it, and every path out crosses exactly
-    // one of the two. `drop_sites::where_control_leaves` holds the rule and
-    // both of the guards that cost a segfault.
-    {
-        let mut extra: HashMap<usize, Vec<LocalId>> = HashMap::new();
-        for id in droppable.iter().copied() {
-            let Some(&def_idx) = defined_in_block.get(&id) else { continue };
-            let def = func.blocks[def_idx].id;
-            for idx in crate::analysis::drop_sites::where_control_leaves(func, &dom, def, id) {
-                extra.entry(idx).or_default().push(id);
-            }
-        }
-        for (idx, mut locals) in extra {
-            locals.sort_by_key(|l| l.0);
-            drops_to_insert.push((idx, locals));
-        }
-    }
-
-    for (block_idx, block) in func.blocks.iter().enumerate() {
-        match &block.terminator.kind {
-            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => {
-                // An interface object created inside a loop (or either arm of a
-                // branch) doesn't reach every return in the function — only
-                // a return this local's definition actually dominates can
-                // rely on it being live. Dropping it at a return it doesn't
-                // dominate reads a local nothing wrote on that path, which
-                // is exactly the stale-SSA-name crash this pass had before.
-                let to_drop: Vec<LocalId> = droppable.iter()
-                    .copied()
-                    .filter(|id| {
-                        defined_in_block.get(id)
-                            .is_some_and(|&def_idx| dom.dominates(func.blocks[def_idx].id, block.id))
-                    })
-                    .collect();
-                if !to_drop.is_empty() {
-                    drops_to_insert.push((block_idx, to_drop));
-                }
-            }
-            MirTerminatorKind::Goto { target } => {
-                collect_backedge_drops(
-                    &mut drops_to_insert, block_idx, block.id, *target, &func.blocks, &dom, &defined_in_block,
-                );
-            }
-            // Nothing to do here; the exit-edge rule below covers every other
-            // way control leaves a definition's region.
-            MirTerminatorKind::Branch { then_block, else_block, .. } => {
-                collect_backedge_drops(
-                    &mut drops_to_insert, block_idx, block.id, *then_block, &func.blocks, &dom, &defined_in_block,
-                );
-                collect_backedge_drops(
-                    &mut drops_to_insert, block_idx, block.id, *else_block, &func.blocks, &dom, &defined_in_block,
-                );
-            }
-            _ => {}
-        }
-    }
-
-    for (block_idx, locals) in drops_to_insert {
-        for interface_object in locals {
-            func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::InterfaceDrop { interface_object }));
-        }
-    }
-}
-
-fn collect_backedge_drops(
-    out: &mut Vec<(usize, Vec<LocalId>)>,
-    block_idx: usize,
-    source: BlockId,
-    target: BlockId,
-    blocks: &[MirBlock],
-    dom: &crate::analysis::dominators::DominatorTree,
-    defined_in_block: &HashMap<LocalId, usize>,
-) {
-    // A genuine loop back-edge is one whose target dominates its source —
-    // every path to `source` passes through `target` first, i.e. `target`
-    // is the loop header. Block *index* order isn't a safe proxy for this:
-    // `assert`'s desugared success/failure blocks get allocated (and so
-    // numbered) before the main computation that jumps to them, which
-    // looked exactly like a back-edge under an index check and produced a
-    // double-drop (drop at the "back-edge", drop again at the real return).
-    if !dom.dominates(target, source) {
-        return;
-    }
-    // Drop interface objects whose definition is inside the loop. Two conditions,
-    // and the second was missing:
-    //
-    //   The header dominates the definition — so it isn't something created
-    //   before the loop, which is still live after it.
-    //
-    //   The definition dominates the block that jumps back — so the value really
-    //   is written on every iteration. The loop's *exit* block is dominated by
-    //   the header too, so the first check alone claimed anything defined after
-    //   the loop. `let c: any Shape = …` written after a `while` was dropped on
-    //   every back-edge, freeing whatever the uninitialised slot held; the second
-    //   iteration then double-freed and the process segfaulted at the `i = i + 1`
-    //   line (#764's neighbour).
-    //
-    // An interface object created in only one arm of a branch inside the loop doesn't
-    // dominate the back-edge and so leaks rather than being dropped on a path
-    // that never wrote it — the same trade the return path takes.
-    let to_drop: Vec<LocalId> = defined_in_block.iter()
-        .filter(|(_, &def_idx)| {
-            let def = blocks[def_idx].id;
-            dom.dominates(target, def) && dom.dominates(def, source)
-        })
-        .map(|(&id, _)| id)
-        .collect();
-    if !to_drop.is_empty() {
-        out.push((block_idx, to_drop));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MirLocal, MirTerminator};
+    use crate::{MirBlock, MirLocal, MirTerminator};
 
     fn local(id: u32) -> LocalId { LocalId(id) }
     fn block_id(id: u32) -> BlockId { BlockId(id) }
@@ -739,6 +613,13 @@ mod tests {
             is_extern_c: false,
             source_file: None,
         }
+    }
+
+    fn drops_of(stmts: &[MirStmt], names: &[LocalId]) -> usize {
+        stmts
+            .iter()
+            .filter(|s| matches!(&s.kind, MirStmtKind::InterfaceDrop { interface_object } if names.contains(interface_object)))
+            .count()
     }
 
     fn has_interface_drop(stmts: &[MirStmt], target: LocalId) -> bool {
@@ -800,8 +681,7 @@ mod tests {
             }],
         );
         insert_interface_drops(std::slice::from_mut(&mut f));
-        assert!(!has_interface_drop(&f.blocks[0].statements, local(0)), "moved-from name should not be dropped");
-        assert!(has_interface_drop(&f.blocks[0].statements, local(1)), "the name actually holding the value should be dropped");
+        assert_eq!(drops_of(&f.blocks[0].statements, &[local(0), local(1)]), 1, "one drop, under either name");
     }
 
     #[test]
@@ -906,8 +786,8 @@ mod tests {
             ],
         );
         insert_interface_drops(std::slice::from_mut(&mut f));
-        assert!(has_interface_drop(&f.blocks[2].statements, local(1)), "back-edge block should drop the loop-local interface object");
-        assert!(!has_interface_drop(&f.blocks[2].statements, local(0)), "moved-from name should not be dropped");
+        assert_eq!(drops_of(&f.blocks[2].statements, &[local(0), local(1)]), 1, "back-edge block should drop the loop-local interface object once");
+        assert_eq!(drops_of(&f.blocks[3].statements, &[local(0), local(1)]), 0, "and the exit nothing more");
     }
 
     /// Reproduces the shape `assert`'s desugaring produces: the success and
@@ -956,8 +836,8 @@ mod tests {
             ],
         );
         insert_interface_drops(std::slice::from_mut(&mut f));
-        assert!(has_interface_drop(&f.blocks[1].statements, local(1)), "the return block should get the drop");
-        assert!(!has_interface_drop(&f.blocks[2].statements, local(1)), "the branch is not a back-edge — no second drop here");
+        let all: Vec<MirStmt> = f.blocks.iter().flat_map(|b| b.statements.clone()).collect();
+        assert_eq!(drops_of(&all, &[local(0), local(1)]), 1, "one drop in all, not a second at a branch mistaken for a back edge");
     }
 
     /// Reproduces `tests/suite/t62_interface_object_positions.rk`'s struct-field

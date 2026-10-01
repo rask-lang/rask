@@ -20,7 +20,7 @@ use crate::analysis::liveness;
 use crate::analysis::ownership;
 use crate::analysis::uses;
 use crate::{
-    MirBlock, MirTerminator,
+    MirBlock,
     BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
 };
 
@@ -307,7 +307,7 @@ fn insert_aggregate_release(
 
     // Closures this frame drops, and boxes it drops.
     //
-    // `container_drop::insert_closure_drops` and `interface_drop` emit a drop
+    // `closures::insert_drops` and `interface_drop` emit a drop
     // only for a closure or box the frame owns, and this pass runs after both,
     // so the drop's presence answers "does the frame outlive it". One the
     // frame drops reads into what it holds and keeps it needed until the drop;
@@ -318,15 +318,20 @@ fn insert_aggregate_release(
     // *shallowly*, so the box and the frame's own local hold the same
     // container handle, and two boxes of one value hold it twice: a free has
     // to happen exactly once, and the frame is where that can be arranged.
-    let dropped: HashSet<LocalId> = func
+    let boxes_dropped: HashSet<LocalId> = func
         .blocks
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::ClosureDrop { closure } => Some(*closure),
             MirStmtKind::InterfaceDrop { interface_object } => Some(*interface_object),
             _ => None,
         })
+        .collect();
+    // A closure's drop names whichever copy still holds it, so closures are
+    // matched to their create site the way `container_drop` does.
+    let closures_dropped: HashSet<LocalId> = crate::closures::closure_drops_by_create(func)
+        .into_iter()
+        .map(|(create, _, _)| create)
         .collect();
     // The drop is rarely on the boxing site's own name. Inlining copies the box
     // into the callee's parameter local and the drop lands there, so
@@ -346,7 +351,7 @@ fn insert_aggregate_release(
             if !seen.insert(id) {
                 continue;
             }
-            if dropped.contains(&id) {
+            if boxes_dropped.contains(&id) {
                 return true;
             }
             if let Some(next) = copied_into.get(&id) {
@@ -580,7 +585,7 @@ fn insert_aggregate_release(
                 MirStmtKind::ClosureCreate { dst, captures, heap, .. } => {
                     let caps: Vec<LocalId> =
                         captures.iter().map(|c| c.local_id).filter(|c| is_tracked(c)).collect();
-                    if *heap && dropped.contains(dst) {
+                    if *heap && closures_dropped.contains(dst) {
                         if caps.is_empty() {
                             ev.push(ownership::Event::Other(*dst));
                         }
