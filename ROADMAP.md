@@ -393,8 +393,6 @@ Ships open:
   tasks over one `Shared` plus a channel. It wouldn't reproduce on demand.
 - [#1381](https://github.com/rask-lang/rask/issues/1381): sim picks the next
   task itself rather than driving green.c's queues from the seed.
-- [#1382](https://github.com/rask-lang/rask/issues/1382): a generic body's
-  closure is judged by value on the interpreter, by type natively.
 - [#1379](https://github.com/rask-lang/rask/issues/1379): `cli_calculator`
   leaks its expression tree.
 - macOS runs tasks on threads until it has a kqueue poller.
