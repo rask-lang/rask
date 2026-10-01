@@ -35,7 +35,7 @@ Re-measure these rather than trusting them — each line names the command.
 | Measure | Now | Command |
 |---------|-----|---------|
 | Suite programs agreeing on both backends | 577 green, 6 registered red | `tests/differential.sh` |
-| Programs that leak | 4, holding 6 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Programs that leak | 2, holding 2 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
 | Programs memcheck finds an error in | 0 of 579 | `tests/memcheck_gate.sh` |
 | Concurrency files TSan reports a race in | 0 of 81 | `tests/tsan_gate.sh` |
