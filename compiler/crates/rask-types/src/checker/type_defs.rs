@@ -285,6 +285,9 @@ pub struct MethodSig {
     /// Empty for a method with no generic receiver, and for the derived and
     /// interface-supplied signatures, which have no header to read.
     pub owner_patterns: Vec<String>,
+    /// The checker supplied it (EQ1, HA1, ORD1 and the rest): a signature with
+    /// no body behind it, which the backends answer structurally.
+    pub derived: bool,
 }
 
 /// How self is passed to a method.
@@ -426,6 +429,10 @@ pub struct TypedProgram {
     /// path hands back the left operand unchanged — unwrapping it would throw
     /// away the layer the chain is still carrying.
     pub fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// Method calls desugared from an operator (`a + b` → `a.add(b)`). One
+    /// the program wrote as a method call is a call to that method, never the
+    /// machine instruction its name happens to share.
+    pub operator_calls: std::collections::HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them, so their
     /// captures travel with them instead of being pointed at. Worked out by the
     /// ownership pass and written back here, because lowering and the

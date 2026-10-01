@@ -143,6 +143,7 @@ pub struct Monomorphizer<'a> {
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
+    pub instantiated_operator_calls: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
     /// Closures in the copies that may not reach another task (#1356).
     pub instantiated_task_bound_closures: HashSet<NodeId>,
@@ -562,6 +563,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_operator_targets: HashMap::new(),
             instantiated_error_wraps: HashMap::new(),
             instantiated_fallback_keeps_shape: HashSet::new(),
+            instantiated_operator_calls: HashSet::new(),
             instantiated_escaping_closures: HashSet::new(),
             instantiated_task_bound_closures: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
@@ -691,6 +693,9 @@ impl<'a> Monomorphizer<'a> {
             }
             // ER14a: whether a `??` keeps its shape is a property of the two
             // operand types, which substitution preserves.
+            if typed.operator_calls.contains(&old_id) {
+                self.instantiated_operator_calls.insert(new_id);
+            }
             if typed.fallback_keeps_shape.contains(&old_id) {
                 self.instantiated_fallback_keeps_shape.insert(new_id);
             }

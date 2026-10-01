@@ -7478,82 +7478,50 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
-        // Operator overload: `a + b` desugars to `a.add(b)`. A native
-        // BinaryOp only makes sense for primitive operands — on a Struct/Enum
-        // receiver it would `sadd` two aggregate pointers as integers and hand
-        // back garbage (#386). So dispatch any aggregate-receiver operator
-        // method to the real `{Type}_{method}` instead. This is driven by the
-        // MIR type, not the checker's node type, so it also covers receivers
-        // the checker left untyped (e.g. a synthesized lock guard).
+        // `a + b` desugars to `a.add(b)`, and on a primitive receiver that
+        // call is the machine instruction. A call the program wrote as a method
+        // is that method, whatever it's called (the checker reads it the same
+        // way): `bag.add(v)` on a `Bag<Vec<i64>>` used to lower as a pointer
+        // add, which nothing read, so the push inside never happened.
         //
-        // Only when the type actually declares that operator, though. Without an
-        // overload there is nothing to call, and `==`/`!=` on an aggregate is
-        // meant to reach codegen's structural comparison (tag then payload for
-        // enums, field by field for structs) as a BinaryOp. Routing every
-        // aggregate operator to `{Type}_{method}` sent derived comparisons to a
-        // function that was never emitted — `Status_eq` not found (#399/#463).
-        let aggregate_receiver = matches!(obj_ty, MirType::Struct(_) | MirType::Enum(_));
-        // `mir_type_name` reads the struct/enum layout's own `name`, which for
-        // a generic type is the bare declared name ("Wrapping"), never mono's
-        // mangled one ("Wrapping$u32") — `compute_struct_layout` never adds
-        // the type-argument suffix to `.name`. The registered function is
-        // keyed the other way around, method mangled *after* the base name
-        // (`Wrapping_mul$u32`, from `mangle_name("Wrapping_mul", [u32])`). An
-        // exact-match lookup on `"{ty_name}_{method}"` only ever finds a
-        // non-generic overload; on a generic one it silently missed, so
-        // `a.mul(b)` on `Wrapping<u32>` fell through to a raw struct-address
-        // multiply instead of calling `Wrapping_mul$u32` (#838). A generic
-        // instantiation's key always starts with the unmangled prefix plus
-        // `$`, so match on that instead of requiring an exact hit.
-        // The fallback scan below is a linear pass over every registered
-        // function, so it only runs for a generic receiver — the one case an
-        // exact-match lookup can't ever find. A non-generic receiver's exact
-        // key either exists or the method just isn't an overload, and the
-        // first `contains_key` already answers both (#937 review).
-        let receiver_is_generic = matches!(
-            self.ctx.lookup_raw_type(object.id),
-            Some(rask_types::Type::Generic { .. } | rask_types::Type::UnresolvedGeneric { .. })
-        );
-        // Both names the receiver goes by. `mir_type_name` reads the layout,
-        // and a nominal newtype shares its underlying type's layout (T3) — so
-        // for `type Counted = Doc` it answers "Doc" and the lookup built
-        // `Doc_eq`, a function nobody declared. The block's methods are
-        // registered under the newtype's own name, the way #445 keyed them, so
-        // `a.eq(b)` on a `Counted` fell through to a raw struct-address compare
-        // while `a.same(b)` — not an operator method, so it takes the dispatch
-        // chain below — called the right body. The checker's type is what knows
-        // the difference.
-        let mut overload_names: Vec<String> = Vec::new();
-        if let Some(prefix) = self
+        // This replaces guessing from the function table. That looked for
+        // `{Type}_{method}` under the receiver's names, and missed whenever the
+        // layout's name and mono's mangling disagreed: `Bag$Vec$i64_add`
+        // against the registered `Bag_add$Vec$i64` (#838, #445 were earlier
+        // shapes of the same miss).
+        //
+        // An operator that resolved to a conformance already returned above.
+        // One left here on a type that declares the method itself, without an
+        // `implements`, calls it: `a < b` on a `Tag` with its own `lt` (#400).
+        // What the receiver is comes from the checker's record of the call,
+        // and whether it declares the method from the type table. Anything
+        // else on an aggregate is a derived `==`/`!=`, which reaches codegen's
+        // structural comparison as a BinaryOp (#399/#463).
+        let scalar_receiver = raw_type_is_numeric
+            || matches!(
+                obj_ty,
+                MirType::Bool | MirType::Char
+                    | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
+                    | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128
+                    | MirType::F32 | MirType::F64
+            );
+        let written_as_method = !self.ctx.operator_calls.contains(&call);
+        let declares_method = self
             .ctx
-            .lookup_raw_type(object.id)
-            .filter(|ty| super::MirContext::stdlib_type_prefix(ty).is_none())
-            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-        {
-            overload_names.push(prefix);
-        }
-        if let Some(name) = self.mir_type_name(obj_ty) {
-            overload_names.push(name);
-        }
-        // XC5: an operator method is a conformance method like any other —
-        // `Doc implements Equal` in two packages puts two `eq`s on one type.
-        let method = &overload_names
-            .first()
-            .map(|p| self.dispatch_method_name(call, p, method))
-            .unwrap_or_else(|| method.clone());
-        // A nominal newtype has no layout of its own (type.aliases/T3), so it
-        // isn't an aggregate by `obj_ty` even when it wraps a struct — and an
-        // `Counted implements Equal` block is exactly the overload this gate
-        // is here to find.
-        let has_operator_overload = (aggregate_receiver
-            || self.expr_is_transparent_newtype(object))
-            && overload_names.iter().any(|ty_name| {
-                let qualified = format!("{}_{}", ty_name, method);
-                self.func_sigs.contains_key(&qualified)
-                    || (receiver_is_generic
-                        && self.func_sigs.keys().any(|k| k.starts_with(&format!("{}$", qualified))))
+            .call_targets
+            .get(&call)
+            .and_then(|target| target.recv_type_id())
+            .and_then(|id| self.ctx.type_defs.get(id))
+            .is_some_and(|def| match def {
+                rask_types::TypeDef::Struct { methods, .. }
+                | rask_types::TypeDef::Enum { methods, .. }
+                | rask_types::TypeDef::NominalAlias { methods, .. } => {
+                    methods.iter().any(|m| m.name == *method && !m.derived)
+                }
+                _ => false,
             });
-        let skip_binop = skip_binop || has_operator_overload;
+        let skip_binop =
+            skip_binop || declares_method || (written_as_method && !scalar_receiver);
 
         // std.bits B1 on an integer receiver. These aren't operator methods —
         // they're named calls — but they lower the same way, to a single

@@ -791,8 +791,12 @@ impl Desugarer {
                 // Special case for != which is !a.eq(b)
                 self.operator_calls.insert(expr.id);
                 if op == BinOp::Ne {
+                    // The `eq` call is the one the checker and lowering see,
+                    // so it's the one that has to read as an operator.
+                    let eq_id = self.fresh_id();
+                    self.operator_calls.insert(eq_id);
                     let eq_call = Expr {
-                        id: self.fresh_id(),
+                        id: eq_id,
                         kind: ExprKind::MethodCall {
                             object: Box::new(left_expr),
                             method: "eq".to_string(),
