@@ -13,4 +13,5 @@ pub mod escape;
 pub mod intervals;
 pub mod liveness;
 pub mod loops;
+pub mod ownership;
 pub mod uses;
