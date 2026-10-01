@@ -710,7 +710,9 @@ fn remap_stmt(
             func_name,
             captures,
             heap,
+            task_bound,
         } => MirStmtKind::ClosureCreate {
+            task_bound: *task_bound,
             dst: local_map.get(dst).copied().unwrap_or(*dst),
             func_name: func_name.clone(),
             captures: captures
@@ -740,8 +742,9 @@ fn remap_stmt(
             offset: *offset,
             access: *access,
         },
-        MirStmtKind::ClosureDrop { closure } => MirStmtKind::ClosureDrop {
+        MirStmtKind::ClosureDrop { closure, made } => MirStmtKind::ClosureDrop {
             closure: local_map.get(closure).copied().unwrap_or(*closure),
+            made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
         },
         MirStmtKind::ArrayStore {
             base,

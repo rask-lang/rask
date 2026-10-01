@@ -21,8 +21,6 @@ mod random;
 mod reflect;
 mod thread;
 mod time;
-#[cfg(not(target_arch = "wasm32"))]
-mod http;
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{ModuleKind, Value};
@@ -86,12 +84,12 @@ impl Interpreter {
             ModuleKind::Path => self.call_path_module_method(method, args),
             ModuleKind::Async => self.call_async_method(method, args),
             ModuleKind::Thread => self.call_thread_method(method, args),
-            #[cfg(not(target_arch = "wasm32"))]
-            ModuleKind::Http => self.call_http_method(method, args),
-            #[cfg(target_arch = "wasm32")]
-            ModuleKind::Http => Err(RuntimeError::Generic(
-                "http module not available in browser playground".to_string()
-            )),
+            // All of it is Rask (stdlib/http.rk), which `call_module_method`
+            // falls back to.
+            ModuleKind::Http => Err(RuntimeError::NoSuchMethod {
+                ty: "http".to_string(),
+                method: method.to_string(),
+            }),
 
             ModuleKind::Reflect => self.call_reflect_method(method, args),
 
@@ -210,10 +208,6 @@ impl Interpreter {
                     )))
                 }
             }
-            #[cfg(not(target_arch = "wasm32"))]
-            "Response" => self.call_response_type_method(method, args),
-            #[cfg(not(target_arch = "wasm32"))]
-            "Method" => self.call_method_enum_constructor(method),
             _ => {
                 // Auto-derived default() — construct struct with default-valued fields
                 if method == "default" {
@@ -239,7 +233,7 @@ impl Interpreter {
                             .map(|p| p.name != "self")
                             .unwrap_or(true);
                         if is_static && has_body {
-                            return self.call_function(&method_fn, args).map_err(|diag| diag.error);
+                            return self.call_function(&method_fn, args, None).map_err(|diag| diag.error);
                         }
                     }
                 }

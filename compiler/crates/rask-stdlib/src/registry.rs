@@ -167,7 +167,6 @@ const TCP_LISTENER_METHODS: &[&str] = &["accept", "local_addr", "close", "clone"
 
 const TCP_CONNECTION_METHODS: &[&str] = &[
     "read_bytes", "write_bytes", "read_text", "write_text", "remote_addr",
-    "read_http_request", "write_http_response",
     "close", "clone",
 ];
 
@@ -337,7 +336,15 @@ pub const REGISTERED_MODULES: &[&str] = &[
 /// `Path` was the first: 46 lines of declarations, 192 lines of C and 184 lines
 /// of Rust, for pure string manipulation that the two backends got different
 /// answers from (#688).
-pub const RASK_IMPLEMENTED_TYPES: &[&str] = &["Path", "Handles"];
+///
+/// The HTTP types followed: the interpreter answered them from Rust, and the
+/// two drifted three times in one week — native lost the url, the
+/// interpreter never closed a connection, native dropped response headers
+/// (#1378).
+pub const RASK_IMPLEMENTED_TYPES: &[&str] = &[
+    "Path", "Handles",
+    "Request", "Response", "Headers", "Method", "HttpServer", "Responder", "HttpClient",
+];
 
 /// True when this type's methods live in Rask rather than in the backends.
 pub fn is_rask_implemented(type_name: &str) -> bool {

@@ -1286,7 +1286,7 @@ impl TypeChecker {
                 // of the declaration `subst` borrows from.
                 let header_bound: Vec<(String, Type)> = found
                     .map(|m| {
-                        Self::build_owner_pattern_subst(&m.owner_patterns, generic_args)
+                        self.build_owner_pattern_subst(&m.owner_patterns, generic_args)
                             .into_iter()
                             .collect()
                     })
@@ -2271,21 +2271,6 @@ impl TypeChecker {
             ("TcpListener", "accept") if args.is_empty() => {
                 let result_type = Type::Result {
                     ok: Box::new(Type::UnresolvedNamed("TcpConnection".to_string())),
-                    err: Box::new(error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            // TcpConnection
-            ("TcpConnection", "read_http_request") if args.is_empty() => {
-                let result_type = Type::Result {
-                    ok: Box::new(Type::UnresolvedNamed("Request".to_string())),
-                    err: Box::new(error_ty),
-                };
-                self.unify(ret, &result_type, span)
-            }
-            ("TcpConnection", "write_http_response") if args.len() == 1 => {
-                let result_type = Type::Result {
-                    ok: Box::new(Type::Unit),
                     err: Box::new(error_ty),
                 };
                 self.unify(ret, &result_type, span)

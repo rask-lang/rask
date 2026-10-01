@@ -258,6 +258,46 @@ int64_t rask_sim_net_connect(const char *host, const char *port_str) {
     return add_fd(client);
 }
 
+// ─── Waiting, and being cancelled while waiting ────────────
+//
+// A task parked on a simulated socket ends its wait when it is cancelled, the
+// same as on a real one (conc.async/CN3). The wake registers at the first real
+// wait, and whatever the loop is waiting for is checked before the cancel, so
+// data that is already there is still taken.
+
+typedef struct {
+    RaskCancelWake wake;
+    int            registered;
+} SimWait;
+
+static void wake_parked(RaskCancelWake *w) {
+    rask_sim_notify(w->a);
+}
+
+// Park on `key`, or answer 1 when the task was cancelled.
+static int sim_wait(SimWait *sw, const void *key, const char *what) {
+    if (!sw->registered) {
+        sw->wake = (RaskCancelWake){ .wake = wake_parked, .a = (void *)key };
+        sw->registered = 1;
+        if (rask_cancel_wait_begin(&sw->wake)) return 1;
+    }
+    if (rask_cancel_requested()) return 1;
+    int released = rask_task_slot_release();
+    rask_sim_park(key, what);
+    rask_task_slot_retake(released);
+    return 0;
+}
+
+static int64_t sim_wait_done(SimWait *sw, int64_t result) {
+    if (sw->registered) rask_cancel_wait_end();
+    return result;
+}
+
+static int64_t cancelled(SimWait *sw) {
+    errno = ECANCELED;
+    return sim_wait_done(sw, -1);
+}
+
 int64_t rask_sim_net_accept(int64_t fd) {
     SimSock *l = sock_at((int)fd);
     RASK_SIM_POINT();
@@ -269,9 +309,11 @@ int64_t rask_sim_net_accept(int64_t fd) {
         errno = EINVAL;
         return -1;
     }
+    SimWait sw = {0};
     while (l->q_len == 0 && !l->closed) {
-        rask_sim_park(l, "accept");
+        if (sim_wait(&sw, l, "accept")) return cancelled(&sw);
     }
+    sim_wait_done(&sw, 0);
     if (l->closed) {
         errno = EBADF;
         return -1;
@@ -294,9 +336,11 @@ int64_t rask_sim_net_read(int64_t fd, void *buf, size_t n) {
     // nothing may yield, or a second reader of the same socket takes them and
     // this one reports an end of stream that never happened.
     latency();
+    SimWait sw = {0};
     while (s->in_len == 0 && !s->peer_closed && !s->peer_reset && !s->closed && !s->reset) {
-        rask_sim_park(s, "socket read");
+        if (sim_wait(&sw, s, "socket read")) return cancelled(&sw);
     }
+    sim_wait_done(&sw, 0);
     if (s->closed) {
         errno = EBADF;   // closed by another task while this one waited
         return -1;
@@ -325,9 +369,11 @@ int64_t rask_sim_net_write(int64_t fd, const void *buf, size_t n) {
     if (injected(s, "write")) return -1;
     SimSock *p = s->peer;
     // A full window waits for the reader, as a real send buffer does.
+    SimWait sw = {0};
     while (p && !p->closed && !p->reset && !s->closed && !s->reset && p->in_len >= p->window) {
-        rask_sim_park(p, "room in the peer's receive window");
+        if (sim_wait(&sw, p, "room in the peer's receive window")) return cancelled(&sw);
     }
+    sim_wait_done(&sw, 0);
     if (s->closed) {
         errno = EBADF;
         return -1;

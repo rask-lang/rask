@@ -39,7 +39,7 @@ impl Interpreter {
                     } else {
                         "to_string"
                     };
-                    return self.call_rask_method("JsonValue", body, recv, vec![]);
+                    return self.call_rask_method("JsonValue", body, recv, vec![], None);
                 }
             }
         }

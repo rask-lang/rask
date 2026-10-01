@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// A test that passes and leaks. A match over `Vec<T> or E` drops only the Vec
-// side, so the IoError's message stays allocated (#1338, tests/known_leaks.txt).
+// A test that passes and leaks. A closure handed to a `take` parameter carries
+// the vector it captured in a heap environment, and freeing that environment
+// doesn't release what's inside it (#1045, tests/known_leaks.txt).
 // When that is fixed this needs another leak, or the sim test using it fails.
-import fs
 
-test "a missing directory is an error" {
-    mut failed = false
-    match fs.list_dir("/definitely/not/here") {
-        Vec<string> as names => { failed = false }
-        IoError as e => { failed = true }
-    }
-    assert failed
+func consume(take f: func(i64) -> i64) -> i64 {
+    return f(1)
+}
+
+func hands_it_to_a_take() -> i64 {
+    let tags: Vec<i64> = [1, 2, 3]
+    let f = |x| x + tags.len().wrap<i64>()
+    return consume(f)
+}
+
+test "a closure handed to a take parameter carries its vector along" {
+    assert hands_it_to_a_take() == 4
 }

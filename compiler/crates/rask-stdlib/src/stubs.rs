@@ -118,9 +118,7 @@ fn parse_stub(stub_index: usize, next_id: &mut u32) -> Option<Vec<Decl>> {
 /// underscore is ordinary, so it gets two.
 ///
 /// Left alone: a module's lowercase namespace struct (`struct fs { }`), which
-/// the checker finds by the module's name, and a private function spelled
-/// `Type_method`, which is there to shadow that dispatch entry (http.rk's
-/// `TcpConnection_read_http_request`).
+/// the checker finds by the module's name.
 fn qualify_private_helpers(decls: &mut [Decl], module: &str) {
     let snake = |n: &str| n.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
     let camel = |n: &str| n.starts_with(|c: char| c.is_ascii_uppercase()) && !n.contains(['<', '_']);

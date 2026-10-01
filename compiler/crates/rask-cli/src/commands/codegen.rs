@@ -245,19 +245,12 @@ pub fn cmd_mir(path: &str, format: Format) {
     let nominal_underlying = super::compile::build_nominal_underlying(&typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
-    let all_node_types = mono.all_node_types(&typed);
-    let all_call_targets = mono.all_call_targets(&typed);
-    let all_operator_targets = mono.all_operator_targets(&typed);
-    let all_error_wraps = mono.all_error_wraps(&typed);
-    let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
-    let all_escaping_closures = mono.all_escaping_closures(&typed);
+    let records = mono.node_records(&typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
         &typed,
         &mono.struct_layouts,
         &mono.enum_layouts,
-        &all_node_types,
-        &all_call_targets,
-        &all_operator_targets,
+        &records,
         &type_names,
     )
         .with_comptime_globals(&comptime_globals)
@@ -268,9 +261,6 @@ pub fn cmd_mir(path: &str, format: Format) {
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = Some(path);
     mir_ctx.comptime_interp = Some(std::cell::RefCell::new(mir_interp));
-    mir_ctx.error_wraps = &all_error_wraps;
-    mir_ctx.fallback_keeps_shape = &all_fallback_keeps_shape;
-    mir_ctx.escaping_closures = &all_escaping_closures;
     let mir_ctx = mir_ctx;
 
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
@@ -330,19 +320,12 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     let nominal_underlying = super::compile::build_nominal_underlying(&typed);
     // Instantiated generic bodies have nodes the checker never saw; mono
     // carried its records onto them. Lowering wants one map for both.
-    let all_node_types = mono.all_node_types(&typed);
-    let all_call_targets = mono.all_call_targets(&typed);
-    let all_operator_targets = mono.all_operator_targets(&typed);
-    let all_error_wraps = mono.all_error_wraps(&typed);
-    let all_fallback_keeps_shape = mono.all_fallback_keeps_shape(&typed);
-    let all_escaping_closures = mono.all_escaping_closures(&typed);
+    let records = mono.node_records(&typed);
     let mut mir_ctx = rask_mir::lower::MirContext::new(
         &typed,
         &mono.struct_layouts,
         &mono.enum_layouts,
-        &all_node_types,
-        &all_call_targets,
-        &all_operator_targets,
+        &records,
         &type_names,
     )
         .with_comptime_globals(&comptime_globals)
@@ -353,9 +336,6 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = Some(path);
-    mir_ctx.error_wraps = &all_error_wraps;
-    mir_ctx.fallback_keeps_shape = &all_fallback_keeps_shape;
-    mir_ctx.escaping_closures = &all_escaping_closures;
     let mir_ctx = mir_ctx;
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);

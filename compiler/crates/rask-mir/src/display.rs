@@ -211,8 +211,12 @@ impl fmt::Display for MirStmt {
                 write!(f, "ensure_push(bb{})", cleanup_block.0)
             }
             MirStmtKind::EnsurePop => write!(f, "ensure_pop"),
-            MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => {
-                let alloc = if *heap { "heap" } else { "stack" };
+            MirStmtKind::ClosureCreate { dst, func_name, captures, heap, task_bound } => {
+                let alloc = match (*heap, *task_bound) {
+                    (true, true) => "heap, task-bound",
+                    (true, false) => "heap",
+                    (false, _) => "stack",
+                };
                 write!(f, "_{} = closure[{}]({}, [", dst.0, alloc, func_name)?;
                 for (i, cap) in captures.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
@@ -243,9 +247,10 @@ impl fmt::Display for MirStmt {
                     captures.iter().map(|c| format!("_{}", c.local_id.0)).collect::<Vec<_>>().join(", "))
             }
             MirStmtKind::EnsureHookPop => write!(f, "ensure_hook_pop()"),
-            MirStmtKind::ClosureDrop { closure } => {
-                write!(f, "closure_drop(_{}))", closure.0)
-            }
+            MirStmtKind::ClosureDrop { closure, made } => match made {
+                Some(m) if m != closure => write!(f, "closure_drop(_{}) made _{}", closure.0, m.0),
+                _ => write!(f, "closure_drop(_{})", closure.0),
+            },
             MirStmtKind::ArrayStore { base, index, elem_size, value } => {
                 write!(f, "*(_{}+{}*{}) = {}", base.0, index, elem_size, value)
             }

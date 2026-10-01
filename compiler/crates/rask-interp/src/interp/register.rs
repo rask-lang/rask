@@ -12,7 +12,7 @@ use super::{Interpreter, RegisteredProgram, RuntimeError, TestResult, BenchmarkR
 
 /// Strip generic type parameters from a type name.
 /// "Box<T>" → "Box", "SpscRingBuffer<T, N>" → "SpscRingBuffer", "Point" → "Point"
-fn strip_generics(name: &str) -> &str {
+pub(crate) fn strip_generics(name: &str) -> &str {
     match name.find('<') {
         Some(pos) => &name[..pos],
         None => name,
@@ -160,6 +160,15 @@ impl Interpreter {
                     // second block read overwrites the first and one library
                     // runs the other's body.
                     let suffix = self.conformance_disambiguation.get(&decl.id).cloned();
+                    let header = rask_types::extend_target_args(&impl_decl.target_ty);
+                    if !header.is_empty() {
+                        for method in &impl_decl.methods {
+                            self.extend_header_patterns.insert(
+                                (base_name.clone(), method.name.clone()),
+                                header.clone(),
+                            );
+                        }
+                    }
                     let type_methods = self.methods.entry(base_name).or_default();
                     for method in &impl_decl.methods {
                         // OR4: `Mul<f64>` and `Mul<Meters>` on one type both
@@ -622,7 +631,7 @@ impl Interpreter {
 
         let outer_capture = self.begin_output_capture();
 
-        match self.call_function(func, vec![]) {
+        match self.call_function(func, vec![], None) {
             Ok(_) => {}
             Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {}
             Err(diag) if matches!(&diag.error, RuntimeError::CheckFailed(_) | RuntimeError::AssertionFailed(_)) => {

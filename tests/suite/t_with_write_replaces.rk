@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `with box.write() as p { p = Whole { … } }` replaces what the box holds.
+// Natively a struct payload is bound by address, and the assignment pointed
+// the binding at the new value instead of copying it in, so the box kept its
+// old contents. A field write (`p.a = 1`) went through the address and was
+// fine, which is how it went unnoticed.
+
+import sync.Shared
+
+struct Account {
+    owner: string
+    balance: i64
+}
+
+const BANK = Shared.mutex(Account { owner: "nobody", balance: 0 })
+
+test "a whole-value write replaces a local box's payload" {
+    let acct = Shared.mutex(Account { owner: "ada", balance: 1 })
+    with acct.write() as a {
+        a = Account { owner: "grace {a.balance}", balance: 20 }
+    }
+    with acct.read() as a {
+        assert a.owner == "grace 1"
+        assert a.balance == 20
+    }
+}
+
+test "and a module-level box's" {
+    with BANK.write() as a {
+        a = Account { owner: "linus", balance: 5 }
+    }
+    with BANK.read() as a {
+        assert a.owner == "linus"
+        assert a.balance == 5
+    }
+}
+
+test "the binding doesn't leak to an outer name of the same spelling" {
+    mut a = Account { owner: "outer", balance: 1 }
+    let box = Shared.mutex(Account { owner: "inner", balance: 2 })
+    with box.write() as a {
+        a = Account { owner: "replaced", balance: 3 }
+    }
+    a = Account { owner: "outer again", balance: 4 }
+    assert a.owner == "outer again"
+    with box.read() as b {
+        assert b.owner == "replaced"
+    }
+}
+
+func main() {}

@@ -431,6 +431,18 @@ pub struct TypedProgram {
     /// ownership pass and written back here, because lowering and the
     /// interpreter both have to agree with it.
     pub escaping_closures: std::collections::HashSet<NodeId>,
+    /// Closure literals that capture a link or a `Local` box, so they may not
+    /// reach another task (mem.ownership/T2, conc.sync/SH7). A `spawn` written
+    /// around the closure is rejected at compile time; one that reaches the
+    /// spawn through a return, a field or a container is caught when the task
+    /// starts, from a flag the closure carries (#1356).
+    pub task_bound_closures: std::collections::HashSet<NodeId>,
+    /// Closure literals in a generic body that capture a name whose type
+    /// mentions a type parameter, with each such capture's name and type.
+    /// Whether one is task-bound depends on the instantiation, and both
+    /// backends decide it from the substituted types through
+    /// `TypeTable::generic_closure_task_bound`.
+    pub generic_closure_captures: HashMap<NodeId, Vec<(String, Type)>>,
     /// ER16a: `try` node → the postfix-chain step it attaches to, when that
     /// isn't the operand itself. `try read_file(p).len()` maps the `try` to the
     /// `read_file(p)` call, so lowering branches there and hands `.len()` the

@@ -34,16 +34,17 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 561 green, 6 registered red | `tests/differential.sh` |
-| Programs that leak | 5, holding 7 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
+| Suite programs agreeing on both backends | 577 green, 6 registered red | `tests/differential.sh` |
+| Programs that leak | 2, holding 2 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
 | Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 557 | `tests/memcheck_gate.sh` |
-| Concurrency files TSan reports a race in | 0 of 72 | `tests/tsan_gate.sh` |
+| Programs memcheck finds an error in | 0 of 579 | `tests/memcheck_gate.sh` |
+| Concurrency files TSan reports a race in | 0 of 81 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
+| Concurrency files clean under sim, 100 seeds in CI | 81 of 81, 43 tests exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
 | Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 39 of 85 open issues | issue search |
-| Open design questions | 22 | issue search |
+| Open bugs | 64 of 106 open issues | issue search |
+| Open design questions | 20 | issue search |
 
 Nine more gates cover prototypes, packages, projects, tutorials, the book, the
 agent benchmark, internal spellings, formatter round-trips and the HTTP server.
@@ -275,7 +276,7 @@ matrix work, rather than left to stall it:
 disagreement, not a value kind failing in a position — a narrow theme is the
 only kind that closes.
 
-## v0.5 — Concurrency you can trust
+## v0.5 — Concurrency you can trust — **shipped 2026-09-30**
 
 **Done when two numbers hold in CI:**
 
@@ -338,11 +339,16 @@ so the deterministic tests run the code that ships.
    this step: macOS, which needs a kqueue backend before `green_threads.c` can
    go. Files and stdin still block their worker (that waits on io_uring). The
    aarch64 switch runs under qemu in the fiber gate.
-3. Sim on fibers, replacing the baton.
-4. Preemption last. Codegen puts a flag check in every function prologue, and
-   a loop that never calls anything gets a signal instead (`conc.runtime/P2`),
-   so it touches the compiler, not only the runtime. Its test: a task spinning
-   in a loop doesn't stop another task from finishing.
+3. Sim on fibers, replacing the baton. **Done:** every sim task is a fiber on
+   the test's own thread, so a sim run is one OS thread however many tasks it
+   spawns, and the switch, stacks and per-task state swap that ship are what
+   the sim gate exercises.
+4. Preemption. **Done:** a SIGURG timer marks a fiber past its 10 ms budget,
+   and codegen checks for that at every function entry and loop back edge, so
+   a loop that never calls anything still yields (`conc.runtime/P2`). The
+   interpreter hands its worker slot over at the same budget. Test: a task
+   spinning on a flag another task sets finishes on one worker
+   (`tests/suite/t_preemption.rk`).
 
 ### Bugs in the theme
 
@@ -372,20 +378,24 @@ Then the handle types went from two to one: `spawn`, `Thread.spawn` and
 `join_all`, `detach`) replaces `TaskGroup` and `ThreadGroup`. `cancel` works on
 threads and pool jobs now, and `cancelled()` works at all: the interpreter
 always said false, and native couldn't compile a call to it.
-Open:
+Fixed in #1376: #1357 (a `Vec<T or E>` freed its error payloads), #1356 (a
+closure holding a link or a `Local` box is refused at spawn however it gets
+there), #1371 (cancel wakes a simulated socket), #1375 (sim resets module
+state per test), #1377 (native `read_http_request`), #1378 (the interpreter
+runs `http.rk` instead of a Rust copy), and a loop that rebuilt a
+value from itself releasing the old one early, which crashed
+`cli_calculator` once preemption moved its stack frame. #298 and #299 close:
+#298's last case was a `Pool` container, and `Pool` is gone.
+
+Ships open:
 
 - [#1218](https://github.com/rask-lang/rask/issues/1218): rare double free, two
-  tasks over one `Shared` plus a channel.
-- [#1357](https://github.com/rask-lang/rask/issues/1357): freeing a
-  `Vec<T or E>` doesn't release an error element's payload, so each panicked
-  handle in a `Handles` leaks its message.
-- [#1356](https://github.com/rask-lang/rask/issues/1356): a closure that reaches
-  `spawn` through a return or a field isn't checked for a captured link or
-  `Local` box. Written in place or bound to a local, it is.
-- [#298](https://github.com/rask-lang/rask/issues/298) and
-  [#299](https://github.com/rask-lang/rask/issues/299): panic leftovers,
-  `staged()` the main one. #298's last case goes when Pool does
-  ([#1296](https://github.com/rask-lang/rask/issues/1296)).
+  tasks over one `Shared` plus a channel. It wouldn't reproduce on demand.
+- [#1381](https://github.com/rask-lang/rask/issues/1381): sim picks the next
+  task itself rather than driving green.c's queues from the seed.
+- [#1379](https://github.com/rask-lang/rask/issues/1379): `cli_calculator`
+  leaks its expression tree.
+- macOS runs tasks on threads until it has a kqueue poller.
 
 ## v0.6 — The stdlib matches its own spec
 

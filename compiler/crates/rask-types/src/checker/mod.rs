@@ -30,11 +30,12 @@ mod validate;
 pub(crate) mod resolved_types;
 
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, receiver_name, conformance_symbol};
-pub use type_table::{primitive_spelling, TypeTable};
+pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
 pub use parse_type::parse_type_string;
+pub use generics::{bind_header_pattern, bind_header_patterns, extend_target_args};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
 use borrow::{ActiveBorrow, PersistentBorrow};
@@ -131,6 +132,9 @@ pub(super) struct TaskBoundUse {
     /// Depth of the local scope the name was found in. One declared inside the
     /// spawned closure is deeper than the call and belongs to the task.
     pub depth: usize,
+    /// The type parameters in scope at the use. A closure capturing a name
+    /// whose type mentions one is judged per instantiation.
+    pub type_params: Vec<String>,
 }
 
 pub struct TypeChecker {
@@ -234,7 +238,13 @@ pub struct TypeChecker {
     /// Pending generic call sites: (call NodeId, one fresh type var per type
     /// parameter, named by that parameter). Resolved after constraint solving to
     /// populate TypedProgram.call_type_args.
+    ///
+    /// A generic function named as a value (`v.map(keep)`, `let f = keep`) is
+    /// an instantiation too, recorded under the name's own NodeId.
     pub(super) pending_call_type_args: Vec<(NodeId, Vec<(String, Type)>)>,
+    /// The callee name of the call being checked. A generic function in call
+    /// position is instantiated by the call; anywhere else, by its own node.
+    pub(super) callee_ident: Option<NodeId>,
     /// Type arguments written at a *method* call, keyed by the call's NodeId.
     ///
     /// `s.parse<i64>()` says what it wants and nothing carried it: the method's
@@ -385,6 +395,10 @@ pub struct TypeChecker {
     /// type is usually still a variable, since `let c = Shared.new(0)` is solved
     /// later.
     pub(super) task_bound_uses: Vec<TaskBoundUse>,
+    /// Filled in by `validate_spawn_captures`; see `TypedProgram`.
+    pub(super) task_bound_closures: std::collections::HashSet<NodeId>,
+    /// Filled in by `validate_spawn_captures`; see `TypedProgram`.
+    pub(super) generic_closure_captures: HashMap<NodeId, Vec<(String, Type)>>,
     /// Suppressions from the enclosing function's `@allow(...)` attributes.
     /// Statements carry no attributes, so a per-site `@allow` isn't expressible;
     /// the function is the smallest scope the AST offers.
@@ -418,6 +432,12 @@ pub struct TypeChecker {
     /// argument, so they are checked for captures the same way.
     pub(super) closure_bindings:
         HashMap<(String, usize), Vec<(rask_ast::Span, usize)>>,
+    /// Every closure expression, with its span and the scope depth it was
+    /// written at. A closure that captures a link or a `Local` box can't cross
+    /// a task however it gets to a `spawn`, and one that gets there by a
+    /// return or a field is invisible at the spawn site, so each closure is
+    /// judged on its own (#1356).
+    pub(super) closure_spans: Vec<(NodeId, rask_ast::Span, usize)>,
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
@@ -543,6 +563,7 @@ impl TypeChecker {
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
+            callee_ident: None,
             written_method_type_args: HashMap::new(),
             pending_interface_elem_coercions: Vec::new(),
             try_block_errors: Vec::new(),
@@ -588,12 +609,15 @@ impl TypeChecker {
             pending_mutations: Vec::new(),
             pending_self_mutations: Vec::new(),
             task_bound_uses: Vec::new(),
+            task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: HashMap::new(),
             with_source_ids: std::collections::HashSet::new(),
             staged_reported: std::collections::HashSet::new(),
             allowed_warnings: Vec::new(),
             comptime_string_names: vec![HashMap::new()],
             spawn_arg_spans: Vec::new(),
             closure_bindings: HashMap::new(),
+            closure_spans: Vec::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
@@ -981,6 +1005,8 @@ impl TypeChecker {
             fallback_keeps_shape,
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::mem::take(&mut self.task_bound_closures),
+            generic_closure_captures: std::mem::take(&mut self.generic_closure_captures),
             try_chain_placement,
             unsafe_ops,
             span_types,

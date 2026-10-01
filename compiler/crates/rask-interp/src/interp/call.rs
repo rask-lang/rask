@@ -7,7 +7,7 @@ use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
 use std::collections::HashSet;
 
-use crate::value::Value;
+use crate::value::{GenericFrame, Value};
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
@@ -36,7 +36,16 @@ impl Interpreter {
     ///
     /// The chain of stacks is capped, so runaway recursion is still a diagnostic
     /// rather than a machine out of threads.
-    pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+    ///
+    /// `generics` is what the body's type parameters stand for in this call,
+    /// handed over by whoever made it: the call site's own record for a call
+    /// written in the source, the function value's for one passed around.
+    pub(crate) fn call_function(
+        &mut self,
+        func: &FnDecl,
+        args: Vec<Value>,
+        generics: GenericFrame,
+    ) -> Result<Value, RuntimeDiagnostic> {
         if crate::stack_nearly_exhausted() {
             if crate::stack_segments_exhausted() {
                 return Err(RuntimeDiagnostic::new(
@@ -47,12 +56,17 @@ impl Interpreter {
                     func.span,
                 ));
             }
-            return crate::grow_interp_stack(move || self.call_counted(func, args));
+            return crate::grow_interp_stack(move || self.call_counted(func, args, generics));
         }
-        self.call_counted(func, args)
+        self.call_counted(func, args, generics)
     }
 
-    fn call_counted(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+    fn call_counted(
+        &mut self,
+        func: &FnDecl,
+        args: Vec<Value>,
+        generics: GenericFrame,
+    ) -> Result<Value, RuntimeDiagnostic> {
         self.call_depth += 1;
         // XC4: the package whose code is now running. A conformance another
         // package also declares is looked up against this, the same way native
@@ -63,7 +77,7 @@ impl Interpreter {
             let pkg = self.file_packages.get(&func.span.file_id).cloned();
             self.package_stack.push(pkg);
         }
-        let result = self.call_function_at_depth(func, args);
+        let result = self.call_function_at_depth(func, args, generics);
         if pushed {
             self.package_stack.pop();
         }
@@ -81,7 +95,12 @@ impl Interpreter {
         result
     }
 
-    fn call_function_at_depth(&mut self, func: &FnDecl, mut args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+    fn call_function_at_depth(
+        &mut self,
+        func: &FnDecl,
+        mut args: Vec<Value>,
+        generics: GenericFrame,
+    ) -> Result<Value, RuntimeDiagnostic> {
         // Fill in default values for missing trailing arguments
         if args.len() < func.params.len() {
             for i in args.len()..func.params.len() {
@@ -111,47 +130,7 @@ impl Interpreter {
 
         self.env.push_scope();
 
-        // What this call's type parameters resolved to, read off the arguments:
-        // `value: T` given a `Point` means `T = "Point"` for the body. Scoped to
-        // the call, like `env`. Without it `reflect.fields<T>()` inside a generic
-        // body saw the literal "T" (#699).
-        //
-        // PC1 makes a single uppercase letter a type parameter wherever it
-        // appears, so `func print_fields(value: T)` declares one without writing
-        // `<T>` — reading only `type_params` found nothing to bind.
-        let mut type_frame: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-
-        // Written type arguments bind positionally against the declaration's
-        // own list: `count<Plain>()` on `func count<T>()` means `T = "Plain"`.
-        // Taken, so it can't leak into a later call, and applied before the
-        // argument-derived bindings below — which use `or_insert`, so an
-        // inferred value can still fill a parameter this didn't name.
-        if let Some(written) = self.pending_type_args.take() {
-            for (tp, concrete) in func
-                .type_params
-                .iter()
-                .filter(|tp| !tp.is_comptime)
-                .zip(written)
-            {
-                type_frame.insert(tp.name.clone(), concrete);
-            }
-        }
-
-        for (idx, param) in func.params.iter().enumerate() {
-            let declared = param.ty.trim();
-            let named_here = func
-                .type_params
-                .iter()
-                .any(|tp| !tp.is_comptime && tp.name == declared);
-            if !(named_here || is_type_param_name(declared)) {
-                continue;
-            }
-            if let Some(concrete) = args.get(idx).and_then(Self::runtime_type_name) {
-                type_frame.entry(declared.to_string()).or_insert(concrete);
-            }
-        }
-        self.type_bindings.push(type_frame);
+        self.generic_frames.push(generics);
 
         for (param, arg) in func.params.iter().zip(args.into_iter()) {
             // A by-value parameter receives an independent copy (VS1): mutating
@@ -223,7 +202,7 @@ impl Interpreter {
             if body_failed {
                 self.report_secondary_panic(&guard_diag);
             } else {
-                self.type_bindings.pop();
+                self.generic_frames.pop();
                 self.env.pop_scope();
                 return Err(guard_diag);
             }
@@ -237,7 +216,7 @@ impl Interpreter {
             .filter_map(|(i, p)| self.env.get(&p.name).map(|v| (i, v.clone())))
             .collect();
 
-        self.type_bindings.pop();
+        self.generic_frames.pop();
         self.env.pop_scope();
 
         let value = match result {
@@ -325,6 +304,7 @@ impl Interpreter {
 
     /// Runs ensure blocks in LIFO order on block exit.
     pub(super) fn exec_stmts(&mut self, stmts: &[Stmt]) -> Result<Value, RuntimeDiagnostic> {
+        crate::preempt_point();
         let mut last_value = Value::Unit;
         let mut ensures: Vec<&Stmt> = Vec::new();
         let mut exit_error: Option<RuntimeDiagnostic> = None;
@@ -589,13 +569,6 @@ fn binding_name(kind: &StmtKind) -> Option<&str> {
         StmtKind::Let { name, .. } | StmtKind::Mut { name, .. } => Some(name),
         _ => None,
     }
-}
-
-/// PC1: a single uppercase ASCII letter is a type parameter wherever it appears
-/// in a signature, whether or not the function also writes `<T>`.
-fn is_type_param_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
 }
 
 /// The T of a `Result<T, E>` string, as written.

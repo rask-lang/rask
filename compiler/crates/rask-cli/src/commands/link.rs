@@ -157,7 +157,9 @@ impl TargetConfig {
 
         // Platform-specific link flags
         let link_flags = match target_os {
-            "linux" => vec!["-no-pie".into(), "-lpthread".into(), "-lm".into()],
+            // `-lrt` for the preemption timer: `timer_create` lives in librt
+            // before glibc 2.34, and in libc (with an empty librt) after.
+            "linux" => vec!["-no-pie".into(), "-lpthread".into(), "-lm".into(), "-lrt".into()],
             "macos" => vec!["-lpthread".into(), "-lm".into()],
             _ => vec![],
         };

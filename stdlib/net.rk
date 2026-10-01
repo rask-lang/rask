@@ -182,24 +182,16 @@ extend TcpConnection {
     @native("rask_net_remote_addr")
     public func remote_addr(self) -> string {}
 
-    /// Read an HTTP/1.1 request from the connection.
-    @native("rask_net_read_http_request")
-    public func read_http_request(self) -> Request or IoError {}
+    // `read_http_request` and `write_http_response` are in http.rk, next to
+    // the parser and formatter they're written over.
 
-    /// Write an HTTP response to the connection, and close it.
-    ///
-    /// Takes the connection because `format_http_response` always writes
-    /// `Connection: close` — a response that says the socket is closing has to
-    /// be sent by something that then closes it, or the client waits for an EOF
-    /// that never comes and the server keeps the descriptor (#1055). Borrowing
-    /// and closing inside would be worse: the caller still holds a
-    /// `close(take self)` of its own, and that would be a second close on a
-    /// descriptor the OS may already have handed to someone else.
-    ///
-    /// Same shape as `Responder.respond`, which is the path `HttpServer.accept`
-    /// hands out.
-    @native("rask_net_write_http_response")
-    public func write_http_response(take self, response: Response) -> void or IoError {}
+    /// One read of whatever has arrived, up to `max` bytes: empty at the end
+    /// of the stream, `none` when the read failed, with the error left for
+    /// `IoError.last_os_error()`. What a caller needs to build a framing of its
+    /// own on (http.rk's messages), which `read_bytes` can't be: it waits for
+    /// the peer to close.
+    @native("rask_net_read_some")
+    func read_some_raw(self, max: i64) -> Vec<u8>? {}
 
     /// Close the connection.
     @native("rask_net_close")

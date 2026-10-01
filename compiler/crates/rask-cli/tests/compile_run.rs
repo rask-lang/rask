@@ -4270,6 +4270,82 @@ fn panic_in_a_lock_closure_releases_the_lock() {
     }
 }
 
+// A closure that captured a link or a `Local` box can't reach another task,
+// however it gets to the spawn (#1356). Written at the spawn, the checker
+// rejects it; returned from a function or read out of a field, the spawn site
+// shows nothing, so the closure carries a flag and every spawn form refuses a
+// flagged one when it starts the task.
+#[test]
+fn a_task_bound_closure_is_refused_at_spawn() {
+    // The report names the spawn's own line. Natively `spawn` didn't record a
+    // location, so the report named whatever line last had: none at all, or
+    // an earlier spawn that succeeded.
+    for (fixture, line) in [
+        ("spawn_returned_closure_with_link.rk", 21),
+        ("spawn_field_closure_with_local_box.rk", 19),
+    ] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, fixture);
+            assert_ne!(code, 0, "{mode} {fixture}: the spawn has to fail; stdout: {stdout}");
+            assert!(stdout.starts_with("before"), "{mode} {fixture}: {stdout}");
+            assert!(
+                stderr.contains("this closure captured a link or a `Local` box"),
+                "{mode} {fixture}: {stderr}",
+            );
+            assert!(stderr.contains(&format!("{fixture}:{line}:")), "{mode} {fixture}: {stderr}");
+        }
+    }
+    // And one that captured only plain values still crosses.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "spawn_returned_closure_that_may_cross.rk");
+        assert_eq!(code, 0, "{mode}: {stderr}");
+        assert_eq!(stdout, "15\n", "{mode}");
+    }
+    // A closure in a generic body captures a `T`, so it's decided per
+    // instantiation: `keep<i64>`'s crosses, `keep<Link<Node>>`'s doesn't.
+    for mode in ["--interp", "--native"] {
+        let (stdout, stderr, code) = run_capture(mode, "spawn_generic_closure_with_link.rk");
+        assert_ne!(code, 0, "{mode}: the link spawn has to fail; stdout: {stdout}");
+        assert_eq!(stdout, "1\nbefore\n", "{mode}");
+        assert!(
+            stderr.contains("this closure captured a link or a `Local` box"),
+            "{mode}: {stderr}",
+        );
+        assert!(stderr.contains("spawn_generic_closure_with_link.rk:26:"), "{mode}: {stderr}");
+        let (stdout, stderr, code) = run_capture(mode, "spawn_generic_closure_that_may_cross.rk");
+        assert_eq!(code, 0, "{mode}: {stderr}");
+        assert_eq!(stdout, "1\n", "{mode}");
+    }
+    // The type decides, not the value: an empty `Vec<Link<Node>>` and a `none`
+    // `Link<Node>?` hold no link and still may not cross. The interpreter used
+    // to look at the value and let both through (#1382). `none_link` reaches
+    // `keep` through another generic function, and `method_closure` binds `T`
+    // from the receiver's type. The two `header` fixtures bind it from an
+    // `extend` header that takes the receiver's argument apart, and the two
+    // `fn_value` ones pass a generic function as a value, so its type arguments
+    // come from where it was named, not from the call that runs it.
+    for (file, line) in [
+        ("spawn_generic_closure_empty_vec.rk", 24),
+        ("spawn_generic_closure_none_link.rk", 30),
+        ("spawn_generic_method_closure.rk", 32),
+        ("spawn_generic_tuple_header_closure.rk", 33),
+        ("spawn_generic_nested_header_closure.rk", 32),
+        ("spawn_generic_fn_value_apply.rk", 30),
+        ("spawn_generic_fn_value_map.rk", 16),
+    ] {
+        for mode in ["--interp", "--native"] {
+            let (stdout, stderr, code) = run_capture(mode, file);
+            assert_ne!(code, 0, "{mode} {file}: the spawn has to fail; stdout: {stdout}");
+            assert_eq!(stdout, "1\nbefore\n", "{mode} {file}");
+            assert!(
+                stderr.contains("this closure captured a link or a `Local` box"),
+                "{mode} {file}: {stderr}",
+            );
+            assert!(stderr.contains(&format!("{file}:{line}:")), "{mode} {file}: {stderr}");
+        }
+    }
+}
+
 // A real deadlock is reported instead of hanging (#1354). Every task is parked
 // and the scope's thread is waiting in `join`, so nothing can move again; the
 // scheduler says which task waits on what and ends the process. Native only:

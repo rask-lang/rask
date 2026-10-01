@@ -573,17 +573,25 @@ impl TypeChecker {
                     // shape to be right; judged after solving, because right now
                     // the type of a `let c = Shared.new(0)` is usually still a
                     // variable.
+                    // A name whose type is a type parameter is recorded too: a
+                    // closure capturing it is judged per instantiation.
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
-                    if matches!(resolved, Type::Var(_))
+                    let generic = Self::names_type_param(&resolved, &|n| {
+                        self.types.is_type_param_in_scope(n) || self.type_params_in_scope.contains(n)
+                    });
+                    if generic
+                        || matches!(resolved, Type::Var(_))
                         || Self::type_is_shared(&resolved, &self.types)
                         || self.types.holds_link(&resolved)
                     {
                         let depth = self.local_depth(name).unwrap_or(0);
+                        let type_params = self.type_params_here();
                         self.task_bound_uses.push(super::TaskBoundUse {
                             name: name.clone(),
                             ty: ty.clone(),
                             span: expr.span,
                             depth,
+                            type_params,
                         });
                     }
                     ty
@@ -600,7 +608,11 @@ impl TypeChecker {
                     // answer the target (#1026).
                     Type::Named(type_id)
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
-                    self.get_symbol_type(sym_id)
+                    let ty = self.get_symbol_type(sym_id);
+                    if self.callee_ident == Some(expr.id) {
+                        return ty;
+                    }
+                    self.instantiate_fn_value(expr.id, sym_id, ty, expr.span)
                 } else if let Some(type_id) = self.types.get_type_id(name) {
                     // Imported type name (struct/enum) without resolver entry
                     Type::Named(type_id)
@@ -1739,6 +1751,7 @@ impl TypeChecker {
             }
 
             ExprKind::Closure { params, ret_ty: declared_ret, body, .. } => {
+                self.closure_spans.push((expr.id, expr.span, self.local_types.len()));
                 let param_types: Vec<_> = params
                     .iter()
                     .map(|p| {
@@ -2747,7 +2760,9 @@ impl TypeChecker {
             None
         };
 
+        let outer_callee = self.callee_ident.replace(func.id);
         let func_ty = self.infer_expr(func);
+        self.callee_ident = outer_callee;
 
         // Substitute type param names with fresh vars in the function signature.
         // Applied first: a return type the checker inferred sits behind a
@@ -5450,17 +5465,18 @@ impl TypeChecker {
     /// `validate_pending_mutations` does: during the walk, the type of a
     /// `let c = Shared.new(0)` is usually still a variable.
     pub(super) fn validate_spawn_captures(&mut self) {
+        let uses = std::mem::take(&mut self.task_bound_uses);
+        self.mark_task_bound_closures(&uses);
         if self.spawn_arg_spans.is_empty() {
             return;
         }
         let spans = std::mem::take(&mut self.spawn_arg_spans);
-        let uses = std::mem::take(&mut self.task_bound_uses);
         let mut reported: std::collections::HashSet<(String, usize)> =
             std::collections::HashSet::new();
         let within = |inner: rask_ast::Span, outer: &rask_ast::Span| {
             inner.file_id == outer.file_id && inner.start >= outer.start && inner.end <= outer.end
         };
-        for super::TaskBoundUse { name, ty, span, depth } in uses {
+        for super::TaskBoundUse { name, ty, span, depth, .. } in uses {
             // Made inside the task — a `let` in the closure, a parameter, a
             // pattern binding — sits deeper than the call. Only what the closure
             // reaches from outside crosses.
@@ -5471,19 +5487,91 @@ impl TypeChecker {
                 continue;
             };
             let resolved = self.resolve_named(&self.ctx.apply(&ty));
-            let error = if Self::type_is_shared(&resolved, &self.types) {
-                if self.shared_strategy_name(&resolved) != "Local" {
-                    continue;
+            let error = match self.types.task_bound(&resolved) {
+                Some(crate::TaskBound::LocalBox) => {
+                    TypeError::LocalSharedSent { name: name.clone(), span }
                 }
-                TypeError::LocalSharedSent { name: name.clone(), span }
-            } else if self.types.holds_link(&resolved) {
-                TypeError::LinkSent { name: name.clone(), ty: self.types.resolve_type_names(&resolved), span }
-            } else {
-                continue;
+                Some(crate::TaskBound::Link) => TypeError::LinkSent {
+                    name: name.clone(),
+                    ty: self.types.resolve_type_names(&resolved),
+                    span,
+                },
+                None => continue,
             };
             if reported.insert((name, i)) {
                 self.errors.push(error);
             }
+        }
+    }
+
+    /// Every closure that captures a task-bound value, by the same rule the
+    /// spawn check uses: a use inside the closure of a name from a scope no
+    /// deeper than the closure's own.
+    ///
+    /// A capture whose type names a type parameter can't be judged here: `x: T`
+    /// is a link in one instantiation and an `i64` in the next. Those go into
+    /// `generic_closure_captures` for whoever sees the concrete type.
+    fn mark_task_bound_closures(&mut self, uses: &[super::TaskBoundUse]) {
+        let closures = std::mem::take(&mut self.closure_spans);
+        if closures.is_empty() {
+            return;
+        }
+        let within = |inner: rask_ast::Span, outer: &rask_ast::Span| {
+            inner.file_id == outer.file_id && inner.start >= outer.start && inner.end <= outer.end
+        };
+        for u in uses {
+            let resolved = self.resolve_named(&self.ctx.apply(&u.ty));
+            let bound = self.types.task_bound(&resolved).is_some();
+            if !bound && !Self::names_type_param(&resolved, &|n| u.type_params.iter().any(|p| p == n)) {
+                continue;
+            }
+            for (id, span, depth) in &closures {
+                if !(within(u.span, span) && u.depth <= *depth) {
+                    continue;
+                }
+                if bound {
+                    self.task_bound_closures.insert(*id);
+                    continue;
+                }
+                let captures = self.generic_closure_captures.entry(*id).or_default();
+                if !captures.iter().any(|(n, t)| *n == u.name && *t == resolved) {
+                    captures.push((u.name.clone(), resolved.clone()));
+                }
+            }
+        }
+        // Already refused whatever it's instantiated with.
+        let bound = &self.task_bound_closures;
+        self.generic_closure_captures.retain(|id, _| !bound.contains(id));
+    }
+
+    /// Every type parameter name in scope: the function's own, implicit ones
+    /// included, and an enclosing `extend` header's.
+    fn type_params_here(&self) -> Vec<String> {
+        let mut names = self.types.type_param_scope().to_vec();
+        for n in &self.type_params_in_scope {
+            if !names.contains(n) {
+                names.push(n.clone());
+            }
+        }
+        names
+    }
+
+    /// Does this type mention a name `is_param` says is a type parameter?
+    fn names_type_param(ty: &Type, is_param: &dyn Fn(&str) -> bool) -> bool {
+        let params = is_param;
+        let arg = |a: &GenericArg| matches!(a, GenericArg::Type(t) if Self::names_type_param(t, params));
+        match ty {
+            Type::UnresolvedNamed(n) => is_param(n),
+            Type::Generic { args, .. } => args.iter().any(arg),
+            Type::UnresolvedGeneric { args, .. } => args.iter().any(arg),
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().any(|t| Self::names_type_param(t, params))
+            }
+            Type::Array { elem, .. } => Self::names_type_param(elem, params),
+            Type::Result { ok, err } => {
+                Self::names_type_param(ok, params) || Self::names_type_param(err, params)
+            }
+            _ => false,
         }
     }
 
@@ -5589,22 +5677,18 @@ impl TypeChecker {
             Type::UnresolvedGeneric { args, .. } | Type::Generic { args, .. } => args.as_slice(),
             _ => return "Readers".to_string(),
         };
-        match args.get(1) {
-            Some(GenericArg::Type(s)) => match self.resolve_named(s) {
-                Type::UnresolvedNamed(n) => n,
-                Type::Named(id) => self.types.type_name(id),
-                _ => "Readers".to_string(),
-            },
-            _ => "Readers".to_string(),
-        }
+        let resolved: Vec<GenericArg> = args
+            .iter()
+            .map(|a| match a {
+                GenericArg::Type(t) => GenericArg::Type(Box::new(self.resolve_named(t))),
+                other => other.clone(),
+            })
+            .collect();
+        self.types.shared_strategy_name(&resolved)
     }
 
     fn type_is_shared(ty: &Type, types: &crate::TypeTable) -> bool {
-        match ty {
-            Type::Generic { base, .. } => types.type_name(*base) == "Shared",
-            Type::UnresolvedGeneric { name, .. } => name == "Shared",
-            _ => false,
-        }
+        types.shared_args(ty).is_some()
     }
 
     /// How to spell a `with` source back to the author. A name for a plain

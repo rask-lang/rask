@@ -36,7 +36,7 @@ impl TypeChecker {
         };
 
         let declared = self.declared_type_params(type_id).len();
-        let header_args = Self::target_type_args(target_ty);
+        let header_args = extend_target_args(target_ty);
         if !header_args.is_empty() && header_args.len() == declared {
             let args = header_args
                 .iter()
@@ -259,6 +259,42 @@ impl TypeChecker {
         }
     }
 
+    /// A generic function named as a value rather than called: `v.map(keep)`,
+    /// `let f = keep`. That use is an instantiation of its own, so it gets a
+    /// fresh variable per type parameter, recorded under the name's node the
+    /// way a call records them under the call. Monomorphization makes that
+    /// copy, and the interpreter gives the function value those types.
+    ///
+    /// Left as the bare signature, `keep` passed to `map` had a parameter
+    /// spelled `T` that nothing ever bound: native had no copy to point at, and
+    /// the interpreter ran the body not knowing what `T` was.
+    pub(super) fn instantiate_fn_value(
+        &mut self,
+        node: rask_ast::NodeId,
+        sym: rask_resolve::SymbolId,
+        ty: Type,
+        span: rask_ast::Span,
+    ) -> Type {
+        let Some(params) = self.fn_type_params.get(&sym).cloned() else { return ty };
+        if params.is_empty() || !matches!(ty, Type::Fn { .. }) {
+            return ty;
+        }
+        let bounds = self.fn_type_param_bounds.get(&sym).cloned();
+        let pairs: Vec<(String, Type)> = params
+            .into_iter()
+            .map(|name| {
+                let fresh = self.ctx.fresh_var();
+                if let Some(param_bounds) = bounds.as_ref().and_then(|b| b.get(&name)) {
+                    self.pending_bound_checks.push((fresh.clone(), param_bounds.clone(), span));
+                }
+                (name, fresh)
+            })
+            .collect();
+        self.pending_call_type_args.push((node, pairs.clone()));
+        let subst: HashMap<&str, Type> = pairs.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+        Self::substitute_type_params(&self.ctx.apply(&ty), &subst)
+    }
+
     /// Build a substitution map from type param names to concrete types from generic args.
     pub(super) fn build_type_param_subst<'a>(
         type_params: &'a [String],
@@ -285,13 +321,20 @@ impl TypeChecker {
     /// A pattern that doesn't line up with what arrived contributes nothing,
     /// which leaves the name unbound rather than bound to the wrong type.
     pub(super) fn build_owner_pattern_subst(
+        &self,
         patterns: &[String],
         args: &[GenericArg],
     ) -> HashMap<String, Type> {
         let mut subst = HashMap::new();
         for (pattern, arg) in patterns.iter().zip(args.iter()) {
-            if let GenericArg::Type(ty) = arg {
-                bind_owner_pattern(pattern, ty, &mut subst);
+            let GenericArg::Type(ty) = arg else { continue };
+            let mut bound = Vec::new();
+            if bind_header_pattern(&self.types, pattern, ty, &mut bound) {
+                subst.extend(
+                    bound
+                        .into_iter()
+                        .filter(|(name, _)| super::declarations::is_type_param_name(name)),
+                );
             }
         }
         subst
@@ -515,40 +558,88 @@ fn generic_args_of(pattern: &str) -> Option<&str> {
     (!pattern[..open].trim().is_empty()).then_some(inner)
 }
 
-/// Match one target argument, as written, against the type that arrived.
-fn bind_owner_pattern(pattern: &str, actual: &Type, out: &mut HashMap<String, Type>) {
+/// An `extend` header's target arguments as written, nesting kept and bounds
+/// dropped: `["(K, V)"]` for `Sequence<(K, V)>`, `["K", "V"]` for
+/// `Map<K, V: Hash>`, `["i64"]` for `Holder<i64>`, nothing for `Holder`.
+pub fn extend_target_args(target_ty: &str) -> Vec<String> {
+    let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
+    // Exactly one `>`, not every trailing one: `Vec<Vec<T>>` closes the outer
+    // bracket here and the inner one belongs to the argument.
+    let Some(inner) = rest.trim_end().strip_suffix('>') else { return Vec::new() };
+    super::parse_type::split_type_args(inner)
+        .into_iter()
+        .map(|a| a.split(':').next().unwrap_or(a).trim().to_string())
+        .filter(|a| !a.is_empty())
+        .collect()
+}
+
+/// Match one `extend` header argument, as written, against the type the
+/// receiver has in that position, pushing each name it binds.
+///
+/// Structural: `(K, V)` against `(string, Vec<Link<Node>>)` binds `K` and `V`
+/// to the halves, and `Sequence<U>` against `Sequence<i64>` binds `U` to the
+/// element rather than the whole sequence. Every leaf binds, a concrete
+/// spelling (`extend Holder<i64>`) included; a caller that only wants
+/// parameters filters. False when the shapes don't line up.
+///
+/// The one matcher. The checker, monomorphization and the interpreter all bind
+/// a method's receiver through here, so the backends agree on what a header's
+/// names stand for.
+pub fn bind_header_pattern(
+    types: &super::TypeTable,
+    pattern: &str,
+    actual: &Type,
+    out: &mut Vec<(String, Type)>,
+) -> bool {
     let pattern = pattern.trim();
     if let Some(members) = pattern.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
-        let Type::Tuple(elems) = actual else { return };
+        let Type::Tuple(elems) = actual else { return false };
         let parts = super::parse_type::split_type_args(members);
         if parts.len() != elems.len() {
-            return;
+            return false;
         }
-        for (p, a) in parts.iter().zip(elems.iter()) {
-            bind_owner_pattern(p, a, out);
-        }
-        return;
+        return parts
+            .iter()
+            .zip(elems.iter())
+            .all(|(p, a)| bind_header_pattern(types, p, a, out));
     }
-    // A generic in the target binds argument-wise, the same way a tuple does:
-    // `extend Sequence<Sequence<U>>` has to give `U` the *inner* sequence's
-    // element, not the inner sequence.
     if let Some(inner) = generic_args_of(pattern) {
-        let parts = super::parse_type::split_type_args(inner);
-        let actual_args = match actual {
-            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
-            _ => return,
+        let head = pattern.split('<').next().unwrap_or(pattern).trim();
+        let bare = |n: &str| n.split('<').next().unwrap_or(n).trim().to_string();
+        let (actual_head, actual_args) = match actual {
+            Type::Generic { base, args } => (bare(&types.type_name(*base)), args),
+            Type::UnresolvedGeneric { name, args } => (bare(name), args),
+            _ => return false,
         };
-        if parts.len() != actual_args.len() {
-            return;
+        let parts = super::parse_type::split_type_args(inner);
+        if actual_head != head || parts.len() != actual_args.len() {
+            return false;
         }
-        for (p, a) in parts.iter().zip(actual_args.iter()) {
-            if let GenericArg::Type(t) = a {
-                bind_owner_pattern(p, t, out);
-            }
+        return parts.iter().zip(actual_args.iter()).all(|(p, a)| match a {
+            GenericArg::Type(t) => bind_header_pattern(types, p, t, out),
+            GenericArg::ConstUsize(_) => false,
+        });
+    }
+    out.push((pattern.to_string(), actual.clone()));
+    true
+}
+
+/// Every header argument against the receiver's type arguments. `None` unless
+/// each one lines up, so a name is never left bound to the wrong thing.
+pub fn bind_header_patterns(
+    types: &super::TypeTable,
+    patterns: &[String],
+    args: &[GenericArg],
+) -> Option<Vec<(String, Type)>> {
+    if patterns.len() != args.len() {
+        return None;
+    }
+    let mut out = Vec::new();
+    for (pattern, arg) in patterns.iter().zip(args) {
+        let GenericArg::Type(ty) = arg else { return None };
+        if !bind_header_pattern(types, pattern, ty, &mut out) {
+            return None;
         }
-        return;
     }
-    if super::declarations::is_type_param_name(pattern) {
-        out.insert(pattern.to_string(), actual.clone());
-    }
+    Some(out)
 }

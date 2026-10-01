@@ -2,14 +2,6 @@
 
 import sync.Shared
 
-extern "C" func rask_io_errno() -> i32
-
-extern "C" func rask_io_error_kind(err: i32) -> i32
-
-extern "C" func rask_io_error_text(err: i32) -> *u8
-
-extern "C" func rask_io_cstr_len(s: *u8) -> u64
-
 /// I/O error type — all I/O operations return T or IoError.
 public enum IoError {
     NotFound(string)
@@ -45,12 +37,12 @@ extend IoError {
     /// can overwrite errno.
     ///
     /// Variant and wording both match what the interpreter builds from Rust's
-    /// `std::io::Error`, so one failure reads the same on both backends. The
-    /// interpreter implements `fs.*` in Rust and never runs this; it's the
-    /// thing being matched, not a caller (#674).
+    /// `std::io::Error`, so one failure reads the same on both backends (#674).
+    /// The interpreter keeps the last error its own I/O calls hit and answers
+    /// the three natives below from it, so this runs there too.
     public func last_os_error() -> IoError {
-        let code = unsafe rask_io_errno()
-        let kind = unsafe rask_io_error_kind(code)
+        let code = IoError.errno_now()
+        let kind = IoError.kind_of(code)
         // The variants without a message first, so the message is only built
         // where it's kept (building it up front leaked it on these paths, #1341).
         if kind == 3 {
@@ -65,7 +57,7 @@ extend IoError {
         if kind == 8 {
             return IoError.Cancelled
         }
-        let msg = os_error_text(code)
+        let msg = IoError.text_of(code)
         if kind == 0 {
             return IoError.NotFound(msg)
         }
@@ -77,12 +69,20 @@ extend IoError {
         }
         return IoError.Other(msg)
     }
-}
 
-func os_error_text(code: i32) -> string {
-    let ptr = unsafe rask_io_error_text(code)
-    let len = unsafe rask_io_cstr_len(ptr)
-    return unsafe string.from_raw(ptr, len as usize)
+    /// errno, which is a macro over a thread-local, so Rask can't name it.
+    @native("rask_io_errno")
+    func errno_now() -> i32 {}
+
+    /// The variant index for an errno, in declaration order. The E* values
+    /// differ across platforms, so the mapping lives in the runtime.
+    @native("rask_io_error_kind")
+    func kind_of(err: i32) -> i32 {}
+
+    /// "No such file or directory (os error 2)": the shape Rust's
+    /// `std::io::Error` prints.
+    @native("rask_io_error_message")
+    func text_of(err: i32) -> string {}
 }
 
 /// Readable stream: bytes in, `IoError` out. `read`/`read_bytes`/`read_text`

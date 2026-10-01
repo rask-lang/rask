@@ -29,7 +29,7 @@ use rask_ast::Span;
 
 use crate::env::Environment;
 use crate::resource::ResourceTracker;
-use crate::value::Value;
+use crate::value::{GenericFrame, Value};
 
 pub(crate) mod binary;
 
@@ -192,6 +192,31 @@ pub struct Interpreter {
     /// ownership pass. Those snapshot their captures; the rest share the live
     /// slots so a write reaches the enclosing variable (MC4).
     pub(crate) escaping_closures: std::collections::HashSet<rask_ast::NodeId>,
+    /// Closures that captured a link or a `Local` box (#1356).
+    pub(crate) task_bound_closures: std::collections::HashSet<rask_ast::NodeId>,
+    /// Closures in a generic body, with each capture whose type mentions a
+    /// type parameter. Task-bound if one of those types, with the running
+    /// call's type arguments filled in, holds a link or is a `Local` box.
+    pub(crate) generic_closure_captures: Arc<HashMap<rask_ast::NodeId, Vec<(String, rask_types::Type)>>>,
+    /// The checker's type table, for asking whether a type may cross tasks.
+    pub(crate) types: Arc<rask_types::TypeTable>,
+    /// What each generic call's type parameters resolved to, keyed by the call.
+    /// Written in the caller's own terms: inside `wrap<U>`, `keep(u)` records
+    /// `T = U`, so the caller's frame is substituted in before it's used.
+    pub(crate) call_type_args: Arc<HashMap<rask_ast::NodeId, Vec<rask_types::TypeBinding>>>,
+    /// The concrete type arguments of the function or closure body running
+    /// now, innermost last. A frame is pushed for every call, `None` for a
+    /// body with nothing generic in it, so only the top one is ever read: a
+    /// body sees its own type parameters, not its caller's.
+    ///
+    /// A closure carries the frame it was built under and pushes it when
+    /// called, because it can run after the generic call that built it has
+    /// returned, or on another task.
+    pub(crate) generic_frames: Vec<GenericFrame>,
+    /// `(type, method)` → its `extend` header's target arguments as written
+    /// (`["(K, V)"]` for `extend Pairs<(K, V)>`), for a header that has any. A
+    /// method call matches them against the receiver's type.
+    pub(crate) extend_header_patterns: HashMap<(String, String), Vec<String>>,
     /// XC4/XC5: which package each source file belongs to, and which `extend`
     /// blocks carry their package in the method name because the block is on a
     /// type that package doesn't own.
@@ -207,27 +232,6 @@ pub struct Interpreter {
     /// runs the `f64 implements Mul<Meters>` body instead of asking the float
     /// layer to multiply a struct.
     pub(crate) operator_targets: HashMap<rask_ast::NodeId, rask_types::OperatorTarget>,
-    /// What each generic function's type parameters resolved to for the call
-    /// currently on the stack, innermost last.
-    ///
-    /// The interpreter doesn't monomorphize, so `T` inside a generic body is
-    /// just a name. Anything comptime that asks "what is `T` right now" —
-    /// `reflect.fields<T>()` above all — got the literal "T" and gave up (#699).
-    /// Inferred from the runtime argument bound to a parameter declared as that
-    /// bare name, and scoped like `env`.
-    pub(crate) type_bindings: Vec<HashMap<String, String>>,
-    /// Type arguments written at the call about to be made, in order.
-    ///
-    /// `type_bindings` is inferred from the arguments, which answers nothing for
-    /// a call that has none: `count<Plain>()` left `T` unbound, so
-    /// `reflect.name_of<T>()` returned the string "T" while native said "Plain"
-    /// (#968). The parser folds written type arguments into the callee's name,
-    /// so they're read off there and parked here for the callee to bind.
-    ///
-    /// Taken, not read — set immediately before the call, after the arguments
-    /// are evaluated, so a nested call during argument evaluation can't pick it
-    /// up and the next call can't inherit a stale one.
-    pub(crate) pending_type_args: Option<Vec<String>>,
     /// Nested Rask calls currently on the host stack.
     ///
     /// An interpreted call costs about 30 KB of Rust stack — `eval_expr` is one
@@ -291,7 +295,126 @@ pub struct SourceInfo {
     pub line_map: LineMap,
 }
 
+/// What every spawn form says to a closure that captured a link or a `Local`
+/// box. Worded as native's `rask_task_adopt_closure` words it.
+const TASK_BOUND_SPAWN: &str = "spawn: this closure captured a link or a `Local` box, and \
+another task would then reach what this one still can [mem.ownership/T2, conc.sync/SH7]. \
+Copy the values the task needs out before spawning, or use a Mutex or Readers box";
+
 impl Interpreter {
+    /// The generic frame for the call at `call`: the type arguments the
+    /// checker recorded there, plus, for a method on a generic type, the ones
+    /// the receiver's type gives the `extend` block. The running body's own
+    /// are filled into both.
+    fn generic_frame_for_call(
+        &self,
+        call: rask_ast::NodeId,
+        receiver: Option<(rask_ast::NodeId, &str)>,
+    ) -> GenericFrame {
+        let outer = self.generic_frames.last().and_then(|f| f.as_deref());
+        let concrete = |ty: &rask_types::Type| match outer {
+            Some(outer) => rask_types::substitute_type(ty, outer),
+            None => ty.clone(),
+        };
+        let mut frame: HashMap<String, rask_types::Type> = HashMap::new();
+        if let Some((object, method)) = receiver {
+            if let Some(recv) = self.node_types.get(&object) {
+                frame.extend(self.receiver_type_params(&concrete(recv), method));
+            }
+        }
+        if let Some(args) = self.call_type_args.get(&call) {
+            frame.extend(args.iter().map(|b| (b.param.clone(), concrete(&b.ty))));
+        }
+        (!frame.is_empty()).then(|| Arc::new(frame))
+    }
+
+    /// What a generic receiver type binds in the block `method` is declared
+    /// in: `Box<Vec<i64>>` gives `T = Vec<i64>` to `extend Box<T>`, and
+    /// `Pairs<(string, i64)>` gives `K = string, V = i64` to
+    /// `extend Pairs<(K, V)>`. The header is matched against the receiver's
+    /// type by `rask_types::bind_header_patterns`, the matcher the checker and
+    /// monomorphization use, so all three bind the same names to the same
+    /// types. Nothing binds when the shapes don't line up.
+    fn receiver_type_params(
+        &self,
+        recv: &rask_types::Type,
+        method: &str,
+    ) -> Vec<(String, rask_types::Type)> {
+        use rask_types::Type;
+        let (base, args) = match recv {
+            Type::Generic { base, args } => (self.types.type_name(*base), args),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            _ => return Vec::new(),
+        };
+        let base = register::strip_generics(&base);
+        // A header that leaves the arguments out (`extend Box`), and a method
+        // declared in the type's own body, mean the declaration's names.
+        let patterns = match self.extend_header_patterns.get(&(base.to_string(), method.to_string())) {
+            Some(patterns) => patterns.clone(),
+            None => match (self.struct_decls.get(base), self.enums.get(base)) {
+                (Some(s), _) => rask_types::struct_type_param_names(s),
+                (None, Some(e)) => rask_types::enum_type_param_names(e),
+                (None, None) => return Vec::new(),
+            },
+        };
+        rask_types::bind_header_patterns(&self.types, &patterns, args).unwrap_or_default()
+    }
+
+    /// The generic frame for a call written at `call` with no receiver.
+    pub(crate) fn call_generics(&self, call: rask_ast::NodeId) -> GenericFrame {
+        self.generic_frame_for_call(call, None)
+    }
+
+    /// The generic frame for `object.method(…)` written at `call`, whose
+    /// receiver's type also binds the type parameters of the block the method
+    /// is declared in.
+    pub(crate) fn method_call_generics(
+        &self,
+        call: rask_ast::NodeId,
+        object: rask_ast::NodeId,
+        method: &str,
+    ) -> GenericFrame {
+        self.generic_frame_for_call(call, Some((object, method)))
+    }
+
+    /// Does the closure literal `id`, built here, have to stay on this task?
+    ///
+    /// One in a generic body is judged from its captures' types with this
+    /// call's type arguments filled in — the same question monomorphization
+    /// asks of each copy it makes, so `keep<Vec<Link<Node>>>` is refused on
+    /// both backends however empty the vector is (#1382).
+    pub(crate) fn closure_is_task_bound(&self, id: rask_ast::NodeId) -> bool {
+        if self.task_bound_closures.contains(&id) {
+            return true;
+        }
+        let Some(captures) = self.generic_closure_captures.get(&id) else {
+            return false;
+        };
+        let frame = self.generic_frames.last().and_then(|f| f.as_deref());
+        self.types.generic_closure_task_bound(captures, |ty| {
+            frame.map(|frame| rask_types::substitute_type(ty, frame))
+        })
+    }
+
+    /// Enter a closure's body: its captures in a scope of their own, under the
+    /// generic frame it was built in. Pair with `leave_closure`.
+    pub(crate) fn enter_closure<'c>(
+        &mut self,
+        captured_env: impl IntoIterator<Item = (&'c String, &'c crate::env::Slot)>,
+        generics: &GenericFrame,
+    ) {
+        self.env.push_scope();
+        for (name, slot) in captured_env {
+            self.env.define_slot(name.clone(), slot.clone());
+        }
+        self.generic_frames.push(generics.clone());
+    }
+
+    pub(crate) fn leave_closure(&mut self) {
+        self.generic_frames.pop();
+        self.env.pop_scope();
+    }
+
     pub fn new() -> Self {
         Self {
             env: Environment::new(),
@@ -313,12 +436,16 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: Arc::new(HashMap::new()),
+            types: Arc::new(rask_types::TypeTable::default()),
+            call_type_args: Arc::new(HashMap::new()),
+            generic_frames: Vec::new(),
+            extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
-            type_bindings: Vec::new(),
-            pending_type_args: None,
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -348,12 +475,16 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: Arc::new(HashMap::new()),
+            types: Arc::new(rask_types::TypeTable::default()),
+            call_type_args: Arc::new(HashMap::new()),
+            generic_frames: Vec::new(),
+            extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
-            type_bindings: Vec::new(),
-            pending_type_args: None,
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -389,12 +520,16 @@ impl Interpreter {
             binary_structs: HashMap::new(),
             node_types: HashMap::new(),
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: Arc::new(HashMap::new()),
+            types: Arc::new(rask_types::TypeTable::default()),
+            call_type_args: Arc::new(HashMap::new()),
+            generic_frames: Vec::new(),
+            extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
-            type_bindings: Vec::new(),
-            pending_type_args: None,
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
@@ -502,6 +637,10 @@ impl Interpreter {
         self.fallback_keeps_shape = typed.fallback_keeps_shape.clone();
         self.operator_targets = typed.operator_targets.clone();
         self.escaping_closures = typed.escaping_closures.clone();
+        self.task_bound_closures = typed.task_bound_closures.clone();
+        self.generic_closure_captures = Arc::new(typed.generic_closure_captures.clone());
+        self.types = Arc::new(typed.types.clone());
+        self.call_type_args = Arc::new(typed.call_type_args.clone());
         // XC4/XC5: which package wrote each file, and which `extend` blocks
         // carry their package in the method name.
         self.file_packages = typed.file_packages.clone();
@@ -540,15 +679,21 @@ impl Interpreter {
         }
     }
 
-    /// What `name` resolved to for the innermost generic call that bound it, or
-    /// `name` itself when nothing did.
+    /// What the type parameter `name` stands for in the body running now,
+    /// spelled the way native spells it for the same instantiation, or `name`
+    /// itself when it isn't one of the body's parameters.
+    ///
+    /// Read off the generic frame, which holds the checker's types for the
+    /// call. It used to be guessed from the argument values, so `T = i32`
+    /// read as `i64` because every integer value looks alike (#699, #968).
     pub(crate) fn resolve_type_param(&self, name: &str) -> String {
-        for frame in self.type_bindings.iter().rev() {
-            if let Some(concrete) = frame.get(name) {
-                return concrete.clone();
-            }
+        let frame = self.generic_frames.last().and_then(|f| f.as_deref());
+        match frame.and_then(|f| f.get(name)) {
+            Some(ty) => rask_mono::Monomorphizer::nameable_type(ty, &self.types)
+                .unwrap_or_else(|| ty.clone())
+                .to_string(),
+            None => name.to_string(),
         }
-        name.to_string()
     }
 
     /// How many optional layers a container's Nth type argument declares —
@@ -629,14 +774,25 @@ impl Interpreter {
     /// lives here rather than at each. Patching one copy and not the others is
     /// how #882's first fix changed nothing: two copies looked identical and
     /// only one was reached.
-    pub(crate) fn spawn_child(&mut self, captured_vars: HashMap<String, crate::env::Slot>) -> Self {
+    pub(crate) fn spawn_child(
+        &mut self,
+        captured_vars: HashMap<String, crate::env::Slot>,
+        generics: &GenericFrame,
+    ) -> Self {
         let mut child = Interpreter::new();
+        // The body is the closure's, so it runs under the frame it was built in.
+        child.generic_frames.push(generics.clone());
         child.functions = self.functions.clone();
         child.enums = self.enums.clone();
         child.struct_decls = self.struct_decls.clone();
         child.methods = self.methods.clone();
         child.node_types = self.node_types.clone();
         child.escaping_closures = self.escaping_closures.clone();
+        child.task_bound_closures = self.task_bound_closures.clone();
+        child.generic_closure_captures = self.generic_closure_captures.clone();
+        child.types = self.types.clone();
+        child.call_type_args = self.call_type_args.clone();
+        child.extend_header_patterns = self.extend_header_patterns.clone();
         child.operator_targets = self.operator_targets.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
@@ -699,16 +855,21 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                task_bound,
+                generics,
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(
                         "Thread.spawn closure must take no parameters".to_string(),
                     ));
                 }
+                if *task_bound {
+                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
+                }
 
                 let body = body.clone();
                 let captured = captured_env.clone();
-                let child = self.spawn_child(captured);
+                let child = self.spawn_child(captured, generics);
                 let cancel = Arc::new(crate::value::CancelToken::default());
                 let flag = cancel.clone();
                 let join_handle = crate::spawn_interp_thread(move || {
@@ -746,16 +907,21 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                task_bound,
+                generics,
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(
                         "spawn() closure must take no parameters".to_string(),
                     ));
                 }
+                if *task_bound {
+                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
+                }
 
                 let body = body.clone();
                 let captured = captured_env.clone();
-                let child = self.spawn_child(captured);
+                let child = self.spawn_child(captured, generics);
 
                 // The thread starts now; the body waits for one of the scope's
                 // task slots before running, so `workers: n` bounds how many
@@ -792,11 +958,16 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                task_bound,
+                generics,
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(
                         "ThreadPool.spawn closure must take no parameters".to_string(),
                     ));
+                }
+                if *task_bound {
+                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
                 }
 
                 // Check for thread pool context
@@ -812,7 +983,7 @@ impl Interpreter {
 
                 let body = body.clone();
                 let captured = captured_env.clone();
-                let child = self.spawn_child(captured);
+                let child = self.spawn_child(captured, generics);
 
                 let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
                 let cancel = Arc::new(crate::value::CancelToken::default());
@@ -1076,7 +1247,7 @@ impl Interpreter {
             // main thread's 8 MiB, so it managed ~245 nested Rask calls where a
             // task got ~450 on its 16 MiB — the same program, a different depth
             // depending on which thread ran it (#759).
-            let value = crate::on_interp_stack(|| self.call_function(&entry, vec![]));
+            let value = crate::on_interp_stack(|| self.call_function(&entry, vec![], None));
             // O4: a detached task's panic has to reach stderr, and a reaper
             // racing process exit doesn't satisfy that — the report just
             // vanishes, which is the failure O4 exists to prevent. Wait here,
@@ -1161,7 +1332,7 @@ impl Interpreter {
     /// type defines one, otherwise the value as printed.
     fn describe_error_value(&mut self, err: &Value) -> String {
         let owned = err.clone();
-        if let Ok(Value::String(s)) = self.call_method(owned.clone(), "message", vec![]) {
+        if let Ok(Value::String(s)) = self.call_method(owned.clone(), "message", vec![], None) {
             return s.lock().unwrap().clone();
         }
         format!("{}", owned)
@@ -1191,9 +1362,9 @@ impl Interpreter {
 
         // If func build takes a parameter, pass ctx; otherwise call with no args
         if build_fn.params.is_empty() {
-            self.call_function(&build_fn, vec![])
+            self.call_function(&build_fn, vec![], None)
         } else {
-            self.call_function(&build_fn, vec![ctx_value])
+            self.call_function(&build_fn, vec![ctx_value], None)
         }
     }
 

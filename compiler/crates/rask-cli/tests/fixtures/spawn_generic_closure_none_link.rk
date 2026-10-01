@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic closure over a `Link<Node>?` that is `none`, reached through a
+// second generic function: `wrap<U>` calls `keep(u)`, so `keep`'s `T` is
+// whatever `wrap`'s `U` is. No link is held, but the type can hold one, so
+// the closure may not cross to another task (#1382).
+import memory.{Rack, Link}
+
+struct Node {
+    id: i64
+}
+
+func keep<T>(x: T) -> func() -> i64 {
+    return || {
+        let y = x
+        return 1
+    }
+}
+
+func wrap<U>(u: U) -> func() -> i64 {
+    return keep(u)
+}
+
+func main() {
+    using Multitasking {
+        let plain = wrap(7)
+        println("{spawn(plain).join()!}")
+        let missing: Link<Node>? = none
+        let f = wrap(missing)
+        println("before")
+        println("{spawn(f).join()!}")
+    }
+}

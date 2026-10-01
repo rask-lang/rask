@@ -938,7 +938,7 @@ impl Interpreter {
                 // works the way `l.health` does.
                 let recv = Value::Struct(Arc::clone(node));
                 let _ = rack_id;
-                self.call_builtin_method(recv, method, args)
+                self.call_builtin_method(recv, method, args, None)
             }
         }
     }
@@ -1573,6 +1573,7 @@ impl Interpreter {
                     "compare",
                     out[mid].clone(),
                     vec![item.clone()],
+                    None,
                 )?;
                 let greater = matches!(&ord,
                     Value::Enum { name, variant, .. } if name == "Ordering" && variant == "Greater");

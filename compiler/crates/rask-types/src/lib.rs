@@ -13,12 +13,13 @@ pub use checker::{
     typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, TypeTable, TypeDef,
     TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
     ParamMode, Callee, ErrorWrap, receiver_name, conformance_symbol, BoundFrom, TypeBinding,
-    OperatorTarget, operator_interface, primitive_spelling,
+    OperatorTarget, operator_interface, primitive_spelling, TaskBound,
     parse_type_string, signature_type_param_names, struct_type_param_names,
+    bind_header_pattern, bind_header_patterns, extend_target_args,
     enum_type_param_names, UnsafeCategory, binary_field_runtime_type,
 };
 pub use interfaces::{
     InterfaceBound, InterfaceChecker, InterfaceError,
-    verify_instantiation, implements_interface, implemented_interfaces,
+    verify_instantiation, implements_interface, implemented_interfaces, substitute_type,
     COMPILER_PROVIDED_TRAITS, builtin_interface_method_names, object_compatible_methods,
 };

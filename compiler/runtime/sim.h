@@ -13,6 +13,9 @@
 // A lock that is only ever held for a few instructions and never across a wait
 // (a channel's own mutex, the print lock) doesn't need to be here. Under sim
 // nothing else can be running while it is held.
+//
+// Where a task holds a worker slot rather than being a fiber (sim, a build
+// without the green scheduler), a wait here gives the slot back until it ends.
 
 #ifndef RASK_SIM_H
 #define RASK_SIM_H
@@ -21,6 +24,14 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/stat.h>
+
+// A task that waits gives its worker slot back for the wait and takes one
+// again after (thread.c), the way a green fiber gives back its worker. 0 from
+// release means there was none to give, and retake then does nothing.
+int  rask_task_slot_release(void);
+void rask_task_slot_retake(int released);
+
+static inline void rask_task_mutex_lock(pthread_mutex_t *m, const char *what);
 
 #ifdef RASK_SIM
 
@@ -36,6 +47,7 @@ void rask_sim_wake(void *task);
 int64_t rask_sim_now_ns(void);
 uint64_t rask_sim_random_seed(void);
 uint64_t rask_sim_fault_draw(void);
+int64_t rask_sim_preempt_budget(void);
 
 // Opt-in faults (sim/F2). The bits match `fault_bit` in stdlib/sim.rk.
 #define SIM_FAULT_IO_ERROR   1
@@ -50,13 +62,12 @@ int64_t rask_sim_wall_jump_ns(void);
 const char *rask_sim_sick_log(void);
 const char *rask_sim_fault_log(void);
 
-// Task lifecycle, called from thread.c.
-void *rask_sim_task_new(int64_t task_id);
-void rask_sim_task_enter(void *task);
-void rask_sim_task_exit(void);
+// Task lifecycle, called from thread.c and threadpool.c. A task is a fiber
+// that runs `entry(arg)` when the seed first picks it and is done when that
+// returns.
+void *rask_sim_task_spawn(int64_t task_id, void (*entry)(void *), void *arg);
+void *rask_sim_worker_spawn(void (*entry)(void *), void *arg);
 void rask_sim_task_join(void *task);
-void *rask_sim_worker_new(void);
-void rask_sim_task_abandon(void *task);
 
 // Test lifecycle, called from test.c. A sim test runs alone in its process,
 // so the failure paths report and exit rather than unwind.
@@ -95,6 +106,9 @@ void    rask_sim_net_addr(int64_t fd, int remote, char *out, size_t cap);
 #define RASK_SIM_POINT() rask_sim_point()
 #define RASK_SIM_UNSIMULATED(...) rask_sim_unsimulated(__VA_ARGS__)
 
+// The slot comes back before the mutex does. A task woken holding the mutex
+// and then queueing for a slot would block every slot holder that wants the
+// same mutex, and a waiter loops on its condition anyway.
 static inline void rask_task_cond_wait(pthread_cond_t *c, pthread_mutex_t *m,
                                        const char *what) {
     if (!rask_sim_active()) {
@@ -102,8 +116,10 @@ static inline void rask_task_cond_wait(pthread_cond_t *c, pthread_mutex_t *m,
         return;
     }
     pthread_mutex_unlock(m);
+    int released = rask_task_slot_release();
     rask_sim_park(c, what);
-    pthread_mutex_lock(m);
+    rask_task_slot_retake(released);
+    rask_task_mutex_lock(m, what);
 }
 
 static inline void rask_task_cond_signal(pthread_cond_t *c) {
@@ -124,7 +140,10 @@ static inline void rask_task_mutex_lock(pthread_mutex_t *m, const char *what) {
         return;
     }
     rask_sim_point();
+    if (pthread_mutex_trylock(m) == 0) return;
+    int released = rask_task_slot_release();
     while (pthread_mutex_trylock(m) != 0) rask_sim_park(m, what);
+    rask_task_slot_retake(released);
 }
 
 static inline int rask_task_mutex_trylock(pthread_mutex_t *m) {
@@ -143,7 +162,10 @@ static inline void rask_task_rwlock_rdlock(pthread_rwlock_t *l, const char *what
         return;
     }
     rask_sim_point();
+    if (pthread_rwlock_tryrdlock(l) == 0) return;
+    int released = rask_task_slot_release();
     while (pthread_rwlock_tryrdlock(l) != 0) rask_sim_park(l, what);
+    rask_task_slot_retake(released);
 }
 
 static inline void rask_task_rwlock_wrlock(pthread_rwlock_t *l, const char *what) {
@@ -152,7 +174,10 @@ static inline void rask_task_rwlock_wrlock(pthread_rwlock_t *l, const char *what
         return;
     }
     rask_sim_point();
+    if (pthread_rwlock_trywrlock(l) == 0) return;
+    int released = rask_task_slot_release();
     while (pthread_rwlock_trywrlock(l) != 0) rask_sim_park(l, what);
+    rask_task_slot_retake(released);
 }
 
 static inline int rask_task_rwlock_tryrdlock(pthread_rwlock_t *l) {
@@ -198,9 +223,16 @@ static inline void rask_task_cond_wait(pthread_cond_t *c, pthread_mutex_t *m,
         rask_fiber_cond_wait(c, m, what);
         return;
     }
+    // The slot comes back before the mutex does, as under sim above.
     rask_thread_wait_begin(what);
+    int released = rask_task_slot_release();
     pthread_cond_wait(c, m);
     rask_thread_wait_end();
+    if (released) {
+        pthread_mutex_unlock(m);
+        rask_task_slot_retake(released);
+        rask_task_mutex_lock(m, what);
+    }
 }
 static inline void rask_task_cond_signal(pthread_cond_t *c) {
     pthread_cond_signal(c);
@@ -218,8 +250,10 @@ static inline void rask_task_mutex_lock(pthread_mutex_t *m, const char *what) {
     }
     if (pthread_mutex_trylock(m) == 0) return;
     rask_thread_wait_begin(what);
+    int released = rask_task_slot_release();
     pthread_mutex_lock(m);
     rask_thread_wait_end();
+    rask_task_slot_retake(released);
 }
 static inline int rask_task_mutex_trylock(pthread_mutex_t *m) { return pthread_mutex_trylock(m); }
 static inline void rask_task_mutex_unlock(pthread_mutex_t *m) {
@@ -234,8 +268,10 @@ static inline void rask_task_rwlock_rdlock(pthread_rwlock_t *l, const char *what
     }
     if (pthread_rwlock_tryrdlock(l) == 0) return;
     rask_thread_wait_begin(what);
+    int released = rask_task_slot_release();
     pthread_rwlock_rdlock(l);
     rask_thread_wait_end();
+    rask_task_slot_retake(released);
 }
 static inline void rask_task_rwlock_wrlock(pthread_rwlock_t *l, const char *what) {
     if (rask_fiber_active()) {
@@ -244,8 +280,10 @@ static inline void rask_task_rwlock_wrlock(pthread_rwlock_t *l, const char *what
     }
     if (pthread_rwlock_trywrlock(l) == 0) return;
     rask_thread_wait_begin(what);
+    int released = rask_task_slot_release();
     pthread_rwlock_wrlock(l);
     rask_thread_wait_end();
+    rask_task_slot_retake(released);
 }
 static inline int rask_task_rwlock_tryrdlock(pthread_rwlock_t *l) { return pthread_rwlock_tryrdlock(l); }
 static inline int rask_task_rwlock_trywrlock(pthread_rwlock_t *l) { return pthread_rwlock_trywrlock(l); }

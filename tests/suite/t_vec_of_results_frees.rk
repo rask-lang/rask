@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A container of `T or E` or `T?` gives back what each element holds.
+//
+// Freeing a `Vec<i64 or Oops>` released nothing inside its elements, so the
+// message in every `Oops.Bad(msg)` leaked (#1357). A plain local of the same
+// type was fine. Where the string sits depends on which side the element is
+// on, and the container's description of its elements couldn't say that.
+// Each `Handles` group with a panicked task leaked its message this way.
+//
+// The leak gate runs this file with RASK_LEAK_CHECK=1, which is what makes
+// the assertions below mean anything: they only pin the values.
+
+enum Oops {
+    Bad(string)
+    Worse
+}
+
+func make(n: i64) -> i64 or Oops {
+    if n == 1 {
+        return Oops.Bad("a message long enough to live on the heap {n}")
+    }
+    if n == 2 {
+        return Oops.Worse
+    }
+    return n
+}
+
+func name_for(n: i64) -> string? {
+    if n == 0 {
+        return none
+    }
+    return "a name long enough to live on the heap too {n}"
+}
+
+test "a Vec of results frees each error's message" {
+    mut v: Vec<i64 or Oops> = Vec.new()
+    v.push(make(0))
+    v.push(make(1))
+    v.push(make(2))
+    assert v.len() == 3
+}
+
+test "a Vec of optional strings frees the ones that are there" {
+    mut v: Vec<string?> = Vec.new()
+    v.push(name_for(0))
+    v.push(name_for(1))
+    assert v.len() == 2
+}
+
+test "a Map whose values are results" {
+    mut m: Map<string, i64 or Oops> = Map.new()
+    m.insert("ok", make(0))
+    m.insert("bad", make(1))
+    assert m.len() == 2
+}
+
+test "a cloned Vec of results frees its copy too" {
+    mut v: Vec<i64 or Oops> = Vec.new()
+    v.push(make(1))
+    let w = v.clone()
+    assert w.len() == 1
+}
+
+func main() {}

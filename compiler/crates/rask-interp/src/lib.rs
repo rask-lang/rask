@@ -89,12 +89,65 @@ where
 
 /// Does this thread hold one of the scope's task slots?
 ///
-/// A task that blocks in `join` isn't running anything, so it hands its slot
-/// back for the duration — which is the same rule native follows, where a
-/// blocked worker gets a replacement thread. Only a thread that holds one may
-/// give it up, hence the flag.
+/// A task that waits isn't running anything, so it hands its slot back for the
+/// wait (`without_task_slot`) — which is the same rule native follows, where a
+/// waiting fiber gives back its worker. Only a thread that holds one may give
+/// it up, hence the flag.
 thread_local! {
     static HOLDS_TASK_SLOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// When this thread last took its slot.
+    static SLOT_SINCE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+    /// Safe points since the clock was last read.
+    static SAFE_POINTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// How long a task keeps its slot while another waits (conc.runtime/P1).
+/// Native preempts a fiber on the same budget.
+const PREEMPT_BUDGET: std::time::Duration = std::time::Duration::from_millis(10);
+
+fn slot_taken_now() {
+    HOLDS_TASK_SLOT.with(|h| h.set(true));
+    SLOT_SINCE.with(|s| s.set(Some(std::time::Instant::now())));
+}
+
+fn slot_given_up() {
+    HOLDS_TASK_SLOT.with(|h| h.set(false));
+    SLOT_SINCE.with(|s| s.set(None));
+}
+
+/// A task that computes without ever blocking would otherwise keep its slot
+/// until it finished, and with `workers: 1` a task spinning on a flag another
+/// task sets never finishes. Called at the start of every statement block,
+/// which every loop iteration and function body passes through, the same
+/// places native checks.
+///
+/// Holding a lock is no reason to wait: a task that then blocks on the lock
+/// gives its slot back while it waits, so the owner gets one to finish in.
+pub(crate) fn preempt_point() {
+    if !HOLDS_TASK_SLOT.with(|h| h.get()) {
+        return;
+    }
+    let n = SAFE_POINTS.with(|c| {
+        let n = c.get().wrapping_add(1);
+        c.set(n);
+        n
+    });
+    if n % 256 != 0 {
+        return;
+    }
+    let Some(since) = SLOT_SINCE.with(|s| s.get()) else { return };
+    if since.elapsed() < PREEMPT_BUDGET {
+        return;
+    }
+    let runtime = value::ACTIVE_RUNTIME.read().unwrap().clone();
+    let Some(runtime) = runtime else { return };
+    if runtime.has_waiters() {
+        // Back of the queue, behind the task waiting.
+        slot_given_up();
+        runtime.give_slot();
+        runtime.take_slot();
+    }
+    slot_taken_now();
 }
 
 /// Run a spawned task's body under the `using Multitasking(workers: n)` bound.
@@ -105,29 +158,73 @@ pub(crate) fn with_task_slot<T>(body: impl FnOnce() -> T) -> T {
     let runtime = value::ACTIVE_RUNTIME.read().unwrap().clone();
     let Some(runtime) = runtime else { return body() };
     runtime.take_slot();
-    HOLDS_TASK_SLOT.with(|h| h.set(true));
+    slot_taken_now();
     let out = body();
-    HOLDS_TASK_SLOT.with(|h| h.set(false));
+    slot_given_up();
     runtime.give_slot();
     out
 }
 
 /// Wait for something, without holding a task slot while waiting.
 ///
-/// `join` on a task is the case that matters: a joiner that kept its slot would
-/// leave `using Multitasking(workers: 1)` unable to run the task it waits for.
+/// Every wait goes through here: `join`, a contended lock, a channel, a sleep.
+/// A joiner that kept its slot would leave `using Multitasking(workers: 1)`
+/// unable to run the task it waits for, and a task blocked on a lock it wanted
+/// would keep the slot the lock's owner needs to finish.
 pub(crate) fn without_task_slot<T>(wait: impl FnOnce() -> T) -> T {
-    if !HOLDS_TASK_SLOT.with(|h| h.get()) {
-        return wait();
-    }
-    let runtime = value::ACTIVE_RUNTIME.read().unwrap().clone();
-    let Some(runtime) = runtime else { return wait() };
-    HOLDS_TASK_SLOT.with(|h| h.set(false));
-    runtime.give_slot();
+    let released = release_task_slot();
     let out = wait();
-    runtime.take_slot();
-    HOLDS_TASK_SLOT.with(|h| h.set(true));
+    retake_task_slot(released);
     out
+}
+
+/// Give this thread's slot back, if it holds one. Returns what to hand
+/// `retake_task_slot`.
+pub(crate) fn release_task_slot() -> Option<std::sync::Arc<value::MultitaskingRuntime>> {
+    if !HOLDS_TASK_SLOT.with(|h| h.get()) {
+        return None;
+    }
+    let runtime = value::ACTIVE_RUNTIME.read().unwrap().clone()?;
+    slot_given_up();
+    runtime.give_slot();
+    Some(runtime)
+}
+
+/// Take back the slot `release_task_slot` gave up. Not while holding a lock a
+/// running task might want: queueing for a slot with it held blocks them.
+pub(crate) fn retake_task_slot(released: Option<std::sync::Arc<value::MultitaskingRuntime>>) {
+    if let Some(runtime) = released {
+        runtime.take_slot();
+        slot_taken_now();
+    }
+}
+
+/// Take a user lock (`Shared`'s `Mutex` or `Readers`, a `with` block's box),
+/// giving the task slot back if it has to wait for it.
+pub(crate) fn lock_waiting<T>(m: &std::sync::Mutex<T>) -> std::sync::LockResult<std::sync::MutexGuard<'_, T>> {
+    match m.try_lock() {
+        Ok(g) => Ok(g),
+        Err(std::sync::TryLockError::Poisoned(p)) => Err(p),
+        Err(std::sync::TryLockError::WouldBlock) => without_task_slot(|| m.lock()),
+    }
+}
+
+/// `lock_waiting` for a reader.
+pub(crate) fn read_waiting<T>(l: &std::sync::RwLock<T>) -> std::sync::LockResult<std::sync::RwLockReadGuard<'_, T>> {
+    match l.try_read() {
+        Ok(g) => Ok(g),
+        Err(std::sync::TryLockError::Poisoned(p)) => Err(p),
+        Err(std::sync::TryLockError::WouldBlock) => without_task_slot(|| l.read()),
+    }
+}
+
+/// `lock_waiting` for a writer.
+pub(crate) fn write_waiting<T>(l: &std::sync::RwLock<T>) -> std::sync::LockResult<std::sync::RwLockWriteGuard<'_, T>> {
+    match l.try_write() {
+        Ok(g) => Ok(g),
+        Err(std::sync::TryLockError::Poisoned(p)) => Err(p),
+        Err(std::sync::TryLockError::WouldBlock) => without_task_slot(|| l.write()),
+    }
 }
 
 /// Stack for a thread running interpreted Rask code.

@@ -299,11 +299,12 @@ impl<'a> MirContext<'a> {
     /// effect was a `comptime { }` block lowering with method dispatch blanked
     /// out while the same code lowered by the main pipeline had it (#425, #727).
     ///
-    /// The five tables that come straight off `TypedProgram` are read here, so
-    /// they can't be forgotten or blanked. `node_types` and `call_targets` stay
-    /// explicit: the real pipeline passes versions merged with the
-    /// monomorphizer's instantiated bodies, and silently taking the unmerged
-    /// ones off `typed` would lose every generic instantiation.
+    /// The tables that come straight off `TypedProgram` are read here, so
+    /// they can't be forgotten or blanked. The per-node records come from
+    /// `records` instead, which the real pipeline builds merged with the
+    /// monomorphizer's instantiated bodies (`MonoProgram::node_records`):
+    /// taking the unmerged ones off `typed` would lose every generic
+    /// instantiation.
     ///
     /// Everything else defaults to empty, with a `with_*` to set it. A new field
     /// is one edit here, and no call site can miss it.
@@ -311,25 +312,24 @@ impl<'a> MirContext<'a> {
         typed: &'a rask_types::TypedProgram,
         struct_layouts: &'a [StructLayout],
         enum_layouts: &'a [EnumLayout],
-        node_types: &'a HashMap<NodeId, Type>,
-        call_targets: &'a HashMap<NodeId, rask_types::Callee>,
-        operator_targets: &'a HashMap<NodeId, rask_types::OperatorTarget>,
+        records: &'a rask_mono::NodeRecords,
         type_names: &'a HashMap<rask_types::TypeId, String>,
     ) -> Self {
         Self {
             struct_layouts,
             enum_layouts,
-            node_types,
-            call_targets,
-            operator_targets,
+            node_types: &records.node_types,
+            call_targets: &records.call_targets,
+            operator_targets: &records.operator_targets,
+            error_wraps: &records.error_wraps,
+            fallback_keeps_shape: &records.fallback_keeps_shape,
+            escaping_closures: &records.escaping_closures,
+            task_bound_closures: &records.task_bound_closures,
             type_names,
             // Straight off the checker — never optional.
             type_defs: &typed.types,
             mutate_self_fns: Some(&typed.mutate_self_fns),
             interface_coercions: &typed.interface_coercions,
-            error_wraps: &typed.error_wraps,
-            fallback_keeps_shape: &typed.fallback_keeps_shape,
-            escaping_closures: &typed.escaping_closures,
             try_chain_placement: &typed.try_chain_placement,
             inferred_fn_ret: &typed.inferred_fn_ret,
             // Defaults; the `with_*` below set the ones a caller has.
@@ -471,6 +471,8 @@ pub struct MirContext<'a> {
     /// CM1: closure literals that outlive the frame that built them. Those
     /// carry their captures; the rest hold the address and write through it.
     pub escaping_closures: &'a std::collections::HashSet<NodeId>,
+    /// Closures that captured a link or a `Local` box (#1356).
+    pub task_bound_closures: &'a std::collections::HashSet<NodeId>,
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
     /// goes there, and the rest of the chain works on the payload.
     pub try_chain_placement: &'a HashMap<NodeId, NodeId>,
@@ -591,6 +593,7 @@ impl<'a> MirContext<'a> {
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             escaping_closures: &EMPTY_ESCAPING,
+            task_bound_closures: &EMPTY_ESCAPING,
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
             call_targets: &EMPTY_TARGETS,
@@ -1682,10 +1685,12 @@ pub(crate) struct LocalMeta {
     /// C1/C2: resource_id local for consumption cancellation.
     /// Set when an ensure registers this variable as its receiver.
     pub resource_id: Option<LocalId>,
-    /// Function parameter declared `mutate`. Whole-value reassignment must
-    /// flow back through the param's pointer (mem.borrowing/M-rules), so
-    /// `p = expr` lowers to a Store(*p, ...) instead of Assign(p, ...).
-    pub is_mutate_param: bool,
+    /// The name stands for a place this frame doesn't own: a `mutate`
+    /// parameter (mem.borrowing/M-rules), or a `with` binding on a box whose
+    /// payload is bound by address. Whole-value reassignment has to land in
+    /// that place, so `p = expr` lowers to a Store(*p, ...) instead of
+    /// Assign(p, ...).
+    pub assigns_through: bool,
     /// This local holds an *address*, and the scalar at it has this type. Reads
     /// of the bare name load through it, writes store through it, and the size
     /// of the access comes from here. `None` for a normal local and for an
@@ -4213,7 +4218,7 @@ impl<'a> MirLowerer<'a> {
                     .or_else(|| type_prefix_from_str(param_ty_str));
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
                 if param.is_mutate {
-                    meta.is_mutate_param = true;
+                    meta.assigns_through = true;
                 }
                 if scalar_mutate {
                     meta.scalar_through_ptr = Some(param_ty.clone());
@@ -7384,6 +7389,7 @@ mod tests {
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
+            task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
@@ -7463,6 +7469,7 @@ mod tests {
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
+            task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,
@@ -7551,6 +7558,7 @@ mod tests {
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
+            task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
             call_targets: &empty_targets,

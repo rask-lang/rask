@@ -144,6 +144,8 @@ pub struct Monomorphizer<'a> {
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
+    /// Closures in the copies that may not reach another task (#1356).
+    pub instantiated_task_bound_closures: HashSet<NodeId>,
     /// Per-call-site type arguments for the copies. A generic calling another
     /// generic (`func outer<T>(x: T) { inner(x) }`) records `[T]` at the inner
     /// call; substituting this instantiation's arguments turns that into the
@@ -243,90 +245,6 @@ fn is_primitive_receiver(name: &str) -> bool {
             | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
             | "f32" | "f64"
     )
-}
-
-impl MethodOwner {
-    /// The target's type arguments as written: `["(K, V)"]` for
-    /// `Sequence<(K, V)>`, `["K", "V"]` for `Map<K, V>`.
-    fn template_args(&self) -> Vec<String> {
-        let Some(open) = self.template.find('<') else { return Vec::new() };
-        let Some(inner) = self.template[open + 1..].trim_end().strip_suffix('>') else {
-            return Vec::new();
-        };
-        split_top_level(inner, ',')
-            .into_iter()
-            .map(|a| a.split(':').next().unwrap_or(a).trim().to_string())
-            .filter(|a| !a.is_empty())
-            .collect()
-    }
-}
-
-/// Match one of the target's arguments, as written, against the type that
-/// arrived, collecting the parameter names it binds and what each binds to.
-///
-/// Returns false when the shapes don't line up, which leaves the caller on its
-/// old positional reading rather than guessing.
-fn bind_pattern(
-    pattern: &str,
-    actual: &Type,
-    names: &mut Vec<String>,
-    args: &mut Vec<Type>,
-) -> bool {
-    let pattern = pattern.trim();
-    // A tuple in the target binds member-wise against a tuple that arrived.
-    if let Some(members) = pattern.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
-        let Type::Tuple(elems) = actual else { return false };
-        let parts = split_top_level(members, ',');
-        if parts.len() != elems.len() {
-            return false;
-        }
-        for (p, a) in parts.iter().zip(elems.iter()) {
-            if !bind_pattern(p, a, names, args) {
-                return false;
-            }
-        }
-        return true;
-    }
-    // A generic in the target binds argument-wise against a generic that
-    // arrived, the same way a tuple does. `extend Sequence<Sequence<U>>` is how
-    // `flatten` says what it takes, and without this its `U` bound to the whole
-    // inner sequence instead of that sequence's element.
-    if let Some((head, inner)) = split_generic(pattern) {
-        let (actual_head, actual_args) = match actual {
-            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
-            _ => return false,
-        };
-        if actual_head != head {
-            return false;
-        }
-        let parts = split_top_level(inner, ',');
-        if parts.len() != actual_args.len() {
-            return false;
-        }
-        for (p, a) in parts.iter().zip(actual_args.iter()) {
-            let rask_types::GenericArg::Type(t) = a else { return false };
-            if !bind_pattern(p, t, names, args) {
-                return false;
-            }
-        }
-        return true;
-    }
-    // Anything else is taken as a parameter name binding to what arrived. A
-    // concrete spelling in the target (`extend Holder<i64>`) would land here
-    // too and bind a name nothing substitutes, which is harmless — the copy
-    // just carries an unused entry.
-    names.push(pattern.to_string());
-    args.push(actual.clone());
-    true
-}
-
-/// `Sequence<U>` into `("Sequence", "U")`. `None` for anything without
-/// arguments, and for a bare tuple, which `bind_pattern` handles first.
-fn split_generic(pattern: &str) -> Option<(String, &str)> {
-    let open = pattern.find('<')?;
-    let inner = pattern[open + 1..].trim_end().strip_suffix('>')?;
-    let head = pattern[..open].trim();
-    (!head.is_empty()).then(|| (head.to_string(), inner))
 }
 
 /// Replace whole-word occurrences of a type parameter name in a type string.
@@ -645,6 +563,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_error_wraps: HashMap::new(),
             instantiated_fallback_keeps_shape: HashSet::new(),
             instantiated_escaping_closures: HashSet::new(),
+            instantiated_task_bound_closures: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
             interface_methods,
             interface_coercions: HashMap::new(),
@@ -779,6 +698,20 @@ impl<'a> Monomorphizer<'a> {
             // it is written, which substitution doesn't move.
             if typed.escaping_closures.contains(&old_id) {
                 self.instantiated_escaping_closures.insert(new_id);
+            }
+            // A closure that captured a link or a `Local` box of a concrete
+            // type is task-bound in every copy. One whose capture has a type
+            // parameter's type is decided here, where that type is known:
+            // `keep<T>`'s closure over `x: T` is task-bound in `keep<Link<Node>>`
+            // and not in `keep<i64>`.
+            let task_bound = typed.task_bound_closures.contains(&old_id)
+                || typed.generic_closure_captures.get(&old_id).is_some_and(|captures| {
+                    typed.types.generic_closure_task_bound(captures, |ty| {
+                        Self::concretize(ty, type_args, &bindings)
+                    })
+                });
+            if task_bound {
+                self.instantiated_task_bound_closures.insert(new_id);
             }
         }
     }
@@ -1388,32 +1321,24 @@ impl<'a> Monomorphizer<'a> {
         // names nothing downstream, and a nested instantiation has to say which
         // inner type — `get` on `Wrap<Wrap<i32>>` hands back a `Wrap<i32>` and on
         // `Wrap<i32>` an `i32`, so one body can't serve both (#871).
-        let mut actuals: Vec<Type> = Vec::with_capacity(args.len());
+        let mut actuals = Vec::with_capacity(args.len());
         for arg in args {
             let rask_types::GenericArg::Type(t) = arg else { return Vec::new() };
             match Self::nameable_type(t.as_ref(), &typed.types) {
-                Some(named) => actuals.push(named),
+                Some(named) => actuals.push(rask_types::GenericArg::Type(Box::new(named))),
                 None => return Vec::new(),
             }
         }
 
-        let templates = owner.template_args();
-        if templates.len() != actuals.len() {
+        let templates = rask_types::extend_target_args(&owner.template);
+        let Some(bound) = rask_types::bind_header_patterns(&typed.types, &templates, &actuals) else {
+            return Vec::new();
+        };
+        if bound.len() != owner.params.len() {
             return Vec::new();
         }
-        let mut names: Vec<String> = Vec::new();
-        let mut vals: Vec<Type> = Vec::new();
-        for (pattern, actual) in templates.iter().zip(actuals.iter()) {
-            if !bind_pattern(pattern, actual, &mut names, &mut vals) {
-                return Vec::new();
-            }
-        }
-        if names.len() != owner.params.len() {
-            return Vec::new();
-        }
-        names
+        bound
             .into_iter()
-            .zip(vals)
             .map(|(param, ty)| TypeBinding::new(param, ty))
             .collect()
     }
@@ -1425,7 +1350,7 @@ impl<'a> Monomorphizer<'a> {
     /// `<type#84><i32>`, neither of which names anything downstream. `None` when
     /// some part of the type has no name at all — an inference variable, a type
     /// parameter still standing for itself.
-    fn nameable_type(ty: &Type, types: &rask_types::TypeTable) -> Option<Type> {
+    pub fn nameable_type(ty: &Type, types: &rask_types::TypeTable) -> Option<Type> {
         let bare = |n: &str| n.split('<').next().unwrap_or(n).trim().to_string();
         match ty {
             Type::Named(id) => {
@@ -2194,11 +2119,16 @@ impl<'a> Monomorphizer<'a> {
             // nothing emitted it and MIR lowering reported the name as an
             // unresolved variable.
             ExprKind::Ident(name) => {
-                // Only a plain top-level function. A generic one has nothing to
-                // instantiate from here — a bare name carries no type arguments
-                // — and enqueuing it with none produced a call to the
-                // uninstantiated `T_greet` that nothing emits.
-                if self.is_plain_fn(name) {
+                // A generic one is instantiated where it's named: the checker
+                // recorded its type arguments under this node, the same as for
+                // a call, and MIR reads the rewrite to point the function value
+                // at that copy. Enqueuing one with no arguments produced a
+                // call to the uninstantiated `T_greet` that nothing emits.
+                let type_args = self.type_args_at(expr.id);
+                if !type_args.is_empty() && self.has_instantiable_body(name) {
+                    self.call_rewrites.insert(expr.id, mangle_name(name, &type_args));
+                    self.enqueue(name.clone(), type_args);
+                } else if self.is_plain_fn(name) {
                     self.enqueue(name.clone(), Vec::new());
                 }
             }

@@ -296,8 +296,17 @@ impl<'a> MirLowerer<'a> {
         }));
 
         let saved_binding = self.locals.insert(binding_name.to_string(), (guard_local, guard_ty.clone()));
+        // The binding shadows any outer name for the block only, metadata
+        // included.
+        let saved_meta = self.local_meta.remove(binding_name);
         if let Some(ref type_name) = inner_type_name {
             self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
+        }
+        // Bound by address, the binding is the box's own payload, so `p = v`
+        // replaces what the box holds. It used to rebind the local, and the
+        // box kept its old value.
+        if by_address {
+            self.meta_mut(binding_name).assigns_through = true;
         }
         // A box holding a function value binds a callable, so `with b.read() as
         // f { f(2) }` has to emit an indirect call — without it the call went
@@ -343,6 +352,10 @@ impl<'a> MirLowerer<'a> {
         match saved_binding {
             Some(prev) => { self.locals.insert(binding_name.to_string(), prev); }
             None => { self.locals.remove(binding_name); }
+        }
+        match saved_meta {
+            Some(prev) => { self.local_meta.insert(binding_name.to_string(), prev); }
+            None => { self.local_meta.remove(binding_name); }
         }
 
         result

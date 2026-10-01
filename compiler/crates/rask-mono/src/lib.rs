@@ -47,63 +47,64 @@ pub struct MonoProgram {
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
+    /// Closures in instantiated bodies that may not reach another task, each
+    /// decided from its copy's concrete capture types (#1356).
+    pub instantiated_task_bound_closures: HashSet<NodeId>,
+}
+
+/// Everything recorded per node, for the whole program: the checker's records
+/// plus the ones monomorphization carried onto instantiated bodies.
+///
+/// Lowering runs after monomorphization and sees both kinds of node, so it
+/// wants one map of each. The two sets of ids are disjoint by construction:
+/// instantiation allocates above everything the checker used. One struct so
+/// no pipeline can take one merged table and forget the next; the native run
+/// path used to lower with the checker's own `escaping_closures`, and so knew
+/// nothing about a closure in a generic body.
+pub struct NodeRecords {
+    pub node_types: HashMap<NodeId, Type>,
+    pub call_targets: HashMap<NodeId, rask_types::Callee>,
+    /// OR1: operator calls a conformance answered.
+    pub operator_targets: HashMap<NodeId, rask_types::OperatorTarget>,
+    /// ER31a: `try` sites that wrap their error.
+    pub error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
+    /// ER14a: `??` sites that keep the optional shape.
+    pub fallback_keeps_shape: HashSet<NodeId>,
+    /// CM1: closure literals that outlive the frame that built them.
+    pub escaping_closures: HashSet<NodeId>,
+    /// Closure literals that may not reach another task (#1356).
+    pub task_bound_closures: HashSet<NodeId>,
+}
+
+impl NodeRecords {
+    /// The checker's records alone, for a program with no instantiated bodies.
+    pub fn from_typed(typed: &TypedProgram) -> Self {
+        Self {
+            node_types: typed.node_types.clone(),
+            call_targets: typed.call_targets.clone(),
+            operator_targets: typed.operator_targets.clone(),
+            error_wraps: typed.error_wraps.clone(),
+            fallback_keeps_shape: typed.fallback_keeps_shape.clone(),
+            escaping_closures: typed.escaping_closures.clone(),
+            task_bound_closures: typed.task_bound_closures.clone(),
+        }
+    }
 }
 
 impl MonoProgram {
-    /// Node types for the whole program: the checker's, plus the ones carried
-    /// onto instantiated bodies.
-    ///
-    /// Lowering runs after monomorphization and sees both kinds of node, so it
-    /// wants one map. The two sets of ids are disjoint by construction —
-    /// instantiation allocates above everything the checker used.
-    pub fn all_node_types(&self, typed: &TypedProgram) -> HashMap<NodeId, Type> {
-        let mut merged = typed.node_types.clone();
-        merged.extend(self.instantiated_node_types.iter().map(|(k, v)| (*k, v.clone())));
-        merged
-    }
-
-    /// Dispatch targets for the whole program, merged the same way.
-    pub fn all_call_targets(
-        &self,
-        typed: &TypedProgram,
-    ) -> HashMap<NodeId, rask_types::Callee> {
-        let mut merged = typed.call_targets.clone();
-        merged.extend(self.instantiated_call_targets.iter().map(|(k, v)| (*k, v.clone())));
-        merged
-    }
-
-    /// OR1 operator targets for the whole program, merged the same way.
-    pub fn all_operator_targets(
-        &self,
-        typed: &TypedProgram,
-    ) -> HashMap<NodeId, rask_types::OperatorTarget> {
-        let mut merged = typed.operator_targets.clone();
-        merged.extend(self.instantiated_operator_targets.iter().map(|(k, v)| (*k, v.clone())));
-        merged
-    }
-
-    /// ER31a error wraps for the whole program, merged the same way.
-    pub fn all_error_wraps(
-        &self,
-        typed: &TypedProgram,
-    ) -> HashMap<NodeId, rask_types::ErrorWrap> {
-        let mut merged = typed.error_wraps.clone();
-        merged.extend(self.instantiated_error_wraps.iter().map(|(k, v)| (*k, v.clone())));
-        merged
-    }
-
-    /// ER14a: every `??` site that keeps the optional shape, source and
-    /// instantiated alike.
-    pub fn all_fallback_keeps_shape(&self, typed: &TypedProgram) -> HashSet<NodeId> {
-        let mut merged = typed.fallback_keeps_shape.clone();
-        merged.extend(self.instantiated_fallback_keeps_shape.iter().copied());
-        merged
-    }
-
-    pub fn all_escaping_closures(&self, typed: &TypedProgram) -> HashSet<NodeId> {
-        let mut merged = typed.escaping_closures.clone();
-        merged.extend(self.instantiated_escaping_closures.iter().copied());
-        merged
+    /// The checker's records merged with the ones carried onto instantiated
+    /// bodies.
+    pub fn node_records(&self, typed: &TypedProgram) -> NodeRecords {
+        let mut r = NodeRecords::from_typed(typed);
+        r.node_types.extend(self.instantiated_node_types.iter().map(|(k, v)| (*k, v.clone())));
+        r.call_targets.extend(self.instantiated_call_targets.iter().map(|(k, v)| (*k, v.clone())));
+        r.operator_targets
+            .extend(self.instantiated_operator_targets.iter().map(|(k, v)| (*k, v.clone())));
+        r.error_wraps.extend(self.instantiated_error_wraps.iter().map(|(k, v)| (*k, v.clone())));
+        r.fallback_keeps_shape.extend(self.instantiated_fallback_keeps_shape.iter().copied());
+        r.escaping_closures.extend(self.instantiated_escaping_closures.iter().copied());
+        r.task_bound_closures.extend(self.instantiated_task_bound_closures.iter().copied());
+        r
     }
 }
 
@@ -977,6 +978,7 @@ fn monomorphize_inner(
         instantiated_error_wraps: mono.instantiated_error_wraps,
         instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
         instantiated_escaping_closures: mono.instantiated_escaping_closures,
+        instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
     })
 }
 
@@ -1182,6 +1184,8 @@ mod tests {
             error_wraps: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
+            task_bound_closures: std::collections::HashSet::new(),
+            generic_closure_captures: std::collections::HashMap::new(),
             try_chain_placement: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),

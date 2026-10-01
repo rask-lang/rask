@@ -43,6 +43,9 @@ pub struct CodeGenerator {
     string_header_data: HashMap<String, cranelift_module::DataId>,
     /// Comptime global data (const name → DataId in the object module)
     pub comptime_data: HashMap<String, cranelift_module::DataId>,
+    /// The runtime's `rask_preempt_requested`, which every function entry and
+    /// loop back-edge checks (conc.runtime/P3).
+    preempt_flag_data: Option<cranelift_module::DataId>,
     /// MIR names of stdlib functions that can panic at runtime
     panicking_fns: HashSet<String>,
     /// Names of functions compiled as Rask code (not C stdlib)
@@ -117,6 +120,7 @@ impl CodeGenerator {
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
+            preempt_flag_data: None,
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             fn_param_types: HashMap::new(),
@@ -184,6 +188,7 @@ impl CodeGenerator {
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
             comptime_data: HashMap::new(),
+            preempt_flag_data: None,
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             fn_param_types: HashMap::new(),
@@ -822,10 +827,11 @@ impl CodeGenerator {
             self.func_ids.insert("rask_free".to_string(), id);
         }
 
-        // rask_closure_alloc(block_size: i64, env_drop: i64) -> i64
-        // (pointer past the two header words)
+        // rask_closure_alloc(block_size: i64, env_drop: i64, flags: i64) -> i64
+        // (pointer past the header words)
         {
             let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.params.push(AbiParam::new(types::I64));
             sig.returns.push(AbiParam::new(types::I64));
@@ -833,6 +839,20 @@ impl CodeGenerator {
                 .declare_function("rask_closure_alloc", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("rask_closure_alloc".to_string(), id);
+        }
+
+        // Preemption safe points (conc.runtime/P3): the flag every function
+        // entry and loop back-edge reads, and what they call when it's up.
+        {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function("rask_preempt_point", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_preempt_point".to_string(), id);
+            let flag = self.module
+                .declare_data("rask_preempt_requested", Linkage::Import, true, false)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.preempt_flag_data = Some(flag);
         }
 
         // rask_closure_free(ptr: i64) -> void
@@ -1808,6 +1828,10 @@ impl CodeGenerator {
             }
         }
 
+        let preempt_flag = self
+            .preempt_flag_data
+            .map(|d| self.module.declare_data_in_func(d, &mut self.ctx.func));
+
         // Build the function
         let mut builder = FunctionBuilder::new(
             &mut self.ctx.func,
@@ -1830,6 +1854,9 @@ impl CodeGenerator {
             builder.set_line_map(lm);
         }
         builder.set_c_abi_args(&self.c_abi_args);
+        if let Some(gv) = preempt_flag {
+            builder.set_preempt_flag(gv);
+        }
         builder.build()?;
 
         // Temporary: dump CLIF IR for debugging

@@ -595,8 +595,8 @@ impl<'a> MirLowerer<'a> {
                         // as an address (segfault), so they fall through to a plain
                         // local Assign — the Copy is mutated in place with no writeback,
                         // matching `modify_int(x)` in the spec.
-                        let is_mutate_param = self.meta(name)
-                            .map(|m| m.is_mutate_param)
+                        let assigns_through = self.meta(name)
+                            .map(|m| m.assigns_through)
                             .unwrap_or(false);
                         // #270: a scalar `mutate` param's local is a pointer — the
                         // store must use the *scalar* size, not the pointer's, or it
@@ -606,7 +606,7 @@ impl<'a> MirLowerer<'a> {
                         // parameter, so the scalar case doesn't need the
                         // `mutate` half of the test any more (#1011).
                         let store_through_ptr = scalar_mutate.is_some()
-                            || (is_mutate_param && mutate_param_by_pointer(&dst_ty));
+                            || (assigns_through && mutate_param_by_pointer(&dst_ty));
                         if store_through_ptr {
                             let store_size = match (&scalar_mutate, &dst_ty) {
                                 (Some(sty), _) => Some(sty.size()),
@@ -632,7 +632,7 @@ impl<'a> MirLowerer<'a> {
                             // A plain scalar goes through this branch too, with
                             // a cell for a destination, and a cell's contents
                             // are `container_drop`'s to place.
-                            let replaced = if !is_mutate_param {
+                            let replaced = if !assigns_through {
                                 None
                             } else if matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_)) {
                                 Some(dst_ty.clone())

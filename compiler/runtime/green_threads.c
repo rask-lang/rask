@@ -94,4 +94,16 @@ int rask_io_wait(int64_t fd, int64_t want_write) {
     return rask_thread_io_wait(fd, want_write);
 }
 
+// No green scheduler, so no fiber to take off the CPU: a task is an OS thread
+// holding a worker slot, and preempting it means handing the slot over
+// (thread.c). A task waiting for a slot raises the flag.
+//
+// Holding a lock is no reason to wait: a task that then blocks on the lock
+// gives its slot back while it waits, so the owner gets one to finish in.
+int32_t rask_preempt_requested;
+void rask_preempt_point(void) {
+    if (rask_preempt_unsafe()) return;
+    rask_task_slot_preempt();
+}
+
 #endif // !RASK_HAS_GREEN

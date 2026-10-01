@@ -11,7 +11,7 @@ use crate::types::Type;
 const TYPED_MODULES: &[&str] = &["fs", "net", "json", "cli", "io", "std"];
 
 /// Registry of builtin modules and their methods.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(super) struct BuiltinModules {
     pub(super) modules: HashMap<String, Vec<ModuleMethodSig>>,
 }

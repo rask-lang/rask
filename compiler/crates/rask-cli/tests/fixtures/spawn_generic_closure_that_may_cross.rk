@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// The control for spawn_generic_closure_with_link.rk: the same generic
+// function, instantiated with a plain value, gives a closure that may cross.
+// Whether a generic body's closure is task-bound is decided per instantiation.
+
+func keep<T>(x: T) -> func() -> i64 {
+    return || {
+        let y = x
+        return 1
+    }
+}
+
+func main() {
+    using Multitasking {
+        let f = keep(7)
+        println("{spawn(f).join()!}")
+    }
+}

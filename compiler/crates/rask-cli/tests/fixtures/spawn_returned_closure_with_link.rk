@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure that captured a link, returned from a function and then spawned
+// (#1356). The spawn site has no closure written in it, so the checker can't
+// see what it captured; the closure carries that itself, and spawn refuses it.
+import memory.{Rack, Link}
+
+struct Node {
+    id: i64
+}
+
+func reader(a: Link<Node>) -> func() -> i64 {
+    return || { return a.id }
+}
+
+func main() {
+    using Multitasking {
+        mut rack: Rack<Node> = Rack.new()
+        let a = rack.insert(Node { id: 1 })
+        let f = reader(a)
+        println("before")
+        println("{spawn(f).join()!}")
+    }
+}

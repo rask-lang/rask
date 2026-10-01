@@ -95,6 +95,11 @@ void rask_print_unlock(void)  { if (print_lock_depth > 0) { print_lock_depth--; 
 void rask_eprint_lock(void)   { flockfile(stderr); eprint_lock_depth++; }
 void rask_eprint_unlock(void) { if (eprint_lock_depth > 0) { eprint_lock_depth--; funlockfile(stderr); } }
 
+// A line is half printed: another fiber on this thread would splice into it.
+int rask_print_lock_held(void) {
+    return print_lock_depth > 0 || eprint_lock_depth > 0;
+}
+
 // Drop whatever this thread still holds. Called before a panic longjmps past
 // the matching unlock, and before the panic reporter writes to stderr.
 void rask_print_unlock_all(void) {
@@ -841,9 +846,10 @@ const char *rask_io_error_text(int32_t err) {
     return buf;
 }
 
-// strlen under a name Rask can declare without clashing with fs.rk's own
-// `strlen` extern — one C symbol may only be declared once across stdlib.
-uint64_t rask_io_cstr_len(const char *s) { return s ? (uint64_t)strlen(s) : 0; }
+// `rask_io_error_text` as a Rask string, for `IoError.last_os_error()`.
+void rask_io_error_message(RaskStr *out, int32_t err) {
+    rask_string_from(out, rask_io_error_text(err));
+}
 
 
 // Stat helpers — return individual fields so Rask doesn't need struct access
@@ -1165,151 +1171,20 @@ int64_t rask_net_tcp_connect(const RaskStr *addr) {
     return net_connect_fd(host, port_str);
 }
 
-// ─── String-based socket I/O (used by Rask stdlib HTTP parser) ────
+// ─── Socket I/O ───────────────────────────────────────────────────
 
-// One HTTP/1.1 message off a connection: the headers through the blank line,
-// then the body. A request's body is as long as its Content-Length says, and
-// empty without one; a response without one runs to the end of the stream.
-//
-// A read returns whatever the network had, which can be a fraction of the
-// request line: the server used to parse one read as the whole request
-// (sim's short reads found it, sim/F1). And the message is only whole once
-// every byte it announces is in: a connection that ends or resets first is
-// an error, never a shorter body.
-//
-// The reader hands back a message for `rask_io_http_take`, or one of these.
-#define HTTP_READ_FAILED  (-1)   // errno says why
-#define HTTP_CUT_SHORT    (-2)   // the stream ended before the message did
-#define HTTP_TOO_LARGE    (-3)
-#define HTTP_BAD_LENGTH   (-4)   // a Content-Length that isn't one number
-#define HTTP_CHUNKED      (-5)   // Transfer-Encoding: chunked isn't read
-
-typedef struct {
-    int64_t len;
-    char    data[];
-} HttpMessage;
-
-// The value of header `key` (lowercase, with its colon) in `head`, or NULL.
-static const char *http_header(const char *head, int64_t head_len, const char *key,
-                               int64_t *value_len) {
-    int64_t key_len = (int64_t)strlen(key);
-    for (int64_t i = 0; i + key_len <= head_len; i++) {
-        if (i > 0 && head[i - 1] != '\n') continue;
-        if (strncasecmp(head + i, key, (size_t)key_len) != 0) continue;
-        int64_t j = i + key_len;
-        while (j < head_len && (head[j] == ' ' || head[j] == '\t')) j++;
-        int64_t k = j;
-        while (k < head_len && head[k] != '\r' && head[k] != '\n') k++;
-        while (k > j && (head[k - 1] == ' ' || head[k - 1] == '\t')) k--;
-        *value_len = k - j;
-        return head + j;
-    }
-    return NULL;
-}
-
-// -1 when there's no Content-Length, HTTP_BAD_LENGTH when it isn't a number
-// no larger than `max`, HTTP_TOO_LARGE when it's more than `max`.
-static int64_t http_content_length(const char *head, int64_t head_len, int64_t max) {
-    int64_t len;
-    const char *v = http_header(head, head_len, "content-length:", &len);
-    if (!v) return -1;
-    if (len == 0) return HTTP_BAD_LENGTH;
-    int64_t n = 0;
-    for (int64_t i = 0; i < len; i++) {
-        if (v[i] < '0' || v[i] > '9') return HTTP_BAD_LENGTH;
-        n = n * 10 + (v[i] - '0');
-        if (n > max) return HTTP_TOO_LARGE;
-    }
-    return n;
-}
-
-static int http_is_chunked(const char *head, int64_t head_len) {
-    int64_t len;
-    const char *v = http_header(head, head_len, "transfer-encoding:", &len);
-    if (!v) return 0;
-    for (int64_t i = 0; i + 7 <= len; i++) {
-        if (strncasecmp(v + i, "chunked", 7) == 0) return 1;
-    }
-    return 0;
-}
-
-int64_t rask_io_http_read(int64_t fd, int64_t max_len, int64_t is_response) {
-    if (max_len <= 0 || max_len > 4 * 1024 * 1024) max_len = 65536;
-    HttpMessage *m = (HttpMessage *)rask_alloc((int64_t)sizeof(HttpMessage) + max_len);
-    char *buf = m->data;
-    int64_t total = 0;
-    int64_t want = -1;      // bytes in the whole message, once the headers are in
-    int to_close = 0;       // a response with no length: everything up to EOF
-    int64_t failure = 0;
-
-    for (;;) {
-        if (want >= 0 && total >= want) break;
-        if (total >= max_len) {
-            failure = HTTP_TOO_LARGE;
-            break;
-        }
-        ssize_t n = sock_read(fd, buf + total, (size_t)(max_len - total));
-        if (n < 0) {
-            failure = HTTP_READ_FAILED;
-            break;
-        }
-        if (n == 0) {
-            if (!to_close) failure = HTTP_CUT_SHORT;
-            break;
-        }
-        int64_t from = total >= 3 ? total - 3 : 0;
-        total += n;
-        if (want >= 0 || to_close) continue;
-        for (int64_t i = from; i + 3 < total; i++) {
-            if (buf[i] != '\r' || buf[i+1] != '\n' || buf[i+2] != '\r' || buf[i+3] != '\n') continue;
-            if (http_is_chunked(buf, i)) {
-                failure = HTTP_CHUNKED;
-                break;
-            }
-            int64_t body = http_content_length(buf, i, max_len);
-            if (body == HTTP_BAD_LENGTH || body == HTTP_TOO_LARGE) {
-                failure = body;
-                break;
-            }
-            if (body < 0 && is_response) to_close = 1;
-            else want = i + 4 + (body < 0 ? 0 : body);
-            if (want > max_len) failure = HTTP_TOO_LARGE;
-            break;
-        }
-        if (failure) break;
-    }
-    if (failure) {
-        int err = errno;
-        rask_free(m);
-        errno = err;
-        return failure;
-    }
-    // Bytes past the message belong to a next one, which a `Connection: close`
-    // exchange never sends.
-    m->len = want >= 0 ? want : total;
-    return (int64_t)(uintptr_t)m;
-}
-
-// The message `rask_io_http_read` handed back, as a string. Frees it.
-void rask_io_http_take(RaskStr *out, int64_t handle) {
-    HttpMessage *m = (HttpMessage *)(uintptr_t)handle;
-    rask_string_from_bytes(out, m->data, m->len);
-    rask_free(m);
-}
-
-// Read until connection closes or max_len reached. For HTTP client responses
-// where Connection: close is used.
-void rask_io_read_until_close(RaskStr *out, int64_t fd, int64_t max_len) {
-    if (max_len <= 0 || max_len > 4 * 1024 * 1024) max_len = 1048576;
-    char *buf = (char *)rask_alloc(max_len);
-    int64_t total = 0;
-    while (total < max_len) {
-        ssize_t n = sock_read(fd, buf + total, (size_t)(max_len - total));
-        if (n <= 0) break;
-        total += n;
-    }
-    rask_string_from_bytes(out, buf, total);
-    rask_free(buf);
+// One read of whatever has arrived on a connection, up to `max` bytes, as a
+// `Vec<u8>` cast to i64: empty at the end of the stream, -1 with errno set when
+// the read failed. stdlib/http.rk frames its messages on top of this, so the
+// framing is Rask both backends run rather than a C copy of it here.
+int64_t rask_net_read_some(int64_t fd, int64_t max) {
+    if (max <= 0) max = 1;
+    if (max > 65536) max = 65536;
+    char buf[65536];
+    ssize_t n = sock_read(fd, buf, (size_t)max);
+    if (n < 0) return -1;
+    RaskVec *v = rask_vec_from_bytes(buf, n);
+    return (int64_t)(uintptr_t)v;
 }
 
 // Write a RaskStr to fd. Returns bytes written or -1.
@@ -1388,197 +1263,8 @@ int64_t rask_io_std_read_bytes(int64_t max) {
     return (int64_t)(uintptr_t)v;
 }
 
-// Close a file descriptor.
-void rask_io_close_fd(int64_t fd) {
-    sock_close(fd);
-}
-
-// ─── HTTP helpers (called from Rask stdlib via extern "C") ──────
-
-// Parse HTTP/1.1 request from socket fd. Returns pointer to
-// [method, path, body, headers] — each string field is a 16-byte RaskStr.
-// Layout: [RaskStr method (16B)][RaskStr path (16B)][RaskStr body (16B)][Map* headers (8B)]
-int64_t rask_http_parse_request(int64_t conn_fd) {
-    RaskStr raw;
-    int64_t msg = rask_io_http_read(conn_fd, 65536, 0);
-    if (msg < 0) rask_string_new(&raw);
-    else rask_io_http_take(&raw, msg);
-    if (rask_string_len(&raw) == 0) {
-        // Empty request — return minimal struct
-        // Allocate: 3 * 16 bytes (strings) + 8 bytes (map ptr) = 56 bytes
-        uint8_t *req = (uint8_t *)rask_alloc(56);
-        memset(req, 0, 56);
-        RaskStr *method = (RaskStr *)req;
-        RaskStr *path = (RaskStr *)(req + 16);
-        RaskStr *body = (RaskStr *)(req + 32);
-        rask_string_from_bytes(method, "GET", 3);
-        rask_string_from_bytes(path, "/", 1);
-        rask_string_new(body);
-        *(int64_t *)(req + 48) = (int64_t)(uintptr_t)rask_map_new(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
-        return (int64_t)(uintptr_t)req;
-    }
-
-    const char *data = rask_string_ptr(&raw);
-    int64_t len = rask_string_len(&raw);
-
-    // Find end of headers (\r\n\r\n)
-    int64_t header_end = -1;
-    for (int64_t i = 0; i + 3 < len; i++) {
-        if (data[i] == '\r' && data[i+1] == '\n' &&
-            data[i+2] == '\r' && data[i+3] == '\n') {
-            header_end = i;
-            break;
-        }
-    }
-    if (header_end < 0) header_end = len;
-
-    // Parse request line: "METHOD PATH HTTP/1.1\r\n"
-    int64_t first_space = -1, second_space = -1;
-    for (int64_t i = 0; i < header_end; i++) {
-        if (data[i] == ' ') {
-            if (first_space < 0) first_space = i;
-            else if (second_space < 0) { second_space = i; break; }
-        }
-        if (data[i] == '\r') break;
-    }
-
-    // Allocate result: 3 RaskStr (48B) + 1 Map* (8B) = 56B
-    uint8_t *req = (uint8_t *)rask_alloc(56);
-    memset(req, 0, 56);
-    RaskStr *method = (RaskStr *)req;
-    RaskStr *path_str = (RaskStr *)(req + 16);
-    RaskStr *body = (RaskStr *)(req + 32);
-
-    if (first_space > 0 && second_space > first_space) {
-        rask_string_from_bytes(method, data, first_space);
-        rask_string_from_bytes(path_str, data + first_space + 1,
-                               second_space - first_space - 1);
-    } else {
-        rask_string_from_bytes(method, "GET", 3);
-        rask_string_from_bytes(path_str, "/", 1);
-    }
-
-    // Extract body (after \r\n\r\n)
-    if (header_end + 4 < len) {
-        rask_string_from_bytes(body, data + header_end + 4, len - header_end - 4);
-    } else {
-        rask_string_new(body);
-    }
-
-    // Parse headers — map stores RaskStr keys and values (16B each)
-    RaskMap *headers = rask_map_new_string_keys(16, 16, rask_elem_strs_one, 1, rask_elem_strs_one, 1);
-    int64_t line_start = -1;
-    // Find start of second line (after first \r\n)
-    for (int64_t i = 0; i < header_end; i++) {
-        if (data[i] == '\r' && i + 1 < header_end && data[i+1] == '\n') {
-            line_start = i + 2;
-            break;
-        }
-    }
-    if (line_start > 0) {
-        int64_t pos = line_start;
-        while (pos < header_end) {
-            // Find end of this header line
-            int64_t line_end = header_end;
-            for (int64_t i = pos; i < header_end; i++) {
-                if (data[i] == '\r') { line_end = i; break; }
-            }
-            // Find ": " separator
-            int64_t colon = -1;
-            for (int64_t i = pos; i + 1 < line_end; i++) {
-                if (data[i] == ':' && data[i+1] == ' ') { colon = i; break; }
-            }
-            if (colon > pos) {
-                RaskStr key, val;
-                rask_string_from_bytes(&key, data + pos, colon - pos);
-                rask_string_from_bytes(&val, data + colon + 2,
-                                       line_end - colon - 2);
-                rask_map_insert(headers, &key, &val);
-            }
-            // Skip \r\n to next line
-            pos = line_end + 2;
-        }
-    }
-
-    *(int64_t *)(req + 48) = (int64_t)(uintptr_t)headers;
-
-    rask_string_free(&raw);
-    return (int64_t)(uintptr_t)req;
-}
-
-// Format and write HTTP response to socket fd.
-// resp_ptr points to [RaskStr status_str (16B) ... ] — but currently uses
-// [status(i64), headers(Map*), body_ptr]. Keep old ABI for now.
-int64_t rask_http_write_response(int64_t conn_fd, int64_t response_ptr) {
-    int64_t *resp = (int64_t *)(uintptr_t)response_ptr;
-    int64_t status = resp[0];
-    RaskMap *headers = (RaskMap *)(uintptr_t)resp[1];
-    const RaskStr *body = (const RaskStr *)(uintptr_t)resp[2];
-
-    const char *reason = "OK";
-    switch ((int)status) {
-        case 200: reason = "OK"; break;
-        case 201: reason = "Created"; break;
-        case 204: reason = "No Content"; break;
-        case 400: reason = "Bad Request"; break;
-        case 404: reason = "Not Found"; break;
-        case 500: reason = "Internal Server Error"; break;
-    }
-
-    int64_t body_len = body ? rask_string_len(body) : 0;
-
-    // Build response into a growable string
-    RaskStr out;
-    rask_string_new(&out);
-    char line_buf[256];
-    snprintf(line_buf, sizeof(line_buf),
-             "HTTP/1.1 %d %s\r\n", (int)status, reason);
-    rask_string_append_cstr(&out, &out, line_buf);
-
-    // Write user headers from Map
-    if (headers && rask_map_len(headers) > 0) {
-        RaskVec *keys = rask_map_keys(headers);
-        for (int64_t i = 0; i < rask_vec_len(keys); i++) {
-            RaskStr *key = (RaskStr *)rask_vec_get(keys, i);
-            if (!key) continue;
-            RaskStr *val = (RaskStr *)rask_map_get(headers, key);
-            if (!val) continue;
-            // Append in place. Routing through a temp and freeing the
-            // accumulator frees the buffer the temp just took ownership of —
-            // the append primitive reuses a sole-owned buffer (#414).
-            rask_string_append_cstr(&out, &out, rask_string_ptr(key));
-            rask_string_append_cstr(&out, &out, ": ");
-            rask_string_append_cstr(&out, &out, rask_string_ptr(val));
-            rask_string_append_cstr(&out, &out, "\r\n");
-        }
-        rask_vec_free(keys);
-    }
-
-    // Content-Length header
-    snprintf(line_buf, sizeof(line_buf),
-             "Content-Length: %lld\r\n\r\n", (long long)body_len);
-    rask_string_append_cstr(&out, &out, line_buf);
-
-    // Write header + body
-    rask_io_write_string(conn_fd, (int64_t)(uintptr_t)&out);
-    if (body_len > 0) {
-        rask_io_write_string(conn_fd, (int64_t)(uintptr_t)body);
-    }
-
-    rask_string_free(&out);
-    return 0;
-}
-
 // Close a network socket (listening or connected).
 void rask_net_close(int64_t fd) {
-    if (fd >= 0) sock_close(fd);
-}
-
-// Close an HttpServer — extracts the listener fd from the struct
-// (listener is the first field) and closes it.
-void rask_http_server_close(int64_t server_ptr) {
-    if (server_ptr == 0) return;
-    int64_t fd = *(int64_t *)(uintptr_t)server_ptr;
     if (fd >= 0) sock_close(fd);
 }
 
@@ -1869,15 +1555,6 @@ int64_t rask_args_positional(int64_t args_ptr) {
 // Args method: program() -> string
 int64_t rask_args_program(int64_t args_ptr) {
     return args_ptr; // first 16 bytes IS the program string
-}
-
-// Legacy stubs — kept for backward compat, but shadowed by Rask stdlib functions
-int64_t rask_net_read_http_request(int64_t conn_fd) {
-    return rask_http_parse_request(conn_fd);
-}
-
-int64_t rask_net_write_http_response(int64_t conn_fd, int64_t response_ptr) {
-    return rask_http_write_response(conn_fd, response_ptr);
 }
 
 // Stub: create a Map from a static array of key-value pairs.

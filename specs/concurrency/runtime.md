@@ -352,28 +352,31 @@ Rask preempts fibers at safe points, like Go since 1.14. No CW1-style linter war
 
 | Rule | Description |
 |------|-------------|
-| **P2.1: Budget per fiber** | Each fiber starts with a budget (default 10 ms of wall time). When budget expires, preemption is requested |
-| **P2.2: Safe points at function calls** | Function prologues check a per-fiber preemption flag. If set, the function yields back to the scheduler via `fiber_switch` before executing |
-| **P2.3: Signal preemption for tight loops** | If a fiber runs 50 ms past its budget without hitting a safe point, the runtime delivers SIGURG to the carrier thread. The signal handler parks the fiber at the signal site |
-| **P2.4: No unsafe preemption points** | Signal handlers check a per-worker "preemption allowed" flag, disabled during FFI calls, unsafe blocks, and codegen'd sections that hold internal locks |
+| **P2.1: Budget per fiber** | Each fiber starts with a budget of 10 ms of wall time. A SIGURG timer ticking every 5 ms marks each worker whose fiber is past it and raises one process-wide flag |
+| **P2.2: Safe points** | Every function entry and every loop back edge checks the flag. If it's set, the fiber yields to the scheduler via `fiber_switch` and goes to the back of its worker's queue, behind anything ready |
+| **P2.3: No yield from the signal handler** | The handler only marks. A loop with no call in it still yields, at its back edge, so parking a fiber at an arbitrary instruction buys nothing |
+| **P2.4: No unsafe preemption points** | A safe point doesn't yield while the fiber is unwinding, inside FFI, or holding a runtime-internal lock such as the print lock |
+| **P2.5: A waiting task holds no worker** | Where a task holds a worker slot rather than being a fiber (sim, a build without the green scheduler, the interpreter), it gives the slot back for any wait (join, a lock, a condition, a channel, a sleep, a socket) and queues for one after, as a fiber gives back its worker. Slots are handed out first come, first served, so a task that steps aside goes behind whoever was already waiting. A task preempted inside a lock is then harmless: whoever blocks on the lock gives its slot back |
 
 ### Safe-point instrumentation (P3)
 
-The compiler inserts a preemption check into every function prologue:
+Codegen inserts the check at function entry and before each jump back to an earlier block:
 
 ```
-func_prologue:
-    mov     rax, [current_task + OFFSET_PREEMPT_FLAG]
-    test    rax, rax
-    jnz     yield_back_to_scheduler
-    ; ... normal prologue ...
+    load    r, [rask_preempt_requested]
+    test    r, r
+    jnz     cold_block          ; calls rask_preempt_point(), then continues
 ```
 
-Cost per function call: one cache-resident load + test + conditional branch. Modern branch predictors handle this for free in the common case.
+Cost per call or iteration: one cache-resident load, a test and a predicted-not-taken branch. The flag is process-wide, so the common case never touches the current task.
+
+The interpreter runs a task on an OS thread holding one of the `workers: n` slots. At the start of every statement block, which every loop iteration and function body passes through, a task that has held its slot past the same budget while another task waits gives the slot back and queues for one again (P2.5). Under sim the budget is a number of safe points drawn from the seed each time a task takes a slot, so different seeds step tasks aside at different places and a replay steps them aside at the same ones.
 
 ### Rationale
 
 **Why not Go's approach exactly?** Go uses a GC-pre-existing "stack growth" check at prologues for preemption. Rask doesn't have stack growth (demand-paged fixed reservation), so the check piggybacks on a different mechanism — but the cost is identical.
+
+**Why checks at back edges instead of Go's signal-site parking?** Parking a fiber from the handler needs the codegen to describe every instruction as resumable: which registers hold live values, which don't. A back-edge check costs a load per iteration and needs nothing from the codegen but a branch. I'll take the load.
 
 **Why SIGURG?** Matches Go since 1.14. SIGURG is "urgent condition on socket" in POSIX but nothing uses it in practice; reusing it avoids conflicts with user-chosen signal handlers.
 
@@ -2067,7 +2070,6 @@ Interpreter is an MVP for validating language semantics, not a full runtime. Bui
 - Scalability: 100k concurrent connections would create 100k OS threads (crash)
 - Transparent I/O pausing: I/O blocks the entire OS thread
 - Cancellation: No cancel flag, no ensure hook execution
-- Preemption: OS thread preemption only (no per-fiber budget)
 
 **Path to full runtime:**
 
@@ -2132,7 +2134,7 @@ Interpreter remains as-is (OS threads) for semantics validation and examples.
 **Signal-based preemption over cooperative-only:**
 - Cooperative-only makes "CPU in async" a footgun that needs a linter warning
 - Signal preemption (Go 1.14+ style) eliminates the footgun entirely at ~1 instruction per function call
-- Complexity is contained: signals only deliver at pre-instrumented safe points
+- Complexity is contained: the signal only marks, and the fiber yields at an instrumented safe point
 
 ### Tradeoffs Accepted (DR2)
 

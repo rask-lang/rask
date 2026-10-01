@@ -419,6 +419,14 @@ jobs:
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
       run: tests/soak_gate.sh
 
+    # Every concurrency suite file under sim, 100 interleavings each. A failure
+    # prints a replay line that reruns the exact interleaving.
+    - name: Sim stress gate
+      if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
+      env:
+        SIM_SEEDS: 100
+      run: tests/sim_gate.sh
+
   # ── Everything that is about the surface we publish: formatting, packages,
   # prose, and the C the runtime is written in.
   gates-surface:

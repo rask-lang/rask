@@ -281,15 +281,15 @@ The consequence is that sim is a sealed world: there is no way to read the machi
 
 Sim is built on the native runtime, as a link-time swap of the runtime's C side. What it finds is what ships.
 
-**A baton over OS threads.** Each task keeps the OS thread the native runtime gives it today. Sim adds one baton: only the thread holding it runs Rask code. At a scheduling point the holder asks the seeded scheduler who is next, hands the baton over, and blocks until it comes back. Every task but one is asleep on a condition variable at all times, so the program is single-threaded in effect and ordering comes from the seed alone.
+**Fibers on one thread.** Every task is a stackful fiber on the thread that runs the test: the same fibers, stacks and switch the native scheduler uses, with a task's thread-local runtime state swapped on and off at each switch. At a scheduling point the running task asks the seeded scheduler who is next and switches straight to it. Nothing else runs, so the program is single-threaded and ordering comes from the seed alone.
 
-An earlier draft put sim after Phase B fibers, on the grounds that a fiber scheduler is the thing to make deterministic. It isn't needed. Scheduling points (S3) are all runtime calls, so a task only ever yields at a point where it is already inside the runtime, and blocking its thread there costs a futex round trip (a few microseconds) instead of a fiber switch. Virtual time makes that cost invisible to the test. When fibers land, the scheduler and its seed draws stay; only the handover changes.
+The first version was a baton over OS threads: each task on the thread the runtime gave it, all but one asleep on a condition variable. That was enough to make the order a function of the seed, since scheduling points (S3) are all runtime calls and blocking a thread there is safe. Fibers replaced it once they shipped, so the tests run the switch that ships rather than a stand-in for it. The scheduler and its seed draws didn't change; only the handover did.
 
 The interpreter was the other option: stepping evaluation makes "pick a random runnable task" nearly free. It also spawns OS threads today, and a scheduler built there would verify orderings the compiled program may not have.
 
 **One process per test.** The runner starts the test binary once per test and seed, naming the test and handing over its seed. That is what I7 costs: nothing, since a fresh process starts from the initializers. It also gives B4 and B5 their per-test reset, lets a deadlock report and exit from whichever thread noticed it, and makes seed search's parallelism (I6) a matter of starting more processes.
 
-**Allocator.** B7's fixed-base allocator replaces `malloc` for the whole process, not just linked C. Rask's own allocations go through `malloc`, and under the baton only one thread allocates at a time, so every address is a function of the seed. Nothing in Rask can observe an address (`determinism/D11`), but thread-local arenas would still make C-side behavior differ between runs, and one allocator closes both.
+**Allocator.** B7's fixed-base allocator replaces `malloc` for the whole process, not just linked C. Rask's own allocations go through `malloc`, and under sim only one thread exists, so every address is a function of the seed. Nothing in Rask can observe an address (`determinism/D11`), but thread-local arenas would still make C-side behavior differ between runs, and one allocator closes both.
 
 ### Open questions
 

@@ -2,14 +2,19 @@
 
 // Sim mode: one task at a time, in an order drawn from a seed (sim/S1–S5).
 //
-// Every task still runs on its own OS thread, the way thread.c starts it. What
-// sim adds is a baton: only the thread whose task is `g.current` executes Rask
-// code, and every other task thread sleeps on its own condition variable. At a
-// scheduling point the running task draws the next one from the scheduler
-// stream, hands the baton over, and waits until it comes back.
+// Every task is a fiber on the one thread that runs the test, the same stackful
+// fibers green.c schedules (fiber.c). At a scheduling point the running task
+// draws the next one from the scheduler stream and switches straight to it.
+// Nothing else runs, so the program is single-threaded and the order comes
+// from the seed alone.
 //
-// All scheduling points are runtime calls (sim.h), so a task only ever gives
-// the baton up from inside the runtime, where blocking its thread is safe.
+// It used to be a baton over OS threads: each task on its own thread, all but
+// one asleep on a condition variable. Fibers make the deterministic tests run
+// the switch, the stacks and the per-task state swap that ship (ROADMAP v0.5).
+//
+// All scheduling points are runtime calls (sim.h), so a task only ever
+// switches from inside the runtime, and never while it holds a lock another
+// task could want.
 //
 // The clock is virtual (sim/C1–C3): it starts at zero, moves 1 µs per
 // scheduling step, and jumps to the next timer when nothing is runnable.
@@ -21,6 +26,7 @@
 #ifdef RASK_SIM
 
 #include "sim.h"
+#include "fiber.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -69,7 +75,10 @@ typedef struct SimTask {
     const struct SimTask *joining; // set while parked in join
     int64_t          deadline_ns; // sleeping until
     uint64_t         random;      // the task's user-random stream (SD3)
-    pthread_cond_t   turn;        // signalled when this task gets the baton
+    RaskFiber        fiber;       // the test's own stack for task 0
+    void            *tls;         // its thread-local state while switched out
+    void           (*entry)(void *);
+    void            *arg;
 } SimTask;
 
 static struct {
@@ -89,6 +98,7 @@ static struct {
     char             fault_log[4096];
     int64_t          step;
     int64_t          now_ns;
+    SimTask         *reap;        // finished, its stack still to give back
 } g = { .lock = PTHREAD_MUTEX_INITIALIZER };
 
 static __thread SimTask *tl_self;
@@ -111,7 +121,12 @@ static SimTask *task_alloc(int64_t task_id) {
     t->task_id = task_id;
     t->state = SIM_RUNNABLE;
     t->random = stream_seed(g.seed, STREAM_TASK + ((uint64_t)t->index << 8));
-    pthread_cond_init(&t->turn, NULL);
+    // Zeroed is a task that hasn't started (rask_task_tls_swap).
+    t->tls = calloc(1, rask_task_tls_size());
+    if (!t->tls) {
+        fprintf(stderr, "sim: out of memory creating a task\n");
+        _exit(1);
+    }
     g.tasks[g.count++] = t;
     return t;
 }
@@ -173,7 +188,40 @@ static void over_budget_locked(void) {
     stuck_locked(headline, "raise the budget with `--max-steps` if the test is just long");
 }
 
-// ─── The baton ──────────────────────────────────────────────
+// ─── The switch ─────────────────────────────────────────────
+
+// A finished task's stack can't be given back while it is still the one
+// running, so the task switched to does it.
+static void reap_locked(void) {
+    SimTask *t = g.reap;
+    if (!t) return;
+    g.reap = NULL;
+    rask_fiber_destroy(&t->fiber);
+    free(t->tls);
+    t->tls = NULL;
+}
+
+// Hand the thread to `next`. Returns when something switches back to `self`,
+// which never happens once `self` is done.
+static void switch_to_locked(SimTask *self, SimTask *next) {
+    // Every task shares this thread, so its thread-local state goes with it:
+    // out of the thread into `self`'s blob, and `next`'s back in.
+    rask_task_tls_swap(self->tls);
+    rask_task_tls_swap(next->tls);
+    tl_self = next;
+    // Held across the switch it would be held by whoever runs next, on the
+    // same thread, and the first thing they do is take it.
+    pthread_mutex_unlock(&g.lock);
+    if (self->state == SIM_DONE) {
+        g.reap = self;
+        rask_fiber_switch_final(&self->fiber, &next->fiber);
+    }
+    rask_fiber_switch(&self->fiber, &next->fiber);
+    pthread_mutex_lock(&g.lock);
+    reap_locked();
+}
+
+// ─── Picking who runs ───────────────────────────────────────
 
 static void wake_expired_locked(void) {
     for (int64_t i = 0; i < g.count; i++) {
@@ -230,11 +278,7 @@ static void schedule_locked(SimTask *self) {
 
     if (next == self) return;
     g.current = next;
-    pthread_cond_signal(&next->turn);
-    if (self->state == SIM_DONE) return;
-    while (g.current != self) {
-        pthread_cond_wait(&self->turn, &g.lock);
-    }
+    switch_to_locked(self, next);
 }
 
 static SimTask *self_or_die(const char *where) {
@@ -429,6 +473,15 @@ const char *rask_sim_fault_log(void) {
 
 // Short reads, latencies and injected errors all draw here, so none of them
 // can shift the schedule (sim/SD2).
+// How many safe points a task gets before it steps aside for a waiting one
+// (thread.c). From the schedule's stream, so different seeds preempt at
+// different places and a replay preempts at the same ones. Anywhere from one
+// to a couple of thousand: short enough to cut into a small critical section,
+// long enough that a spinning test still makes progress.
+int64_t rask_sim_preempt_budget(void) {
+    return 1 + (int64_t)(splitmix64(&g.sched) % 2048);
+}
+
 uint64_t rask_sim_fault_draw(void) {
     return splitmix64(&g.fault);
 }
@@ -438,53 +491,47 @@ uint64_t rask_sim_random_seed(void) {
     return splitmix64(&self->random);
 }
 
-// ─── Task lifecycle (thread.c) ──────────────────────────────
+// ─── Task lifecycle (thread.c, threadpool.c) ────────────────
 
-// Called by the spawner, which holds the baton, so the new task's place in the
-// table (and so its streams) doesn't depend on when its thread starts.
-void *rask_sim_task_new(int64_t task_id) {
+// Where every task's fiber starts. Whoever switched here left the lock
+// released and may have finished, so its stack comes back first.
+static void sim_fiber_main(void *arg) {
+    rask_fiber_started();
+    // A fresh fiber stack reads as zeros, which hides a slot codegen forgot to
+    // write the way a fresh thread stack does.
+    rask_poison_stack();
+    SimTask *t = (SimTask *)arg;
+    pthread_mutex_lock(&g.lock);
+    reap_locked();
+    pthread_mutex_unlock(&g.lock);
+
+    t->entry(t->arg);
+
+    pthread_mutex_lock(&g.lock);
+    t->state = SIM_DONE;
+    notify_locked(t);
+    schedule_locked(t);
+    // Not reached: nothing is runnable but a finished task is not either, so
+    // the switch above is final or sim reported a deadlock and exited.
+    abort();
+}
+
+// Called by the spawner, which is the running task, so the new task's place in
+// the table (and so its streams) is fixed by the spawn and nothing else. It is
+// runnable from here and first runs when the seed picks it.
+void *rask_sim_task_spawn(int64_t task_id, void (*entry)(void *), void *arg) {
     pthread_mutex_lock(&g.lock);
     SimTask *t = task_alloc(task_id);
+    t->entry = entry;
+    t->arg = arg;
+    rask_fiber_init(&t->fiber, sim_fiber_main, t);
     pthread_mutex_unlock(&g.lock);
     return t;
 }
 
 // A pool worker runs many tasks' bodies, so it has no task id of its own.
-void *rask_sim_worker_new(void) {
-    return rask_sim_task_new(SIM_POOL_WORKER);
-}
-
-// A task whose thread couldn't be started. It is done before it began, so
-// nothing picks it and nothing waits for it.
-void rask_sim_task_abandon(void *task) {
-    SimTask *t = (SimTask *)task;
-    pthread_mutex_lock(&g.lock);
-    t->state = SIM_DONE;
-    notify_locked(t);
-    pthread_mutex_unlock(&g.lock);
-}
-
-// First thing a task thread does: wait to be picked.
-void rask_sim_task_enter(void *task) {
-    SimTask *t = (SimTask *)task;
-    tl_self = t;
-    pthread_mutex_lock(&g.lock);
-    while (g.current != t) {
-        pthread_cond_wait(&t->turn, &g.lock);
-    }
-    pthread_mutex_unlock(&g.lock);
-}
-
-// Last thing a task thread does. The baton passes on and this thread only
-// returns from here, so nothing after it may touch shared state.
-void rask_sim_task_exit(void) {
-    pthread_mutex_lock(&g.lock);
-    SimTask *self = self_or_die("task exit");
-    self->state = SIM_DONE;
-    notify_locked(self);
-    schedule_locked(self);
-    pthread_mutex_unlock(&g.lock);
-    tl_self = NULL;
+void *rask_sim_worker_spawn(void (*entry)(void *), void *arg) {
+    return rask_sim_task_spawn(SIM_POOL_WORKER, entry, arg);
 }
 
 void rask_sim_task_join(void *task) {
@@ -533,6 +580,7 @@ void rask_sim_begin(uint64_t seed, int64_t max_steps) {
     g.now_ns = 0;
     g.count = 0;
     SimTask *main_task = task_alloc(0);
+    rask_fiber_init_thread(&main_task->fiber);
     g.current = main_task;
     tl_self = main_task;
     pthread_mutex_unlock(&g.lock);

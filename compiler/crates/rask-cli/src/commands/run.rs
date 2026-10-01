@@ -1726,7 +1726,7 @@ fn run_c_baseline(c_path: &std::path::Path, opt_level: &str, format: Format) -> 
         }
     }
     cmd.arg(format!("-I{}", runtime_dir.display()));
-    cmd.args(["-o", &bin_str, "-no-pie", "-lpthread", "-lm"]);
+    cmd.args(["-o", &bin_str, "-no-pie", "-lpthread", "-lm", "-lrt"]);
 
     let status = match cmd.status() {
         Ok(s) => s,

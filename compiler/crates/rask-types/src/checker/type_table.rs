@@ -11,6 +11,13 @@ use super::errors::{MapKeyFix, TypeError};
 
 use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
+/// What keeps a value on its task. See `TypeTable::task_bound`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskBound {
+    LocalBox,
+    Link,
+}
+
 /// MN3/XC3: an `T implements Interface` block, as the conformance table remembers
 /// it. Auto-derive records no site at all, so having one means it was written.
 ///
@@ -48,7 +55,7 @@ pub(super) enum TypeOwner {
 }
 
 /// Central registry of all types in the program.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct TypeTable {
     /// User-defined types indexed by TypeId.
     pub(super) types: Vec<TypeDef>,
@@ -1062,6 +1069,64 @@ impl TypeTable {
         }
     }
 
+    /// Why a value of this type has to stay on the task that made it, if it
+    /// does: it's a `Local` box, which takes no lock (conc.sync/SH7), or it
+    /// carries a link (`mem.ownership/T2`). A `Readers` or `Mutex` box may
+    /// cross whatever it holds.
+    ///
+    /// The one test for it. The checker asks at a `spawn` and for every
+    /// closure literal; monomorphization asks again for a closure in a generic
+    /// body, whose capture types are only concrete per instantiation.
+    pub fn task_bound(&self, ty: &Type) -> Option<TaskBound> {
+        if let Some(args) = self.shared_args(ty) {
+            return (self.shared_strategy_name(args) == "Local").then_some(TaskBound::LocalBox);
+        }
+        self.holds_link(ty).then_some(TaskBound::Link)
+    }
+
+    /// Is a closure in a generic body task-bound in one instantiation? Its
+    /// captures are the `generic_closure_captures` entry; `concrete` fills in
+    /// that instantiation's type arguments, `None` where it can't.
+    ///
+    /// Decided from types, never from the captured values: an empty
+    /// `Vec<Link<Node>>` holds no link yet, and still may not cross (#1382).
+    /// Monomorphization and the interpreter both ask here.
+    pub fn generic_closure_task_bound(
+        &self,
+        captures: &[(String, Type)],
+        concrete: impl Fn(&Type) -> Option<Type>,
+    ) -> bool {
+        captures
+            .iter()
+            .any(|(_, ty)| concrete(ty).is_some_and(|ty| self.task_bound(&ty).is_some()))
+    }
+
+    /// The type arguments of a `Shared<T, S>`, or `None` for any other type.
+    pub fn shared_args<'t>(&self, ty: &'t Type) -> Option<&'t [GenericArg]> {
+        match ty {
+            Type::Generic { base, args } if self.type_name(*base) == "Shared" => Some(args),
+            Type::UnresolvedGeneric { name, args } if name == "Shared" => Some(args),
+            _ => None,
+        }
+    }
+
+    /// A `Shared` box's strategy, from its type arguments. SH3: no strategy
+    /// argument means `Readers`, and so does one that can't be read, which is
+    /// the safe side of every rule that asks.
+    pub fn shared_strategy_name(&self, args: &[GenericArg]) -> String {
+        match args.get(1) {
+            Some(GenericArg::Type(s)) => match s.as_ref() {
+                Type::Named(id) => self.type_name(*id),
+                Type::UnresolvedNamed(n) => match self.get_type_id(n) {
+                    Some(id) => self.type_name(id),
+                    None => n.clone(),
+                },
+                _ => "Readers".to_string(),
+            },
+            _ => "Readers".to_string(),
+        }
+    }
+
     /// Does a value of this type carry a `Link` — itself, in an option or a
     /// container, or in a field of a struct or enum it holds?
     ///
@@ -1590,6 +1655,11 @@ impl TypeTable {
     /// Is this name a type parameter of whatever is being checked?
     pub fn is_type_param_in_scope(&self, name: &str) -> bool {
         self.type_param_scope.iter().any(|p| p == name)
+    }
+
+    /// The names `is_type_param_in_scope` answers yes to.
+    pub fn type_param_scope(&self) -> &[String] {
+        &self.type_param_scope
     }
 
     /// Record a module-level const's integer value, for array lengths.

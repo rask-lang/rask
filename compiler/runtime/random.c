@@ -145,6 +145,25 @@ void *rask_random_choice(RaskRng *rng, RaskVec *v) {
 static __thread RaskRng tl_random_rng;
 static __thread int     tl_random_ready;
 
+// A task's generator is its own (sim/SD3), so it travels with the task when
+// tasks share a thread (rask_task_tls_swap).
+typedef struct {
+    RaskRng rng;
+    int     ready;
+} RandomTls;
+
+size_t rask_random_tls_size(void) {
+    return sizeof(RandomTls);
+}
+
+void rask_random_tls_swap(void *blob) {
+    RandomTls *t = (RandomTls *)blob;
+    RandomTls live = { tl_random_rng, tl_random_ready };
+    tl_random_rng = t->rng;
+    tl_random_ready = t->ready;
+    *t = live;
+}
+
 static RaskRng *get_tl_rng(void) {
     if (!tl_random_ready) {
         rng_seed_fresh(&tl_random_rng);

@@ -22,8 +22,8 @@
 //! anything. The header describes the packing; `owned_walk` in `vec.c` reads it.
 
 use rask_mir::elem_strs::{
-    ELEM_CLOSURE, ELEM_ENUM_BASE, ELEM_MAP, ELEM_STRING, ELEM_STRUCT_BASE, ELEM_TRAITBOX,
-    ELEM_VEC,
+    decode_wrapper, Wrapper, ELEM_CLOSURE, ELEM_ENUM_BASE, ELEM_MAP, ELEM_NONE, ELEM_STRING,
+    ELEM_STRUCT_BASE, ELEM_TRAITBOX, ELEM_VEC,
 };
 use rask_mono::{EnumLayout, FieldLayout, StructLayout};
 use rask_types::Type as RaskType;
@@ -104,32 +104,76 @@ pub fn string_offsets_for_tag(
     layouts: &[StructLayout],
     enums: &[EnumLayout],
 ) -> Option<Vec<i32>> {
+    let mut out = Vec::new();
+    describe_tag(tag, 0, layouts, enums, &mut out)?;
+    (!out.is_empty()).then_some(out)
+}
+
+/// What a value tagged `tag` at offset `base` owns, appended to `out`.
+fn describe_tag(
+    tag: i64,
+    base: i32,
+    layouts: &[StructLayout],
+    enums: &[EnumLayout],
+    out: &mut Vec<i32>,
+) -> Option<()> {
+    if let Some((kind, ok, err)) = decode_wrapper(tag) {
+        return wrapper_arms(kind, ok, err, base, layouts, enums, out);
+    }
     match tag {
-        ELEM_STRING => Some(vec![0]),
+        ELEM_STRING => out.push(entry(base, KIND_STRING)),
         // The element is the container. Its own list travels with it, so this
         // level says "a Vec lives at offset 0" and stops there.
-        ELEM_VEC => Some(vec![entry(0, KIND_VEC)]),
-        ELEM_MAP => Some(vec![entry(0, KIND_MAP)]),
+        ELEM_VEC => out.push(entry(base, KIND_VEC)),
+        ELEM_MAP => out.push(entry(base, KIND_MAP)),
         // The element *is* the pointer, so there is nothing to flatten: one
-        // entry at offset zero saying what kind of block it names.
-        ELEM_CLOSURE => Some(vec![entry(0, KIND_CLOSURE)]),
-        ELEM_TRAITBOX => Some(vec![entry(0, KIND_TRAITBOX)]),
+        // entry saying what kind of block it names.
+        ELEM_CLOSURE => out.push(entry(base, KIND_CLOSURE)),
+        ELEM_TRAITBOX => out.push(entry(base, KIND_TRAITBOX)),
         n if n >= ELEM_STRUCT_BASE => {
             let idx = usize::try_from(n - ELEM_STRUCT_BASE).ok()?;
             let layout = layouts.get(idx)?;
-            let mut out = Vec::new();
-            flatten(&layout.fields, 0, layouts, enums, 0, None, &mut out)?;
-            (!out.is_empty()).then_some(out)
+            flatten(&layout.fields, base, layouts, enums, 0, None, out)?;
         }
         n if n <= ELEM_ENUM_BASE => {
             let idx = usize::try_from(ELEM_ENUM_BASE - n).ok()?;
             let layout = enums.get(idx)?;
-            let mut out = Vec::new();
-            enum_arms(layout, 0, layouts, enums, 0, None, &mut out)?;
-            (!out.is_empty()).then_some(out)
+            enum_arms(layout, base, layouts, enums, 0, None, out)?;
         }
-        _ => None,
+        _ => {}
     }
+    Some(())
+}
+
+/// A `T or E` or tagged `T?`: one guard per side that owns anything, on the
+/// wrapper's own tag, with the side described at the payload offset.
+fn wrapper_arms(
+    kind: Wrapper,
+    ok: i64,
+    err: i64,
+    base: i32,
+    layouts: &[StructLayout],
+    enums: &[EnumLayout],
+    out: &mut Vec<i32>,
+) -> Option<()> {
+    let (tag_offset, payload_offset) = match kind {
+        Wrapper::Result => (rask_mono::abi::RESULT_TAG_OFFSET, rask_mono::abi::RESULT_PAYLOAD_OFFSET),
+        Wrapper::Option => (rask_mono::abi::OPTION_TAG_OFFSET, rask_mono::abi::OPTION_PAYLOAD_OFFSET),
+    };
+    // Tag 0 is the ok side (`Some` for an option), tag 1 the error side.
+    for (tag_value, side) in [(0u64, ok), (1u64, err)] {
+        if side == ELEM_NONE {
+            continue;
+        }
+        let mut arm = Vec::new();
+        describe_tag(side, base + payload_offset as i32, layouts, enums, &mut arm)?;
+        if arm.is_empty() {
+            continue;
+        }
+        out.push(tag_guard(base + tag_offset as i32, tag_value, arm.len(), 8)?);
+        out.extend(arm);
+    }
+    Some(())
 }
 
 /// One guard plus its entries per variant that owns anything.

@@ -11,6 +11,11 @@ use std::sync::LazyLock;
 
 use rask_ast::expr::Expr;
 
+/// What a generic body's type parameters stand for in the call running it,
+/// `None` for a body with none. Shared, since every closure built under it
+/// keeps a copy.
+pub type GenericFrame = Option<Arc<HashMap<String, rask_types::Type>>>;
+
 /// Width and signedness carried by `Value::Int`, so integer arithmetic is
 /// self-describing (type.overflow). `Untyped` means the width wasn't known at
 /// the value's creation (e.g. an internally-produced length or index) and is
@@ -792,10 +797,17 @@ impl fmt::Debug for ThreadPoolInner {
 /// hundred spawns ran two hundred tasks at once here and two natively (#1111).
 pub struct MultitaskingRuntime {
     pub workers: usize,
-    /// Slots left. `Mutex` + `Condvar` rather than an atomic, because a task
-    /// that finds none has to wait for one.
-    free: Mutex<usize>,
+    slots: Mutex<Slots>,
     slot_freed: Condvar,
+}
+
+/// A queue, not a count: each taker draws a ticket and runs once its ticket is
+/// below `granted`. First come, first served, so a task that steps aside at a
+/// safe point goes behind whoever was already waiting instead of racing them
+/// for the slot it just gave up — nothing makes a `Mutex` fair.
+struct Slots {
+    next: u64,
+    granted: u64,
 }
 
 impl MultitaskingRuntime {
@@ -810,25 +822,33 @@ impl MultitaskingRuntime {
         }
         Ok(Self {
             workers,
-            free: Mutex::new(workers.max(1)),
+            slots: Mutex::new(Slots { next: 0, granted: workers.max(1) as u64 }),
             slot_freed: Condvar::new(),
         })
     }
 
     /// Wait for a slot to run in.
     pub fn take_slot(&self) {
-        let mut free = self.free.lock().unwrap();
-        while *free == 0 {
-            free = self.slot_freed.wait(free).unwrap();
+        let mut slots = self.slots.lock().unwrap();
+        let ticket = slots.next;
+        slots.next += 1;
+        while ticket >= slots.granted {
+            slots = self.slot_freed.wait(slots).unwrap();
         }
-        *free -= 1;
     }
 
     /// Hand a slot back.
     pub fn give_slot(&self) {
-        let mut free = self.free.lock().unwrap();
-        *free += 1;
-        self.slot_freed.notify_one();
+        let mut slots = self.slots.lock().unwrap();
+        slots.granted += 1;
+        // Every waiter checks its own ticket, so all of them hear it.
+        self.slot_freed.notify_all();
+    }
+
+    /// Is a task queued behind the running ones?
+    pub fn has_waiters(&self) -> bool {
+        let slots = self.slots.lock().unwrap();
+        slots.next > slots.granted
     }
 
     /// Wait for every task the block started, which is what block exit means
@@ -1012,6 +1032,10 @@ pub enum Value {
     /// Function reference
     Function {
         name: String,
+        /// What a generic function's type parameters stand for in the use
+        /// that named it (`v.map(keep)`), `None` for a plain one. A call
+        /// through the value runs the body under these.
+        generics: GenericFrame,
     },
     /// Built-in function
     Builtin(BuiltinKind),
@@ -1055,6 +1079,11 @@ pub enum Value {
         params: Vec<String>,
         body: Expr,
         captured_env: HashMap<String, crate::env::Slot>,
+        /// Captured a link or a `Local` box, so `spawn` refuses it (#1356).
+        task_bound: bool,
+        /// The type arguments of the generic body it was built in, for
+        /// whatever generic calls and closures its own body makes.
+        generics: GenericFrame,
     },
     /// Duration (time span in nanoseconds)
     Duration(u64),
@@ -1478,13 +1507,19 @@ impl Value {
                 let inner = c.lock().unwrap().deep_clone();
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
-            Value::Closure { params, body, captured_env } => {
+            Value::Closure { params, body, captured_env, task_bound, generics } => {
                 // Deep-cloning a closure detaches it from what it borrowed, so
                 // each capture gets storage of its own.
                 let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
                     .map(|(k, v)| (k.clone(), crate::env::slot(v.lock().unwrap().deep_clone())))
                     .collect();
-                Value::Closure { params: params.clone(), body: body.clone(), captured_env: deep_env }
+                Value::Closure {
+                    params: params.clone(),
+                    body: body.clone(),
+                    captured_env: deep_env,
+                    task_bound: *task_bound,
+                    generics: generics.clone(),
+                }
             }
             Value::Map(m) => {
                 let map = m.lock().unwrap();
@@ -1594,7 +1629,7 @@ impl fmt::Display for Value {
                 }
                 Ok(())
             }
-            Value::Function { name } => write!(f, "<func {}>", name),
+            Value::Function { name, .. } => write!(f, "<func {}>", name),
             Value::Builtin(kind) => write!(f, "<builtin {:?}>", kind),
             Value::Vec(v) => {
                 let vec = v.lock().unwrap();

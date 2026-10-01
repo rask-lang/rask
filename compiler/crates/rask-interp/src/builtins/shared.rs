@@ -22,7 +22,7 @@ impl Interpreter {
             // For aggregate types (Struct, Vec, etc.), clone shares the Arc,
             // so subsequent field access operates on shared data.
             "read" if args.is_empty() => {
-                let guard = shared.read().map_err(|e| {
+                let guard = crate::read_waiting(shared).map_err(|e| {
                     RuntimeError::Panic(format!("Shared.read: lock poisoned: {}", e))
                 })?;
                 Ok(guard.clone())
@@ -31,7 +31,7 @@ impl Interpreter {
             // Returns a snapshot for inline mutation. Aggregate types share
             // through Arc, so field mutations go to the shared data.
             "write" if args.is_empty() => {
-                let guard = shared.write().map_err(|e| {
+                let guard = crate::write_waiting(shared).map_err(|e| {
                     RuntimeError::Panic(format!("Shared.write: lock poisoned: {}", e))
                 })?;
                 Ok(guard.clone())
@@ -92,7 +92,7 @@ impl Interpreter {
             }
             // The single-expression shorthands, under every strategy.
             "get" | "take" if args.is_empty() => {
-                let guard = shared.read().map_err(|e| {
+                let guard = crate::read_waiting(shared).map_err(|e| {
                     RuntimeError::Panic(format!("Shared.get: lock poisoned: {}", e))
                 })?;
                 Ok(guard.clone())
@@ -104,7 +104,7 @@ impl Interpreter {
                 let Some(value) = args.into_iter().next() else {
                     return Err(RuntimeError::ArityMismatch { expected: 1, got: 0 });
                 };
-                let mut guard = shared.write().map_err(|e| {
+                let mut guard = crate::write_waiting(shared).map_err(|e| {
                     RuntimeError::Panic(format!("Shared.{}: lock poisoned: {}", method, e))
                 })?;
                 let old = std::mem::replace(&mut *guard, value);
@@ -128,13 +128,13 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match (receiver, method) {
             (Value::Shared(s), "read") => {
-                let guard = s.read().map_err(|e| {
+                let guard = crate::read_waiting(s).map_err(|e| {
                     RuntimeError::Panic(format!("Shared.read: lock poisoned: {}", e))
                 })?;
                 Ok(guard.clone())
             }
             (Value::Shared(s), "write") => {
-                let guard = s.write().map_err(|e| {
+                let guard = crate::write_waiting(s).map_err(|e| {
                     RuntimeError::Panic(format!("Shared.write: lock poisoned: {}", e))
                 })?;
                 Ok(guard.clone())
@@ -153,7 +153,7 @@ impl Interpreter {
             // `write` too — which lock a verb takes is the strategy's business
             // (SH5), and under `Mutex` both take the exclusive one.
             (Value::RaskMutex(m), "lock" | "read" | "write") => {
-                let guard = m.lock().map_err(|e| {
+                let guard = crate::lock_waiting(m).map_err(|e| {
                     RuntimeError::Panic(format!("Mutex.{}: lock poisoned: {}", method, e))
                 })?;
                 Ok(guard.clone())
@@ -176,16 +176,15 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                generics,
+                ..
             } => {
-                self.env.push_scope();
-                for (k, cell) in captured_env {
-                    self.env.define_slot(k.clone(), cell.clone());
-                }
+                self.enter_closure(captured_env, generics);
                 if let Some(param_name) = params.first() {
                     self.env.define(param_name.clone(), arg);
                 }
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
-                self.env.pop_scope();
+                self.leave_closure();
                 match result {
                     Ok(v) => Ok(v),
                     Err(RuntimeError::Return(v)) => Ok(v),
@@ -209,6 +208,8 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                generics,
+                ..
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(format!(
@@ -217,12 +218,9 @@ impl Interpreter {
                     )));
                 }
 
-                self.env.push_scope();
-                for (k, cell) in captured_env {
-                    self.env.define_slot(k.clone(), cell.clone());
-                }
+                self.enter_closure(captured_env, generics);
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
-                self.env.pop_scope();
+                self.leave_closure();
                 match result {
                     Ok(v) => Ok(v),
                     Err(RuntimeError::Return(v)) => Ok(v),
@@ -248,7 +246,7 @@ impl Interpreter {
             // Returns a snapshot for inline mutation. Aggregate types share
             // through Arc, so field mutations go to the shared data.
             "lock" if args.is_empty() => {
-                let guard = mutex.lock().map_err(|e| {
+                let guard = crate::lock_waiting(mutex).map_err(|e| {
                     RuntimeError::Panic(format!("Mutex.{}: lock poisoned: {}", method, e))
                 })?;
                 Ok(guard.clone())
@@ -289,13 +287,13 @@ impl Interpreter {
             // `read`/`write` on the `Mutex` strategy both take the one lock it
             // has — slower than `Readers` would be there, never wrong (SH5).
             "read" | "write" if args.is_empty() => {
-                let guard = mutex.lock().map_err(|e| {
+                let guard = crate::lock_waiting(mutex).map_err(|e| {
                     RuntimeError::Panic(format!("Shared.write: lock poisoned: {}", e))
                 })?;
                 Ok(guard.clone())
             }
             "get" | "take" if args.is_empty() => {
-                let guard = mutex.lock().map_err(|e| {
+                let guard = crate::lock_waiting(mutex).map_err(|e| {
                     RuntimeError::Panic(format!("Shared.get: lock poisoned: {}", e))
                 })?;
                 Ok(guard.clone())
@@ -304,7 +302,7 @@ impl Interpreter {
                 let Some(value) = args.into_iter().next() else {
                     return Err(RuntimeError::ArityMismatch { expected: 1, got: 0 });
                 };
-                let mut guard = mutex.lock().map_err(|e| {
+                let mut guard = crate::lock_waiting(mutex).map_err(|e| {
                     RuntimeError::Panic(format!("Shared.{}: lock poisoned: {}", method, e))
                 })?;
                 let old = std::mem::replace(&mut *guard, value);
@@ -333,15 +331,14 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                generics,
+                ..
             } => {
-                let mut guard = mutex.lock().map_err(|e| {
+                let mut guard = crate::lock_waiting(mutex).map_err(|e| {
                     RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
                 })?;
 
-                self.env.push_scope();
-                for (k, cell) in captured_env {
-                    self.env.define_slot(k.clone(), cell.clone());
-                }
+                self.enter_closure(captured_env, generics);
                 let param_name = params
                     .first()
                     .cloned()
@@ -365,7 +362,7 @@ impl Interpreter {
                     }
                 }
 
-                self.env.pop_scope();
+                self.leave_closure();
                 match result {
                     Ok(v) => Ok(v),
                     Err(RuntimeError::Return(v)) => Ok(v),

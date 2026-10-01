@@ -448,17 +448,14 @@ fn try_eval_comptime_mir(
     // comptime globals of its own. Before the constructor existed this was 21
     // fields written by hand, and `call_targets` had silently become an empty
     // map (#425, #727).
-    let comptime_call_targets = mono.all_call_targets(typed);
-    let comptime_operator_targets = mono.all_operator_targets(typed);
+    let records = mono.node_records(typed);
     let type_names: HashMap<rask_types::TypeId, String> = typed.types.type_name_map();
 
     let mir_ctx = rask_mir::lower::MirContext::new(
         typed,
         &mono.struct_layouts,
         &mono.enum_layouts,
-        &typed.node_types,
-        &comptime_call_targets,
-        &comptime_operator_targets,
+        &records,
         &type_names,
     );
 
