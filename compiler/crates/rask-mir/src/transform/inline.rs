@@ -742,8 +742,9 @@ fn remap_stmt(
             offset: *offset,
             access: *access,
         },
-        MirStmtKind::ClosureDrop { closure } => MirStmtKind::ClosureDrop {
+        MirStmtKind::ClosureDrop { closure, made } => MirStmtKind::ClosureDrop {
             closure: local_map.get(closure).copied().unwrap_or(*closure),
+            made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
         },
         MirStmtKind::ArrayStore {
             base,

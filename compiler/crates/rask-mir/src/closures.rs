@@ -266,29 +266,31 @@ fn insert_drops(
         crate::analysis::ownership::Placement::ScopeEnd,
     );
     // Freeing an environment frees what only it captured, innermost first.
-    let drops_for = |name: LocalId| -> Vec<MirStmt> {
-        let root = sole_origin(&aliases, &name).unwrap_or(name);
+    let drops_for = |name: LocalId, made: Option<LocalId>| -> Vec<MirStmt> {
+        let root = made.unwrap_or(name);
         let mut out: Vec<MirStmt> = expand_owned(&[root], &owned_by)
             .into_iter()
             .filter(|id| *id != root)
-            .map(|closure| MirStmt::dummy(MirStmtKind::ClosureDrop { closure }))
+            .map(|closure| MirStmt::dummy(MirStmtKind::ClosureDrop { closure, made: Some(closure) }))
             .collect();
-        out.push(MirStmt::dummy(MirStmtKind::ClosureDrop { closure: name }));
+        out.push(MirStmt::dummy(MirStmtKind::ClosureDrop { closure: name, made }));
         out
     };
-    let mut at_end: Vec<(usize, LocalId)> = Vec::new();
+    let mut at_end: Vec<(usize, LocalId, Option<LocalId>)> = Vec::new();
     let mut on_edges: Vec<(crate::BlockId, crate::BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan {
         match r {
-            crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
-            crate::analysis::ownership::Release::OnEdge { from, to, name } => {
-                on_edges.push((from, to, drops_for(name)))
+            crate::analysis::ownership::Release::At { block, name, made, .. } => {
+                at_end.push((block, name, made))
+            }
+            crate::analysis::ownership::Release::OnEdge { from, to, name, made } => {
+                on_edges.push((from, to, drops_for(name, made)))
             }
         }
     }
-    at_end.sort_by_key(|(b, l)| (*b, l.0));
-    for (block, name) in at_end {
-        let drops = drops_for(name);
+    at_end.sort_by_key(|(b, l, _)| (*b, l.0));
+    for (block, name, made) in at_end {
+        let drops = drops_for(name, made);
         func.blocks[block].statements.extend(drops);
     }
     crate::analysis::ownership::insert_on_edges(func, on_edges);
@@ -787,34 +789,17 @@ fn sole_origin(aliases: &ClosureAliases, id: &LocalId) -> Option<LocalId> {
     }
 }
 
-/// Each `closure_drop` in `func` as `(create, block, stmt)`: the heap create
-/// whose closure it frees, and where. The drop names whichever copy still holds
-/// the closure when it goes, so the create is found through copies; a drop that
-/// might free either of two is left out.
-pub(crate) fn closure_drops_by_create(func: &MirFunction) -> Vec<(LocalId, usize, usize)> {
-    let created: HashMap<LocalId, bool> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|st| match &st.kind {
-            MirStmtKind::ClosureCreate { dst, heap: true, .. } => Some((*dst, true)),
+/// Each `closure_drop` in `func` that names the create it frees, as
+/// `(create, block, stmt)`.
+pub(crate) fn closure_drops_by_create(
+    func: &MirFunction,
+) -> impl Iterator<Item = (LocalId, usize, usize)> + '_ {
+    func.blocks.iter().enumerate().flat_map(|(bi, block)| {
+        block.statements.iter().enumerate().filter_map(move |(si, stmt)| match &stmt.kind {
+            MirStmtKind::ClosureDrop { made: Some(made), .. } => Some((*made, bi, si)),
             _ => None,
         })
-        .collect();
-    if created.is_empty() {
-        return Vec::new();
-    }
-    let aliases = closure_aliases(func, &created);
-    let mut out = Vec::new();
-    for (bi, block) in func.blocks.iter().enumerate() {
-        for (si, stmt) in block.statements.iter().enumerate() {
-            let MirStmtKind::ClosureDrop { closure } = &stmt.kind else { continue };
-            if let Some(origin) = sole_origin(&aliases, closure) {
-                out.push((origin, bi, si));
-            }
-        }
-    }
-    out
+    })
 }
 
 fn closure_aliases(
@@ -1785,37 +1770,47 @@ mod tests {
     }
 
     #[test]
-    fn drop_through_a_copy_names_its_create() {
-        // _0 = closure; _1 = _0; _2 = closure; drop(_1); drop(_2)
-        let create = |dst| MirStmt::dummy(MirStmtKind::ClosureCreate {
-            dst: LocalId(dst),
-            func_name: "f__closure_0".to_string(),
-            captures: vec![],
-            heap: true,
-            task_bound: false,
-        });
+    fn drop_under_a_copy_names_its_create() {
+        // _0 = closure; _1 = _0; call _1 — the frame frees it, under whichever
+        // name, and says it was made as _0.
         let func = MirFunction {
             name: "f".to_string(),
             params: vec![],
             ret_ty: MirType::Void,
-            locals: vec![temp(0, MirType::Ptr), temp(1, MirType::Ptr), temp(2, MirType::Ptr)],
+            locals: vec![temp(0, MirType::Ptr), temp(1, MirType::Ptr)],
             blocks: vec![block(0, vec![
-                create(0),
+                MirStmt::dummy(MirStmtKind::ClosureCreate {
+                    dst: LocalId(0),
+                    func_name: "f__closure_0".to_string(),
+                    captures: vec![],
+                    heap: true,
+                    task_bound: false,
+                }),
                 MirStmt::dummy(MirStmtKind::Assign {
                     dst: LocalId(1),
                     rvalue: crate::MirRValue::Use(MirOperand::Local(LocalId(0))),
                 }),
-                create(2),
-                MirStmt::dummy(MirStmtKind::ClosureDrop { closure: LocalId(1) }),
-                MirStmt::dummy(MirStmtKind::ClosureDrop { closure: LocalId(2) }),
+                MirStmt::dummy(MirStmtKind::Call {
+                    dst: None,
+                    func: FunctionRef::internal("keep_nothing".to_string()),
+                    args: vec![MirOperand::Local(LocalId(1))],
+                }),
             ], ret(None))],
             entry_block: BlockId(0),
             is_extern_c: false,
             source_file: None,
         };
-        assert_eq!(
-            closure_drops_by_create(&func),
-            vec![(LocalId(0), 0, 3), (LocalId(2), 0, 4)],
-        );
+        let mut fns = vec![func];
+        let escapes = HashMap::from([("keep_nothing".to_string(), vec![false])]);
+        insert_drops(&mut fns[0], &escapes, &HashSet::new(), &crate::closure_targets::ClosureTargets::build(&[]));
+        let made: Vec<Option<LocalId>> = fns[0].blocks[0]
+            .statements
+            .iter()
+            .filter_map(|s| match &s.kind {
+                MirStmtKind::ClosureDrop { made, .. } => Some(*made),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(made, vec![Some(LocalId(0))]);
     }
 }

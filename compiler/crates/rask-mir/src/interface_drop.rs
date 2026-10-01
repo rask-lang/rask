@@ -421,7 +421,7 @@ fn insert_for_function(
     for r in plan {
         match r {
             crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
-            crate::analysis::ownership::Release::OnEdge { from, to, name } => {
+            crate::analysis::ownership::Release::OnEdge { from, to, name, .. } => {
                 on_edges.push((from, to, vec![drop_of(name)]))
             }
         }

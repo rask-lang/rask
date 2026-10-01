@@ -82,9 +82,13 @@ pub enum MirStmtKind {
         offset: u32,
         access: CaptureAccess,
     },
-    /// Free a heap-allocated closure. Emitted before returns for owned closures.
+    /// Free a heap-allocated closure. `made` is the `ClosureCreate` that built
+    /// it, when one did: the closure is freed under whichever name still holds
+    /// it, and passes that free what it captured need the create. A label, not
+    /// a read.
     ClosureDrop {
         closure: LocalId,
+        made: Option<LocalId>,
     },
     /// Store into a fixed-size array element: base_ptr[index * elem_size] = value
     ArrayStore {

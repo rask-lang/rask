@@ -247,9 +247,10 @@ impl fmt::Display for MirStmt {
                     captures.iter().map(|c| format!("_{}", c.local_id.0)).collect::<Vec<_>>().join(", "))
             }
             MirStmtKind::EnsureHookPop => write!(f, "ensure_hook_pop()"),
-            MirStmtKind::ClosureDrop { closure } => {
-                write!(f, "closure_drop(_{}))", closure.0)
-            }
+            MirStmtKind::ClosureDrop { closure, made } => match made {
+                Some(m) if m != closure => write!(f, "closure_drop(_{}) made _{}", closure.0, m.0),
+                _ => write!(f, "closure_drop(_{})", closure.0),
+            },
             MirStmtKind::ArrayStore { base, index, elem_size, value } => {
                 write!(f, "*(_{}+{}*{}) = {}", base.0, index, elem_size, value)
             }

@@ -327,8 +327,8 @@ fn insert_aggregate_release(
             _ => None,
         })
         .collect();
-    // A closure's drop names whichever copy still holds it, so closures are
-    // matched to their create site the way `container_drop` does.
+    // A closure's drop goes under whichever copy still holds it, and says
+    // which create built it.
     let closures_dropped: HashSet<LocalId> = crate::closures::closure_drops_by_create(func)
         .into_iter()
         .map(|(create, _, _)| create)
@@ -677,7 +677,7 @@ fn insert_aggregate_release(
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan {
         match r {
-            ownership::Release::At { block, at, name } => {
+            ownership::Release::At { block, at, name, .. } => {
                 let stmts = &func.blocks[block].statements;
                 let mut at = at;
                 while at < stmts.len() && matches!(stmts[at].kind, MirStmtKind::RcInc { .. }) {
@@ -685,7 +685,7 @@ fn insert_aggregate_release(
                 }
                 by_block.entry(block).or_default().push((at, name));
             }
-            ownership::Release::OnEdge { from, to, name } => {
+            ownership::Release::OnEdge { from, to, name, .. } => {
                 let span = func
                     .blocks
                     .iter()

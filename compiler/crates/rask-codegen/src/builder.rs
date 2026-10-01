@@ -1153,7 +1153,7 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
-            MirStmtKind::ClosureDrop { closure } => {
+            MirStmtKind::ClosureDrop { closure, .. } => {
                 let closure_val = builder.use_var(*ctx.var_map.get(closure)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "ClosureDrop closure variable not found".to_string()

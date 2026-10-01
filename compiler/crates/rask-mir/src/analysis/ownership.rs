@@ -50,6 +50,13 @@ pub struct Value {
     name: LocalId,
 }
 
+impl Value {
+    /// The name it was made under; a join's value wasn't made by one statement.
+    fn made(self) -> Option<LocalId> {
+        (self.at != u32::MAX).then_some(self.name)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Bind {
     /// The name holds the value itself, and releasing under it releases it.
@@ -138,15 +145,18 @@ pub struct Facts {
     pub foreign: Vec<LocalId>,
 }
 
-/// A release to insert, under `name`.
+/// A release to insert, under `name`. `made` is the name the value was made
+/// under, so a pass that has to act on what the value was built from (a
+/// closure's captures) finds the statement that built it. `None` for a value
+/// that is one of several, after a join.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Release {
     /// Before statement `at` of block `block` (an index into the original
     /// statements and blocks).
-    At { block: usize, at: usize, name: LocalId },
+    At { block: usize, at: usize, name: LocalId, made: Option<LocalId> },
     /// On the edge between two blocks: the value is still needed on the way
     /// out of `from`, because another successor reads it, and not by `to`.
-    OnEdge { from: BlockId, to: BlockId, name: LocalId },
+    OnEdge { from: BlockId, to: BlockId, name: LocalId, made: Option<LocalId> },
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -755,7 +765,7 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Vec<Rele
             let found = after_last_use(func, facts, &sh, &live, &entries, &kills, &later);
             if !found.is_empty() {
                 for (block, si, name, v) in found {
-                    out.push(Release::At { block, at: si + 1, name });
+                    out.push(Release::At { block, at: si + 1, name, made: v.made() });
                     kills.at.insert((block, si, v));
                 }
                 continue;
@@ -776,7 +786,7 @@ pub fn plan(func: &MirFunction, facts: &Facts, placement: Placement) -> Vec<Rele
             if (order[bi], order[pi]) != first {
                 continue;
             }
-            out.push(Release::OnEdge { from: ids[pi], to: ids[bi], name });
+            out.push(Release::OnEdge { from: ids[pi], to: ids[bi], name, made: v.made() });
             kills.edges.insert((pi, bi, v));
         }
     }
@@ -929,7 +939,7 @@ fn before_returns(
         for (v, owned) in &st.own {
             if *owned {
                 if let Some(name) = pick(&st, *v, &[]) {
-                    out.push(Release::At { block: bi, at: len, name });
+                    out.push(Release::At { block: bi, at: len, name, made: v.made() });
                 }
             }
         }

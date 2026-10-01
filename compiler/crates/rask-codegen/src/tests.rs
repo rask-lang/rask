@@ -1595,6 +1595,7 @@ mod tests {
                     }),
                     MirStmt::dummy(MirStmtKind::ClosureDrop {
                         closure: LocalId(1),
+                        made: Some(LocalId(1)),
                     }),
                 ], ret(Some(MirOperand::Constant(MirConst::Int(0))))),
             ],
