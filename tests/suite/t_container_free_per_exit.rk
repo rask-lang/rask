@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// One vector, two names, two different ways out (#1384).
+//
+// `buf` is built before the loop and read through a fused `buf.take(n)` both
+// inside the loop and after it. Each fused read copies the handle into a name of
+// its own, so the vector has one name covering the `return` inside the loop and
+// another covering the returns after it. Neither name's definition comes before
+// the other's on every path, and the old rule ("free once, under the name that
+// comes first everywhere") found no such name and freed nothing. Every call
+// leaked `buf`, on every exit.
+//
+// Each exit is driven below, so a leak or a double free on any one of them
+// shows up under RASK_LEAK_CHECK and valgrind.
+
+enum Bad {
+    Gone
+    NotUtf8
+}
+
+extend Bad {
+    func message(self) -> string {
+        match self {
+            Bad.Gone => return "gone"
+            Bad.NotUtf8 => return "not utf8"
+        }
+    }
+}
+
+// Index of the blank line ending the head, or none yet.
+func find_head_end(buf: Vec<u8>) -> i64? {
+    mut i: i64 = 0
+    while i + 3 < buf.len().wrap<i64>() {
+        if buf[i] == 13 && buf[i + 1] == 10 && buf[i + 2] == 13 && buf[i + 3] == 10 {
+            return i
+        }
+        i += 1
+    }
+    return none
+}
+
+// Head, blank line, then a three-byte body.
+func read_message(chunks: Vec<Vec<u8>>) -> string or Bad {
+    mut buf: Vec<u8> = Vec.new()
+    mut want: i64 = -1
+    mut next: usize = 0
+    loop {
+        if want >= 0 && buf.len().wrap<i64>() >= want { break }
+        let chunk = chunks.get(next.wrap<i64>()) ?? { return Bad.Gone }
+        next += 1
+        for b in chunk { buf.push(b) }
+        if want >= 0 { continue }
+        let head_end = find_head_end(buf) ?? { continue }
+        let head = string.from_utf8(buf.take(head_end.wrap<usize>()).to_vec()) catch _ => {
+            return Bad.NotUtf8
+        }
+        want = head_end + 4 + 3
+    }
+    let text = string.from_utf8(buf.take(want.wrap<usize>()).to_vec()) catch _ => {
+        return Bad.NotUtf8
+    }
+    return text
+}
+
+func bytes_of(s: string) -> Vec<u8> {
+    mut v: Vec<u8> = Vec.new()
+    for b in s.bytes() {
+        v.push(b)
+    }
+    return v
+}
+
+func blank_line() -> Vec<u8> {
+    mut v: Vec<u8> = Vec.new()
+    v.push(13)
+    v.push(10)
+    v.push(13)
+    v.push(10)
+    return v
+}
+
+func bad_byte() -> Vec<u8> {
+    mut v: Vec<u8> = Vec.new()
+    v.push(0xFF)
+    return v
+}
+
+func outcome(r: string or Bad) -> string {
+    return r catch e => "error: {e.message()}"
+}
+
+func main() {
+    mut chunks: Vec<Vec<u8>> = Vec.new()
+    chunks.push(bytes_of("GET"))
+    chunks.push(blank_line())
+    chunks.push(bytes_of("abc"))
+    println(outcome(read_message(chunks)))
+}
+
+test "a message split across chunks comes back whole" {
+    mut chunks: Vec<Vec<u8>> = Vec.new()
+    chunks.push(bytes_of("GE"))
+    chunks.push(bytes_of("T"))
+    chunks.push(blank_line())
+    chunks.push(bytes_of("a"))
+    chunks.push(bytes_of("bc"))
+    assert outcome(read_message(chunks)) == "GET\r\n\r\nabc"
+}
+
+test "running out of chunks before the head ends is Gone" {
+    mut chunks: Vec<Vec<u8>> = Vec.new()
+    chunks.push(bytes_of("GET"))
+    assert outcome(read_message(chunks)) == "error: gone"
+}
+
+test "running out of chunks before the body ends is Gone" {
+    mut chunks: Vec<Vec<u8>> = Vec.new()
+    chunks.push(bytes_of("GET"))
+    chunks.push(blank_line())
+    chunks.push(bytes_of("a"))
+    assert outcome(read_message(chunks)) == "error: gone"
+}
+
+test "a bad byte in the head fails inside the loop" {
+    mut chunks: Vec<Vec<u8>> = Vec.new()
+    chunks.push(bytes_of("GE"))
+    chunks.push(bad_byte())
+    chunks.push(blank_line())
+    chunks.push(bytes_of("abc"))
+    assert outcome(read_message(chunks)) == "error: not utf8"
+}
+
+test "a bad byte in the body fails after the loop" {
+    mut chunks: Vec<Vec<u8>> = Vec.new()
+    chunks.push(bytes_of("GET"))
+    chunks.push(blank_line())
+    chunks.push(bytes_of("ab"))
+    chunks.push(bad_byte())
+    assert outcome(read_message(chunks)) == "error: not utf8"
+}
+
+test "every exit, many times over" {
+    mut i = 0
+    while i < 50 {
+        mut ok: Vec<Vec<u8>> = Vec.new()
+        ok.push(bytes_of("HEAD"))
+        ok.push(blank_line())
+        ok.push(bytes_of("xyz"))
+        assert outcome(read_message(ok)) == "HEAD\r\n\r\nxyz"
+
+        mut gone: Vec<Vec<u8>> = Vec.new()
+        gone.push(bytes_of("HEAD"))
+        assert outcome(read_message(gone)) == "error: gone"
+
+        mut bad_head: Vec<Vec<u8>> = Vec.new()
+        bad_head.push(bad_byte())
+        bad_head.push(blank_line())
+        bad_head.push(bytes_of("xyz"))
+        assert outcome(read_message(bad_head)) == "error: not utf8"
+
+        mut bad_body: Vec<Vec<u8>> = Vec.new()
+        bad_body.push(bytes_of("HEAD"))
+        bad_body.push(blank_line())
+        bad_body.push(bytes_of("xy"))
+        bad_body.push(bad_byte())
+        assert outcome(read_message(bad_body)) == "error: not utf8"
+        i += 1
+    }
+}
