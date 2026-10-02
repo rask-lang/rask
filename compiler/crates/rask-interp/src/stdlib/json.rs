@@ -560,7 +560,7 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
             if map.is_empty() {
                 return "{}".to_string();
             }
-            let key_of = |k: &MapKey| match &k.0 {
+            let key_of = |k: &MapKey| match &k.value {
                 Value::String(s) => escape_json_string(&s.lock().unwrap()),
                 other => escape_json_string(&format!("{}", other)),
             };
@@ -756,7 +756,7 @@ fn value_to_json(
             let map = m.lock().unwrap();
             let mut entries = Vec::with_capacity(map.len());
             for (k, v) in map.iter() {
-                let key = match &k.0 {
+                let key = match &k.value {
                     Value::String(s) => s.lock().unwrap().clone(),
                     other => format!("{}", other),
                 };
@@ -941,7 +941,7 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
     // Last value wins for a repeated key (J5) — `insert` already does that.
     let mut pairs = MapData::with_capacity(entries.len());
     for (k, v) in entries {
-        pairs.insert(MapKey(Value::String(Arc::new(Mutex::new(k)))), v);
+        pairs.insert(MapKey::string(k), v);
     }
     Value::Enum {
         name: "JsonValue".to_string(),
@@ -1056,7 +1056,7 @@ fn json_to_typed(
             let mut pairs = MapData::with_capacity(entries.len());
             for (k, v) in entries {
                 let value = json_to_typed(&v, value_ty, &child_path(path, &k), struct_decls)?;
-                pairs.insert(MapKey(Value::String(Arc::new(Mutex::new(k)))), value);
+                pairs.insert(MapKey::string(k), value);
             }
             return Ok(Value::Map(Arc::new(Mutex::new(pairs))));
         }
@@ -1296,7 +1296,7 @@ fn object_entries(v: &Value) -> Option<Vec<(String, Value)>> {
             let map = m.lock().unwrap();
             let mut out = Vec::with_capacity(map.len());
             for (k, val) in map.iter() {
-                let Value::String(s) = &k.0 else { continue };
+                let Value::String(s) = &k.value else { continue };
                 out.push((s.lock().unwrap().clone(), val.clone()));
             }
             Some(out)

@@ -290,6 +290,7 @@ fn rename_rvalue(rv: &mut MirRValue, version_stack: &[Vec<LocalId>], num_orig_lo
     match rv {
         MirRValue::Use(op) => rename_operand(op, version_stack, num_orig_locals),
         MirRValue::Ref(id) => *id = current_version(*id, version_stack, num_orig_locals),
+        MirRValue::FuncAddr(_) => {}
         MirRValue::Deref(op) => rename_operand(op, version_stack, num_orig_locals),
         MirRValue::BinaryOp { left, right, .. } => {
             rename_operand(left, version_stack, num_orig_locals);

@@ -5517,6 +5517,7 @@ impl<'a> MirLowerer<'a> {
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(kind)));
                             }
 
+                            let mut keyed_map = false;
                             // Vec.new() / Vec.with_capacity(n): inject elem_size so
                             // the runtime allocates correct slots.
                             if base_name == "Vec"
@@ -5543,6 +5544,16 @@ impl<'a> MirLowerer<'a> {
                                 let val_tag = self.container_elem_tag(expr.id, 1);
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(key_tag)));
                                 arg_operands.push(MirOperand::Constant(MirConst::Int(val_tag)));
+                                // A key with its own `eq`/`hash`: their addresses
+                                // follow the sizes, and the capacity if there is one.
+                                if let Some(key_ty) = self.container_elem_mir_type(expr.id, 0) {
+                                    if let Some((hash, eq)) = self.map_key_fn_addrs(expr.id, &key_ty) {
+                                        let at = if method == "with_capacity" { 3 } else { 2 };
+                                        arg_operands.insert(at, hash);
+                                        arg_operands.insert(at + 1, eq);
+                                        keyed_map = true;
+                                    }
+                                }
                             }
 
                             // Map.new() with string keys → use string hash/eq.
@@ -5554,7 +5565,12 @@ impl<'a> MirLowerer<'a> {
                             // then read the key's 8 bytes as a char pointer. Lookups
                             // hashed whatever that address held, so an insert and a
                             // later get disagreed at random (#812).
-                            let func_name = if func_name == "Map_new"
+                            let func_name = if keyed_map {
+                                match func_name.as_str() {
+                                    "Map_with_capacity" => "Map_with_capacity_keyed".to_string(),
+                                    _ => "Map_new_keyed".to_string(),
+                                }
+                            } else if func_name == "Map_new"
                                 || func_name == "Map_with_capacity"
                             {
                                 let from_checker = self.container_elem_mir_type(expr.id, 0);
@@ -7451,11 +7467,24 @@ impl<'a> MirLowerer<'a> {
         // `Bag$Vec$i64_add` against the registered `Bag_add$Vec$i64` (#838,
         // #445 were earlier shapes of the same miss). Calls that resolved to an
         // `implements` conformance already returned above.
+        // An instantiated copy names its receiver rather than pointing at it:
+        // monomorphization spells a type argument `Version`, so `self[i] !=
+        // other[i]` inside `Vec_eq$Version` arrives with a receiver that has
+        // no id. Without the name lookup that compare became a field-by-field
+        // one and skipped `Version`'s own `eq` (#1391). Workaround: mono
+        // should hand down the id, not a name (#1393).
         let declares_method = self
             .ctx
             .call_targets
             .get(&call)
-            .and_then(|target| target.recv_type_id())
+            .and_then(|target| match target {
+                rask_types::Callee::Method {
+                    recv: rask_types::Type::UnresolvedNamed(name)
+                        | rask_types::Type::UnresolvedGeneric { name, .. },
+                    ..
+                } => self.ctx.type_defs.get_type_id(name),
+                _ => target.recv_type_id(),
+            })
             .and_then(|id| self.ctx.type_defs.get(id))
             .is_some_and(|def| match def {
                 rask_types::TypeDef::Struct { methods, .. }

@@ -28,6 +28,13 @@ use rask_types::{Type, TypeBinding, TypedProgram};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Monomorphized program with all generics eliminated
+/// The symbols a map calls to hash and compare its keys.
+#[derive(Debug, Clone)]
+pub struct MapKeyFns {
+    pub hash: String,
+    pub eq: String,
+}
+
 pub struct MonoProgram {
     pub functions: Vec<MonoFunction>,
     pub struct_layouts: Vec<StructLayout>,
@@ -38,6 +45,9 @@ pub struct MonoProgram {
     pub type_names: HashMap<rask_types::TypeId, String>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: HashMap<NodeId, String>,
+    /// Calls that build a `Map` whose key compares through its own `eq`/`hash`,
+    /// and the functions that are (#1391).
+    pub map_key_fns: HashMap<NodeId, MapKeyFns>,
     /// Types and dispatch targets for the nodes of instantiated generic bodies.
     ///
     /// Those nodes don't exist in the checker's output — they were created
@@ -975,6 +985,7 @@ fn monomorphize_inner(
         enum_layouts,
         type_names: program.types.type_name_map(),
         call_rewrites: mono.call_rewrites,
+        map_key_fns: mono.map_key_fns,
         instantiated_node_types: mono.instantiated_node_types,
         instantiated_call_targets: mono.instantiated_call_targets,
         instantiated_operator_targets: mono.instantiated_operator_targets,

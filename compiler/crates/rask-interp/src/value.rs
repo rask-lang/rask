@@ -910,15 +910,33 @@ pub struct StructData {
     pub resource_id: Option<u64>,
 }
 
-/// A Map key. Hash/Eq delegate to `Interpreter::value_hash`/`value_eq` — the
-/// same structural comparison every other Value equality check in the
-/// interpreter uses — so a key found by `==` is always the key a Map finds too.
+/// A Map key: the value, and what its type's own `hash` said about it.
+///
+/// The interpreter computes the hash when it builds the key
+/// (`Interpreter::map_key`), and finds a key by comparing candidates with the
+/// type's own `eq` (`Interpreter::map_index`) — the same two methods `==` and
+/// `.hash()` call, so a user's `Version implements Equal` decides what counts
+/// as the same key here as it does natively (#1391). The structural equality
+/// below is only what `IndexMap` falls back on when it inserts a key the
+/// interpreter already knows isn't there.
 #[derive(Debug, Clone)]
-pub struct MapKey(pub Value);
+pub struct MapKey {
+    pub value: Value,
+    pub hash: u64,
+}
+
+impl MapKey {
+    /// A string key, for the places that build a map without an interpreter
+    /// (JSON decoding). Same hash `string.hash()` answers.
+    pub fn string(s: String) -> MapKey {
+        let hash = crate::builtins::fnv1a(s.as_bytes());
+        MapKey { value: Value::String(Arc::new(Mutex::new(s))), hash }
+    }
+}
 
 impl PartialEq for MapKey {
     fn eq(&self, other: &Self) -> bool {
-        crate::interp::Interpreter::value_eq(&self.0, &other.0)
+        self.hash == other.hash && crate::interp::Interpreter::value_eq(&self.value, &other.value)
     }
 }
 
@@ -926,7 +944,7 @@ impl Eq for MapKey {}
 
 impl std::hash::Hash for MapKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(crate::interp::Interpreter::value_hash(&self.0));
+        state.write_u64(self.hash);
     }
 }
 
@@ -963,12 +981,12 @@ fn map_order_seed() -> u64 {
 /// given key set within one process, but neither insertion order nor
 /// guessable across processes.
 pub fn map_entries_seeded(map: &MapData) -> Vec<(Value, Value)> {
-    let mut entries: Vec<(Value, Value)> = map.iter()
-        .map(|(k, v)| (k.0.clone(), v.clone()))
-        .collect();
     let seed = map_order_seed();
-    entries.sort_by_key(|(k, _)| crate::interp::Interpreter::value_hash(k) ^ seed);
-    entries
+    let mut entries: Vec<(u64, Value, Value)> = map.iter()
+        .map(|(k, v)| (k.hash ^ seed, k.value.clone(), v.clone()))
+        .collect();
+    entries.sort_by_key(|(order, _, _)| *order);
+    entries.into_iter().map(|(_, k, v)| (k, v)).collect()
 }
 
 /// A vector's elements plus its capacity bound (`std.collections/CP1-CP3`).
@@ -1549,7 +1567,7 @@ impl Value {
             Value::Map(m) => {
                 let map = m.lock().unwrap();
                 let deep: MapData = map.iter()
-                    .map(|(k, v)| (MapKey(k.0.deep_clone()), v.deep_clone()))
+                    .map(|(k, v)| (MapKey { value: k.value.deep_clone(), hash: k.hash }, v.deep_clone()))
                     .collect();
                 Value::Map(Arc::new(Mutex::new(deep)))
             }

@@ -862,6 +862,20 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::ContainerCtor { leading: 3, tags: 2 }, ret_adapt: RetAdapt::None,
         },
+        // A key compared through its own `eq`/`hash`: the two function
+        // addresses ride with the sizes (and the capacity) ahead of the tags.
+        StdlibEntry {
+            mir_name: "Map_new_keyed", c_name: "rask_map_new_keyed",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 4, tags: 2 }, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Map_with_capacity_keyed", c_name: "rask_map_new_keyed_cap",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::ContainerCtor { leading: 5, tags: 2 }, ret_adapt: RetAdapt::None,
+        },
         StdlibEntry::simple("Map_from", "rask_map_clone", &[types::I64], Some(types::I64), false),
         // `insert` answers `V?` — the value it displaced. The C side hands
         // back a pointer to it (NULL for a fresh key), so DerefOption builds

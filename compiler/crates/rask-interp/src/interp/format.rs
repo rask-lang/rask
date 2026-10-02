@@ -234,7 +234,7 @@ impl Interpreter {
                 let mut entries: Vec<(Option<DebugKey>, String, String)> = guard
                     .iter()
                     .map(|(k, v)| {
-                        (debug_sort_key(&k.0), self.debug_format(&k.0), self.debug_format(v))
+                        (debug_sort_key(&k.value), self.debug_format(&k.value), self.debug_format(v))
                     })
                     .collect();
                 if entries.is_empty() {

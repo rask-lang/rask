@@ -107,6 +107,8 @@ pub struct Monomorphizer<'a> {
     /// Call expression NodeId → mangled callee name.
     /// Used by MIR lowering to rewrite calls to generic function instantiations.
     pub call_rewrites: HashMap<NodeId, String>,
+    /// The key `hash`/`eq` each map-building call needs (`note_map_key_fns`).
+    pub map_key_fns: HashMap<NodeId, crate::MapKeyFns>,
     /// Node ids handed out to instantiated copies. Starts above every id the
     /// original program used, so a copy's nodes can never be mistaken for the
     /// nodes they were cloned from.
@@ -473,6 +475,7 @@ impl<'a> Monomorphizer<'a> {
             queue: VecDeque::new(),
             results: Vec::new(),
             call_rewrites: HashMap::new(),
+            map_key_fns: HashMap::new(),
             next_instantiated_id: 0,
             in_test_body: false,
             instantiated_node_types: HashMap::new(),
@@ -1209,17 +1212,17 @@ impl<'a> Monomorphizer<'a> {
     /// still standing for itself would mangle to `One_get$A`, which is an
     /// instance of nothing.
     fn receiver_bindings(&self, call_id: NodeId, qualified: &str) -> Vec<TypeBinding> {
+        match self.call_target(call_id) {
+            Some(rask_types::Callee::Method { recv, .. }) => self.bindings_for(recv, qualified),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `receiver_bindings` for a receiver type in hand.
+    fn bindings_for(&self, recv: &Type, qualified: &str) -> Vec<TypeBinding> {
         let Some(owner) = self.method_owners.get(qualified) else { return Vec::new() };
         let Some(typed) = self.typed else { return Vec::new() };
-        let recv = self
-            .instantiated_call_targets
-            .get(&call_id)
-            .or_else(|| typed.call_targets.get(&call_id))
-            .and_then(|callee| match callee {
-                rask_types::Callee::Method { recv, .. } => Some(recv),
-                _ => None,
-            });
-        let Some(Type::Generic { args, .. }) = recv else { return Vec::new() };
+        let Type::Generic { args, .. } = recv else { return Vec::new() };
 
         // Name every argument first: a `Type::Named` prints as `<type#7>`, which
         // names nothing downstream, and a nested instantiation has to say which
@@ -1388,6 +1391,70 @@ impl<'a> Monomorphizer<'a> {
         self.method_table.contains_key(&mangled).then_some(mangled)
     }
 
+    /// A call that hands back a `Map` whose key compares through its own `eq`
+    /// and `hash` — a struct, an enum, a `Vec` — needs both bodies, and nothing
+    /// in the source calls them: the map does, from the runtime. So they're
+    /// queued from here, and the names they were emitted under are recorded
+    /// for lowering to take the addresses of (#1391). The same reason
+    /// `sort_comparator_fn` exists.
+    ///
+    /// Every call is asked rather than only `Map.new`: a map comes out of
+    /// `Map.from`, `with_capacity`, a generic constructor like `Set.new` whose
+    /// body builds one, and whatever comes next. Lowering looks the record up
+    /// where it builds a map, so a call that only passes one along costs a
+    /// lookup nobody reads.
+    fn note_map_key_fns(&mut self, id: NodeId) {
+        let Some(typed) = self.typed else { return };
+        let Some(ty) = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id)) else {
+            return;
+        };
+
+        let key = match ty {
+            Type::Generic { base, args } if typed.types.type_name(*base) == "Map" => args.first(),
+            Type::UnresolvedGeneric { name, args } if name == "Map" => args.first(),
+            _ => None,
+        };
+        let Some(rask_types::GenericArg::Type(key)) = key else { return };
+        let key = key.as_ref().clone();
+        let Some(fns) = self.key_fns(&key) else { return };
+        self.map_key_fns.insert(id, fns);
+    }
+
+    /// The `hash` and `eq` a map with this key calls, queued, or `None` when
+    /// the key's bytes are its identity (an integer, a string, a link: the
+    /// runtime has those).
+    fn key_fns(&mut self, key: &Type) -> Option<crate::MapKeyFns> {
+        let typed = self.typed?;
+        let mut name_of = |reach: &mut Self, method: &str| -> Option<String> {
+            match key {
+                Type::Named(id) if matches!(
+                    typed.types.get(*id),
+                    Some(rask_types::TypeDef::Struct { .. } | rask_types::TypeDef::Enum { .. })
+                ) => {
+                    let qualified = format!("{}_{method}", rask_types::receiver_name(key, &typed.types)?);
+                    reach.method_table.contains_key(&qualified).then(|| {
+                        reach.enqueue(qualified.clone(), Vec::new());
+                        qualified
+                    })
+                }
+                Type::Generic { base, .. } if typed.types.type_name(*base) == "Vec" => {
+                    let qualified = format!("Vec_{method}");
+                    let bindings = reach.bindings_for(key, &qualified);
+                    if bindings.is_empty() {
+                        return None;
+                    }
+                    let mangled = mangle_name(&qualified, &bindings);
+                    reach.enqueue(qualified, bindings);
+                    Some(mangled)
+                }
+                _ => None,
+            }
+        };
+        let hash = name_of(self, "hash")?;
+        let eq = name_of(self, "eq")?;
+        Some(crate::MapKeyFns { hash, eq })
+    }
+
     fn arg_type_name(&self, id: NodeId) -> Option<String> {
         let typed = self.typed?;
         let ty = self
@@ -1398,6 +1465,17 @@ impl<'a> Monomorphizer<'a> {
     }
 
     /// Add a (name, type_args) pair to queue if not already seen
+    /// What the checker dispatched a call to. A node in an instantiated copy
+    /// has its own record, with the receiver already concrete; the generic
+    /// body's record still names the type parameter. Reading only the latter
+    /// is what widened `self[i].hash()` inside `Vec_hash$i64` to every `hash`
+    /// there is, the generic `Vec_hash` among them, which then had no `T`.
+    fn call_target(&self, id: NodeId) -> Option<&rask_types::Callee> {
+        self.instantiated_call_targets
+            .get(&id)
+            .or_else(|| self.typed?.call_targets.get(&id))
+    }
+
     fn enqueue(&mut self, name: String, type_args: Vec<TypeBinding>) {
         let key = (name.clone(), type_args.clone());
         if !self.seen.contains_key(&key) {
@@ -1481,6 +1559,9 @@ impl<'a> Monomorphizer<'a> {
         if let Some(interface_name) = self.interface_coercions.get(&expr.id).cloned() {
             self.mark_interface_object_methods(&interface_name);
         }
+        if matches!(expr.kind, ExprKind::Call { .. } | ExprKind::MethodCall { .. }) {
+            self.note_map_key_fns(expr.id);
+        }
 
         match &expr.kind {
             ExprKind::Call { func, args } => {
@@ -1549,10 +1630,7 @@ impl<'a> Monomorphizer<'a> {
                 // that reason — `carry_node_records` had brought the record
                 // across and nothing looked at it (#1065).
                 let dispatched = self.typed.and_then(|typed| {
-                    let callee = self
-                        .instantiated_call_targets
-                        .get(&expr.id)
-                        .or_else(|| typed.call_targets.get(&expr.id))?;
+                    let callee = self.call_target(expr.id)?;
                     match callee {
                         // An instantiated copy's receiver comes through as the
                         // name it was substituted with rather than as an interned
@@ -1713,7 +1791,7 @@ impl<'a> Monomorphizer<'a> {
                     // still take every candidate.
                     let dispatch = match self
                         .typed
-                        .and_then(|typed| typed.call_targets.get(&expr.id).map(|c| (c, typed)))
+                        .and_then(|typed| self.call_target(expr.id).map(|c| (c, typed)))
                     {
                         Some((Callee::Method { recv, method: m, package }, typed)) => {
                             match rask_types::receiver_name(recv, &typed.types) {
@@ -1776,7 +1854,7 @@ impl<'a> Monomorphizer<'a> {
                                 if std::env::var("RASK_LIST_WIDENED_CALLS").is_ok() {
                                     let recv = self
                                         .typed
-                                        .and_then(|t| t.call_targets.get(&expr.id).map(|c| (c, t)))
+                                        .and_then(|t| self.call_target(expr.id).map(|c| (c, t)))
                                         .and_then(|(c, t)| match c {
                                             Callee::Method { recv, .. } => {
                                                 rask_types::receiver_name(recv, &t.types)

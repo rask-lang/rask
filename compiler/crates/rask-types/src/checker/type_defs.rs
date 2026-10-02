@@ -377,6 +377,31 @@ impl TypeBinding {
     }
 }
 
+impl TypedProgram {
+    /// Take out the derived `eq`/`hash` bodies the checker didn't keep.
+    ///
+    /// The desugarer writes one for every struct and enum; only the checker
+    /// knows which types qualify (a closure field has no `eq`). The rest were
+    /// never checked, and every pass after this one reads every body.
+    pub fn drop_underived(&self, decls: &mut [rask_ast::decl::Decl]) {
+        use rask_ast::decl::DeclKind;
+        for decl in decls.iter_mut() {
+            let (name, methods) = match &mut decl.kind {
+                DeclKind::Struct(s) => (&s.name, &mut s.methods),
+                DeclKind::Enum(e) => (&e.name, &mut e.methods),
+                _ => continue,
+            };
+            let kept: Vec<&MethodSig> = match self.types.get_type_id(name).and_then(|id| self.types.get(id)) {
+                Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => {
+                    methods.iter().filter(|m| !m.derived).collect()
+                }
+                _ => Vec::new(),
+            };
+            methods.retain(|m| !m.is_derived() || kept.iter().any(|k| k.name == m.name));
+        }
+    }
+}
+
 /// Result of type checking.
 #[derive(Debug)]
 pub struct TypedProgram {

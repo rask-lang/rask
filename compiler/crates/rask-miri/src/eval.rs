@@ -425,6 +425,10 @@ impl MiriEngine {
                 }
             }
 
+            MirRValue::FuncAddr(name) => Err(MiriError::UnsupportedOperation(format!(
+                "taking the address of `{name}` for the runtime has no compile-time meaning"
+            ))),
+
             MirRValue::Ref(_) => {
                 Err(MiriError::UnsupportedOperation(
                     "references are not supported in compile-time evaluation".to_string(),

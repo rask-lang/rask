@@ -163,6 +163,93 @@ impl<'a> MirLowerer<'a> {
         Some((MirOperand::Local(result_local), MirType::Ptr))
     }
 
+    /// The `hash` and `eq` a map built at `node` calls on its keys, as the two
+    /// function addresses the keyed constructor takes — `None` when the key's
+    /// bytes are its identity and the runtime hashes it itself.
+    ///
+    /// Monomorphization chose the functions and queued them (#1391); this only
+    /// adapts them to the runtime's callback shape. The runtime hands a key's
+    /// *address* and its size, and wants `int` back from `eq`. A struct or
+    /// enum is passed by address anyway, so its address is the argument; a
+    /// `Vec` key is a handle, loaded out of the slot.
+    pub(super) fn map_key_fn_addrs(
+        &mut self,
+        node: NodeId,
+        key_ty: &MirType,
+    ) -> Option<(MirOperand, MirOperand)> {
+        let fns = self.ctx.map_key_fns.get(&node)?.clone();
+        let hash = self.key_callback(&fns.hash, key_ty, false);
+        let eq = self.key_callback(&fns.eq, key_ty, true);
+        let addr = |this: &mut Self, name: String| {
+            let local = this.builder.alloc_temp(MirType::I64);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::FuncAddr(name),
+            }));
+            MirOperand::Local(local)
+        };
+        Some((addr(self, hash), addr(self, eq)))
+    }
+
+    /// `uint64_t (*)(const void *key, int64_t size)` around `target(key)`, or
+    /// `int (*)(const void *a, const void *b, int64_t size)` around
+    /// `target(a, b)` when `is_eq`.
+    fn key_callback(&mut self, target: &str, key_ty: &MirType, is_eq: bool) -> String {
+        let name = format!(
+            "{}__key_{}_{}",
+            self.parent_name,
+            if is_eq { "eq" } else { "hash" },
+            self.closure_counter
+        );
+        self.closure_counter += 1;
+        let by_address = matches!(key_ty, MirType::Struct(_) | MirType::Enum(_));
+        let ret_ty = if is_eq { MirType::I32 } else { MirType::U64 };
+        let mut wb = BlockBuilder::new(name.clone(), ret_ty.clone());
+        let mut args = Vec::new();
+        for i in 0..(if is_eq { 2 } else { 1 }) {
+            if by_address {
+                args.push(MirOperand::Local(wb.add_param(format!("__k{i}"), key_ty.clone())));
+            } else {
+                let slot = wb.add_param(format!("__k{i}"), MirType::Ptr);
+                let key = wb.alloc_temp(key_ty.clone());
+                wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: key,
+                    rvalue: MirRValue::Deref(MirOperand::Local(slot)),
+                }));
+                args.push(MirOperand::Local(key));
+            }
+        }
+        wb.add_param("__size".to_string(), MirType::I64);
+        let answer = wb.alloc_temp(if is_eq { MirType::Bool } else { MirType::U64 });
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(answer),
+            func: FunctionRef::internal(target.to_string()),
+            args,
+        }));
+        let value = if is_eq {
+            let widened = wb.alloc_temp(MirType::I32);
+            wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: widened,
+                rvalue: MirRValue::Cast { value: MirOperand::Local(answer), target_ty: MirType::I32 },
+            }));
+            widened
+        } else {
+            answer
+        };
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: Some(MirOperand::Local(value)),
+        }));
+        self.func_sigs.insert(name.clone(), super::FuncSig {
+            ret_ty,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        self.synthesized_functions.push(wb.finish());
+        name
+    }
+
     /// Closure lowering: synthesize a separate MIR function for the body,
     /// build the environment, and emit ClosureCreate in the enclosing function.
     ///

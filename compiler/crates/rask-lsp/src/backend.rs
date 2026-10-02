@@ -337,7 +337,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     let (mut typed, type_errors) =
         rask_types::typecheck_with_stdlib_lenient(
             resolved,
-            &parse_result.decls,
+            &mut parse_result.decls,
             &stdlib_decls,
             &desugared.operator_calls,
         );

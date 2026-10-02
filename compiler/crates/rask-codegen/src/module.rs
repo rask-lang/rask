@@ -1372,7 +1372,7 @@ impl CodeGenerator {
             rask_mir::MirRValue::Field { base, .. } => self.register_operand_string(base, counter),
             rask_mir::MirRValue::EnumTag { value } => self.register_operand_string(value, counter),
             rask_mir::MirRValue::Deref(op) => self.register_operand_string(op, counter),
-            rask_mir::MirRValue::Ref(_) => Ok(()),
+            rask_mir::MirRValue::Ref(_) | rask_mir::MirRValue::FuncAddr(_) => Ok(()),
             rask_mir::MirRValue::ArrayIndex { base, index, .. } => {
                 self.register_operand_string(base, counter)?;
                 self.register_operand_string(index, counter)
@@ -1955,7 +1955,7 @@ fn collect_rvalue_strings(rvalue: &rask_mir::MirRValue, out: &mut HashSet<String
         rask_mir::MirRValue::Field { base, .. } => collect_operand_string(base, out),
         rask_mir::MirRValue::EnumTag { value } => collect_operand_string(value, out),
         rask_mir::MirRValue::Deref(op) => collect_operand_string(op, out),
-        rask_mir::MirRValue::Ref(_) => {}
+        rask_mir::MirRValue::Ref(_) | rask_mir::MirRValue::FuncAddr(_) => {}
         rask_mir::MirRValue::ArrayIndex { base, index, .. } => {
             collect_operand_string(base, out);
             collect_operand_string(index, out);

@@ -168,18 +168,25 @@ impl<'a> MirLowerer<'a> {
         let val_ty = arg_ty(1).or_else(|| spelled_ty(1)).or_else(|| pair_ty(1))
             .unwrap_or(MirType::I64);
 
-        let ctor = crate::elem_strs::map_ctor_for(&key_ty);
         let tag = |ty: &MirType| crate::elem_strs::tag_of(Some(ty));
+        let mut args = vec![
+            MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
+            MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
+        ];
+        let ctor = match self.map_key_fn_addrs(call.id, &key_ty) {
+            Some((hash, eq)) => {
+                args.extend([hash, eq]);
+                "Map_new_keyed"
+            }
+            None => crate::elem_strs::map_ctor_for(&key_ty),
+        };
+        args.push(MirOperand::Constant(MirConst::Int(tag(&key_ty))));
+        args.push(MirOperand::Constant(MirConst::Int(tag(&val_ty))));
         let map_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map_local),
             func: FunctionRef::internal(ctor.to_string()),
-            args: vec![
-                MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
-                MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
-                MirOperand::Constant(MirConst::Int(tag(&key_ty))),
-                MirOperand::Constant(MirConst::Int(tag(&val_ty))),
-            ],
+            args,
         }));
 
         for elem in elems {

@@ -189,7 +189,7 @@ impl Interpreter {
     }
 
     /// Assign `value` into `container[idx]`.
-    fn assign_index(container: &Value, idx: &Value, value: Value) -> Result<(), RuntimeError> {
+    fn assign_index(&mut self, container: &Value, idx: &Value, value: Value) -> Result<(), RuntimeError> {
         match container {
             Value::Vec(v) => {
                 if let Value::Int(i, _) = idx {
@@ -206,7 +206,7 @@ impl Interpreter {
                 }
             }
             Value::Map(m) => {
-                m.lock().unwrap().insert(MapKey(idx.clone()), value);
+                self.map_insert(m, idx.clone(), value)?;
                 Ok(())
             }
             _ => Err(RuntimeError::TypeError(format!(
@@ -217,6 +217,7 @@ impl Interpreter {
 
     /// Assign `value` into a field chain on `container[idx].field_chain...`.
     fn assign_index_field(
+        &mut self,
         container: &Value,
         idx: &Value,
         field_chain: &[String],
@@ -236,13 +237,10 @@ impl Interpreter {
                     Err(RuntimeError::TypeError("Vec index must be an integer".to_string()))
                 }
             }
-            Value::Map(m) => {
-                let map = m.lock().unwrap();
-                match map.get(&MapKey(idx.clone())) {
-                    Some(v) => Self::assign_nested_field(v, field_chain, value),
-                    None => Err(RuntimeError::Panic("key not found in map".to_string())),
-                }
-            }
+            Value::Map(m) => match self.map_get(m, idx.clone())? {
+                Some(v) => Self::assign_nested_field(&v, field_chain, value),
+                None => Err(RuntimeError::Panic("key not found in map".to_string())),
+            },
             _ => Err(RuntimeError::TypeError(format!(
                 "cannot index into {}; only Vec, Map, and Pool support indexing", container.type_name()
             ))),
@@ -294,7 +292,7 @@ impl Interpreter {
                     ExprKind::Index { object: idx_obj, index: idx_expr } => {
                         let idx_val = self.eval_expr(idx_expr).map_err(|diag| diag.error)?;
                         let container = self.eval_index_target(idx_obj)?;
-                        Self::assign_index_field(&container, &idx_val, &field_chain, value)
+                        self.assign_index_field(&container, &idx_val, &field_chain, value)
                     }
                     // Inline sync access: shared.write().field = value, mutex.lock().field = value
                     ExprKind::MethodCall { object, method, args, .. }
@@ -314,7 +312,7 @@ impl Interpreter {
             ExprKind::Index { object, index } => {
                 let idx = self.eval_expr(index).map_err(|diag| diag.error)?;
                 let obj = self.eval_index_target(object)?;
-                Self::assign_index(&obj, &idx, value)
+                self.assign_index(&obj, &idx, value)
             }
             _ => Err(RuntimeError::TypeError(
                 "invalid assignment target".to_string(),

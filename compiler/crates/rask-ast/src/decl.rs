@@ -183,7 +183,17 @@ impl FnDecl {
             a == "native" || a.starts_with("native(") || a == "builtin" || a == "unimplemented"
         })
     }
+
+    /// Written by the compiler, not the program: a derived `eq` or `hash`
+    /// (rask-desugar's `derive`). The checker keeps it only where the type
+    /// qualifies for the interface.
+    pub fn is_derived(&self) -> bool {
+        self.attrs.iter().any(|a| a == DERIVED_ATTR)
+    }
 }
+
+/// The attribute marking a compiler-written method. See [`FnDecl::is_derived`].
+pub const DERIVED_ATTR: &str = "derived";
 
 /// A function parameter.
 #[derive(Debug, Clone)]

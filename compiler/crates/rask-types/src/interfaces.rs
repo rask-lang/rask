@@ -266,11 +266,20 @@ impl<'a> InterfaceChecker<'a> {
         // ever get a conformance this way — and it had none, so `Map<(i64, i64),
         // V>` failed the moment the Map key bound became a real check (#812).
         //
-        // A fixed array is the same argument with one element type.
+        // A fixed array is the same argument with one element type, and so is
+        // a `Vec`: equal when its elements are, hashed element by element.
         if matches!(base_interface, "Equal" | "Hashable" | "Cloneable") {
             let elems: Option<Vec<Type>> = match ty {
                 Type::Tuple(elems) => Some(elems.clone()),
                 Type::Array { elem, .. } => Some(vec![(**elem).clone()]),
+                Type::Generic { base, args }
+                    if self.types.type_name(*base) == "Vec" =>
+                {
+                    match args.first() {
+                        Some(crate::types::GenericArg::Type(elem)) => Some(vec![(**elem).clone()]),
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
             if let Some(elems) = elems {

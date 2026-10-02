@@ -259,7 +259,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         .with_comptime_globals(&comptime_globals)
         .with_extern_funcs(&extern_funcs)
         .with_interface_methods(interface_methods)
-        .with_call_rewrites(&mono.call_rewrites)
+        .with_mono_calls(&mono)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = Some(path);
@@ -334,7 +334,7 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         .with_extern_funcs(&extern_funcs)
         .with_package_modules(&package_modules)
         .with_interface_methods(interface_methods.clone())
-        .with_call_rewrites(&mono.call_rewrites)
+        .with_mono_calls(&mono)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = Some(path);

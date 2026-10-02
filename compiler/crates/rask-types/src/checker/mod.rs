@@ -212,6 +212,9 @@ pub struct TypeChecker {
     /// `current_type_param_bounds` from this before layering the method's own
     /// bounds on top (#838).
     pub(super) current_impl_type_param_bounds: HashMap<String, Vec<TypeExpr>>,
+    /// Methods the desugarer wrote a derived body for (`FnDecl::is_derived`).
+    /// They aren't the type's until `auto_derive_interfaces` says it qualifies.
+    pub(super) derived_bodies: std::collections::HashSet<(crate::types::TypeId, String)>,
     /// Every type parameter name in scope right here — the enclosing `extend
     /// Foo<T>`'s and the method's own, bounded or not.
     ///
@@ -559,6 +562,7 @@ impl TypeChecker {
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
             current_impl_type_param_bounds: HashMap::new(),
+            derived_bodies: std::collections::HashSet::new(),
             type_params_in_scope: std::collections::HashSet::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
@@ -1146,20 +1150,25 @@ impl Default for TypeChecker {
 // Public API
 // ============================================================================
 
+///
+/// Takes the declarations mutably to remove the derived bodies it didn't keep
+/// (`TypedProgram::drop_underived`): every caller goes on to read every body.
 pub fn typecheck(
     resolved: ResolvedProgram,
-    decls: &[Decl],
+    decls: &mut [Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
-    checker.check(decls)
+    let typed = checker.check(decls)?;
+    typed.drop_underived(decls);
+    Ok(typed)
 }
 
 /// Typecheck with stdlib type/method declarations registered but not body-checked.
 pub fn typecheck_with_stdlib(
     resolved: ResolvedProgram,
-    decls: &[Decl],
+    decls: &mut [Decl],
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
@@ -1170,7 +1179,9 @@ pub fn typecheck_with_stdlib(
     checker.types.stdlib_mode = true;
     checker.collect_type_declarations(stdlib_decls);
     checker.types.stdlib_mode = false;
-    checker.check(decls)
+    let typed = checker.check(decls)?;
+    typed.drop_underived(decls);
+    Ok(typed)
 }
 
 /// Lenient typecheck: always returns the (partial) TypedProgram plus errors.
@@ -1181,7 +1192,7 @@ pub fn typecheck_with_stdlib(
 /// instead of fixing them one category at a time.
 pub fn typecheck_with_stdlib_lenient(
     resolved: ResolvedProgram,
-    decls: &[Decl],
+    decls: &mut [Decl],
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> (TypedProgram, Vec<TypeError>) {
@@ -1207,5 +1218,7 @@ pub fn typecheck_with_stdlib_lenient(
         .filter(|d| matches!(d.kind,
             rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))
         .collect();
-    checker.check_lenient_with_stdlib(&bodies, decls)
+    let (typed, errors) = checker.check_lenient_with_stdlib(&bodies, decls);
+    typed.drop_underived(decls);
+    (typed, errors)
 }

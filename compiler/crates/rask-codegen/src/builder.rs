@@ -2186,6 +2186,11 @@ impl<'a> FunctionBuilder<'a> {
             // Address-of: return the pointer that the local already holds (for aggregates
             // and address-taken scalars) or spill a scalar to a stack slot and return
             // its address.
+            MirRValue::FuncAddr(name) => {
+                let func_ref = ctx.func_refs.get(name.as_str())
+                    .ok_or_else(|| CodegenError::FunctionNotFound(name.clone()))?;
+                Ok(builder.ins().func_addr(types::I64, *func_ref))
+            }
             MirRValue::Ref(local_id) => {
                 let var = ctx.var_map.get(local_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Ref: local not found".to_string()))?;

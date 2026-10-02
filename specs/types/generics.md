@@ -433,6 +433,8 @@ The compiler auto-derives Equal where all fields implement Equal — same patter
 | **EQ1: Auto-derive** | Primitives, structs with all Equal fields, enums (tag + payload equality): auto-derived |
 | **EQ2: Override** | `Type implements Equal { ... }` overrides the auto-derived version |
 | **EQ3: Enum equality** | Variants compared by tag, then field-wise payload equality |
+| **EQ4: Vec** | `Vec<T>` is Equal when `T` is: same length, and equal element by element through `T`'s own `eq` |
+| **EQ5: One definition** | A derived `eq` is a method like a written one: `==`, `.eq()` and a `Map` key all call it, on both backends. A field compares through its own type's `eq`, so an override (EQ2) holds wherever the type ends up: a field, a `Vec` element, a key |
 
 ```rask
 struct Point {
@@ -463,6 +465,8 @@ The compiler auto-derives Hashable where all fields implement Hashable. Since Ha
 | **HA1: Auto-derive** | Primitives, structs with all Hashable fields, enums (tag + payload hash): auto-derived |
 | **HA2: Override** | `Type implements Hashable { ... }` overrides the auto-derived version |
 | **HA3: Hash combine** | Field-wise hash uses deterministic combine (order matches declaration order) |
+| **HA3b: Vec** | `Vec<T>` is Hashable when `T` is, combining its elements' hashes in order |
+| **HA3c: Map keys** | A `Map` buckets a key by its type's `hash` and finds it by its type's `eq`, derived or overridden. Never by the key's bytes: a struct holding a string has a pointer in them |
 | **HA3a: What a scalar's hash is** | `x.hash()` on an integer, a `bool`, a `char` or a `string` is FNV-1a over the value's little-endian bytes at its own width — the same function an int-keyed Map buckets with, so a value and the same value used as a key agree. Unseeded: a hash is as stable as `==`. The width counts, so `5u32` and `5u64` don't hash alike |
 | **HA4: Float exclusion** | `f32` and `f64` are NOT Hashable (NaN != NaN violates Hashable contract). So `Map<f64, V>` is a compile error — including nested, as in `Vec<Map<f64, V>>`. A float *value* is fine; only the key position is excluded |
 | **HA5: Bits as the hatch** | `x.to_bits() -> u64` reinterprets a float's bit pattern, so a caller who wants a float-keyed Map spells out what "the same key" means. u64 at both widths. Distinct values get distinct keys, and unlike a float key a NaN can be looked up again |

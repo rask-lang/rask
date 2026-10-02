@@ -449,7 +449,7 @@ fn check_loaded(
     let (mut typed, type_errors) =
         rask_types::typecheck_with_stdlib_lenient(
             resolved,
-            &parse_result.decls,
+            &mut parse_result.decls,
             &stdlib_decls,
             &desugared.operator_calls,
         );
@@ -800,7 +800,7 @@ fn check_package_scoped(
     let (mut typed, type_errors) =
         rask_types::typecheck_with_stdlib_lenient(
             resolved,
-            &pkg_ctx.all_decls,
+            &mut pkg_ctx.all_decls,
             &stdlib_decls,
             &desugared.operator_calls,
         );

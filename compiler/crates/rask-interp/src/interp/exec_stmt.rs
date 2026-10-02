@@ -374,9 +374,13 @@ impl Interpreter {
                             if let ForBinding::Tuple(names) = binding {
                                 if names.len() >= 2 {
                                     if let Some(v) = self.env.get(&names[1]) {
+                                        let stored = self.map_key(key.clone())
+                                            .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                                         let mut guard = map_arc.lock().unwrap();
-                                        if let Some(slot) = guard.get_mut(&MapKey(key.clone())) {
-                                            *slot = v;
+                                        if let Some(i) = self.map_index(&guard, &stored)
+                                            .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?
+                                        {
+                                            guard[i] = v;
                                         }
                                     }
                                 }

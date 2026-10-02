@@ -18,6 +18,7 @@ mod assign;
 mod eval_expr;
 mod pattern;
 mod collections;
+mod map_keys;
 mod format;
 mod operators;
 pub(crate) mod overflow;

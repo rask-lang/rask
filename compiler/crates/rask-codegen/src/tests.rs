@@ -1969,6 +1969,7 @@ mod tests {
             enum_layouts: vec![],
             type_names: Default::default(),
             call_rewrites: std::collections::HashMap::new(),
+            map_key_fns: std::collections::HashMap::new(),
         }
     }
 
@@ -2023,6 +2024,7 @@ mod tests {
             enum_layouts: vec![],
             type_names: Default::default(),
             call_rewrites: std::collections::HashMap::new(),
+            map_key_fns: std::collections::HashMap::new(),
         }
     }
 
@@ -2096,6 +2098,7 @@ mod tests {
                 },
             ],
             call_rewrites: std::collections::HashMap::new(),
+            map_key_fns: std::collections::HashMap::new(),
         }
     }
 }

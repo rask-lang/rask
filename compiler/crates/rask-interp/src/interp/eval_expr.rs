@@ -2000,8 +2000,10 @@ impl Interpreter {
                         Ok(Value::String(Arc::new(Mutex::new(slice.to_string()))))
                     }
                     (Value::Map(m), _) => {
-                        let map = m.lock().unwrap();
-                        map.get(&MapKey(idx.clone())).cloned().ok_or_else(|| {
+                        let found = self
+                            .map_get(m, idx.clone())
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                        found.ok_or_else(|| {
                             RuntimeDiagnostic::new(
                                 RuntimeError::Panic("key not found in map".to_string()),
                                 expr.span,

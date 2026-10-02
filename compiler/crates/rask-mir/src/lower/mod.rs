@@ -286,6 +286,7 @@ mod empty {
     empty_of!(comptime_globals, HashMap<String, ComptimeGlobalMeta>);
     empty_of!(node_names, HashMap<NodeId, String>);
     empty_of!(nominal_map, HashMap<String, Type>);
+    empty_of!(map_key_fns, HashMap<NodeId, rask_mono::MapKeyFns>);
 }
 
 impl<'a> MirContext<'a> {
@@ -339,6 +340,7 @@ impl<'a> MirContext<'a> {
             source_file: None,
             interface_methods: HashMap::new(),
             call_rewrites: empty::node_names(),
+            map_key_fns: empty::map_key_fns(),
             resource_types: empty::strings(),
             nominal_underlying: empty::nominal_map(),
             comptime_interp: None,
@@ -380,8 +382,11 @@ impl<'a> MirContext<'a> {
         self
     }
 
-    pub fn with_call_rewrites(mut self, rewrites: &'a HashMap<NodeId, String>) -> Self {
-        self.call_rewrites = rewrites;
+    /// What monomorphization decided per call: which copy it names, and the
+    /// key functions a map it builds needs.
+    pub fn with_mono_calls(mut self, mono: &'a rask_mono::MonoProgram) -> Self {
+        self.call_rewrites = &mono.call_rewrites;
+        self.map_key_fns = &mono.map_key_fns;
         self
     }
 
@@ -477,6 +482,8 @@ pub struct MirContext<'a> {
     pub try_chain_placement: &'a HashMap<NodeId, NodeId>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: &'a HashMap<NodeId, String>,
+    /// A map-building call → the `hash`/`eq` its keys go through (#1391).
+    pub map_key_fns: &'a HashMap<NodeId, rask_mono::MapKeyFns>,
     /// CALL6: the receiver type dispatch actually selected, per call node.
     ///
     /// Authoritative for method-name qualification. `node_types` holds the type
@@ -595,6 +602,7 @@ impl<'a> MirContext<'a> {
             task_bound_closures: &EMPTY_ESCAPING,
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
+            map_key_fns: empty::map_key_fns(),
             call_targets: &EMPTY_TARGETS,
             operator_targets: &EMPTY_OPERATOR_TARGETS,
             resource_types: &EMPTY_RESOURCE_TYPES,
@@ -7167,6 +7175,7 @@ mod tests {
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
+            map_key_fns: empty::map_key_fns(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
@@ -7247,6 +7256,7 @@ mod tests {
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
+            map_key_fns: empty::map_key_fns(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
@@ -7336,6 +7346,7 @@ mod tests {
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
+            map_key_fns: empty::map_key_fns(),
             call_targets: &empty_targets,
             operator_targets: &empty_operator_targets,
             resource_types: &empty_resource_types,
