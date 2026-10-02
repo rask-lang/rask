@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, RwLock, mpsc};
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 use rask_ast::ty::TypeExpr;
 
-use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadPoolInner, TypeConstructorKind, Value};
+use crate::value::{FloatKind, ModuleKind, PoolTask, StructData, ThreadPoolInner, TypeConstructorKind, Value};
 
 use super::{AssertDetail, Interpreter, RuntimeDiagnostic, RuntimeError};
 
