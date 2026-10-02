@@ -112,6 +112,19 @@ pub enum Type {
 }
 
 impl Type {
+    /// The name at the head of a named type: `Vec` for `Vec<i64>`, `Point` for
+    /// `Point`. A resolved type carries its id, so `names` says what it's
+    /// called. `None` for anything structural — an optional, a result, a tuple.
+    pub fn head_name<'a>(&'a self, names: &'a std::collections::HashMap<TypeId, String>) -> Option<&'a str> {
+        match self {
+            Type::Named(id) | Type::Generic { base: id, .. } => names.get(id).map(String::as_str),
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+}
+
+impl Type {
     /// `T`, if this is a `Heap<T>`.
     ///
     /// HP5 says `Heap<T>` behaves as `T` wherever one is expected. Every place

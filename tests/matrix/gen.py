@@ -219,32 +219,39 @@ func roundtrip({take}x: {decl}) -> {decl} {{
            show=read_expr(t, "y"))
 
 
+def grouped(decl):
+    """A type ready for a `?` or an `or` after it. A function type's return runs
+    to the end of the type, so `func() -> i64?` returns `i64?`; the whole
+    function made optional is `(func() -> i64)?`."""
+    return "({})".format(decl) if decl.startswith("func(") and "->" in decl else decl
+
+
 def c_optional(t, ty):
     return "", """\
-    let o: {decl}? = {val}
+    let o: {opt} = {val}
     if o? as v {{
 {commit}        println("got={show}")
     }} else {{
         println("got=NONE")
     }}
-""".format(decl=ty["decl"], val=ty["val"], show=read_expr(t, "v"),
+""".format(opt=grouped(ty["decl"]) + "?", val=ty["val"], show=read_expr(t, "v"),
            commit=("    " + commit(t, "v").lstrip("\n") if commit(t, "v") else ""))
 
 
 def c_optional_param(t, ty):
     decls = """\
-func unwrap_it({take}o: {decl}?) -> {decl} {{
+func unwrap_it({take}o: {opt}) -> {decl} {{
     if o? as v {{
         return v
     }}
     return {val2}
 }}
-""".format(decl=ty["decl"], val2=ty["val2"], take=take(t))
+""".format(decl=ty["decl"], opt=grouped(ty["decl"]) + "?", val2=ty["val2"], take=take(t))
     return decls, """\
-    let o: {decl}? = {val}
+    let o: {opt} = {val}
     let v = unwrap_it(o)
 {commit}    println("got={show}")
-""".format(decl=ty["decl"], val=ty["val"], commit=commit(t, "v"),
+""".format(opt=grouped(ty["decl"]) + "?", val=ty["val"], commit=commit(t, "v"),
            show=read_expr(t, "v"))
 
 
@@ -265,7 +272,7 @@ extend Oops {{
 func make() -> {decl} or Oops {{
     return {val}
 }}
-""".format(decl=ty["decl"], val=ty["val"])
+""".format(decl=grouped(ty["decl"]), val=ty["val"])
     return decls, """\
     let v = make() catch _ => return
 {commit}    println("got={show}")

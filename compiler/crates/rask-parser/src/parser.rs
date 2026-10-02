@@ -1344,7 +1344,9 @@ impl Parser {
                 TypeExpr::Unit
             };
 
-            return Ok(TypeExpr::Func { params, ret: Box::new(ret_ty) });
+            // A written return already took any `?` after it; with none, a
+            // `?` here makes the function itself optional.
+            return Ok(self.parse_optional_suffix(TypeExpr::Func { params, ret: Box::new(ret_ty) }));
         }
 
         if self.check(&TokenKind::Func) {
@@ -1366,7 +1368,9 @@ impl Parser {
                 TypeExpr::Unit
             };
 
-            return Ok(TypeExpr::Func { params, ret: Box::new(ret_ty) });
+            // A written return already took any `?` after it; with none, a
+            // `?` here makes the function itself optional.
+            return Ok(self.parse_optional_suffix(TypeExpr::Func { params, ret: Box::new(ret_ty) }));
         }
 
         let name = self.expect_ident()?;

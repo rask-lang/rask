@@ -262,6 +262,18 @@ impl TypeExpr {
 }
 
 impl TypeExpr {
+    /// Would a suffix or an `or` written after this type attach to a part of
+    /// it rather than to the whole? True for `T or E`, and for a function type
+    /// with a return, whose return runs to the end: `func() -> i64?` returns
+    /// `i64?`.
+    fn runs_on(&self) -> bool {
+        match self {
+            TypeExpr::Result { .. } => true,
+            TypeExpr::Func { ret, .. } => **ret != TypeExpr::Unit,
+            _ => false,
+        }
+    }
+
     /// The type as a programmer writes it: `T or E`, `void`, `func(A)` with
     /// no arrow for a `void` return. `Display` is the canonical spelling
     /// diagnostics use, which names the result type `Result<T, E>`.
@@ -279,20 +291,20 @@ impl TypeExpr {
                 }
             }
             TypeExpr::Int(n) => n.clone(),
-            // A suffix binds tighter than `or`, so a result under it needs its
+            // A suffix binds tighter than `or`, and a function's return runs to
+            // the end of the type, so either one under a `?` needs its
             // parentheses back.
-            TypeExpr::Optional(inner) => match **inner {
-                TypeExpr::Result { .. } => format!("({})?", inner.source()),
-                _ => format!("{}?", inner.source()),
-            },
+            TypeExpr::Optional(inner) if inner.runs_on() => format!("({})?", inner.source()),
+            TypeExpr::Optional(inner) => format!("{}?", inner.source()),
             TypeExpr::Result { ok, err } => {
-                let ok_src = match **ok {
-                    TypeExpr::Result { .. } => format!("({})", ok.source()),
-                    _ => ok.source(),
-                };
+                let ok_src = if ok.runs_on() { format!("({})", ok.source()) } else { ok.source() };
                 format!("{} or {}", ok_src, err.source())
             }
-            TypeExpr::Union(ts) => list(ts, " | "),
+            TypeExpr::Union(ts) => ts
+                .iter()
+                .map(|t| if t.runs_on() { format!("({})", t.source()) } else { t.source() })
+                .collect::<Vec<_>>()
+                .join(" | "),
             TypeExpr::Tuple(ts) => format!("({})", list(ts, ", ")),
             TypeExpr::Unit => "void".to_string(),
             TypeExpr::NoneType => "none".to_string(),

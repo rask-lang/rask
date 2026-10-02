@@ -679,11 +679,12 @@ type alias Handler = func(i32) -> string
 let coords: Pair<f64> = (1.0, 2.0)  // Pair<f64> IS (f64, f64)
 ```
 
-A function type's return runs to the end of the type, so a trailing `?` belongs to the return. To make the whole function optional, put it in parentheses:
+A function type's return runs to the end of the type, so a trailing `?` or `or E` belongs to the return. To apply it to the whole function, put the function in parentheses:
 
 ```rask
 let parse: func(string) -> i64? = to_number    // returns i64?
 let hook: (func(i64) -> i64)? = none           // no function at all
+func make() -> (func(i64) -> i64) or Oops      // a function, or an error
 ```
 
 Visibility: `public type Name = ...` exports the type. See [type-aliases.md](types/type-aliases.md).

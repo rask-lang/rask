@@ -91,6 +91,9 @@ fn make_diagnostic(
 }
 
 /// naming/from: `from_*` should return Self or Self or E.
+///
+/// A generic `from_value<T>(…) -> T` builds whatever `T` is, so its own type
+/// parameter stands where `Self` would.
 pub fn check_from(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
@@ -99,13 +102,14 @@ pub fn check_from(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
         }
         if let Some(ret) = &ctx.method.ret_ty {
             let type_lower = ctx.type_name.to_lowercase();
-            if !ret.mentions(&|n| n.to_lowercase() == type_lower || n == "Self") {
+            let own_param = |n: &str| ctx.method.type_params.iter().any(|p| p.name == n);
+            if !ret.mentions(&|n| n.to_lowercase() == type_lower || n == "Self" || own_param(n)) {
                 diags.push(make_diagnostic(
                     "naming/from",
                     Severity::Warning,
                     format!(
                         "`{}` should return `{}` or `{} or E`, found `{}`",
-                        ctx.method.name, ctx.type_name, ctx.type_name, ret
+                        ctx.method.name, ctx.type_name, ctx.type_name, ret.source()
                     ),
                     format!(
                         "change return type to `{}` or `{} or E`",
@@ -364,7 +368,7 @@ pub fn check_is(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
                     diags.push(make_diagnostic(
                         "naming/is",
                         Severity::Error,
-                        format!("`{}` must return `bool`, found `{}`", f.name, ret),
+                        format!("`{}` must return `bool`, found `{}`", f.name, ret.source()),
                         "change return type to `bool`, or rename to remove the `is_` prefix"
                             .to_string(),
                         source,

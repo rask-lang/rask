@@ -279,7 +279,7 @@ impl<'a> MirLowerer<'a> {
     fn replaced_slot_type(&self, target: &Expr, fty: &MirType) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(target.id) {
             if let Some(head) = self.head_name(&ty) {
-                if let Some(kind) = crate::ContainerKind::from_rendered(&head) {
+                if let Some(kind) = crate::ContainerKind::from_head(&head) {
                     return Some(MirType::Container(kind));
                 }
             }

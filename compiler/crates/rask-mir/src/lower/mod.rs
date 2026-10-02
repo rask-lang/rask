@@ -1443,7 +1443,7 @@ impl<'a> MirContext<'a> {
         if mir != MirType::Ptr {
             return mir;
         }
-        match crate::ContainerKind::from_rendered(name) {
+        match crate::ContainerKind::from_head(name.split('<').next().unwrap_or(name)) {
             Some(kind) => MirType::Container(kind),
             None => mir,
         }
@@ -1457,9 +1457,7 @@ impl<'a> MirContext<'a> {
         if mir != MirType::Ptr {
             return mir;
         }
-        // The rendered name, for the same reason the codegen side reads one: a
-        // resolved `Type::Generic` carries a TypeId and no name.
-        match crate::ContainerKind::from_rendered(&format!("{}", ty)) {
+        match crate::ContainerKind::of(ty, self.type_names) {
             Some(kind) => MirType::Container(kind),
             None => mir,
         }

@@ -881,6 +881,25 @@ mod tests {
     // These tests verify the parser handles this correctly.
     // ================================================================
 
+    /// Written types print back as written, parentheses included where a
+    /// function's return would otherwise swallow what follows it.
+    #[test]
+    fn type_source_round_trips() {
+        for src in [
+            "(func(i64) -> i64)?",
+            "func(i64) -> i64?",
+            "(func() -> i64) or IoError",
+            "func() -> i64 or IoError",
+            "(i64 or E)?",
+            "func(i64)?",
+            "Map<string, func(i64) -> i64>",
+        ] {
+            let ty = parse_type(src).unwrap_or_else(|| panic!("`{src}` didn't parse"));
+            assert_eq!(ty.source(), src);
+            assert_eq!(parse_type(&ty.source()), Some(ty));
+        }
+    }
+
     /// `src` is one call whose callee is `name` with these written type arguments.
     fn assert_generic_call(src: &str, name: &str, args: &[&str]) {
         let stmts = parse_body(src);
