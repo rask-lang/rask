@@ -226,8 +226,8 @@ fn flatten(
     }
     for f in fields {
         let at = base + f.offset as i32;
-        if let Some(payload) = heap_payload_name(&f.ty) {
-            let payload = layout_name(&payload, layouts, enums);
+        if let Some(payload) = heap_payload(&f.ty) {
+            let payload = layout_name(payload, layouts, enums);
             // Only where a self-reference has a name to match. The
             // container-element path passes `None`, because a `retain` would
             // have to copy the block and a block carries no size to copy — so
@@ -256,7 +256,7 @@ fn flatten(
             RaskType::UnresolvedNamed(_) | RaskType::UnresolvedGeneric { .. } => {
                 // A nested struct flattens into the same list. A nested *enum*
                 // contributes its own guards, at this field's offset.
-                let name = &layout_name(&format!("{}", f.ty), layouts, enums);
+                let name = &layout_name(&f.ty, layouts, enums);
                 if let Some(l) = layouts.iter().find(|l| &l.name == name) {
                     let nested = l.fields.clone();
                     flatten(&nested, at, layouts, enums, depth + 1, self_name, out)?;
@@ -293,7 +293,7 @@ pub fn heap_field_descriptor(
     layouts: &[StructLayout],
     enums: &[EnumLayout],
 ) -> Option<Vec<i32>> {
-    let payload = layout_name(&heap_payload_name(ty)?, layouts, enums);
+    let payload = layout_name(heap_payload(ty)?, layouts, enums);
     let mut out = Vec::new();
     describe_named(&payload, 0, layouts, enums, 0, Some(&payload), &mut out)?;
     Some(out)
@@ -311,14 +311,14 @@ pub fn generic_as_layout(
     if !matches!(ty, RaskType::UnresolvedGeneric { .. }) {
         return None;
     }
-    let name = layout_name(&format!("{}", ty), layouts, enums);
+    let name = layout_name(ty, layouts, enums);
     let known = layouts.iter().any(|l| l.name == name) || enums.iter().any(|l| l.name == name);
     known.then(|| RaskType::UnresolvedNamed(name))
 }
 
 /// The layout name a written type goes by — see `rask_mono::layout_name_for`.
-fn layout_name(written: &str, layouts: &[StructLayout], enums: &[EnumLayout]) -> String {
-    rask_mono::layout_name_for(written, |n| {
+fn layout_name(ty: &RaskType, layouts: &[StructLayout], enums: &[EnumLayout]) -> String {
+    rask_mono::layout_name_for(ty, |n| {
         layouts.iter().any(|l| l.name == n) || enums.iter().any(|l| l.name == n)
     })
 }
@@ -350,18 +350,19 @@ fn describe_named(
 /// Is this field a `Heap<T>`? The release walk asks before it looks at
 /// anything else, the way it asks about an interface object.
 pub fn is_heap_field(ty: &RaskType) -> bool {
-    heap_payload_name(ty).is_some()
+    heap_payload(ty).is_some()
 }
 
 /// `Heap<Big>` → `Big`. A wrapper around the handle is a different thing, the
 /// same way it is for a container.
-fn heap_payload_name(ty: &RaskType) -> Option<String> {
-    let rendered = format!("{}", ty);
-    if rendered.ends_with('?') || rendered.contains(" or ") {
-        return None;
+fn heap_payload(ty: &RaskType) -> Option<&RaskType> {
+    match ty {
+        RaskType::UnresolvedGeneric { name, args } if name == "Heap" => match args.as_slice() {
+            [rask_types::GenericArg::Type(inner)] => Some(inner),
+            _ => None,
+        },
+        _ => None,
     }
-    let inner = rendered.trim().strip_prefix("Heap<")?.strip_suffix('>')?;
-    Some(inner.trim().to_string())
 }
 
 /// Is this field a container the element owns, and which one.

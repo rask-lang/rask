@@ -460,7 +460,7 @@ pub fn check_match_on_optional(decls: &[Decl], source: &str) -> Vec<LintDiagnost
 fn is_none_pattern(p: &rask_ast::expr::Pattern) -> bool {
     matches!(
         p,
-        rask_ast::expr::Pattern::TypePat { ty_name, binding: None } if ty_name == "none"
+        rask_ast::expr::Pattern::TypePat { ty: rask_ast::ty::TypeExpr::NoneType, binding: None }
     )
 }
 

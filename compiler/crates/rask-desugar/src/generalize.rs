@@ -38,6 +38,7 @@
 //! need `len`'s return type, which this pass runs too early to know. #1141 has
 //! the options.
 
+use rask_ast::ty::TypeExpr;
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, TypeParam};
@@ -80,7 +81,7 @@ fn generalize_fn(f: &mut FnDecl) {
     let inferred: HashSet<String> = f
         .params
         .iter()
-        .filter(|p| p.name != "self" && p.ty.is_empty())
+        .filter(|p| p.name != "self" && p.ty.is_none())
         .map(|p| p.name.clone())
         .collect();
     if inferred.is_empty() {
@@ -132,12 +133,12 @@ fn generalize_fn(f: &mut FnDecl) {
         let Some(letter) = free_letter(&taken) else { continue };
         taken.insert(letter.clone());
         letters.insert(param.name.clone(), letter.clone());
-        param.ty = letter.clone();
+        param.ty = Some(TypeExpr::named(letter.clone()));
         added.push(TypeParam {
             name: letter,
             is_comptime: false,
             comptime_type: None,
-            bounds,
+            bounds: bounds.into_iter().map(TypeExpr::named).collect(),
             default: None,
         });
     }
@@ -149,10 +150,10 @@ fn generalize_fn(f: &mut FnDecl) {
         // Keyed by parameter name and answered in terms of it, so the letter
         // goes in only now that one has been handed out.
         if let Some((name, answer)) = returns.iter().next() {
-            f.ret_ty = Some(match letters.get(name) {
+            f.ret_ty = Some(TypeExpr::named(match letters.get(name) {
                 Some(letter) if answer == name => letter.clone(),
                 _ => answer.clone(),
-            });
+            }));
         }
     }
     f.type_params.extend(added);
@@ -355,15 +356,17 @@ fn shadowed_names(body: &[Stmt]) -> HashSet<String> {
 /// with a type parameter another parameter's type mentions (PC1).
 fn letters_already_in(f: &FnDecl) -> HashSet<String> {
     let mut taken = HashSet::new();
-    let mut scan = |s: &str| {
-        for part in s.split(|c: char| !c.is_alphanumeric() && c != '_') {
-            if part.len() == 1 && part.chars().all(|c| c.is_ascii_uppercase()) {
-                taken.insert(part.to_string());
+    let mut scan = |t: &TypeExpr| {
+        t.walk_names(&mut |name| {
+            if name.len() == 1 && name.chars().all(|c| c.is_ascii_uppercase()) {
+                taken.insert(name.to_string());
             }
-        }
+        });
     };
     for p in &f.params {
-        scan(&p.ty);
+        if let Some(t) = &p.ty {
+            scan(t);
+        }
     }
     if let Some(r) = &f.ret_ty {
         scan(r);

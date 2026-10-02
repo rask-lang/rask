@@ -53,6 +53,10 @@ pub struct ResolvedProgram {
     pub symbols: SymbolTable,
     /// Mapping from AST nodes (identifier usages) to their resolved symbols.
     pub resolutions: HashMap<NodeId, SymbolId>,
+    /// The symbol each top-level function declaration got, by the
+    /// declaration's id. Names aren't unique — the stdlib's stubs and bodies
+    /// both declare `Wrapping` — so this is the only reliable way back.
+    pub decl_symbols: HashMap<NodeId, SymbolId>,
     /// Public type declarations from external packages, keyed by package name.
     /// The type checker registers these so cross-package types resolve.
     pub external_decls: HashMap<String, Vec<Decl>>,
@@ -76,8 +80,8 @@ pub struct ResolvedProgram {
 #[derive(Debug, Clone)]
 pub struct CImportExternFunc {
     pub name: String,
-    pub params: Vec<String>,
-    pub ret_ty: Option<String>,
+    pub params: Vec<rask_ast::ty::TypeExpr>,
+    pub ret_ty: Option<rask_ast::ty::TypeExpr>,
 }
 
 impl ResolvedProgram {

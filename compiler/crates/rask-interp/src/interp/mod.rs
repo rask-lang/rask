@@ -26,6 +26,7 @@ mod dispatch;
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};
 use rask_ast::span::LineMap;
 use rask_ast::Span;
+use rask_ast::ty::TypeExpr;
 
 use crate::env::Environment;
 use crate::resource::ResourceTracker;
@@ -160,7 +161,7 @@ pub struct Interpreter {
     /// so nothing here needed the target until `reflect.is_flat` had to follow
     /// it — a newtype over a primitive is flat, and answering "not declared" made
     /// it not (#791).
-    pub(crate) nominal_targets: HashMap<String, String>,
+    pub(crate) nominal_targets: HashMap<String, rask_ast::ty::TypeExpr>,
     /// `type alias X = Y` — the transparent kind, which is the same type under
     /// another spelling. An instance call takes its prefix from the receiver's
     /// *value*, so the alias is long gone by then; a static call takes it from
@@ -216,7 +217,7 @@ pub struct Interpreter {
     /// `(type, method)` → its `extend` header's target arguments as written
     /// (`["(K, V)"]` for `extend Pairs<(K, V)>`), for a header that has any. A
     /// method call matches them against the receiver's type.
-    pub(crate) extend_header_patterns: HashMap<(String, String), Vec<String>>,
+    pub(crate) extend_header_patterns: HashMap<(String, String), Vec<rask_ast::ty::TypeExpr>>,
     /// XC4/XC5: which package each source file belongs to, and which `extend`
     /// blocks carry their package in the method name because the block is on a
     /// type that package doesn't own.
@@ -346,16 +347,19 @@ impl Interpreter {
             Type::UnresolvedGeneric { name, args } => (name.clone(), args),
             _ => return Vec::new(),
         };
-        let base = register::strip_generics(&base);
+        let base = base.as_str();
         // A header that leaves the arguments out (`extend Box`), and a method
         // declared in the type's own body, mean the declaration's names.
-        let patterns = match self.extend_header_patterns.get(&(base.to_string(), method.to_string())) {
+        let patterns: Vec<TypeExpr> = match self.extend_header_patterns.get(&(base.to_string(), method.to_string())) {
             Some(patterns) => patterns.clone(),
             None => match (self.struct_decls.get(base), self.enums.get(base)) {
                 (Some(s), _) => rask_types::struct_type_param_names(s),
                 (None, Some(e)) => rask_types::enum_type_param_names(e),
                 (None, None) => return Vec::new(),
-            },
+            }
+            .iter()
+            .map(TypeExpr::named)
+            .collect(),
         };
         rask_types::bind_header_patterns(&self.types, &patterns, args).unwrap_or_default()
     }
@@ -679,21 +683,23 @@ impl Interpreter {
         }
     }
 
-    /// What the type parameter `name` stands for in the body running now,
-    /// spelled the way native spells it for the same instantiation, or `name`
-    /// itself when it isn't one of the body's parameters.
+    /// A written type argument with the running body's type parameters
+    /// replaced by what this instantiation bound them to, spelled the way
+    /// native spells it.
     ///
     /// Read off the generic frame, which holds the checker's types for the
     /// call. It used to be guessed from the argument values, so `T = i32`
     /// read as `i64` because every integer value looks alike (#699, #968).
-    pub(crate) fn resolve_type_param(&self, name: &str) -> String {
+    pub(crate) fn resolve_type_param(&self, ty: &TypeExpr) -> TypeExpr {
         let frame = self.generic_frames.last().and_then(|f| f.as_deref());
-        match frame.and_then(|f| f.get(name)) {
-            Some(ty) => rask_mono::Monomorphizer::nameable_type(ty, &self.types)
-                .unwrap_or_else(|| ty.clone())
-                .to_string(),
-            None => name.to_string(),
-        }
+        ty.substitute(&|name| {
+            let bound = frame?.get(name)?;
+            Some(
+                rask_mono::Monomorphizer::nameable_type(bound, &self.types)
+                    .unwrap_or_else(|| bound.clone())
+                    .to_type_expr(),
+            )
+        })
     }
 
     /// How many optional layers a container's Nth type argument declares —
@@ -1261,7 +1267,7 @@ impl Interpreter {
             // A `try` that propagates already lands in the error path; an
             // explicit `return SomeError` came back as an ordinary value and
             // the process reported success (#345).
-            if let Some(err) = Self::main_error_return(entry.ret_ty.as_deref(), &value) {
+            if let Some(err) = Self::main_error_return(entry.ret_ty.as_ref(), &value) {
                 let msg = self.describe_error_value(err);
                 return Err(RuntimeDiagnostic::new(
                     RuntimeError::MainReturnedError(msg),
@@ -1277,17 +1283,9 @@ impl Interpreter {
     /// The error `main` returned, if it returned one. `ret_ty` is main's
     /// declared return type — without a `T or E` there's no error branch and
     /// every value is a success.
-    fn main_error_return<'v>(ret_ty: Option<&str>, value: &'v Value) -> Option<&'v Value> {
-        // Desugar rewrites `T or E` to `Result<T, E>`, but the source spelling
-        // survives in some paths — accept either.
-        let ret_ty = ret_ty?.trim();
-        let err_branch = match ret_ty.split_once(" or ") {
-            Some((_, e)) => e.trim(),
-            None => {
-                let inner = ret_ty.strip_prefix("Result<")?.strip_suffix('>')?;
-                Self::split_top_level_comma(inner)?.1.trim()
-            }
-        };
+    fn main_error_return<'v>(ret_ty: Option<&TypeExpr>, value: &'v Value) -> Option<&'v Value> {
+        let (_, err) = call::result_sides(ret_ty?)?;
+        let err_arms = call::err_arms(err);
         match value {
             Value::Enum { name, variant, fields, .. } if name == "Result" => {
                 (variant == "Err").then(|| fields.first().unwrap_or(&Value::Unit))
@@ -1305,28 +1303,14 @@ impl Interpreter {
                     Value::Nominal { type_name, .. } => type_name.clone(),
                     _ => return None,
                 };
-                err_branch
-                    .split('|')
-                    .any(|e| e.trim() == name)
+                err_arms
+                    .iter()
+                    .any(|e| e.to_string() == name)
                     .then_some(other)
             }
         }
     }
 
-    /// Split `Result<...>`'s arguments at the comma that separates ok from err,
-    /// ignoring commas inside a nested generic.
-    fn split_top_level_comma(s: &str) -> Option<(&str, &str)> {
-        let mut depth = 0usize;
-        for (i, c) in s.char_indices() {
-            match c {
-                '<' | '(' | '[' => depth += 1,
-                '>' | ')' | ']' => depth = depth.saturating_sub(1),
-                ',' if depth == 0 => return Some((&s[..i], &s[i + 1..])),
-                _ => {}
-            }
-        }
-        None
-    }
 
     /// Human-readable text for an error value: its own `message()` when the
     /// type defines one, otherwise the value as printed.

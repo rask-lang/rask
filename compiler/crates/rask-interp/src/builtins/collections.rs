@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::ptr::RawPtr;
-use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, RackData, StructData, TypeConstructorKind, Value, VecData};
+use crate::value::{map_entries_seeded, FloatKind, MapData, MapKey, RackData, StructData, TypeConstructorKind, Value, VecData};
 
 /// UTF-8 or a clear error. `from_raw` promises no validation natively, but a
 /// Rust `String` can't carry the malformed bytes, so saying so beats inventing
@@ -1130,7 +1130,6 @@ impl Interpreter {
     pub(crate) fn call_type_constructor_method(
         &self,
         kind: &TypeConstructorKind,
-        type_param: Option<String>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
@@ -1237,7 +1236,7 @@ impl Interpreter {
                 Ok(opt)
             }
             (TypeConstructorKind::Rack, "new") => {
-                let rack = Arc::new(Mutex::new(RackData::with_type_param(type_param.clone())));
+                let rack = Arc::new(Mutex::new(RackData::new()));
                 crate::value::register_rack(&rack);
                 Ok(Value::Rack(rack))
             }

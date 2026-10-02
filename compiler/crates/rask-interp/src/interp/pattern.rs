@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use rask_ast::ty::TypeExpr;
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 
 use crate::value::Value;
@@ -102,7 +103,9 @@ impl Interpreter {
                 if let Value::Enum { name: sc_name, fields, .. } = value {
                     if (sc_name == "Result" || sc_name == "Option") && self.is_known_type_name(name) {
                         return match fields.first() {
-                            Some(inner) if runtime_type_matches(inner, name) => Some(HashMap::new()),
+                            Some(inner) if runtime_type_matches(inner, &TypeExpr::named(name.as_str())) => {
+                                Some(HashMap::new())
+                            }
                             _ => None,
                         };
                     }
@@ -254,7 +257,7 @@ impl Interpreter {
             // ER23/ER27: `TypeName [as name]` type pattern, and OPT15's
             // `none`. A flat `T? or E` wears two wrappers, so the walk goes
             // down layer by layer — the pattern names one leaf (OPT30).
-            Pattern::TypePat { ty_name, binding } => {
+            Pattern::TypePat { ty, binding } => {
                 let mut current = value;
                 loop {
                     let Value::Enum { name: sc_name, variant, fields, .. } = current else {
@@ -265,7 +268,7 @@ impl Interpreter {
                     }
                     // The absent branch carries no payload, so it's the
                     // variant itself that answers, not an inner value.
-                    if ty_name == "none" {
+                    if *ty == TypeExpr::NoneType {
                         if variant == "None" {
                             return Some(HashMap::new());
                         }
@@ -278,7 +281,7 @@ impl Interpreter {
                     // "MyErr.Worse", never matched, and descended into the payload
                     // looking for another two-branch value — so the test answered
                     // "no match" for the value it was written for (#766).
-                    if let Some((enum_name, variant_name)) = ty_name.split_once('.') {
+                    if let Some((enum_name, variant_name)) = enum_variant_path(ty) {
                         if let Value::Enum { name, variant: v, fields: payload, .. } = inner {
                             if name == enum_name && v == variant_name {
                                 let mut bindings = HashMap::new();
@@ -295,7 +298,7 @@ impl Interpreter {
                             }
                         }
                     }
-                    if runtime_type_matches(inner, ty_name) {
+                    if runtime_type_matches(inner, ty) {
                         let mut bindings = HashMap::new();
                         if let Some(n) = binding {
                             bindings.insert(n.clone(), inner.clone());
@@ -574,49 +577,51 @@ fn variant_payload(fields: &[Value]) -> Value {
     }
 }
 
-fn runtime_type_matches(value: &Value, ty_name: &str) -> bool {
-    fn base_of(ty_name: &str) -> &str {
-        ty_name.split('<').next().unwrap_or(ty_name).trim()
-    }
+fn runtime_type_matches(value: &Value, ty: &TypeExpr) -> bool {
+    let head = ty.name().unwrap_or_default();
+    let bare = ty.bare_name().unwrap_or_default();
     match value {
-        Value::Bool(_) => ty_name == "bool",
-        Value::Char(_) => ty_name == "char",
-        Value::String(_) => ty_name == "string",
+        Value::Bool(_) => bare == "bool",
+        Value::Char(_) => bare == "char",
+        Value::String(_) => bare == "string",
         // `Value::Int` holds the register-width integers; 128-bit ones are
         // `Int128`/`Uint128` and match their own arms.
         Value::Int(_, _) => {
-            rask_ast::primitives::is_machine_integer(ty_name)
-                || rask_ast::primitives::INT_ALIASES.contains(&ty_name)
+            rask_ast::primitives::is_machine_integer(bare)
+                || rask_ast::primitives::INT_ALIASES.contains(&bare)
         }
-        Value::Float(_, _) => rask_ast::primitives::is_float(ty_name),
+        Value::Float(_, _) => rask_ast::primitives::is_float(bare),
         // A user type compares on its base name. The value carries `Wrap`; the
         // test can be written `Wrap<i64>`, and nothing at runtime records which
         // instantiation this one is — same reason `Vec` below only checks `Vec`.
         // `m.get("k") is Wrap<i64> as w` on a `Map<string, Wrap<i64>>` answered
         // false here while native took the branch (#871).
-        Value::Enum { name, .. } => name == base_of(ty_name),
-        Value::Struct(s) => {
-            let guard = s.lock().unwrap();
-            guard.name == base_of(ty_name)
-        }
-        // Generic containers: compare the base name only (`Vec<i32>` ->
-        // `Vec`) — the interpreter doesn't track element types at runtime,
-        // so it can't verify `<i32>` matches. rask#217 generic type patterns.
-        Value::Vec(_) => ty_name.split('<').next() == Some("Vec"),
-        // A tuple type is written `(i64, string)`, so there's no name to
-        // compare — the arity is all this can check.
-        Value::Tuple(items) => {
-            ty_name.starts_with('(')
-                && ty_name.ends_with(')')
-                && ty_name[1..ty_name.len() - 1].split(',').count() == items.len()
-        }
-        Value::Map(_) => ty_name.split('<').next() == Some("Map"),
+        Value::Enum { name, .. } => *name == head,
+        Value::Struct(s) => s.lock().unwrap().name == head,
+        // Generic containers: compare the base name only — the interpreter
+        // doesn't track element types at runtime, so it can't verify `<i32>`
+        // matches. rask#217 generic type patterns.
+        Value::Vec(_) => head == "Vec",
+        // A tuple type has no name to compare — the arity is all this can check.
+        Value::Tuple(items) => matches!(ty, TypeExpr::Tuple(elems) if elems.len() == items.len()),
+        Value::Map(_) => head == "Map",
         // Everything else answers with its own runtime type name — Duration,
         // Instant, File, Cell, Shared, TcpConnection, and the 128-bit integers.
         // A catch-all `false` here said "no" for every one of them, so
         // `r is Duration` on a `Duration or TimeError` took the else branch and
         // bound the Duration as if it were the error.
-        other => other.type_name() == ty_name.split('<').next().unwrap_or(ty_name),
+        other => other.type_name() == head,
+    }
+}
+
+/// `MyErr.Worse` as a pattern's type: the enum and the variant it names.
+fn enum_variant_path(ty: &TypeExpr) -> Option<(&str, &str)> {
+    match ty {
+        TypeExpr::Named { path, args } if args.is_empty() => match path.as_slice() {
+            [enum_name, variant] => Some((enum_name, variant)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

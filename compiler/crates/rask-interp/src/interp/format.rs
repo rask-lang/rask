@@ -3,7 +3,7 @@
 
 use rask_ast::fmt_spec::{pad, parse_spec, FormatSpec, SpecType};
 
-use crate::value::{FloatKind, Value};
+use crate::value::Value;
 
 use super::{Interpreter, RuntimeError};
 

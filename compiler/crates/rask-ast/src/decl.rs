@@ -69,19 +69,19 @@ pub struct AnnotationDecl {
 pub struct TypeAliasDecl {
     pub name: String,
     pub type_params: Vec<TypeParam>,
-    pub target: String,
+    pub target: crate::ty::TypeExpr,
     pub is_pub: bool,
     /// True for `type alias X = Y` (transparent). False for `type X = Y` (nominal).
     pub is_transparent: bool,
     /// Interfaces inherited from underlying type: `type X = Y implements Equal, Hashable`
-    pub with_interfaces: Vec<String>,
+    pub with_interfaces: Vec<crate::ty::TypeExpr>,
 }
 
 /// A top-level constant declaration.
 #[derive(Debug, Clone)]
 pub struct ConstDecl {
     pub name: String,
-    pub ty: Option<String>,
+    pub ty: Option<crate::ty::TypeExpr>,
     pub init: crate::expr::Expr,
     pub is_pub: bool,
     /// Attributes (`@comptime_quota(50000)`), stored verbatim.
@@ -133,7 +133,7 @@ pub struct ExternDecl {
     /// Parameters
     pub params: Vec<Param>,
     /// Return type (None means void)
-    pub ret_ty: Option<String>,
+    pub ret_ty: Option<crate::ty::TypeExpr>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
     /// Byte offset of the `extern` keyword when this came from the block form,
@@ -154,7 +154,7 @@ pub struct FnDecl {
     pub name: String,
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
-    pub ret_ty: Option<String>,
+    pub ret_ty: Option<crate::ty::TypeExpr>,
     pub body: Vec<Stmt>,
     pub is_pub: bool,
     pub is_private: bool,
@@ -190,7 +190,8 @@ impl FnDecl {
 pub struct Param {
     pub name: String,
     pub name_span: Span,
-    pub ty: String,
+    /// `None` when the type is left to inference (GC1).
+    pub ty: Option<crate::ty::TypeExpr>,
     pub is_take: bool,
     pub is_mutate: bool,
     /// analysis.fourth-option: this parameter's `Store` may have nodes deleted
@@ -208,12 +209,12 @@ pub struct TypeParam {
     /// True if this is a comptime parameter (e.g., `comptime N: usize`)
     pub is_comptime: bool,
     /// Type for comptime parameters (e.g., "usize" for `comptime N: usize`)
-    pub comptime_type: Option<String>,
+    pub comptime_type: Option<crate::ty::TypeExpr>,
     /// Interface bounds (for regular type parameters)
-    pub bounds: Vec<String>,
+    pub bounds: Vec<crate::ty::TypeExpr>,
     /// GT4: `interface Mul<Rhs = Self>` — what the parameter means when a bound or
     /// conformance header writes the interface bare. Only interfaces declare these.
-    pub default: Option<String>,
+    pub default: Option<crate::ty::TypeExpr>,
 }
 
 /// GT1/AT1: an interface member the conformance supplies, not a method.
@@ -223,9 +224,9 @@ pub struct TypeParam {
 pub struct AssocTypeDecl {
     pub name: String,
     /// AT5: every conformance's binding must satisfy these.
-    pub bounds: Vec<String>,
+    pub bounds: Vec<crate::ty::TypeExpr>,
     /// AT4: what a conformance that omits the binding gets.
-    pub default: Option<String>,
+    pub default: Option<crate::ty::TypeExpr>,
     pub span: Span,
 }
 
@@ -233,7 +234,7 @@ pub struct AssocTypeDecl {
 #[derive(Debug, Clone)]
 pub struct AssocTypeBinding {
     pub name: String,
-    pub ty: String,
+    pub ty: crate::ty::TypeExpr,
     pub span: Span,
 }
 
@@ -272,7 +273,7 @@ impl FieldVisibility {
 pub struct Field {
     pub name: String,
     pub name_span: Span,
-    pub ty: String,
+    pub ty: crate::ty::TypeExpr,
     pub visibility: FieldVisibility,
     /// Field annotations: `@rename("...")`, `@no_serialize`, `@default(expr)`.
     /// Stored verbatim (e.g. `rename("user_name")`), same shape as decl attrs.
@@ -444,7 +445,7 @@ pub struct EnumDecl {
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
     /// E14: Optional backing integer type (e.g., "u8", "i32")
-    pub backing_type: Option<String>,
+    pub backing_type: Option<crate::ty::TypeExpr>,
 }
 
 /// An enum variant.
@@ -479,7 +480,7 @@ pub struct InterfaceDecl {
     /// through every required signature before it's checked.
     pub type_params: Vec<TypeParam>,
     /// Super-interfaces: `interface Display: ToString, Debug`
-    pub super_interfaces: Vec<String>,
+    pub super_interfaces: Vec<crate::ty::TypeExpr>,
     pub methods: Vec<FnDecl>,
     /// AT1: associated types the conformance supplies.
     pub assoc_types: Vec<AssocTypeDecl>,
@@ -499,8 +500,8 @@ pub struct InterfaceDecl {
 pub struct ImplDecl {
     /// The one interface this block conforms to (CD1). None for a plain
     /// `extend T` block.
-    pub interface_name: Option<String>,
-    pub target_ty: String,
+    pub interface: Option<crate::ty::TypeExpr>,
+    pub target_ty: crate::ty::TypeExpr,
     pub methods: Vec<FnDecl>,
     /// Whether this is an `unsafe extend`.
     pub is_unsafe: bool,

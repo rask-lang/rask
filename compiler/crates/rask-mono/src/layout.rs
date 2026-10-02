@@ -3,6 +3,7 @@
 //! Memory layout computation - field offsets, sizes, alignments.
 
 use rask_ast::decl::Decl;
+use rask_ast::ty::TypeExpr;
 use rask_types::Type;
 use std::collections::HashMap;
 
@@ -404,10 +405,82 @@ fn is_typevar_name(name: &str) -> bool {
     }
 }
 
-/// Parse a field type string (from AST) to a Type for layout computation.
-/// Public because the interpreter parses the same strings for the same reason:
-/// a type argument written in a `reflect.fields<Pair<string>>()` call has to
-/// become the `Type` the layout pass expects (#1104).
+/// A written field type as the `Type` layout works with. Public because the
+/// interpreter reads type arguments the same way: one written in a
+/// `reflect.fields<Pair<string>>()` call has to become the `Type` the layout
+/// pass expects (#1104).
+pub fn field_type(ty: &TypeExpr) -> Type {
+    match ty {
+        TypeExpr::Unit => Type::Unit,
+        TypeExpr::Optional(inner) => Type::option(field_type(inner)),
+        TypeExpr::Result { ok, err } => Type::Result {
+            ok: Box::new(field_type(ok)),
+            err: Box::new(field_type(err)),
+        },
+        // A symbolic length (`[T; SIZE]`) has no value here — there is no const
+        // table in this pass. Keeping it a name keeps its warning rather than
+        // sizing the field at zero (#906).
+        TypeExpr::Array { elem, len } => match len.parse::<usize>() {
+            Ok(len) => Type::Array { elem: Box::new(field_type(elem)), len },
+            Err(_) => Type::UnresolvedNamed(ty.to_string()),
+        },
+        TypeExpr::Tuple(elems) => Type::Tuple(elems.iter().map(field_type).collect()),
+        TypeExpr::Func { params, ret } => Type::Fn {
+            params: params.iter().map(field_type).collect(),
+            ret: Box::new(field_type(ret)),
+        },
+        TypeExpr::RawPtr(inner) => Type::RawPtr(Box::new(field_type(inner))),
+        // Whatever a field's type is reached *through* says nothing about its
+        // size, so the last segment is the whole question: `time.Duration` and
+        // an aliased import's `h.Response` both size as the type they name.
+        TypeExpr::Named { path, args } => {
+            let name = path.last().map(String::as_str).unwrap_or_default();
+            match (name, args.as_slice()) {
+                (_, []) => primitive_or_named(name),
+                ("Option", [inner]) => Type::option(field_type(inner)),
+                ("Result", [ok, err]) => Type::Result {
+                    ok: Box::new(field_type(ok)),
+                    err: Box::new(field_type(err)),
+                },
+                _ => Type::UnresolvedGeneric {
+                    name: name.to_string(),
+                    args: args
+                        .iter()
+                        .map(|a| rask_types::GenericArg::Type(Box::new(field_type(a))))
+                        .collect(),
+                },
+            }
+        }
+        _ => Type::UnresolvedNamed(ty.to_string()),
+    }
+}
+
+fn primitive_or_named(name: &str) -> Type {
+    match name {
+        "bool" => Type::Bool,
+        "i8" => Type::I8,
+        "i16" => Type::I16,
+        "i32" => Type::I32,
+        "i64" => Type::I64,
+        "isize" => Type::isize_ty(),
+        "i128" => Type::I128,
+        "u8" => Type::U8,
+        "u16" => Type::U16,
+        "u32" => Type::U32,
+        "u64" => Type::U64,
+        "usize" => Type::usize_ty(),
+        "u128" => Type::U128,
+        "f32" => Type::F32,
+        "f64" => Type::F64,
+        "char" => Type::Char,
+        "string" => Type::String,
+        name => Type::UnresolvedNamed(name.to_string()),
+    }
+}
+
+/// TRANSITIONAL: a type spelled inside an expression's name — `Map<string,
+/// i64>.from(…)`, whose arguments the parser still folds into the identifier.
+/// Goes once expression-position type arguments are structured.
 pub fn parse_field_type(s: &str) -> Type {
     // `d: time.Duration` on a field. Left dotted it fell through to the unknown
     // name at the bottom of `type_size_align`, and the field got pointer-sized
@@ -474,7 +547,7 @@ pub fn parse_field_type(s: &str) -> Type {
     if let Some(inner) = s.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
         if !inner.trim().is_empty() {
             let elems: Vec<Type> =
-                split_type_args(inner).into_iter().map(parse_field_type).collect();
+                split_type_args_transitional(inner).into_iter().map(parse_field_type).collect();
             return match elems.len() {
                 1 => elems.into_iter().next().expect("checked"),
                 _ => Type::Tuple(elems),
@@ -505,7 +578,7 @@ pub fn parse_field_type(s: &str) -> Type {
         if let Some(close) = close {
             let params = match rest[..close].trim() {
                 "" => Vec::new(),
-                list => split_type_args(list).into_iter().map(parse_field_type).collect(),
+                list => split_type_args_transitional(list).into_iter().map(parse_field_type).collect(),
             };
             let after = rest[close + 1..].trim();
             let ret = match after.strip_prefix("->") {
@@ -531,7 +604,7 @@ pub fn parse_field_type(s: &str) -> Type {
             // string form. Without this it falls through to UnresolvedGeneric and
             // gets mis-sized as a pointer.
             if name == "Result" {
-                let parts = split_type_args(inner);
+                let parts = split_type_args_transitional(inner);
                 if parts.len() == 2 {
                     return Type::Result {
                         ok: Box::new(parse_field_type(parts[0])),
@@ -541,7 +614,7 @@ pub fn parse_field_type(s: &str) -> Type {
             }
 
             // Split comma-separated type args (respecting nested angle brackets)
-            let args: Vec<rask_types::GenericArg> = split_type_args(inner)
+            let args: Vec<rask_types::GenericArg> = split_type_args_transitional(inner)
                 .into_iter()
                 .map(|a| rask_types::GenericArg::Type(Box::new(parse_field_type(a))))
                 .collect();
@@ -577,7 +650,7 @@ pub fn parse_field_type(s: &str) -> Type {
 }
 
 /// Split comma-separated type arguments, respecting nested angle brackets.
-fn split_type_args(s: &str) -> Vec<&str> {
+fn split_type_args_transitional(s: &str) -> Vec<&str> {
     let mut result = Vec::new();
     let mut depth = 0;
     let mut start = 0;
@@ -602,6 +675,7 @@ fn split_type_args(s: &str) -> Vec<&str> {
     result
 }
 
+
 /// Build a substitution map from type param names to concrete types.
 ///
 /// Names come from PC1, not from the explicit `<T>` list: a single letter in a
@@ -620,7 +694,7 @@ fn build_subst<'a>(
     subst
 }
 
-/// Parse a field type string and apply generic substitution.
+/// A field's type with generic substitution applied.
 /// If the parsed type is an unresolved name that matches a type parameter,
 /// replace it with the concrete type from type_args.
 ///
@@ -628,10 +702,10 @@ fn build_subst<'a>(
 /// returned type is a substitution rather than what the source wrote — see
 /// `FieldLayout::is_type_param`.
 fn resolve_field_type(
-    field_ty_str: &str,
+    field_ty: &TypeExpr,
     subst: &std::collections::HashMap<&str, &Type>,
 ) -> (Type, bool) {
-    let parsed = parse_field_type(field_ty_str);
+    let parsed = field_type(field_ty);
     match &parsed {
         Type::UnresolvedNamed(name) => {
             if let Some(concrete) = subst.get(name.as_str()) {
@@ -885,7 +959,7 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
     let mut max_align = 1u32;
 
     for (decl_index, field) in union_decl.fields.iter().enumerate() {
-        let field_ty = parse_field_type(&field.ty);
+        let field_ty = field_type(&field.ty);
         let (field_size, field_align) = type_size_align(&field_ty, cache);
         max_size = max_size.max(field_size);
         max_align = max_align.max(field_align);
@@ -985,7 +1059,7 @@ fn enum_layout(
 
     // E2/E14: Determine discriminant type
     let tag_ty = if let Some(ref bt) = enum_decl.backing_type {
-        match bt.as_str() {
+        match bt.bare_name().unwrap_or_default() {
             "u8" => Type::U8,
             "u16" => Type::U16,
             "u32" => Type::U32,
@@ -1115,7 +1189,7 @@ mod tests {
                     .map(|(n, ty)| Field {
                         name: n.to_string(),
                         name_span: dummy_span(),
-                        ty: ty.to_string(),
+                        ty: rask_parser::parse_type(ty).unwrap(),
                         visibility: FieldVisibility::Package,
                         attrs: vec![],
                         default: None,
@@ -1148,7 +1222,7 @@ mod tests {
                             .map(|(i, ty)| Field {
                                 name: format!("f{}", i),
                                 name_span: dummy_span(),
-                                ty: ty.to_string(),
+                                ty: rask_parser::parse_type(ty).unwrap(),
                                 visibility: FieldVisibility::Package,
                                 attrs: vec![],
                                 default: None,
@@ -1487,7 +1561,7 @@ mod tests {
                     .map(|(n, ty)| Field {
                         name: n.to_string(),
                         name_span: dummy_span(),
-                        ty: ty.to_string(),
+                        ty: rask_parser::parse_type(ty).unwrap(),
                         visibility: FieldVisibility::Package,
                         attrs: vec![],
                         default: None,

@@ -18,6 +18,7 @@ use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, Fiel
                      CatchClause, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp,
                      WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
+use rask_ast::ty::TypeExpr;
 
 /// A 64-bit semantic hash.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -94,6 +95,73 @@ impl Hasher {
         self.feed_bytes(s.as_bytes());
     }
 
+    /// A written type, by its structure.
+    fn feed_type(&mut self, t: &TypeExpr) {
+        match t {
+            TypeExpr::Named { path, args } => {
+                self.feed_tag(1);
+                self.feed_u32(path.len() as u32);
+                for seg in path {
+                    self.feed_str(seg);
+                }
+                self.feed_types(args);
+            }
+            TypeExpr::Int(n) => {
+                self.feed_tag(2);
+                self.feed_str(n);
+            }
+            TypeExpr::Optional(inner) => {
+                self.feed_tag(3);
+                self.feed_type(inner);
+            }
+            TypeExpr::Result { ok, err } => {
+                self.feed_tag(4);
+                self.feed_type(ok);
+                self.feed_type(err);
+            }
+            TypeExpr::Union(ts) => {
+                self.feed_tag(5);
+                self.feed_types(ts);
+            }
+            TypeExpr::Tuple(ts) => {
+                self.feed_tag(6);
+                self.feed_types(ts);
+            }
+            TypeExpr::Unit => self.feed_tag(7),
+            TypeExpr::NoneType => self.feed_tag(8),
+            TypeExpr::Array { elem, len } => {
+                self.feed_tag(9);
+                self.feed_type(elem);
+                self.feed_str(len);
+            }
+            TypeExpr::FixedCount { count, elem } => {
+                self.feed_tag(10);
+                self.feed_str(count);
+                self.feed_type(elem);
+            }
+            TypeExpr::Func { params, ret } => {
+                self.feed_tag(11);
+                self.feed_types(params);
+                self.feed_type(ret);
+            }
+            TypeExpr::RawPtr(inner) => {
+                self.feed_tag(12);
+                self.feed_type(inner);
+            }
+            TypeExpr::Any(inner) => {
+                self.feed_tag(13);
+                self.feed_type(inner);
+            }
+        }
+    }
+
+    fn feed_types(&mut self, ts: &[TypeExpr]) {
+        self.feed_u32(ts.len() as u32);
+        for t in ts {
+            self.feed_type(t);
+        }
+    }
+
     fn feed_char(&mut self, c: char) {
         self.feed_u32(c as u32);
     }
@@ -146,7 +214,7 @@ impl Hasher {
                 self.feed_str(&t.name);
                 self.feed_bool(t.is_pub);
                 for st in &t.super_interfaces {
-                    self.feed_str(st);
+                    self.feed_type(st);
                 }
                 for m in &t.methods {
                     self.hash_fn_decl(m);
@@ -154,11 +222,11 @@ impl Hasher {
             }
             DeclKind::Impl(i) => {
                 self.feed_tag(5);
-                self.feed_u32(i.interface_name.is_some() as u32);
-                if let Some(tn) = &i.interface_name {
-                    self.feed_str(tn);
+                self.feed_u32(i.interface.is_some() as u32);
+                if let Some(tn) = &i.interface {
+                    self.feed_type(tn);
                 }
-                self.feed_str(&i.target_ty);
+                self.feed_type(&i.target_ty);
                 for m in &i.methods {
                     self.hash_fn_decl(m);
                 }
@@ -176,7 +244,7 @@ impl Hasher {
                 self.feed_str(&c.name);
                 self.feed_bool(c.is_pub);
                 if let Some(ty) = &c.ty {
-                    self.feed_str(ty);
+                    self.feed_type(ty);
                 }
                 self.hash_expr(&c.init);
             }
@@ -203,7 +271,7 @@ impl Hasher {
                     self.hash_param(p);
                 }
                 if let Some(rt) = &e.ret_ty {
-                    self.feed_str(rt);
+                    self.feed_type(rt);
                 }
             }
             DeclKind::Export(_) => {
@@ -215,7 +283,7 @@ impl Hasher {
             DeclKind::TypeAlias(ta) => {
                 self.feed_tag(14);
                 self.feed_str(&ta.name);
-                self.feed_str(&ta.target);
+                self.feed_type(&ta.target);
                 self.feed_bool(ta.is_pub);
             }
             DeclKind::CImport(ci) => {
@@ -259,7 +327,7 @@ impl Hasher {
         // Return type
         if let Some(rt) = &f.ret_ty {
             self.feed_bool(true);
-            self.feed_str(rt);
+            self.feed_type(rt);
         } else {
             self.feed_bool(false);
         }
@@ -316,7 +384,7 @@ impl Hasher {
         self.feed_u32(fields.len() as u32);
         for f in fields {
             self.feed_str(&f.name);
-            self.feed_str(&f.ty);
+            self.feed_type(&f.ty);
             self.feed_u8(f.visibility as u8);
         }
     }
@@ -324,7 +392,10 @@ impl Hasher {
     fn hash_param(&mut self, p: &Param) {
         // H4: Parameter names normalized
         self.feed_var(&p.name);
-        self.feed_str(&p.ty);
+        self.feed_bool(p.ty.is_some());
+        if let Some(t) = &p.ty {
+            self.feed_type(t);
+        }
         self.feed_bool(p.is_take);
         self.feed_bool(p.is_mutate);
         if let Some(d) = &p.default {
@@ -339,10 +410,10 @@ impl Hasher {
         self.feed_str(&tp.name);
         self.feed_bool(tp.is_comptime);
         if let Some(ct) = &tp.comptime_type {
-            self.feed_str(ct);
+            self.feed_type(ct);
         }
         for b in &tp.bounds {
-            self.feed_str(b);
+            self.feed_type(b);
         }
     }
 
@@ -367,7 +438,7 @@ impl Hasher {
                 self.feed_var(name);
                 if let Some(t) = ty {
                     self.feed_bool(true);
-                    self.feed_str(t);
+                    self.feed_type(t);
                 } else {
                     self.feed_bool(false);
                 }
@@ -387,7 +458,7 @@ impl Hasher {
                 self.feed_var(name);
                 if let Some(t) = ty {
                     self.feed_bool(true);
-                    self.feed_str(t);
+                    self.feed_type(t);
                 } else {
                     self.feed_bool(false);
                 }
@@ -584,6 +655,11 @@ impl Hasher {
             ExprKind::None => {
                 self.feed_tag(89);
             }
+            ExprKind::GenericName { name, type_args } => {
+                self.feed_tag(103);
+                self.feed_str(name);
+                self.feed_types(type_args);
+            }
             ExprKind::Ident(name) => {
                 self.feed_tag(46);
                 // H4: Normalize local variable references
@@ -613,7 +689,7 @@ impl Hasher {
                     self.feed_bool(true);
                     self.feed_u32(tas.len() as u32);
                     for ta in tas {
-                        self.feed_str(ta);
+                        self.feed_type(ta);
                     }
                 } else {
                     self.feed_bool(false);
@@ -661,7 +737,7 @@ impl Hasher {
                     self.feed_bool(false);
                 }
             }
-            ExprKind::IfLet { expr, pattern, then_branch, else_branch, else_binding } => {
+            ExprKind::IfLet { expr, pattern, then_branch, else_branch, else_binding: _ } => {
                 self.feed_tag(56);
                 self.hash_expr(expr);
                 self.hash_pattern(pattern);
@@ -746,9 +822,10 @@ impl Hasher {
                 }
                 self.feed_bool(*inclusive);
             }
-            ExprKind::StructLit { name, fields, spread } => {
+            ExprKind::StructLit { name, type_args, fields, spread } => {
                 self.feed_tag(64);
                 self.feed_str(name);
+                self.feed_types(type_args);
                 self.feed_u32(fields.len() as u32);
                 for fi in fields {
                     self.hash_field_init(fi);
@@ -801,7 +878,7 @@ impl Hasher {
                 }
                 if let Some(rt) = ret_ty {
                     self.feed_bool(true);
-                    self.feed_str(rt);
+                    self.feed_type(rt);
                 } else {
                     self.feed_bool(false);
                 }
@@ -810,12 +887,12 @@ impl Hasher {
             ExprKind::Cast { expr, ty } => {
                 self.feed_tag(71);
                 self.hash_expr(expr);
-                self.feed_str(ty);
+                self.feed_type(ty);
             }
             ExprKind::Convert { expr, target, kind } => {
                 self.feed_tag(101);
                 self.hash_expr(expr);
-                self.feed_str(target);
+                self.feed_type(target);
                 self.feed_tag(*kind as u8);
             }
             ExprKind::BlockCall { name, body } => {
@@ -951,9 +1028,9 @@ impl Hasher {
                 self.hash_expr(start);
                 self.hash_expr(end);
             }
-            Pattern::TypePat { ty_name, binding } => {
+            Pattern::TypePat { ty, binding } => {
                 self.feed_tag(88);
-                self.feed_str(ty_name);
+                self.feed_type(ty);
                 if let Some(name) = binding {
                     self.feed_bool(true);
                     self.feed_var(name);
@@ -983,7 +1060,7 @@ impl Hasher {
         self.feed_var(&cp.name);
         if let Some(ty) = &cp.ty {
             self.feed_bool(true);
-            self.feed_str(ty);
+            self.feed_type(ty);
         } else {
             self.feed_bool(false);
         }
@@ -1111,7 +1188,7 @@ mod tests {
             params: params.into_iter().map(|(n, ty)| Param {
                 name: n.into(),
                 name_span: sp(),
-                ty: ty.into(),
+                ty: Some(rask_ast::ty::TypeExpr::named(ty)),
                 is_take: false,
                 is_mutate: false, is_deleting: false,
                 default: None,

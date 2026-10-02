@@ -92,7 +92,7 @@ pub struct InterfaceTypeParam {
     /// GT5: what a conformance's argument must satisfy.
     pub bounds: Vec<String>,
     /// GT4: what the bare interface name means. `None` makes the argument required.
-    pub default: Option<String>,
+    pub default: Option<rask_ast::ty::TypeExpr>,
 }
 
 /// AT1/AT4/AT5: an associated type a conformance supplies.
@@ -102,7 +102,7 @@ pub struct InterfaceAssocType {
     /// AT5: what the conformance's binding must satisfy.
     pub bounds: Vec<String>,
     /// AT4: what a conformance that omits the binding gets.
-    pub default: Option<String>,
+    pub default: Option<rask_ast::ty::TypeExpr>,
 }
 
 #[derive(Debug, Clone)]
@@ -284,7 +284,7 @@ pub struct MethodSig {
     ///
     /// Empty for a method with no generic receiver, and for the derived and
     /// interface-supplied signatures, which have no header to read.
-    pub owner_patterns: Vec<String>,
+    pub owner_patterns: Vec<rask_ast::ty::TypeExpr>,
     /// The checker supplied it (EQ1, HA1, ORD1 and the rest): a signature with
     /// no body behind it, which the backends answer structurally.
     pub derived: bool,
@@ -320,7 +320,7 @@ pub struct ModuleMethodSig {
     /// Which bounded type parameter each parameter *is*, when its declared type
     /// is exactly one — `encode<T: Encode>(value: T)` gives `[Some("T")]`.
     ///
-    /// `params` can't answer this: `parse_stub_type` turns a single-letter type
+    /// `params` can't answer this: `stub_type` turns a single-letter type
     /// parameter into the `_Any` wildcard, which is what the return-type
     /// freshening runs on, so by then the name is gone. Without it a call that
     /// didn't write the type argument had nothing to check the bound against.

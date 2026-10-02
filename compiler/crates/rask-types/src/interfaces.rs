@@ -778,7 +778,7 @@ impl<'a> InterfaceChecker<'a> {
 
         let written = crate::checker::type_table::interface_ref_args(interface_ref);
         for (i, p) in type_params.iter().enumerate() {
-            let arg = written.get(i).cloned().or_else(|| p.default.clone());
+            let arg = written.get(i).cloned().or_else(|| p.default.as_ref().map(|d| d.to_string()));
             if let Some(arg) = arg {
                 if arg == "Self" {
                     map.insert(p.name.clone(), self_ty.clone());
@@ -796,9 +796,9 @@ impl<'a> InterfaceChecker<'a> {
             let bound = type_id
                 .and_then(|id| self.types.assoc_binding(id, interface_ref, &a.name))
                 .cloned()
-                .or_else(|| match a.default.as_deref() {
-                    Some("Self") => Some(self_ty.clone()),
-                    Some(d) => crate::checker::parse_type_string(d, self.types).ok(),
+                .or_else(|| match &a.default {
+                    Some(d) if d.is_name("Self") => Some(self_ty.clone()),
+                    Some(d) => crate::checker::resolve_type_expr(d, self.types).ok(),
                     None => None,
                 });
             if let Some(t) = bound {

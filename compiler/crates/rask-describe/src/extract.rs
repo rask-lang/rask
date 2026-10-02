@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Extract module description from parsed AST.
 
+use rask_ast::ty::TypeExpr;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -75,7 +76,7 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
                 constants.push(ConstantDesc {
                     name: c.name.clone(),
                     doc: c.doc.clone(),
-                    type_str: c.ty.clone(),
+                    type_str: c.ty.as_ref().map(|t| t.to_string()),
                     public: c.is_pub,
                 });
             }
@@ -100,7 +101,8 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
                     .collect();
 
                 // `extend Wrapper<T>` targets the type `Wrapper`.
-                let target = base_type_name(&imp.target_ty);
+                let target_name = imp.target_ty.name().unwrap_or_default();
+                let target = target_name.as_str();
 
                 if let Some(&idx) = struct_map.get(target) {
                     types[idx].methods.extend(methods);
@@ -146,11 +148,6 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
     }
 }
 
-/// `Wrapper<T>` names the type `Wrapper`.
-fn base_type_name(ty: &str) -> &str {
-    ty.split('<').next().unwrap_or(ty).trim()
-}
-
 fn extract_struct(s: &StructDecl, opts: &DescribeOpts) -> StructDesc {
     let fields: Vec<FieldDesc> = s
         .fields
@@ -158,7 +155,7 @@ fn extract_struct(s: &StructDecl, opts: &DescribeOpts) -> StructDesc {
         .filter(|f| opts.show_all || f.visibility.is_pub())
         .map(|f| FieldDesc {
             name: f.name.clone(),
-            type_str: f.ty.clone(),
+            type_str: f.ty.to_string(),
             public: f.visibility.is_pub(),
             doc: f.doc.clone(),
         })
@@ -206,7 +203,7 @@ fn extract_enum(e: &EnumDecl, opts: &DescribeOpts) -> EnumDesc {
                     } else {
                         f.name.clone()
                     },
-                    type_str: f.ty.clone(),
+                    type_str: f.ty.to_string(),
                     public: true,
                     doc: f.doc.clone(),
                 })
@@ -274,12 +271,12 @@ fn extract_function(f: &FnDecl) -> FunctionDesc {
 
         params.push(ParamDesc {
             name: p.name.clone(),
-            type_str: p.ty.clone(),
+            type_str: p.ty.as_ref().map(|t| t.to_string()).unwrap_or_default(),
             mode: mode.to_string(),
         });
     }
 
-    let returns = parse_return_type(f.ret_ty.as_deref());
+    let returns = parse_return_type(f.ret_ty.as_ref());
 
     let type_params = extract_type_params(&f.type_params);
     let attrs = if f.attrs.is_empty() {
@@ -320,7 +317,7 @@ fn extract_extern(e: &ExternDecl) -> ExternDesc {
             };
             ParamDesc {
                 name: p.name.clone(),
-                type_str: p.ty.clone(),
+                type_str: p.ty.as_ref().map(|t| t.to_string()).unwrap_or_default(),
                 mode: mode.to_string(),
             }
         })
@@ -331,7 +328,7 @@ fn extract_extern(e: &ExternDecl) -> ExternDesc {
         name: e.name.clone(),
         doc: e.doc.clone(),
         params,
-        returns: parse_return_type(e.ret_ty.as_deref()),
+        returns: parse_return_type(e.ret_ty.as_ref()),
     }
 }
 
@@ -340,75 +337,21 @@ fn extract_extern(e: &ExternDecl) -> ExternDesc {
 /// "Result<T, E>" → { ok: "T", err: "E" }  (parser normalizes "T or E" to this)
 /// "T" → { ok: "T" }
 /// None → { ok: "()" }
-pub fn parse_return_type(ret_ty: Option<&str>) -> ReturnsDesc {
+pub fn parse_return_type(ret_ty: Option<&TypeExpr>) -> ReturnsDesc {
     match ret_ty {
         None => ReturnsDesc {
             ok: "()".to_string(),
             err: None,
         },
-        Some(s) => {
-            // Parser stores "T or E" as "Result<T, E>" — check both forms
-            if let Some((ok, err)) = split_result_type(s) {
-                ReturnsDesc {
-                    ok: ok.trim().to_string(),
-                    err: Some(err.trim().to_string()),
-                }
-            } else if let Some((ok, err)) = split_result_generic(s) {
-                ReturnsDesc {
-                    ok: ok.trim().to_string(),
-                    err: Some(err.trim().to_string()),
-                }
-            } else {
-                ReturnsDesc {
-                    ok: s.trim().to_string(),
-                    err: None,
-                }
-            }
-        }
+        Some(TypeExpr::Result { ok, err }) => ReturnsDesc {
+            ok: ok.to_string(),
+            err: Some(err.to_string()),
+        },
+        Some(t) => ReturnsDesc {
+            ok: t.to_string(),
+            err: None,
+        },
     }
-}
-
-/// Split "T or E" respecting angle bracket nesting.
-fn split_result_type(s: &str) -> Option<(String, String)> {
-    let mut depth = 0;
-    let bytes = s.as_bytes();
-    let or_pat = b" or ";
-
-    for i in 0..bytes.len() {
-        match bytes[i] {
-            b'<' | b'(' => depth += 1,
-            b'>' | b')' => depth -= 1,
-            _ => {}
-        }
-        if depth == 0 && i + 4 <= bytes.len() && &bytes[i..i + 4] == or_pat {
-            return Some((s[..i].to_string(), s[i + 4..].to_string()));
-        }
-    }
-    None
-}
-
-/// Split "Result<T, E>" into (T, E).
-fn split_result_generic(s: &str) -> Option<(String, String)> {
-    let s = s.trim();
-    if !s.starts_with("Result<") || !s.ends_with('>') {
-        return None;
-    }
-    let inner = &s[7..s.len() - 1]; // Strip "Result<" and ">"
-    // Split on ", " at depth 0
-    let mut depth = 0;
-    for (i, b) in inner.bytes().enumerate() {
-        match b {
-            b'<' | b'(' => depth += 1,
-            b'>' | b')' => depth -= 1,
-            b',' if depth == 0 => {
-                let ok = inner[..i].trim();
-                let err = inner[i + 1..].trim();
-                return Some((ok.to_string(), err.to_string()));
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 fn extract_type_params(tps: &[TypeParam]) -> Option<Vec<String>> {

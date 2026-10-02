@@ -401,7 +401,6 @@ pub struct RackData {
     pub slots: Vec<Option<Arc<Mutex<StructData>>>>,
     pub free_list: Vec<u32>,
     pub len: usize,
-    pub type_param: Option<String>,
     /// Incoming edges per node: who points at me. This is what makes `delete`
     /// cost O(in-degree) instead of a scan.
     /// Keyed by slot so registration and unlinking are both O(1) — a hub with
@@ -425,16 +424,11 @@ impl RackData {
             slots: Vec::new(),
             free_list: Vec::new(),
             len: 0,
-            type_param: None,
             incoming: HashMap::new(),
             slot_of: HashMap::new(),
             origin_id: None,
             origin: HashMap::new(),
         }
-    }
-
-    pub fn with_type_param(type_param: Option<String>) -> Self {
-        Self { type_param, ..Self::new() }
     }
 
     /// Insert a node, returning its slot index.
@@ -545,6 +539,38 @@ pub enum TypeConstructorKind {
     Mutex,
     Atomic,
     Ordering,
+}
+
+impl TypeConstructorKind {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "Vec" => Self::Vec,
+            "Map" => Self::Map,
+            "string" => Self::String,
+            "char" => Self::Char,
+            "Rack" => Self::Rack,
+            "Cell" => Self::Cell,
+            "Channel" => Self::Channel,
+            "Shared" => Self::Shared,
+            "Mutex" => Self::Mutex,
+            "Atomic" => Self::Atomic,
+            "Ordering" => Self::Ordering,
+            _ => return None,
+        })
+    }
+}
+
+impl Value {
+    /// What a type's name evaluates to. One answer however the name got into
+    /// scope: an import binding `Channel` used to get a plain `Type` while the
+    /// unimported spelling got the constructor, so `Channel.buffered(4)` broke
+    /// as soon as the program wrote `import async.{Channel}`.
+    pub fn for_type_name(name: &str) -> Value {
+        match TypeConstructorKind::from_name(name) {
+            Some(kind) => Value::TypeConstructor(kind),
+            None => Value::Type(name.to_string()),
+        }
+    }
 }
 
 /// Module kinds for stdlib modules.
@@ -1051,10 +1077,7 @@ pub enum Value {
     /// `(1, "x")`, and "is this a tuple?" had no answer at all (#1063).
     Tuple(Arc<Vec<Value>>),
     /// Type constructor (for static method calls like Vec.new())
-    TypeConstructor {
-        kind: TypeConstructorKind,
-        type_param: Option<String>,
-    },
+    TypeConstructor(TypeConstructorKind),
     /// Enum variant constructor (e.g., Option.Some before calling with args)
     EnumConstructor {
         enum_name: String,
@@ -1384,7 +1407,7 @@ impl Value {
             Value::Vec(_) => "Vec",
             Value::Tuple(_) => "tuple",
             Value::Wide(_) => "Wide",
-            Value::TypeConstructor { .. } => "type",
+            Value::TypeConstructor(_) => "type",
             Value::EnumConstructor { .. } => "enum constructor",
             Value::Module(_) => "module",
             Value::Package(_) => "package",
@@ -1417,9 +1440,12 @@ impl Value {
         }
     }
 
-    /// Produce the default value for a type string (DF4).
-    pub fn default_for_type(ty: &str) -> Value {
-        match ty {
+    /// Produce the default value for a written type (DF4).
+    pub fn default_for_type(ty: &rask_ast::ty::TypeExpr) -> Value {
+        if *ty == rask_ast::ty::TypeExpr::Unit {
+            return Value::Unit;
+        }
+        match ty.bare_name().unwrap_or_default() {
             "i8" | "i16" | "i32" | "i64" | "int" | "isize" |
             "u8" => Value::Int(0, IntKind::U8),
             "u16" => Value::Int(0, IntKind::U16),
@@ -1432,7 +1458,6 @@ impl Value {
             "bool" => Value::Bool(false),
             "char" => Value::Char('\0'),
             "string" => Value::String(Arc::new(Mutex::new(String::new()))),
-            "()" => Value::Unit,
             _ => Value::Unit,
         }
     }
@@ -1653,7 +1678,7 @@ impl fmt::Display for Value {
                 write!(f, ")")
             }
             Value::Wide(_) => write!(f, "<Wide plan>"),
-            Value::TypeConstructor { kind, type_param } => {
+            Value::TypeConstructor(kind) => {
                 let base_name = match kind {
                     TypeConstructorKind::Vec => "Vec",
                     TypeConstructorKind::Map => "Map",
@@ -1667,11 +1692,7 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Atomic => "Atomic",
                     TypeConstructorKind::Ordering => "Ordering",
                 };
-                if let Some(param) = type_param {
-                    write!(f, "{}<{}>", base_name, param)
-                } else {
-                    write!(f, "{}", base_name)
-                }
+                write!(f, "{}", base_name)
             },
             Value::EnumConstructor {
                 enum_name,

@@ -6,8 +6,8 @@
 //! wants the whole tree with one borrow and a rewriter wants each node on its
 //! own, and because a rewriter needs more of the tree: a name in Rask source
 //! appears as an expression (`Cat { … }`, `greet(c)`), inside a pattern
-//! (`match c { Colour.Red => … }`) and inside a type — and a type at this
-//! stage is a `String`, so nothing else can find one.
+//! (`match c { Colour.Red => … }`) and inside a type, which nothing else walks
+//! at this stage.
 //!
 //! Hence three callbacks rather than one. Merging a dependency's declarations
 //! renamed each declaration and not the references to it, which is why a
@@ -25,6 +25,7 @@
 use crate::decl::{Decl, DeclKind, FnDecl};
 use crate::expr::{Expr, ExprKind, Pattern, SelectArmKind, StringSegment};
 use crate::stmt::{Stmt, StmtKind};
+use crate::ty::TypeExpr;
 
 /// What a rewriter is handed. Implement the parts that matter; the rest are
 /// no-ops.
@@ -34,7 +35,7 @@ pub trait Rewrite {
     /// Every pattern, outermost first.
     fn pattern(&mut self, _p: &mut Pattern) {}
     /// Every type as it was written — `Vec<Cat>`, `Cat?`, `i64 or Cat`.
-    fn ty(&mut self, _t: &mut String) {}
+    fn ty(&mut self, _t: &mut TypeExpr) {}
 }
 
 /// Rewrite a whole program.
@@ -85,7 +86,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
             }
         }
         DeclKind::Impl(i) => {
-            if let Some(t) = &mut i.interface_name {
+            if let Some(t) = &mut i.interface {
                 r.ty(t);
             }
             r.ty(&mut i.target_ty);
@@ -122,7 +123,9 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
         }
         DeclKind::Extern(e) => {
             for p in &mut e.params {
-                r.ty(&mut p.ty);
+                if let Some(t) = &mut p.ty {
+                    r.ty(t);
+                }
             }
             if let Some(t) = &mut e.ret_ty {
                 r.ty(t);
@@ -145,7 +148,9 @@ fn rewrite_fn(f: &mut FnDecl, r: &mut impl Rewrite) {
         }
     }
     for p in &mut f.params {
-        r.ty(&mut p.ty);
+        if let Some(t) = &mut p.ty {
+            r.ty(t);
+        }
         if let Some(d) = &mut p.default {
             rewrite_expr(d, r);
         }
@@ -229,6 +234,11 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
         | ExprKind::Null
         | ExprKind::None
         | ExprKind::Ident(_) => {}
+        ExprKind::GenericName { type_args, .. } => {
+            for t in type_args {
+                r.ty(t);
+            }
+        }
 
         ExprKind::StringInterp(segments) => {
             for seg in segments {
@@ -251,8 +261,11 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
                 rewrite_expr(&mut a.expr, r);
             }
         }
-        ExprKind::MethodCall { object, args, .. } => {
+        ExprKind::MethodCall { object, args, type_args, .. } => {
             rewrite_expr(object, r);
+            for t in type_args.iter_mut().flatten() {
+                r.ty(t);
+            }
             for a in args {
                 rewrite_expr(&mut a.expr, r);
             }
@@ -344,7 +357,10 @@ pub fn rewrite_expr(expr: &mut Expr, r: &mut impl Rewrite) {
             }
         }
 
-        ExprKind::StructLit { fields, spread, .. } => {
+        ExprKind::StructLit { type_args, fields, spread, .. } => {
+            for t in type_args {
+                r.ty(t);
+            }
             for field in fields {
                 rewrite_expr(&mut field.value, r);
             }
@@ -438,6 +454,6 @@ pub fn rewrite_pattern(pattern: &mut Pattern, r: &mut impl Rewrite) {
             rewrite_expr(start, r);
             rewrite_expr(end, r);
         }
-        Pattern::TypePat { ty_name, .. } => r.ty(ty_name),
+        Pattern::TypePat { ty, .. } => r.ty(ty),
     }
 }

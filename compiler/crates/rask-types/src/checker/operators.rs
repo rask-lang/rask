@@ -335,12 +335,13 @@ impl TypeChecker {
         args: &[Type],
     ) -> PairOutcome {
         // OR4: the conformance's method is filed under the applied argument.
-        let filed = rask_ast::operators::conformance_method_name(
-            &self.types.type_name(self_id),
-            Some(applied),
-            method,
-        )
-        .unwrap_or_else(|| method.to_string());
+        let self_name = self.types.type_name(self_id);
+        let self_base = self_name.split('<').next().unwrap_or(&self_name).trim();
+        let applied_base = applied.split('<').next().unwrap_or(applied).trim();
+        let rhs = super::type_table::interface_ref_args(applied).into_iter().next();
+        let rhs = rhs.as_deref().map(|r| r.split('<').next().unwrap_or(r).trim());
+        let filed = rask_ast::operators::filed_operator_method(self_base, applied_base, rhs, method)
+            .unwrap_or_else(|| method.to_string());
         let Some(sig) = self.conformance_method(self_id, &filed, args) else {
             // The conformance is declared and its method isn't there: the block
             // is already being reported for the missing method.

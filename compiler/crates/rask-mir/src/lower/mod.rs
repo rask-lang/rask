@@ -25,6 +25,7 @@ use rask_ast::{
 };
 use rask_mono::{StructLayout, EnumLayout};
 use rask_types::Type;
+use rask_ast::ty::TypeExpr;
 use std::collections::HashMap;
 
 /// Typed expression result from lowering
@@ -115,10 +116,8 @@ fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> V
     params
         .iter()
         .map(|p| {
-            if !p.is_mutate || p.ty.is_empty() {
-                return None;
-            }
-            let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
+            let written = p.ty.as_ref().filter(|_| p.is_mutate)?;
+            let ty = ctx.resolve_type_expr(written);
             if crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty) {
                 Some(ty)
             } else {
@@ -134,10 +133,10 @@ fn aggregate_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -
     params
         .iter()
         .map(|p| {
-            if !p.is_mutate || p.ty.is_empty() {
+            let Some(written) = p.ty.as_ref().filter(|_| p.is_mutate) else {
                 return false;
-            }
-            let ty = ctx.resolve_type_str(p.ty.trim_start_matches('&'));
+            };
+            let ty = ctx.resolve_type_expr(written);
             crate::lower::stmt::mutate_param_by_pointer(&ty)
                 && !crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty)
         })
@@ -163,12 +162,12 @@ struct FuncSig {
     /// from once the checker's node types are out of reach (a closure body, an
     /// instantiated copy) — the declared return type is the remaining record.
     ret_vec_elem: Option<MirType>,
-    /// Declared parameter type strings, positionally. Used to type an
+    /// Declared parameter types, positionally. Used to type an
     /// unannotated closure argument's parameters: `|req| { … }` passed to a
     /// `func(Request) -> Response` parameter has nothing else to go on, and
     /// defaulting them to i64 made field access and method dispatch inside the
     /// closure body operate on the wrong type.
-    param_ty_strs: Vec<Option<String>>,
+    param_tys: Vec<Option<TypeExpr>>,
 }
 
 /// Loop context for break/continue
@@ -286,7 +285,7 @@ mod empty {
     empty_of!(strings, std::collections::HashSet<String>);
     empty_of!(comptime_globals, HashMap<String, ComptimeGlobalMeta>);
     empty_of!(node_names, HashMap<NodeId, String>);
-    empty_of!(str_map, HashMap<String, String>);
+    empty_of!(nominal_map, HashMap<String, Type>);
 }
 
 impl<'a> MirContext<'a> {
@@ -341,7 +340,7 @@ impl<'a> MirContext<'a> {
             interface_methods: HashMap::new(),
             call_rewrites: empty::node_names(),
             resource_types: empty::strings(),
-            nominal_underlying: empty::str_map(),
+            nominal_underlying: empty::nominal_map(),
             comptime_interp: None,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             shared_elem_conflicts: std::cell::RefCell::new(Default::default()),
@@ -391,7 +390,7 @@ impl<'a> MirContext<'a> {
         self
     }
 
-    pub fn with_nominal_underlying(mut self, map: &'a HashMap<String, String>) -> Self {
+    pub fn with_nominal_underlying(mut self, map: &'a HashMap<String, Type>) -> Self {
         self.nominal_underlying = map;
         self
     }
@@ -502,7 +501,7 @@ pub struct MirContext<'a> {
     /// distinct identity, so it's transparent in MIR. Without this the name
     /// resolved to a bare `Ptr` with nothing allocated behind it, and
     /// construction stored through an uninitialised pointer (#445).
-    pub nominal_underlying: &'a HashMap<String, String>,
+    pub nominal_underlying: &'a HashMap<String, Type>,
     /// Module-level const name → the MIR type its global slot holds.
     ///
     /// Filled by `compute_const_slot_types` before any function is lowered.
@@ -530,9 +529,9 @@ impl<'a> MirContext<'a> {
     /// — `func f() { }`. A missing annotation on `func f() { return 41 }` used to
     /// land there too, so the signature said void while the body returned an i64
     /// and Cranelift rejected the function (#571).
-    pub fn fn_ret_ty(&self, name: &str, declared: Option<&str>) -> MirType {
+    pub fn fn_ret_ty(&self, name: &str, declared: Option<&TypeExpr>) -> MirType {
         if let Some(s) = declared {
-            return self.resolve_type_str(s);
+            return self.resolve_type_expr(s);
         }
         match self.inferred_fn_ret.get(name) {
             Some(ty) => self.type_to_mir(ty),
@@ -569,7 +568,7 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_RESOURCE_TYPES: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
-        static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, String>> =
+        static EMPTY_NOMINAL: std::sync::LazyLock<HashMap<String, Type>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_TYPE_DEFS: std::sync::LazyLock<rask_types::TypeTable> =
             std::sync::LazyLock::new(Default::default);
@@ -726,29 +725,6 @@ impl<'a> MirContext<'a> {
         Some(self.type_to_mir(arg))
     }
 
-    /// `find_struct`, falling back to the name with any `<…>` stripped.
-    ///
-    /// A generic type's layout is stored under its base name, so a name written
-    /// with type arguments finds nothing. At a struct literal that meant
-    /// `One<i64> { only: 9 }` got no layout, its temp was typed `ptr` instead of
-    /// the struct, and the field store wrote through an uninitialised pointer.
-    /// `One { only: 9 }` and `let x: One<i64> = One { … }` both went through the
-    /// base name and worked.
-    ///
-    /// Only for names in literal position. Type *strings* reach `find_struct`
-    /// too, and there a stripped `Vec<Ctr>` would match whatever else is called
-    /// `Vec`.
-    pub fn find_struct_written(&self, name: &str) -> Option<(u32, &StructLayout)> {
-        if let Some(found) = self.find_struct(name) {
-            return Some(found);
-        }
-        let base = name.split('<').next()?.trim();
-        if base == name {
-            return None;
-        }
-        self.find_struct(base)
-    }
-
     /// The layout of one *instantiation* of a generic type, when mono emitted a
     /// separate one.
     ///
@@ -892,6 +868,182 @@ impl<'a> MirContext<'a> {
             .find(|(_, e)| e.name == name)
             .map(|(i, e)| (i as u32, e))
     }
+    /// The MIR type of a written type.
+    pub fn resolve_type_expr(&self, ty: &TypeExpr) -> MirType {
+        match ty {
+            TypeExpr::Unit | TypeExpr::NoneType => MirType::Void,
+            TypeExpr::Optional(inner) => option_of(self.payload_of_expr(inner)),
+            TypeExpr::Result { ok, err } => MirType::Result {
+                ok: Box::new(self.payload_of_expr(ok)),
+                err: Box::new(self.payload_of_expr(err)),
+            },
+            // Same order the checker canonicalizes to — by member name. A
+            // union's member index is what says which member is present, so the
+            // frame that writes one and the frame that reads it have to agree
+            // (#1103).
+            TypeExpr::Union(members) => {
+                let mut members: Vec<&TypeExpr> = members.iter().collect();
+                members.sort_by_key(|m| m.to_string());
+                MirType::Union(members.into_iter().map(|m| self.resolve_type_expr(m)).collect())
+            }
+            TypeExpr::Tuple(elems) => {
+                MirType::Tuple(elems.iter().map(|e| self.resolve_type_expr(e)).collect())
+            }
+            // A literal length, then a module-level `const` naming one — read
+            // from the checker's table so the two can't disagree (#906). Anything
+            // still symbolic keeps 0, which preserves the element type.
+            TypeExpr::Array { elem, len } => MirType::Array {
+                elem: Box::new(self.resolve_type_expr(elem)),
+                len: len
+                    .parse::<u32>()
+                    .ok()
+                    .or_else(|| self.type_defs.const_length(len).and_then(|n| u32::try_from(n).ok()))
+                    .unwrap_or(0),
+            },
+            // A closure is a pointer to its block, and saying so in the type is
+            // what lets a carrier holding one give it back (#1253).
+            TypeExpr::Func { .. } => MirType::FuncPtr(crate::types::SignatureId(0)),
+            TypeExpr::Any(interface) => {
+                MirType::InterfaceObject { interface_name: interface.to_string() }
+            }
+            TypeExpr::RawPtr(_) | TypeExpr::FixedCount { .. } | TypeExpr::Int(_) => MirType::Ptr,
+            TypeExpr::Named { path, args } if args.is_empty() => self.resolve_type_name(&path.join(".")),
+            TypeExpr::Named { path, args } => self.resolve_generic_expr(&path.join("."), args),
+        }
+    }
+
+    /// `Name<args>` as written.
+    fn resolve_generic_expr(&self, head: &str, args: &[TypeExpr]) -> MirType {
+        match (head, args) {
+            ("Result", [ok, err]) => MirType::Result {
+                ok: Box::new(self.payload_of_expr(ok)),
+                err: Box::new(self.payload_of_expr(err)),
+            },
+            ("Option", [inner]) => option_of(self.payload_of_expr(inner)),
+            ("Link", [node]) => match self.resolve_type_expr(node) {
+                MirType::Struct(sid) => MirType::Link(sid),
+                _ => MirType::Ptr,
+            },
+            // `Heap<T>` is a block address, always — that is what makes it a
+            // type rather than a fact about a binding. The payload keeps its
+            // container kind, since `drop` has to free what it points at.
+            ("Heap", [inner]) => MirType::Heap(Box::new(self.payload_of_expr(inner))),
+            ("Vec" | "Map" | "Rack" | "Channel" | "Sender" | "Receiver" | "Shared", _) => MirType::Ptr,
+            _ => {
+                // A generic instantiation whose type argument is an inline
+                // aggregate has a layout of its own, not found under the base
+                // name: `first$Big(o: One<Big>)` was given the shared 8-byte
+                // layout while its caller passed 24 bytes (#781).
+                let arg_tys: Vec<Type> = args.iter().map(rask_mono::field_type).collect();
+                if let Some(name) = rask_mono::generic_instance_name(head, &arg_tys, self.type_names) {
+                    if let Some((idx, sl)) = self.find_struct(&name) {
+                        return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
+                    }
+                    if let Some((idx, el)) = self.find_enum(&name) {
+                        return MirType::Enum(EnumLayoutId::new(idx, el.size, el.align));
+                    }
+                }
+                self.resolve_type_name(head)
+            }
+        }
+    }
+
+    /// A generic the checker left as a name with arguments: `One<Big>` in an
+    /// instantiated copy, `Channel<i64>` before its name resolved.
+    fn resolve_unresolved_generic(&self, name: &str, args: &[rask_types::GenericArg]) -> MirType {
+        match name {
+            "Vec" | "Map" | "Rack" | "Channel" | "Sender" | "Receiver" | "Shared" => MirType::Ptr,
+            _ => {
+                // An instantiation whose argument is an inline aggregate has a
+                // layout of its own, not found under the base name (#781).
+                let arg_tys: Option<Vec<Type>> = args
+                    .iter()
+                    .map(|a| match a {
+                        rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                        rask_types::GenericArg::ConstUsize(_) => None,
+                    })
+                    .collect();
+                if let Some(instance) = arg_tys
+                    .and_then(|tys| rask_mono::generic_instance_name(name, &tys, self.type_names))
+                {
+                    if let Some((idx, sl)) = self.find_struct(&instance) {
+                        return MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
+                    }
+                    if let Some((idx, el)) = self.find_enum(&instance) {
+                        return MirType::Enum(EnumLayoutId::new(idx, el.size, el.align));
+                    }
+                }
+                self.resolve_type_name(name)
+            }
+        }
+    }
+
+    /// A wrapper's payload as written: same as `resolve_type_expr`, except a
+    /// container keeps what it is instead of collapsing to a bare pointer.
+    fn payload_of_expr(&self, ty: &TypeExpr) -> MirType {
+        let mir = self.resolve_type_expr(ty);
+        if mir != MirType::Ptr {
+            return mir;
+        }
+        match ty.name().as_deref() {
+            Some("Vec") => MirType::Container(crate::ContainerKind::Vec),
+            Some("Map") => MirType::Container(crate::ContainerKind::Map),
+            Some("Rack") => MirType::Container(crate::ContainerKind::Rack),
+            _ => mir,
+        }
+    }
+
+    /// The MIR type a single type name stands for.
+    pub fn resolve_type_name(&self, name: &str) -> MirType {
+        // IM3: a transparent alias is its target, so the layout to find is the
+        // target's: `let d: Span = …` under `import time.Duration as Span` was
+        // matching `stdlib/builtins.rk`'s own `Span` layout by name (#923, #975).
+        if let Some(target) = self.type_defs.alias_target(name) {
+            if target != name {
+                return self.resolve_type_str(target);
+            }
+        }
+        match name {
+            "i8" => MirType::I8,
+            "i16" => MirType::I16,
+            "i32" => MirType::I32,
+            "i64" => MirType::I64,
+            "i128" => MirType::I128,
+            "isize" => MirType::isize_ty(),
+            "u8" => MirType::U8,
+            "u16" => MirType::U16,
+            "u32" => MirType::U32,
+            "u64" => MirType::U64,
+            "u128" => MirType::U128,
+            "usize" => MirType::usize_ty(),
+            "f32" => MirType::F32,
+            "f64" => MirType::F64,
+            "bool" => MirType::Bool,
+            "char" => MirType::Char,
+            "string" => MirType::String,
+            // std.strings/V1: a view is a `RaskStr` that shares the source's
+            // heap buffer — same 16 bytes, same copy semantics, read-only API.
+            "StringView" => MirType::String,
+            // Bare `Error` is `any Error` written short (#1095). BI2 reserves the
+            // name, so nothing else reaches here under it.
+            "Error" => MirType::InterfaceObject { interface_name: "Error".to_string() },
+            "Vec" | "Map" | "Rack" => MirType::Ptr,
+            _ => {
+                // A nominal newtype has no layout — it is whatever it wraps.
+                if let Some(underlying) = self.nominal_underlying.get(name) {
+                    return self.type_to_mir(underlying);
+                }
+                if let Some((idx, sl)) = self.find_struct(name) {
+                    self.struct_or_handle(name, idx, sl)
+                } else if let Some((idx, el)) = self.find_enum(name) {
+                    MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
+                } else {
+                    self.module_qualified_mir_type(name)
+                }
+            }
+        }
+    }
+
 
     /// Resolve a type string to MirType, looking up struct/enum names in layouts.
     pub fn resolve_type_str(&self, s: &str) -> MirType {
@@ -1085,9 +1237,7 @@ impl<'a> MirContext<'a> {
                 }
                 // A nominal newtype has no layout — it is whatever it wraps.
                 if let Some(underlying) = self.nominal_underlying.get(name) {
-                    if underlying != name {
-                        return self.resolve_type_str(underlying);
-                    }
+                    return self.type_to_mir(underlying);
                 }
                 if let Some((idx, sl)) = self.find_struct(name) {
                     self.struct_or_handle(name, idx, sl)
@@ -1336,7 +1486,7 @@ impl<'a> MirContext<'a> {
             Type::Never => MirType::Void,
             Type::InterfaceObject { interface_name } => MirType::InterfaceObject { interface_name: interface_name.clone() },
             // Named types — look up in struct/enum layouts by name
-            Type::UnresolvedNamed(name) => self.resolve_type_str(name),
+            Type::UnresolvedNamed(name) => self.resolve_type_name(name),
             // Handle<T> → packed i64 handle
             // Link<T> → the node's address; Rack<T> → the rack's. The checker
             // hands these over as `Generic` once the name resolves and as
@@ -1366,7 +1516,7 @@ impl<'a> MirContext<'a> {
             // Resolved named types — look up via type_names, then struct/enum layouts
             Type::Named(id) => {
                 if let Some(name) = self.type_names.get(id) {
-                    self.resolve_type_str(name)
+                    self.resolve_type_name(name)
                 } else {
                     MirType::Ptr
                 }
@@ -1376,15 +1526,12 @@ impl<'a> MirContext<'a> {
                     return instance;
                 }
                 if let Some(name) = self.type_names.get(base) {
-                    self.resolve_type_str(name)
+                    self.resolve_type_name(name)
                 } else {
                     MirType::Ptr
                 }
             }
-            Type::UnresolvedGeneric { .. } => {
-                let type_str = format!("{}", ty);
-                self.resolve_type_str(&type_str)
-            }
+            Type::UnresolvedGeneric { name, args } => self.resolve_unresolved_generic(name, args),
             Type::RawPtr(_) => MirType::Ptr,
             // A closure is a pointer to its block, and saying so in the type is
             // what lets a carrier holding one give it back. `MirType::Ptr` is
@@ -1647,15 +1794,6 @@ impl<'a> MirContext<'a> {
         if let Type::Fn { ret, .. } = ty {
             return Some(self.type_to_mir(ret));
         }
-        // A function type the checker never resolved past its spelling. A
-        // `Map`'s value type and an optional's payload both arrive this way, so
-        // `if m.get(k)? as f` bound a name nothing knew was callable and `f(2)`
-        // lowered as a call to a function called `f` (#1151).
-        if let Type::UnresolvedNamed(name) = ty {
-            if let Some(ret) = fn_type_ret_str(name) {
-                return Some(self.resolve_type_str(ret));
-            }
-        }
         let head = Self::type_prefix(ty, type_names)?;
         match head.split('<').next() {
             Some("Sequence") | Some("SequenceMut") => Some(MirType::Void),
@@ -1673,9 +1811,9 @@ pub(crate) struct LocalMeta {
     /// Stdlib type prefix (e.g. "Random", "File", "Vec").
     /// Fallback when the type checker leaves types unresolved.
     pub type_prefix: Option<String>,
-    /// Full type annotation string (e.g. "Shared<Database>").
+    /// The full written type of a generic one (e.g. `Shared<Database>`).
     /// Resolves generic inner types when type checker info is incomplete.
-    pub full_type: Option<String>,
+    pub full_type: Option<TypeExpr>,
     /// Collection element MirType (e.g. the T in Vec<T>).
     /// Propagates element types through for-in iteration after mono.
     pub elem_type: Option<MirType>,
@@ -1821,7 +1959,7 @@ pub struct MirLowerer<'a> {
     /// itself, which then called itself forever — the binary died on a stack
     /// overflow before reaching main's first line (#463). Materializing at the
     /// use site keeps them out of functions that never mention them.
-    pending_module_consts: HashMap<String, (Expr, Option<String>)>,
+    pending_module_consts: HashMap<String, (Expr, Option<TypeExpr>)>,
     /// Module-level consts that own a global slot, and the type stored there.
     /// A reference loads from the slot instead of re-running the initializer.
     const_slots: HashMap<String, MirType>,
@@ -1833,7 +1971,7 @@ pub struct MirLowerer<'a> {
     /// nodes of a stdlib body — `Headers { entries: Map.new() }` had no type on
     /// that call, so the map was built with 8-byte slots and a `string` value lost
     /// half of its 16 bytes.
-    field_type_hint: Option<String>,
+    field_type_hint: Option<Type>,
     /// Element type of a Vec built by a fused `collect()`, keyed by the local
     /// holding it. The fused loop is the only place that type exists — the
     /// checker leaves `collect()`'s element an inference variable — and a binding
@@ -1928,15 +2066,16 @@ impl<'a> MirLowerer<'a> {
     /// initializer is the only place it's concrete.
     pub(crate) fn record_module_const_meta(&mut self, name: &str, init: &Expr) {
         let ExprKind::MethodCall { object, args, .. } = &init.kind else { return };
-        let ExprKind::Ident(type_name) = &object.kind else { return };
+        let Some(type_name) = object.name() else { return };
         let Some(prefix) = type_prefix_from_str(type_name) else { return };
+        self.meta_mut(name).type_prefix = Some(prefix.clone());
         if let Some(inner) = args.first().and_then(|a| {
             self.ctx.lookup_raw_type(a.expr.id)
                 .and_then(|t| MirContext::type_prefix(t, self.ctx.type_names))
         }) {
-            self.meta_mut(name).full_type = Some(format!("{}<{}>", prefix, inner));
+            self.meta_mut(name).full_type =
+                Some(TypeExpr::generic(prefix, vec![TypeExpr::named(inner)]));
         }
-        self.meta_mut(name).type_prefix = Some(prefix);
     }
 
     /// Bring a module-level const into scope the first time it's named in this
@@ -2224,7 +2363,7 @@ impl<'a> MirLowerer<'a> {
     /// an inference variable), then the checker's type, which is the only source
     /// for a field or any other non-`Ident` object.
     pub(crate) fn index_object_base(&self, object: &Expr) -> Option<String> {
-        let prefix = if let ExprKind::Ident(var_name) = &object.kind {
+        let prefix = if let Some(var_name) = object.name() {
             self.meta(var_name).and_then(|m| m.type_prefix.clone())
         } else {
             None
@@ -2390,7 +2529,7 @@ impl<'a> MirLowerer<'a> {
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
-                param_ty_strs: Vec::new(),
+                param_tys: Vec::new(),
             },
         );
     }
@@ -2492,7 +2631,7 @@ impl<'a> MirLowerer<'a> {
             if let Some(elem) = self.ctx.comptime_globals.get(name)
                 .and_then(|g| g.elem_type.as_deref())
             {
-                return Some(self.ctx.resolve_type_str(elem));
+                return Some(self.ctx.resolve_type_name(elem));
             }
         }
         // A view over a collection holds what the collection holds, so ask the
@@ -2627,9 +2766,10 @@ impl<'a> MirLowerer<'a> {
             }
             ExprKind::Ident(name) => {
                 let full = self.meta(name).and_then(|m| m.full_type.clone())?;
-                let inner = full.strip_prefix("Map<")?.strip_suffix('>')?;
-                let comma = find_top_level_comma(inner)?;
-                Some(self.ctx.resolve_type_str(inner[comma + 1..].trim()))
+                match (full.name().as_deref(), full.args()) {
+                    (Some("Map"), [_, value]) => Some(self.ctx.resolve_type_expr(value)),
+                    _ => None,
+                }
             }
             _ => None,
         }
@@ -2663,7 +2803,7 @@ impl<'a> MirLowerer<'a> {
         }
         let Some(inner) = inner else { return Ok(None) };
         let (op, _) = self.lower_expr(inner)?;
-        Ok(Some((op, self.ctx.resolve_type_str(name))))
+        Ok(Some((op, self.ctx.resolve_type_name(name))))
     }
 
     /// Method-dispatch prefix for a Struct/Enum MIR type — its layout name.
@@ -3017,18 +3157,18 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
-            if let ExprKind::Ident(callee) = &func.kind {
-                self.consume_take_arguments(&callee.clone(), args);
+            if let Some(callee) = func.name() {
+                self.consume_take_arguments(&callee, args);
             }
             return;
         }
         if let ExprKind::MethodCall { object, method, args, .. } = &expr.kind {
-            if let ExprKind::Ident(receiver_name) = &object.kind {
+            if let Some(receiver_name) = object.name() {
                 if let Some(prefix) = self.meta(receiver_name).and_then(|m| m.type_prefix.clone()) {
                     self.consume_take_arguments(&format!("{}_{}", prefix, method), args);
                 }
             }
-            if let ExprKind::Ident(receiver_name) = &object.kind {
+            if let Some(receiver_name) = object.name() {
                 // Check if this receiver has a resource_id (registered by an ensure)
                 let resource_id = self.meta(receiver_name)
                     .and_then(|m| m.resource_id);
@@ -3111,8 +3251,8 @@ impl<'a> MirLowerer<'a> {
             if let StmtKind::Expr(expr) = &first.kind {
                 match &expr.kind {
                     ExprKind::MethodCall { object, .. } => {
-                        if let ExprKind::Ident(name) = &object.kind {
-                            return Some(name.clone());
+                        if let Some(name) = object.name() {
+                            return Some(name.to_string());
                         }
                     }
                     ExprKind::Call { func, args, .. } => {
@@ -3699,7 +3839,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         let thunk_fn = thunk_builder.finish();
-        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
+        self.func_sigs.insert(thunk_name.clone(), FuncSig { ret_ty: MirType::Void, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
         self.synthesized_functions.push(thunk_fn);
 
         let captures = caps
@@ -3966,44 +4106,44 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
-        let ret_ty = ctx.fn_ret_ty(&fn_decl.name, fn_decl.ret_ty.as_deref());
+        let ret_ty = ctx.fn_ret_ty(&fn_decl.name, fn_decl.ret_ty.as_ref());
 
         // Build function signature table from all declarations
         let mut func_sigs = HashMap::new();
         for d in all_decls {
             match &d.kind {
                 DeclKind::Fn(f) => {
-                    let sig_ret = ctx.fn_ret_ty(&f.name, f.ret_ty.as_deref());
+                    let sig_ret = ctx.fn_ret_ty(&f.name, f.ret_ty.as_ref());
                     func_sigs.insert(f.name.clone(), FuncSig {
                         ret_ty: sig_ret,
                         scalar_mutate_params: scalar_mutate_params(&f.params, ctx),
                         aggregate_mutate_params: aggregate_mutate_params(&f.params, ctx),
-                        ret_vec_elem: vec_elem_of_type_str(f.ret_ty.as_deref(), ctx),
-                        param_ty_strs: f.params.iter().map(|p| Some(p.ty.clone())).collect(),
+                        ret_vec_elem: vec_elem_of_type(f.ret_ty.as_ref(), ctx),
+                        param_tys: f.params.iter().map(|p| p.ty.clone()).collect(),
                     });
                 }
                 DeclKind::Extern(ext) => {
                     let sig_ret = ext
                         .ret_ty
-                        .as_deref()
-                        .map(|s| ctx.resolve_type_str(s))
+                        .as_ref()
+                        .map(|t| ctx.resolve_type_expr(t))
                         .unwrap_or(MirType::Void);
-                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
+                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
                 }
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
-                        let qualified = format!("{}_{}", impl_decl.target_ty, m.name);
+                        let qualified = format!("{}_{}", impl_decl.target_ty.name().unwrap_or_default(), m.name);
                         let sig_ret = m
                             .ret_ty
-                            .as_deref()
-                            .map(|s| ctx.resolve_type_str(s))
+                            .as_ref()
+                            .map(|t| ctx.resolve_type_expr(t))
                             .unwrap_or(MirType::Void);
                         func_sigs.insert(qualified, FuncSig {
                             ret_ty: sig_ret,
                             scalar_mutate_params: scalar_mutate_params(&m.params, ctx),
                             aggregate_mutate_params: aggregate_mutate_params(&m.params, ctx),
-                            ret_vec_elem: vec_elem_of_type_str(m.ret_ty.as_deref(), ctx),
-                            param_ty_strs: m.params.iter().map(|p| Some(p.ty.clone())).collect(),
+                            ret_vec_elem: vec_elem_of_type(m.ret_ty.as_ref(), ctx),
+                            param_tys: m.params.iter().map(|p| p.ty.clone()).collect(),
                         });
                     }
                 }
@@ -4015,11 +4155,11 @@ impl<'a> MirLowerer<'a> {
         // Derived from stub files via rask_stdlib::mir_metadata.
         for meta in rask_stdlib::mir_metadata::method_metas() {
             func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
-                ret_ty: ctx.resolve_type_str(&meta.ret_ty),
+                ret_ty: ctx.resolve_type_expr(&meta.ret_ty),
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
-                param_ty_strs: Vec::new(),
+                param_tys: Vec::new(),
             });
         }
 
@@ -4064,31 +4204,20 @@ impl<'a> MirLowerer<'a> {
             match &d.kind {
                 DeclKind::Impl(impl_decl) => {
                     for m in &impl_decl.methods {
+                        // Filed under the target's name, which is what a call
+                        // site dispatches through: `extend Handle<T>` is
+                        // `Handle_join` (#1216).
+                        let qualified =
+                            format!("{}_{}", impl_decl.target_ty.name().unwrap_or_default(), m.name);
                         if m.params.first().map_or(false, |p| p.name == "self" && p.is_take) {
-                            take_self_methods
-                                .insert(format!("{}_{}", impl_decl.target_ty, m.name));
-                            // `extend Handle<T>` gives a target of
-                            // `Handle<T>`, and what a call site dispatches
-                            // through is `Handle`. Without the base name
-                            // `join` wasn't known to consume its receiver, so a
-                            // registered `ensure h.detach()` ran after it and
-                            // detached a handle that was already gone (#1216).
-                            if let Some(base) = impl_decl.target_ty.split('<').next() {
-                                take_self_methods.insert(format!("{}_{}", base, m.name));
-                            }
+                            take_self_methods.insert(qualified.clone());
                         }
                         let takes = take_positions(&m.params);
                         if !takes.is_empty() {
-                            take_param_positions
-                                .insert(format!("{}_{}", impl_decl.target_ty, m.name), takes.clone());
-                            if let Some(base) = impl_decl.target_ty.split('<').next() {
-                                take_param_positions
-                                    .insert(format!("{}_{}", base, m.name), takes);
-                            }
+                            take_param_positions.insert(qualified.clone(), takes);
                         }
                         if method_mutates_self(m, ctx) {
-                            mutate_self_methods
-                                .insert(format!("{}_{}", impl_decl.target_ty, m.name));
+                            mutate_self_methods.insert(qualified);
                         }
                     }
                 }
@@ -4183,25 +4312,24 @@ impl<'a> MirLowerer<'a> {
         // underscore in it reads as a different type, which is what made a
         // dependency's `Helper_liba_describe` look up a `Helper` (#1129). Mono
         // writes the type in wherever it knows it, so this sees the rest.
-        let self_type_name: Option<String> = fn_decl.params.iter()
-            .any(|p| p.ty == "Self")
+        let self_type: Option<TypeExpr> = fn_decl.params.iter()
+            .any(|p| p.ty.as_ref().is_some_and(|t| t.is_name("Self")))
             .then(|| {
                 // Extract the type name prefix from the qualified function name
-                lowerer.parent_name.split('_').next().map(|s| s.to_string())
+                lowerer.parent_name.split('_').next().map(TypeExpr::named)
             })
             .flatten();
 
         // Add parameters
         for param in &fn_decl.params {
-            let param_ty_str = if param.ty == "Self" {
-                self_type_name.as_deref().unwrap_or(&param.ty)
-            } else {
-                &param.ty
+            let written = match &param.ty {
+                Some(t) if t.is_name("Self") => self_type.as_ref().or(param.ty.as_ref()),
+                other => other.as_ref(),
             };
-            // Rask has no reference types at the backend, so a `&T` annotation
-            // lowers as its pointee.
-            let param_ty_str = param_ty_str.trim_start_matches('&');
-            let param_ty = ctx.resolve_type_str(param_ty_str);
+            let param_ty = match written {
+                Some(t) => ctx.resolve_type_expr(t),
+                None => MirType::Void,
+            };
             // #270: a scalar `mutate` param is passed by pointer so the callee can
             // write back through it. Register the param local as a pointer; reads
             // load and writes store through it, keyed by the recorded scalar type.
@@ -4211,11 +4339,11 @@ impl<'a> MirLowerer<'a> {
             let local_id = lowerer.builder.add_param(param.name.clone(), local_ty.clone());
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));
             // Set type prefix for parameters so method calls qualify correctly.
-            // mir_type_name handles Struct/Enum/String/primitives; type_prefix_from_str
-            // catches Ptr types like Vec<T>, Map<K,V> from the annotation string.
+            // mir_type_name handles Struct/Enum/String/primitives; the written
+            // type catches Ptr types like Vec<T>, Map<K,V>.
             {
                 let prefix = lowerer.mir_type_name(&param_ty)
-                    .or_else(|| type_prefix_from_str(param_ty_str));
+                    .or_else(|| written.and_then(type_prefix_of));
                 let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
                 if param.is_mutate {
                     meta.assigns_through = true;
@@ -4226,44 +4354,37 @@ impl<'a> MirLowerer<'a> {
                 if let Some(p) = prefix {
                     meta.type_prefix = Some(p);
                 }
-                // Store full annotation for generic types (Shared<T>, Channel<T>, etc.)
-                if param_ty_str.contains('<') {
-                    meta.full_type = Some(param_ty_str.to_string());
-                    // Track collection element types so for-loop iteration resolves correctly.
-                    // e.g., Vec<Inline> → collection_elem_types["children"] = Struct(Inline)
-                    if let Some(elem_str) = param_ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
-                        let elem_mir = ctx.resolve_type_str(elem_str);
-                        meta.elem_type = Some(elem_mir);
-                    }
+                // The full written type for generic ones (Shared<T>, Channel<T>, etc.)
+                if let Some(written) = written.filter(|t| !t.args().is_empty()) {
+                    meta.full_type = Some(written.clone());
+                    // Collection element types, so for-loop iteration resolves:
+                    // Vec<Inline> → Struct(Inline).
+                    //
                     // A `Sequence<T>` parameter carries its element type the
                     // same way, and this is the only place it survives
                     // monomorphization: the instantiated copy has fresh node
                     // ids, so the checker's record is gone, but mono did
-                    // substitute the declared string — `Sequence<(K, V)>`
+                    // substitute the declared type — `Sequence<(K, V)>`
                     // arrives here as `Sequence<(i32, i32)>`. Without it
                     // `for (k, v) in self` inside `Sequence.to_map` had no
                     // element type and fell back to a machine word (#1046).
-                    for head in ["Sequence<", "SequenceMut<"] {
-                        if let Some(elem_str) = param_ty_str.strip_prefix(head).and_then(|s| s.strip_suffix('>')) {
-                            let elem_mir = ctx.resolve_type_str(elem_str);
-                            meta.elem_type = Some(elem_mir);
-                        }
+                    if let (Some("Vec" | "Sequence" | "SequenceMut"), [elem]) =
+                        (written.name().as_deref(), written.args())
+                    {
+                        meta.elem_type = Some(ctx.resolve_type_expr(elem));
                     }
                 }
             }
 
-            // Function-type params (|args| -> ret) are closures passed as arguments.
-            // Register them so call sites emit ClosureCall instead of Call.
-            // Parser normalizes |T| -> R to "func(T) -> R", so check both forms.
-            if MirContext::is_callable_ty_str(param_ty_str) {
+            // Function-type params are closures passed as arguments. Register
+            // them so call sites emit ClosureCall instead of Call.
+            if let Some(callable) = written.filter(|t| is_callable_type(t)) {
                 lowerer.closure_locals.insert(param.name.clone());
-                let ret_ty = if let Some(arrow_pos) = param_ty_str.rfind("-> ") {
-                    let ret_str = param_ty_str[arrow_pos + 3..].trim();
-                    ctx.resolve_type_str(ret_str)
-                } else {
-                    MirType::Void
+                let ret_ty = match callable {
+                    TypeExpr::Func { ret, .. } => ctx.resolve_type_expr(ret),
+                    _ => MirType::Void,
                 };
-                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
+                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
             }
         }
 
@@ -4275,7 +4396,7 @@ impl<'a> MirLowerer<'a> {
                 if lowerer.locals.contains_key(&c.name) {
                     continue;
                 }
-                if let Some((op, ty)) = lowerer.try_eval_const_init(&c.init, c.ty.as_deref()) {
+                if let Some((op, ty)) = lowerer.try_eval_const_init(&c.init, c.ty.as_ref()) {
                     let local_id = lowerer.builder.alloc_local(c.name.clone(), ty.clone());
                     lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: local_id,
@@ -4429,11 +4550,11 @@ impl<'a> MirLowerer<'a> {
 
     /// Evaluate a module-level constant initializer to a MIR constant.
     /// Only handles simple literals; complex expressions fall through.
-    fn try_eval_const_init(&self, expr: &Expr, ty_hint: Option<&str>) -> Option<(MirOperand, MirType)> {
+    fn try_eval_const_init(&self, expr: &Expr, ty_hint: Option<&TypeExpr>) -> Option<(MirOperand, MirType)> {
         match &expr.kind {
             ExprKind::Int(val, suffix) => {
                 let ty = if let Some(hint) = ty_hint {
-                    self.ctx.resolve_type_str(hint)
+                    self.ctx.resolve_type_expr(hint)
                 } else {
                     match suffix {
                         Some(rask_ast::token::IntSuffix::I8) => MirType::I8,
@@ -4459,7 +4580,7 @@ impl<'a> MirLowerer<'a> {
             }
             ExprKind::Float(val, _) => {
                 let ty = if let Some(hint) = ty_hint {
-                    self.ctx.resolve_type_str(hint)
+                    self.ctx.resolve_type_expr(hint)
                 } else {
                     MirType::F64
                 };
@@ -4540,8 +4661,8 @@ impl<'a> MirLowerer<'a> {
                 "bytes" => return Some(MirType::U8),
                 _ => {}
             }
-            if let ExprKind::Ident(name) = &object.kind {
-                match (name.as_str(), method.as_str()) {
+            if let Some(name) = object.name() {
+                match (name, method.as_str()) {
                     ("cli", "args") | ("fs", "read_lines") => return Some(MirType::String),
                     ("fs", "read_bytes") => return Some(MirType::U8),
                     _ => {}
@@ -4809,8 +4930,8 @@ impl<'a> MirLowerer<'a> {
                     .unwrap_or_else(|| self.variant_tag(name))
             }
             Pattern::Ident(_) => 0,
-            Pattern::TypePat { ty_name, .. } => {
-                if self.pattern_is_err_side(ty_name, val_ty) { 1 } else { 0 }
+            Pattern::TypePat { ty, .. } => {
+                if self.pattern_is_err_side(&type_pat_name(ty), val_ty) { 1 } else { 0 }
             }
             Pattern::Constructor { name, .. } => self
                 .variant_tag_in_scrutinee(name, val_ty)
@@ -5320,7 +5441,8 @@ impl<'a> MirLowerer<'a> {
             // only caller (WhileLet) already routed control flow via
             // `pattern_tag_in_type_context` and passes the ok payload type, so
             // bind that directly — no case guess needed.
-            Pattern::TypePat { ty_name, binding: Some(name) } => {
+            Pattern::TypePat { ty, binding: Some(name) } => {
+                let ty_name = &type_pat_name(ty);
                 // ER23 at variant granularity: `r is MyErr.Worse as w` binds the
                 // *variant's* payload, not the whole error. The test is already
                 // two-layer — err tag, then the variant tag — so all that's needed
@@ -5629,7 +5751,7 @@ impl<'a> MirLowerer<'a> {
             // Literals — no free variables
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(..)
             | ExprKind::StringInterp(..)
-            | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::Null | ExprKind::None => {}
+            | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::Null | ExprKind::None | ExprKind::GenericName { .. } => {}
         }
     }
 
@@ -5811,15 +5933,15 @@ pub(crate) fn fn_type_ret_str(ty: &str) -> Option<&str> {
     Some(rest.strip_prefix("->")?.trim())
 }
 
-/// Element type of a declared `Vec<T>` return type, e.g. `"Vec<SeedSpec>"` →
+/// Element type of a declared `Vec<T>` return type: `Vec<SeedSpec>` →
 /// `Struct(SeedSpec)`. `None` for anything that isn't a Vec.
-fn vec_elem_of_type_str(ret_ty: Option<&str>, ctx: &MirContext) -> Option<MirType> {
-    let inner = ret_ty?
-        .trim()
-        .strip_prefix("Vec<")?
-        .strip_suffix('>')?
-        .trim();
-    Some(ctx.resolve_type_str(inner))
+fn vec_elem_of_type(ret_ty: Option<&TypeExpr>, ctx: &MirContext) -> Option<MirType> {
+    match ret_ty? {
+        TypeExpr::Named { path, args } if path.len() == 1 && path[0] == "Vec" && args.len() == 1 => {
+            Some(ctx.resolve_type_expr(&args[0]))
+        }
+        _ => None,
+    }
 }
 
 /// Is `name` one of the integer primitives (as spelled in source)?
@@ -6043,7 +6165,7 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
         // handles, which is what `StringView` needed a hard-coded exception for
         // (#1025).
         let Some(ctx) = ctx else { return None };
-        return Some(ctx.resolve_type_str(&meta.ret_ty));
+        return Some(ctx.resolve_type_expr(&meta.ret_ty));
     }
 
     // f64 methods aren't stub-declared — they come from FLOAT_METHODS, which
@@ -6316,6 +6438,34 @@ pub fn type_prefix_from_str(s: &str) -> Option<String> {
     }
 }
 
+/// `type_prefix_from_str` for a written type: the name methods are filed
+/// under. `time.Instant` → `Instant`, `Vec<i64>` → `Vec`; `None` for a
+/// primitive.
+pub fn type_prefix_of(ty: &TypeExpr) -> Option<String> {
+    let name = ty.last_segment()?;
+    if rask_ast::primitives::is_builtin_scalar_or_string(name) {
+        return None;
+    }
+    name.starts_with(char::is_uppercase).then(|| name.to_string())
+}
+
+/// A function type, or a sequence — what a call through a binding drives.
+pub(crate) fn is_callable_type(ty: &TypeExpr) -> bool {
+    matches!(ty, TypeExpr::Func { .. })
+        || matches!(ty.name().as_deref(), Some("Sequence" | "SequenceMut"))
+}
+
+/// The name a type pattern tests against: `none`, `MyErr`, `MyErr.Worse`,
+/// `Refused` for `Refused<i64>` — the layouts it is compared with carry no
+/// arguments.
+pub(crate) fn type_pat_name(ty: &TypeExpr) -> String {
+    match ty {
+        TypeExpr::NoneType => "none".to_string(),
+        TypeExpr::Named { path, .. } => path.join("."),
+        other => other.to_string(),
+    }
+}
+
 /// Determine result type for a binary operation.
 /// Comparison ops return Bool, arithmetic returns the operand type.
 fn binop_result_type(op: &crate::operand::BinOp, operand_ty: &MirType) -> MirType {
@@ -6532,7 +6682,7 @@ mod tests {
             kind: StmtKind::Mut {
                 name: name.to_string(),
                 name_span: sp(),
-                ty: ty.map(|s| s.to_string()),
+                ty: ty.and_then(rask_parser::parse_type),
                 init,
             },
             span: sp(),
@@ -6545,7 +6695,7 @@ mod tests {
             kind: StmtKind::Let {
                 name: name.to_string(),
                 name_span: sp(),
-                ty: ty.map(|s| s.to_string()),
+                ty: ty.and_then(rask_parser::parse_type),
                 init,
             },
             span: sp(),
@@ -6638,13 +6788,13 @@ mod tests {
                     .map(|(n, ty)| Param {
                         name: n.to_string(),
                         name_span: sp(),
-                        ty: ty.to_string(),
+                        ty: rask_parser::parse_type(ty),
                         is_take: false,
                         is_mutate: false, is_deleting: false,
                         default: None,
                     })
                     .collect(),
-                ret_ty: ret_ty.map(|s| s.to_string()),
+                ret_ty: ret_ty.and_then(rask_parser::parse_type),
                 body,
                 is_pub: false,
                 is_private: false,
@@ -6987,25 +7137,23 @@ mod tests {
     // ═══════════════════════════════════════════════════════════
 
     #[test]
-    fn lower_parse_type_str_coverage() {
+    fn resolve_type_name_coverage() {
         let node_types = HashMap::new();
         let ctx = MirContext::empty_with_map(&node_types);
-        assert_eq!(ctx.resolve_type_str("i8"), MirType::I8);
-        assert_eq!(ctx.resolve_type_str("i16"), MirType::I16);
-        assert_eq!(ctx.resolve_type_str("i32"), MirType::I32);
-        assert_eq!(ctx.resolve_type_str("i64"), MirType::I64);
-        assert_eq!(ctx.resolve_type_str("u8"), MirType::U8);
-        assert_eq!(ctx.resolve_type_str("u16"), MirType::U16);
-        assert_eq!(ctx.resolve_type_str("u32"), MirType::U32);
-        assert_eq!(ctx.resolve_type_str("u64"), MirType::U64);
-        assert_eq!(ctx.resolve_type_str("f32"), MirType::F32);
-        assert_eq!(ctx.resolve_type_str("f64"), MirType::F64);
-        assert_eq!(ctx.resolve_type_str("bool"), MirType::Bool);
-        assert_eq!(ctx.resolve_type_str("char"), MirType::Char);
-        assert_eq!(ctx.resolve_type_str("string"), MirType::String);
-        assert_eq!(ctx.resolve_type_str("()"), MirType::Void);
-        assert_eq!(ctx.resolve_type_str(""), MirType::Void);
-        assert_eq!(ctx.resolve_type_str("SomeStruct"), MirType::Ptr);
+        assert_eq!(ctx.resolve_type_name("i8"), MirType::I8);
+        assert_eq!(ctx.resolve_type_name("i16"), MirType::I16);
+        assert_eq!(ctx.resolve_type_name("i32"), MirType::I32);
+        assert_eq!(ctx.resolve_type_name("i64"), MirType::I64);
+        assert_eq!(ctx.resolve_type_name("u8"), MirType::U8);
+        assert_eq!(ctx.resolve_type_name("u16"), MirType::U16);
+        assert_eq!(ctx.resolve_type_name("u32"), MirType::U32);
+        assert_eq!(ctx.resolve_type_name("u64"), MirType::U64);
+        assert_eq!(ctx.resolve_type_name("f32"), MirType::F32);
+        assert_eq!(ctx.resolve_type_name("f64"), MirType::F64);
+        assert_eq!(ctx.resolve_type_name("bool"), MirType::Bool);
+        assert_eq!(ctx.resolve_type_name("char"), MirType::Char);
+        assert_eq!(ctx.resolve_type_name("string"), MirType::String);
+        assert_eq!(ctx.resolve_type_name("SomeStruct"), MirType::Ptr);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -7261,7 +7409,7 @@ mod tests {
                 id: NodeId(600),
                 kind: ExprKind::Cast {
                     expr: Box::new(ident_expr("x")),
-                    ty: "i64".to_string(),
+                    ty: rask_ast::ty::TypeExpr::named("i64"),
                 },
                 span: sp(),
             })),

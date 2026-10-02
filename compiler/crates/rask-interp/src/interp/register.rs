@@ -1,23 +1,15 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Declaration registration, test runners, and benchmark runners.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FieldVisibility, FnDecl, TestDecl, TypeAliasDecl, Variant, Field};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FieldVisibility, FnDecl, TestDecl, Variant, Field};
 use rask_ast::stmt::Stmt;
 use rask_ast::stmt::StmtKind;
 use rask_ast::Span;
+use rask_ast::ty::TypeExpr;
 
-use crate::value::{BuiltinKind, ModuleKind, TypeConstructorKind, Value};
+use crate::value::{BuiltinKind, ModuleKind, Value};
 
 use super::{Interpreter, RegisteredProgram, RuntimeError, TestResult, BenchmarkResult};
-
-/// Strip generic type parameters from a type name.
-/// "Box<T>" → "Box", "SpscRingBuffer<T, N>" → "SpscRingBuffer", "Point" → "Point"
-pub(crate) fn strip_generics(name: &str) -> &str {
-    match name.find('<') {
-        Some(pos) => &name[..pos],
-        None => name,
-    }
-}
 
 /// Free functions from `stdlib/async.rk` that are callable unqualified.
 /// `spawn { … }` is its own expression form; `spawn(closure)` arrives here as an
@@ -50,7 +42,7 @@ impl Interpreter {
             }
             // Any exported type: `import http.Response`, `import time.Instant`.
             _ if module.exports_type(member) => {
-                self.env.define(alias.to_string(), Value::Type(member.to_string()));
+                self.env.define(alias.to_string(), Value::for_type_name(member));
             }
             _ => {
                 // Unknown member - ignore
@@ -61,7 +53,7 @@ impl Interpreter {
     /// Register companion types for glob imports (`import module.*`).
     fn register_glob_companions(env: &mut crate::env::Environment, module: ModuleKind) {
         for name in module.exported_types() {
-            env.define(name.to_string(), Value::Type(name.to_string()));
+            env.define(name.to_string(), Value::for_type_name(name));
         }
     }
 
@@ -134,16 +126,11 @@ impl Interpreter {
                     if f.attrs.iter().any(|a| a == "test") {
                         test_fns.push(f.clone());
                     }
-                    let fn_name = strip_generics(&f.name).to_string();
+                    let fn_name = f.name.clone();
                     self.functions.insert(fn_name, f.clone());
                 }
                 DeclKind::Enum(e) => {
-                    // The parser keeps the parameter list in the name, so a
-                    // generic enum arrives as "Wrap<T>" while every lookup asks
-                    // for "Wrap" — `Wrap.One(2)` answered "undefined variable
-                    // `Wrap`" on the interpreter and worked natively. Structs
-                    // and extend blocks already strip it here.
-                    let base_name = strip_generics(&e.name).to_string();
+                    let base_name = e.name.clone();
                     self.enums.insert(base_name.clone(), e.clone());
                     // Register enum methods (e.g., @message-generated message())
                     if !e.methods.is_empty() {
@@ -154,13 +141,13 @@ impl Interpreter {
                     }
                 }
                 DeclKind::Impl(impl_decl) => {
-                    let base_name = strip_generics(&impl_decl.target_ty).to_string();
+                    let base_name = impl_decl.target_ty.name().unwrap_or_default();
                     // XC5: where another package declares the same method on
                     // this type, the package goes in the key — otherwise the
                     // second block read overwrites the first and one library
                     // runs the other's body.
                     let suffix = self.conformance_disambiguation.get(&decl.id).cloned();
-                    let header = rask_types::extend_target_args(&impl_decl.target_ty);
+                    let header = impl_decl.target_ty.args().to_vec();
                     if !header.is_empty() {
                         for method in &impl_decl.methods {
                             self.extend_header_patterns.insert(
@@ -177,7 +164,7 @@ impl Interpreter {
                         // whichever block was registered last.
                         let name = rask_ast::operators::conformance_method_name(
                             &impl_decl.target_ty,
-                            impl_decl.interface_name.as_deref(),
+                            impl_decl.interface.as_ref(),
                             &method.name,
                         )
                         .unwrap_or_else(|| method.name.clone());
@@ -238,7 +225,7 @@ impl Interpreter {
                     }
                 }
                 DeclKind::Struct(s) => {
-                    let base_name = strip_generics(&s.name).to_string();
+                    let base_name = s.name.clone();
                     // Register @binary struct metadata
                     if s.attrs.iter().any(|a| a == "binary") {
                         if let Some(meta) = super::binary::BinaryStructMeta::from_decl(&s.name, &s.fields) {
@@ -287,8 +274,9 @@ impl Interpreter {
                     if a.is_transparent {
                         // The same type under another spelling, so a static call
                         // through it has to reach the target's methods (#998).
-                        self.transparent_aliases
-                            .insert(a.name.clone(), a.target.clone());
+                        if let Some(target) = a.target.name() {
+                            self.transparent_aliases.insert(a.name.clone(), target);
+                        }
                     } else {
                         // Nominal type: register constructor so `UserId(42)` works
                         self.env.define(
@@ -398,7 +386,7 @@ impl Interpreter {
                         fields: vec![Field {
                             name: "value".to_string(),
                             name_span: Span::new(0, 0),
-                            ty: "T".to_string(),
+                            ty: TypeExpr::named("T"),
                             visibility: FieldVisibility::Package,
                             attrs: vec![],
                             default: None,
@@ -434,7 +422,7 @@ impl Interpreter {
                         fields: vec![Field {
                             name: "value".to_string(),
                             name_span: Span::new(0, 0),
-                            ty: "T".to_string(),
+                            ty: TypeExpr::named("T"),
                             visibility: FieldVisibility::Package,
                             attrs: vec![],
                             default: None,
@@ -449,7 +437,7 @@ impl Interpreter {
                         fields: vec![Field {
                             name: "error".to_string(),
                             name_span: Span::new(0, 0),
-                            ty: "E".to_string(),
+                            ty: TypeExpr::named("E"),
                             visibility: FieldVisibility::Package,
                             attrs: vec![],
                             default: None,

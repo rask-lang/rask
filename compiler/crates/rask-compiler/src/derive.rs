@@ -5,6 +5,7 @@
 //! hash, clone), this pass generates actual AST function bodies so they
 //! compile through the normal pipeline (mono → MIR → codegen).
 
+use rask_ast::ty::TypeExpr;
 use rask_ast::decl::{Decl, DeclKind, FnDecl, ImplDecl, Param};
 use rask_ast::expr::{BinOp, Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
@@ -54,7 +55,7 @@ pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
 
                 // Check for user-provided compare
                 let has_user_compare = decls.iter().any(|d| match &d.kind {
-                    DeclKind::Impl(imp) if imp.target_ty == *name => {
+                    DeclKind::Impl(imp) if imp.target_ty.name().as_deref() == Some(name.as_str()) => {
                         imp.methods.iter().any(|m| m.name == "compare")
                     }
                     _ => false,
@@ -66,8 +67,8 @@ pub fn generate_derived_methods(decls: &mut Vec<Decl>, typed: &TypedProgram) {
                         new_impls.push(Decl {
                             id: NodeId(0),
                             kind: DeclKind::Impl(ImplDecl {
-                                interface_name: None,
-                                target_ty: name.clone(),
+                                interface: None,
+                                target_ty: TypeExpr::named(name.as_str()),
                                 methods: vec![fn_decl],
                                 is_unsafe: false,
                                 is_pub: false,
@@ -171,7 +172,7 @@ fn gen_struct_compare(
             Param {
                 name: "self".to_string(),
                 name_span: DUMMY,
-                ty: type_name.to_string(),
+                ty: Some(TypeExpr::named(type_name)),
                 is_take: false,
                 is_mutate: false, is_deleting: false,
                 default: None,
@@ -179,13 +180,13 @@ fn gen_struct_compare(
             Param {
                 name: "other".to_string(),
                 name_span: DUMMY,
-                ty: type_name.to_string(),
+                ty: Some(TypeExpr::named(type_name)),
                 is_take: false,
                 is_mutate: false, is_deleting: false,
                 default: None,
             },
         ],
-        ret_ty: Some("Ordering".to_string()),
+        ret_ty: Some(TypeExpr::named("Ordering")),
         body,
         is_pub: false,
         is_private: false,

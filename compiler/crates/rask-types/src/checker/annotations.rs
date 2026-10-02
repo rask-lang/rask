@@ -8,6 +8,7 @@
 
 use rask_ast::decl::{AnnotationDecl, Decl, DeclKind};
 use rask_ast::Span;
+use rask_ast::ty::TypeExpr;
 use std::collections::HashMap;
 
 use super::errors::TypeError;
@@ -48,15 +49,15 @@ const RESERVED: &[&str] = &[
 /// a constant the backends splice — reading one back materializes it exactly
 /// as a string literal in source does. What's excluded is anything whose value
 /// can't be written as a literal at all.
-fn const_representable(ty: &str) -> bool {
-    let ty = ty.trim();
-    if ty.starts_with('[') {
-        return true; // fixed array; element type checked at attachment
+fn const_representable(ty: &TypeExpr) -> bool {
+    match ty {
+        // fixed array; element type checked at attachment
+        TypeExpr::Array { .. } | TypeExpr::FixedCount { .. } => true,
+        // primitives, string, and names assumed to be enums
+        TypeExpr::Named { args, .. } => args.is_empty(),
+        // containers, generics, function types, optionals, unions
+        _ => false,
     }
-    if ty.contains('<') || ty.contains("func(") || ty.contains('?') || ty.contains('|') {
-        return false; // containers, generics, function types, optionals, unions
-    }
-    true // primitives, string, and names assumed to be enums
 }
 
 fn int_type(ty: &str) -> bool {
@@ -107,14 +108,17 @@ fn classify(value: &str) -> Lit {
     Lit::Other
 }
 
-fn lit_matches(lit: Lit, ty: &str) -> bool {
-    let ty = ty.trim();
+fn lit_matches(lit: Lit, written: &TypeExpr) -> bool {
+    if lit == Lit::Array {
+        return matches!(written, TypeExpr::Array { .. } | TypeExpr::FixedCount { .. });
+    }
+    let Some(ty) = written.bare_name() else { return lit == Lit::Path };
     match lit {
         Lit::Int => int_type(ty) || ty == "f32" || ty == "f64",
         Lit::Float => ty == "f32" || ty == "f64",
         Lit::Str => ty == "string",
         Lit::Bool => ty == "bool",
-        Lit::Array => ty.starts_with('['),
+        Lit::Array => false,
         // Enum variants and consts: no type table lookup yet, accept.
         Lit::Path => !int_type(ty) && !matches!(ty, "f32" | "f64" | "bool" | "string"),
         Lit::Other => false,
@@ -254,10 +258,9 @@ impl TypeChecker {
     /// Not folded into `parse_type_string`: that's a free function over the
     /// type table with no span and no error channel, called from stdlib and
     /// stub paths where a user diagnostic has nowhere to go.
-    pub(super) fn reject_annotation_binding_type(&mut self, ty: &str, span: Span) {
+    pub(super) fn reject_annotation_binding_type(&mut self, ty: &TypeExpr, span: Span) {
         for name in type_name_parts(ty) {
-            if self.annotation_types.contains(name) {
-                let name = name.to_string();
+            if self.annotation_types.contains(&name) {
                 self.errors.push(TypeError::BadAnnotation {
                     name: name.clone(),
                     problem: "an annotation is not a type, so a binding cannot be declared as one".to_string(),
@@ -426,7 +429,9 @@ impl TypeChecker {
         declared: &HashMap<&str, &AnnotationDecl>,
     ) {
         for param in &f.params {
-            self.reject_annotation_type(&param.ty, "parameter type", param.name_span, declared);
+            if let Some(ty) = &param.ty {
+                self.reject_annotation_type(ty, "parameter type", param.name_span, declared);
+            }
         }
         if let Some(ret) = &f.ret_ty {
             self.reject_annotation_type(ret, "return type", f.span, declared);
@@ -444,15 +449,15 @@ impl TypeChecker {
     /// through here — this walks declaration syntax, not expressions.
     fn reject_annotation_type(
         &mut self,
-        ty: &str,
+        ty: &TypeExpr,
         position: &str,
         span: Span,
         declared: &HashMap<&str, &AnnotationDecl>,
     ) {
         for name in type_name_parts(ty) {
-            if declared.contains_key(name) {
+            if declared.contains_key(name.as_str()) {
                 self.errors.push(TypeError::BadAnnotation {
-                    name: name.to_string(),
+                    name: name.clone(),
                     problem: format!("an annotation is not a type, so it cannot be a {}", position),
                     why: TYPE_POSITION_WHY,
                     fix: format!(
@@ -575,11 +580,10 @@ impl TypeChecker {
     }
 }
 
-/// Every bare name inside a written type: `Vec<Map<str, validate>>` yields
-/// `Vec`, `Map`, `str`, `validate`. Splits on the type punctuation rather than
-/// parsing, which is enough to spot a name that must not appear at all.
-fn type_name_parts(ty: &str) -> impl Iterator<Item = &str> {
-    ty.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.'))
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
+/// Every name inside a written type: `Vec<Map<str, validate>>` yields
+/// `Vec`, `Map`, `str`, `validate`.
+fn type_name_parts(ty: &TypeExpr) -> Vec<String> {
+    let mut out = Vec::new();
+    ty.walk_paths(&mut |path| out.push(path.join(".")));
+    out
 }

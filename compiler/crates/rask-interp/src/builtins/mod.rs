@@ -225,8 +225,8 @@ impl Interpreter {
             Value::Link { rack_id, node } => {
                 return self.call_link_method(*rack_id, node, method, args);
             }
-            Value::TypeConstructor { kind, type_param } => {
-                return self.call_type_constructor_method(kind, type_param.clone(), method, args);
+            Value::TypeConstructor(kind) => {
+                return self.call_type_constructor_method(kind, method, args);
             }
             Value::Enum { name, variant, fields, .. } if name == "Result" => {
                 return self.call_result_method(variant, fields, method, args);

@@ -228,7 +228,7 @@ pub fn impl_methods() -> &'static HashMap<String, Vec<rask_ast::decl::FnDecl>> {
         let mut out: HashMap<String, Vec<rask_ast::decl::FnDecl>> = HashMap::new();
         for decl in StubRegistry::all_type_decls() {
             let DeclKind::Impl(i) = decl.kind else { continue };
-            let target = base_name(&i.target_ty);
+            let target = i.target_ty.name().unwrap_or_default();
             if !enums.contains_key(&target) {
                 continue;
             }

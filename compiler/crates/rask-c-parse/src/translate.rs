@@ -7,10 +7,11 @@
 //! - `T*` → `*T`, `void*` → `*void`, `const char*` → `*u8`
 //! - `#define FOO 42` → const FOO: c_int = 42
 //!
-//! Produces self-contained types that the resolver consumes without depending
-//! on rask-ast. Type names are Rask syntax strings (`*u8`, `c_int`, etc.).
+//! Types come out as `TypeExpr`, the same structure the parser builds, so the
+//! resolver takes them as they are.
 
 use crate::*;
+use rask_ast::ty::TypeExpr;
 
 // ---------------------------------------------------------------------------
 // Output types
@@ -31,15 +32,15 @@ pub enum RaskCDecl {
 pub struct RaskCFunc {
     pub name: String,
     pub params: Vec<RaskCParam>,
-    /// Rask type as string. Empty string means no return type (C `void`).
-    pub ret_ty: String,
+    /// None for C `void`.
+    pub ret_ty: Option<TypeExpr>,
     pub is_variadic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RaskCParam {
     pub name: String,
-    pub ty: String,
+    pub ty: TypeExpr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,7 +54,7 @@ pub struct RaskCStruct {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RaskCField {
     pub name: String,
-    pub ty: String,
+    pub ty: TypeExpr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,7 +66,7 @@ pub struct RaskCEnum {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RaskCConst {
     pub name: String,
-    pub ty: String,
+    pub ty: TypeExpr,
     /// Literal representation of the value.
     pub value_repr: String,
 }
@@ -73,7 +74,7 @@ pub struct RaskCConst {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RaskCTypeAlias {
     pub name: String,
-    pub target: String,
+    pub target: TypeExpr,
 }
 
 #[derive(Debug, Clone)]
@@ -94,20 +95,7 @@ pub fn translate(result: &CParseResult, hiding: &[String]) -> TranslateResult {
     let mut decls = Vec::new();
     let mut warnings: Vec<String> = Vec::new();
 
-    // Collect typedefs for potential resolution.
-    let typedefs: std::collections::HashMap<String, CType> = result
-        .decls
-        .iter()
-        .filter_map(|d| {
-            if let CDecl::Typedef(td) = d {
-                Some((td.name.clone(), td.target.clone()))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let translator = Translator { typedefs: &typedefs };
+    let translator = Translator;
 
     // Forward parse warnings.
     for w in &result.warnings {
@@ -186,72 +174,53 @@ pub fn translate(result: &CParseResult, hiding: &[String]) -> TranslateResult {
 // Internal translator
 // ---------------------------------------------------------------------------
 
-struct Translator<'a> {
-    typedefs: &'a std::collections::HashMap<String, CType>,
-}
+struct Translator;
 
-impl<'a> Translator<'a> {
+impl Translator {
     // -- Type translation ---------------------------------------------------
 
-    /// Convert a `CType` to its Rask type string representation.
-    fn translate_type(&self, ty: &CType) -> String {
+    fn translate_type(&self, ty: &CType) -> TypeExpr {
+        let named = |n: &str| TypeExpr::named(n);
         match ty {
-            CType::Void => "void".to_string(),
-            CType::Char => "c_char".to_string(),
-            CType::SignedChar => "i8".to_string(),
-            CType::UnsignedChar => "u8".to_string(),
-            CType::Short => "c_short".to_string(),
-            CType::UnsignedShort => "c_ushort".to_string(),
-            CType::Int => "c_int".to_string(),
-            CType::UnsignedInt => "c_uint".to_string(),
-            CType::Long => "c_long".to_string(),
-            CType::UnsignedLong => "c_ulong".to_string(),
-            CType::LongLong => "c_longlong".to_string(),
-            CType::UnsignedLongLong => "c_ulonglong".to_string(),
-            CType::Float => "f32".to_string(),
-            CType::Double => "f64".to_string(),
-            CType::Bool => "bool".to_string(),
-            CType::SizeT => "c_size".to_string(),
-            CType::SSizeT => "c_ssize".to_string(),
+            CType::Void => TypeExpr::Unit,
+            CType::Char => named("c_char"),
+            CType::SignedChar => named("i8"),
+            CType::UnsignedChar => named("u8"),
+            CType::Short => named("c_short"),
+            CType::UnsignedShort => named("c_ushort"),
+            CType::Int => named("c_int"),
+            CType::UnsignedInt => named("c_uint"),
+            CType::Long => named("c_long"),
+            CType::UnsignedLong => named("c_ulong"),
+            CType::LongLong => named("c_longlong"),
+            CType::UnsignedLongLong => named("c_ulonglong"),
+            CType::Float => named("f32"),
+            CType::Double => named("f64"),
+            CType::Bool => named("bool"),
+            CType::SizeT => named("c_size"),
+            CType::SSizeT => named("c_ssize"),
             CType::FixedInt { bits, signed } => {
-                if *signed {
-                    format!("i{}", bits)
-                } else {
-                    format!("u{}", bits)
-                }
+                named(&format!("{}{}", if *signed { 'i' } else { 'u' }, bits))
             }
-            CType::IntPtr { signed } => {
-                if *signed { "isize" } else { "usize" }.to_string()
-            }
+            CType::IntPtr { signed } => named(if *signed { "isize" } else { "usize" }),
             CType::Pointer(inner) => self.translate_pointer(inner),
-            CType::Const(inner) => {
-                // Top-level const on a non-pointer: strip it. Rask handles
-                // mutability through const/let, not type qualifiers.
-                self.translate_type(inner)
+            // Top-level const on a non-pointer: strip it. Rask handles
+            // mutability through const/let, not type qualifiers.
+            CType::Const(inner) => self.translate_type(inner),
+            CType::Array(elem, Some(size)) => TypeExpr::Array {
+                elem: Box::new(self.translate_type(elem)),
+                len: size.to_string(),
+            },
+            // Unsized array decays to pointer.
+            CType::Array(elem, None) => TypeExpr::RawPtr(Box::new(self.translate_type(elem))),
+            CType::Named(name) => match name.as_str() {
+                "FILE" | "va_list" => void_ptr(),
+                _ => named(name),
+            },
+            CType::StructTag(tag) | CType::UnionTag(tag) | CType::EnumTag(tag) => named(tag),
+            CType::FuncPtr { ret, params, is_variadic } => {
+                self.translate_func_ptr(ret, params, *is_variadic)
             }
-            CType::Array(elem, Some(size)) => {
-                let elem_str = self.translate_type(elem);
-                format!("[{}; {}]", elem_str, size)
-            }
-            CType::Array(elem, None) => {
-                // Unsized array decays to pointer.
-                let elem_str = self.translate_type(elem);
-                format!("*{}", elem_str)
-            }
-            CType::Named(name) => {
-                match name.as_str() {
-                    "FILE" | "va_list" => "*void".to_string(),
-                    _ => name.clone(),
-                }
-            }
-            CType::StructTag(tag) => tag.clone(),
-            CType::UnionTag(tag) => tag.clone(),
-            CType::EnumTag(tag) => tag.clone(),
-            CType::FuncPtr {
-                ret,
-                params,
-                is_variadic,
-            } => self.translate_func_ptr(ret, params, *is_variadic),
         }
     }
 
@@ -259,48 +228,35 @@ impl<'a> Translator<'a> {
     /// - `const char*` → `*u8` (C string convention)
     /// - `void*` → `*void`
     /// - Strips outer `const` on pointer targets.
-    fn translate_pointer(&self, inner: &CType) -> String {
-        let stripped = strip_const(inner);
-        match stripped {
-            CType::Char | CType::SignedChar | CType::UnsignedChar => "*u8".to_string(),
-            CType::Void => "*void".to_string(),
-            CType::FuncPtr {
-                ret,
-                params,
-                is_variadic,
-            } => {
-                // Pointer-to-function-pointer collapses to the func ptr.
+    fn translate_pointer(&self, inner: &CType) -> TypeExpr {
+        match strip_const(inner) {
+            CType::Char | CType::SignedChar | CType::UnsignedChar => {
+                TypeExpr::RawPtr(Box::new(TypeExpr::named("u8")))
+            }
+            CType::Void => void_ptr(),
+            // Pointer-to-function-pointer collapses to the func ptr.
+            CType::FuncPtr { ret, params, is_variadic } => {
                 self.translate_func_ptr(ret, params, *is_variadic)
             }
-            other => {
-                let inner_ty = self.translate_type(other);
-                format!("*{}", inner_ty)
-            }
+            other => TypeExpr::RawPtr(Box::new(self.translate_type(other))),
         }
     }
 
-    /// Translate a C function pointer to Rask `*func(...) -> R` syntax.
-    fn translate_func_ptr(&self, ret: &CType, params: &[CType], is_variadic: bool) -> String {
-        let param_strs: Vec<String> = params.iter().map(|p| self.translate_type(p)).collect();
-        let mut sig = String::from("*func(");
+    /// Translate a C function pointer to `*func(...) -> R`. Rask function types
+    /// have no variadic form, so a pointer to a variadic function stays opaque.
+    fn translate_func_ptr(&self, ret: &CType, params: &[CType], is_variadic: bool) -> TypeExpr {
         if is_variadic {
-            if !param_strs.is_empty() {
-                sig.push_str(&param_strs.join(", "));
-                sig.push_str(", ...");
-            } else {
-                sig.push_str("...");
-            }
-        } else {
-            sig.push_str(&param_strs.join(", "));
+            return void_ptr();
         }
-        sig.push(')');
+        TypeExpr::RawPtr(Box::new(TypeExpr::Func {
+            params: params.iter().map(|p| self.translate_type(p)).collect(),
+            ret: Box::new(self.translate_type(ret)),
+        }))
+    }
 
-        let ret_str = self.translate_type(ret);
-        if ret_str != "void" {
-            sig.push_str(" -> ");
-            sig.push_str(&ret_str);
-        }
-        sig
+    #[cfg(test)]
+    fn translate_type_src(&self, ty: &CType) -> String {
+        self.translate_type(ty).source()
     }
 
     // -- Declaration translators --------------------------------------------
@@ -324,8 +280,8 @@ impl<'a> Translator<'a> {
             .collect();
 
         let ret_ty = match &f.ret_ty {
-            CType::Void => String::new(),
-            other => self.translate_type(other),
+            CType::Void => None,
+            other => Some(self.translate_type(other)),
         };
 
         RaskCFunc {
@@ -385,22 +341,22 @@ impl<'a> Translator<'a> {
         match &d.kind {
             CDefineKind::Integer(v) => Some(RaskCConst {
                 name: d.name.clone(),
-                ty: "c_int".to_string(),
+                ty: TypeExpr::named("c_int"),
                 value_repr: v.to_string(),
             }),
             CDefineKind::UnsignedInteger(v) => Some(RaskCConst {
                 name: d.name.clone(),
-                ty: "c_uint".to_string(),
+                ty: TypeExpr::named("c_uint"),
                 value_repr: v.to_string(),
             }),
             CDefineKind::Float(v) => Some(RaskCConst {
                 name: d.name.clone(),
-                ty: "f64".to_string(),
+                ty: TypeExpr::named("f64"),
                 value_repr: format!("{}", v),
             }),
             CDefineKind::String(s) => Some(RaskCConst {
                 name: d.name.clone(),
-                ty: "*u8".to_string(),
+                ty: TypeExpr::RawPtr(Box::new(TypeExpr::named("u8"))),
                 value_repr: format!(
                     "c\"{}\"",
                     s.replace('\\', "\\\\").replace('"', "\\\"")
@@ -434,6 +390,10 @@ fn strip_const(ty: &CType) -> &CType {
         CType::Const(inner) => inner,
         other => other,
     }
+}
+
+fn void_ptr() -> TypeExpr {
+    TypeExpr::RawPtr(Box::new(TypeExpr::Unit))
 }
 
 /// Extract the primary name of a C declaration for hiding checks.
@@ -471,7 +431,7 @@ pub fn render_rask(result: &TranslateResult) -> String {
                     first = false;
                     out.push_str(&p.name);
                     out.push_str(": ");
-                    out.push_str(&p.ty);
+                    out.push_str(&p.ty.source());
                 }
                 if f.is_variadic {
                     if !first {
@@ -480,9 +440,9 @@ pub fn render_rask(result: &TranslateResult) -> String {
                     out.push_str("...");
                 }
                 out.push(')');
-                if !f.ret_ty.is_empty() {
+                if let Some(ret) = &f.ret_ty {
                     out.push_str(" -> ");
-                    out.push_str(&f.ret_ty);
+                    out.push_str(&ret.source());
                 }
                 out.push('\n');
             }
@@ -504,7 +464,7 @@ pub fn render_rask(result: &TranslateResult) -> String {
                         out.push_str("    ");
                         out.push_str(&f.name);
                         out.push_str(": ");
-                        out.push_str(&f.ty);
+                        out.push_str(&f.ty.source());
                         out.push('\n');
                     }
                     out.push_str("}\n");
@@ -528,7 +488,7 @@ pub fn render_rask(result: &TranslateResult) -> String {
                 out.push_str("const ");
                 out.push_str(&c.name);
                 out.push_str(": ");
-                out.push_str(&c.ty);
+                out.push_str(&c.ty.source());
                 if !c.value_repr.is_empty() {
                     out.push_str(" = ");
                     out.push_str(&c.value_repr);
@@ -539,7 +499,7 @@ pub fn render_rask(result: &TranslateResult) -> String {
                 out.push_str("type ");
                 out.push_str(&a.name);
                 out.push_str(" = ");
-                out.push_str(&a.target);
+                out.push_str(&a.target.source());
                 out.push('\n');
             }
         }
@@ -590,8 +550,8 @@ mod tests {
                 assert_eq!(f.name, "puts");
                 assert_eq!(f.params.len(), 1);
                 assert_eq!(f.params[0].name, "s");
-                assert_eq!(f.params[0].ty, "*u8");
-                assert_eq!(f.ret_ty, "c_int");
+                assert_eq!(f.params[0].ty.source(), "*u8");
+                assert_eq!(f.ret_ty.as_ref().map(|t| t.source()).as_deref(), Some("c_int"));
                 assert!(!f.is_variadic);
             }
             other => panic!("expected Function, got {:?}", other),
@@ -615,8 +575,8 @@ mod tests {
         let out = translate(&result, &[]);
         match &out.decls[0] {
             RaskCDecl::Function(f) => {
-                assert_eq!(f.ret_ty, "");
-                assert_eq!(f.params[0].ty, "*void");
+                assert_eq!(f.ret_ty, None);
+                assert_eq!(f.params[0].ty.source(), "*void");
             }
             other => panic!("expected Function, got {:?}", other),
         }
@@ -710,7 +670,7 @@ mod tests {
                 assert_eq!(s.name, "point");
                 assert!(!s.is_opaque);
                 assert_eq!(s.fields.len(), 2);
-                assert_eq!(s.fields[0].ty, "f64");
+                assert_eq!(s.fields[0].ty.source(), "f64");
             }
             other => panic!("expected Struct, got {:?}", other),
         }
@@ -758,7 +718,7 @@ mod tests {
         match &out.decls[0] {
             RaskCDecl::TypeAlias(a) => {
                 assert_eq!(a.name, "size_t");
-                assert_eq!(a.target, "c_ulong");
+                assert_eq!(a.target.source(), "c_ulong");
             }
             other => panic!("expected TypeAlias, got {:?}", other),
         }
@@ -793,7 +753,7 @@ mod tests {
         match &out.decls[0] {
             RaskCDecl::Const(c) => {
                 assert_eq!(c.name, "EXIT_SUCCESS");
-                assert_eq!(c.ty, "c_int");
+                assert_eq!(c.ty.source(), "c_int");
                 assert_eq!(c.value_repr, "0");
             }
             other => panic!("expected Const, got {:?}", other),
@@ -867,22 +827,20 @@ mod tests {
 
     #[test]
     fn translate_fixed_int_types() {
-        let t = Translator {
-            typedefs: &std::collections::HashMap::new(),
-        };
+        let t = Translator;
         assert_eq!(
-            t.translate_type(&CType::FixedInt { bits: 8, signed: true }),
+            t.translate_type_src(&CType::FixedInt { bits: 8, signed: true }),
             "i8"
         );
         assert_eq!(
-            t.translate_type(&CType::FixedInt {
+            t.translate_type_src(&CType::FixedInt {
                 bits: 32,
                 signed: false
             }),
             "u32"
         );
         assert_eq!(
-            t.translate_type(&CType::FixedInt {
+            t.translate_type_src(&CType::FixedInt {
                 bits: 64,
                 signed: true
             }),
@@ -892,28 +850,24 @@ mod tests {
 
     #[test]
     fn translate_func_ptr_type() {
-        let t = Translator {
-            typedefs: &std::collections::HashMap::new(),
-        };
+        let t = Translator;
         let ty = CType::FuncPtr {
             ret: Box::new(CType::Int),
             params: vec![CType::Pointer(Box::new(CType::Void)), CType::Int],
             is_variadic: false,
         };
-        assert_eq!(t.translate_type(&ty), "*func(*void, c_int) -> c_int");
+        assert_eq!(t.translate_type_src(&ty), "*func(*void, c_int) -> c_int");
     }
 
     #[test]
     fn translate_array_type() {
-        let t = Translator {
-            typedefs: &std::collections::HashMap::new(),
-        };
+        let t = Translator;
         assert_eq!(
-            t.translate_type(&CType::Array(Box::new(CType::Int), Some(16))),
+            t.translate_type_src(&CType::Array(Box::new(CType::Int), Some(16))),
             "[c_int; 16]"
         );
         assert_eq!(
-            t.translate_type(&CType::Array(Box::new(CType::Char), None)),
+            t.translate_type_src(&CType::Array(Box::new(CType::Char), None)),
             "*c_char"
         );
     }
@@ -946,12 +900,12 @@ mod tests {
         match &out.decls[0] {
             RaskCDecl::Function(f) => {
                 assert_eq!(f.params[0].name, "p0");
-                assert_eq!(f.params[0].ty, "*void");
+                assert_eq!(f.params[0].ty.source(), "*void");
                 assert_eq!(f.params[1].name, "p1");
-                assert_eq!(f.params[1].ty, "*void"); // const stripped on pointer target
+                assert_eq!(f.params[1].ty.source(), "*void"); // const stripped on pointer target
                 assert_eq!(f.params[2].name, "p2");
-                assert_eq!(f.params[2].ty, "c_size");
-                assert_eq!(f.ret_ty, "*void");
+                assert_eq!(f.params[2].ty.source(), "c_size");
+                assert_eq!(f.ret_ty.as_ref().map(|t| t.source()).as_deref(), Some("*void"));
             }
             other => panic!("expected Function, got {:?}", other),
         }

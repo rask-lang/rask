@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use super::errors::TypeError;
 use super::TypeChecker;
-use crate::types::{GenericArg, Type};
+use crate::types::Type;
 
 /// Is the open-node census switched on?
 pub(crate) fn tracing_open_nodes() -> bool {

@@ -11,11 +11,6 @@ use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, FieldInit};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::NodeId;
 
-/// Strip a generic suffix from a type name: `Pair<i32>` -> `Pair`.
-fn base_type_name(name: &str) -> &str {
-    name.split('<').next().unwrap_or(name)
-}
-
 /// Desugar default arguments and named arguments across all declarations.
 ///
 /// Builds a lookup table of function signatures, then rewrites call sites
@@ -70,7 +65,7 @@ pub fn is_valid_default_expr(expr: &Expr) -> bool {
 
         // Enum-style path: Color.Red, FileMode.Read
         ExprKind::Field { object, .. } => {
-            matches!(&object.kind, ExprKind::Ident(_))
+            object.name().is_some()
         }
 
         // Dynamic field — not valid as a default
@@ -127,13 +122,13 @@ impl FunctionLookup {
                     }
                 }
                 DeclKind::Struct(s) => {
-                    declared_types.insert(base_type_name(&s.name).to_string());
+                    declared_types.insert(s.name.clone());
                     declared_methods.extend(s.methods.iter().map(|m| m.name.clone()));
                     let defaults: Vec<(String, Expr)> = s.fields.iter()
                         .filter_map(|f| f.default.as_ref().map(|d| (f.name.clone(), d.clone())))
                         .collect();
                     if !defaults.is_empty() {
-                        struct_defaults.insert(base_type_name(&s.name).to_string(), defaults);
+                        struct_defaults.insert(s.name.clone(), defaults);
                     }
                     for m in &s.methods {
                         Self::register_method(
@@ -142,7 +137,7 @@ impl FunctionLookup {
                     }
                 }
                 DeclKind::Enum(e) => {
-                    declared_types.insert(base_type_name(&e.name).to_string());
+                    declared_types.insert(e.name.clone());
                     declared_methods.extend(e.methods.iter().map(|m| m.name.clone()));
                     for m in &e.methods {
                         Self::register_method(
@@ -154,7 +149,7 @@ impl FunctionLookup {
                     declared_methods.extend(i.methods.iter().map(|m| m.name.clone()));
                     for m in &i.methods {
                         Self::register_method(
-                            &i.target_ty, m, &mut methods, &mut methods_by_name,
+                            &i.target_ty.to_string(), m, &mut methods, &mut methods_by_name,
                         );
                     }
                 }
@@ -531,7 +526,7 @@ impl DefaultDesugarer {
                 if let Some(s) = start { self.desugar_expr(s); }
                 if let Some(e) = end { self.desugar_expr(e); }
             }
-            ExprKind::StructLit { name, fields, spread } => {
+            ExprKind::StructLit { name, fields, spread, .. } => {
                 for f in fields.iter_mut() { self.desugar_expr(&mut f.value); }
                 if let Some(s) = spread { self.desugar_expr(s); }
                 // FD2/FD5: fill omitted fields from declared defaults. A spread
@@ -582,7 +577,7 @@ impl DefaultDesugarer {
             // Terminals
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
             | ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_)
-            | ExprKind::Ident(_) | ExprKind::Null | ExprKind::None => {}
+            | ExprKind::Ident(_) | ExprKind::GenericName { .. } | ExprKind::Null | ExprKind::None => {}
         }
 
         // After recursing, try to resolve defaults at this call site
@@ -594,10 +589,10 @@ impl DefaultDesugarer {
         let Some(defaults) = self
             .lookup
             .struct_defaults
-            .get(base_type_name(name))
+            .get(name)
             .or_else(|| {
-                (!self.lookup.declared_types.contains(base_type_name(name)))
-                    .then(|| self.outer.struct_defaults.get(base_type_name(name)))
+                (!self.lookup.declared_types.contains(name))
+                    .then(|| self.outer.struct_defaults.get(name))
                     .flatten()
             })
         else {
@@ -641,12 +636,12 @@ impl DefaultDesugarer {
     fn try_resolve_call(&mut self, expr: &mut Expr) {
         match &mut expr.kind {
             ExprKind::Call { func, args } => {
-                if let ExprKind::Ident(name) = &func.kind {
+                if let Some(name) = func.name() {
                     let found = self
                         .lookup
                         .lookup_function(name)
                         .or_else(|| {
-                            (!self.lookup.declared_fns.contains(name.as_str()))
+                            (!self.lookup.declared_fns.contains(name))
                                 .then(|| self.outer.lookup_function(name))
                                 .flatten()
                         })
@@ -685,7 +680,7 @@ impl DefaultDesugarer {
                 // into a call to *its* method, turning "expected 1 argument"
                 // into a call that type-checks and does the wrong thing.
                 let own = !self.lookup.declared_methods.contains(method.as_str());
-                let params = if let ExprKind::Ident(type_name) = &object.kind {
+                let params = if let Some(type_name) = object.name() {
                     self.lookup.lookup_static_method(type_name, method)
                         .or_else(|| self.lookup.lookup_instance_method(method))
                         .or_else(|| own.then(|| self.outer.lookup_static_method(type_name, method)).flatten())
@@ -731,7 +726,7 @@ mod tests {
         Param {
             name: name.to_string(),
             name_span: sp(),
-            ty: ty.to_string(),
+            ty: Some(rask_ast::ty::TypeExpr::named(ty)),
             is_take: false,
             is_mutate: false, is_deleting: false,
             default,
@@ -877,7 +872,7 @@ mod tests {
 
         fn field(name: &str, ty: &str, default: Option<Expr>) -> Field {
             Field {
-                name: name.to_string(), name_span: sp(), ty: ty.to_string(),
+                name: name.to_string(), name_span: sp(), ty: rask_ast::ty::TypeExpr::named(ty),
                 visibility: FieldVisibility::Public, attrs: vec![], default, doc: None,
             }
         }
@@ -902,6 +897,7 @@ mod tests {
             id: NodeId(0),
             kind: ExprKind::StructLit {
                 name: "Config".to_string(),
+                type_args: vec![],
                 fields: vec![FieldInit { name: "host".to_string(), value: str_expr("x") }],
                 spread: None,
             },
@@ -945,7 +941,7 @@ mod tests {
             kind: DeclKind::Struct(StructDecl {
                 name: "Config".to_string(), type_params: vec![],
                 fields: vec![Field {
-                    name: "port".to_string(), name_span: sp(), ty: "i32".to_string(),
+                    name: "port".to_string(), name_span: sp(), ty: rask_ast::ty::TypeExpr::named("i32"),
                     visibility: FieldVisibility::Public, attrs: vec![], default: Some(int_expr(8080)), doc: None,
                 }],
                 methods: vec![], is_pub: false, attrs: vec![], doc: None,
@@ -956,6 +952,7 @@ mod tests {
             id: NodeId(0),
             kind: ExprKind::StructLit {
                 name: "Config".to_string(),
+                type_args: vec![],
                 fields: vec![],
                 spread: Some(Box::new(Expr { id: NodeId(0), kind: ExprKind::Ident("base".to_string()), span: sp() })),
             },

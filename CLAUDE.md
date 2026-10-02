@@ -266,6 +266,8 @@ Pipeline: `.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Co
 
 For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
 
+**Each pass hands its results down as data. No pass re-derives them from text.** A type is a `TypeExpr` or `Type` and never a string to `split('<')`. When a later pass needs a fact, give the earlier pass a field to carry it. Details are in compiler/CLAUDE.md, and a test enforces it.
+
 | Task | Start here |
 |------|-----------|
 | Parse error / new syntax | `rask-parser/src/parser.rs` |

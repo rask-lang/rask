@@ -299,9 +299,9 @@ int unix_only(void);
         match &result.decls[0] {
             translate::RaskCDecl::Function(f) => {
                 assert_eq!(f.name, "open");
-                assert_eq!(f.ret_ty, "c_int");
-                assert_eq!(f.params[0].ty, "*u8");
-                assert_eq!(f.params[1].ty, "c_int");
+                assert_eq!(f.ret_ty.as_ref().map(|t| t.source()).as_deref(), Some("c_int"));
+                assert_eq!(f.params[0].ty.source(), "*u8");
+                assert_eq!(f.params[1].ty.source(), "c_int");
             }
             other => panic!("expected Function, got {:?}", other),
         }
@@ -315,8 +315,8 @@ int unix_only(void);
         match found {
             Some(translate::RaskCDecl::Struct(s)) => {
                 assert_eq!(s.name, "Point");
-                assert_eq!(s.fields[0].ty, "c_int");
-                assert_eq!(s.fields[1].ty, "f32");
+                assert_eq!(s.fields[0].ty.source(), "c_int");
+                assert_eq!(s.fields[1].ty.source(), "f32");
             }
             other => panic!("expected Struct, got {:?}", other),
         }
@@ -353,7 +353,7 @@ int unix_only(void);
         match &result.decls[0] {
             translate::RaskCDecl::Const(c) => {
                 assert_eq!(c.name, "SQLITE_OK");
-                assert_eq!(c.ty, "c_int");
+                assert_eq!(c.ty.source(), "c_int");
                 assert_eq!(c.value_repr, "0");
             }
             other => panic!("expected Const, got {:?}", other),
@@ -366,7 +366,7 @@ int unix_only(void);
         let result = translate::translate(&r, &[]);
         match &result.decls[0] {
             translate::RaskCDecl::Function(f) => {
-                assert_eq!(f.ret_ty, "c_size");
+                assert_eq!(f.ret_ty.as_ref().map(|t| t.source()).as_deref(), Some("c_size"));
             }
             other => panic!("expected Function, got {:?}", other),
         }
@@ -378,8 +378,8 @@ int unix_only(void);
         let result = translate::translate(&r, &[]);
         match &result.decls[0] {
             translate::RaskCDecl::Function(f) => {
-                assert_eq!(f.ret_ty, "");
-                assert_eq!(f.params[0].ty, "*void");
+                assert_eq!(f.ret_ty, None);
+                assert_eq!(f.params[0].ty.source(), "*void");
             }
             other => panic!("expected Function, got {:?}", other),
         }

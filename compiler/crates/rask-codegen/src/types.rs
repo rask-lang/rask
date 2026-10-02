@@ -6,16 +6,18 @@ use cranelift::prelude::*;
 use rask_mir::MirType;
 use crate::CodegenResult;
 
-/// Map a type annotation string to MirType for extern function signatures.
+/// The MIR type of a type written in an extern function signature.
 ///
 /// Handles primitive types and raw pointers used in FFI declarations.
 /// Not a full type resolver — only covers types valid in extern "C" signatures.
-pub fn type_string_to_mir(s: &str) -> MirType {
-    let s = s.trim();
-    if s.starts_with('*') {
-        return MirType::Ptr;
+pub fn extern_type_to_mir(ty: &rask_ast::ty::TypeExpr) -> MirType {
+    use rask_ast::ty::TypeExpr;
+    match ty {
+        TypeExpr::RawPtr(_) => return MirType::Ptr,
+        TypeExpr::Unit => return MirType::Void,
+        _ => {}
     }
-    match s {
+    match ty.bare_name().unwrap_or_default() {
         "i8" => MirType::I8,
         "i16" => MirType::I16,
         "i32" => MirType::I32,
@@ -27,7 +29,6 @@ pub fn type_string_to_mir(s: &str) -> MirType {
         "f32" => MirType::F32,
         "f64" => MirType::F64,
         "bool" => MirType::Bool,
-        "()" => MirType::Void,
         _ => MirType::I64, // default to pointer-sized
     }
 }

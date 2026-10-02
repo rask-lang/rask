@@ -6,7 +6,7 @@
 //! the interpreter's realization of the "stage → run" model; the CPU result is
 //! the reference semantics a device backend must match (conc.data-parallel/W3).
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, Value, WidePlan};

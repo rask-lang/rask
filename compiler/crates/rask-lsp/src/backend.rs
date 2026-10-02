@@ -358,7 +358,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     }
 
     // --- Effects (IO propagation + frozen check) ---
-    let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
+    let (_effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
     for w in &effect_warnings {
         let d = rask_diagnostics::Diagnostic::warning(&w.message)
             .with_code(w.code)

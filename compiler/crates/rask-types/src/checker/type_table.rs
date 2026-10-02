@@ -529,7 +529,7 @@ impl TypeTable {
             let arg = match written.get(i) {
                 Some(a) => a.clone(),
                 None => match &p.default {
-                    Some(d) => d.clone(),
+                    Some(d) => d.to_string(),
                     // GT4: no argument and no default. The arity error is
                     // reported at the header; key on what was written so the
                     // conformance still exists for everything else.

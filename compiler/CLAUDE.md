@@ -2,6 +2,26 @@ Read this file before editing compiler code. It maps tasks to files so you don't
 
 Pipeline: `.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Comptime → Ownership → MIR → Codegen/Interp`
 
+## Hand information down, never re-derive it
+
+Each pass hands the next one what it worked out, as data. A later pass never
+reconstructs it from text.
+
+- The parser is the only thing that reads source syntax. A type is a `TypeExpr`
+  from there on, a checked type is a `Type`, and written type arguments live in
+  their own field (`GenericName.type_args`, `StructLit.type_args`), not inside
+  a name.
+- If a pass needs something an earlier pass knew, add a field and pass it along.
+  Don't render a type to a string and parse it again, don't `split('<')` a name,
+  don't guess from capitalisation or from how a symbol is spelled.
+- A string is a *name*: an identifier or a dotted path. It is never a type.
+  `Display` on `TypeExpr`/`Type` is for messages and symbol mangling. Nothing
+  reads that output back.
+
+Why it matters: the compiler used to have seven type-string parsers that had
+drifted apart. Each disagreement was a bug that only showed on one backend.
+`no_type_text_reparsing` in `rask-cli/tests/` fails the build when one comes back.
+
 ## Crate guide
 
 ### rask-parser — Recursive descent parser

@@ -338,7 +338,7 @@ fn extract_cfg_comparison<'a>(left: &'a Expr, right: &'a Expr) -> Option<(&'a st
 
 fn extract_cfg_field(expr: &Expr) -> Option<&str> {
     if let ExprKind::Field { object, field } = &expr.kind {
-        if let ExprKind::Ident(name) = &object.kind {
+        if let Some(name) = object.name() {
             if name == "cfg" { return Some(field); }
         }
     }
@@ -1772,7 +1772,7 @@ impl ComptimeInterpreter {
             // Type cast: expr as Type
             ExprKind::Cast { expr, ty } => {
                 let val = self.eval_expr(expr)?;
-                match (&val, ty.as_str()) {
+                match (&val, ty.bare_name().unwrap_or("")) {
                     // int → int
                     (ComptimeValue::I64(n), "i8") => ComptimeValue::I8(*n as i8),
                     (ComptimeValue::I64(n), "i16") => ComptimeValue::I16(*n as i16),
@@ -2008,7 +2008,7 @@ impl ComptimeInterpreter {
                 // in u64>` bound a `u64` — and a fold of it came out `u64`-wide,
                 // which printed the same digits and compared unequal against a
                 // `u128` (#826).
-                let value = match ty.as_deref().and_then(CtInt::from_name) {
+                let value = match ty.as_ref().and_then(|t| t.bare_name()).and_then(CtInt::from_name) {
                     Some(kind) => Self::coerce_int_width(value, kind)?,
                     None => value,
                 };
@@ -2359,7 +2359,7 @@ impl ComptimeInterpreter {
 
         // If the callee is an identifier, check named functions/builtins first,
         // then fall back to variable lookup (could be a closure).
-        if let ExprKind::Ident(name) = &func.kind {
+        if let Some(name) = func.name() {
             if let Some(func_decl) = self.env.get_function(name).cloned() {
                 self.env.count_branch()?;
                 return self.call_function(&func_decl, arg_values);
@@ -2379,7 +2379,7 @@ impl ComptimeInterpreter {
 
         // Static method call: Type.method(args) — e.g. Vec.new()
         if let ExprKind::Field { object, field } = &func.kind {
-            if let ExprKind::Ident(type_name) = &object.kind {
+            if let Some(type_name) = object.name() {
                 return self.call_static_method(type_name, field, arg_values);
             }
         }
@@ -2401,7 +2401,7 @@ impl ComptimeInterpreter {
         args: &[&Expr],
     ) -> ComptimeResult<ComptimeValue> {
         // Static method call on a type: Vec.new(), Map.new()
-        if let ExprKind::Ident(name) = &object.kind {
+        if let Some(name) = object.name() {
             if !self.env.get(name).is_some() && is_comptime_type(name) {
                 let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
                 let arg_values = arg_values?;
@@ -2411,7 +2411,7 @@ impl ComptimeInterpreter {
 
         // Mutating Vec methods: push, pop — need to update the variable in-place
         if matches!(method, "push" | "pop" | "insert" | "remove" | "clear") {
-            if let ExprKind::Ident(var_name) = &object.kind {
+            if let Some(var_name) = object.name() {
                 let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
                 let arg_values = arg_values?;
                 return self.call_mutating_vec_method(var_name, method, &arg_values);
@@ -2446,7 +2446,7 @@ impl ComptimeInterpreter {
         // expression evaluated to otherwise, which is a different type from the
         // one the signature promises.
         for (param, value) in func.params.iter().zip(args) {
-            let value = match CtInt::from_name(&param.ty) {
+            let value = match param.ty.as_ref().and_then(|t| t.bare_name()).and_then(CtInt::from_name) {
                 Some(kind) => Self::coerce_int_width(value, kind)?,
                 None => value,
             };
@@ -2467,11 +2467,11 @@ impl ComptimeInterpreter {
         // A `-> T?` hands back an optional, so a bare `T` is wrapped here
         // rather than at every `return` in the body. Already-optional values
         // (a `none`, or a result passed straight through) go as they are.
-        let ret = func.ret_ty.as_deref();
-        if ret.map(rask_ast::type_str::is_optional).unwrap_or(false) {
+        let ret = func.ret_ty.as_ref();
+        if matches!(ret, Some(rask_ast::ty::TypeExpr::Optional(_))) {
             return Ok(Self::ct_some(value));
         }
-        match ret.and_then(CtInt::from_name) {
+        match ret.and_then(|t| t.bare_name()).and_then(CtInt::from_name) {
             Some(kind) => Self::coerce_int_width(value, kind),
             None => Ok(value),
         }
@@ -3218,9 +3218,9 @@ impl ComptimeInterpreter {
                     _ => false,
                 })
             }
-            Pattern::TypePat { ty_name, .. } => {
+            Pattern::TypePat { ty, .. } => {
                 // Match when the value's enum tag matches the named type.
-                Ok(matches!(value, ComptimeValue::Enum { variant, .. } if variant == ty_name))
+                Ok(matches!(value, ComptimeValue::Enum { variant, .. } if ty.name().as_deref() == Some(variant.as_str())))
             }
         }
     }

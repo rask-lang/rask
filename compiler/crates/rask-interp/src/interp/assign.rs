@@ -226,7 +226,7 @@ impl Interpreter {
             Value::Vec(v) => {
                 if let Value::Int(i, _) = idx {
                     let idx = *i as usize;
-                    let mut vec = v.lock().unwrap();
+                    let vec = v.lock().unwrap();
                     if idx < vec.len() {
                         Self::assign_nested_field(&vec[idx], field_chain, value)
                     } else {

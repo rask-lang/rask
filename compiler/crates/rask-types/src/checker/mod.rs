@@ -34,8 +34,8 @@ pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
-pub use parse_type::parse_type_string;
-pub use generics::{bind_header_pattern, bind_header_patterns, extend_target_args};
+pub use parse_type::{parse_type_string, resolve_type_expr};
+pub use generics::{bind_header_pattern, bind_header_patterns};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
 use borrow::{ActiveBorrow, PersistentBorrow};

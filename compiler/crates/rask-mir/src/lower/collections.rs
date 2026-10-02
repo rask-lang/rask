@@ -10,6 +10,7 @@ use crate::{
     MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::ty::TypeExpr;
 use rask_mono::StructLayout;
 
 impl<'a> MirLowerer<'a> {
@@ -128,9 +129,9 @@ impl<'a> MirLowerer<'a> {
 
     /// Map.from([(k, v), ...]) → Map.new() + Map.insert() per pair.
     ///
-    /// `call` is the `Map.from(...)` expression and `name` the receiver as
-    /// written, because between them they say what the key and value types
-    /// are — and the constructor needs to be told.
+    /// `call` is the `Map.from(...)` expression and `written` the receiver's
+    /// type arguments, because between them they say what the key and value
+    /// types are — and the constructor needs to be told.
     ///
     /// It used to be told nothing: the call went out with no arguments and
     /// codegen filled in its generic defaults, one machine word per slot. A
@@ -141,20 +142,17 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_map_from_pairs(
         &mut self,
         call: &Expr,
-        name: &str,
+        written: &[TypeExpr],
         elems: &[Expr],
     ) -> Result<TypedOperand, LoweringError> {
         // The checker knows the map's own type; the spelling answers when it
         // doesn't (`Map<string, i64>.from(…)` inside a stdlib body has no
         // recorded type). The first pair is the last resort.
-        let spelled = super::generic_args_of_str(name);
         let arg_ty = |i: usize| -> Option<MirType> {
             self.container_elem_mir_type(call.id, i)
         };
         let spelled_ty = |i: usize| -> Option<MirType> {
-            spelled.as_ref()
-                .and_then(|args| args.get(i).copied())
-                .map(|arg| self.ctx.resolve_type_str(arg))
+            written.get(i).map(|arg| self.ctx.resolve_type_expr(arg))
         };
         let pair_ty = |i: usize| -> Option<MirType> {
             elems.first().and_then(|e| match &e.kind {
@@ -965,10 +963,8 @@ impl<'a> MirLowerer<'a> {
         // to an 8-byte slot silently halved every `string` value stored in it.
         if self.ctx.lookup_raw_type(node_id).is_none() {
             if let Some(hint) = self.field_type_hint.clone() {
-                if let Some(inner) = super::generic_args_of_str(&hint) {
-                    if let Some(arg) = inner.get(index) {
-                        return Self::mir_slot_size(&self.ctx.resolve_type_str(arg));
-                    }
+                if let Some(GenericArg::Type(arg)) = generic_args(&hint).and_then(|a| a.get(index)) {
+                    return Self::mir_slot_size(&self.ctx.type_to_mir(arg));
                 }
             }
         }
@@ -1101,7 +1097,7 @@ impl<'a> MirLowerer<'a> {
     /// to its own `Receiver<T>` type — otherwise a 24-byte struct was received
     /// into an 8-byte buffer and smashed the stack (#360).
     pub(super) fn channel_elem_size(&self, object: &rask_ast::expr::Expr) -> i64 {
-        if let rask_ast::expr::ExprKind::Ident(var_name) = &object.kind {
+        if let Some(var_name) = object.name() {
             if let Some(size) = self.meta(var_name).and_then(|m| m.channel_elem_size) {
                 return size;
             }

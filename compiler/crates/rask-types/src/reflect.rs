@@ -13,6 +13,8 @@
 //! answer 0 on the interpreter, which reads as "this type is empty" instead of
 //! "nobody implemented this" — a wrong number is worse than a message.
 
+use rask_ast::ty::TypeExpr;
+
 /// The value a reflect method folds to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReflectAnswer {
@@ -42,9 +44,9 @@ pub trait ReflectDecls {
     /// Is the declaration marked `@resource` (mem.resource-types)?
     fn is_resource(&self, name: &str) -> bool;
     /// Field types of a declared struct, or every variant payload type of a
-    /// declared enum, spelled as the source wrote them. `None` when nothing by
-    /// that name is declared.
-    fn member_type_names(&self, name: &str) -> Option<Vec<String>>;
+    /// declared enum, as the source wrote them. `None` when nothing by that name
+    /// is declared.
+    fn member_types(&self, name: &str) -> Option<Vec<TypeExpr>>;
     /// Type parameter names of a declared struct or enum, if it has any.
     ///
     /// A field written with one of these has no concrete type until the
@@ -71,25 +73,26 @@ const NEEDS_INSTANTIATION: &str =
 
 /// Fold `reflect.<method><T>()` to its constant.
 ///
-/// `type_name` is `T` as spelled at the call site, already substituted by
+/// `ty` is `T` as written at the call site, already substituted by
 /// monomorphization on the native path (std.reflect/R5) — so it's a concrete
-/// name like `Point` or `Vec<i32>`, never a bare type parameter.
-pub fn answer(method: &str, type_name: &str, decls: &dyn ReflectDecls) -> ReflectAnswer {
+/// type like `Point` or `Vec<i32>`, never a bare type parameter.
+pub fn answer(method: &str, ty: &TypeExpr, decls: &dyn ReflectDecls) -> ReflectAnswer {
     use ReflectAnswer::*;
+    let head = ty.name().unwrap_or_default();
     match method {
-        "name_of" => Str(type_name.to_string()),
-        "is_struct" => Bool(decls.declares_struct(type_name)),
-        "is_enum" => Bool(decls.declares_enum(type_name)),
-        "is_optional" => Bool(is_optional(type_name)),
-        "is_vec" => Bool(container_is(type_name, "Vec")),
-        "is_map" => Bool(container_is(type_name, "Map")),
-        "is_integer" => Bool(is_integer(type_name)),
-        "is_float" => Bool(matches!(type_name, "f32" | "f64")),
+        "name_of" => Str(ty.source()),
+        "is_struct" => Bool(decls.declares_struct(&head)),
+        "is_enum" => Bool(decls.declares_enum(&head)),
+        "is_optional" => Bool(optional_payload(ty).is_some()),
+        "is_vec" => Bool(head == "Vec"),
+        "is_map" => Bool(head == "Map"),
+        "is_integer" => Bool(ty.bare_name().is_some_and(is_integer)),
+        "is_float" => Bool(matches!(ty.bare_name(), Some("f32" | "f64"))),
 
         // mem.resource-types: the annotation is the whole answer.
-        "is_resource" => Bool(decls.is_resource(type_name)),
+        "is_resource" => Bool(decls.is_resource(&head)),
         // mem.relocatable/FL1-FL5.
-        "is_flat" => match flatness(type_name, decls, &mut Vec::new()) {
+        "is_flat" => match flatness(ty, decls, &mut Vec::new()) {
             Flatness::Flat => Bool(true),
             Flatness::NotFlat => Bool(false),
             Flatness::Unknown => Unsupported(NEEDS_INSTANTIATION),
@@ -101,19 +104,16 @@ pub fn answer(method: &str, type_name: &str, decls: &dyn ReflectDecls) -> Reflec
     }
 }
 
-/// `T?` — the sugar, and the `T or none` spelling it desugars from.
+/// The payload of `T?`, either spelling: the sugar or `T or none`.
 ///
 /// Nesting doesn't matter here: `T??` is optional at the outer layer, which is
 /// the layer every operator sees (type.optionals/OPT30).
-fn is_optional(name: &str) -> bool {
-    name.ends_with('?') || name.trim_end().ends_with(" or none")
-}
-
-/// `Vec<…>` / `Map<…>`, and the bare name a not-yet-parameterized spelling
-/// leaves behind. Matching on the prefix rather than parsing the argument list
-/// is enough — nothing else in the language is named `Vec` or `Map`.
-fn container_is(name: &str, base: &str) -> bool {
-    name == base || (name.starts_with(base) && name[base.len()..].starts_with('<'))
+fn optional_payload(ty: &TypeExpr) -> Option<&TypeExpr> {
+    match ty {
+        TypeExpr::Optional(inner) => Some(inner),
+        TypeExpr::Result { ok, err } if **err == TypeExpr::NoneType => Some(ok),
+        _ => None,
+    }
 }
 
 /// std.reflect: the integer primitives. `usize`/`isize` count — they're the
@@ -147,18 +147,22 @@ enum Flatness {
 /// `seen` breaks the cycle a self-referential type makes. A struct that reaches
 /// itself does so through a reference or an `Owned<Self>`; both terminate on
 /// their own, but a type that reached itself some other way would not.
-fn flatness(name: &str, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> Flatness {
-    let name = name.trim();
-
+fn flatness(ty: &TypeExpr, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> Flatness {
     // `T?` is flat exactly when its payload is: a tag byte holds no pointer.
-    if let Some(inner) = name.strip_suffix('?') {
+    if let Some(inner) = optional_payload(ty) {
         return flatness(inner, decls, seen);
     }
-    if let Some(inner) = name.strip_suffix(" or none") {
-        return flatness(inner, decls, seen);
+    match ty {
+        TypeExpr::Unit => return Flatness::Flat,
+        // FL1: a raw pointer's bytes would survive an mmap and mean nothing on
+        // the way back; an interface object and a closure point at their parts.
+        TypeExpr::RawPtr(_) | TypeExpr::Any(_) | TypeExpr::Func { .. } => {
+            return Flatness::NotFlat;
+        }
+        _ => {}
     }
-
-    let base = base_name(name);
+    // `time.Instant` is `Instant`.
+    let Some(base) = ty.last_segment() else { return Flatness::NotFlat };
 
     if is_flat_primitive(base) {
         return Flatness::Flat;
@@ -166,17 +170,11 @@ fn flatness(name: &str, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> Fla
     // FL3: a reference into a container is never flat — a `Link` is an
     // address. Answering here also terminates the walk: it is generic, and the
     // generic arm below would return Unknown.
-    if base == "Link" {
-        return Flatness::NotFlat;
-    }
-    if is_heap_backed(base) || name.starts_with("any ") || name.starts_with("func(") {
-        return Flatness::NotFlat;
-    }
-    if decls.is_resource(base) {
+    if base == "Link" || is_heap_backed(base) || decls.is_resource(base) {
         return Flatness::NotFlat;
     }
 
-    let Some(members) = decls.member_type_names(base) else {
+    let Some(members) = decls.member_types(base) else {
         // Not declared here and not a name the tables know: an opaque runtime
         // handle (`File`, `TcpListener`) or something out of scope. Neither is
         // safe to call flat.
@@ -196,8 +194,8 @@ fn flatness(name: &str, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> Fla
     }
     seen.push(base.to_string());
     let mut answer = Flatness::Flat;
-    for member in members {
-        match flatness(&member, decls, seen) {
+    for member in &members {
+        match flatness(member, decls, seen) {
             Flatness::Flat => {}
             Flatness::NotFlat => {
                 answer = Flatness::NotFlat;
@@ -210,43 +208,33 @@ fn flatness(name: &str, decls: &dyn ReflectDecls, seen: &mut Vec<String>) -> Fla
     answer
 }
 
-/// `Vec<i32>` -> `Vec`, `time.Instant` -> `Instant`, `*u8` -> `*u8`.
-fn base_name(name: &str) -> &str {
-    let name = name.trim();
-    let base = name.split('<').next().unwrap_or(name).trim();
-    base.rsplit('.').next().unwrap_or(base)
-}
-
 /// mem.relocatable/FL2, plus the widths and aliases the spec's list implies.
 fn is_flat_primitive(name: &str) -> bool {
-    is_integer(name)
-        || matches!(name, "bool" | "f32" | "f64" | "char" | "()" | "int" | "uint")
+    is_integer(name) || matches!(name, "bool" | "f32" | "f64" | "char" | "int" | "uint")
 }
 
-/// FL1's list: the types that own or point at heap memory. A raw pointer counts —
-/// the bytes would survive an mmap and mean nothing on the way back.
+/// FL1's list: the types that own or point at heap memory.
 fn is_heap_backed(name: &str) -> bool {
-    name.starts_with('*')
-        || matches!(
-            name,
-            "string"
-                | "Path"
-                | "StringView"
-                | "Vec"
-                | "Wide"
-                | "Map"
-                | "Set"
-                | "Shared"
-                | "Mutex"
-                | "Heap"
-                | "Channel"
-                | "Sender"
-                | "Receiver"
-                | "Handle"
-                | "ThreadPool"
-                | "StringBuilder"
-                | "Iterator"
-        )
+    matches!(
+        name,
+        "string"
+            | "Path"
+            | "StringView"
+            | "Vec"
+            | "Wide"
+            | "Map"
+            | "Set"
+            | "Shared"
+            | "Mutex"
+            | "Heap"
+            | "Channel"
+            | "Sender"
+            | "Receiver"
+            | "Handle"
+            | "ThreadPool"
+            | "StringBuilder"
+            | "Iterator"
+    )
 }
 
 #[cfg(test)]
@@ -264,76 +252,89 @@ mod tests {
         fn is_resource(&self, name: &str) -> bool {
             name == "Conn"
         }
-        fn member_type_names(&self, name: &str) -> Option<Vec<String>> {
-            let m: &[&str] = match name {
-                "Point" => &["f64", "f64"],
-                "Named" => &["string", "i32"],
-                "Boxed" => &["T"],
+        fn member_types(&self, name: &str) -> Option<Vec<TypeExpr>> {
+            let m: Vec<TypeExpr> = match name {
+                "Point" => vec![n("f64"), n("f64")],
+                "Named" => vec![n("string"), n("i32")],
+                "Boxed" => vec![n("T")],
                 // Self-referential through a reference — the walk has to stop
                 // there (FL3) rather than recurse into `Node` again.
-                "Node" => &["i64", "Link<Node>"],
-                "Conn" => &["i64"],
-                "Colour" => &[],
-                "Shape" => &["f64", "Point"],
-                "Payload" => &["string"],
+                "Node" => vec![n("i64"), g("Link", n("Node"))],
+                "Conn" => vec![n("i64")],
+                "Colour" => vec![],
+                "Shape" => vec![n("f64"), n("Point")],
+                "Payload" => vec![n("string")],
                 _ => return None,
             };
-            Some(m.iter().map(|s| s.to_string()).collect())
+            Some(m)
         }
         fn type_params(&self, name: &str) -> Vec<String> {
             if name == "Boxed" { vec!["T".to_string()] } else { Vec::new() }
         }
     }
 
-    fn ask(method: &str, ty: &str) -> ReflectAnswer {
-        answer(method, ty, &Decls)
+    fn n(s: &str) -> TypeExpr {
+        TypeExpr::named(s)
+    }
+
+    fn g(head: &str, arg: TypeExpr) -> TypeExpr {
+        TypeExpr::generic(head, vec![arg])
+    }
+
+    fn opt(t: TypeExpr) -> TypeExpr {
+        TypeExpr::Optional(Box::new(t))
+    }
+
+    fn ask(method: &str, ty: TypeExpr) -> ReflectAnswer {
+        answer(method, &ty, &Decls)
     }
 
     #[test]
     fn category_predicates_answer_the_spec_table() {
-        assert_eq!(ask("is_struct", "Point"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_struct", "Colour"), ReflectAnswer::Bool(false));
-        assert_eq!(ask("is_enum", "Colour"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_enum", "Point"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_struct", n("Point")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_struct", n("Colour")), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_enum", n("Colour")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_enum", n("Point")), ReflectAnswer::Bool(false));
         // The two the interpreter answered `false` for before #775.
-        assert_eq!(ask("is_integer", "i32"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_integer", "usize"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_integer", "f64"), ReflectAnswer::Bool(false));
-        assert_eq!(ask("is_float", "f64"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_float", "i32"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_integer", n("i32")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_integer", n("usize")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_integer", n("f64")), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_float", n("f64")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_float", n("i32")), ReflectAnswer::Bool(false));
     }
 
     #[test]
     fn container_shapes_match_on_the_base_name() {
-        assert_eq!(ask("is_vec", "Vec<i32>"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_vec", "Vec"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_map", "Map<string, i32>"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_map", "Vec<i32>"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_vec", g("Vec", n("i32"))), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_vec", n("Vec")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_map", g("Vec", n("i32"))), ReflectAnswer::Bool(false));
         // A user type whose name merely starts with Vec is not a Vec.
-        assert_eq!(ask("is_vec", "Vector"), ReflectAnswer::Bool(false));
-        assert_eq!(ask("is_map", "MapEntry"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_vec", n("Vector")), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_map", n("MapEntry")), ReflectAnswer::Bool(false));
     }
 
     #[test]
     fn optional_matches_both_spellings_and_nests() {
-        assert_eq!(ask("is_optional", "Point?"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_optional", "i32??"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_optional", "Point or none"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_optional", "Point"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_optional", opt(n("Point"))), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_optional", opt(opt(n("i32")))), ReflectAnswer::Bool(true));
+        let or_none = TypeExpr::Result { ok: Box::new(n("Point")), err: Box::new(TypeExpr::NoneType) };
+        assert_eq!(ask("is_optional", or_none), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_optional", n("Point")), ReflectAnswer::Bool(false));
         // `T or E` for a real E is a result, not an optional.
-        assert_eq!(ask("is_optional", "Point or ParseError"), ReflectAnswer::Bool(false));
+        let result = TypeExpr::Result { ok: Box::new(n("Point")), err: Box::new(n("ParseError")) };
+        assert_eq!(ask("is_optional", result), ReflectAnswer::Bool(false));
     }
 
     #[test]
     fn name_of_hands_back_the_spelling() {
-        assert_eq!(ask("name_of", "Vec<i32>"), ReflectAnswer::Str("Vec<i32>".into()));
+        assert_eq!(ask("name_of", g("Vec", n("i32"))), ReflectAnswer::Str("Vec<i32>".into()));
     }
 
     #[test]
     fn size_dependent_methods_say_so_rather_than_guessing_zero() {
         for m in ["size_of", "align_of", "is_copy"] {
             assert!(
-                matches!(ask(m, "Point"), ReflectAnswer::Unsupported(_)),
+                matches!(ask(m, n("Point")), ReflectAnswer::Unsupported(_)),
                 "{m} must not answer with a placeholder",
             );
         }
@@ -341,50 +342,49 @@ mod tests {
 
     #[test]
     fn is_resource_reads_the_annotation() {
-        assert_eq!(ask("is_resource", "Conn"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_resource", "Point"), ReflectAnswer::Bool(false));
-        assert_eq!(ask("is_resource", "i32"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_resource", n("Conn")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_resource", n("Point")), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_resource", n("i32")), ReflectAnswer::Bool(false));
     }
 
     #[test]
     fn flatness_walks_fields_recursively() {
         // FL2: the primitives.
-        assert_eq!(ask("is_flat", "i32"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_flat", "f64"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_flat", "bool"), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_flat", n("i32")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_flat", n("f64")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_flat", n("bool")), ReflectAnswer::Bool(true));
         // FL1: not the heap-backed ones.
-        assert_eq!(ask("is_flat", "string"), ReflectAnswer::Bool(false));
-        assert_eq!(ask("is_flat", "Vec<i32>"), ReflectAnswer::Bool(false));
-        assert_eq!(ask("is_flat", "Map<string, i32>"), ReflectAnswer::Bool(false));
-        assert_eq!(ask("is_flat", "any Shape"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_flat", n("string")), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_flat", g("Vec", n("i32"))), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_flat", TypeExpr::Any(Box::new(n("Shape")))), ReflectAnswer::Bool(false));
         // FL3: a link is an address.
-        assert_eq!(ask("is_flat", "Link<Node>"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_flat", g("Link", n("Node"))), ReflectAnswer::Bool(false));
         // FL1 recursively.
-        assert_eq!(ask("is_flat", "Point"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_flat", "Named"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_flat", n("Point")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_flat", n("Named")), ReflectAnswer::Bool(false));
         // A resource is never flat.
-        assert_eq!(ask("is_flat", "Conn"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_flat", n("Conn")), ReflectAnswer::Bool(false));
         // FL5: an enum follows its variant payloads.
-        assert_eq!(ask("is_flat", "Colour"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_flat", "Shape"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_flat", "Payload"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_flat", n("Colour")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_flat", n("Shape")), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_flat", n("Payload")), ReflectAnswer::Bool(false));
         // A self-referential type through a reference terminates, and answers
         // false because FL3 stops at the reference.
-        assert_eq!(ask("is_flat", "Node"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_flat", n("Node")), ReflectAnswer::Bool(false));
         // An optional follows its payload.
-        assert_eq!(ask("is_flat", "Point?"), ReflectAnswer::Bool(true));
-        assert_eq!(ask("is_flat", "Named?"), ReflectAnswer::Bool(false));
+        assert_eq!(ask("is_flat", opt(n("Point"))), ReflectAnswer::Bool(true));
+        assert_eq!(ask("is_flat", opt(n("Named"))), ReflectAnswer::Bool(false));
     }
 
     #[test]
     fn a_generic_declaration_cannot_answer_for_an_instantiation() {
         // R5 wants the monomorphized type; the declaration's fields are written
         // in its type parameters.
-        assert!(matches!(ask("is_flat", "Boxed<i32>"), ReflectAnswer::Unsupported(_)));
+        assert!(matches!(ask("is_flat", g("Boxed", n("i32"))), ReflectAnswer::Unsupported(_)));
     }
 
     #[test]
     fn an_unknown_name_is_not_a_reflect_method() {
-        assert_eq!(ask("is_purple", "Point"), ReflectAnswer::NoSuchMethod);
+        assert_eq!(ask("is_purple", n("Point")), ReflectAnswer::NoSuchMethod);
     }
 }

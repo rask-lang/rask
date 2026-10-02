@@ -5,6 +5,7 @@ use rask_ast::decl::FnDecl;
 use rask_ast::expr::ExprKind;
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
+use rask_ast::ty::TypeExpr;
 use std::collections::HashSet;
 
 use crate::value::{GenericFrame, Value};
@@ -145,7 +146,10 @@ impl Interpreter {
             // OPT6: a bare `T` passed where the parameter is `T?` widens at the
             // call. Without it `present_bare(3)` bound a raw 3 and `x?` had no
             // tag to read (#393).
-            let arg = wrap_optional_layers(arg, &param.ty);
+            let arg = match &param.ty {
+                Some(ty) => wrap_optional_layers(arg, ty),
+                None => arg,
+            };
             self.env.define(param.name.clone(), arg);
         }
 
@@ -238,21 +242,15 @@ impl Interpreter {
             Err(e) => return Err(e),
         };
 
-        let returns_result = func.ret_ty.as_ref()
-            .map(|t| t.starts_with("Result<"))
-            .unwrap_or(false);
+        let result_sides = func.ret_ty.as_ref().and_then(result_sides);
+        let returns_result = result_sides.is_some();
         // Both spellings. `wrap_optional_layers` has always understood
         // `Option<T>` as well as `T?` — this gate didn't, so a function
         // declared the long way handed back a bare `T` and the caller's `!`
         // said "requires Option or Result, got i64". `get_clone` in
         // `stdlib/collections.rk` is written that way, so every `get_clone` on
         // the interpreter was broken (#1211).
-        let returns_option = func.ret_ty.as_ref()
-            .map(|t| {
-                let t = t.trim();
-                t.ends_with('?') || (t.starts_with("Option<") && t.ends_with('>'))
-            })
-            .unwrap_or(false);
+        let returns_option = func.ret_ty.as_ref().is_some_and(|t| optional_depth(t) > 0);
         if returns_result {
             // Already a Result: pass through.
             if matches!(&value, Value::Enum { name, .. } if name == "Result") {
@@ -261,9 +259,7 @@ impl Interpreter {
             // ER9: pick the branch by the value's runtime type. If the value
             // matches E (or a variant of a union E), wrap as Err; else Ok.
             // Disjointness (ER3) makes this unambiguous.
-            let err_names = func.ret_ty.as_ref()
-                .map(|t| extract_result_err_names(t))
-                .unwrap_or_default();
+            let err_names = result_sides.map(|(_, err)| err_arms(err)).unwrap_or_default();
             let is_err_branch = self.value_matches_any_err(&value, &err_names);
             if is_err_branch {
                 return Ok(Value::Enum {
@@ -277,9 +273,8 @@ impl Interpreter {
             // returning a bare KV needs the optional layer too — without it,
             // `try f()` handed back a KV where the caller expected a KV? and
             // read it as absent (#383).
-            let ok_ty = func.ret_ty.as_ref().and_then(|t| result_ok_type(t));
-            let payload = match ok_ty {
-                Some(ok) => wrap_optional_layers(value, &ok),
+            let payload = match result_sides {
+                Some((ok, _)) => wrap_optional_layers(value, ok),
                 None => value,
             };
             return Ok(Value::Enum {
@@ -295,7 +290,7 @@ impl Interpreter {
             // absent. Same helper the ok side and the arguments use.
             match func.ret_ty.as_ref() {
                 Some(ret) => Ok(wrap_optional_layers(value, ret)),
-                None => Ok(wrap_optional_layers(value, "T?")),
+                None => Ok(value),
             }
         } else {
             Ok(value)
@@ -571,22 +566,34 @@ fn binding_name(kind: &StmtKind) -> Option<&str> {
     }
 }
 
-/// The T of a `Result<T, E>` string, as written.
-fn result_ok_type(ret_ty: &str) -> Option<String> {
-    rask_ast::type_str::result_parts(ret_ty).map(|(ok, _)| ok.to_string())
+/// The two sides of a result type, either spelling: `T or E`, `Result<T, E>`.
+pub(super) fn result_sides(ty: &TypeExpr) -> Option<(&TypeExpr, &TypeExpr)> {
+    match ty {
+        TypeExpr::Result { ok, err } => Some((ok, err)),
+        TypeExpr::Named { path, args } if path.len() == 1 && path[0] == "Result" => match args.as_slice() {
+            [ok, err] => Some((ok, err)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// How many optional layers a written type asks for: `KV?` and `Option<KV>`
+/// one, `KV??` two.
+pub(super) fn optional_depth(ty: &TypeExpr) -> usize {
+    match ty {
+        TypeExpr::Optional(inner) => 1 + optional_depth(inner),
+        TypeExpr::Named { path, args } if path.len() == 1 && path[0] == "Option" && args.len() == 1 => {
+            1 + optional_depth(&args[0])
+        }
+        _ => 0,
+    }
 }
 
 /// Add whatever optional layers `ty` asks for that `value` doesn't already
-/// carry. `KV?` / `Option<KV>` want one; `KV??` wants two.
-fn wrap_optional_layers(value: Value, ty: &str) -> Value {
-    let ty = ty.trim();
-    let want = if ty.ends_with('?') {
-        ty.chars().rev().take_while(|c| *c == '?').count()
-    } else if ty.starts_with("Option<") && ty.ends_with('>') {
-        1
-    } else {
-        return value;
-    };
+/// carry.
+fn wrap_optional_layers(value: Value, ty: &TypeExpr) -> Value {
+    let want = optional_depth(ty);
     let mut out = value;
     for _ in option_depth(&out)..want {
         out = Value::Enum {
@@ -610,27 +617,12 @@ pub(crate) fn option_depth(value: &Value) -> usize {
     }
 }
 
-/// The E type names of a `Result<T, E>`, one per arm of a union error.
-///
-/// The split is `rask_ast::type_str`'s. Three hand-written copies of it lived
-/// in this crate, all counting the `>` of a function type's `->` as a closing
-/// bracket — so `Result<(func(i64) -> i64), Oops>` had no top-level comma, this
-/// answered with nothing, and `return Oops.Bad` was wrapped as the *success*
-/// branch. The caller then bound the enum and reported "enum is not callable"
-/// at the call site, while native ran it (#1244).
-fn extract_result_err_names(ret_ty: &str) -> Vec<String> {
-    let Some((_, err_str)) = rask_ast::type_str::result_parts(ret_ty) else {
-        return Vec::new();
-    };
-    // `(E1 | E2)` — those parens belong to the union, not to a type.
-    let err_str = err_str
-        .strip_prefix('(').and_then(|s| s.strip_suffix(')'))
-        .map(str::trim)
-        .unwrap_or(err_str);
-    rask_ast::type_str::split_all_top_level(err_str, '|')
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+/// The error side of a result, one entry per arm of a union.
+pub(super) fn err_arms(err: &TypeExpr) -> Vec<TypeExpr> {
+    match err {
+        TypeExpr::Union(arms) => arms.clone(),
+        one => vec![one.clone()],
+    }
 }
 
 impl Interpreter {
@@ -646,7 +638,7 @@ impl Interpreter {
     /// methods. ER4 already restricts an error side to `Error`, so the
     /// compiler-provided method lists cover every case that can legally appear
     /// here — a user interface can't be an error type on its own.
-    fn value_matches_any_err(&self, value: &Value, names: &[String]) -> bool {
+    fn value_matches_any_err(&self, value: &Value, names: &[TypeExpr]) -> bool {
         if value_matches_any_type(value, names) {
             return true;
         }
@@ -660,12 +652,12 @@ impl Interpreter {
             // Only the long spelling matched, so an `i64 or Error` function
             // returning a concrete error handed it back as the *ok* branch —
             // the same #708 bug, in the spelling most of the corpus uses.
-            let interface_name = match rask_ast::interfaces::interface_object_name(n) {
-                Some(t) => t,
-                None if rask_ast::interfaces::is_bare_error(n) => "Error",
-                None => return false,
+            let interface_name = match n {
+                TypeExpr::Any(t) => t.to_string(),
+                _ if n.is_name("Error") => "Error".to_string(),
+                _ => return false,
             };
-            let required = rask_types::builtin_interface_method_names(interface_name);
+            let required = rask_types::builtin_interface_method_names(&interface_name);
             if required.is_empty() {
                 return false;
             }
@@ -678,13 +670,13 @@ impl Interpreter {
 }
 
 /// Does the runtime value match any of the named types?
-fn value_matches_any_type(value: &Value, names: &[String]) -> bool {
+fn value_matches_any_type(value: &Value, names: &[TypeExpr]) -> bool {
     if names.is_empty() {
         return false;
     }
     // "none" in the error type names matches the interpreter's `none` runtime value,
     // which is represented as Option.None (from ExprKind::None).
-    if names.iter().any(|n| n == "none") {
+    if names.iter().any(|n| *n == TypeExpr::NoneType) {
         if matches!(value, Value::Enum { name, variant, .. } if name == "Option" && variant == "None") {
             return true;
         }
@@ -719,11 +711,7 @@ fn value_matches_any_type(value: &Value, names: &[String]) -> bool {
 /// against a layout named `Refused` and routed to the success arm — so
 /// `Vec.try_push`, declared `void or GrowError<T>`, read backwards on both
 /// backends in different ways.
-fn same_nominal(a: &str, b: &str) -> bool {
-    fn base(n: &str) -> &str {
-        let n = n.split('<').next().unwrap_or(n).trim();
-        n.rsplit('.').next().unwrap_or(n).trim()
-    }
-    base(a) == base(b)
+pub(super) fn same_nominal(written: &TypeExpr, runtime_name: &str) -> bool {
+    written.last_segment() == runtime_name.rsplit('.').next()
 }
 

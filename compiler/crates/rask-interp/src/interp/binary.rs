@@ -67,18 +67,19 @@ impl BinaryStructMeta {
     }
 }
 
-/// Parse a binary field type specifier: returns (bits, endian, runtime_type_name, is_byte_array, byte_array_len)
-fn parse_field_spec(ty: &str) -> Option<(u32, Option<Endian>, String, bool, usize)> {
-    let s = ty.trim();
-
-    // [N]u8 — fixed byte array
-    if s.starts_with('[') {
-        let bracket_end = s.find(']')?;
-        let count: usize = s[1..bracket_end].parse().ok()?;
-        let elem = &s[bracket_end + 1..];
-        if elem != "u8" { return None; }
-        return Some((count as u32 * 8, None, "byte_array".into(), true, count));
-    }
+/// Read a binary field type specifier: returns (bits, endian, runtime_type_name, is_byte_array, byte_array_len)
+fn parse_field_spec(ty: &rask_ast::ty::TypeExpr) -> Option<(u32, Option<Endian>, String, bool, usize)> {
+    use rask_ast::ty::TypeExpr;
+    let s = match ty {
+        // [N]u8 — fixed byte array
+        TypeExpr::FixedCount { count, elem } => {
+            let count: usize = count.parse().ok()?;
+            if !elem.is_name("u8") { return None; }
+            return Some((count as u32 * 8, None, "byte_array".into(), true, count));
+        }
+        TypeExpr::Int(n) => n.as_str(),
+        _ => ty.bare_name()?,
+    };
 
     // Bare number
     if let Ok(n) = s.parse::<u32>() {

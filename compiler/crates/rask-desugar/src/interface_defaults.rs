@@ -40,7 +40,8 @@ pub(crate) fn inject(decls: &mut [Decl]) -> Injected {
                 .filter(|m| !m.body.is_empty())
                 .cloned()
                 .collect();
-            interfaces.insert(bare(&t.name), (t.super_interfaces.clone(), defaults));
+            let supers = t.super_interfaces.iter().filter_map(|s| s.name()).collect();
+            interfaces.insert(bare(&t.name), (supers, defaults));
         }
     }
     if interfaces.values().all(|(_, d)| d.is_empty()) {
@@ -56,7 +57,7 @@ pub(crate) fn inject(decls: &mut [Decl]) -> Injected {
         let (ty, methods) = match &decl.kind {
             DeclKind::Struct(s) => (bare(&s.name), &s.methods),
             DeclKind::Enum(e) => (bare(&e.name), &e.methods),
-            DeclKind::Impl(i) => (bare(&i.target_ty), &i.methods),
+            DeclKind::Impl(i) => (i.target_ty.name().unwrap_or_default(), &i.methods),
             _ => continue,
         };
         let entry = owned.entry(ty).or_default();
@@ -68,21 +69,21 @@ pub(crate) fn inject(decls: &mut [Decl]) -> Injected {
     let mut injected = Injected::new();
     for (decl_index, decl) in decls.iter_mut().enumerate() {
         let DeclKind::Impl(block) = &mut decl.kind else { continue };
-        if block.interface_name.is_none() {
+        if block.interface.is_none() {
             continue;
         }
-        let target = bare(&block.target_ty);
+        let target = block.target_ty.name().unwrap_or_default();
 
         // The header's interfaces and everything above them: a default declared two
         // levels up is still part of what this block promises.
         let mut claimed: Vec<String> = Vec::new();
-        let mut queue: Vec<String> = block.interface_name.iter().map(|n| bare(n)).collect();
+        let mut queue: Vec<String> = block.interface.iter().filter_map(|n| n.name()).collect();
         while let Some(name) = queue.pop() {
             if claimed.contains(&name) {
                 continue;
             }
             if let Some((supers, _)) = interfaces.get(&name) {
-                queue.extend(supers.iter().map(|s| bare(s)));
+                queue.extend(supers.iter().cloned());
             }
             claimed.push(name);
         }

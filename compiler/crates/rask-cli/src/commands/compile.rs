@@ -47,17 +47,17 @@ pub(super) fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask
     typed.types.type_name_map()
 }
 
-/// Nominal newtype name → the type string it wraps.
+/// Nominal newtype name → the type it wraps.
 ///
 /// `type Id = u64 implements …` has no layout: it *is* a u64 with its own
 /// identity, so MIR treats it as transparent (#445).
 pub(super) fn build_nominal_underlying(
     typed: &rask_types::TypedProgram,
-) -> HashMap<String, String> {
+) -> HashMap<String, rask_types::Type> {
     typed.types.iter()
         .filter_map(|def| match def {
             rask_types::TypeDef::NominalAlias { name, underlying, .. } => {
-                Some((name.clone(), format!("{}", underlying)))
+                Some((name.clone(), underlying.clone()))
             }
             _ => None,
         })
@@ -231,7 +231,8 @@ fn setup_codegen(
         if let DeclKind::Extern(e) = &d.kind {
             Some(rask_codegen::ExternFuncSig {
                 name: e.name.clone(),
-                param_types: e.params.iter().map(|p| p.ty.clone()).collect(),
+                // The parser rejects an extern parameter without a type.
+                param_types: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
                 ret_ty: e.ret_ty.clone(),
             })
         } else {

@@ -12,7 +12,7 @@ use rask_ast::LineMap;
 use rask_mir::{MirConst, MirFunction, MirOperand};
 use rask_mono::{EnumLayout, MonoProgram, StructLayout};
 use crate::builder::FunctionBuilder;
-use crate::types::{mir_to_cranelift_type, type_string_to_mir};
+use crate::types::{mir_to_cranelift_type, extern_type_to_mir};
 use crate::{BuildMode, CodegenError, CodegenResult};
 
 pub struct CodeGenerator {
@@ -1163,7 +1163,7 @@ impl CodeGenerator {
             let mut sig = self.module.make_signature();
             let mut plan = Vec::with_capacity(decl.param_types.len());
             for param_ty in &decl.param_types {
-                let mir_ty = type_string_to_mir(param_ty);
+                let mir_ty = extern_type_to_mir(param_ty);
                 let cl_ty = mir_to_cranelift_type(&mir_ty)?;
                 let arg = crate::c_abi::classify(param_ty, cl_ty, layouts);
                 match &arg {
@@ -1184,7 +1184,7 @@ impl CodeGenerator {
                 self.c_abi_args.insert(decl.name.clone(), plan);
             }
             if let Some(ret) = &decl.ret_ty {
-                let mir_ty = type_string_to_mir(ret);
+                let mir_ty = extern_type_to_mir(ret);
                 if !matches!(mir_ty, rask_mir::MirType::Void) {
                     let cl_ty = mir_to_cranelift_type(&mir_ty)?;
                     sig.returns.push(AbiParam::new(cl_ty));

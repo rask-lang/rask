@@ -9,7 +9,6 @@
 //!   M3: Compute layouts (done after this pass)
 //!   M4: Transitive - new instantiations may discover more calls
 
-use crate::instantiate::instantiate_function;
 use crate::MonoFunction;
 use rask_ast::{
     decl::{Decl, DeclKind, FnDecl},
@@ -17,6 +16,7 @@ use rask_ast::{
     stmt::{Stmt, StmtKind},
 };
 use rask_ast::{NodeId, Span};
+use rask_ast::ty::TypeExpr;
 use rask_types::{Callee, Type, TypeBinding, TypeId, TypedProgram};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -40,18 +40,6 @@ pub struct AmbiguousMethod {
     pub span: Span,
 }
 
-/// A callee name with any written type arguments removed: `make<i32>` →
-/// `make`. Names with no `<…>` come back unchanged.
-///
-/// Only for call position. A *type* name like `Vec<i64>` keeps its arguments —
-/// they're part of which type it is.
-pub(crate) fn strip_written_type_args(name: &str) -> &str {
-    match name.find('<') {
-        Some(i) if name.ends_with('>') => &name[..i],
-        _ => name,
-    }
-}
-
 /// Generate a mangled name for a generic function instantiation.
 /// e.g., ("render_children", [Inline]) → "render_children$Inline"
 pub fn mangle_name(base: &str, type_args: &[TypeBinding]) -> String {
@@ -66,9 +54,8 @@ pub fn mangle_name(base: &str, type_args: &[TypeBinding]) -> String {
 /// One type argument as it appears inside a symbol name.
 ///
 /// A written instantiation flattens: `Wrap<i64>` becomes `Wrap$i64`,
-/// `Pair<i64, Big>` becomes `Pair$i64$Big`. A `<` in a symbol name is what
-/// `strip_written_type_args` cuts off, so `get$Wrap<i64>` would come back out of
-/// it as `get$Wrap` — a name for a different instantiation (#871).
+/// `Pair<i64, Big>` becomes `Pair$i64$Big`, so a symbol name never holds a
+/// `<` (#871).
 ///
 /// `?` and ` or ` get names of their own rather than being dropped: `i64?` and
 /// `i64` are different instantiations of the same method and can't share a
@@ -184,37 +171,24 @@ struct MethodOwner {
     /// when the parameters sit directly under the angle brackets:
     /// `extend Sequence<(K, V)>` came back as `Sequence<i32>`, dropping `V`,
     /// and the receiver then had a scalar element type where a pair was due.
-    template: String,
+    template: TypeExpr,
 }
 
-/// Split `One<A, B: Interface>` into `("One", ["A", "B"])`. `None` when the name
-/// carries no parameters.
-fn parse_owner(type_name: &str) -> Option<MethodOwner> {
-    let open = type_name.find('<')?;
-    let inner = type_name[open + 1..].trim_end().strip_suffix('>')?;
+/// The owner an `extend` header writes: `extend One<A, B>` gives `One` with
+/// `["A", "B"]`. `None` when the header carries no arguments.
+fn header_owner(target: &TypeExpr) -> Option<MethodOwner> {
     let mut params: Vec<String> = Vec::new();
-    for arg in split_top_level(inner, ',') {
-        let bare = arg.split(':').next().unwrap_or(arg).trim();
+    for arg in target.args() {
         // A tuple argument binds each of its members, not itself.
-        if let Some(members) = bare.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
-            for m in split_top_level(members, ',') {
-                let m = m.split(':').next().unwrap_or(m).trim();
-                if !m.is_empty() {
-                    params.push(m.to_string());
-                }
-            }
-        } else if !bare.is_empty() {
-            params.push(bare.to_string());
+        match arg {
+            TypeExpr::Tuple(members) => params.extend(members.iter().map(|m| m.to_string())),
+            other => params.push(other.to_string()),
         }
     }
     if params.is_empty() {
         return None;
     }
-    Some(MethodOwner {
-        base: type_name[..open].trim().to_string(),
-        params,
-        template: type_name.trim().to_string(),
-    })
+    Some(MethodOwner { base: target.name()?, params, template: target.clone() })
 }
 
 /// What the checker's record says a method call dispatches to.
@@ -247,56 +221,6 @@ fn is_primitive_receiver(name: &str) -> bool {
     )
 }
 
-/// Replace whole-word occurrences of a type parameter name in a type string.
-///
-/// Whole-word so `V` doesn't rewrite the `V` inside `Value`, and so a parameter
-/// named `T` leaves `Task` alone.
-fn substitute_param_name(ty: &str, param: &str, arg: &str) -> String {
-    let mut out = String::with_capacity(ty.len());
-    let bytes = ty.as_bytes();
-    let mut i = 0usize;
-    while i < ty.len() {
-        let rest = &ty[i..];
-        let boundary_before = i == 0 || !is_ident_byte(bytes[i - 1]);
-        if boundary_before && rest.starts_with(param) {
-            let after = i + param.len();
-            let boundary_after = after >= ty.len() || !is_ident_byte(bytes[after]);
-            if boundary_after {
-                out.push_str(arg);
-                i = after;
-                continue;
-            }
-        }
-        let ch = rest.chars().next().unwrap();
-        out.push(ch);
-        i += ch.len_utf8();
-    }
-    out
-}
-
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'_'
-}
-
-/// Split on `sep` at nesting depth zero, so `Map<K, V>, T` gives two parts.
-fn split_top_level(s: &str, sep: char) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth -= 1,
-            c if c == sep && depth == 0 => {
-                parts.push(&s[start..i]);
-                start = i + c.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    parts.push(&s[start..]);
-    parts
-}
 
 /// Methods declared directly by a type declaration or an `extend` block.
 fn methods_of(decl: &Decl) -> &[FnDecl] {
@@ -320,17 +244,16 @@ fn methods_of(decl: &Decl) -> &[FnDecl] {
 /// where the field's value belongs (#1129).
 ///
 /// Both places that file a method under `Type_method` know the type, so both
-/// write it in. A generic owner keeps `Self` — the per-receiver copy in `run`
-/// substitutes the instantiated layout, which the template's `Wrapper<T>`
-/// couldn't say.
-fn with_self_type(method: &FnDecl, type_name: &str) -> FnDecl {
+/// write it in — the bare name, generic owner included. A per-receiver copy in
+/// `run` replaces it with the instantiated type; the template is laid out by
+/// the shared layout. Keeping `Self` for a generic owner left the name split as
+/// the only answer, and a private stdlib enum (`HandleList_async`) read as
+/// `HandleList`.
+fn with_self_type(method: &FnDecl, owner: &TypeExpr) -> FnDecl {
     let mut method = method.clone();
-    if type_name.contains('<') {
-        return method;
-    }
     if let Some(p) = method.params.first_mut() {
-        if p.name == "self" && p.ty == "Self" {
-            p.ty = type_name.to_string();
+        if p.name == "self" && p.ty.as_ref().is_some_and(|t| t.is_name("Self")) {
+            p.ty = Some(owner.clone());
         }
     }
     method
@@ -339,7 +262,7 @@ fn with_self_type(method: &FnDecl, type_name: &str) -> FnDecl {
 /// Wrap a method FnDecl as a top-level Decl and register it under its
 /// qualified name (Type_method). Also records the bare→qualified mapping.
 fn register_method(
-    type_name: &str,
+    target: &TypeExpr,
     method: &FnDecl,
     parent_decl: &Decl,
     method_table: &mut HashMap<String, Decl>,
@@ -347,6 +270,7 @@ fn register_method(
     method_owners: &mut HashMap<String, MethodOwner>,
     owner_params: &HashMap<String, Vec<String>>,
 ) {
+    let Some(type_name) = target.name() else { return };
     let qualified = format!("{}_{}", type_name, method.name);
     // `extend Wrapper<T>` says its parameters in the header. `extend Wrapper`
     // doesn't, and the owning declaration is where they live — the header is
@@ -355,45 +279,36 @@ fn register_method(
     // `Wrapper_get` returning a word served `Wrapper<f64>` (which read the
     // double's bits as an integer) and `Wrapper<string>` (which segfaulted on a
     // 16-byte value in an 8-byte return slot) alike (#916).
-    let owner = parse_owner(type_name).or_else(|| {
-        let base = type_name.split('<').next().unwrap_or(type_name).trim();
+    let owner = header_owner(target).or_else(|| {
         owner_params
-            .get(base)
+            .get(&type_name)
             .filter(|params| !params.is_empty())
             .map(|params| MethodOwner {
-                base: base.to_string(),
-                template: format!("{}<{}>", base, params.join(", ")),
+                base: type_name.clone(),
+                template: TypeExpr::generic(
+                    type_name.clone(),
+                    params.iter().map(TypeExpr::named).collect(),
+                ),
                 params: params.clone(),
             })
     });
+    // The owner's bare name, generic or not: a per-receiver copy in `run`
+    // replaces it with the instantiated type, and the template itself is laid
+    // out by the shared layout that name finds.
+    let method = with_self_type(method, &TypeExpr::named(type_name.as_str()));
     if let Some(owner) = owner {
-        method_owners.insert(format!("{}_{}", owner.base, method.name), owner.clone());
         method_owners.insert(qualified.clone(), owner);
     }
-    let method = with_self_type(method, type_name);
-    let method = &method;
     let wrapped = Decl {
         id: parent_decl.id,
         kind: DeclKind::Fn(method.clone()),
         span: parent_decl.span,
     };
-    method_table.insert(qualified.clone(), wrapped.clone());
+    method_table.insert(qualified.clone(), wrapped);
     method_by_bare_name
         .entry(method.name.clone())
         .or_default()
-        .push(qualified.clone());
-
-    // For generic types like Box<T>, also register under the stripped name (Box_new)
-    // so MIR calls that strip generic params can resolve the method.
-    let base = type_name.split('<').next().unwrap_or(type_name);
-    if base != type_name {
-        let stripped = format!("{}_{}", base, method.name);
-        method_table.entry(stripped.clone()).or_insert(wrapped);
-        method_by_bare_name
-            .entry(method.name.clone())
-            .or_default()
-            .push(stripped);
-    }
+        .push(qualified);
 }
 
 impl<'a> Monomorphizer<'a> {
@@ -428,12 +343,15 @@ impl<'a> Monomorphizer<'a> {
         let mut declared_types: std::collections::HashSet<String> = std::collections::HashSet::new();
         for decl in decls {
             let name = match &decl.kind {
-                DeclKind::Struct(s) => &s.name,
-                DeclKind::Enum(e) => &e.name,
-                DeclKind::Impl(i) => &i.target_ty,
+                DeclKind::Struct(s) => s.name.clone(),
+                DeclKind::Enum(e) => e.name.clone(),
+                DeclKind::Impl(i) => match i.target_ty.name() {
+                    Some(n) => n,
+                    None => continue,
+                },
                 _ => continue,
             };
-            declared_types.insert(name.split('<').next().unwrap_or(name).trim().to_string());
+            declared_types.insert(name);
         }
 
         for decl in decls {
@@ -473,7 +391,7 @@ impl<'a> Monomorphizer<'a> {
                 DeclKind::Struct(s) => {
                     for method in &s.methods {
                         register_method(
-                            &s.name, method, decl,
+                            &TypeExpr::named(s.name.as_str()), method, decl,
                             &mut method_table, &mut method_by_bare_name,
                             &mut method_owners, &owner_params,
                         );
@@ -482,7 +400,7 @@ impl<'a> Monomorphizer<'a> {
                 DeclKind::Enum(e) => {
                     for method in &e.methods {
                         register_method(
-                            &e.name, method, decl,
+                            &TypeExpr::named(e.name.as_str()), method, decl,
                             &mut method_table, &mut method_by_bare_name,
                             &mut method_owners, &owner_params,
                         );
@@ -497,7 +415,7 @@ impl<'a> Monomorphizer<'a> {
                         // same rule the checker files them under.
                         let filed;
                         let method = match rask_ast::operators::conformance_method_name(
-                            &i.target_ty, i.interface_name.as_deref(), &method.name,
+                            &i.target_ty, i.interface.as_ref(), &method.name,
                         ) {
                             Some(name) => {
                                 filed = FnDecl { name, ..method.clone() };
@@ -524,7 +442,7 @@ impl<'a> Monomorphizer<'a> {
             if let DeclKind::Interface(t) = &decl.kind {
                 let compatible = t.methods.iter()
                     .filter(|m| m.type_params.is_empty()
-                        && m.ret_ty.as_deref() != Some("Self"))
+                        && !m.ret_ty.as_ref().is_some_and(|t| t.is_name("Self")))
                     .map(|m| m.name.clone())
                     .collect();
                 interface_methods.insert(t.name.clone(), compatible);
@@ -874,6 +792,7 @@ impl<'a> Monomorphizer<'a> {
             // The type the bare name resolves to. Only that one can claim the
             // plain `Type_method` symbol; a shadowed type has no other spelling.
             let owns_name = typed.types.get_type_id(&type_name) == Some(type_id);
+            let self_owner = TypeExpr::named(type_name.as_str());
 
             for decl_id in decl_ids {
                 let Some(decl) = by_id.get(&decl_id) else { continue };
@@ -896,7 +815,7 @@ impl<'a> Monomorphizer<'a> {
                     if owns_name {
                         let body = Decl {
                             id: decl.id,
-                            kind: DeclKind::Fn(with_self_type(method, &type_name)),
+                            kind: DeclKind::Fn(with_self_type(method, &self_owner)),
                             span: decl.span,
                         };
                         if suffix.is_some() {
@@ -1037,20 +956,14 @@ impl<'a> Monomorphizer<'a> {
     fn add_entry_error_message_roots(&mut self, entry: &str) {
         let Some(decl) = self.fn_table.get(entry) else { return };
         let DeclKind::Fn(f) = &decl.kind else { return };
-        let Some(ret_ty) = f.ret_ty.clone() else { return };
-        let err_branch = match ret_ty.split_once(" or ") {
-            Some((_, e)) => e.trim().to_string(),
-            // The canonical form. Splitting it lives in rask_ast::type_str so
-            // this and the checker's stub parser can't drift — they already had,
-            // over whether `[` `]` nest (a `Vec[T, N]` lane count has a comma).
-            None => match rask_ast::type_str::result_parts(ret_ty.trim()) {
-                Some((_, e)) => e.trim().to_string(),
-                None => return,
-            },
-        };
+        let Some(TypeExpr::Result { err, .. }) = &f.ret_ty else { return };
         // `A | B` — every arm can be the one that reaches main.
-        for arm in err_branch.split('|') {
-            let name = format!("{}_message", arm.trim());
+        let arms = match err.as_ref() {
+            TypeExpr::Union(arms) => arms.clone(),
+            one => vec![one.clone()],
+        };
+        for arm in arms {
+            let name = format!("{}_message", arm);
             if self.method_table.contains_key(&name) {
                 self.enqueue(name, Vec::new());
             }
@@ -1068,18 +981,11 @@ impl<'a> Monomorphizer<'a> {
     /// "vtable method IoError.message" (#1107). Cast sites have had the same
     /// answer since TR5 — mark every method of that name — so this uses it.
     fn mark_erased_error_methods(&mut self, f: &rask_ast::decl::FnDecl) {
-        let Some(ret_ty) = f.ret_ty.as_deref() else { return };
-        let err: &str = match ret_ty.split_once(" or ") {
-            Some((_, e)) => e.trim(),
-            None => match rask_ast::type_str::result_parts(ret_ty.trim()) {
-                Some((_, e)) => e.trim(),
-                None => return,
-            },
-        };
-        let interface_name = match rask_ast::interfaces::interface_object_name(err) {
-            Some(t) => t.to_string(),
-            None if rask_ast::interfaces::is_bare_error(err) => "Error".to_string(),
-            None => return,
+        let Some(TypeExpr::Result { err, .. }) = &f.ret_ty else { return };
+        let interface_name = match err.as_ref() {
+            TypeExpr::Any(t) => t.to_string(),
+            e if e.is_name("Error") => "Error".to_string(),
+            _ => return,
         };
         self.mark_interface_object_methods(&interface_name);
     }
@@ -1127,7 +1033,7 @@ impl<'a> Monomorphizer<'a> {
                 if let (Some(self_ty), DeclKind::Fn(f)) = (self_ty, &mut cloned.kind) {
                     if let Some(p) = f.params.first_mut() {
                         if p.name == "self" {
-                            p.ty = self_ty;
+                            p.ty = Some(self_ty);
                         }
                     }
                 }
@@ -1155,8 +1061,8 @@ impl<'a> Monomorphizer<'a> {
                             })
                         });
                         if let Some(ty) = inferred {
-                            f.ret_ty = Some(crate::instantiate::substitute_type_in_string(
-                                &format!("{}", ty),
+                            f.ret_ty = Some(crate::instantiate::substitute_written_type(
+                                ty,
                                 &param_names,
                                 &bound_args,
                             ));
@@ -1201,7 +1107,7 @@ impl<'a> Monomorphizer<'a> {
         &self,
         name: &str,
         bindings: &[TypeBinding],
-    ) -> (Vec<String>, Vec<Type>, Option<String>) {
+    ) -> (Vec<String>, Vec<Type>, Option<TypeExpr>) {
         let names: Vec<String> = bindings.iter().map(|b| b.param.clone()).collect();
         let args: Vec<Type> = bindings.iter().map(|b| b.ty.clone()).collect();
 
@@ -1218,11 +1124,9 @@ impl<'a> Monomorphizer<'a> {
             if !owner.params.iter().all(|p| names.iter().any(|n| n == p)) {
                 return None;
             }
-            let mut out = owner.template.clone();
-            for b in bindings {
-                out = substitute_param_name(&out, &b.param, &format!("{}", b.ty));
-            }
-            Some(out)
+            Some(owner.template.substitute(&|name| {
+                bindings.iter().find(|b| b.param == name).map(|b| b.ty.to_type_expr())
+            }))
         });
         (names, args, self_ty)
     }
@@ -1330,7 +1234,7 @@ impl<'a> Monomorphizer<'a> {
             }
         }
 
-        let templates = rask_types::extend_target_args(&owner.template);
+        let templates = owner.template.args();
         let Some(bound) = rask_types::bind_header_patterns(&typed.types, &templates, &actuals) else {
             return Vec::new();
         };
@@ -1580,13 +1484,10 @@ impl<'a> Monomorphizer<'a> {
 
         match &expr.kind {
             ExprKind::Call { func, args } => {
-                if let ExprKind::Ident(name) = &func.kind {
-                    // `make<i32>(2)` — the parser folds the written type
-                    // arguments into the callee's name, so the function table's
-                    // bare key never matched and nothing was ever queued for
-                    // the call (#712). The arguments are already in
-                    // `type_args_at`, put there by the checker.
-                    let name = &strip_written_type_args(name).to_string();
+                if let Some(name) = func.name() {
+                    // `make<i32>(2)`: the written arguments are already in
+                    // `type_args_at`, put there by the checker (#712).
+                    let name = &name.to_string();
                     let type_args = self.type_args_at(expr.id);
                     // Record call rewrite so MIR lowering uses the mangled name.
                     // Only for functions with a body to instantiate — a stdlib
@@ -1760,7 +1661,7 @@ impl<'a> Monomorphizer<'a> {
                     // Static method call: Type.method() → enqueue "Type_method"
                     // Cross-package call: pkg.func() → enqueue "func" (the function
                     // is registered under its original name from the dependency).
-                    if let ExprKind::Ident(name) = &object.kind {
+                    if let Some(name) = object.name() {
                         if self.package_modules.contains(name) {
                             self.enqueue(method.clone(), type_args.clone());
                         } else {
@@ -1775,7 +1676,7 @@ impl<'a> Monomorphizer<'a> {
                             && written_type_args
                                 .as_ref()
                                 .and_then(|t| t.first())
-                                .map(|t| t.trim() == "JsonValue")
+                                .map(|t| t.is_name("JsonValue"))
                                 .unwrap_or(false)
                         {
                             self.enqueue("json_parse".to_string(), Vec::new());
@@ -2059,8 +1960,8 @@ impl<'a> Monomorphizer<'a> {
             }
             ExprKind::Cast { expr: inner, ty } => {
                 // TR5: `value as any Interface` boxes `value` — pull in the vtable's methods.
-                if let Some(interface_name) = rask_ast::interfaces::interface_object_name(ty) {
-                    self.mark_interface_object_methods(interface_name);
+                if let TypeExpr::Any(interface) = ty {
+                    self.mark_interface_object_methods(&interface.to_string());
                 }
                 self.visit_expr(inner);
             }
@@ -2118,7 +2019,7 @@ impl<'a> Monomorphizer<'a> {
             // Treated as a leaf, the function was never marked reachable, so
             // nothing emitted it and MIR lowering reported the name as an
             // unresolved variable.
-            ExprKind::Ident(name) => {
+            ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
                 // A generic one is instantiated where it's named: the checker
                 // recorded its type arguments under this node, the same as for
                 // a call, and MIR reads the rewrite to point the function value

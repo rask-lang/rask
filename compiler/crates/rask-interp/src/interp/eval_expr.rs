@@ -5,6 +5,7 @@ use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
+use rask_ast::ty::TypeExpr;
 
 use crate::value::{FloatKind, MapKey, ModuleKind, PoolTask, StructData, ThreadPoolInner, TypeConstructorKind, Value};
 
@@ -444,14 +445,14 @@ impl Interpreter {
     fn parse_target_method(
         &self,
         method: &str,
-        type_args: &Option<Vec<std::string::String>>,
+        type_args: &Option<Vec<rask_ast::ty::TypeExpr>>,
         node_id: rask_ast::NodeId,
     ) -> std::string::String {
         if method != "parse" {
             return method.to_string();
         }
         let float_target = match type_args.as_ref().and_then(|ta| ta.first()) {
-            Some(name) => matches!(name.as_str(), "f32" | "f64"),
+            Some(ty) => matches!(ty.bare_name(), Some("f32" | "f64")),
             None => matches!(
                 self.node_types.get(&node_id),
                 Some(rask_types::Type::Result { ok, .. })
@@ -594,7 +595,7 @@ impl Interpreter {
     /// `Level.Low`, not a variant of a type called `Low`.
     fn module_qualified_enum_receiver(&self, object: &Expr, method: &str) -> Option<String> {
         let ExprKind::Field { object: head, field: type_name } = &object.kind else { return None };
-        let ExprKind::Ident(head_name) = &head.kind else { return None };
+        let Some(head_name) = head.name() else { return None };
         if let Some(Value::Struct(s)) = self.env.get(head_name) {
             if s.lock().unwrap().fields.contains_key(type_name.as_str()) {
                 return None;
@@ -722,7 +723,7 @@ impl Interpreter {
             // on `void`" (#935).
             ExprKind::Null => Ok(Value::RawPtr(crate::ptr::RawPtr::null())),
 
-            ExprKind::Ident(name) => {
+            ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
                 if let Some(val) = self.env.get(name) {
                     return Ok(val.clone());
                 }
@@ -735,87 +736,27 @@ impl Interpreter {
                         generics: self.call_generics(expr.id),
                     });
                 }
-                // Check for generic type constructors (e.g., Pool<Node>)
-                let (base_name, type_param) = if let Some(lt_pos) = name.find('<') {
-                    if let Some(gt_pos) = name.rfind('>') {
-                        let base = &name[..lt_pos];
-                        let param = name[lt_pos + 1..gt_pos].trim();
-                        (base, Some(param.to_string()))
-                    } else {
-                        (name.as_str(), None)
-                    }
-                } else {
-                    (name.as_str(), None)
-                };
+                let base_name = name.as_str();
+                let has_type_args = !expr.written_type_args().is_empty();
 
-                match base_name {
-                    "Vec" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Vec,
-                        type_param,
-                    }),
-                    "Map" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Map,
-                        type_param,
-                    }),
-                    "string" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::String,
-                        type_param,
-                    }),
-                    "char" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Char,
-                        type_param,
-                    }),
-                    "Rack" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Rack,
-                        type_param,
-                    }),
-                    "Cell" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Cell,
-                        type_param,
-                    }),
-                    "Channel" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Channel,
-                        type_param,
-                    }),
-                    "Shared" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Shared,
-                        type_param,
-                    }),
-                    "Mutex" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Mutex,
-                        type_param,
-                    }),
-                    "Atomic" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Atomic,
-                        type_param,
-                    }),
-                    "Ordering" => return Ok(Value::TypeConstructor {
-                        kind: TypeConstructorKind::Ordering,
-                        type_param,
-                    }),
-                    "f32x8" => return Ok(Value::Type("f32x8".to_string())),
-                    _ => {}
+                if TypeConstructorKind::from_name(base_name).is_some() || base_name == "f32x8" {
+                    return Ok(Value::for_type_name(base_name));
                 }
                 // User-defined struct types (e.g., Box, Pair)
                 if self.struct_decls.contains_key(base_name) {
                     return Ok(Value::Type(base_name.to_string()));
                 }
-                // `Holder<i64>.Full(4)` — written type arguments are folded into
-                // the name, and the enum table is keyed by the bare one. Only when
-                // arguments were actually written: a bare enum name is intercepted
-                // before it gets here, and answering for it too would change what
-                // `Holder` alone means. The arguments have already done their work
-                // in the checker (#782).
-                if base_name != name && self.enums.contains_key(base_name) {
+                // `Holder<i64>.Full(4)`. Only when arguments were actually
+                // written: a bare enum name is intercepted before it gets here,
+                // and answering for it too would change what `Holder` alone
+                // means. The arguments have already done their work in the
+                // checker (#782).
+                if has_type_args && self.enums.contains_key(base_name) {
                     return Ok(Value::Type(base_name.to_string()));
                 }
-                // `make<i32>(2)` — the parser folds the written type arguments
-                // into the callee's name, and the function table is keyed by
-                // the bare one, so an explicitly instantiated call went looking
-                // for a function literally called `make<i32>` (#712). The
-                // arguments themselves are already handled: the checker bound
-                // them at the call, and the call hands them to the body.
-                if base_name != name && self.functions.contains_key(base_name) {
+                // `make<i32>(2)`: the checker bound the written arguments at the
+                // call, and the call hands them to the body (#712).
+                if has_type_args && self.functions.contains_key(base_name) {
                     return Ok(Value::Function {
                         name: base_name.to_string(),
                         generics: self.call_generics(expr.id),
@@ -967,23 +908,13 @@ impl Interpreter {
                     }
                     None => object,
                 };
-                if let ExprKind::Ident(ident) = &object.kind {
+                if let Some(ident) = object.name() {
                     // A transparent `type alias` is the same type under another
                     // spelling, and everything below keys off the spelling. One
                     // rewrite here reaches every branch — the enum table, the
                     // stdlib namespaces, `extend` methods — rather than each of
                     // them learning about aliases (#998).
-                    let written = &self.resolve_transparent_alias(ident);
-                    // `Holder<i64>.Full(4)` — written type arguments are folded
-                    // into the name and the enum table is keyed by the bare one, so
-                    // the whole-name lookup missed and the variant call fell through
-                    // to "type Holder has no method 'Full'". The arguments have
-                    // already done their work in the checker; the value carries the
-                    // bare enum name either way (#782).
-                    //
-                    // Only the enum lookup below is unwrapped. Everything after it
-                    // keys off the name as written, which is what it did before.
-                    let name = &written.split('<').next().unwrap_or(written).to_string();
+                    let name = &self.resolve_transparent_alias(ident);
                     if let Some(enum_decl) = self.enums.get(name).cloned() {
                         // .variants() — return Vec of all fieldless variant values
                         if method == "variants" {
@@ -1083,7 +1014,6 @@ impl Interpreter {
                         }
                     }
 
-                    let name = written;
                     // @binary static methods (e.g. IpHeader.parse(data))
                     if self.binary_structs.contains_key(name) {
                         let arg_vals: Vec<Value> = args
@@ -1189,35 +1119,35 @@ impl Interpreter {
                     }
                 }
 
-                // Inject type_args for generic methods (e.g. json.decode<T>, reflect.fields<T>)
-                if let Some(ta) = type_args {
-                    // Inside a generic body the written type is a parameter name.
-                    // Hand over what this call bound it to, not the letter (#699).
-                    let first_resolved = ta.first().map(|t| self.resolve_type_param(t));
-                    if let Some(first_type) = first_resolved.as_ref() {
-                        if let Value::Module(ModuleKind::Json) = &receiver {
-                            if method == "decode" || method == "from_value" {
-                                arg_vals.insert(
-                                    0,
-                                    Value::String(Arc::new(Mutex::new(first_type.clone()))),
-                                );
+                // The methods whose answer depends on a written type argument
+                // (`json.decode<T>`, `reflect.fields<T>`, `s.parse<f64>()`).
+                // Inside a generic body the written type names a parameter;
+                // what this call bound it to is what they get (#699).
+                if let Some(first_type) = type_args
+                    .as_ref()
+                    .and_then(|ta| ta.first())
+                    .map(|t| self.resolve_type_param(t))
+                {
+                    match &receiver {
+                        Value::Module(ModuleKind::Json) if method == "decode" => {
+                            return self
+                                .json_decode(&first_type, arg_vals)
+                                .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                        }
+                        Value::Module(ModuleKind::Reflect) => {
+                            return self
+                                .call_reflect_method(method, &first_type)
+                                .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                        }
+                        // `"3.5".parse<f64>()` — without the target, parse has
+                        // nothing to go on and read every string as an integer,
+                        // so parsing a float reported an error (#480).
+                        Value::String(_) if method == "parse" => {
+                            if let Some(target) = first_type.bare_name() {
+                                arg_vals.insert(0, Value::String(Arc::new(Mutex::new(target.to_string()))));
                             }
                         }
-                        if let Value::Module(ModuleKind::Reflect) = &receiver {
-                            arg_vals.insert(
-                                0,
-                                Value::String(Arc::new(Mutex::new(first_type.clone()))),
-                            );
-                        }
-                        // `"3.5".parse<f64>()` — without the type name, parse
-                        // has nothing to go on and read every string as an
-                        // integer, so parsing a float reported an error (#480).
-                        if matches!(&receiver, Value::String(_)) && method == "parse" {
-                            arg_vals.insert(
-                                0,
-                                Value::String(Arc::new(Mutex::new(first_type.clone()))),
-                            );
-                        }
+                        _ => {}
                     }
                 }
 
@@ -1227,8 +1157,10 @@ impl Interpreter {
                 if let Value::Struct(s) = &receiver {
                     let is_field_info = s.lock().unwrap().name == "FieldInfo";
                     if is_field_info && matches!(method.as_str(), "has" | "get") {
-                        if let Some(annotation) =
-                            type_args.as_ref().and_then(|ta| ta.first()).map(|t| self.resolve_type_param(t))
+                        if let Some(annotation) = type_args
+                            .as_ref()
+                            .and_then(|ta| ta.first())
+                            .and_then(|t| self.resolve_type_param(t).bare_name().map(str::to_string))
                         {
                             let attrs = field_info_attrs(s);
                             let found = attrs.iter().find(|a| {
@@ -1638,22 +1570,23 @@ impl Interpreter {
                 ))
             }
 
-            ExprKind::StructLit { name, fields, spread } => {
+            ExprKind::StructLit { name, type_args, fields, spread } => {
                 // Explicit generic args (`Ring<i64> { }`) give two names, and
                 // they are not interchangeable. The value carries the BASE name
-                // — methods and field decls register under the stripped name
-                // (like the inferred `Ring { }` form), so dispatch keys match.
-                // The field-type lookup further down needs the INSTANTIATED one
+                // — methods and field decls register under it (like the
+                // inferred `Ring { }` form), so dispatch keys match. The
+                // field-type lookup further down needs the INSTANTIATED one
                 // instead: that decl has the type parameters substituted, and
                 // without it a field declared `T` never looks like the `i64?`
                 // it was instantiated to, so the wrap below never fires (#1080).
-                let (concrete_name, decl_name) = if name.contains('<') {
-                    let instantiated = self
-                        .monomorphize_struct_from_name(name)
-                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                    (name.split('<').next().unwrap_or(name).to_string(), instantiated)
+                let concrete_name = name.clone();
+                let decl_name = if type_args.is_empty() {
+                    name.clone()
                 } else {
-                    (name.clone(), name.clone())
+                    let args: Vec<TypeExpr> =
+                        type_args.iter().map(|t| self.resolve_type_param(t)).collect();
+                    self.monomorphize_struct(name, &args)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?
                 };
 
                 // `A4.N { v: 5 }` is an enum variant with a named payload, not a
@@ -1750,23 +1683,17 @@ impl Interpreter {
             ExprKind::Field { object, field } => {
                 // type.primitives/NT1 — `i32.MAX`, `u8.MIN`, `f64.EPSILON`, …
                 // The interpreter had no answer for these at all; only MIR did.
-                if let ExprKind::Ident(type_name) = &object.kind {
+                if let Some(type_name) = object.name() {
                     if let Some(v) = primitive_type_constant(type_name, field) {
                         return Ok(v);
                     }
                 }
-                if let ExprKind::Ident(ident) = &object.kind {
+                if let Some(ident) = object.name() {
                     // A transparent `type alias` names the same enum, so a
                     // variant reached through it is that enum's variant (#998).
-                    let written = &self.resolve_transparent_alias(ident);
-                    // `Holder<i64>.Full(4)` — the parser folds written type
-                    // arguments into the name, and the enum table is keyed by the
-                    // bare one. Looked up whole, it missed, and the miss surfaced
-                    // as "undefined variable `Holder<i64>`" — at *runtime*, while
-                    // native failed during lowering (#782). The arguments have
-                    // already done their work in the checker; a variant value
-                    // carries the bare enum name either way.
-                    let enum_name = written.split('<').next().unwrap_or(written);
+                    // Written type arguments (`Holder<i64>.Full(4)`) have already
+                    // done their work in the checker (#782).
+                    let enum_name = &self.resolve_transparent_alias(ident);
                     if let Some(enum_decl) = self.enums.get(enum_name).cloned() {
                         if let Some((vidx, variant)) =
                             enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == field)
@@ -2427,7 +2354,7 @@ impl Interpreter {
 
             ExprKind::Cast { expr, ty } => {
                 let val = self.eval_expr(expr)?;
-                match (val, ty.as_str()) {
+                match (val, ty.bare_name().unwrap_or_default()) {
                     // CV1/CV4: int→float rounds. f32 rounds at 24 bits, so the
                     // result has to go through f32 — keeping full i64 precision
                     // here made the interpreter answer 16777217 where native
@@ -2518,7 +2445,7 @@ impl Interpreter {
 
             ExprKind::Convert { expr: inner, target, kind } => {
                 let val = self.eval_expr(inner)?;
-                super::overflow::convert(val, target, *kind)
+                super::overflow::convert(val, target.bare_name().unwrap_or_default(), *kind)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 
@@ -3229,7 +3156,12 @@ impl Interpreter {
         let declared: Vec<(String, String)> = self
             .struct_decls
             .get(annotation)
-            .map(|d| d.fields.iter().map(|f| (f.name.clone(), f.ty.trim().to_string())).collect())
+            .map(|d| {
+                d.fields
+                    .iter()
+                    .map(|f| (f.name.clone(), f.ty.bare_name().unwrap_or_default().to_string()))
+                    .collect()
+            })
             .unwrap_or_default();
 
         let mut fields = IndexMap::new();

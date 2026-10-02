@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use crate::analysis::call_graph::CallGraph;
 use crate::operand::{BinOp, MirConst};
 use crate::{
-    BlockId, FunctionRef, LocalId, MirBlock, MirFunction, MirLocal, MirOperand,
+    BlockId, LocalId, MirBlock, MirFunction, MirLocal, MirOperand,
     MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, Span,
 };
 
@@ -1073,7 +1073,7 @@ fn has_unwrapped_return(callee: &MirFunction) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MirConst, BinOp};
+    use crate::{BinOp, FunctionRef, MirConst};
 
     fn make_local(id: u32, name: &str, ty: MirType, is_param: bool) -> MirLocal {
         MirLocal {

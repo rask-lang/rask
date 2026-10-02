@@ -62,7 +62,8 @@ pub fn walk_expr_pruned<'a>(expr: &'a Expr, f: &mut impl FnMut(&'a Expr) -> bool
         | ExprKind::Bool(_)
         | ExprKind::Null
         | ExprKind::None
-        | ExprKind::Ident(_) => {}
+        | ExprKind::Ident(_)
+        | ExprKind::GenericName { .. } => {}
 
         ExprKind::StringInterp(segments) => {
             for seg in segments {

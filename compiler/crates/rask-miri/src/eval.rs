@@ -3,8 +3,7 @@
 //! MIR evaluation loop — execute statements, follow terminators.
 
 use rask_mir::{
-    BinOp, BlockId, MirBlock, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind,
-    MirTerminator, MirTerminatorKind, MirType,
+    BinOp, BlockId, MirBlock, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
 };
 
 use crate::intrinsics;

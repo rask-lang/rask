@@ -8,7 +8,7 @@ use rask_ast::Span;
 
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
-use super::parse_type::parse_type_string;
+use super::parse_type::resolve_type_expr;
 use super::check_expr::ContainerElem;
 use super::TypeChecker;
 
@@ -82,7 +82,7 @@ impl TypeChecker {
                     // asking for a value nothing can produce, and the type
                     // error would blame the initializer for it.
                     self.reject_annotation_binding_type(ty_str, *name_span);
-                    if let Ok(declared) = parse_type_string(ty_str, &self.types) {
+                    if let Ok(declared) = resolve_type_expr(ty_str, &self.types) {
                         // ER3/ER4: validate `T or E` in let annotation.
                         self.validate_result_types_in(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
@@ -131,7 +131,7 @@ impl TypeChecker {
                     // asking for a value nothing can produce, and the type
                     // error would blame the initializer for it.
                     self.reject_annotation_binding_type(ty_str, *name_span);
-                    if let Ok(declared) = parse_type_string(ty_str, &self.types) {
+                    if let Ok(declared) = resolve_type_expr(ty_str, &self.types) {
                         // ER3/ER4: validate `T or E` in const annotation.
                         self.validate_result_types_in(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
@@ -335,7 +335,7 @@ impl TypeChecker {
                 // collection. Nothing enforced this, so `for c in xs { c.n += 1 }`
                 // compiled and then the backends disagreed — the interpreter
                 // wrote through to the element, native dropped the write.
-                let mut define = |c: &mut Self, name: String, ty: Type| {
+                let define = |c: &mut Self, name: String, ty: Type| {
                     if *mutate {
                         c.define_local(name, ty);
                     } else {

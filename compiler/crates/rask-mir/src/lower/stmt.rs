@@ -10,6 +10,7 @@ use crate::{
     FunctionRef, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind,
     MirType,
 };
+use rask_ast::ty::TypeExpr;
 use rask_ast::{
     expr::{Expr, ExprKind, Pattern, UnaryOp},
     stmt::{ForBinding, Stmt, StmtKind, TuplePat},
@@ -302,7 +303,7 @@ impl<'a> MirLowerer<'a> {
         if let MirType::Struct(StructLayoutId { id, .. }) = oty {
             let layout = self.ctx.struct_layouts.get(*id as usize)?;
             let fl = layout.fields.iter().find(|f| f.name == *field)?;
-            let ty = self.ctx.resolve_type_str(&format!("{}", fl.ty));
+            let ty = self.ctx.type_to_mir(&fl.ty);
             return Some((fl.offset, ty, Some(fl.size)));
         }
         if let Some((_, ety, Some(off), fsize)) = Self::resolve_tuple_field(oty, field) {
@@ -383,7 +384,7 @@ impl<'a> MirLowerer<'a> {
                 // A `mut` can be reassigned, so whatever this name meant to
                 // `value.(name)` before, it doesn't now.
                 self.comptime_strings.remove(name);
-                let r = self.lower_binding(name, ty.as_deref(), init);
+                let r = self.lower_binding(name, ty.as_ref(), init);
                 self.check_resource_moved(init);
                 r
             }
@@ -405,8 +406,8 @@ impl<'a> MirLowerer<'a> {
                 if let Some((key, meta)) = self.comptime_global_for(name) {
                     if meta.type_prefix == "Vec" {
                         // Array: store pointer for later Vec wrapping
-                        let mir_ty = if let Some(ty_str) = ty.as_deref() {
-                            self.ctx.resolve_type_str(ty_str)
+                        let mir_ty = if let Some(written) = ty.as_ref() {
+                            self.ctx.resolve_type_expr(written)
                         } else {
                             MirType::Ptr
                         };
@@ -425,8 +426,8 @@ impl<'a> MirLowerer<'a> {
                         // read 8 of the 16 bytes, so the answer came back mod 2^64
                         // (#824).
                         let mir_ty = Self::comptime_global_mir_type(&meta.type_prefix)
-                            .unwrap_or_else(|| match ty.as_deref() {
-                                Some(ty_str) => self.ctx.resolve_type_str(ty_str),
+                            .unwrap_or_else(|| match ty.as_ref() {
+                                Some(written) => self.ctx.resolve_type_expr(written),
                                 None => MirType::I64,
                             });
                         let ptr_local = self.builder.alloc_temp(MirType::Ptr);
@@ -450,7 +451,7 @@ impl<'a> MirLowerer<'a> {
                     self.meta_mut(name).type_prefix = Some(prefix);
                     return Ok(());
                 }
-                let r = self.lower_binding(name, ty.as_deref(), init);
+                let r = self.lower_binding(name, ty.as_ref(), init);
                 self.check_resource_moved(init);
                 r
             }
@@ -1274,40 +1275,44 @@ impl<'a> MirLowerer<'a> {
         if !is_reflect_fields {
             return Err(unsupported());
         }
-        let type_name = type_args
+        let ty = type_args
             .as_ref()
             .and_then(|ta| ta.first())
             .ok_or_else(unsupported)?;
 
-        self.reflect_field_consts(type_name)
+        self.reflect_field_consts(ty)
     }
 
     /// The declaration's type parameters paired with an instantiation's written
-    /// arguments — `Ring<i64>` on `struct Ring<T>` gives `[("T", "i64")]`.
+    /// arguments — `Ring<i64>` on `struct Ring<T>` gives `[("T", i64)]`.
     ///
-    /// Empty for a name that isn't an instantiation, or when the declaration
+    /// Empty for a type that isn't an instantiation, or when the declaration
     /// can't be found or takes a different number of parameters. A partial
     /// mapping would report some fields substituted and some not, which is
     /// worse than reporting the declared types throughout.
-    fn generic_type_subst(&self, type_name: &str) -> Vec<(String, String)> {
+    fn generic_type_subst(&self, ty: &TypeExpr) -> Vec<(String, TypeExpr)> {
         use rask_types::TypeDef;
-        let Some((base, _)) = rask_ast::type_str::split_generic_name(type_name) else {
+        let (Some(base), args) = (ty.name(), ty.args()) else { return Vec::new() };
+        if args.is_empty() {
             return Vec::new();
-        };
-        let Some(rask_types::Type::Named(id)) = self.ctx.type_defs.lookup(base) else {
+        }
+        let Some(rask_types::Type::Named(id)) = self.ctx.type_defs.lookup(&base) else {
             return Vec::new();
         };
         let Some(TypeDef::Struct { type_params, .. }) = self.ctx.type_defs.get(id) else {
             return Vec::new();
         };
-        rask_ast::type_str::generic_type_subst(type_name, type_params)
+        if type_params.len() != args.len() {
+            return Vec::new();
+        }
+        type_params.iter().cloned().zip(args.iter().cloned()).collect()
     }
 
     /// The same field metadata, by type name — shared with the value form in
     /// `expr.rs`, which builds a runtime `Vec<FieldInfo>` out of it.
     pub(super) fn reflect_field_consts(
         &self,
-        type_name: &str,
+        ty: &TypeExpr,
     ) -> Result<Vec<super::ReflectFieldConst>, LoweringError> {
         use rask_ast::decl::field_attrs;
 
@@ -1315,11 +1320,12 @@ impl<'a> MirLowerer<'a> {
         // there is one, is keyed `Ring$i64` — mono's own spelling. Reflection
         // was only ever asking under the written name, so every generic struct
         // answered "not a struct type" (#968).
-        let instance = rask_ast::type_str::generic_instance_key(type_name);
-        let found = self
-            .ctx
-            .find_struct(type_name)
-            .or_else(|| instance.as_deref().and_then(|k| self.ctx.find_struct(k)));
+        let base = ty.name().unwrap_or_default();
+        let arg_tys: Vec<rask_types::Type> = ty.args().iter().map(rask_mono::field_type).collect();
+        let instance = (!arg_tys.is_empty())
+            .then(|| rask_mono::generic_instance_name(&base, &arg_tys, self.ctx.type_names))
+            .flatten();
+        let found = instance.as_deref().and_then(|k| self.ctx.find_struct(k));
 
         // No instance layout means mono decided the shared one is exact for
         // this instantiation — it emits one exactly when an argument overflows
@@ -1330,12 +1336,8 @@ impl<'a> MirLowerer<'a> {
         // field's *declared* type, so `slots` reads as `Vec<T>` where the
         // instantiation says `Vec<i64>`. The type arguments are substituted
         // back in below rather than reported as the placeholder.
-        let found = match found {
-            Some(f) => Some(f),
-            None => rask_ast::type_str::generic_base_name(type_name)
-                .and_then(|b| self.ctx.find_struct(&b)),
-        };
-        let type_subst = self.generic_type_subst(type_name);
+        let found = found.or_else(|| self.ctx.find_struct(&base));
+        let type_subst = self.generic_type_subst(ty);
 
         let Some((_, layout)) = found else {
             // The uninstantiated generic template gets lowered too (alongside
@@ -1345,12 +1347,12 @@ impl<'a> MirLowerer<'a> {
             // fully resolve — so a bare single-letter placeholder unrolls to
             // nothing instead of hard-erroring the whole compile. A real typo
             // or a non-struct type still errors.
-            if is_bare_type_param(type_name) {
+            if ty.bare_name().is_some_and(is_bare_type_param) {
                 return Ok(Vec::new());
             }
             return Err(LoweringError::InvalidConstruct(format!(
                 "reflect.fields<{}>(): not a struct type",
-                type_name
+                ty.source()
             )));
         };
 
@@ -1364,17 +1366,12 @@ impl<'a> MirLowerer<'a> {
         Ok(ordered
             .into_iter()
             .map(|fl| {
-                let type_name = match &fl.ty {
-                    rask_types::Type::Named(id) => self
-                        .ctx
-                        .type_names
-                        .get(id)
-                        .cloned()
-                        .unwrap_or_else(|| format!("{}", fl.ty)),
-                    other => format!("{}", other),
-                };
-                let type_name =
-                    rask_ast::type_str::substitute_type_params(&type_name, &type_subst);
+                let declared = self.ctx.type_defs.resolve_type_names(&fl.ty).to_type_expr();
+                let type_name = declared
+                    .substitute(&|name| {
+                        type_subst.iter().find(|(p, _)| p == name).map(|(_, a)| a.clone())
+                    })
+                    .to_string();
                 super::ReflectFieldConst {
                     name: fl.name.clone(),
                     type_name,
@@ -1545,7 +1542,7 @@ impl<'a> MirLowerer<'a> {
             unreachable!("checked by `spawned` above")
         };
         let lowered = self.lower_closure_expecting(
-            params, ret_ty.as_deref(), body, true, &[],
+            params, ret_ty.as_ref(), body, true, &[],
             Some(value.id), true,
         )?;
         self.spawn_boxed_bindings.insert(name.to_string(), self.spawn_result_boxed);
@@ -1553,7 +1550,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Lower a let/const binding: evaluate init, assign to a new local.
-    fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
+    fn lower_binding(&mut self, name: &str, ty: Option<&TypeExpr>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
         let (init_op, inferred_ty) = self.lower_value_for_name(name, init)?;
 
@@ -1568,7 +1565,7 @@ impl<'a> MirLowerer<'a> {
         // is an option holding one, and taking the block's local as the binding
         // skipped the wrap: the tag was read out of the block's first word and
         // `o? as v` took the `none` branch.
-        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty.clone());
+        let var_ty = ty.map(|t| self.ctx.resolve_type_expr(t)).unwrap_or(inferred_ty.clone());
         if matches!(var_ty, MirType::Heap(_)) {
             if let MirOperand::Local(src) = init_op {
                 if matches!(self.builder.local_type(src), Some(MirType::Heap(_))) {
@@ -1649,8 +1646,8 @@ impl<'a> MirLowerer<'a> {
 
         // Track collection element types for for-in iteration heuristics
         if let ExprKind::MethodCall { object, method, .. } = &init.kind {
-            if let ExprKind::Ident(obj_name) = &object.kind {
-                match (obj_name.as_str(), method.as_str()) {
+            if let Some(obj_name) = object.name() {
+                match (obj_name, method.as_str()) {
                     ("cli", "args") | ("fs", "read_lines") => {
                         self.meta_mut(name).elem_type = Some(MirType::String);
                     }
@@ -1679,7 +1676,7 @@ impl<'a> MirLowerer<'a> {
             _ => init,
         };
         if let ExprKind::MethodCall { object, method, .. } = &init_inner.kind {
-            if let ExprKind::Ident(obj_name) = &object.kind {
+            if let Some(obj_name) = object.name() {
                 // What `Type.method()` returns is whatever the checker says it
                 // is. `Thread.spawn` hands back a `Handle`, not a
                 // `Thread`, and reading the prefix off the type name gave the
@@ -1735,7 +1732,7 @@ impl<'a> MirLowerer<'a> {
             }
             // Module.Type.method() pattern: http.HttpServer.listen() → prefix "HttpServer"
             if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
-                if let ExprKind::Ident(module_name) = &inner_obj.kind {
+                if let Some(module_name) = inner_obj.name() {
                     if !self.locals.contains_key(module_name)
                         && super::is_type_constructor_name(module_name)
                     {
@@ -1747,15 +1744,15 @@ impl<'a> MirLowerer<'a> {
         // Track full generic type for Shared.new(data) calls:
         // infer inner type from the constructor argument.
         if let ExprKind::MethodCall { object, method, args: call_args, .. } = &init.kind {
-            if let ExprKind::Ident(obj_name) = &object.kind {
+            if let Some(obj_name) = object.name() {
                 if obj_name == "Shared" && method == "new" && !call_args.is_empty() {
                     // Infer inner type from the first arg
                     let inner_name = match &call_args[0].expr.kind {
                         ExprKind::StructLit { name: sn, .. } => Some(sn.clone()),
                         ExprKind::MethodCall { object: inner_obj, .. } => {
-                            if let ExprKind::Ident(tn) = &inner_obj.kind {
+                            if let Some(tn) = inner_obj.name() {
                                 if tn.chars().next().map_or(false, |c| c.is_uppercase()) {
-                                    Some(tn.clone())
+                                    Some(tn.to_string())
                                 } else { None }
                             } else { None }
                         }
@@ -1766,9 +1763,8 @@ impl<'a> MirLowerer<'a> {
                         _ => None,
                     };
                     if let Some(inner) = inner_name {
-                        self.meta_mut(name).full_type = Some(
-                            format!("Shared<{}>", inner),
-                        );
+                        self.meta_mut(name).full_type =
+                            Some(TypeExpr::generic("Shared", vec![TypeExpr::named(inner)]));
                     }
                 }
             }
@@ -1781,7 +1777,7 @@ impl<'a> MirLowerer<'a> {
         }
         // Also track for simple function calls (e.g. cli.args())
         if let ExprKind::Call { func, .. } = &init.kind {
-            if let ExprKind::Ident(func_name) = &func.kind {
+            if let Some(func_name) = func.name() {
                 if let Some(prefix) = super::func_return_type_prefix(func_name) {
                     self.meta_mut(name).type_prefix = Some(prefix.to_string());
                 }
@@ -1789,7 +1785,7 @@ impl<'a> MirLowerer<'a> {
         }
         // Index expression: args[1] → if args has known element type, propagate it
         if let ExprKind::Index { object, .. } = &init.kind {
-            if let ExprKind::Ident(coll_name) = &object.kind {
+            if let Some(coll_name) = object.name() {
                 if let Some(elem_ty) = self.meta(coll_name).and_then(|m| m.elem_type.clone()) {
                     if let Some(prefix) = self.mir_type_name(&elem_ty) {
                         self.meta_mut(name).type_prefix = Some(prefix);
@@ -1824,8 +1820,8 @@ impl<'a> MirLowerer<'a> {
         if self.meta(name).and_then(|m| m.type_prefix.as_ref()).is_none() {
             if let Some(prefix) = self.mir_type_name(&var_ty) {
                 self.meta_mut(name).type_prefix = Some(prefix);
-            } else if let Some(ty_str) = ty {
-                if let Some(prefix) = super::type_prefix_from_str(ty_str) {
+            } else if let Some(written) = ty {
+                if let Some(prefix) = super::type_prefix_of(written) {
                     self.meta_mut(name).type_prefix = Some(prefix);
                 }
             }
@@ -1833,10 +1829,12 @@ impl<'a> MirLowerer<'a> {
 
         // Track collection element types from type annotations (Vec<u8>, …)
         if self.meta(name).and_then(|m| m.elem_type.as_ref()).is_none() {
-            if let Some(ty_str) = ty {
-                if let Some(elem_str) = ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
-                    let elem_mir = self.ctx.resolve_type_str(elem_str);
-                    self.meta_mut(name).elem_type = Some(elem_mir);
+            if let Some(TypeExpr::Named { path, args }) = ty {
+                if let ([head], [elem]) = (path.as_slice(), args.as_slice()) {
+                    if head == "Vec" {
+                        let elem_mir = self.ctx.resolve_type_expr(elem);
+                        self.meta_mut(name).elem_type = Some(elem_mir);
+                    }
                 }
             }
         }
@@ -1916,7 +1914,7 @@ impl<'a> MirLowerer<'a> {
                 .and_then(|ty| self.ctx.callable_ret_ty(ty, self.ctx.type_names));
             if let Some(ret_mir) = bound_ret {
                 self.closure_locals.insert(name.to_string());
-                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_ty_strs: Vec::new() });
+                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
             }
         }
 
@@ -2050,7 +2048,7 @@ impl<'a> MirLowerer<'a> {
         // calls to extract the handles instead of field extraction.
         let is_channel_create = match &init.kind {
             ExprKind::MethodCall { object, method, .. } => {
-                if let ExprKind::Ident(type_name) = &object.kind {
+                if let Some(type_name) = object.name() {
                     let base = type_name.split('<').next().unwrap_or(type_name);
                     base == "Channel" && (method == "buffered" || method == "unbuffered")
                 } else { false }
@@ -2126,7 +2124,7 @@ impl<'a> MirLowerer<'a> {
             // off it, and without it a 24-byte element was received into an
             // 8-byte buffer and smashed the stack (#463).
             if let ExprKind::MethodCall { object, method, .. } = &init.kind {
-                if let ExprKind::Ident(type_name) = &object.kind {
+                if let Some(type_name) = object.name() {
                     let base = type_name.split('<').next().unwrap_or(type_name);
                     if base == "Channel" && (method == "buffered" || method == "unbuffered") {
                         // Same source the constructor uses for its elem_size arg,

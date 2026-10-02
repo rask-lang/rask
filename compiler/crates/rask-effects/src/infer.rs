@@ -431,7 +431,7 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             // Method calls: record the method name for call graph.
             // Also check qualified "Type.method" form when we can extract
             // the receiver type name.
-            if let ExprKind::Ident(type_name) = &object.kind {
+            if let Some(type_name) = object.name() {
                 let qname = format!("{}.{}", type_name, method);
                 let direct = sources::classify_call(&qname);
                 effects.union(direct);
@@ -587,16 +587,17 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
         | ExprKind::Bool(_)
         | ExprKind::Null
         | ExprKind::None
-        | ExprKind::Ident(_) => {}
+        | ExprKind::Ident(_)
+        | ExprKind::GenericName { .. } => {}
     }
 }
 
 /// Extract callee name from a Call expression's func field.
 fn extract_callee_name(func: &Expr) -> Option<String> {
     match &func.kind {
-        ExprKind::Ident(name) => Some(name.clone()),
+        ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => Some(name.clone()),
         ExprKind::Field { object, field } => {
-            if let ExprKind::Ident(obj_name) = &object.kind {
+            if let Some(obj_name) = object.name() {
                 Some(format!("{}.{}", obj_name, field))
             } else {
                 None
@@ -732,7 +733,7 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan) -> bool {
 
         // All other expressions: recurse with same depth
         ExprKind::MethodCall { object, method, args, .. } => {
-            if let ExprKind::Ident(type_name) = &object.kind {
+            if let Some(type_name) = object.name() {
                 rs.reach(depth, format!("{}.{}", type_name, method));
             }
             rs.reach(depth, method.clone());
@@ -839,7 +840,8 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan) -> bool {
         }
         ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
         | ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_)
-        | ExprKind::Null | ExprKind::None | ExprKind::Ident(_) => false,
+        | ExprKind::Null | ExprKind::None | ExprKind::Ident(_)
+        | ExprKind::GenericName { .. } => false,
     }
 }
 

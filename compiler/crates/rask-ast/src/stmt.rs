@@ -105,7 +105,7 @@ pub enum StmtKind {
     Mut {
         name: String,
         name_span: Span,
-        ty: Option<String>,
+        ty: Option<crate::ty::TypeExpr>,
         init: Expr,
     },
     /// Mut tuple destructuring
@@ -117,7 +117,7 @@ pub enum StmtKind {
     Let {
         name: String,
         name_span: Span,
-        ty: Option<String>,
+        ty: Option<crate::ty::TypeExpr>,
         init: Expr,
     },
     /// Let tuple destructuring

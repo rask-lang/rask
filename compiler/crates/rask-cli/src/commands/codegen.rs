@@ -109,12 +109,15 @@ pub fn cmd_mono(path: &str, format: Format) {
             let params: Vec<String> = fn_decl
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", p.name, p.ty))
+                .map(|p| match &p.ty {
+                    Some(ty) => format!("{}: {}", p.name, ty.source()),
+                    None => p.name.clone(),
+                })
                 .collect();
             let ret = fn_decl
                 .ret_ty
-                .as_deref()
-                .map(|t| format!(" -> {}", t))
+                .as_ref()
+                .map(|t| format!(" -> {}", t.source()))
                 .unwrap_or_default();
             let type_args = if mono_fn.type_args.is_empty() {
                 String::new()
@@ -494,12 +497,12 @@ pub fn collect_c_import_extern_sigs(
                 })
                 .map(|(name, _)| name.as_str())
                 .collect();
-            let qualify = |ty: &String| {
-                if structs.contains(ty.as_str()) {
-                    format!("{}.{}", sym.name, ty)
-                } else {
-                    ty.clone()
-                }
+            let qualify = |ty: &rask_ast::ty::TypeExpr| match ty.bare_name() {
+                Some(name) if structs.contains(name) => rask_ast::ty::TypeExpr::Named {
+                    path: vec![sym.name.clone(), name.to_string()],
+                    args: Vec::new(),
+                },
+                _ => ty.clone(),
             };
 
             for (_, &member_id) in members {

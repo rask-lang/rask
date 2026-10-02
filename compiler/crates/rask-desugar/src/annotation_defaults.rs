@@ -230,7 +230,7 @@ mod tests {
                 fields: vec![Field {
                     name: "max".to_string(),
                     name_span: Span::new(0, 0),
-                    ty: "i64".to_string(),
+                    ty: rask_ast::ty::TypeExpr::named("i64"),
                     visibility: FieldVisibility::Public,
                     attrs: vec![],
                     default: Some(Expr {
@@ -270,7 +270,7 @@ mod tests {
                 fields: vec![Field {
                     name: "x".to_string(),
                     name_span: Span::new(0, 0),
-                    ty: "i64".to_string(),
+                    ty: rask_ast::ty::TypeExpr::named("i64"),
                     visibility: FieldVisibility::Public,
                     attrs: vec!["validate".to_string()],
                     default: None,

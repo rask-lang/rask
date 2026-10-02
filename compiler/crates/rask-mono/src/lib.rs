@@ -16,13 +16,14 @@ mod reachability;
 pub use instantiate::instantiate_function;
 pub use layout::{
     arg_owns_storage, compute_enum_layout, compute_struct_layout, compute_union_layout,
-    is_stdlib_span, ordering_layout, parse_field_type, type_size_align,
+    is_stdlib_span, ordering_layout, field_type, parse_field_type, type_size_align,
     EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::NodeId;
+use rask_ast::ty::TypeExpr;
 use rask_types::{Type, TypeBinding, TypedProgram};
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -221,7 +222,7 @@ pub fn compute_declared_layouts(
             // struct's later fields overlapped it (#445).
             DeclKind::TypeAlias(a) if !a.is_transparent && a.type_params.is_empty() => {
                 let (size, align) = type_size_align(
-                    &Type::UnresolvedNamed(a.target.clone()),
+                    &layout::field_type(&a.target),
                     &layout_cache,
                 );
                 layout_cache.insert(a.name.clone(), (size, align));
@@ -288,19 +289,19 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
 
     for &idx in &type_indices {
         let mut field_deps = HashSet::new();
-        let fields: Vec<&str> = match &decls[idx].kind {
-            DeclKind::Struct(s) => s.fields.iter().map(|f| f.ty.as_str()).collect(),
+        let fields: Vec<&TypeExpr> = match &decls[idx].kind {
+            DeclKind::Struct(s) => s.fields.iter().map(|f| &f.ty).collect(),
             DeclKind::Enum(e) => e.variants.iter()
-                .flat_map(|v| v.fields.iter().map(|f| f.ty.as_str()))
+                .flat_map(|v| v.fields.iter().map(|f| &f.ty))
                 .collect(),
-            DeclKind::Union(u) => u.fields.iter().map(|f| f.ty.as_str()).collect(),
-            DeclKind::TypeAlias(a) => vec![a.target.as_str()],
+            DeclKind::Union(u) => u.fields.iter().map(|f| &f.ty).collect(),
+            DeclKind::TypeAlias(a) => vec![&a.target],
             _ => vec![],
         };
 
         let mut type_names = HashSet::new();
-        for ty_str in fields {
-            let parsed = layout::parse_field_type(ty_str);
+        for ty in fields {
+            let parsed = layout::field_type(ty);
             collect_type_deps(&parsed, &mut type_names);
         }
 
@@ -379,14 +380,15 @@ pub fn generic_instance_name(
 
 /// The layout a written type is laid out by: `Tagged<string>` is
 /// `Tagged$string` when that instance was made, else the shared `Tagged`.
-/// Codegen describes what a value owns by reading layouts by name, and a field
-/// type is written text — so without this a generic's nodes matched no layout
-/// and a `Heap` holding one freed nothing inside it.
-pub fn layout_name_for(written: &str, exists: impl Fn(&str) -> bool) -> String {
-    if exists(written) {
-        return written.to_string();
+/// Codegen describes what a value owns by reading layouts by name — so without
+/// this a generic's nodes matched no layout and a `Heap` holding one freed
+/// nothing inside it.
+pub fn layout_name_for(ty: &Type, exists: impl Fn(&str) -> bool) -> String {
+    let written = ty.to_string();
+    if exists(&written) {
+        return written;
     }
-    if let Type::UnresolvedGeneric { name, args } = layout::parse_field_type(written) {
+    if let Type::UnresolvedGeneric { name, args } = ty {
         let tys: Vec<Type> = args
             .iter()
             .filter_map(|a| match a {
@@ -394,17 +396,17 @@ pub fn layout_name_for(written: &str, exists: impl Fn(&str) -> bool) -> String {
                 _ => None,
             })
             .collect();
-        if let Some(instance) = generic_instance_name(&name, &tys, &HashMap::new()) {
+        if let Some(instance) = generic_instance_name(name, &tys, &HashMap::new()) {
             if exists(&instance) {
                 return instance;
             }
         }
-        let base = bare_type_name(&name);
+        let base = bare_type_name(name);
         if exists(&base) {
             return base;
         }
     }
-    written.to_string()
+    written
 }
 
 fn bare_type_name(name: &str) -> String {
@@ -1097,13 +1099,13 @@ mod tests {
                     .map(|(n, ty)| Param {
                         name: n.to_string(),
                         name_span: sp(),
-                        ty: ty.to_string(),
+                        ty: rask_parser::parse_type(ty),
                         is_take: false,
                         is_mutate: false, is_deleting: false,
                         default: None,
                     })
                     .collect(),
-                ret_ty: ret_ty.map(|s| s.to_string()),
+                ret_ty: ret_ty.map(|s| rask_parser::parse_type(s).unwrap()),
                 body,
                 is_pub: false,
                 is_private: false,
@@ -1145,13 +1147,13 @@ mod tests {
                     .map(|(n, ty)| Param {
                         name: n.to_string(),
                         name_span: sp(),
-                        ty: ty.to_string(),
+                        ty: rask_parser::parse_type(ty),
                         is_take: false,
                         is_mutate: false, is_deleting: false,
                         default: None,
                     })
                     .collect(),
-                ret_ty: ret_ty.map(|s| s.to_string()),
+                ret_ty: ret_ty.map(|s| rask_parser::parse_type(s).unwrap()),
                 body,
                 is_pub: false,
                 is_private: false,
@@ -1331,8 +1333,8 @@ mod tests {
                     name: "Point".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "x".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "y".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -1393,8 +1395,8 @@ mod tests {
                     name: "Container".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "kind".to_string(), name_span: sp(), ty: "Kind".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                        Field { name: "value".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "kind".to_string(), name_span: sp(), ty: rask_parser::parse_type("Kind").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "value".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -1413,8 +1415,8 @@ mod tests {
                             name: "Alpha".to_string(),
                             name_span: sp(),
                             fields: vec![
-                                Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                                Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                                Field { name: "x".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                                Field { name: "y".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                             ],
                             attrs: vec![],
                             discriminant: None,
@@ -1464,7 +1466,7 @@ mod tests {
         let result = instantiate_function(&decl, &[Type::I32]);
         if let DeclKind::Fn(f) = &result.kind {
             assert!(f.type_params.is_empty());
-            assert_eq!(f.params[0].ty, "i32"); // substituted
+            assert_eq!(f.params[0].ty.as_ref().map(|t| t.to_string()).as_deref(), Some("i32")); // substituted
         } else {
             panic!("Expected function declaration");
         }
@@ -1608,13 +1610,13 @@ mod tests {
                 .map(|(n, ty)| Param {
                     name: n.to_string(),
                     name_span: sp(),
-                    ty: ty.to_string(),
+                    ty: rask_parser::parse_type(ty),
                     is_take: false,
                     is_mutate: false, is_deleting: false,
                     default: None,
                 })
                 .collect(),
-            ret_ty: ret_ty.map(|s| s.to_string()),
+            ret_ty: ret_ty.map(|s| rask_parser::parse_type(s).unwrap()),
             body,
             is_pub: false,
             is_private: false,
@@ -1647,8 +1649,8 @@ mod tests {
                     name: "Point".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "x".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "y".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                     ],
                     methods: vec![
                         make_method("new", vec![], Some("Point"), vec![return_stmt(None)]),
@@ -1687,8 +1689,8 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    interface_name: None,
-                    target_ty: "Point".to_string(),
+                    interface: None,
+                    target_ty: rask_parser::parse_type("Point").unwrap(),
                     methods: vec![
                         make_method("distance", vec![("self", "Point")], Some("f64"), vec![return_stmt(None)]),
                     ],
@@ -1729,8 +1731,8 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    interface_name: None,
-                    target_ty: "Counter".to_string(),
+                    interface: None,
+                    target_ty: rask_parser::parse_type("Counter").unwrap(),
                     methods: vec![
                         make_method("increment", vec![("self", "Counter")], None, vec![return_stmt(None)]),
                     ],

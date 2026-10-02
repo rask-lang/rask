@@ -1968,6 +1968,7 @@ impl<'a> FunctionBuilder<'a> {
             | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 | RaskType::U128
             | RaskType::F32 | RaskType::F64
             | RaskType::Char
+            | RaskType::RawPtr(_)
             | RaskType::Fn { .. } => false,
             // Runtime-opaque pointer types (Vec, Map, Rack, Channel, ...)
             RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,

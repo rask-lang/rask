@@ -547,9 +547,7 @@ pub fn snapshot_rack(rack: &Arc<Mutex<RackData>>) -> Value {
         copies.push(copy);
     }
 
-    let new_rack = Arc::new(Mutex::new(RackData::with_type_param(
-        rack.lock().unwrap().type_param.clone(),
-    )));
+    let new_rack = Arc::new(Mutex::new(RackData::new()));
     crate::value::register_rack(&new_rack);
     let new_id = new_rack.lock().unwrap().rack_id;
 

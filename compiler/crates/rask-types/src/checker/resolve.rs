@@ -1628,11 +1628,12 @@ impl TypeChecker {
                 })
                 .cloned()
             {
-                if let Some(filed) = rask_ast::operators::conformance_method_name(
-                    &param,
-                    Some(applied.as_str()),
-                    &method,
-                ) {
+                let applied_base = applied.split('<').next().unwrap_or(&applied).trim();
+                let rhs = super::type_table::interface_ref_args(&applied).into_iter().next();
+                let rhs = rhs.as_deref().map(|r| r.split('<').next().unwrap_or(r).trim());
+                if let Some(filed) =
+                    rask_ast::operators::filed_operator_method(&param, applied_base, rhs, &method)
+                {
                     // CALL6: dispatch keys on this, and mono carries it into
                     // each instantiation with `T` replaced — which is what
                     // makes `Meters_mul$f64` reachable from a generic body.
@@ -1923,7 +1924,7 @@ impl TypeChecker {
                     span,
                 });
             }
-            let ret_ty = super::builtins::parse_stub_type(&method_def.ret_ty);
+            let ret_ty = super::builtins::stub_type(&method_def.ret_ty);
             return self.unify(ret, &ret_ty, span);
         }
 
@@ -1978,14 +1979,14 @@ impl TypeChecker {
             // (#480). A fresh var lets the call site decide.
             // A type argument written at the call binds the method's own
             // parameter; `freshen_free_type_params` only invents a variable for
-            // the ones nothing named. `parse_stub_type` has already rewritten a
+            // the ones nothing named. `stub_type` has already rewritten a
             // single-uppercase name to `_Any`, so that is the key to seed.
             let mut seen = std::collections::HashMap::new();
             if let Some(first) = written.first() {
                 seen.insert("_Any".to_string(), first.clone());
             }
             let ret_ty = self.freshen_free_type_params(
-                &super::builtins::parse_stub_type(&method_def.ret_ty),
+                &super::builtins::stub_type(&method_def.ret_ty),
                 &mut seen,
             );
             return self.unify(ret, &ret_ty, span);
@@ -2308,10 +2309,10 @@ impl TypeChecker {
                         });
                     }
                     for ((_, param_ty_str), arg) in stub.params.iter().zip(args.iter()) {
-                        let param_ty = super::builtins::parse_stub_type(param_ty_str);
+                        let param_ty = super::builtins::stub_type(param_ty_str);
                         self.unify(arg, &param_ty, span)?;
                     }
-                    let ret_ty = super::builtins::parse_stub_type(&stub.ret_ty);
+                    let ret_ty = super::builtins::stub_type(&stub.ret_ty);
                     return self.unify(ret, &ret_ty, span);
                 }
                 // Known runtime type but unknown method — hard error

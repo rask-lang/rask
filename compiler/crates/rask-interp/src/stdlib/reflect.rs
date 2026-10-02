@@ -4,6 +4,7 @@
 use std::sync::{Arc, Mutex};
 use indexmap::IndexMap;
 
+use rask_ast::ty::TypeExpr;
 use rask_types::reflect;
 
 use crate::interp::{Interpreter, RuntimeError};
@@ -30,7 +31,7 @@ impl reflect::ReflectDecls for InterpDecls<'_> {
                 .is_some_and(|d| d.attrs.iter().any(|a| a == "resource"))
     }
 
-    fn member_type_names(&self, name: &str) -> Option<Vec<String>> {
+    fn member_types(&self, name: &str) -> Option<Vec<TypeExpr>> {
         if let Some(s) = self.0.struct_decls.get(name) {
             return Some(s.fields.iter().map(|f| f.ty.clone()).collect());
         }
@@ -53,35 +54,26 @@ impl reflect::ReflectDecls for InterpDecls<'_> {
 }
 
 impl Interpreter {
+    /// `reflect.<method><T>()`, with `T` already resolved in the running body.
     pub(crate) fn call_reflect_method(
         &self,
         method: &str,
-        args: Vec<Value>,
+        ty: &TypeExpr,
     ) -> Result<Value, RuntimeError> {
-        // All reflect methods take a type name as first arg (injected from type_args)
-        let type_name = match args.first() {
-            Some(Value::String(s)) => s.lock().unwrap().clone(),
-            _ => {
-                return Err(RuntimeError::TypeError(
-                    "reflect methods require a type argument: reflect.fields<T>()".into(),
-                ));
-            }
-        };
-
         if method == "fields" {
-            return self.reflect_fields(&type_name);
+            return self.reflect_fields(ty);
         }
 
         // The rules are in rask-types so native folds the same answers — each
         // backend deriving its own is how `is_integer<i32>()` came back `false`
         // here while native couldn't lower the call at all (#775).
         let decls = InterpDecls(self);
-        match reflect::answer(method, &type_name, &decls) {
+        match reflect::answer(method, ty, &decls) {
             reflect::ReflectAnswer::Bool(b) => Ok(Value::Bool(b)),
             reflect::ReflectAnswer::Int(n) => Ok(Value::int(n as i64)),
             reflect::ReflectAnswer::Str(s) => Ok(Value::String(Arc::new(Mutex::new(s)))),
             reflect::ReflectAnswer::Unsupported(why) => Err(RuntimeError::TypeError(format!(
-                "reflect.{method}<{type_name}>() isn't implemented on either backend — {why} (#791)"
+                "reflect.{method}<{}>() isn't implemented on either backend — {why} (#791)", ty.source()
             ))),
             reflect::ReflectAnswer::NoSuchMethod => Err(RuntimeError::NoSuchMethod {
                 ty: "reflect".to_string(),
@@ -100,17 +92,14 @@ impl Interpreter {
     fn struct_layout_of(
         &self,
         decl: &rask_ast::decl::StructDecl,
-        type_name: &str,
+        ty: &TypeExpr,
         params: &[String],
     ) -> Option<rask_mono::StructLayout> {
-        let args: Vec<&str> = rask_ast::type_str::split_generic_name(type_name)
-            .map(|(_, written)| written)
-            .unwrap_or_default();
+        let args = ty.args();
         if args.len() != params.len() {
             return None;
         }
-        let type_args: Vec<rask_types::Type> =
-            args.iter().map(|a| rask_mono::parse_field_type(a)).collect();
+        let type_args: Vec<rask_types::Type> = args.iter().map(rask_mono::field_type).collect();
         // `compute_struct_layout` wants the declaration in its `Decl` wrapper,
         // which is why the list is kept: the span decides whether the type
         // counts as stdlib, and a synthesized one would answer that wrong.
@@ -126,21 +115,24 @@ impl Interpreter {
     /// the declaration is found under the base name and the type arguments are
     /// substituted into the field types — otherwise every generic struct
     /// answered "not a struct type" (#968).
-    fn reflect_fields(&self, type_name: &str) -> Result<Value, RuntimeError> {
-        let base = rask_ast::type_str::generic_base_name(type_name);
-        let decl = self
-            .struct_decls
-            .get(type_name)
-            .or_else(|| base.as_deref().and_then(|b| self.struct_decls.get(b)))
+    fn reflect_fields(&self, ty: &TypeExpr) -> Result<Value, RuntimeError> {
+        let decl = ty
+            .name()
+            .and_then(|n| self.struct_decls.get(&n))
             .ok_or_else(|| {
                 RuntimeError::TypeError(format!(
                     "reflect.fields<{}>(): not a struct type",
-                    type_name
+                    ty.source()
                 ))
             })?;
         let params: Vec<String> = decl.type_params.iter().map(|p| p.name.clone()).collect();
-        let subst = rask_ast::type_str::generic_type_subst(type_name, &params);
-        let layout = self.struct_layout_of(decl, type_name, &params);
+        let args = ty.args();
+        let substitute = |field_ty: &TypeExpr| {
+            field_ty.substitute(&|name| {
+                params.iter().position(|p| p == name).and_then(|i| args.get(i)).cloned()
+            })
+        };
+        let layout = self.struct_layout_of(decl, ty, &params);
 
         let field_infos: Vec<Value> = decl
             .fields
@@ -153,7 +145,7 @@ impl Interpreter {
                 );
                 fields.insert(
                     "type_name".to_string(),
-                    Value::String(Arc::new(Mutex::new(rask_ast::type_str::substitute_type_params(&f.ty, &subst)))),
+                    Value::String(Arc::new(Mutex::new(substitute(&f.ty).to_string()))),
                 );
                 // Both were 0 here while native reported the truth (#1104).
                 // The numbers come from the layout pass mono already runs, so

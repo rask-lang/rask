@@ -8,9 +8,33 @@ mod parser;
 
 pub use parser::{ParseError, ParseResult, Parser};
 
+/// A type from its source spelling — `Vec<i64>?`, `func(i64) -> bool` — read
+/// by the same parser that reads programs. `None` if it isn't one type.
+pub fn parse_type(src: &str) -> Option<rask_ast::ty::TypeExpr> {
+    let lexed = rask_lexer::Lexer::new(src).tokenize();
+    if !lexed.is_ok() {
+        return None;
+    }
+    Parser::new(lexed.tokens).parse_whole_type()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A parsed type as its canonical spelling, for comparing against text.
+    fn ts<T: std::fmt::Display>(t: &T) -> String {
+        t.to_string()
+    }
+
+    fn ots(t: &Option<rask_ast::ty::TypeExpr>) -> Option<String> {
+        t.as_ref().map(|t| t.to_string())
+    }
+
+    fn vts(ts: &[rask_ast::ty::TypeExpr]) -> Vec<String> {
+        ts.iter().map(|t| t.to_string()).collect()
+    }
+
     use rask_ast::decl::DeclKind;
     use rask_ast::expr::{BinOp, ExprKind, UnaryOp};
     use rask_ast::stmt::StmtKind;
@@ -460,7 +484,7 @@ mod tests {
         if let DeclKind::Fn(ref f) = result.decls[1].kind {
             assert_eq!(f.params.len(), 2);
             assert_eq!(f.params[0].name, "m");
-            assert!(f.params[0].ty.contains("Handle<Foo>"));
+            assert!(ots(&f.params[0].ty).unwrap_or_default().contains("Handle<Foo>"));
             assert_eq!(f.params[1].name, "items");
         } else {
             panic!("Expected function");
@@ -472,7 +496,7 @@ mod tests {
         let result = parse("func foo(x: A<B<C<i32>>>) { }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         if let DeclKind::Fn(ref f) = result.decls[0].kind {
-            assert_eq!(f.params[0].ty, "A<B<C<i32>>>");
+            assert_eq!(ots(&f.params[0].ty).as_deref(), Some("A<B<C<i32>>>"));
         } else {
             panic!("Expected function");
         }
@@ -735,7 +759,7 @@ mod tests {
         if let StmtKind::Expr(ref e) = stmts[0].kind {
             if let ExprKind::MethodCall { ref type_args, .. } = e.kind {
                 assert!(type_args.is_some(), "should have type args");
-                assert_eq!(type_args.as_ref().unwrap(), &vec!["i32".to_string()]);
+                assert_eq!(vts(type_args.as_ref().unwrap()), vec!["i32".to_string()]);
             } else {
                 panic!("expected method call");
             }
@@ -772,7 +796,7 @@ mod tests {
         let result = parse("func f(x: Vec<Vec<i32>>) { }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         if let DeclKind::Fn(ref f) = result.decls[0].kind {
-            assert_eq!(f.params[0].ty, "Vec<Vec<i32>>");
+            assert_eq!(ots(&f.params[0].ty).as_deref(), Some("Vec<Vec<i32>>"));
         } else {
             panic!("expected function");
         }
@@ -783,7 +807,7 @@ mod tests {
         let result = parse("func f(x: A<B<C<i32>>>) { }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         if let DeclKind::Fn(ref f) = result.decls[0].kind {
-            assert_eq!(f.params[0].ty, "A<B<C<i32>>>");
+            assert_eq!(ots(&f.params[0].ty).as_deref(), Some("A<B<C<i32>>>"));
         } else {
             panic!("expected function");
         }
@@ -794,8 +818,9 @@ mod tests {
         let stmts = parse_body("let p = Point<f64> { x: 1.0, y: 2.0 }");
         assert_eq!(stmts.len(), 1);
         if let StmtKind::Let { ref init, .. } = stmts[0].kind {
-            if let ExprKind::StructLit { ref name, .. } = init.kind {
-                assert_eq!(name, "Point<f64>");
+            if let ExprKind::StructLit { ref name, ref type_args, .. } = init.kind {
+                assert_eq!(name, "Point");
+                assert_eq!(type_args, &vec![rask_ast::ty::TypeExpr::named("f64")]);
             } else {
                 panic!("expected struct literal, got {:?}", init.kind);
             }
@@ -832,7 +857,7 @@ mod tests {
         let result = parse("func f(x: Map<string, Vec<i32>>) { }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         if let DeclKind::Fn(ref f) = result.decls[0].kind {
-            assert_eq!(f.params[0].ty, "Map<string, Vec<i32>>");
+            assert_eq!(ots(&f.params[0].ty).as_deref(), Some("Map<string, Vec<i32>>"));
         } else {
             panic!("expected function");
         }
@@ -856,85 +881,38 @@ mod tests {
     // These tests verify the parser handles this correctly.
     // ================================================================
 
+    /// `src` is one call whose callee is `name` with these written type arguments.
+    fn assert_generic_call(src: &str, name: &str, args: &[&str]) {
+        let stmts = parse_body(src);
+        assert_eq!(stmts.len(), 1);
+        let StmtKind::Expr(ref e) = stmts[0].kind else { panic!("expected expression") };
+        let ExprKind::Call { ref func, .. } = e.kind else { panic!("expected call, got {:?}", e.kind) };
+        let ExprKind::GenericName { name: ref got, ref type_args } = func.kind else {
+            panic!("expected a generic name, got {:?}", func.kind)
+        };
+        assert_eq!(got, name);
+        let written: Vec<String> = type_args.iter().map(|t| t.to_string()).collect();
+        assert_eq!(written, args);
+    }
+
     #[test]
     fn generic_call_lowercase_func() {
-        // sort<i32>(items) — generic function call
-        let stmts = parse_body("sort<i32>(items)");
-        assert_eq!(stmts.len(), 1);
-        if let StmtKind::Expr(ref e) = stmts[0].kind {
-            if let ExprKind::Call { ref func, .. } = e.kind {
-                // The function ident should include generic args
-                if let ExprKind::Ident(ref name) = func.kind {
-                    assert_eq!(name, "sort<i32>");
-                } else {
-                    panic!("expected ident with generics, got {:?}", func.kind);
-                }
-            } else {
-                panic!("expected call expression, got {:?}", e.kind);
-            }
-        } else {
-            panic!("expected expression statement");
-        }
+        assert_generic_call("sort<i32>(items)", "sort", &["i32"]);
     }
 
     #[test]
     fn generic_call_uppercase_with_paren() {
-        // Vec<i32>(items) — uppercase generic call
-        let stmts = parse_body("Vec<i32>(items)");
-        assert_eq!(stmts.len(), 1);
-        if let StmtKind::Expr(ref e) = stmts[0].kind {
-            if let ExprKind::Call { ref func, .. } = e.kind {
-                if let ExprKind::Ident(ref name) = func.kind {
-                    assert_eq!(name, "Vec<i32>");
-                } else {
-                    panic!("expected ident, got {:?}", func.kind);
-                }
-            } else {
-                panic!("expected call, got {:?}", e.kind);
-            }
-        } else {
-            panic!("expected expression");
-        }
+        assert_generic_call("Vec<i32>(items)", "Vec", &["i32"]);
     }
 
     #[test]
     fn generic_call_multiple_type_args() {
-        // convert<i32, f64>(x) — multiple type args
-        let stmts = parse_body("convert<i32, f64>(x)");
-        assert_eq!(stmts.len(), 1);
-        if let StmtKind::Expr(ref e) = stmts[0].kind {
-            if let ExprKind::Call { ref func, .. } = e.kind {
-                if let ExprKind::Ident(ref name) = func.kind {
-                    assert_eq!(name, "convert<i32, f64>");
-                } else {
-                    panic!("expected ident with generics");
-                }
-            } else {
-                panic!("expected call");
-            }
-        } else {
-            panic!("expected expression");
-        }
+        assert_generic_call("convert<i32, f64>(x)", "convert", &["i32", "f64"]);
     }
 
     #[test]
     fn generic_call_nested_type_arg() {
-        // process<Vec<i32>>(items) — nested generic in type arg
-        let stmts = parse_body("process<Vec<i32>>(items)");
-        assert_eq!(stmts.len(), 1);
-        if let StmtKind::Expr(ref e) = stmts[0].kind {
-            if let ExprKind::Call { ref func, .. } = e.kind {
-                if let ExprKind::Ident(ref name) = func.kind {
-                    assert_eq!(name, "process<Vec<i32>>");
-                } else {
-                    panic!("expected ident with nested generics");
-                }
-            } else {
-                panic!("expected call");
-            }
-        } else {
-            panic!("expected expression");
-        }
+        assert_generic_call("process<Vec<i32>>(items)", "process", &["Vec<i32>"]);
     }
 
     #[test]
@@ -1358,7 +1336,7 @@ mod tests {
                 assert_eq!(params.len(), 1);
                 assert_eq!(params[0].name, "x");
                 assert!(params[0].is_mutate, "expected is_mutate = true");
-                assert_eq!(params[0].ty.as_deref(), Some("Item"));
+                assert_eq!(ots(&params[0].ty).as_deref(), Some("Item"));
             } else {
                 panic!("expected closure, got {:?}", init.kind);
             }
@@ -1427,7 +1405,7 @@ mod tests {
     fn where_clause_implicit_generic() {
         let f = parse_fn("func pick(a: T, b: T) -> T where T: Comparable { return a }");
         let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
-        assert_eq!(t.bounds, vec!["Comparable".to_string()]);
+        assert_eq!(vts(&t.bounds), vec!["Comparable".to_string()]);
     }
 
     // Multiple `+`-separated bounds in a where clause.
@@ -1435,7 +1413,7 @@ mod tests {
     fn where_clause_multiple_bounds() {
         let f = parse_fn("func s(x: T) where T: Comparable + Debug { }");
         let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
-        assert_eq!(t.bounds, vec!["Comparable".to_string(), "Debug".to_string()]);
+        assert_eq!(vts(&t.bounds), vec!["Comparable".to_string(), "Debug".to_string()]);
     }
 
     // A where bound merges into an explicitly-declared type param, not a duplicate.
@@ -1444,7 +1422,7 @@ mod tests {
         let f = parse_fn("func echo<T>(x: T) -> T where T: Comparable { return x }");
         assert_eq!(f.type_params.len(), 1);
         assert_eq!(f.type_params[0].name, "T");
-        assert_eq!(f.type_params[0].bounds, vec!["Comparable".to_string()]);
+        assert_eq!(vts(&f.type_params[0].bounds), vec!["Comparable".to_string()]);
     }
 
     // Full order: generics → params → return → where, across lines.
@@ -1455,8 +1433,8 @@ mod tests {
         );
         let k = f.type_params.iter().find(|p| p.name == "K").expect("K param");
         let v = f.type_params.iter().find(|p| p.name == "V").expect("V param");
-        assert_eq!(k.bounds, vec!["HashKey".to_string()]);
-        assert_eq!(v.bounds, vec!["Clone".to_string()]);
+        assert_eq!(vts(&k.bounds), vec!["HashKey".to_string()]);
+        assert_eq!(vts(&v.bounds), vec!["Clone".to_string()]);
     }
 
     // Generic interface bound inside a where clause: `where T: Iterator<Item>`.
@@ -1464,7 +1442,7 @@ mod tests {
     fn where_clause_generic_bound() {
         let f = parse_fn("func run(x: T) where T: Iterator<Item> { }");
         let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
-        assert_eq!(t.bounds, vec!["Iterator<Item>".to_string()]);
+        assert_eq!(vts(&t.bounds), vec!["Iterator<Item>".to_string()]);
     }
 
     // CD1: one interface per block. A second name after `implements` is a
@@ -1483,8 +1461,8 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
-                assert_eq!(i.interface_name.as_deref(), Some("Countable"));
-                assert_eq!(i.target_ty, "Bag");
+                assert_eq!(ots(&i.interface).as_deref(), Some("Countable"));
+                assert_eq!(ts(&i.target_ty), "Bag");
             }
             _ => panic!("expected extend block"),
         }
@@ -1496,7 +1474,7 @@ mod tests {
         let result = parse("extend Bag { }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
-            DeclKind::Impl(ref i) => assert!(i.interface_name.is_none()),
+            DeclKind::Impl(ref i) => assert!(i.interface.is_none()),
             _ => panic!("expected impl"),
         }
     }
@@ -1547,10 +1525,10 @@ mod tests {
             DeclKind::Interface(ref t) => {
                 let names: Vec<&str> = t.assoc_types.iter().map(|a| a.name.as_str()).collect();
                 assert_eq!(names, ["Out", "Key", "Same"]);
-                assert_eq!(t.assoc_types[1].bounds, ["Comparable"]);
-                assert_eq!(t.assoc_types[2].default.as_deref(), Some("Self"));
+                assert_eq!(vts(&t.assoc_types[1].bounds), ["Comparable"]);
+                assert_eq!(ots(&t.assoc_types[2].default).as_deref(), Some("Self"));
                 assert_eq!(t.methods.len(), 1);
-                assert_eq!(t.methods[0].ret_ty.as_deref(), Some("Self.Out"));
+                assert_eq!(ots(&t.methods[0].ret_ty).as_deref(), Some("Self.Out"));
             }
             _ => panic!("expected interface"),
         }
@@ -1569,8 +1547,8 @@ mod tests {
                 assert_eq!(t.name, "Mul");
                 let names: Vec<&str> = t.type_params.iter().map(|p| p.name.as_str()).collect();
                 assert_eq!(names, ["Rhs", "K"]);
-                assert_eq!(t.type_params[0].default.as_deref(), Some("Self"));
-                assert_eq!(t.type_params[1].bounds, ["Comparable"]);
+                assert_eq!(ots(&t.type_params[0].default).as_deref(), Some("Self"));
+                assert_eq!(vts(&t.type_params[1].bounds), ["Comparable"]);
                 assert_eq!(t.methods.len(), 1);
             }
             _ => panic!("expected interface"),
@@ -1588,10 +1566,10 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
-                assert_eq!(i.interface_name.as_deref(), Some("Mul<f64>"));
+                assert_eq!(ots(&i.interface).as_deref(), Some("Mul<f64>"));
                 assert_eq!(i.assoc_bindings.len(), 1);
                 assert_eq!(i.assoc_bindings[0].name, "Out");
-                assert_eq!(i.assoc_bindings[0].ty, "Meters");
+                assert_eq!(ts(&i.assoc_bindings[0].ty), "Meters");
                 assert_eq!(i.methods.len(), 1);
             }
             _ => panic!("expected extend"),
@@ -1675,9 +1653,9 @@ mod tests {
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
         match result.decls[0].kind {
             DeclKind::Impl(ref i) => {
-                assert_eq!(i.interface_name.as_deref(), Some("Show"));
+                assert_eq!(ots(&i.interface).as_deref(), Some("Show"));
                 let t = i.where_bounds.iter().find(|tp| tp.name == "T").expect("T bound");
-                assert_eq!(t.bounds, vec!["Show".to_string()]);
+                assert_eq!(vts(&t.bounds), vec!["Show".to_string()]);
             }
             _ => panic!("expected impl"),
         }

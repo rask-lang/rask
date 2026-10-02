@@ -2,6 +2,7 @@
 
 //! Closure and spawn lowering.
 
+use rask_ast::ty::TypeExpr;
 use super::{LoweringError, MirLowerer, TypedOperand};
 use rask_ast::NodeId;
 use crate::{
@@ -30,7 +31,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_fn_as_value(&mut self, name: &str) -> Option<TypedOperand> {
         let sig = self.func_sigs.get(name)?;
         let ret_ty = sig.ret_ty.clone();
-        let param_ty_strs = sig.param_ty_strs.clone();
+        let param_tys = sig.param_tys.clone();
 
         // Named per use site, the way closure bodies are. A single global
         // `<name>__fnval` looks tidier but the dedup that would need is
@@ -43,10 +44,10 @@ impl<'a> MirLowerer<'a> {
             wb.add_param("__env".to_string(), MirType::Ptr);
 
             let mut args = Vec::new();
-            for (i, ty_str) in param_ty_strs.iter().enumerate() {
+            for (i, ty_str) in param_tys.iter().enumerate() {
                 let ty = ty_str
-                    .as_deref()
-                    .map(|s| self.ctx.resolve_type_str(s))
+                    .as_ref()
+                    .map(|t| self.ctx.resolve_type_expr(t))
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"));
                 let id = wb.add_param(format!("__a{}", i), ty);
                 args.push(MirOperand::Local(id));
@@ -71,7 +72,7 @@ impl<'a> MirLowerer<'a> {
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
-                param_ty_strs: Vec::new(),
+                param_tys: Vec::new(),
             });
             self.synthesized_functions.push(wb.finish());
         }
@@ -102,9 +103,9 @@ impl<'a> MirLowerer<'a> {
     /// return shape reads a tag out of whatever it is, which crashes.
     pub(super) fn lower_compare_as_comparator(&mut self, name: &str) -> Option<TypedOperand> {
         let sig = self.func_sigs.get(name)?;
-        let param_ty_strs = sig.param_ty_strs.clone();
+        let param_tys = sig.param_tys.clone();
         let ret_ty = sig.ret_ty.clone();
-        if param_ty_strs.len() != 2 || !self.is_ordering_ty(&ret_ty) {
+        if param_tys.len() != 2 || !self.is_ordering_ty(&ret_ty) {
             return None;
         }
 
@@ -115,10 +116,10 @@ impl<'a> MirLowerer<'a> {
             wb.add_param("__env".to_string(), MirType::Ptr);
 
             let mut args = Vec::new();
-            for (i, ty_str) in param_ty_strs.iter().enumerate() {
+            for (i, ty_str) in param_tys.iter().enumerate() {
                 let ty = ty_str
-                    .as_deref()
-                    .map(|s| self.ctx.resolve_type_str(s))
+                    .as_ref()
+                    .map(|t| self.ctx.resolve_type_expr(t))
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:cmp_param"));
                 let id = wb.add_param(format!("__c{}", i), ty);
                 args.push(MirOperand::Local(id));
@@ -146,7 +147,7 @@ impl<'a> MirLowerer<'a> {
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
-                param_ty_strs: Vec::new(),
+                param_tys: Vec::new(),
             });
             self.synthesized_functions.push(wb.finish());
         }
@@ -175,7 +176,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_closure(
         &mut self,
         params: &[rask_ast::expr::ClosureParam],
-        ret_ty: Option<&str>,
+        ret_ty: Option<&TypeExpr>,
         body: &Expr,
         carries: bool,
         closure_id: Option<NodeId>,
@@ -197,10 +198,10 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_closure_expecting(
         &mut self,
         params: &[rask_ast::expr::ClosureParam],
-        ret_ty: Option<&str>,
+        ret_ty: Option<&TypeExpr>,
         body: &Expr,
         carries: bool,
-        expected_param_tys: &[String],
+        expected_param_tys: &[TypeExpr],
         closure_id: Option<NodeId>,
         for_spawn: bool,
     ) -> Result<TypedOperand, LoweringError> {
@@ -274,7 +275,7 @@ impl<'a> MirLowerer<'a> {
                 _ => None,
             });
         let closure_ret = ret_ty
-            .map(|s| self.ctx.resolve_type_str(s))
+            .map(|t| self.ctx.resolve_type_expr(t))
             .or(checked_ret)
             .unwrap_or_else(|| if inferred_void {
                 MirType::Void
@@ -320,10 +321,10 @@ impl<'a> MirLowerer<'a> {
         for (i, param) in params.iter().enumerate() {
             // Written annotation first, then the type the callee declares for
             // this position, then what the checker inferred.
-            let ty_str = param.ty.clone()
+            let written = param.ty.clone()
                 .or_else(|| expected_param_tys.get(i).cloned());
-            let param_ty = ty_str.as_deref()
-                .map(|s| self.ctx.resolve_type_str(s))
+            let param_ty = written.as_ref()
+                .map(|t| self.ctx.resolve_type_expr(t))
                 .or_else(|| checked_params.get(i).cloned())
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:param"));
             let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
@@ -346,14 +347,14 @@ impl<'a> MirLowerer<'a> {
                         scalar_mutate_params: Vec::new(),
                         aggregate_mutate_params: Vec::new(),
                         ret_vec_elem: None,
-                        param_ty_strs: Vec::new(),
+                        param_tys: Vec::new(),
                     },
                 );
             }
             if let Some(prefix) = self.mir_type_name(&param_ty) {
                 self.meta_mut(&param.name).type_prefix = Some(prefix);
-            } else if let Some(s) = ty_str.as_deref() {
-                if let Some(prefix) = super::type_prefix_from_str(s) {
+            } else if let Some(t) = written.as_ref() {
+                if let Some(prefix) = super::type_prefix_of(t) {
                     self.meta_mut(&param.name).type_prefix = Some(prefix);
                 }
             }
@@ -423,7 +424,7 @@ impl<'a> MirLowerer<'a> {
             scalar_mutate_params: Vec::new(),
             aggregate_mutate_params: Vec::new(),
             ret_vec_elem: None,
-            param_ty_strs: Vec::new(),
+            param_tys: Vec::new(),
         });
 
         self.synthesized_functions.push(closure_fn);
@@ -727,7 +728,7 @@ impl<'a> MirLowerer<'a> {
             scalar_mutate_params: Vec::new(),
             aggregate_mutate_params: Vec::new(),
             ret_vec_elem: None,
-            param_ty_strs: Vec::new(),
+            param_tys: Vec::new(),
         });
         self.synthesized_functions.push(yb.finish());
 
@@ -813,7 +814,7 @@ impl<'a> MirLowerer<'a> {
             scalar_mutate_params: Vec::new(),
             aggregate_mutate_params: Vec::new(),
             ret_vec_elem: None,
-            param_ty_strs: Vec::new(),
+            param_tys: Vec::new(),
         });
         self.synthesized_functions.push(b.finish());
         thunk_name
