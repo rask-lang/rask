@@ -169,9 +169,9 @@ impl<'a> MirLowerer<'a> {
     ///
     /// Monomorphization chose the functions and queued them (#1391); this only
     /// adapts them to the runtime's callback shape. The runtime hands a key's
-    /// *address* and its size, and wants `int` back from `eq`. A struct or
-    /// enum is passed by address anyway, so its address is the argument; a
-    /// `Vec` key is a handle, loaded out of the slot.
+    /// *address* and its size, and wants `int` back from `eq`. A struct, enum,
+    /// tuple or wrapper is passed by address anyway, so its address is the
+    /// argument; a `Vec` key is a handle, loaded out of the slot.
     pub(super) fn map_key_fn_addrs(
         &mut self,
         node: NodeId,
@@ -202,7 +202,12 @@ impl<'a> MirLowerer<'a> {
             self.closure_counter
         );
         self.closure_counter += 1;
-        let by_address = matches!(key_ty, MirType::Struct(_) | MirType::Enum(_));
+        // Everything codegen passes by address: the slot holds the value, so
+        // the slot's address is the argument.
+        let by_address = matches!(
+            key_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Option(_) | MirType::Result { .. }
+        );
         let ret_ty = if is_eq { MirType::I32 } else { MirType::U64 };
         let mut wb = BlockBuilder::new(name.clone(), ret_ty.clone());
         let mut args = Vec::new();

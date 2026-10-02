@@ -319,7 +319,7 @@ impl Interpreter {
     /// `generics` is the frame for `method`'s body, from the call site. Only
     /// that body gets it: a builtin that calls some other Rask function on the
     /// way (`sort` reaching `compare`) hands that one nothing.
-    pub(super) fn call_method(
+    pub(crate) fn call_method(
         &mut self,
         receiver: Value,
         method: &str,

@@ -378,27 +378,39 @@ impl TypeBinding {
 }
 
 impl TypedProgram {
-    /// Take out the derived `eq`/`hash` bodies the checker didn't keep.
+    /// Hand the checker's own declarations to the program: the derived
+    /// `eq`/`hash`/`compare` bodies and wrapper functions it wrote and
+    /// checked, and every `==` on two wrappers turned into a call to the
+    /// wrapper's `eq` (`checker/derive.rs`).
     ///
-    /// The desugarer writes one for every struct and enum; only the checker
-    /// knows which types qualify (a closure field has no `eq`). The rest were
-    /// never checked, and every pass after this one reads every body.
-    pub fn drop_underived(&self, decls: &mut [rask_ast::decl::Decl]) {
-        use rask_ast::decl::DeclKind;
-        for decl in decls.iter_mut() {
-            let (name, methods) = match &mut decl.kind {
-                DeclKind::Struct(s) => (&s.name, &mut s.methods),
-                DeclKind::Enum(e) => (&e.name, &mut e.methods),
-                _ => continue,
-            };
-            let kept: Vec<&MethodSig> = match self.types.get_type_id(name).and_then(|id| self.types.get(id)) {
-                Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => {
-                    methods.iter().filter(|m| !m.derived).collect()
-                }
-                _ => Vec::new(),
-            };
-            methods.retain(|m| !m.is_derived() || kept.iter().any(|k| k.name == m.name));
+    /// Done here, by the entry points that check a program, rather than by
+    /// whoever runs next: every pass after this one reads the declarations,
+    /// and none of them should have to know the checker wrote some.
+    pub fn attach_derived(&mut self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        struct Calls<'a>(&'a HashMap<NodeId, (NodeId, String)>);
+        impl rask_ast::rewrite::Rewrite for Calls<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                use rask_ast::expr::{Expr, ExprKind, CallArg, ArgMode};
+                let Some((callee, name)) = self.0.get(&e.id) else { return };
+                let old = std::mem::replace(&mut e.kind, ExprKind::Bool(false));
+                let ExprKind::MethodCall { object, mut args, .. } = old else {
+                    e.kind = old;
+                    return;
+                };
+                let rhs = args.remove(0);
+                e.kind = ExprKind::Call {
+                    func: Box::new(Expr { id: *callee, kind: ExprKind::Ident(name.clone()), span: e.span }),
+                    args: vec![
+                        CallArg { name: None, mode: ArgMode::Default, expr: *object },
+                        CallArg { name: None, mode: ArgMode::Default, expr: rhs.expr },
+                    ],
+                };
+            }
         }
+        rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.wrapper_eq_calls));
+        let mut derived = std::mem::take(&mut self.derived_decls);
+        rask_ast::rewrite::rewrite_decls(&mut derived, &mut Calls(&self.wrapper_eq_calls));
+        decls.extend(derived);
     }
 }
 
@@ -508,4 +520,12 @@ pub struct TypedProgram {
     /// `string` parameter reached MIR as a void and printed as an address
     /// (#905). Written back into the declarations after checking.
     pub inferred_fn_params: HashMap<String, Vec<(String, Type)>>,
+    /// Declarations the checker wrote and checked (`checker/derive.rs`).
+    /// `attach_derived` moves them into the program.
+    pub derived_decls: Vec<rask_ast::decl::Decl>,
+    /// `==` calls on two wrappers that go through the wrapper's `eq`:
+    /// call node → (callee node, function name). Applied by `attach_derived`.
+    pub wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
+    /// The `eq`/`hash` written for each wrapper type, for a map keyed by one.
+    pub wrapper_fns: Vec<super::derive::WrapperFns>,
 }

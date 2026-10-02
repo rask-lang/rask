@@ -103,4 +103,31 @@ test "a struct with a Vec and an optional field" {
     assert a.hash() != c.hash()
 }
 
+test "a tuple and an optional compare through their parts' own eq" {
+    let a = (Version { major: 1, minor: 0 }, 2)
+    let b = (Version { major: 1, minor: 5 }, 2)
+    assert a == b
+    let c: Version? = Version { major: 1, minor: 0 }
+    let d: Version? = Version { major: 1, minor: 5 }
+    assert c == d
+    let x: (Vec<i64>, i64) = ([1], 2)
+    let y: (Vec<i64>, i64) = ([1], 2)
+    assert x == y
+    let p: Vec<i64>? = [1]
+    let q: Vec<i64>? = [1]
+    assert p == q
+}
+
+test "a tuple key holding a heap string" {
+    mut m: Map<(string, i64), i64> = Map.new()
+    m.insert(("A STRING WELL PAST THE INLINE LIMIT".to_lowercase(), 1), 5)
+    assert m.contains(("a string well past the inline limit", 1))
+}
+
+test "a tuple key holding a type with its own Equal" {
+    mut m: Map<(Version, i64), string> = Map.new()
+    m.insert((Version { major: 2, minor: 0 }, 1), "x")
+    assert m.get((Version { major: 2, minor: 7 }, 1)) ?? "" == "x"
+}
+
 func main() {}

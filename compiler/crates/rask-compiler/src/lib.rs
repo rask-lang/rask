@@ -34,12 +34,7 @@ use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::Span;
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
-// Public because `rask test` and `rask bench` assemble the back half of the
-// pipeline themselves rather than going through `finalize_compile`, and they
-// have to run this pass too — a derived `compare` that only `rask run`
-// generates is a method that exists or doesn't depending on the subcommand.
 pub mod package_scope;
-pub mod derive;
 mod comptime_eval;
 
 // Re-export key types so callers don't need direct deps on pipeline crates.
@@ -856,7 +851,7 @@ fn check_package_scoped(
 // compile — full pipeline through monomorphization
 // ============================================================================
 
-/// Compile a .rk file: check + derive + stdlib + monomorphize.
+/// Compile a .rk file: check + stdlib + monomorphize.
 ///
 /// Returns everything codegen needs. Does NOT emit object files.
 pub fn compile_file(
@@ -868,7 +863,7 @@ pub fn compile_file(
 
 /// `compile_file`, with a chance to rewrite the declarations first.
 ///
-/// `transform` runs after the frontend and the derive/stdlib/dependency merge,
+/// `transform` runs after the frontend and the stdlib/dependency merge,
 /// and before monomorphization — the one point where the decl list is complete
 /// and nothing has been laid out yet. That's where `rask test` swaps `main` for
 /// a test runner and `rask bench` for a benchmark runner.
@@ -961,7 +956,7 @@ fn write_back_inferred_params(decls: &mut [Decl], typed: &TypedProgram) {
     }
 }
 
-/// Shared post-check compilation: hidden params, derive, stdlib, mono, comptime.
+/// Shared post-check compilation: hidden params, stdlib, mono, comptime.
 fn finalize_compile(
     check_output: PipelineOutput<CheckResult>,
     package_modules: HashSet<String>,
@@ -997,9 +992,6 @@ fn finalize_compile_inner(
     // string, and an omitted one is empty, which reads as `void`. The checker
     // solved it; put the answer where the rest of the pipeline looks (#905).
     write_back_inferred_params(&mut check.decls, &check.typed);
-
-    // --- Derive synthetic method bodies (compare, etc.) ---
-    derive::generate_derived_methods(&mut check.decls, &check.typed);
 
     // --- Inject compiled stdlib functions and the types they use ---
     let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();

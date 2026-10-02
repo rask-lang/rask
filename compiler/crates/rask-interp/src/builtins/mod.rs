@@ -252,12 +252,19 @@ impl Interpreter {
             // TU9: a tuple's derived interfaces compare, order and hash element by
             // element. It was a `Value::Vec` until #1063, so `(1, 2) == (1, 2)`
             // used to land on `Vec.eq`; now it needs its own arm.
-            Value::Tuple(..) if matches!(method, "eq" | "ne") => {
-                let eq = args.first().is_some_and(|o| Self::value_eq(&receiver, o));
+            // TU9–TU11: a tuple compares and hashes element by element, each
+            // element through its own type's `eq`/`hash` — a user `Equal` on
+            // an element holds inside the tuple too (#1392).
+            Value::Tuple(items) if matches!(method, "eq" | "ne") => {
+                let eq = match args.first() {
+                    Some(Value::Tuple(other)) => self.parts_equal(&items.clone(), &other.clone())?,
+                    _ => false,
+                };
                 return Ok(Value::Bool(if method == "eq" { eq } else { !eq }));
             }
-            Value::Tuple(..) if method == "hash" => {
-                return Ok(Value::int(Self::value_hash(&receiver) as i64));
+            Value::Tuple(items) if method == "hash" => {
+                let h = self.parts_hash(FNV_OFFSET, &items.clone())?;
+                return Ok(Value::int(h as i64));
             }
             Value::Tuple(..) if method == "compare" => {
                 let ord = args.first()
@@ -265,15 +272,15 @@ impl Interpreter {
                     .unwrap_or(std::cmp::Ordering::Equal);
                 return Ok(Self::ordering_value(ord));
             }
+            // An enum the checker wrote no `eq` for — an optional, a result, a
+            // stdlib enum: same variant, and the payloads equal through their own
+            // `eq`.
             Value::Enum { .. } if method == "eq" => {
-                if let Some(other) = args.first() {
-                    if let (Value::Enum { name: n1, variant: v1, fields: f1, .. },
-                            Value::Enum { name: n2, variant: v2, fields: f2, .. }) = (&receiver, other) {
-                        if n1 == n2 && v1 == v2 && f1.len() == f2.len() {
-                            let all_eq = f1.iter().zip(f2.iter()).all(|(a, b)| Self::value_eq(a, b));
-                            return Ok(Value::Bool(all_eq));
-                        }
-                        return Ok(Value::Bool(false));
+                if let (Value::Enum { name: n1, variant: v1, fields: f1, .. },
+                        Some(Value::Enum { name: n2, variant: v2, fields: f2, .. })) = (&receiver, args.first()) {
+                    if n1 == n2 && v1 == v2 {
+                        let (f1, f2) = (f1.clone(), f2.clone());
+                        return Ok(Value::Bool(self.parts_equal(&f1, &f2)?));
                     }
                 }
                 return Ok(Value::Bool(false));
@@ -286,22 +293,21 @@ impl Interpreter {
                 return Ok(Value::Bool(true));
             }
             Value::Struct(..) if method == "eq" => {
-                if let Some(other) = args.first() {
-                    if let (Value::Struct(ref s1), Value::Struct(ref s2)) = (&receiver, other) {
-                        // `a == a` passes the same Arc twice — locking it again
-                        // would deadlock the interpreter.
-                        if Arc::ptr_eq(s1, s2) {
-                            return Ok(Value::Bool(true));
-                        }
-                        let g1 = s1.lock().unwrap();
-                        let g2 = s2.lock().unwrap();
-                        if g1.name == g2.name && g1.fields.len() == g2.fields.len() {
-                            let all_eq = g1.fields.iter()
-                                .all(|(k, v1)| g2.fields.get(k).map_or(false, |v2| Self::value_eq(v1, v2)));
-                            return Ok(Value::Bool(all_eq));
-                        }
-                        return Ok(Value::Bool(false));
+                if let (Value::Struct(s1), Some(Value::Struct(s2))) = (&receiver, args.first()) {
+                    // `a == a` passes the same Arc twice — locking it again
+                    // would deadlock the interpreter.
+                    if Arc::ptr_eq(s1, s2) {
+                        return Ok(Value::Bool(true));
                     }
+                    let (n1, a): (String, Vec<Value>) = {
+                        let g = s1.lock().unwrap();
+                        (g.name.clone(), g.fields.values().cloned().collect())
+                    };
+                    let (n2, b): (String, Vec<Value>) = {
+                        let g = s2.lock().unwrap();
+                        (g.name.clone(), g.fields.values().cloned().collect())
+                    };
+                    return Ok(Value::Bool(n1 == n2 && self.parts_equal(&a, &b)?));
                 }
                 return Ok(Value::Bool(false));
             }
@@ -312,11 +318,20 @@ impl Interpreter {
                 }
                 return Ok(Value::Bool(true));
             }
-            Value::Struct(..) if method == "hash" => {
-                return Ok(Value::int(Self::value_hash(&receiver) as i64));
+            Value::Struct(s) if method == "hash" => {
+                let fields: Vec<Value> = s.lock().unwrap().fields.values().cloned().collect();
+                let h = self.parts_hash(FNV_OFFSET, &fields)?;
+                return Ok(Value::int(h as i64));
             }
-            Value::Enum { .. } if method == "hash" => {
-                return Ok(Value::int(Self::value_hash(&receiver) as i64));
+            // The variant's position, then the payload — what the checker writes
+            // for an enum it derives, and for `T?`: absent hashes to 0.
+            Value::Enum { variant_index, fields, name, variant, .. } if method == "hash" => {
+                if name == "Option" && variant == "None" {
+                    return Ok(Value::int(0));
+                }
+                let seed = fnv_mix(FNV_OFFSET, *variant_index as u64);
+                let h = self.parts_hash(seed, &fields.clone())?;
+                return Ok(Value::int(h as i64));
             }
             Value::Struct(..) if method == "compare" => {
                 let ord = args.first()
@@ -518,4 +533,46 @@ pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+/// FNV-1a's offset basis and prime, the mixing the checker's derived `hash`
+/// uses.
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv_mix(h: u64, part: u64) -> u64 {
+    (h ^ part).wrapping_mul(FNV_PRIME)
+}
+
+impl Interpreter {
+    /// Parts equal pairwise, each through its own type's `eq`.
+    fn parts_equal(&mut self, a: &[Value], b: &[Value]) -> Result<bool, RuntimeError> {
+        if a.len() != b.len() {
+            return Ok(false);
+        }
+        for (x, y) in a.iter().zip(b) {
+            if !matches!(self.call_method(x.clone(), "eq", vec![y.clone()], None)?, Value::Bool(true)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// `seed` mixed with each part's own `hash`, in order.
+    fn parts_hash(&mut self, seed: u64, parts: &[Value]) -> Result<u64, RuntimeError> {
+        let mut h = seed;
+        for p in parts {
+            let part = match self.call_method(p.clone(), "hash", vec![], None)? {
+                Value::Int(n, _) => n as u64,
+                other => {
+                    return Err(RuntimeError::TypeError(format!(
+                        "`hash` answered {}, not a u64",
+                        other.type_name()
+                    )))
+                }
+            };
+            h = fnv_mix(h, part);
+        }
+        Ok(h)
+    }
 }

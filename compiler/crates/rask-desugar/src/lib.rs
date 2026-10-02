@@ -14,7 +14,6 @@
 
 mod annotation_defaults;
 mod defaults;
-mod derive;
 mod generalize;
 mod interface_defaults;
 pub use defaults::is_valid_default_expr;
@@ -77,14 +76,14 @@ pub fn desugar(decls: &mut [Decl]) -> DesugarOutput {
 /// parsed and then unusable (#1276). This crate can't read the registry
 /// itself: `rask-stdlib` already depends on it.
 pub fn desugar_with_stdlib(decls: &mut [Decl], stdlib: &[Decl]) -> DesugarOutput {
-    desugar_inner_from(decls, &[], stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE, true)
+    desugar_inner_from(decls, &[], stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 /// Desugar the stdlib's own declarations, in their own NodeId bands.
 ///
 /// See [`STDLIB_DESUGAR_ID_BASE`].
 pub fn desugar_stdlib(decls: &mut [Decl]) -> DesugarOutput {
-    desugar_inner_from(decls, &[], &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE, false)
+    desugar_inner_from(decls, &[], &[], STDLIB_DESUGAR_ID_BASE, STDLIB_DEFAULT_ARGS_ID_BASE)
 }
 
 /// Desugar a package whose dependencies are known.
@@ -97,7 +96,7 @@ pub fn desugar_package(
     dep_annotations: &[(String, Decl)],
     stdlib: &[Decl],
 ) -> DesugarOutput {
-    desugar_inner_from(decls, dep_annotations, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE, true)
+    desugar_inner_from(decls, dep_annotations, stdlib, DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 /// ER26 coverage error from @message desugaring.
@@ -128,7 +127,7 @@ pub fn desugar_with_diagnostics(decls: &mut [Decl]) -> DesugarOutput {
 }
 
 fn desugar_inner(decls: &mut [Decl], dep_annotations: &[(String, Decl)]) -> DesugarOutput {
-    desugar_inner_from(decls, dep_annotations, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE, true)
+    desugar_inner_from(decls, dep_annotations, &[], DESUGAR_ID_BASE, DEFAULT_ARGS_ID_BASE)
 }
 
 fn desugar_inner_from(
@@ -137,7 +136,6 @@ fn desugar_inner_from(
     stdlib: &[Decl],
     id_base: u32,
     default_args_id_base: u32,
-    derive_methods: bool,
 ) -> DesugarOutput {
     // TD2: an interface method with a body becomes a real method on every conformer
     // that doesn't write its own. Before anything else walks the tree, so the
@@ -145,14 +143,6 @@ fn desugar_inner_from(
     // sees a `message()` an interface supplied by default.
     let injected = interface_defaults::inject(decls);
 
-    // EQ1/HA1: derived `eq` and `hash` become real methods, after the interface
-    // defaults so a default `eq` counts as the type's own. Not for the stdlib:
-    // its types are the compiler's, and several are fieldless stand-ins for a
-    // runtime object (`struct Vec<T> {}` would derive an `eq` that says yes to
-    // every pair).
-    if derive_methods {
-        derive::inject(decls);
-    }
 
     // Before anything rewrites an operator: this reads the body's operators as
     // written, and turns an inferred parameter that is only ever an operand
@@ -336,13 +326,9 @@ impl Desugarer {
     }
 
     fn desugar_fn(&mut self, f: &mut FnDecl) {
-        // A derived body is built with placeholder ids.
-        let outer = self.renumber;
-        self.renumber |= f.is_derived();
         for stmt in &mut f.body {
             self.desugar_stmt(stmt);
         }
-        self.renumber = outer;
     }
 
     fn desugar_struct(&mut self, s: &mut StructDecl) {

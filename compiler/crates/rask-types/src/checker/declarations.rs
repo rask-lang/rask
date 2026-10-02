@@ -280,6 +280,14 @@ impl TypeChecker {
         self.propagate_uniqueness();
         self.propagate_resource_linearity();
         self.auto_derive_interfaces();
+        let annotations: Vec<String> = decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::Annotation(a) => Some(a.name.clone()),
+                _ => None,
+            })
+            .collect();
+        self.write_derived_methods(&annotations);
         self.register_binary_methods();
 
         // GC1/GC2: Pre-register type vars for functions with inferred params/returns
@@ -1252,7 +1260,6 @@ impl TypeChecker {
         let methods = s
             .methods
             .iter()
-            .filter(|m| !m.is_derived())
             .map(|m| self.method_signature(m, &struct_params, &Self::named_all(&struct_params)))
             .collect();
 
@@ -1303,9 +1310,6 @@ impl TypeChecker {
 
         if let Some(info) = binary_info {
             self.types.register_binary_info(type_id, info);
-        }
-        for m in s.methods.iter().filter(|m| m.is_derived()) {
-            self.derived_bodies.insert((type_id, m.name.clone()));
         }
         type_id
     }
@@ -1415,7 +1419,6 @@ impl TypeChecker {
         let methods = e
             .methods
             .iter()
-            .filter(|m| !m.is_derived())
             .map(|m| self.method_signature(m, &enum_params, &Self::named_all(&enum_params)))
             .collect();
 
@@ -1450,9 +1453,6 @@ impl TypeChecker {
             self.types
                 .variant_field_names
                 .insert((enum_id, variant), field_names);
-        }
-        for m in e.methods.iter().filter(|m| m.is_derived()) {
-            self.derived_bodies.insert((enum_id, m.name.clone()));
         }
         enum_id
     }
@@ -1840,19 +1840,6 @@ impl TypeChecker {
         }
     }
 
-    /// Whether the derived `method` written for `ty` became one of its methods.
-    fn keeps_derived(&self, ty: &str, method: &str) -> bool {
-        self.types
-            .get_type_id(ty)
-            .and_then(|id| self.types.get(id))
-            .is_some_and(|def| match def {
-                TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } => {
-                    methods.iter().any(|m| m.name == method && !m.derived)
-                }
-                _ => false,
-            })
-    }
-
     fn auto_derive_interfaces(&mut self) {
         use crate::types::TypeId;
 
@@ -1872,7 +1859,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
-                            derived: !self.derived_bodies.contains(&(id, "eq".to_string())),
+                            derived: true,
                             owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "eq".to_string(),
@@ -1888,7 +1875,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
-                            derived: !self.derived_bodies.contains(&(id, "hash".to_string())),
+                            derived: true,
                             owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "hash".to_string(),
@@ -2005,7 +1992,7 @@ impl TypeChecker {
                         && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
-                            derived: !self.derived_bodies.contains(&(id, "eq".to_string())),
+                            derived: true,
                             owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "eq".to_string(),
@@ -2021,7 +2008,7 @@ impl TypeChecker {
                         && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
-                            derived: !self.derived_bodies.contains(&(id, "hash".to_string())),
+                            derived: true,
                             owner_patterns: Vec::new(),
                             type_params: Vec::new(),
                             name: "hash".to_string(),
@@ -2122,7 +2109,7 @@ impl TypeChecker {
         matches!(method, "compare" | "lt" | "le" | "gt" | "ge")
     }
 
-    fn type_has_method(&self, ty: &Type, method: &str) -> bool {
+    pub(super) fn type_has_method(&self, ty: &Type, method: &str) -> bool {
         match ty {
             // Primitives
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
@@ -2360,9 +2347,6 @@ impl TypeChecker {
                 }
                 self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
                 for method in &s.methods {
-                    if method.is_derived() && !self.keeps_derived(&s.name, &method.name) {
-                        continue;
-                    }
                     self.check_fn(method);
                 }
                 self.current_self_type = None;
@@ -2384,9 +2368,6 @@ impl TypeChecker {
                 }
                 self.current_self_type = self.types.get_type_id(&e.name).map(Type::Named);
                 for method in &e.methods {
-                    if method.is_derived() && !self.keeps_derived(&e.name, &method.name) {
-                        continue;
-                    }
                     self.check_fn(method);
                 }
                 self.current_self_type = None;

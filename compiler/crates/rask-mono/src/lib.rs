@@ -1206,6 +1206,9 @@ mod tests {
             channel_send_sites: std::collections::HashSet::new(),
             inferred_fn_ret: std::collections::HashMap::new(),
             inferred_fn_params: std::collections::HashMap::new(),
+            derived_decls: Vec::new(),
+            wrapper_eq_calls: std::collections::HashMap::new(),
+            wrapper_fns: Vec::new(),
         }
     }
 

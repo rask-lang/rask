@@ -434,7 +434,7 @@ The compiler auto-derives Equal where all fields implement Equal — same patter
 | **EQ2: Override** | `Type implements Equal { ... }` overrides the auto-derived version |
 | **EQ3: Enum equality** | Variants compared by tag, then field-wise payload equality |
 | **EQ4: Vec** | `Vec<T>` is Equal when `T` is: same length, and equal element by element through `T`'s own `eq` |
-| **EQ5: One definition** | A derived `eq` is a method like a written one: `==`, `.eq()` and a `Map` key all call it, on both backends. A field compares through its own type's `eq`, so an override (EQ2) holds wherever the type ends up: a field, a `Vec` element, a key |
+| **EQ5: One definition** | A derived `eq` is a method like a written one: `==`, `.eq()` and a `Map` key all call it, on both backends. A field compares through its own type's `eq`, so an override (EQ2) holds wherever the type ends up: a field, a `Vec` element, a tuple element, an optional's payload, a key. Tuples, `T?` and `T or E` compare part by part the same way |
 
 ```rask
 struct Point {

@@ -599,7 +599,8 @@ impl<'a> Monomorphizer<'a> {
                         .rhs
                         .as_deref()
                         .and_then(|rhs| bindings.get(rhs).copied())
-                        .and_then(|bound| Self::type_spelling(bound));
+                        .and_then(|bound| Self::nameable_type(bound, &typed.types))
+                        .and_then(|bound| Self::type_spelling(&bound));
                     let method = match &rhs {
                         Some(name) => format!("{}${}", target.operator, name),
                         None => target.method.clone(),
@@ -1430,7 +1431,7 @@ impl<'a> Monomorphizer<'a> {
     /// runtime has those).
     fn key_fns(&mut self, key: &Type) -> Option<crate::MapKeyFns> {
         let typed = self.typed?;
-        let mut name_of = |reach: &mut Self, method: &str| -> Option<String> {
+        let name_of = |reach: &mut Self, method: &str| -> Option<String> {
             match key {
                 Type::Named(id) if matches!(
                     typed.types.get(*id),
@@ -1441,6 +1442,14 @@ impl<'a> Monomorphizer<'a> {
                         reach.enqueue(qualified.clone(), Vec::new());
                         qualified
                     })
+                }
+                // A tuple, optional or result key: the checker wrote its pair
+                // as free functions (`TypedProgram::wrapper_fns`).
+                Type::Tuple(_) | Type::Result { .. } => {
+                    let fns = typed.wrapper_fns.iter().find(|w| &w.ty == key)?;
+                    let name = if method == "hash" { fns.hash.clone()? } else { fns.eq.clone()? };
+                    reach.enqueue(name.clone(), Vec::new());
+                    Some(name)
                 }
                 Type::Generic { base, .. } if typed.types.type_name(*base) == "Vec" => {
                     let qualified = format!("Vec_{method}");
