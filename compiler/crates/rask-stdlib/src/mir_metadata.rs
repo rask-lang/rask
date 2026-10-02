@@ -701,6 +701,26 @@ pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
     m.takes.get(param_index).copied().unwrap_or(false)
 }
 
+/// Does this call only read the argument at `arg_index`, by its declaration?
+///
+/// `false` for anything not declared: a runtime helper (`rask_vec_from_static`
+/// moves the array's elements into the vector it builds) answers nothing here,
+/// where `keeps_argument` would guess for it. A struct handed to `m.get(k)`
+/// stays the caller's to release because `get` declares `key: K` without
+/// `take` — and only because it says so (#1394).
+pub fn borrows_argument(qualified_name: &str, arg_index: usize) -> bool {
+    let Some(m) = declared(qualified_name) else { return false };
+    let param_index = if m.takes_self {
+        match arg_index.checked_sub(1) {
+            Some(i) => i,
+            None => return !m.take_self,
+        }
+    } else {
+        arg_index
+    };
+    m.takes.get(param_index).is_some_and(|take| !take)
+}
+
 /// Does this call hand back a view into storage its receiver keeps owning?
 ///
 /// `Vec.get(self, index: i64) -> Option<T>` points into the vector's buffer:
