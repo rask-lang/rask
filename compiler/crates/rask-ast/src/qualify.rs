@@ -62,18 +62,14 @@ impl Qualifier<'_> {
 }
 
 impl Rewrite for Qualifier<'_> {
-    fn ty(&mut self, t: &mut String) {
-        // A type is written, not parsed, at this stage — `Vec<Cat>`, `Cat?`,
-        // `i64 or Cat` — so the substitution is by word. A type string can
-        // never name a local, so the shadow set doesn't apply.
-        let subst: Vec<(String, String)> =
-            self.map.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        *t = crate::type_str::substitute_type_params(t, &subst);
+    fn ty(&mut self, t: &mut crate::ty::TypeExpr) {
+        // A type can never name a local, so the shadow set doesn't apply.
+        t.rename(&|name| self.map.get(name).cloned());
     }
 
     fn expr(&mut self, e: &mut Expr) {
         match &mut e.kind {
-            ExprKind::Ident(name) => {
+            ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
                 if let Some(q) = self.lookup(name) {
                     *name = q.clone();
                 }
@@ -98,9 +94,11 @@ impl Rewrite for Qualifier<'_> {
     fn pattern(&mut self, p: &mut Pattern) {
         // `Colour.Red` in a pattern is the enum's name and the variant's; only
         // the enum is a declaration. A bare `Red` is a variant of whatever the
-        // scrutinee is, and there is nothing here to rename.
+        // scrutinee is, and there is nothing here to rename. A fieldless
+        // `Colour.Red` parses as an identifier pattern, dot included.
         let name = match p {
             Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => name,
+            Pattern::Ident(name) if name.contains('.') => name,
             Pattern::Wildcard
             | Pattern::Ident(_)
             | Pattern::Literal(_)

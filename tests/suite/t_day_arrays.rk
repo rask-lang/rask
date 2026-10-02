@@ -2,7 +2,7 @@
 // Day one: the fixed-size array `[T; N]`, and what it is *not*.
 //
 // `mut v = [1, 2, 3]` with no annotation is a fixed array, not a Vec —
-// std.collections/C4 says the slot picks the shape and a bare literal keeps the
+// std.collections/C9 says the slot picks the shape and a bare literal keeps the
 // fixed one. That trips people up because the value looks like a Vec and
 // answers `len()` and `[]` like one.
 //

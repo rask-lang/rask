@@ -8,7 +8,8 @@ use rask_ast::Span;
 
 use super::declarations::{for_each_unresolved_name, is_type_param_name, signature_type_param_names};
 use super::errors::TypeError;
-use super::parse_type::parse_type_string;
+use super::parse_type::resolve_type_expr;
+use rask_ast::ty::TypeExpr;
 use super::type_defs::TypeDef;
 use super::TypeChecker;
 
@@ -33,8 +34,8 @@ impl TypeChecker {
     /// `Point` grows. A type parameter is not asked either: `take item: T` is
     /// the declaration `Vec.push` is written from, and its instantiation at
     /// `T = i64` is not a written `take`.
-    fn always_copy_spelling(written: &str) -> Option<String> {
-        let t = written.trim();
+    fn always_copy_spelling(written: &Option<TypeExpr>) -> Option<String> {
+        let t = written.as_ref()?.bare_name()?;
         let copy = matches!(
             t,
             "i8" | "i16" | "i32" | "i64" | "isize"
@@ -63,7 +64,7 @@ impl TypeChecker {
     fn check_fn_scoped(&mut self, f: &FnDecl) {
         // GC5: public functions must have full type annotations
         let unannotated_params: Vec<String> = f.params.iter()
-            .filter(|p| p.name != "self" && p.ty.is_empty())
+            .filter(|p| p.name != "self" && p.ty.is_none())
             .map(|p| p.name.clone())
             .collect();
         let missing_return = f.ret_ty.is_none()
@@ -79,7 +80,11 @@ impl TypeChecker {
         }
 
         // ER21: public functions must not use `or _` (inferred error types)
-        let has_inferred_error = f.ret_ty.as_ref().is_some_and(|t| t.ends_with(", _>"));
+        let inferred_error_ok = match &f.ret_ty {
+            Some(TypeExpr::Result { ok, err }) if err.is_name("_") => Some(ok.as_ref()),
+            _ => None,
+        };
+        let has_inferred_error = inferred_error_ok.is_some();
         if f.is_pub && has_inferred_error {
             self.errors.push(TypeError::PublicInferredError {
                 function_name: f.name.clone(),
@@ -90,22 +95,20 @@ impl TypeChecker {
         // GC1/GC2: Reuse pre-registered type vars for inferred params/return
         let inferred = self.inferred_fn_types.get(&f.name).cloned();
 
-        let ret_ty = if has_inferred_error {
+        let ret_ty = if let Some(ok) = inferred_error_ok {
             // `or _` — reuse the pre-registered Result with fresh error var
             if let Some((_, ref ret_var)) = inferred {
                 ret_var.clone()
             } else {
-                // Fallback: parse the ok type, create fresh error var
-                let t = f.ret_ty.as_ref().unwrap();
-                let ok_str = &t["Result<".len()..t.len() - ", _>".len()];
-                let ok_ty = parse_type_string(ok_str, &self.types).unwrap_or(Type::Error);
+                // Fallback: the written ok type with a fresh error var
+                let ok_ty = resolve_type_expr(ok, &self.types).unwrap_or(Type::Error);
                 Type::Result {
                     ok: Box::new(ok_ty),
                     err: Box::new(self.ctx.fresh_var()),
                 }
             }
         } else if let Some(t) = &f.ret_ty {
-            parse_type_string(t, &self.types).unwrap_or(Type::Error)
+            resolve_type_expr(t, &self.types).unwrap_or(Type::Error)
         } else if let Some((_, ref ret_var)) = inferred {
             ret_var.clone()
         } else {
@@ -236,7 +239,8 @@ impl TypeChecker {
                 continue;
             }
             // GC1: Look up pre-created type var for inferred params
-            let ty = if param.ty.is_empty() {
+            let resolved = param.ty.as_ref().map(|t| resolve_type_expr(t, &self.types));
+            let ty = if resolved.is_none() {
                 if let Some((ref pvars, _)) = inferred {
                     pvars.iter()
                         .find(|(name, _)| name == &param.name)
@@ -245,7 +249,7 @@ impl TypeChecker {
                 } else {
                     self.ctx.fresh_var()
                 }
-            } else if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
+            } else if let Some(Ok(ty)) = resolved {
                 // PC2: unknown PascalCase names in parameter types are errors.
                 self.validate_signature_names(&ty, &sig_type_params, param.name_span);
                 ty
@@ -506,8 +510,8 @@ impl TypeChecker {
         match &expr.kind {
             // Vec.new(), Map.new(), string.new() — heap allocation
             ExprKind::MethodCall { object, method, args, .. } => {
-                if let ExprKind::Ident(name) = &object.kind {
-                    if matches!(name.as_str(), "Vec" | "Map" | "string")
+                if let Some(name) = object.name() {
+                    if matches!(name, "Vec" | "Map" | "string")
                         && method == "new"
                     {
                         self.errors.push(TypeError::NoAllocViolation {
@@ -522,7 +526,7 @@ impl TypeChecker {
             }
             // format() — allocates a string
             ExprKind::Call { func, args } => {
-                if let ExprKind::Ident(name) = &func.kind {
+                if let Some(name) = func.name() {
                     if name == "format" {
                         self.errors.push(TypeError::NoAllocViolation {
                             reason: "format() allocates a new string".to_string(),
@@ -687,8 +691,8 @@ impl TypeChecker {
                 })
             }
             ExprKind::Call { func, .. } => {
-                if let ExprKind::Ident(name) = &func.kind {
-                    matches!(name.as_str(), "panic" | "todo" | "unreachable" | "skip")
+                if let Some(name) = func.name() {
+                    matches!(name, "panic" | "todo" | "unreachable" | "skip")
                 } else {
                     false
                 }
@@ -758,7 +762,7 @@ impl TypeChecker {
                 // declarations we can't know whether `foo` is `self` or
                 // `mutate self`. Marking the enclosing private method as
                 // mutate is safe — it's inference for the common case.
-                if let ExprKind::Ident(name) = &object.kind {
+                if let Some(name) = object.name() {
                     if name == "self" {
                         return true;
                     }

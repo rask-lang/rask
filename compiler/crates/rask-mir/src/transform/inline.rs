@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use crate::analysis::call_graph::CallGraph;
 use crate::operand::{BinOp, MirConst};
 use crate::{
-    BlockId, FunctionRef, LocalId, MirBlock, MirFunction, MirLocal, MirOperand,
+    BlockId, LocalId, MirBlock, MirFunction, MirLocal, MirOperand,
     MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, Span,
 };
 
@@ -618,6 +618,7 @@ fn remap_rvalue(rv: &MirRValue, local_map: &HashMap<LocalId, LocalId>) -> MirRVa
         MirRValue::Use(op) => MirRValue::Use(remap_operand(op, local_map)),
         MirRValue::Ref(id) => MirRValue::Ref(local_map.get(id).copied().unwrap_or(*id)),
         MirRValue::Deref(op) => MirRValue::Deref(remap_operand(op, local_map)),
+        MirRValue::FuncAddr(name) => MirRValue::FuncAddr(name.clone()),
         MirRValue::BinaryOp { op, left, right } => MirRValue::BinaryOp {
             op: *op,
             left: remap_operand(left, local_map),
@@ -1073,7 +1074,7 @@ fn has_unwrapped_return(callee: &MirFunction) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{MirConst, BinOp};
+    use crate::{BinOp, FunctionRef, MirConst};
 
     fn make_local(id: u32, name: &str, ty: MirType, is_param: bool) -> MirLocal {
         MirLocal {

@@ -543,7 +543,7 @@ impl<'a> MirLowerer<'a> {
                 loop {
                     match &expr.kind {
                         ExprKind::MethodCall { object, method, .. } => {
-                            if let ExprKind::Ident(mod_name) = &object.kind {
+                            if let Some(mod_name) = object.name() {
                                 if super::is_type_constructor_name(mod_name) {
                                     let func_name = format!("{}_{}", mod_name, method);
                                     let ret = self.func_sigs.get(&func_name)
@@ -562,7 +562,7 @@ impl<'a> MirLowerer<'a> {
                             let name = match &func.kind {
                                 ExprKind::Ident(n) => n.clone(),
                                 ExprKind::Field { object: o, field: f } => {
-                                    if let ExprKind::Ident(mod_name) = &o.kind {
+                                    if let Some(mod_name) = o.name() {
                                         format!("{}_{}", mod_name, f)
                                     } else { break; }
                                 }

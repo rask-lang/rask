@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Collection indexing and writeback.
 
-use crate::value::{MapKey, Value};
+use crate::value::Value;
 
 use super::{Interpreter, RuntimeError};
 
 impl Interpreter {
-    pub(super) fn index_into(&self, collection: &Value, key: &Value) -> Result<Value, RuntimeError> {
+    pub(super) fn index_into(&mut self, collection: &Value, key: &Value) -> Result<Value, RuntimeError> {
         match (collection, key) {
             (Value::Vec(v), Value::Int(i, _)) => {
                 let vec = v.lock().unwrap();
@@ -14,12 +14,9 @@ impl Interpreter {
                     RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() }
                 })
             }
-            (Value::Map(m), _) => {
-                let map = m.lock().unwrap();
-                map.get(&MapKey(key.clone()))
-                    .cloned()
-                    .ok_or_else(|| RuntimeError::Panic("key not found in map".to_string()))
-            }
+            (Value::Map(m), _) => self
+                .map_get(m, key.clone())?
+                .ok_or_else(|| RuntimeError::Panic("key not found in map".to_string())),
             _ => Err(RuntimeError::TypeError(format!(
                 "with...as: cannot index into {}", collection.type_name()
             ))),
@@ -27,7 +24,7 @@ impl Interpreter {
     }
 
     /// Write a value back to a collection at the given key (for with...as writeback).
-    pub(super) fn write_back_index(&self, collection: &Value, key: &Value, value: Value) -> Result<(), RuntimeError> {
+    pub(super) fn write_back_index(&mut self, collection: &Value, key: &Value, value: Value) -> Result<(), RuntimeError> {
         match (collection, key) {
             (Value::Vec(v), Value::Int(i, _)) => {
                 let mut vec = v.lock().unwrap();
@@ -40,7 +37,7 @@ impl Interpreter {
                 }
             }
             (Value::Map(m), _) => {
-                m.lock().unwrap().insert(MapKey(key.clone()), value);
+                self.map_insert(m, key.clone(), value)?;
                 Ok(())
             }
             _ => Err(RuntimeError::TypeError(format!(

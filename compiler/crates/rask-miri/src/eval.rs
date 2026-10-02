@@ -3,8 +3,7 @@
 //! MIR evaluation loop — execute statements, follow terminators.
 
 use rask_mir::{
-    BinOp, BlockId, MirBlock, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind,
-    MirTerminator, MirTerminatorKind, MirType,
+    BinOp, BlockId, MirBlock, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminatorKind, MirType,
 };
 
 use crate::intrinsics;
@@ -425,6 +424,10 @@ impl MiriEngine {
                     )),
                 }
             }
+
+            MirRValue::FuncAddr(name) => Err(MiriError::UnsupportedOperation(format!(
+                "taking the address of `{name}` for the runtime has no compile-time meaning"
+            ))),
 
             MirRValue::Ref(_) => {
                 Err(MiriError::UnsupportedOperation(

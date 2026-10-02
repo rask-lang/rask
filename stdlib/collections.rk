@@ -377,6 +377,39 @@ extend Vec<T> where T: Cloneable {
     }
 }
 
+// Two vectors are equal when they hold equal elements in the same order, and
+// hash from their elements the same way a derived struct hashes its fields
+// (EQ1/HA1). Written here, element by element through `T`'s own `eq` and
+// `hash`, so a map keyed by `Vec<Name>` and `==` on two of them agree on both
+// backends.
+extend Vec<T> where T: Equal {
+    public func eq(self, other: Vec<T>) -> bool {
+        if self.len() != other.len() {
+            return false
+        }
+        mut i: usize = 0
+        while i < self.len() {
+            if self[i] != other[i] {
+                return false
+            }
+            i = i + 1
+        }
+        return true
+    }
+}
+
+extend Vec<T> where T: Hashable {
+    public func hash(self) -> u64 {
+        mut h: u64 = 14695981039346656037
+        mut i: usize = 0
+        while i < self.len() {
+            h = (h ^ self[i].hash()).wrapping_mul(1099511628211)
+            i = i + 1
+        }
+        return h
+    }
+}
+
 // --- Growth errors ---
 
 /// A growth operation refused a value. The value comes back inside the error,

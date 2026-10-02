@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The name resolver implementation.
 
+use rask_ast::ty::TypeExpr;
 use std::collections::{HashMap, HashSet};
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, InterfaceDecl, ImplDecl, ImportDecl, ExportDecl, CImportDecl, TypeParam, UnionDecl};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
@@ -37,6 +38,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 pub struct Resolver {
     symbols: SymbolTable,
+    decl_symbols: HashMap<NodeId, SymbolId>,
     /// Where each source file lives, by its `file_id`.
     ///
     /// Only `import c` reads this: a header written `"mylib.h"` is looked for
@@ -89,6 +91,11 @@ pub struct Resolver {
     stdlib_mode: bool,
     /// Symbols defined during stdlib_mode — imports may override these.
     stdlib_symbols: HashSet<SymbolId>,
+    /// Stdlib functions registered from the stubs, by name. When the stdlib's
+    /// own body for one is declared it takes this symbol rather than a second
+    /// one: calls resolve to the stub's, and two symbols for one function left
+    /// its type parameters filed under the one nobody calls.
+    stub_functions: HashMap<String, SymbolId>,
     /// Enums (and their variants) the compiler puts in scope itself: the
     /// prelude's, and the ones a module import carries. Span (0,0) used to
     /// stand in for this, which was wrong the moment anything else synthesised
@@ -105,6 +112,7 @@ impl Resolver {
     pub fn new() -> Self {
         let mut resolver = Self {
             symbols: SymbolTable::new(),
+            decl_symbols: HashMap::new(),
             source_dirs: HashMap::new(),
             scopes: ScopeTree::new(),
             resolutions: HashMap::new(),
@@ -121,6 +129,7 @@ impl Resolver {
             package_exports: HashMap::new(),
             stdlib_mode: false,
             stdlib_symbols: HashSet::new(),
+            stub_functions: HashMap::new(),
             builtin_enums: HashSet::new(),
             cfg_values: HashMap::new(),
         };
@@ -136,7 +145,7 @@ impl Resolver {
             let sym_id = self.symbols.insert(
                 entry.name.to_string(),
                 SymbolKind::BuiltinFunction { builtin: entry.kind },
-                entry.ret_ty.map(String::from),
+                None,
                 Span::new(0, 0),
                 true,
             );
@@ -205,7 +214,7 @@ impl Resolver {
             if self.scopes.lookup(&f.name).is_some() {
                 continue;
             }
-            let ret_ty = if f.ret_ty.is_empty() { None } else { Some(f.ret_ty.clone()) };
+            let ret_ty = if f.ret_ty == TypeExpr::Unit { None } else { Some(f.ret_ty.clone()) };
             // A symbol per declared parameter, so the signature has an arity and
             // the parameter types the checker unifies arguments against.
             //
@@ -258,6 +267,8 @@ impl Resolver {
                 true,
             );
             let _ = self.scopes.define(f.name.clone(), sym_id, Span::new(0, 0));
+            self.stub_functions.insert(f.name.clone(), sym_id);
+            self.decl_symbols.insert(f.decl_id, sym_id);
             // These come from the stubs, so a stdlib file importing one of them
             // (`import async.spawn` in http.rk) is replacing its own symbol, not
             // shadowing a user import. Without this, `rask test` — the one entry
@@ -270,7 +281,7 @@ impl Resolver {
         let null_sym = self.symbols.insert(
             "null".to_string(),
             SymbolKind::Variable { mutable: false },
-            Some("*()".to_string()),
+            Some(TypeExpr::RawPtr(Box::new(TypeExpr::Unit))),
             Span::new(0, 0),
             true,
         );
@@ -324,20 +335,20 @@ impl Resolver {
         // `spawn` and `transmute` are always-available built-ins
         // (struct.modules/BF1), so this only settles which symbol kind the name
         // carries — it is not what makes them resolve.
-        let functions: &[(&str, BuiltinFunctionKind, Option<&str>)] = match module {
-            BuiltinModuleKind::ASYNC => &[("spawn", BuiltinFunctionKind::Spawn, None)],
-            BuiltinModuleKind::CORE => &[("transmute", BuiltinFunctionKind::Transmute, None)],
+        let functions: &[(&str, BuiltinFunctionKind)] = match module {
+            BuiltinModuleKind::ASYNC => &[("spawn", BuiltinFunctionKind::Spawn)],
+            BuiltinModuleKind::CORE => &[("transmute", BuiltinFunctionKind::Transmute)],
             _ => &[],
         };
 
-        for (name, builtin, ret_ty) in functions {
+        for (name, builtin) in functions {
             if self.scopes.lookup(name).is_some() {
                 continue;
             }
             let sym_id = self.symbols.insert(
                 name.to_string(),
                 SymbolKind::BuiltinFunction { builtin: *builtin },
-                ret_ty.map(|s| s.to_string()),
+                None,
                 span,
                 false,
             );
@@ -489,6 +500,7 @@ impl Resolver {
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
+                decl_symbols: resolver.decl_symbols,
                 external_decls: HashMap::new(),
                 file_packages: HashMap::new(),
                 package_deps: HashMap::new(),
@@ -517,6 +529,7 @@ impl Resolver {
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
+                decl_symbols: resolver.decl_symbols,
                 external_decls: HashMap::new(),
                 file_packages: HashMap::new(),
                 package_deps: HashMap::new(),
@@ -583,6 +596,7 @@ impl Resolver {
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
+                decl_symbols: resolver.decl_symbols,
                 external_decls: HashMap::new(),
                 file_packages: HashMap::new(),
                 package_deps: HashMap::new(),
@@ -761,6 +775,7 @@ impl Resolver {
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
+                decl_symbols: resolver.decl_symbols,
                 external_decls,
                 file_packages,
                 package_deps,
@@ -805,7 +820,7 @@ impl Resolver {
         for decl in pkg.all_decls() {
             match &decl.kind {
                 DeclKind::Fn(f) if f.is_pub => {
-                    let base = Self::base_name(&f.name).to_string();
+                    let base = f.name.clone();
                     // The parameters too, not just the return type. An export
                     // with an empty list reads as taking none, so the first
                     // consumer to pass an argument was told "expected 0
@@ -822,7 +837,7 @@ impl Resolver {
                                     is_mutate: p.is_mutate,
                                     is_deleting: p.is_deleting,
                                 },
-                                Some(p.ty.clone()),
+                                p.ty.clone(),
                                 Span::new(0, 0),
                                 false,
                             )
@@ -842,7 +857,7 @@ impl Resolver {
                     exports.insert(base, sym_id);
                 }
                 DeclKind::Struct(s) if s.is_pub => {
-                    let base = Self::base_name(&s.name).to_string();
+                    let base = s.name.clone();
                     let sym_id = self.symbols.insert(
                         base.clone(),
                         SymbolKind::Struct { fields: vec![] },
@@ -867,7 +882,7 @@ impl Resolver {
                     exports.insert(base, sym_id);
                 }
                 DeclKind::Enum(e) if e.is_pub => {
-                    let base = Self::base_name(&e.name).to_string();
+                    let base = e.name.clone();
                     let sym_id = self.symbols.insert(
                         base.clone(),
                         SymbolKind::Enum { variants: vec![] },
@@ -930,7 +945,8 @@ impl Resolver {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(fn_decl) => {
-                    self.declare_function(fn_decl, decl.span, fn_decl.is_pub);
+                    let sym = self.declare_function(fn_decl, decl.span, fn_decl.is_pub);
+                    self.decl_symbols.insert(decl.id, sym);
                 }
                 DeclKind::Struct(struct_decl) => {
                     self.declare_struct(struct_decl, decl.span);
@@ -1003,8 +1019,9 @@ impl Resolver {
                     self.declare_union(union_decl, decl.span);
                 }
                 DeclKind::Extern(extern_decl) => {
-                    let param_types: Vec<String> = extern_decl.params.iter()
-                        .map(|p| p.ty.clone())
+                    // The parser rejects an extern parameter without a type.
+                    let param_types: Vec<TypeExpr> = extern_decl.params.iter()
+                        .filter_map(|p| p.ty.clone())
                         .collect();
 
                     // One C symbol, one signature. Ordinary bindings shadow, so
@@ -1060,11 +1077,6 @@ impl Resolver {
         }
     }
 
-    /// Strip generic params from function name: "foo<T: Interface>" → "foo"
-    fn base_name(name: &str) -> &str {
-        name.split('<').next().unwrap_or(name)
-    }
-
     /// IM8: a declaration may not take a name an import already bound.
     ///
     /// Only the import-then-declaration order reaches here. The other order —
@@ -1117,7 +1129,13 @@ impl Resolver {
     }
 
     fn declare_function(&mut self, fn_decl: &FnDecl, span: Span, is_pub: bool) -> SymbolId {
-        let base = Self::base_name(&fn_decl.name).to_string();
+        let base = fn_decl.name.clone();
+        if self.stdlib_mode {
+            if let Some(&sym_id) = self.stub_functions.get(&base) {
+                let _ = self.scopes.define(base, sym_id, span);
+                return sym_id;
+            }
+        }
         if !self.stdlib_mode && self.is_reserved_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
@@ -1140,7 +1158,7 @@ impl Resolver {
     }
 
     fn declare_struct(&mut self, struct_decl: &StructDecl, span: Span) {
-        let base = Self::base_name(&struct_decl.name).to_string();
+        let base = struct_decl.name.clone();
         if !self.stdlib_mode && self.is_reserved_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
@@ -1183,7 +1201,7 @@ impl Resolver {
     }
 
     fn declare_union(&mut self, union_decl: &UnionDecl, span: Span) {
-        let union_base = Self::base_name(&union_decl.name).to_string();
+        let union_base = union_decl.name.clone();
         if !self.stdlib_mode && self.is_reserved_name(&union_base) {
             self.errors.push(ResolveError::shadows_builtin(union_base.clone(), span));
         }
@@ -1218,7 +1236,7 @@ impl Resolver {
     }
 
     fn declare_enum(&mut self, enum_decl: &EnumDecl, span: Span) {
-        let base = Self::base_name(&enum_decl.name).to_string();
+        let base = enum_decl.name.clone();
         if !self.stdlib_mode && self.is_reserved_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
@@ -1268,7 +1286,7 @@ impl Resolver {
         if !self.stdlib_mode && self.is_reserved_name(&interface_decl.name) {
             self.errors.push(ResolveError::shadows_builtin(interface_decl.name.clone(), span));
         }
-        let interface_base = Self::base_name(&interface_decl.name).to_string();
+        let interface_base = interface_decl.name.clone();
         self.check_shadows_import(&interface_base, span);
 
         let sym_id = self.symbols.insert(
@@ -1530,7 +1548,7 @@ impl Resolver {
                             && matches!(kind, SymbolKind::Struct { .. } | SymbolKind::BuiltinType { .. })
                         {
                             kind = SymbolKind::TypeAlias {
-                                target: symbol_name.clone(),
+                                target: TypeExpr::named(symbol_name.clone()),
                                 from_import: true,
                             };
                         }
@@ -1654,7 +1672,7 @@ impl Resolver {
         for decl in &all_decls {
             match decl {
                 translate::RaskCDecl::Function(f) => {
-                    let param_types: Vec<String> = f.params.iter()
+                    let param_types: Vec<TypeExpr> = f.params.iter()
                         .map(|p| p.ty.clone())
                         .collect();
                     let sym_id = self.symbols.insert(
@@ -1662,7 +1680,7 @@ impl Resolver {
                         SymbolKind::ExternFunction {
                             abi: "C".to_string(),
                             params: param_types,
-                            ret_ty: if f.ret_ty.is_empty() { None } else { Some(f.ret_ty.clone()) },
+                            ret_ty: f.ret_ty.clone(),
                         },
                         None,
                         span,
@@ -1927,7 +1945,7 @@ impl Resolver {
     }
 
     fn resolve_function(&mut self, fn_decl: &FnDecl) {
-        let fn_sym = self.scopes.lookup(Self::base_name(&fn_decl.name));
+        let fn_sym = self.scopes.lookup(&fn_decl.name);
         self.resolve_function_body(fn_decl, &[], fn_sym);
     }
 
@@ -1956,7 +1974,7 @@ impl Resolver {
         // `let x: Output = …` inside `func f<Output>()` is the parameter, not
         // `os.Output`. Outer params come along for an `extend Ring<T>` method.
         let mut fn_params =
-            Self::declared_type_params(&fn_decl.name, &fn_decl.type_params);
+            Self::declared_type_params(&fn_decl.type_params);
         fn_params.extend(outer_type_params.iter().map(|p| p.name.clone()));
         self.push_type_params(fn_params);
 
@@ -1997,7 +2015,7 @@ impl Resolver {
                     is_mutate: param.is_mutate,
                     is_deleting: param.is_deleting,
                 },
-                Some(param.ty.clone()),
+                param.ty.clone(),
                 Span::new(0, 0),
                 false,
             );
@@ -2029,7 +2047,7 @@ impl Resolver {
 
     fn resolve_impl(&mut self, impl_decl: &ImplDecl) {
         // Look up type params from the target type's declaration
-        let base = Self::base_name(&impl_decl.target_ty).to_string();
+        let base = impl_decl.target_ty.name().unwrap_or_default();
         let outer_params = self.type_param_map.get(&base).cloned().unwrap_or_default();
         for method in &impl_decl.methods {
             self.resolve_method(method, &outer_params);
@@ -2410,7 +2428,7 @@ impl Resolver {
     /// Extract the field name from a `cfg.field` expression.
     fn extract_cfg_field<'b>(&self, expr: &'b Expr) -> Option<&'b str> {
         if let ExprKind::Field { object, field } = &expr.kind {
-            if let ExprKind::Ident(name) = &object.kind {
+            if let Some(name) = object.name() {
                 if name == "cfg" {
                     return Some(field);
                 }
@@ -2492,24 +2510,16 @@ impl Resolver {
     }
 
     /// The type-parameter names a declaration introduces.
-    ///
-    /// Two places to look: the parsed `type_params` list, and the `<…>` suffix
-    /// the parser leaves on a declaration's name (`foo<T: Interface>`) or on an
-    /// `extend`'s target (`Ring<T>`). Only plain identifiers are taken — a
-    /// concrete argument like `extend Foo<Duration>` is a type, not a parameter,
-    /// and treating it as one would hide a missing import.
-    fn declared_type_params(name: &str, params: &[TypeParam]) -> HashSet<String> {
-        let mut out: HashSet<String> =
-            params.iter().map(|p| p.name.clone()).collect();
-        if let Some(open) = name.find('<') {
-            let close = name.rfind('>').unwrap_or(name.len());
-            for part in name[open + 1..close].split(',') {
-                let bare = part.split(':').next().unwrap_or(part).trim();
-                let plain = !bare.is_empty()
-                    && bare.chars().all(|c| c.is_alphanumeric() || c == '_');
-                if plain {
-                    out.insert(bare.to_string());
-                }
+    fn declared_type_params(params: &[TypeParam]) -> HashSet<String> {
+        params.iter().map(|p| p.name.clone()).collect()
+    }
+
+    /// `extend Ring<T>` puts `T` in scope, as does each `where` bound.
+    fn impl_type_params(i: &ImplDecl) -> HashSet<String> {
+        let mut out: HashSet<String> = i.where_bounds.iter().map(|p| p.name.clone()).collect();
+        for arg in i.target_ty.args() {
+            if let Some(name) = arg.bare_name() {
+                out.insert(name.to_string());
             }
         }
         out
@@ -2528,40 +2538,16 @@ impl Resolver {
         self.type_param_scopes.iter().any(|f| f.contains(name))
     }
 
-    /// The identifier-shaped pieces of a type string. `Vec<Duration>?` gives
-    /// `Vec` and `Duration`, `*u8` gives `u8`, `T or Error` gives `T`, `or` and
-    /// `Error`.
-    ///
-    /// Deliberately not a parser. The only question asked of these is whether
-    /// one is a stdlib type name, so splitting on everything that can't be part
-    /// of an identifier is enough — and it can't be wrong about a type spelling
-    /// it hasn't been taught, which a parser would be.
+    /// IM1 for a type annotation: every stdlib type it names needs its import.
     /// A dotted path is rooted at its first segment: `time.Duration` needs
-    /// `time` in scope and says nothing about a bare `Duration`. Splitting on the
-    /// dot too asked about `Duration`, so writing the qualified form — the very
-    /// thing IM1 sends you to — was reported as the missing import it fixes.
-    fn type_idents(ty: &str) -> impl Iterator<Item = &str> {
-        ty.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
-            .filter(|s| !s.is_empty())
-            .filter_map(|path| path.split('.').next())
-            .filter(|s| !s.is_empty())
-    }
-
-    /// IM1 for a type annotation.
-    ///
-    /// Annotations are strings by the time the resolver sees them — `d: Duration`
-    /// on a field, `-> Instant` on a signature — and nothing in this pass looked
-    /// at them. So however well IM1 was enforced in expression position, every
-    /// stdlib type still reached a program through its annotations: `struct S { d:
-    /// Duration }` compiled with no import (#977).
-    fn check_type_annotation(&mut self, ty: &str, span: Span) {
+    /// `time` in scope and says nothing about a bare `Duration`.
+    fn check_type_annotation(&mut self, ty: &TypeExpr, span: Span) {
         if self.stdlib_mode {
             return;
         }
-        let names: Vec<String> = Self::type_idents(ty)
-            .filter(|n| !self.is_type_param(n))
-            .map(str::to_string)
-            .collect();
+        let mut names: Vec<String> = Vec::new();
+        ty.walk_paths(&mut |path| names.push(path[0].clone()));
+        names.retain(|n| !self.is_type_param(n));
         for name in names {
             self.report_missing_import(&name, span);
         }
@@ -2576,7 +2562,7 @@ impl Resolver {
         for decl in decls {
             match &decl.kind {
                 DeclKind::Struct(s) => {
-                    self.push_type_params(Self::declared_type_params(&s.name, &s.type_params));
+                    self.push_type_params(Self::declared_type_params(&s.type_params));
                     for f in &s.fields {
                         self.check_type_annotation(&f.ty, decl.span);
                     }
@@ -2588,7 +2574,7 @@ impl Resolver {
                     }
                 }
                 DeclKind::Enum(e) => {
-                    self.push_type_params(Self::declared_type_params(&e.name, &e.type_params));
+                    self.push_type_params(Self::declared_type_params(&e.type_params));
                     for v in &e.variants {
                         for ty in &v.fields {
                             self.check_type_annotation(&ty.ty, decl.span);
@@ -2605,9 +2591,7 @@ impl Resolver {
                 DeclKind::Impl(i) => {
                     // `extend Ring<T>` puts `T` in scope for the target and for
                     // every method in the block.
-                    self.push_type_params(
-                        Self::declared_type_params(&i.target_ty, &i.where_bounds),
-                    );
+                    self.push_type_params(Self::impl_type_params(i));
                     self.check_type_annotation(&i.target_ty, decl.span);
                     for m in &i.methods {
                         self.check_fn_annotations(m, decl.span);
@@ -2627,10 +2611,10 @@ impl Resolver {
 
     fn check_fn_annotations(&mut self, fn_decl: &FnDecl, span: Span) {
         self.push_type_params(
-            Self::declared_type_params(&fn_decl.name, &fn_decl.type_params),
+            Self::declared_type_params(&fn_decl.type_params),
         );
-        for p in &fn_decl.params {
-            self.check_type_annotation(&p.ty, span);
+        for ty in fn_decl.params.iter().filter_map(|p| p.ty.as_ref()) {
+            self.check_type_annotation(ty, span);
         }
         if let Some(ret) = &fn_decl.ret_ty {
             self.check_type_annotation(ret, span);
@@ -2638,41 +2622,31 @@ impl Resolver {
         self.pop_type_params();
     }
 
+    fn resolve_name(&mut self, expr: &Expr, name: &str) {
+        if let Some(sym_id) = self.scopes.lookup(name) {
+            self.report_missing_import(name, expr.span);
+            self.resolutions.insert(expr.id, sym_id);
+            return;
+        }
+        // A name a module owns is a missing import, not a missing declaration.
+        // `Heap` and the atomics have no declaration anywhere, so once they
+        // stopped being always-in-scope they read as "unknown type `Heap`"
+        // with a fix suggesting the program declare one.
+        if self.report_missing_import(name, expr.span) {
+            return;
+        }
+        self.errors.push(ResolveError::undefined(name.to_string(), expr.span));
+    }
+
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) |
             ExprKind::StringInterp(_) | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None => {}
-            ExprKind::Ident(name) => {
-                match self.scopes.lookup(name) {
-                    Some(sym_id) => {
-                        self.report_missing_import(name, expr.span);
-                        self.resolutions.insert(expr.id, sym_id);
-                    }
-                    None => {
-                        // Try base type for generic constructors: Pool<Node> → Pool
-                        let base_name = name.split('<').next().unwrap_or(name);
-                        if base_name != name {
-                            if let Some(sym_id) = self.scopes.lookup(base_name) {
-                                // The generic spelling needs its import as much
-                                // as the bare one: `Pool<Node>.new()` reached
-                                // here instead of the branch above and slipped
-                                // past IM1 entirely.
-                                self.report_missing_import(base_name, expr.span);
-                                self.resolutions.insert(expr.id, sym_id);
-                                return;
-                            }
-                        }
-                        // A name a module owns is a missing import, not a
-                        // missing declaration. `Heap` and the atomics have no
-                        // declaration anywhere, so once they stopped being
-                        // always-in-scope they read as "unknown type `Heap`"
-                        // with a fix suggesting the program declare one.
-                        let base = name.split('<').next().unwrap_or(name);
-                        if self.report_missing_import(base, expr.span) {
-                            return;
-                        }
-                        self.errors.push(ResolveError::undefined(name.clone(), expr.span));
-                    }
+            ExprKind::Ident(name) => self.resolve_name(expr, name),
+            ExprKind::GenericName { name, type_args } => {
+                self.resolve_name(expr, name);
+                for arg in type_args {
+                    self.check_type_annotation(arg, expr.span);
                 }
             }
             ExprKind::Binary { left, right, .. } => {
@@ -2690,7 +2664,7 @@ impl Resolver {
             }
             ExprKind::MethodCall { object, method, args, .. } => {
                 // Check for calls on external packages: lib.greet()
-                if let ExprKind::Ident(name) = &object.kind {
+                if let Some(name) = object.name() {
                     if let Some(sym_id) = self.scopes.lookup(name) {
                         if let Some(sym) = self.symbols.get(sym_id) {
                             if let SymbolKind::ExternalPackage { package_id } = &sym.kind {
@@ -2726,7 +2700,7 @@ impl Resolver {
                 }
             }
             ExprKind::Field { object, field } => {
-                if let ExprKind::Ident(name) = &object.kind {
+                if let Some(name) = object.name() {
                     // Check for qualified access on external packages
                     if let Some(sym_id) = self.scopes.lookup(name) {
                         if let Some(sym) = self.symbols.get(sym_id) {
@@ -2919,7 +2893,10 @@ impl Resolver {
                     self.resolve_expr(e);
                 }
             }
-            ExprKind::StructLit { name, fields, spread } => {
+            ExprKind::StructLit { name, type_args, fields, spread } => {
+                for arg in type_args {
+                    self.check_type_annotation(arg, expr.span);
+                }
                 if let Some(sym_id) = self.scopes.lookup(name) {
                     self.resolutions.insert(expr.id, sym_id);
                 } else if name.contains('.') {
@@ -2949,17 +2926,7 @@ impl Resolver {
                         self.errors.push(ResolveError::undefined(name.clone(), expr.span));
                     }
                 } else {
-                    // Try base type for generic: Box<T> → Box
-                    let base_name = Self::base_name(name);
-                    if base_name != name.as_str() {
-                        if let Some(sym_id) = self.scopes.lookup(base_name) {
-                            self.resolutions.insert(expr.id, sym_id);
-                        } else {
-                            self.errors.push(ResolveError::undefined(name.clone(), expr.span));
-                        }
-                    } else {
-                        self.errors.push(ResolveError::undefined(name.clone(), expr.span));
-                    }
+                    self.errors.push(ResolveError::undefined(name.clone(), expr.span));
                 }
                 for field in fields {
                     self.resolve_expr(&field.value);
@@ -3186,10 +3153,11 @@ impl Resolver {
 }
 
 /// An extern signature as the user wrote it, for the conflict message.
-fn render_extern_sig(abi: &str, params: &[String], ret_ty: &Option<String>) -> String {
+fn render_extern_sig(abi: &str, params: &[TypeExpr], ret_ty: &Option<TypeExpr>) -> String {
+    let params: Vec<String> = params.iter().map(TypeExpr::source).collect();
     let params = params.join(", ");
-    match ret_ty.as_deref().filter(|r| !r.is_empty() && *r != "()") {
-        Some(ret) => format!("extern \"{}\" func({}) -> {}", abi, params, ret),
+    match ret_ty.as_ref().filter(|r| **r != TypeExpr::Unit) {
+        Some(ret) => format!("extern \"{}\" func({}) -> {}", abi, params, ret.source()),
         None => format!("extern \"{}\" func({})", abi, params),
     }
 }
@@ -3297,7 +3265,7 @@ mod tests {
         let param = |name: &str, ty: &str| Param {
             name: name.to_string(),
             name_span: Span::new(0, 1),
-            ty: ty.to_string(),
+            ty: Some(TypeExpr::named(ty)),
             is_take: false,
             is_mutate: false,
             is_deleting: false,
@@ -3321,8 +3289,8 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    interface_name: None,
-                    target_ty: "Job".to_string(),
+                    interface: None,
+                    target_ty: TypeExpr::named("Job"),
                     methods: vec![method],
                     is_unsafe: false,
                     is_pub: false,
@@ -3613,7 +3581,7 @@ mod tests {
                 name: name.to_string(),
                 type_params: vec![],
                 params: vec![],
-                ret_ty: Some("string".to_string()),
+                ret_ty: Some(TypeExpr::named("string")),
                 body: vec![],
                 is_pub: true,
                 is_private: false,
@@ -3637,8 +3605,8 @@ mod tests {
                 name: name.to_string(),
                 type_params: vec![],
                 fields: vec![
-                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
-                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
+                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: TypeExpr::named("i32"), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
+                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: TypeExpr::named("i32"), visibility: FieldVisibility::Public, attrs: vec![], default: None, doc: None },
                 ],
                 methods: vec![],
                 is_pub: true,
@@ -3942,7 +3910,7 @@ mod tests {
                 fields: vec![Field {
                     name: "max".to_string(),
                     name_span: Span::new(0, 0),
-                    ty: "i64".to_string(),
+                    ty: TypeExpr::named("i64"),
                     visibility: FieldVisibility::Public,
                     attrs: vec![],
                     default: None,

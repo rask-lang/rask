@@ -6,6 +6,7 @@ use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, Fiel
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
 use rask_ast::{NodeId, Span};
+use rask_ast::ty::TypeExpr;
 
 /// Maximum number of errors to collect before stopping.
 const MAX_ERRORS: usize = 20;
@@ -943,11 +944,10 @@ impl Parser {
         let fn_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
         // Allow keywords as function names (e.g., `or` for Option.or)
-        let mut name = self.expect_ident_or_keyword()?;
+        let name = self.expect_ident_or_keyword()?;
 
         let mut type_params = if self.match_token(&TokenKind::Lt) {
-            let (params, suffix) = self.parse_type_params()?;
-            name.push_str(&suffix);
+            let params = self.parse_type_params()?;
             params
         } else {
             vec![]
@@ -1078,12 +1078,12 @@ impl Parser {
             let name = self.expect_ident_or_keyword()?;
 
             let ty = if self.match_token(&TokenKind::Colon) {
-                self.parse_type_name()?
+                Some(self.parse_type_name()?)
             } else if name == "self" {
-                "Self".to_string()
+                Some(TypeExpr::named("Self"))
             } else {
                 // GC1: Allow omitting parameter type — inferred from body
-                String::new()
+                None
             };
 
             let default = if self.match_token(&TokenKind::Eq) {
@@ -1126,7 +1126,7 @@ impl Parser {
 
     /// Parse one parameter inside a function type: `T`, `name: T`, or `mutate name: T`.
     /// In type position, names and modifiers are noise — only the type part is kept.
-    fn parse_func_type_param(&mut self) -> Result<String, ParseError> {
+    fn parse_func_type_param(&mut self) -> Result<TypeExpr, ParseError> {
         // Skip optional `mutate` modifier
         if matches!(self.current_kind(), TokenKind::MutateKw) {
             self.advance();
@@ -1143,20 +1143,27 @@ impl Parser {
         self.parse_type_name()
     }
 
-    fn parse_type_name(&mut self) -> Result<String, ParseError> {
+    /// The whole token stream as one type, or `None`.
+    pub fn parse_whole_type(&mut self) -> Option<TypeExpr> {
+        let ty = self.parse_type_name().ok()?;
+        self.skip_newlines();
+        self.at_end().then_some(ty)
+    }
+
+    fn parse_type_name(&mut self) -> Result<TypeExpr, ParseError> {
         let base = self.parse_base_type()?;
 
         if self.check(&TokenKind::Or) {
             self.advance();
             let error_ty = self.parse_error_type()?;
-            return Ok(format!("Result<{}, {}>", base, error_ty));
+            return Ok(TypeExpr::Result { ok: Box::new(base), err: Box::new(error_ty) });
         }
 
         Ok(base)
     }
 
     /// Parse an error type, which may be a union: `E` or `(E1 | E2 | E3)` or `E1 | E2`.
-    fn parse_error_type(&mut self) -> Result<String, ParseError> {
+    fn parse_error_type(&mut self) -> Result<TypeExpr, ParseError> {
         // Check for parenthesized union: (E1 | E2)
         if self.check(&TokenKind::LParen) {
             self.advance();
@@ -1168,7 +1175,7 @@ impl Parser {
             if types.len() == 1 {
                 return Ok(types.into_iter().next().unwrap());
             }
-            return Ok(types.join("|"));
+            return Ok(TypeExpr::Union(types));
         }
 
         // Single error type, possibly followed by | for bare union
@@ -1178,12 +1185,12 @@ impl Parser {
             while self.match_token(&TokenKind::Pipe) {
                 types.push(self.parse_base_type()?);
             }
-            return Ok(types.join("|"));
+            return Ok(TypeExpr::Union(types));
         }
         Ok(first)
     }
 
-    fn parse_base_type(&mut self) -> Result<String, ParseError> {
+    fn parse_base_type(&mut self) -> Result<TypeExpr, ParseError> {
         // Reference types are not yet implemented
         if self.check(&TokenKind::Amp) {
             let span = self.current().span;
@@ -1198,7 +1205,7 @@ impl Parser {
         if self.check(&TokenKind::Star) {
             self.advance();
             let pointee_ty = self.parse_type_name()?;
-            return Ok(format!("*{}", pointee_ty));
+            return Ok(TypeExpr::RawPtr(Box::new(pointee_ty)));
         }
 
         if self.check(&TokenKind::LParen) {
@@ -1235,7 +1242,7 @@ impl Parser {
                         why: None,
                     });
                 }
-                return Ok(self.parse_optional_suffix(format!("({})", types.join(", "))));
+                return Ok(self.parse_optional_suffix(TypeExpr::Tuple(types)));
             }
             // Parenthesized type: (T) — not a tuple
             self.expect(&TokenKind::RParen)?;
@@ -1245,7 +1252,7 @@ impl Parser {
         // `void` keyword: zero-sized unit type (type.primitives/P6)
         if self.check(&TokenKind::Void) {
             self.advance();
-            return Ok("()".to_string());
+            return Ok(TypeExpr::Unit);
         }
 
         // `none` keyword: zero-sized absent-sentinel type (type.primitives/P7).
@@ -1253,7 +1260,7 @@ impl Parser {
         // literal in expression position.
         if self.check(&TokenKind::None) {
             self.advance();
-            return Ok("none".to_string());
+            return Ok(TypeExpr::NoneType);
         }
 
         if self.check(&TokenKind::LBracket) {
@@ -1288,7 +1295,7 @@ impl Parser {
                     self.advance(); // consume N
                     self.advance(); // consume ]
                     let elem_ty = self.parse_base_type()?;
-                    return Ok(format!("[{}]{}", count, elem_ty));
+                    return Ok(TypeExpr::FixedCount { count: count.to_string(), elem: Box::new(elem_ty) });
                 }
             }
 
@@ -1310,12 +1317,12 @@ impl Parser {
                 )),
             };
             self.expect(&TokenKind::RBracket)?;
-            return Ok(format!("[{}; {}]", elem_ty, size));
+            return Ok(TypeExpr::Array { elem: Box::new(elem_ty), len: size });
         }
 
         if let TokenKind::Int(n, _) = self.current_kind().clone() {
             self.advance();
-            return Ok(n.to_string());
+            return Ok(TypeExpr::Int(n.to_string()));
         }
 
         // Closure type: |T1, T2| -> R, or with named/modified params:
@@ -1334,10 +1341,12 @@ impl Parser {
             let ret_ty = if self.match_token(&TokenKind::Arrow) {
                 self.parse_type_name()?
             } else {
-                "()".to_string()
+                TypeExpr::Unit
             };
 
-            return Ok(format!("func({}) -> {}", params.join(", "), ret_ty));
+            // A written return already took any `?` after it; with none, a
+            // `?` here makes the function itself optional.
+            return Ok(self.parse_optional_suffix(TypeExpr::Func { params, ret: Box::new(ret_ty) }));
         }
 
         if self.check(&TokenKind::Func) {
@@ -1356,13 +1365,15 @@ impl Parser {
             let ret_ty = if self.match_token(&TokenKind::Arrow) {
                 self.parse_type_name()?
             } else {
-                "()".to_string()
+                TypeExpr::Unit
             };
 
-            return Ok(format!("func({}) -> {}", params.join(", "), ret_ty));
+            // A written return already took any `?` after it; with none, a
+            // `?` here makes the function itself optional.
+            return Ok(self.parse_optional_suffix(TypeExpr::Func { params, ret: Box::new(ret_ty) }));
         }
 
-        let mut name = self.expect_ident()?;
+        let name = self.expect_ident()?;
 
         // `any Interface` — the interface's own name reads exactly like any other, so
         // the same code reads it.
@@ -1383,7 +1394,7 @@ impl Parser {
         // has it, with a message that says which of the two it is.
         if name == "any" {
             if let TokenKind::Ident(_) = self.current_kind() {
-                let interface_name = self.parse_type_body()?;
+                let interface = self.parse_type_body()?;
                 if self.check(&TokenKind::Question) || self.check(&TokenKind::QuestionQuestion) {
                     return Err(ParseError {
                         span: self.current().span,
@@ -1391,7 +1402,7 @@ impl Parser {
                         hint: Some(format!(
                             "take `any {}` and use a sentinel, or wrap it in a struct field \
                              you can leave unset",
-                            interface_name
+                            interface
                         )),
                         why: Some(
                             "`any Interface?` checks, and the interpreter runs it — native never \
@@ -1402,7 +1413,7 @@ impl Parser {
                         ),
                     });
                 }
-                return Ok(format!("any {}", interface_name));
+                return Ok(TypeExpr::Any(Box::new(interface)));
             }
         }
 
@@ -1411,56 +1422,60 @@ impl Parser {
 
     /// A type name and everything that binds tighter than its optional suffix:
     /// the qualification (`io.Buffer`) and the generic arguments (`Map<K, V>`).
-    fn parse_type_body(&mut self) -> Result<String, ParseError> {
+    fn parse_type_body(&mut self) -> Result<TypeExpr, ParseError> {
         let name = self.expect_ident()?;
         self.parse_type_body_from(name)
     }
 
     /// The same, with the leading identifier already consumed.
-    fn parse_type_body_from(&mut self, mut name: String) -> Result<String, ParseError> {
+    fn parse_type_body_from(&mut self, name: String) -> Result<TypeExpr, ParseError> {
+        let mut path = vec![name];
         while self.check(&TokenKind::Dot) && !matches!(self.peek(1), TokenKind::LBrace) {
             self.advance();
-            name.push('.');
-            name.push_str(&self.expect_ident()?);
+            path.push(self.expect_ident()?);
         }
 
+        let mut args = Vec::new();
         if self.match_token(&TokenKind::Lt) {
-            name.push('<');
-            loop {
-                if let TokenKind::Int(n, _) = self.current_kind().clone() {
-                    self.advance();
-                    name.push_str(&n.to_string());
-                } else {
-                    name.push_str(&self.parse_type_name()?);
-                }
-                // If >> was split, pending_gt means the next > belongs to this
-                // generic's closing bracket — don't consume a comma.
-                if self.pending_gt {
-                    break;
-                }
-                if self.match_token(&TokenKind::Comma) {
-                    name.push_str(", ");
-                } else {
-                    break;
-                }
-            }
-            self.expect_gt_in_generic()?;
-            name.push('>');
+            args = self.parse_generic_args_until_gt()?;
         }
 
-        Ok(name)
+        Ok(TypeExpr::Named { path, args })
     }
 
-    /// Consume trailing `?`/`??` optional markers and append them to `base`.
+    /// The arguments of a generic, after its `<` and through its closing `>`.
+    fn parse_generic_args_until_gt(&mut self) -> Result<Vec<TypeExpr>, ParseError> {
+        let mut args = Vec::new();
+        loop {
+            if let TokenKind::Int(n, _) = self.current_kind().clone() {
+                self.advance();
+                args.push(TypeExpr::Int(n.to_string()));
+            } else {
+                args.push(self.parse_type_name()?);
+            }
+            // If >> was split, pending_gt means the next > belongs to this
+            // generic's closing bracket — don't consume a comma.
+            if self.pending_gt {
+                break;
+            }
+            if !self.match_token(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect_gt_in_generic()?;
+        Ok(args)
+    }
+
+    /// Consume trailing `?`/`??` optional markers, one `Optional` layer each.
     /// `T?`, `T??`, … each `?` adds a `none` layer (type.optionals/OPT28,
     /// OPT31). The lexer hands back `??` as one token — in type position
     /// there is no coalescing operator, so it is just two markers.
-    fn parse_optional_suffix(&mut self, mut base: String) -> String {
+    fn parse_optional_suffix(&mut self, mut base: TypeExpr) -> TypeExpr {
         loop {
             if self.match_token(&TokenKind::QuestionQuestion) {
-                base.push_str("??");
+                base = TypeExpr::Optional(Box::new(TypeExpr::Optional(Box::new(base))));
             } else if self.match_token(&TokenKind::Question) {
-                base.push('?');
+                base = TypeExpr::Optional(Box::new(base));
             } else {
                 break;
             }
@@ -1470,9 +1485,8 @@ impl Parser {
 
     /// Parse type parameters like `<T, comptime N: usize>`.
     /// Returns (type_params, name_suffix) where name_suffix is the string representation for display.
-    fn parse_type_params(&mut self) -> Result<(Vec<TypeParam>, String), ParseError> {
+    fn parse_type_params(&mut self) -> Result<Vec<TypeParam>, ParseError> {
         let mut type_params = Vec::new();
-        let mut name_suffix = String::from("<");
 
         loop {
             let is_comptime = self.match_token(&TokenKind::Comptime);
@@ -1490,11 +1504,6 @@ impl Parser {
                     bounds: vec![],
                     default: None,
                 });
-
-                name_suffix.push_str("comptime ");
-                name_suffix.push_str(&param_name);
-                name_suffix.push_str(": ");
-                name_suffix.push_str(&comptime_type);
             } else {
                 // Regular type parameter: `T` or `T: Interface` or `T: A + B`
                 let mut bounds = vec![];
@@ -1516,54 +1525,39 @@ impl Parser {
                     bounds: bounds.clone(),
                     default: default.clone(),
                 });
-
-                name_suffix.push_str(&param_name);
-                if !bounds.is_empty() {
-                    name_suffix.push_str(": ");
-                    name_suffix.push_str(&bounds.join(" + "));
-                }
-                if let Some(d) = &default {
-                    name_suffix.push_str(" = ");
-                    name_suffix.push_str(d);
-                }
             }
 
             // If >> was split in a nested generic bound, pending_gt is our closing >
             if self.pending_gt {
                 break;
             }
-            if self.match_token(&TokenKind::Comma) {
-                name_suffix.push_str(", ");
-            } else {
+            if !self.match_token(&TokenKind::Comma) {
                 break;
             }
         }
 
         self.expect_gt_in_generic()?;
-        name_suffix.push('>');
 
-        Ok((type_params, name_suffix))
+        Ok(type_params)
     }
 
     /// Parse a single interface bound, e.g. `Comparable` or `Iterator<Item>`.
-    fn parse_one_bound(&mut self) -> Result<String, ParseError> {
-        let mut bound = self.expect_ident()?;
+    fn parse_one_bound(&mut self) -> Result<TypeExpr, ParseError> {
+        let name = self.expect_ident()?;
         // Generic interface bound: `Iterator<Item>`
+        let mut args = Vec::new();
         if self.match_token(&TokenKind::Lt) {
-            bound.push('<');
-            bound.push_str(&self.parse_type_name()?);
+            args.push(self.parse_type_name()?);
             while self.match_token(&TokenKind::Comma) {
-                bound.push_str(", ");
-                bound.push_str(&self.parse_type_name()?);
+                args.push(self.parse_type_name()?);
             }
             self.expect_gt_in_generic()?;
-            bound.push('>');
         }
-        Ok(bound)
+        Ok(TypeExpr::generic(name, args))
     }
 
     /// Parse `+`-separated interface bounds: `A + B<X> + C`.
-    fn parse_interface_bounds(&mut self) -> Result<Vec<String>, ParseError> {
+    fn parse_interface_bounds(&mut self) -> Result<Vec<TypeExpr>, ParseError> {
         let mut bounds = vec![self.parse_one_bound()?];
         while self.match_token(&TokenKind::Plus) {
             bounds.push(self.parse_one_bound()?);
@@ -1623,11 +1617,10 @@ impl Parser {
 
     fn parse_struct_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Struct)?;
-        let mut name = self.expect_ident()?;
+        let name = self.expect_ident()?;
 
         let type_params = if self.match_token(&TokenKind::Lt) {
-            let (params, suffix) = self.parse_type_params()?;
-            name.push_str(&suffix);
+            let params = self.parse_type_params()?;
             params
         } else {
             vec![]
@@ -1815,11 +1808,10 @@ impl Parser {
 
     fn parse_enum_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Enum)?;
-        let mut name = self.expect_ident()?;
+        let name = self.expect_ident()?;
 
         let type_params = if self.match_token(&TokenKind::Lt) {
-            let (params, suffix) = self.parse_type_params()?;
-            name.push_str(&suffix);
+            let params = self.parse_type_params()?;
             params
         } else {
             vec![]
@@ -1827,7 +1819,7 @@ impl Parser {
 
         // E14: Optional backing type (e.g., enum Foo: u8 { ... })
         let backing_type = if self.match_token(&TokenKind::Colon) {
-            Some(self.expect_ident()?)
+            Some(TypeExpr::named(self.expect_ident()?))
         } else {
             None
         };
@@ -1962,7 +1954,7 @@ impl Parser {
         // resolved to nothing and every conformance failed claiming a missing
         // method the block plainly had (#1164).
         let type_params = if self.match_token(&TokenKind::Lt) {
-            let (params, _suffix) = self.parse_type_params()?;
+            let params = self.parse_type_params()?;
             params
         } else {
             Vec::new()
@@ -2096,11 +2088,10 @@ impl Parser {
 
     fn parse_interface_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
         let fn_start = self.current().span.start;
-        let mut name = self.expect_ident()?;
+        let name = self.expect_ident()?;
 
         let mut type_params = if self.match_token(&TokenKind::Lt) {
-            let (params, suffix) = self.parse_type_params()?;
-            name.push_str(&suffix);
+            let params = self.parse_type_params()?;
             params
         } else {
             vec![]
@@ -2190,8 +2181,8 @@ impl Parser {
 
     fn parse_impl_body(
         &mut self,
-        target_ty: String,
-        interface_name: Option<String>,
+        target_ty: TypeExpr,
+        interface: Option<TypeExpr>,
         is_pub: bool,
         is_unsafe: bool,
         doc: Option<String>,
@@ -2259,7 +2250,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Impl(ImplDecl { interface_name, target_ty, methods, is_unsafe, is_pub, where_bounds, assoc_bindings, doc }))
+        Ok(DeclKind::Impl(ImplDecl { interface, target_ty, methods, is_unsafe, is_pub, where_bounds, assoc_bindings, doc }))
     }
 
     /// AT2: `type Out = Meters` inside a `T implements I` block.
@@ -2493,7 +2484,7 @@ impl Parser {
         let name = self.expect_ident()?;
         let type_params = if self.check(&TokenKind::Lt) {
             self.advance();
-            let (params, _) = self.parse_type_params()?;
+            let params = self.parse_type_params()?;
             params
         } else {
             Vec::new()
@@ -2507,7 +2498,7 @@ impl Parser {
             self.advance();
             let mut interfaces = Vec::new();
             loop {
-                interfaces.push(self.expect_ident()?);
+                interfaces.push(TypeExpr::named(self.expect_ident()?));
                 if !self.match_token(&TokenKind::Comma) { break; }
             }
             interfaces
@@ -2593,6 +2584,15 @@ impl Parser {
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
         let params = self.parse_params()?;
+        // A foreign signature has no body to infer a type from.
+        if let Some(p) = params.iter().find(|p| p.ty.is_none()) {
+            return Err(ParseError {
+                span: p.name_span,
+                message: format!("extern parameter `{}` needs a type", p.name),
+                hint: Some(format!("write the C type, e.g. `{}: c_int`", p.name)),
+                why: None,
+            });
+        }
         self.skip_newlines();
         self.expect(&TokenKind::RParen)?;
         let ret_ty = if self.match_token(&TokenKind::Arrow) {
@@ -3635,11 +3635,6 @@ impl Parser {
         result
     }
 
-    /// Parse a conversion target type — a single primitive type name.
-    fn parse_convert_target(&mut self) -> Result<String, ParseError> {
-        self.expect_ident()
-    }
-
     /// The right side of `??` or the body of `catch` — a value or a divergence
     /// (`return` / `break` / `continue`; `panic(…)` is an ordinary call whose
     /// type is Never). `min_bp` is 0 for a greedy `catch` body, the operator's
@@ -4022,7 +4017,7 @@ impl Parser {
                     }
                 }
 
-                let mut full_name = name.clone();
+                let mut type_args: Vec<TypeExpr> = Vec::new();
 
                 // Parse generic arguments: ident<T>(...), Type<T>.method(), Type<T> { ... }
                 if self.check(&TokenKind::Lt) {
@@ -4041,28 +4036,30 @@ impl Parser {
 
                     if is_generic_call || is_static_method || is_struct_literal {
                         self.advance(); // consume '<'
-                        full_name.push('<');
                         loop {
-                            full_name.push_str(&self.parse_type_name()?);
-                            if self.match_token(&TokenKind::Comma) {
-                                full_name.push_str(", ");
-                            } else {
+                            type_args.push(self.parse_type_name()?);
+                            if !self.match_token(&TokenKind::Comma) {
                                 break;
                             }
                         }
                         self.expect_gt_in_generic()?;
-                        full_name.push('>');
                     }
                 }
 
                 let end = self.tokens[self.pos - 1].span.end;
 
-                let names_a_struct = Self::is_type_name(&full_name)
-                    || self.declared_structs.contains(&full_name);
+                let names_a_struct = Self::is_type_name(&name)
+                    || self.declared_structs.contains(&name);
                 if names_a_struct && self.allow_brace_expr && self.check(&TokenKind::LBrace) {
-                    self.parse_struct_literal(full_name, start)
+                    self.parse_struct_literal(name, type_args, start)
+                } else if type_args.is_empty() {
+                    Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.span(start, end) })
                 } else {
-                    Ok(Expr { id: self.next_id(), kind: ExprKind::Ident(full_name), span: self.span(start, end) })
+                    Ok(Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::GenericName { name, type_args },
+                        span: self.span(start, end),
+                    })
                 }
             }
 
@@ -4360,14 +4357,24 @@ impl Parser {
         }
     }
 
-    fn parse_struct_literal(&mut self, name: String, start: usize) -> Result<Expr, ParseError> {
+    fn parse_struct_literal(
+        &mut self,
+        name: String,
+        type_args: Vec<TypeExpr>,
+        start: usize,
+    ) -> Result<Expr, ParseError> {
         let outer_list = std::mem::replace(&mut self.in_comma_list, true);
-        let result = self.parse_struct_literal_inner(name, start);
+        let result = self.parse_struct_literal_inner(name, type_args, start);
         self.in_comma_list = outer_list;
         result
     }
 
-    fn parse_struct_literal_inner(&mut self, name: String, start: usize) -> Result<Expr, ParseError> {
+    fn parse_struct_literal_inner(
+        &mut self,
+        name: String,
+        type_args: Vec<TypeExpr>,
+        start: usize,
+    ) -> Result<Expr, ParseError> {
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
 
@@ -4407,7 +4414,7 @@ impl Parser {
 
         Ok(Expr {
             id: self.next_id(),
-            kind: ExprKind::StructLit { name, fields, spread },
+            kind: ExprKind::StructLit { name, type_args, fields, spread },
             span: self.span(start, end),
         })
     }
@@ -4762,7 +4769,7 @@ impl Parser {
                             || self.import_namespaces.contains(base);
                         if head_names_a_type && field.starts_with(|c: char| c.is_uppercase()) {
                             let full_name = format!("{}.{}", base, field);
-                            self.parse_struct_literal(full_name, start)
+                            self.parse_struct_literal(full_name, Vec::new(), start)
                         } else {
                             let end = self.tokens[self.pos - 1].span.end;
                             Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) })
@@ -5175,29 +5182,7 @@ impl Parser {
 
         let mut contexts: Vec<(String, Vec<CallArg>)> = Vec::new();
         loop {
-            let mut name = self.expect_ident()?;
-            // Generic args on context types. Mirrors the loop in parse_base_type.
-            if self.match_token(&TokenKind::Lt) {
-                name.push('<');
-                loop {
-                    if let TokenKind::Int(n, _) = self.current_kind().clone() {
-                        self.advance();
-                        name.push_str(&n.to_string());
-                    } else {
-                        name.push_str(&self.parse_type_name()?);
-                    }
-                    if self.pending_gt {
-                        break;
-                    }
-                    if self.match_token(&TokenKind::Comma) {
-                        name.push_str(", ");
-                    } else {
-                        break;
-                    }
-                }
-                self.expect_gt_in_generic()?;
-                name.push('>');
-            }
+            let name = self.expect_ident()?;
             let args = if self.match_token(&TokenKind::LParen) {
                 let args = self.parse_args()?;
                 self.expect(&TokenKind::RParen)?;
@@ -5733,41 +5718,38 @@ impl Parser {
             // form: there's no payload to bind.
             TokenKind::None => {
                 self.advance();
-                Ok(Pattern::TypePat { ty_name: "none".to_string(), binding: None })
+                Ok(Pattern::TypePat { ty: TypeExpr::NoneType, binding: None })
             }
             TokenKind::Ident(name) => {
                 self.advance();
 
                 // Handle qualified paths: Enum.Variant or Enum.Variant(args) or Enum.Variant { fields }
-                let mut name = if self.match_token(&TokenKind::Dot) {
-                    let variant = self.expect_ident()?;
-                    format!("{}.{}", name, variant)
-                } else {
-                    name
-                };
+                let mut path = vec![name];
+                if self.match_token(&TokenKind::Dot) {
+                    path.push(self.expect_ident()?);
+                }
 
                 // rask#217: generic type patterns — `is Vec<i32>`, `is Map<K, V>`.
                 // After `is`, `<` can't be a comparison, so consume generic args.
+                let mut args = Vec::new();
                 if self.check(&TokenKind::Lt) {
                     self.advance();
-                    name.push('<');
-                    loop {
-                        if let TokenKind::Int(n, _) = self.current_kind().clone() {
-                            self.advance();
-                            name.push_str(&n.to_string());
-                        } else {
-                            name.push_str(&self.parse_type_name()?);
-                        }
-                        if self.pending_gt { break; }
-                        if self.match_token(&TokenKind::Comma) {
-                            name.push_str(", ");
-                        } else {
-                            break;
-                        }
-                    }
-                    self.expect_gt_in_generic()?;
-                    name.push('>');
+                    args = self.parse_generic_args_until_gt()?;
                 }
+                let written = TypeExpr::Named { path, args };
+                if !written.args().is_empty() {
+                    // Arguments only make sense on a type pattern.
+                    let binding = if self.check(&TokenKind::As)
+                        && matches!(self.peek(1), TokenKind::Ident(_))
+                    {
+                        self.advance();
+                        Some(self.expect_ident()?)
+                    } else {
+                        None
+                    };
+                    return Ok(Pattern::TypePat { ty: written, binding });
+                }
+                let name = written.to_string();
 
                 if self.match_token(&TokenKind::LParen) {
                     // Constructor pattern: Name(patterns...) or Enum.Variant(patterns...)
@@ -5785,7 +5767,7 @@ impl Parser {
                     // without a constructor — interpret as a type match.
                     self.advance();
                     let binding = self.expect_ident()?;
-                    Ok(Pattern::TypePat { ty_name: name, binding: Some(binding) })
+                    Ok(Pattern::TypePat { ty: written, binding: Some(binding) })
                 } else if self.check(&TokenKind::LBrace)
                     && self.allow_brace_expr
                     && (name.contains('.') || Self::is_type_name(&name))

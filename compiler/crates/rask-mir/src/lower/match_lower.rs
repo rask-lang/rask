@@ -129,7 +129,7 @@ impl<'a> MirLowerer<'a> {
                     default_block = arm_blocks[i];
                     continue;
                 }
-                Pattern::TypePat { ty_name, .. } => ty_name.clone(),
+                Pattern::TypePat { ty, .. } => super::type_pat_name(ty),
                 Pattern::Ident(n) => n.clone(),
                 Pattern::Constructor { name, .. } => name.clone(),
                 _ => {
@@ -151,7 +151,8 @@ impl<'a> MirLowerer<'a> {
         for (i, arm) in arms.iter().enumerate() {
             self.builder.switch_to_block(arm_blocks[i]);
 
-            if let Pattern::TypePat { ty_name, binding: Some(binding) } = &arm.pattern {
+            if let Pattern::TypePat { ty, binding: Some(binding) } = &arm.pattern {
+                let ty_name = &super::type_pat_name(ty);
                 // The payload comes from the layer the arm named: the inner
                 // option for `T`, the outer result for `E`.
                 // The payload comes from the layer the arm named. The error
@@ -341,7 +342,7 @@ impl<'a> MirLowerer<'a> {
                 .map(|arm| {
                     // `MyErr.Bad` and a bare `Bad` name the same variant.
                     let name = pattern_name(&arm.pattern)?;
-                    let bare = name.rsplit('.').next().unwrap_or(name);
+                    let bare = name.rsplit('.').next().unwrap_or(&name);
                     if let Some(union_ty) = err_union {
                         return self
                             .union_member_index_by_name(union_ty, bare)
@@ -473,7 +474,8 @@ impl<'a> MirLowerer<'a> {
                         cases.push((i as u64, arm_blocks[i]));
                     }
                 }
-                Pattern::TypePat { ty_name, .. } => {
+                Pattern::TypePat { ty, .. } => {
+                    let ty_name = &super::type_pat_name(ty);
                     if is_result_or_option {
                         // Result/Option match: ok arm = tag 0, err arm = tag 1,
                         // decided by the real ok/err type identities.
@@ -503,10 +505,11 @@ impl<'a> MirLowerer<'a> {
                     continue;
                 }
                 let name = match &arm.pattern {
-                    Pattern::TypePat { ty_name, .. } => ty_name.as_str(),
-                    Pattern::Ident(n) => n.as_str(),
+                    Pattern::TypePat { ty, .. } => super::type_pat_name(ty),
+                    Pattern::Ident(n) => n.clone(),
                     _ => continue,
                 };
+                let name = name.as_str();
                 // An arm naming the error type itself (`MyErr as e`) catches
                 // every variant the inner switch doesn't list.
                 if self.pattern_is_err_side(name, &scrutinee_ty) {
@@ -749,10 +752,11 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
                     }
-                // TypePat { ty_name, binding } — `T as name` in a Result/Option match.
+                // TypePat { ty, binding } — `T as name` in a Result/Option match.
                 // The switch case routing is already correct (arm index → tag).
                 // Here we emit the payload extraction for the binding.
-                } else if let Pattern::TypePat { ty_name, binding } = &arm.pattern {
+                } else if let Pattern::TypePat { ty, binding } = &arm.pattern {
+                    let ty_name = &super::type_pat_name(ty);
                     if let Some(binding_name) = binding {
                         // A union-member arm binds the *member*, which sits past
                         // the member index inside the union — not the union
@@ -1778,13 +1782,13 @@ impl<'a> MirLowerer<'a> {
 }
 
 /// The type-or-variant name a pattern matches on, if it names one.
-pub(crate) fn pattern_name(pattern: &rask_ast::expr::Pattern) -> Option<&str> {
+pub(crate) fn pattern_name(pattern: &rask_ast::expr::Pattern) -> Option<String> {
     use rask_ast::expr::Pattern;
     match pattern {
         Pattern::Ident(name)
         | Pattern::Constructor { name, .. }
-        | Pattern::Struct { name, .. } => Some(name),
-        Pattern::TypePat { ty_name, .. } => Some(ty_name),
+        | Pattern::Struct { name, .. } => Some(name.clone()),
+        Pattern::TypePat { ty, .. } => Some(super::type_pat_name(ty)),
         _ => None,
     }
 }

@@ -12,6 +12,25 @@ pub struct Expr {
     pub span: Span,
 }
 
+impl Expr {
+    /// The name a bare or generic name expression names: `Vec` for both `Vec`
+    /// and `Vec<i64>`.
+    pub fn name(&self) -> Option<&str> {
+        match &self.kind {
+            ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => Some(name),
+            _ => None,
+        }
+    }
+
+    /// The type arguments written on a name expression; empty for anything else.
+    pub fn written_type_args(&self) -> &[crate::ty::TypeExpr] {
+        match &self.kind {
+            ExprKind::GenericName { type_args, .. } => type_args,
+            _ => &[],
+        }
+    }
+}
+
 /// The kind of expression.
 #[derive(Debug, Clone)]
 pub enum ExprKind {
@@ -35,6 +54,9 @@ pub enum ExprKind {
     None,
     /// Identifier
     Ident(String),
+    /// A name with its type arguments written out: the callee of
+    /// `make<i32>(x)`, the receiver of `Vec<i64>.new()`.
+    GenericName { name: String, type_args: Vec<crate::ty::TypeExpr> },
     /// Binary operation
     Binary {
         op: BinOp,
@@ -55,7 +77,7 @@ pub enum ExprKind {
     MethodCall {
         object: Box<Expr>,
         method: String,
-        type_args: Option<Vec<String>>,
+        type_args: Option<Vec<crate::ty::TypeExpr>>,
         args: Vec<CallArg>,
     },
     /// Field access
@@ -160,6 +182,8 @@ pub enum ExprKind {
     /// Struct literal (Point { x: 1, y: 2 })
     StructLit {
         name: String,
+        /// `Ring<i64> { … }` writes them; empty otherwise.
+        type_args: Vec<crate::ty::TypeExpr>,
         fields: Vec<FieldInit>,
         spread: Option<Box<Expr>>,
     },
@@ -191,21 +215,21 @@ pub enum ExprKind {
     /// works it out (`mem.closures/CM1`).
     Closure {
         params: Vec<ClosureParam>,
-        ret_ty: Option<String>,
+        ret_ty: Option<crate::ty::TypeExpr>,
         body: Box<Expr>,
     },
     /// Type cast (x as i32) — lossless widening only (type.primitives CV1).
     Cast {
         expr: Box<Expr>,
-        ty: String,
+        ty: crate::ty::TypeExpr,
     },
     /// Explicit lossy numeric conversion (type.primitives CV5–CV10):
     /// `x truncate to T`, `x saturate to T`, `try x convert to T`,
     /// `x float to int T`, `x float to int T (saturating)`, `try x float to int T`.
     Convert {
         expr: Box<Expr>,
-        /// Target primitive type name (e.g. `i8`, `u32`, `f64`).
-        target: String,
+        /// Target primitive type (e.g. `i8`, `u32`, `f64`).
+        target: crate::ty::TypeExpr,
         kind: ConvertKind,
     },
     /// Block call expression (identifier { body }) like spawn_raw { ... }
@@ -311,7 +335,7 @@ pub struct WithBinding {
 #[derive(Debug, Clone)]
 pub struct ClosureParam {
     pub name: String,
-    pub ty: Option<String>,
+    pub ty: Option<crate::ty::TypeExpr>,
     pub is_mutate: bool,
     pub is_take: bool,
 }
@@ -485,7 +509,7 @@ pub enum Pattern {
     /// and binds the value as `name`. Currently supported for `T or E` Result
     /// errors in `if r is E as e { ... }`.
     TypePat {
-        ty_name: String,
+        ty: crate::ty::TypeExpr,
         binding: Option<String>,
     },
 }
@@ -602,6 +626,7 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::Null { .. } => "Null",
         ExprKind::None { .. } => "None",
         ExprKind::Ident { .. } => "Ident",
+        ExprKind::GenericName { .. } => "GenericName",
         ExprKind::Binary { .. } => "Binary",
         ExprKind::Unary { .. } => "Unary",
         ExprKind::Call { .. } => "Call",

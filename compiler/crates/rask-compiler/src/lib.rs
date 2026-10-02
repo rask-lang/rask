@@ -34,12 +34,7 @@ use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::Span;
 use rask_diagnostics::{Diagnostic, Severity, ToDiagnostic};
 
-// Public because `rask test` and `rask bench` assemble the back half of the
-// pipeline themselves rather than going through `finalize_compile`, and they
-// have to run this pass too — a derived `compare` that only `rask run`
-// generates is a method that exists or doesn't depending on the subcommand.
 pub mod package_scope;
-pub mod derive;
 mod comptime_eval;
 
 // Re-export key types so callers don't need direct deps on pipeline crates.
@@ -449,7 +444,7 @@ fn check_loaded(
     let (mut typed, type_errors) =
         rask_types::typecheck_with_stdlib_lenient(
             resolved,
-            &parse_result.decls,
+            &mut parse_result.decls,
             &stdlib_decls,
             &desugared.operator_calls,
         );
@@ -770,7 +765,7 @@ fn check_package_scoped(
 
         for (node, sym_id) in &resolved.resolutions {
             let Some(sym) = resolved.symbols.get(*sym_id) else { continue };
-            let base = sym.name.split('<').next().unwrap_or(&sym.name);
+            let base = &sym.name;
             let Some((owner, owner_name, decl_span)) = private_elsewhere.get(base) else {
                 continue;
             };
@@ -800,7 +795,7 @@ fn check_package_scoped(
     let (mut typed, type_errors) =
         rask_types::typecheck_with_stdlib_lenient(
             resolved,
-            &pkg_ctx.all_decls,
+            &mut pkg_ctx.all_decls,
             &stdlib_decls,
             &desugared.operator_calls,
         );
@@ -856,7 +851,7 @@ fn check_package_scoped(
 // compile — full pipeline through monomorphization
 // ============================================================================
 
-/// Compile a .rk file: check + derive + stdlib + monomorphize.
+/// Compile a .rk file: check + stdlib + monomorphize.
 ///
 /// Returns everything codegen needs. Does NOT emit object files.
 pub fn compile_file(
@@ -868,7 +863,7 @@ pub fn compile_file(
 
 /// `compile_file`, with a chance to rewrite the declarations first.
 ///
-/// `transform` runs after the frontend and the derive/stdlib/dependency merge,
+/// `transform` runs after the frontend and the stdlib/dependency merge,
 /// and before monomorphization — the one point where the decl list is complete
 /// and nothing has been laid out yet. That's where `rask test` swaps `main` for
 /// a test runner and `rask bench` for a benchmark runner.
@@ -935,19 +930,19 @@ pub fn compile_package_with(
 
 /// Fill in the parameter types `type.gradual` let the author leave out.
 ///
-/// `func greet(name) { … }` parses with an empty type string, and every pass
-/// after the checker reads that string. Empty means `void` to all of them, so
-/// the body's `"Hi, {name}"` interpolated an address instead of the string
-/// (#905). The checker already solved it; this copies the answer in, so the
-/// declaration says what the function actually takes.
+/// `func greet(name) { … }` parses with no parameter type, and every pass
+/// after the checker reads the declared one. The body's `"Hi, {name}"` used to
+/// interpolate an address instead of the string (#905). The checker already
+/// solved it; this copies the answer in, so the declaration says what the
+/// function actually takes.
 fn write_back_inferred_params(decls: &mut [Decl], typed: &TypedProgram) {
     fn fill(f: &mut rask_ast::decl::FnDecl, typed: &TypedProgram) {
         let Some(solved) = typed.inferred_fn_params.get(&f.name) else {
             return;
         };
-        for p in f.params.iter_mut().filter(|p| p.ty.is_empty()) {
+        for p in f.params.iter_mut().filter(|p| p.ty.is_none()) {
             if let Some((_, ty)) = solved.iter().find(|(n, _)| *n == p.name) {
-                p.ty = format!("{}", ty);
+                p.ty = Some(typed.types.resolve_type_names(ty).to_type_expr());
             }
         }
     }
@@ -961,16 +956,16 @@ fn write_back_inferred_params(decls: &mut [Decl], typed: &TypedProgram) {
     }
 }
 
-/// Shared post-check compilation: hidden params, derive, stdlib, mono, comptime.
+/// Shared post-check compilation: hidden params, stdlib, mono, comptime.
 fn finalize_compile(
     check_output: PipelineOutput<CheckResult>,
     package_modules: HashSet<String>,
     config: &CompilerConfig,
     transform: impl FnOnce(&mut Vec<Decl>, &TypedProgram),
 ) -> PipelineOutput<CompileResult> {
-    let mut diags = check_output.diagnostics;
+    let diags = check_output.diagnostics;
     let pkg_source_files = check_output.source_files;
-    let mut check = match check_output.result {
+    let check = match check_output.result {
         Some(c) => c,
         None => return PipelineOutput::fail_with_sources(diags, pkg_source_files),
     };
@@ -998,14 +993,9 @@ fn finalize_compile_inner(
     // solved it; put the answer where the rest of the pipeline looks (#905).
     write_back_inferred_params(&mut check.decls, &check.typed);
 
-    // --- Derive synthetic method bodies (compare, etc.) ---
-    derive::generate_derived_methods(&mut check.decls, &check.typed);
-
-    // --- Inject compiled stdlib functions + struct defs ---
+    // --- Inject compiled stdlib functions and the types they use ---
     let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
-    let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
     check.decls.extend(stdlib_fn_decls);
-    check.decls.extend(stdlib_struct_defs);
 
     // A second copy of every dependency declaration used to be merged here,
     // after the check. It existed because `check_package` merged only the
@@ -1140,7 +1130,7 @@ fn private_declaration_named(
         rask_resolve::ResolveErrorKind::UndefinedSymbol { name } => name,
         _ => return None,
     };
-    let base = name.split('<').next().unwrap_or(name);
+    let base = name.as_str();
     let (_, owner_name, decl_span) = private_elsewhere.get(base)?;
     Some(
         Diagnostic::error(format!("`{}` is private to `{}`", base, owner_name))

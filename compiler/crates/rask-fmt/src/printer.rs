@@ -4,6 +4,7 @@ use rask_ast::decl::*;
 use rask_ast::expr::*;
 use rask_ast::stmt::*;
 use rask_ast::Span;
+use rask_ast::ty::TypeExpr;
 
 use crate::comment::{self, CommentList};
 use crate::config::FormatConfig;
@@ -89,6 +90,14 @@ impl<'a> Printer<'a> {
             self.output.push('\n');
         }
         self.output.push('\n');
+    }
+
+    fn emit_type_args(&mut self, args: &[TypeExpr]) {
+        if args.is_empty() {
+            return;
+        }
+        let written: Vec<String> = args.iter().map(TypeExpr::source).collect();
+        self.emit(&format!("<{}>", written.join(", ")));
     }
 
     fn source_text(&self, span: Span) -> &str {
@@ -323,119 +332,9 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// Strip type params from names (parser includes `<T, U>` in names).
-    fn strip_type_params<'b>(&self, name: &'b str) -> &'b str {
-        if let Some(idx) = name.find('<') {
-            &name[..idx]
-        } else {
-            name
-        }
-    }
-
-    /// Convert parser-normalized types back to Rask syntax.
-    /// E.g., `Result<i32, string>` → `i32 or string`.
-    fn format_type(&self, ty: &str) -> String {
-        // The parser normalizes `void` to `()` (type.primitives/P6), which isn't
-        // a type anyone can write — printing it back gave "`()` is not a type"
-        // on the formatter's own output (#805).
-        if ty == "()" {
-            return "void".to_string();
-        }
-        // A pointer's element type goes through the same rewrites, and only the
-        // bare case was handled: `*void` came back as `*()`, which doesn't parse
-        // either. `*void` is the untyped pointer and the spelling the C header
-        // translator produces, so it has to survive a round trip.
-        if let Some(inner) = ty.strip_prefix('*') {
-            return format!("*{}", self.format_type(inner));
-        }
-        if let Some(inner) = ty.strip_prefix("Result<") {
-            if let Some(inner) = inner.strip_suffix('>') {
-                // The top-level comma is the one separating value from error.
-                // Only angle brackets were counted, so a tuple value type split
-                // at its own comma: `(string, string) or E` came back out as
-                // `(string or string), E`, which doesn't parse (#805).
-                let mut depth = 0;
-                for (i, ch) in inner.char_indices() {
-                    match ch {
-                        '<' | '(' | '[' => depth += 1,
-                        '>' | ')' | ']' => depth -= 1,
-                        ',' if depth == 0 => {
-                            let ok_ty = inner[..i].trim();
-                            let err_ty = inner[i + 1..].trim();
-                            return format!(
-                                "{} or {}",
-                                self.format_type(ok_ty),
-                                self.format_type(err_ty)
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        // A closure type has two spellings and the parser stores the `func(…)`
-        // one, so that's what comes back out. Rewriting it to `|T| -> R` was
-        // wrong for the zero-parameter case — `||` is the or-operator token, so
-        // `|| -> Big` doesn't lex — and it's the minority spelling anyway.
-        if let Some(rest) = ty.strip_prefix("func(") {
-            let mut depth = 1;
-            for (i, ch) in rest.char_indices() {
-                match ch {
-                    '(' => depth += 1,
-                    ')' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            let params = self.format_type_list(&rest[..i]);
-                            let after = rest[i + 1..].trim();
-                            return match after.strip_prefix("->").map(str::trim) {
-                                // An omitted return type is stored as `()` too,
-                                // so writing it back adds an arrow the source
-                                // never had.
-                                None | Some("()") => format!("func({})", params),
-                                Some(ret_ty) => {
-                                    format!("func({}) -> {}", params, self.format_type(ret_ty))
-                                }
-                            };
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        // A generic argument is a type too. `Receiver<void>` came back out as
-        // `Receiver<()>`, which doesn't parse — the surface-spelling fix only
-        // looked at the whole string (#805).
-        if let Some(open) = ty.find('<') {
-            if let Some(inner) = ty.strip_suffix('>') {
-                let base = &ty[..open];
-                let args = self.format_type_list(&inner[open + 1..]);
-                return format!("{}<{}>", base, args);
-            }
-        }
-        ty.to_string()
-    }
-
-    /// A comma-separated type list, split at the top level only.
-    fn format_type_list(&self, list: &str) -> String {
-        if list.trim().is_empty() {
-            return String::new();
-        }
-        let mut parts = Vec::new();
-        let mut depth = 0;
-        let mut start = 0;
-        for (i, ch) in list.char_indices() {
-            match ch {
-                '<' | '(' | '[' => depth += 1,
-                '>' | ')' | ']' => depth -= 1,
-                ',' if depth == 0 => {
-                    parts.push(self.format_type(list[start..i].trim()));
-                    start = i + 1;
-                }
-                _ => {}
-            }
-        }
-        parts.push(self.format_type(list[start..].trim()));
-        parts.join(", ")
+    /// A written type in Rask syntax.
+    fn format_type(&self, ty: &rask_ast::ty::TypeExpr) -> String {
+        ty.source()
     }
 
     /// The offset of the `extern` keyword when this declaration came from a block.
@@ -642,7 +541,7 @@ impl<'a> Printer<'a> {
             self.emit("unsafe ");
         }
         self.emit("func ");
-        let name = self.strip_type_params(&f.name);
+        let name = f.name.as_str();
         self.emit(name);
 
         if !f.type_params.is_empty() {
@@ -708,7 +607,7 @@ impl<'a> Printer<'a> {
         self.emit(&tp.name);
         if let Some(ref ct) = tp.comptime_type {
             self.emit(": ");
-            self.emit(ct);
+            self.emit(&ct.source());
         }
         for (i, bound) in tp.bounds.iter().enumerate() {
             if i == 0 {
@@ -716,7 +615,7 @@ impl<'a> Printer<'a> {
             } else {
                 self.emit(" + ");
             }
-            self.emit(bound);
+            self.emit(&bound.source());
         }
     }
 
@@ -740,9 +639,9 @@ impl<'a> Printer<'a> {
         } else {
             self.emit_param_mode(param);
             self.emit(&param.name);
-            if !param.ty.is_empty() {
+            if let Some(ty) = &param.ty {
                 self.emit(": ");
-                let ty = self.format_type(&param.ty);
+                let ty = self.format_type(ty);
                 self.emit(&ty);
             }
             if let Some(ref default) = param.default {
@@ -765,7 +664,7 @@ impl<'a> Printer<'a> {
             self.emit("public ");
         }
         self.emit("struct ");
-        let name = self.strip_type_params(&s.name);
+        let name = s.name.as_str();
         self.emit(name);
 
         if !s.type_params.is_empty() {
@@ -873,7 +772,7 @@ impl<'a> Printer<'a> {
 
     fn struct_fields_fit_one_line(&self, fields: &[Field]) -> bool {
         let est: usize = fields.iter().map(|f| {
-            f.name.len() + 2 + f.ty.len() + match f.visibility {
+            f.name.len() + 2 + f.ty.source().len() + match f.visibility {
                 FieldVisibility::Private => 8,
                 FieldVisibility::Public => 7,
                 FieldVisibility::Package => 0,
@@ -979,7 +878,7 @@ impl<'a> Printer<'a> {
             self.emit("public ");
         }
         self.emit("enum ");
-        let name = self.strip_type_params(&e.name);
+        let name = e.name.as_str();
         self.emit(name);
 
         if !e.type_params.is_empty() {
@@ -1121,7 +1020,7 @@ impl<'a> Printer<'a> {
         }
         for (i, sup) in t.super_interfaces.iter().enumerate() {
             self.emit(if i == 0 { ": " } else { ", " });
-            self.emit(sup);
+            self.emit(&sup.source());
         }
         self.emit(" {");
         self.emit_newline();
@@ -1133,10 +1032,10 @@ impl<'a> Printer<'a> {
             self.emit_indent();
             self.emit(&format!("type {}", a.name));
             if !a.bounds.is_empty() {
-                self.emit(&format!(": {}", a.bounds.join(" + ")));
+                self.emit(&format!(": {}", Self::bounds_text(&a.bounds)));
             }
             if let Some(d) = &a.default {
-                self.emit(&format!(" = {d}"));
+                self.emit(&format!(" = {}", d.source()));
             }
             self.emit_newline();
         }
@@ -1187,17 +1086,17 @@ impl<'a> Printer<'a> {
         if imp.is_unsafe {
             self.emit("unsafe ");
         }
-        if let Some(name) = &imp.interface_name {
-            self.emit(&imp.target_ty);
+        if let Some(name) = &imp.interface {
+            self.emit(&imp.target_ty.source());
             self.emit(" implements ");
-            self.emit(name);
+            self.emit(&name.source());
         } else {
             self.emit("extend ");
-            self.emit(&imp.target_ty);
+            self.emit(&imp.target_ty.source());
         }
         if !imp.where_bounds.is_empty() {
             let clause: Vec<String> = imp.where_bounds.iter()
-                .map(|tp| format!("{}: {}", tp.name, tp.bounds.join(" + ")))
+                .map(|tp| format!("{}: {}", tp.name, Self::bounds_text(&tp.bounds)))
                 .collect();
             self.emit(" where ");
             self.emit(&clause.join(", "));
@@ -1209,7 +1108,7 @@ impl<'a> Printer<'a> {
         // AT2: what this conformance answers with.
         for b in &imp.assoc_bindings {
             self.emit_indent();
-            self.emit(&format!("type {} = {}", b.name, b.ty));
+            self.emit(&format!("type {} = {}", b.name, b.ty.source()));
             self.emit_newline();
         }
         if !imp.assoc_bindings.is_empty() && !imp.methods.is_empty() {
@@ -1221,18 +1120,23 @@ impl<'a> Printer<'a> {
         self.emit("}");
     }
 
+    /// `A + B<X>`
+    fn bounds_text(bounds: &[rask_ast::ty::TypeExpr]) -> String {
+        bounds.iter().map(|b| b.source()).collect::<Vec<_>>().join(" + ")
+    }
+
     /// `T`, `T: A + B`, `Rhs = Self`, `comptime N: usize`.
     fn type_param_text(p: &rask_ast::decl::TypeParam) -> String {
         if p.is_comptime {
-            let ty = p.comptime_type.clone().unwrap_or_default();
+            let ty = p.comptime_type.as_ref().map(|t| t.source()).unwrap_or_default();
             return format!("comptime {}: {}", p.name, ty);
         }
         let mut out = p.name.clone();
         if !p.bounds.is_empty() {
-            out.push_str(&format!(": {}", p.bounds.join(" + ")));
+            out.push_str(&format!(": {}", Self::bounds_text(&p.bounds)));
         }
         if let Some(d) = &p.default {
-            out.push_str(&format!(" = {d}"));
+            out.push_str(&format!(" = {}", d.source()));
         }
         out
     }
@@ -1297,7 +1201,7 @@ impl<'a> Printer<'a> {
         self.emit(&target);
         if !t.with_interfaces.is_empty() {
             self.emit(" implements ");
-            self.emit(&t.with_interfaces.join(", "));
+            self.emit(&t.with_interfaces.iter().map(|i| i.source()).collect::<Vec<_>>().join(", "));
         }
     }
 
@@ -1315,7 +1219,7 @@ impl<'a> Printer<'a> {
         self.emit(&c.name);
         if let Some(ref ty) = c.ty {
             self.emit(": ");
-            self.emit(ty);
+            self.emit(&ty.source());
         }
         self.emit(" = ");
         self.format_expr(&c.init);
@@ -2057,12 +1961,9 @@ impl<'a> Printer<'a> {
             ExprKind::Bool(b) => {
                 self.emit(if *b { "true" } else { "false" });
             }
-            // A type named in expression position (`Handles<void>.new()`)
-            // is stored as its parsed spelling, `Handles<()>`, which
-            // doesn't parse back.
-            ExprKind::Ident(name) if name.contains('<') => {
-                let spelled = self.format_type(name);
-                self.emit(&spelled);
+            ExprKind::GenericName { name, type_args } => {
+                self.emit(name);
+                self.emit_type_args(type_args);
             }
             ExprKind::Ident(name) => {
                 self.emit(name);
@@ -2362,8 +2263,9 @@ impl<'a> Printer<'a> {
                     self.emit(")");
                 }
             }
-            ExprKind::StructLit { name, fields, spread } => {
+            ExprKind::StructLit { name, type_args, fields, spread } => {
                 self.emit(name);
+                self.emit_type_args(type_args);
                 let source_is_multiline = self.source_text(expr.span).contains('\n');
                 if fields.is_empty() && spread.is_none() {
                     self.emit(" {}");
@@ -2482,13 +2384,13 @@ impl<'a> Printer<'a> {
                     self.emit(&param.name);
                     if let Some(ref ty) = param.ty {
                         self.emit(": ");
-                        self.emit(ty);
+                        self.emit(&ty.source());
                     }
                 }
                 self.emit("|");
                 if let Some(ref ty) = ret_ty {
                     self.emit(" -> ");
-                    self.emit(ty);
+                    self.emit(&ty.source());
                 }
                 self.emit(" ");
                 self.format_expr(body);
@@ -2496,7 +2398,7 @@ impl<'a> Printer<'a> {
             ExprKind::Cast { expr: inner, ty } => {
                 self.format_cast_operand(inner);
                 self.emit(" as ");
-                self.emit(ty);
+                self.emit(&ty.source());
             }
             ExprKind::Convert { expr: inner, target, kind } => {
                 // `.wrap<T>()` is postfix, so its receiver needs the same
@@ -2826,6 +2728,7 @@ impl<'a> Printer<'a> {
                 | ExprKind::Null
                 | ExprKind::None
                 | ExprKind::Ident(_)
+                | ExprKind::GenericName { .. }
                 | ExprKind::Call { .. }
                 | ExprKind::MethodCall { .. }
                 | ExprKind::Field { .. }
@@ -3016,8 +2919,8 @@ impl<'a> Printer<'a> {
                 self.emit("..=");
                 self.format_expr(end);
             }
-            Pattern::TypePat { ty_name, binding } => {
-                self.emit(ty_name);
+            Pattern::TypePat { ty, binding } => {
+                self.emit(&ty.source());
                 if let Some(name) = binding {
                     self.emit(" as ");
                     self.emit(name);

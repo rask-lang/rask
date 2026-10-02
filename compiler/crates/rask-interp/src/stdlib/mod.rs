@@ -91,7 +91,11 @@ impl Interpreter {
                 method: method.to_string(),
             }),
 
-            ModuleKind::Reflect => self.call_reflect_method(method, args),
+            // Every reflect method takes its type as a type argument, which
+            // the method-call path hands over before it gets here.
+            ModuleKind::Reflect => Err(RuntimeError::TypeError(format!(
+                "reflect.{}() needs a type argument: reflect.{}<T>()", method, method
+            ))),
 
             // Legacy aliases — forward to new modules
             ModuleKind::Env => self.call_env_method(method, args),

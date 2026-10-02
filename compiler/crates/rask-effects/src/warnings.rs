@@ -279,7 +279,7 @@ impl<'a> WarnContext<'a> {
 
             ExprKind::MethodCall { object, method, args, .. } => {
                 // Check qualified form
-                let is_pool_spawn = if let ExprKind::Ident(type_name) = &object.kind {
+                let is_pool_spawn = if let Some(type_name) = object.name() {
                     let qname = format!("{}.{}", type_name, method);
                     self.maybe_warn_io_call(&qname, expr.span, warnings);
                     is_thread_pool(type_name) && method == "spawn"
@@ -437,7 +437,7 @@ impl<'a> WarnContext<'a> {
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
             | ExprKind::StringInterp(_)
             | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None
-            | ExprKind::Ident(_) => {}
+            | ExprKind::Ident(_) | ExprKind::GenericName { .. } => {}
         }
     }
 
@@ -512,7 +512,7 @@ fn extract_callee_name(func: &Expr) -> Option<String> {
     match &func.kind {
         ExprKind::Ident(name) => Some(name.clone()),
         ExprKind::Field { object, field } => {
-            if let ExprKind::Ident(obj_name) = &object.kind {
+            if let Some(obj_name) = object.name() {
                 Some(format!("{}.{}", obj_name, field))
             } else {
                 None

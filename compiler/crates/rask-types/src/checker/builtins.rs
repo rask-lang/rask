@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use super::type_defs::ModuleMethodSig;
 
 use crate::types::Type;
+use rask_ast::ty::TypeExpr;
 
 /// Modules with type-checked signatures.
 const TYPED_MODULES: &[&str] = &["fs", "net", "json", "cli", "io", "std"];
@@ -29,14 +30,16 @@ impl BuiltinModules {
             let sigs: Vec<ModuleMethodSig> = methods.iter().map(|m| {
                 ModuleMethodSig {
                     name: m.name.clone(),
-                    params: m.params.iter().map(|(_, ty)| parse_stub_type(ty)).collect(),
-                    ret: parse_stub_type(&m.ret_ty),
-                    type_param_bounds: m.type_param_bounds.clone(),
-                    // The declared type string is still intact here, before
-                    // parse_stub_type erases a type parameter into `_Any`.
+                    params: m.params.iter().map(|(_, ty)| stub_type(ty)).collect(),
+                    ret: stub_type(&m.ret_ty),
+                    type_param_bounds: m.type_param_bounds.iter()
+                        .map(|(n, b)| (n.clone(), b.clone()))
+                        .collect(),
+                    // The declared type is still intact here, before
+                    // `stub_type` erases a type parameter into `_Any`.
                     param_type_params: m.params.iter()
                         .map(|(_, ty)| {
-                            let t = ty.trim();
+                            let t = ty.bare_name()?;
                             m.type_param_bounds.iter()
                                 .find(|(n, _)| n == t)
                                 .map(|(n, _)| n.clone())
@@ -59,141 +62,46 @@ impl BuiltinModules {
     }
 }
 
-/// Parse a type string from a stub file into a Type.
-///
-/// The parser normalizes `T or E` to `Result<T, E>` and `T?` to `Option<T>`
-/// in the string representation. This handles both forms plus primitives,
-/// generic placeholders, and named types. Single uppercase letters become
-/// `_Any` wildcards for the type checker's freshening logic.
-pub(super) fn parse_stub_type(s: &str) -> Type {
-    let s = s.trim();
-
-    // `func(A, B) -> R` — a function type. Without this it came back as a *name*
-    // that prints exactly like the real type, so nothing tied the parameter to
-    // the argument: `spawn(f: func() -> T) -> Handle<T>` left `T` an
-    // inference variable, the join's payload fell back to i64, and a task
-    // returning a struct segfaulted while one returning an i64 worked (#882).
-    // Same shape as the `T?`, `*T`, `any Interface` and tuple cases below.
-    //
-    // First, before the `or` split and the generic handling: `func() -> i64 or
-    // MyErr` would split at the ` or ` and `func() -> Vec<i64>` ends in `>`, so
-    // both would be read as something else entirely.
-    if let Some(rest) = s.strip_prefix("func") {
-        let rest = rest.trim_start();
-        if let Some(close) = closing_paren(rest) {
-            let params_str = rest[1..close].trim();
-            let tail = rest[close + 1..].trim();
-            let ret = match tail.strip_prefix("->") {
-                Some(r) if !r.trim().is_empty() => Some(parse_stub_type(r.trim())),
-                // `func(T)` with no arrow answers nothing.
-                None if tail.is_empty() => Some(Type::Unit),
-                _ => None,
-            };
-            if let Some(ret) = ret {
-                let params: Vec<Type> = if params_str.is_empty() {
-                    Vec::new()
-                } else {
-                    split_top_level(params_str).iter().map(|p| parse_stub_type(p)).collect()
-                };
-                return Type::Fn { params, ret: Box::new(ret) };
+/// A stub signature's type, read without a type table: names stay unresolved
+/// for the checker to look up, and a single uppercase letter is a wildcard.
+pub(super) fn stub_type(ty: &TypeExpr) -> Type {
+    let all = |ts: &[TypeExpr]| ts.iter().map(stub_type).collect::<Vec<_>>();
+    match ty {
+        TypeExpr::Unit => Type::Unit,
+        TypeExpr::NoneType => Type::None,
+        TypeExpr::Func { params, ret } => Type::Fn { params: all(params), ret: Box::new(stub_type(ret)) },
+        TypeExpr::Result { ok, err } => Type::Result {
+            ok: Box::new(stub_type(ok)),
+            err: Box::new(stub_type(err)),
+        },
+        TypeExpr::Optional(inner) => Type::option(stub_type(inner)),
+        TypeExpr::RawPtr(inner) => Type::RawPtr(Box::new(stub_type(inner))),
+        TypeExpr::Any(inner) => Type::InterfaceObject { interface_name: inner.to_string() },
+        TypeExpr::Tuple(elems) => Type::Tuple(all(elems)),
+        TypeExpr::Named { path, args } if !args.is_empty() => {
+            let name = path.join(".");
+            match (name.as_str(), args.as_slice()) {
+                ("Option", [inner]) => Type::option(stub_type(inner)),
+                ("Result", [ok, err]) => Type::Result {
+                    ok: Box::new(stub_type(ok)),
+                    err: Box::new(stub_type(err)),
+                },
+                _ => Type::UnresolvedGeneric {
+                    name,
+                    args: all(args)
+                        .into_iter()
+                        .map(|t| crate::types::GenericArg::Type(Box::new(t)))
+                        .collect(),
+                },
             }
         }
+        TypeExpr::Named { path, .. } => stub_name(&path.join(".")),
+        _ => Type::UnresolvedNamed(ty.to_string()),
     }
+}
 
-    // Handle "X or Y" result types (raw form, just in case)
-    if let Some((ok_str, err_str)) = split_or_type(s) {
-        return Type::Result {
-            ok: Box::new(parse_stub_type(ok_str)),
-            err: Box::new(parse_stub_type(err_str)),
-        };
-    }
-
-    // Handle "Result<T, E>" (parser-normalized form). The split lives in
-    // rask_ast::type_str so there is one answer: the copy that used to be here
-    // didn't count `[` `]` as nesting, so a stub returning `Vec[f32, 4] or
-    // SimdError` would have split at the comma inside the lane count.
-    if let Some((ok_str, err_str)) = rask_ast::type_str::result_parts(s) {
-        return Type::Result {
-            ok: Box::new(parse_stub_type(ok_str)),
-            err: Box::new(parse_stub_type(err_str)),
-        };
-    }
-
-    // Handle "Option<T>" (parser-normalized form)
-    if let Some(inner) = s.strip_prefix("Option<").and_then(|r| r.strip_suffix('>')) {
-        return Type::option(parse_stub_type(inner));
-    }
-
-    // `T?` — the way optionals are actually written in the stubs. Without this
-    // `byte_at(i) -> u8?` came back as the *name* "u8?", so the value was never
-    // an optional: `??` had nothing to narrow and no method resolved on the
-    // result. A generic argument can end in `>` (`Vec<i32>?`), so strip the
-    // suffix before the generic handling below rather than after.
-    if let Some(inner) = s.strip_suffix('?') {
-        if !inner.is_empty() {
-            return Type::option(parse_stub_type(inner));
-        }
-    }
-
-    // `*T` — a raw pointer. Without this it came back as a *name* that happened
-    // to read "*u8", and a name prints exactly like the real pointer type — so
-    // `s.as_ptr().offset(1)` failed with "no method `offset` found for type
-    // `*u8`" while the type on screen looked perfectly correct (#696). Same
-    // shape as the `T?` case above, and for the same reason.
-    if let Some(inner) = s.strip_prefix('*') {
-        if !inner.is_empty() {
-            return Type::RawPtr(Box::new(parse_stub_type(inner)));
-        }
-    }
-
-    // `any Interface` — an interface object. Without this it came back as the *name*
-    // "any Reader", which prints exactly like the real type, so a module
-    // function's `any Interface` parameter looked perfectly fine and nothing
-    // recorded the TR5 coercion its argument needed. `io.copy(buf, out)` handed
-    // over a raw struct pointer, and the first dispatch through it jumped to
-    // address zero (#860). Same shape as the `*T` case above (#696).
-    if let Some(interface_name) = s.strip_prefix("any ") {
-        let interface_name = interface_name.trim();
-        if !interface_name.is_empty() {
-            return Type::InterfaceObject { interface_name: interface_name.to_string() };
-        }
-    }
-
-    // `(A, B, ...)` — a tuple. Without this `char_indices() -> Iterator<(usize,
-    // char)>` came back with two arguments, `(usize` and `char)`, because the
-    // comma inside the parens read as the generic's own separator. `t.0` then
-    // reported "no field `0` on type `(usize`" and a `for (i, c)` over it had
-    // no type MIR could lower (#841).
-    if s.starts_with('(') && s.ends_with(')') && s.len() > 2 {
-        let inner = &s[1..s.len() - 1];
-        let parts = split_top_level(inner);
-        if parts.len() > 1 {
-            return Type::Tuple(parts.iter().map(|p| parse_stub_type(p)).collect());
-        }
-    }
-
-    // Handle other generics: `Name<T1, T2, ...>` (Vec, Map, Rack, Link, ...)
-    // Without this, `Vec<string>` returns as `UnresolvedNamed("Vec<string>")`,
-    // which the method-lookup path doesn't unify against `Generic { Vec, [string] }`.
-    if let Some(open) = s.find('<') {
-        if s.ends_with('>') {
-            let name = s[..open].trim();
-            let inner = &s[open + 1..s.len() - 1];
-            let args: Vec<Type> = if inner.is_empty() {
-                Vec::new()
-            } else {
-                split_top_level(inner).iter().map(|p| parse_stub_type(p)).collect()
-            };
-            return Type::UnresolvedGeneric {
-                name: name.to_string(),
-                args: args.into_iter().map(|t| crate::types::GenericArg::Type(Box::new(t))).collect(),
-            };
-        }
-    }
-
+fn stub_name(s: &str) -> Type {
     match s {
-        "" | "()" | "void" => Type::Unit,
-        "none" => Type::None,
         "bool" => Type::Bool,
         "string" => Type::String,
         "char" => Type::Char,
@@ -214,7 +122,7 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         "Never" => Type::Never,
         // The C scalar names, per struct.c-interop/TM1. See `c_type_spelling`.
         _ if rask_ast::primitives::c_type_spelling(s).is_some() => {
-            parse_stub_type(rask_ast::primitives::c_type_spelling(s).unwrap())
+            stub_name(rask_ast::primitives::c_type_spelling(s).unwrap())
         }
         // Single uppercase letter = type variable (wildcard for module generics)
         _ if s.len() == 1 && s.as_bytes()[0].is_ascii_uppercase() => {
@@ -222,65 +130,6 @@ pub(super) fn parse_stub_type(s: &str) -> Type {
         }
         _ => Type::UnresolvedNamed(s.to_string()),
     }
-}
-
-/// The `)` matching a leading `(`, or `None` when `s` doesn't start with one or
-/// the parens don't balance.
-fn closing_paren(s: &str) -> Option<usize> {
-    if !s.starts_with('(') {
-        return None;
-    }
-    let mut depth = 0usize;
-    for (i, b) in s.bytes().enumerate() {
-        match b {
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Split on top-level commas, respecting both `<…>` and `(…)`. A tuple inside
-/// a generic argument list is the reason the parens count.
-fn split_top_level(s: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth: i32 = 0;
-    let mut start = 0usize;
-    for (i, b) in s.bytes().enumerate() {
-        match b {
-            b'<' | b'(' => depth += 1,
-            b'>' | b')' => depth -= 1,
-            b',' if depth == 0 => {
-                parts.push(s[start..i].trim());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    parts.push(s[start..].trim());
-    parts
-}
-
-/// Split `T or E` into `("T", "E")`, respecting nesting.
-fn split_or_type(s: &str) -> Option<(&str, &str)> {
-    let mut depth: i32 = 0;
-    for (i, b) in s.bytes().enumerate() {
-        match b {
-            b'<' | b'(' => depth += 1,
-            b'>' | b')' => depth -= 1,
-            b' ' if depth == 0 && s[i..].starts_with(" or ") => {
-                return Some((s[..i].trim(), s[i + 4..].trim()));
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 #[cfg(test)]
@@ -324,69 +173,13 @@ mod tests {
     /// A `func(...)` parameter has to come back as a real function type. As a
     /// *name* it prints exactly like one, so nothing ties the argument to it —
     /// the shape that left `spawn(f: func() -> T) -> Handle<T>` with an
-    /// unresolved T (#882). Same family as `T?` (#696), `any Interface` (#860) and
-    /// tuples (#841), each of which was found the same way.
+    /// unresolved T (#882).
     #[test]
-    fn a_function_parameter_parses_as_a_function_type() {
+    fn a_function_parameter_is_a_function_type() {
+        let f = TypeExpr::Func { params: vec![], ret: Box::new(TypeExpr::named("T")) };
         assert_eq!(
-            parse_stub_type("func() -> T"),
-            Type::Fn {
-                params: Vec::new(),
-                ret: Box::new(Type::UnresolvedNamed("_Any".to_string())),
-            },
-        );
-        assert_eq!(
-            parse_stub_type("func(i64, string) -> bool"),
-            Type::Fn {
-                params: vec![Type::I64, Type::String],
-                ret: Box::new(Type::Bool),
-            },
-        );
-        // No arrow: answers nothing.
-        assert_eq!(
-            parse_stub_type("func(i64)"),
-            Type::Fn { params: vec![Type::I64], ret: Box::new(Type::Unit) },
-        );
-    }
-
-    /// The two spellings that would be read as something else if the function
-    /// case ran later: a `T or E` return splits at the ` or `, and a generic
-    /// return ends in `>`.
-    #[test]
-    fn a_function_type_wins_over_the_or_and_generic_shapes() {
-        assert_eq!(
-            parse_stub_type("func() -> i64 or IoError"),
-            Type::Fn {
-                params: Vec::new(),
-                ret: Box::new(Type::Result {
-                    ok: Box::new(Type::I64),
-                    err: Box::new(Type::UnresolvedNamed("IoError".to_string())),
-                }),
-            },
-        );
-        let vec_of_i64 = Type::UnresolvedGeneric {
-            name: "Vec".to_string(),
-            args: vec![crate::types::GenericArg::Type(Box::new(Type::I64))],
-        };
-        assert_eq!(
-            parse_stub_type("func(Vec<i64>) -> Vec<i64>"),
-            Type::Fn {
-                params: vec![vec_of_i64.clone()],
-                ret: Box::new(vec_of_i64),
-            },
-        );
-    }
-
-    /// Anything that only looks like one stays a name.
-    #[test]
-    fn a_name_that_starts_with_func_is_still_a_name() {
-        assert_eq!(
-            parse_stub_type("Functor"),
-            Type::UnresolvedNamed("Functor".to_string()),
-        );
-        assert_eq!(
-            parse_stub_type("func"),
-            Type::UnresolvedNamed("func".to_string()),
+            stub_type(&f),
+            Type::Fn { params: Vec::new(), ret: Box::new(Type::UnresolvedNamed("_Any".to_string())) },
         );
     }
 
@@ -452,66 +245,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_primitives() {
-        assert_eq!(parse_stub_type("string"), Type::String);
-        assert_eq!(parse_stub_type("bool"), Type::Bool);
-        assert_eq!(parse_stub_type("i64"), Type::I64);
-        assert_eq!(parse_stub_type("u64"), Type::U64);
-        assert_eq!(parse_stub_type("()"), Type::Unit);
-        assert_eq!(parse_stub_type(""), Type::Unit);
-        assert_eq!(parse_stub_type("Never"), Type::Never);
-    }
-
-    #[test]
-    fn parse_result_type() {
-        let ty = parse_stub_type("string or IoError");
-        assert_eq!(ty, Type::Result {
-            ok: Box::new(Type::String),
-            err: Box::new(Type::UnresolvedNamed("IoError".to_string())),
-        });
-    }
-
-    #[test]
-    fn parse_generic_wildcard() {
-        let ty = parse_stub_type("T");
-        assert_eq!(ty, Type::UnresolvedNamed("_Any".to_string()));
-    }
-
-    #[test]
-    fn parse_named_type() {
-        let ty = parse_stub_type("File");
-        assert_eq!(ty, Type::UnresolvedNamed("File".to_string()));
-    }
-
-    #[test]
-    fn parse_generic_type() {
+    fn a_generic_stays_unresolved_with_its_arguments() {
         use crate::types::GenericArg;
-        let ty = parse_stub_type("Vec<string>");
+        let ty = stub_type(&TypeExpr::generic("Vec", vec![TypeExpr::named("string")]));
         assert_eq!(ty, Type::UnresolvedGeneric {
             name: "Vec".to_string(),
             args: vec![GenericArg::Type(Box::new(Type::String))],
         });
-    }
-
-    #[test]
-    fn split_or_respects_angle_brackets() {
-        let result = split_or_type("Option<T> or Error");
-        assert_eq!(result, Some(("Option<T>", "Error")));
-    }
-
-    #[test]
-    fn parse_result_generic_form() {
-        // Parser normalizes "string or IoError" → "Result<string, IoError>"
-        let ty = parse_stub_type("Result<string, IoError>");
-        assert_eq!(ty, Type::Result {
-            ok: Box::new(Type::String),
-            err: Box::new(Type::UnresolvedNamed("IoError".to_string())),
-        });
-    }
-
-    #[test]
-    fn parse_option_type() {
-        let ty = parse_stub_type("Option<i64>");
-        assert_eq!(ty, Type::option(Type::I64));
     }
 }

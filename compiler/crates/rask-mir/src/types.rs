@@ -66,20 +66,20 @@ impl MirType {
 }
 
 impl ContainerKind {
-    /// The kind a rendered type name stands for, if it is a container.
-    ///
-    /// A wrapper is not one: `Vec<i64>?` holds a tag beside the handle, so it
-    /// is the thing this describes the payload *of*.
-    pub fn from_rendered(rendered: &str) -> Option<ContainerKind> {
-        if rendered.ends_with('?') || rendered.contains(" or ") {
-            return None;
-        }
-        match rendered.split('<').next().unwrap_or(rendered).trim() {
+    /// The kind a type's head name stands for, if it is a container.
+    pub fn from_head(name: &str) -> Option<ContainerKind> {
+        match name {
             "Vec" => Some(ContainerKind::Vec),
             "Map" => Some(ContainerKind::Map),
             "Rack" => Some(ContainerKind::Rack),
             _ => None,
         }
+    }
+
+    /// The container a checker type is, if it is one. An optional or a result
+    /// holding one is a wrapper, not the handle, and answers `None`.
+    pub fn of(ty: &rask_types::Type, names: &std::collections::HashMap<rask_types::TypeId, String>) -> Option<ContainerKind> {
+        ty.head_name(names).and_then(Self::from_head)
     }
 }
 

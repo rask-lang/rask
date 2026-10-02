@@ -336,6 +336,29 @@ RaskMap *rask_map_new_link_keys(int64_t key_size, int64_t val_size,
         key_offs, n_key_offs, val_offs, n_val_offs);
 }
 
+// A key the language compares through its own `eq` and `hash`: a struct, an
+// enum, a Vec. The compiler hands in two functions that call them, so a map
+// buckets a key by what `==` and `.hash()` say about it, not by its bytes. A
+// struct holding a heap string has a pointer in those bytes, and two equal
+// keys with different pointers used to land in different buckets (#1391).
+RaskMap *rask_map_new_keyed(int64_t key_size, int64_t val_size,
+                            RaskHashFn hash, RaskEqFn eq,
+                            const int32_t *key_offs, int64_t n_key_offs,
+                            const int32_t *val_offs, int64_t n_val_offs) {
+    return map_with_elem_strs(
+        rask_map_new_custom(key_size, val_size, hash, eq),
+        key_offs, n_key_offs, val_offs, n_val_offs);
+}
+
+RaskMap *rask_map_new_keyed_cap(int64_t key_size, int64_t val_size, int64_t cap,
+                                RaskHashFn hash, RaskEqFn eq,
+                                const int32_t *key_offs, int64_t n_key_offs,
+                                const int32_t *val_offs, int64_t n_val_offs) {
+    return map_with_elem_strs(
+        map_new_custom_cap(key_size, val_size, hash, eq, cap),
+        key_offs, n_key_offs, val_offs, n_val_offs);
+}
+
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq) {
     return map_new_custom_cap(key_size, val_size, hash, eq, MAP_INITIAL_CAP);

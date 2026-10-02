@@ -136,6 +136,9 @@ pub enum MirRValue {
         index: MirOperand,
         elem_size: u32,
     },
+    /// The address of a function, as a bare C function pointer — for the
+    /// runtime, which calls it with the C ABI. A closure is `ClosureCreate`.
+    FuncAddr(String),
 }
 
 #[derive(Debug, Clone, Copy)]

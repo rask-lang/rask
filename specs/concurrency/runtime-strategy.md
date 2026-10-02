@@ -71,13 +71,15 @@ Sockets park too. Every socket the runtime opens is non-blocking, and a read, wr
 
 A deadlock ends the process instead of hanging it. Once every task is parked, nothing is queued or sleeping on a timer, and every thread outside the scheduler is itself blocked in a runtime wait, nothing can wake anyone. After a second of that, the runtime prints which task waits on what and exits 101.
 
+A task that computes without waiting is preempted. Codegen puts a check of one global flag at every function entry and loop back-edge; a `SIGURG` timer every 5 ms marks any worker whose task has run for 10 ms and raises the flag, and the marked task yields at its next check. The signal never switches stacks itself, so a task is never stopped inside runtime C code holding a lock. `tests/suite/t_preemption.rk` and `t_preempt_holding_a_lock.rk` cover it.
+
+Sim mode runs every task as a fiber on the test's own thread, with a seeded scheduling order and a virtual clock, so a seed replays.
+
 Not yet:
 
 - **File and stdin parking.** Sockets park (see above); a read of a file, a pipe or stdin still makes the blocking syscall and holds its worker for as long as it takes. epoll can't watch a regular file, so this waits on io_uring, which is also what `conc.runtime/R1.1` wants for disk I/O.
 - **Worker compensation for blocking FFI** (`conc.phase-b/FFI3`) — not built, so a long C call holds its worker too.
-- **Preemption** (`conc.runtime/P1-P3`). Switching is cooperative: a task that computes without waiting keeps its worker until it finishes.
 - **macOS.** `green.c` needs a kqueue backend; until then macOS runs `green_threads.c`. The aarch64 switch is assembled for both ELF and Mach-O; `tests/fiber_gate.sh` runs the ELF one under qemu, and the Mach-O one differs only in symbol names.
-- **Sim on fibers.** Sim mode still runs one OS thread per task with a baton.
 - **Stack overflow is an abort, not a panic.** Running into a fiber's guard page prints which task overflowed and aborts.
 
 ## Phase B: M:N Stackful Fibers

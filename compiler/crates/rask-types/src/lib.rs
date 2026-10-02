@@ -14,8 +14,8 @@ pub use checker::{
     TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
     ParamMode, Callee, ErrorWrap, receiver_name, conformance_symbol, BoundFrom, TypeBinding,
     OperatorTarget, operator_interface, primitive_spelling, TaskBound,
-    parse_type_string, signature_type_param_names, struct_type_param_names,
-    bind_header_pattern, bind_header_patterns, extend_target_args,
+    signature_type_param_names, struct_type_param_names,
+    bind_header_pattern, bind_header_patterns,
     enum_type_param_names, UnsafeCategory, binary_field_runtime_type,
 };
 pub use interfaces::{

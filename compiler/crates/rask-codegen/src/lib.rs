@@ -38,8 +38,8 @@ pub enum BuildMode {
 /// Decoupled from AST — callers convert from their own representation.
 pub struct ExternFuncSig {
     pub name: String,
-    pub param_types: Vec<String>,
-    pub ret_ty: Option<String>,
+    pub param_types: Vec<rask_ast::ty::TypeExpr>,
+    pub ret_ty: Option<rask_ast::ty::TypeExpr>,
 }
 
 #[derive(Debug, Clone)]

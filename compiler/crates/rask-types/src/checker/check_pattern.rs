@@ -8,7 +8,8 @@ use rask_ast::Span;
 
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
-use super::parse_type::parse_type_string;
+use super::parse_type::resolve_type_expr;
+use rask_ast::ty::TypeExpr;
 use super::type_defs::TypeDef;
 use super::type_table::TypeTable;
 use super::TypeChecker;
@@ -24,15 +25,6 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
         Type::UnresolvedNamed(name) => {
             if let Some(id) = types.get_type_id(name) {
                 return Type::Named(id);
-            }
-            // Stub parsers store generic forms ("Vec<string>") as UnresolvedNamed.
-            // Re-parse so they compare equal with properly-parsed Generic types.
-            if name.contains('<') {
-                if let Ok(parsed) = parse_type_string(name, types) {
-                    if parsed != *ty {
-                        return normalize_type(&parsed, types);
-                    }
-                }
             }
             ty.clone()
         }
@@ -99,10 +91,9 @@ pub(super) fn two_branch_leaves(
     leaves
 }
 
-/// Resolve a bare type name to a Type.
-/// Returns UnresolvedNamed when the name isn't a known primitive or user type.
-fn resolve_type_name(name: &str, types: &TypeTable) -> Type {
-    parse_type_string(name, types).unwrap_or_else(|_| Type::UnresolvedNamed(name.to_string()))
+/// Resolve a written type, or UnresolvedNamed when it names nothing known.
+fn resolve_type_name(ty: &TypeExpr, types: &TypeTable) -> Type {
+    resolve_type_expr(ty, types).unwrap_or_else(|_| Type::UnresolvedNamed(ty.to_string()))
 }
 
 impl TypeChecker {
@@ -120,9 +111,12 @@ impl TypeChecker {
     /// A union error side is handled too: `is ParseError.Syntax` on a
     /// `T or (ParseError | DivError)` finds the variant in whichever member
     /// declares it.
-    pub(super) fn err_variant_payload(&self, resolved: &Type, ty_name: &str) -> Option<Type> {
+    pub(super) fn err_variant_payload(&self, resolved: &Type, ty: &TypeExpr) -> Option<Type> {
         let Type::Result { err, .. } = resolved else { return None };
-        let (enum_name, variant_name) = ty_name.split_once('.')?;
+        let TypeExpr::Named { path, args } = ty else { return None };
+        let ([enum_name, variant_name], true) = (path.as_slice(), args.is_empty()) else {
+            return None;
+        };
         let err_applied = self.ctx.apply(err);
         let candidates: Vec<Type> = match err_applied {
             Type::Union(members) => members,
@@ -130,7 +124,7 @@ impl TypeChecker {
         };
         for candidate in candidates {
             let Type::Named(id) = self.ctx.apply(&candidate) else { continue };
-            if self.types.type_name(id) != enum_name {
+            if self.types.type_name(id) != *enum_name {
                 continue;
             }
             let Some(TypeDef::Enum { variants, .. }) = self.types.get(id) else { continue };
@@ -202,7 +196,7 @@ impl TypeChecker {
                 // backends disagreed about the answer.
                 let resolved = self.ctx.apply(scrutinee_ty);
                 if let Type::Result { .. } = &resolved {
-                    let candidate = resolve_type_name(name, &self.types);
+                    let candidate = resolve_type_name(&TypeExpr::named(name.as_str()), &self.types);
                     if !matches!(candidate, Type::UnresolvedNamed(_)) {
                         let candidate = normalize_type(&candidate, &self.types);
                         let branches =
@@ -381,8 +375,8 @@ impl TypeChecker {
             // In match arms, matches either the T (ok) or E (err) branch of a
             // Result by type. In `if r is E as e`, typically the err side.
             // Union `E = A | B | ...`: accept if TypeName is a union component.
-            Pattern::TypePat { ty_name, binding } => {
-                let narrow_ty = normalize_type(&resolve_type_name(ty_name, &self.types), &self.types);
+            Pattern::TypePat { ty, binding } => {
+                let narrow_ty = normalize_type(&resolve_type_name(ty, &self.types), &self.types);
                 let resolved = self.ctx.apply(scrutinee_ty);
                 // ER23 at variant granularity. `match` already dispatches on one
                 // variant of a `T or E` — `error-types.md` shows exactly that with
@@ -397,7 +391,7 @@ impl TypeChecker {
                 // never be true". The bare `is MyErr.Worse` next to it proved that
                 // wrong: it parses as a constructor pattern and never reached this
                 // check at all (#766).
-                if let Some(payload) = self.err_variant_payload(&resolved, ty_name) {
+                if let Some(payload) = self.err_variant_payload(&resolved, ty) {
                     return match binding {
                         Some(name) => vec![(name.clone(), payload)],
                         None => vec![],
@@ -434,7 +428,7 @@ impl TypeChecker {
                             self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
                                 scrutinee: scrutinee_ty.clone(),
                                 narrow_ty: narrow_ty.clone(),
-                                ty_name: ty_name.clone(),
+                                ty_name: ty.to_string(),
                                 span,
                             });
                         } else if !branches.contains(&narrow_ty) {
@@ -443,13 +437,13 @@ impl TypeChecker {
                             // wording, which names the alternatives.
                             if matches!(&err_applied, Type::Union(_)) {
                                 self.errors.push(TypeError::TypePatternNotInUnion {
-                                    ty_name: ty_name.clone(),
+                                    ty_name: ty.to_string(),
                                     union: err_applied,
                                     span,
                                 });
                             } else {
                                 self.errors.push(TypeError::TypePatternNotResult {
-                                    ty_name: ty_name.clone(),
+                                    ty_name: ty.to_string(),
                                     found: resolved,
                                     span,
                                 });
@@ -465,13 +459,13 @@ impl TypeChecker {
                         self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
                             scrutinee: scrutinee_ty.clone(),
                             narrow_ty: narrow_ty.clone(),
-                            ty_name: ty_name.clone(),
+                            ty_name: ty.to_string(),
                             span,
                         });
                     }
                     _ => {
                         self.errors.push(TypeError::TypePatternNotResult {
-                            ty_name: ty_name.clone(),
+                            ty_name: ty.to_string(),
                             found: resolved,
                             span,
                         });

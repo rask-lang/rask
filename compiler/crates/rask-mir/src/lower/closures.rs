@@ -2,6 +2,7 @@
 
 //! Closure and spawn lowering.
 
+use rask_ast::ty::TypeExpr;
 use super::{LoweringError, MirLowerer, TypedOperand};
 use rask_ast::NodeId;
 use crate::{
@@ -30,7 +31,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_fn_as_value(&mut self, name: &str) -> Option<TypedOperand> {
         let sig = self.func_sigs.get(name)?;
         let ret_ty = sig.ret_ty.clone();
-        let param_ty_strs = sig.param_ty_strs.clone();
+        let param_tys = sig.param_tys.clone();
 
         // Named per use site, the way closure bodies are. A single global
         // `<name>__fnval` looks tidier but the dedup that would need is
@@ -43,10 +44,10 @@ impl<'a> MirLowerer<'a> {
             wb.add_param("__env".to_string(), MirType::Ptr);
 
             let mut args = Vec::new();
-            for (i, ty_str) in param_ty_strs.iter().enumerate() {
+            for (i, ty_str) in param_tys.iter().enumerate() {
                 let ty = ty_str
-                    .as_deref()
-                    .map(|s| self.ctx.resolve_type_str(s))
+                    .as_ref()
+                    .map(|t| self.ctx.resolve_type_expr(t))
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"));
                 let id = wb.add_param(format!("__a{}", i), ty);
                 args.push(MirOperand::Local(id));
@@ -71,7 +72,7 @@ impl<'a> MirLowerer<'a> {
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
-                param_ty_strs: Vec::new(),
+                param_tys: Vec::new(),
             });
             self.synthesized_functions.push(wb.finish());
         }
@@ -102,9 +103,9 @@ impl<'a> MirLowerer<'a> {
     /// return shape reads a tag out of whatever it is, which crashes.
     pub(super) fn lower_compare_as_comparator(&mut self, name: &str) -> Option<TypedOperand> {
         let sig = self.func_sigs.get(name)?;
-        let param_ty_strs = sig.param_ty_strs.clone();
+        let param_tys = sig.param_tys.clone();
         let ret_ty = sig.ret_ty.clone();
-        if param_ty_strs.len() != 2 || !self.is_ordering_ty(&ret_ty) {
+        if param_tys.len() != 2 || !self.is_ordering_ty(&ret_ty) {
             return None;
         }
 
@@ -115,10 +116,10 @@ impl<'a> MirLowerer<'a> {
             wb.add_param("__env".to_string(), MirType::Ptr);
 
             let mut args = Vec::new();
-            for (i, ty_str) in param_ty_strs.iter().enumerate() {
+            for (i, ty_str) in param_tys.iter().enumerate() {
                 let ty = ty_str
-                    .as_deref()
-                    .map(|s| self.ctx.resolve_type_str(s))
+                    .as_ref()
+                    .map(|t| self.ctx.resolve_type_expr(t))
                     .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:cmp_param"));
                 let id = wb.add_param(format!("__c{}", i), ty);
                 args.push(MirOperand::Local(id));
@@ -146,7 +147,7 @@ impl<'a> MirLowerer<'a> {
                 scalar_mutate_params: Vec::new(),
                 aggregate_mutate_params: Vec::new(),
                 ret_vec_elem: None,
-                param_ty_strs: Vec::new(),
+                param_tys: Vec::new(),
             });
             self.synthesized_functions.push(wb.finish());
         }
@@ -162,6 +163,98 @@ impl<'a> MirLowerer<'a> {
         Some((MirOperand::Local(result_local), MirType::Ptr))
     }
 
+    /// The `hash` and `eq` a map built at `node` calls on its keys, as the two
+    /// function addresses the keyed constructor takes — `None` when the key's
+    /// bytes are its identity and the runtime hashes it itself.
+    ///
+    /// Monomorphization chose the functions and queued them (#1391); this only
+    /// adapts them to the runtime's callback shape. The runtime hands a key's
+    /// *address* and its size, and wants `int` back from `eq`. A struct, enum,
+    /// tuple or wrapper is passed by address anyway, so its address is the
+    /// argument; a `Vec` key is a handle, loaded out of the slot.
+    pub(super) fn map_key_fn_addrs(
+        &mut self,
+        node: NodeId,
+        key_ty: &MirType,
+    ) -> Option<(MirOperand, MirOperand)> {
+        let fns = self.ctx.map_key_fns.get(&node)?.clone();
+        let hash = self.key_callback(&fns.hash, key_ty, false);
+        let eq = self.key_callback(&fns.eq, key_ty, true);
+        let addr = |this: &mut Self, name: String| {
+            let local = this.builder.alloc_temp(MirType::I64);
+            this.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: local,
+                rvalue: MirRValue::FuncAddr(name),
+            }));
+            MirOperand::Local(local)
+        };
+        Some((addr(self, hash), addr(self, eq)))
+    }
+
+    /// `uint64_t (*)(const void *key, int64_t size)` around `target(key)`, or
+    /// `int (*)(const void *a, const void *b, int64_t size)` around
+    /// `target(a, b)` when `is_eq`.
+    fn key_callback(&mut self, target: &str, key_ty: &MirType, is_eq: bool) -> String {
+        let name = format!(
+            "{}__key_{}_{}",
+            self.parent_name,
+            if is_eq { "eq" } else { "hash" },
+            self.closure_counter
+        );
+        self.closure_counter += 1;
+        // Everything codegen passes by address: the slot holds the value, so
+        // the slot's address is the argument.
+        let by_address = matches!(
+            key_ty,
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Option(_) | MirType::Result { .. }
+        );
+        let ret_ty = if is_eq { MirType::I32 } else { MirType::U64 };
+        let mut wb = BlockBuilder::new(name.clone(), ret_ty.clone());
+        let mut args = Vec::new();
+        for i in 0..(if is_eq { 2 } else { 1 }) {
+            if by_address {
+                args.push(MirOperand::Local(wb.add_param(format!("__k{i}"), key_ty.clone())));
+            } else {
+                let slot = wb.add_param(format!("__k{i}"), MirType::Ptr);
+                let key = wb.alloc_temp(key_ty.clone());
+                wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: key,
+                    rvalue: MirRValue::Deref(MirOperand::Local(slot)),
+                }));
+                args.push(MirOperand::Local(key));
+            }
+        }
+        wb.add_param("__size".to_string(), MirType::I64);
+        let answer = wb.alloc_temp(if is_eq { MirType::Bool } else { MirType::U64 });
+        wb.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(answer),
+            func: FunctionRef::internal(target.to_string()),
+            args,
+        }));
+        let value = if is_eq {
+            let widened = wb.alloc_temp(MirType::I32);
+            wb.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: widened,
+                rvalue: MirRValue::Cast { value: MirOperand::Local(answer), target_ty: MirType::I32 },
+            }));
+            widened
+        } else {
+            answer
+        };
+        wb.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+            value: Some(MirOperand::Local(value)),
+        }));
+        self.func_sigs.insert(name.clone(), super::FuncSig {
+            ret_ty,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        self.synthesized_functions.push(wb.finish());
+        name
+    }
+
     /// Closure lowering: synthesize a separate MIR function for the body,
     /// build the environment, and emit ClosureCreate in the enclosing function.
     ///
@@ -175,7 +268,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_closure(
         &mut self,
         params: &[rask_ast::expr::ClosureParam],
-        ret_ty: Option<&str>,
+        ret_ty: Option<&TypeExpr>,
         body: &Expr,
         carries: bool,
         closure_id: Option<NodeId>,
@@ -197,10 +290,10 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_closure_expecting(
         &mut self,
         params: &[rask_ast::expr::ClosureParam],
-        ret_ty: Option<&str>,
+        ret_ty: Option<&TypeExpr>,
         body: &Expr,
         carries: bool,
-        expected_param_tys: &[String],
+        expected_param_tys: &[TypeExpr],
         closure_id: Option<NodeId>,
         for_spawn: bool,
     ) -> Result<TypedOperand, LoweringError> {
@@ -274,7 +367,7 @@ impl<'a> MirLowerer<'a> {
                 _ => None,
             });
         let closure_ret = ret_ty
-            .map(|s| self.ctx.resolve_type_str(s))
+            .map(|t| self.ctx.resolve_type_expr(t))
             .or(checked_ret)
             .unwrap_or_else(|| if inferred_void {
                 MirType::Void
@@ -320,10 +413,10 @@ impl<'a> MirLowerer<'a> {
         for (i, param) in params.iter().enumerate() {
             // Written annotation first, then the type the callee declares for
             // this position, then what the checker inferred.
-            let ty_str = param.ty.clone()
+            let written = param.ty.clone()
                 .or_else(|| expected_param_tys.get(i).cloned());
-            let param_ty = ty_str.as_deref()
-                .map(|s| self.ctx.resolve_type_str(s))
+            let param_ty = written.as_ref()
+                .map(|t| self.ctx.resolve_type_expr(t))
                 .or_else(|| checked_params.get(i).cloned())
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:param"));
             let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
@@ -346,14 +439,14 @@ impl<'a> MirLowerer<'a> {
                         scalar_mutate_params: Vec::new(),
                         aggregate_mutate_params: Vec::new(),
                         ret_vec_elem: None,
-                        param_ty_strs: Vec::new(),
+                        param_tys: Vec::new(),
                     },
                 );
             }
             if let Some(prefix) = self.mir_type_name(&param_ty) {
                 self.meta_mut(&param.name).type_prefix = Some(prefix);
-            } else if let Some(s) = ty_str.as_deref() {
-                if let Some(prefix) = super::type_prefix_from_str(s) {
+            } else if let Some(t) = written.as_ref() {
+                if let Some(prefix) = super::type_prefix_of(t) {
                     self.meta_mut(&param.name).type_prefix = Some(prefix);
                 }
             }
@@ -423,7 +516,7 @@ impl<'a> MirLowerer<'a> {
             scalar_mutate_params: Vec::new(),
             aggregate_mutate_params: Vec::new(),
             ret_vec_elem: None,
-            param_ty_strs: Vec::new(),
+            param_tys: Vec::new(),
         });
 
         self.synthesized_functions.push(closure_fn);
@@ -479,8 +572,7 @@ impl<'a> MirLowerer<'a> {
         // `type_prefix` is the shared answer to "what is this type called", and
         // it knows about stdlib types the local name table doesn't carry.
         let name = super::MirContext::type_prefix(ty, self.ctx.type_names)?;
-        let head = name.split('<').next();
-        if head != Some("Sequence") && head != Some("SequenceMut") {
+        if name != "Sequence" && name != "SequenceMut" {
             return None;
         }
         let args = match ty {
@@ -727,7 +819,7 @@ impl<'a> MirLowerer<'a> {
             scalar_mutate_params: Vec::new(),
             aggregate_mutate_params: Vec::new(),
             ret_vec_elem: None,
-            param_ty_strs: Vec::new(),
+            param_tys: Vec::new(),
         });
         self.synthesized_functions.push(yb.finish());
 
@@ -813,7 +905,7 @@ impl<'a> MirLowerer<'a> {
             scalar_mutate_params: Vec::new(),
             aggregate_mutate_params: Vec::new(),
             ret_vec_elem: None,
-            param_ty_strs: Vec::new(),
+            param_tys: Vec::new(),
         });
         self.synthesized_functions.push(b.finish());
         thunk_name

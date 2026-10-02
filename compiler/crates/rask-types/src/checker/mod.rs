@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use rask_ast::decl::Decl;
 use rask_ast::NodeId;
+use rask_ast::ty::TypeExpr;
 use rask_resolve::{ResolvedProgram, SymbolId};
 
 use crate::types::Type;
@@ -27,6 +28,8 @@ mod generics;
 mod resolve;
 pub mod operators;
 mod validate;
+mod derive;
+pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
 pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode, InterfaceTypeParam, InterfaceAssocType, TypeBinding, TypedProgram, receiver_name, conformance_symbol};
@@ -34,8 +37,8 @@ pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
-pub use parse_type::parse_type_string;
-pub use generics::{bind_header_pattern, bind_header_patterns, extend_target_args};
+pub use parse_type::resolve_type_expr;
+pub use generics::{bind_header_pattern, bind_header_patterns};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
 use borrow::{ActiveBorrow, PersistentBorrow};
@@ -202,7 +205,7 @@ pub struct TypeChecker {
     pub(super) current_self_type: Option<Type>,
     /// Interface bounds on the current function's type params (name → interface names).
     /// Lets `g.greet()` resolve against `T: Greeter` for static dispatch (#314).
-    pub(super) current_type_param_bounds: HashMap<String, Vec<String>>,
+    pub(super) current_type_param_bounds: HashMap<String, Vec<TypeExpr>>,
     /// Interface bounds from the enclosing `extend Foo<T> where T: Interface { }`
     /// block's own where-clause, distinct from a method's own bounds (those
     /// live on the method's `FnDecl` and are folded into
@@ -210,7 +213,26 @@ pub struct TypeChecker {
     /// level covers every method in the block, so `check_fn` seeds
     /// `current_type_param_bounds` from this before layering the method's own
     /// bounds on top (#838).
-    pub(super) current_impl_type_param_bounds: HashMap<String, Vec<String>>,
+    pub(super) current_impl_type_param_bounds: HashMap<String, Vec<TypeExpr>>,
+    /// Derived bodies written and not yet checked (`derive.rs`), with the
+    /// type whose methods they are.
+    pub(super) pending_derived: Vec<(Decl, Option<crate::types::TypeId>)>,
+    /// Derived bodies checked, handed down with the program.
+    pub(super) derived_decls: Vec<Decl>,
+    /// Types `write_derived_methods` has already written for. Collection runs
+    /// once for the stdlib and once for the program.
+    pub(super) derived_written: std::collections::HashSet<crate::types::TypeId>,
+    /// The `eq`/`hash` pairs written for wrapper types, and their symbols.
+    pub(super) wrapper_fns: Vec<derive::WrapperFns>,
+    pub(super) wrapper_symbols: HashMap<String, rask_resolve::SymbolId>,
+    pub(super) next_derived_id: u32,
+    pub(super) derived_names: usize,
+    /// Operator `eq` calls, as (call, receiver, argument) nodes. Decided once
+    /// the operand types settle: two equal wrappers that need their parts'
+    /// own `eq` go through the wrapper's function.
+    pub(super) pending_wrapper_eq: Vec<(NodeId, NodeId, NodeId)>,
+    /// Those decided: call node → (callee node, function name).
+    pub(super) wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
     /// Every type parameter name in scope right here — the enclosing `extend
     /// Foo<T>`'s and the method's own, bounded or not.
     ///
@@ -288,14 +310,14 @@ pub struct TypeChecker {
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
     /// SymbolId → (type param name → interface bounds) for generic functions.
     /// Used to check bound satisfaction at call sites (#314).
-    pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<String>>>,
+    pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<TypeExpr>>>,
     /// Names declared as annotations (type.annotations). Registered as struct
     /// types for `has<A>()` name resolution, but comptime-only: runtime
     /// construction is rejected.
     pub(super) annotation_types: std::collections::HashSet<String>,
     /// Call-site bound obligations: (type-arg var, bound interface names, span).
     /// Verified after constraint solving resolves the var to a concrete type.
-    pub(super) pending_bound_checks: Vec<(Type, Vec<String>, rask_ast::Span)>,
+    pub(super) pending_bound_checks: Vec<(Type, Vec<TypeExpr>, rask_ast::Span)>,
     /// ER3a: call-site disjointness obligations read off the callee's signature.
     /// Verified after constraint solving resolves the type-arg vars.
     pub(super) pending_disjointness: Vec<validate::DisjointObligation>,
@@ -558,6 +580,15 @@ impl TypeChecker {
             current_self_type: None,
             current_type_param_bounds: HashMap::new(),
             current_impl_type_param_bounds: HashMap::new(),
+            pending_derived: Vec::new(),
+            derived_decls: Vec::new(),
+            derived_written: std::collections::HashSet::new(),
+            wrapper_fns: Vec::new(),
+            wrapper_symbols: HashMap::new(),
+            next_derived_id: derive::DERIVED_ID_BASE,
+            derived_names: 0,
+            pending_wrapper_eq: Vec::new(),
+            wrapper_eq_calls: HashMap::new(),
             type_params_in_scope: std::collections::HashSet::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
@@ -716,6 +747,7 @@ impl TypeChecker {
                 self.check_decl(decl);
             }
         }
+        self.check_pending_derived();
         self.pop_scope();
 
         self.solve_constraints();
@@ -794,6 +826,9 @@ impl TypeChecker {
         // is concrete now, so "is this a string slice / a growable view" has an
         // answer it didn't have during the walk.
         self.validate_pending_view_bindings();
+
+        // Wrapper `==` and wrapper map keys, which need the settled types.
+        self.settle_derived_wrappers(decls);
 
         // Every recorded type, with inference's answers substituted in.
         //
@@ -876,9 +911,7 @@ impl TypeChecker {
             .map(|(name, id)| (*id, name.clone()))
             .collect();
 
-        // Resolve pending generic call type args, normalizing Named(TypeId)
-        // to UnresolvedNamed(name) so monomorphizer can use consistent names.
-        // A call site can be recorded more than once — method resolution runs
+        // Generic call type args. A call site can be recorded more than once — method resolution runs
         // again whenever the constraint solver makes progress, and the earlier
         // attempts hold variables that never got bound. Keep the entry that
         // actually resolved; a half-resolved one mangles to `Box2_echo$_` and
@@ -887,10 +920,9 @@ impl TypeChecker {
         for (node_id, vars) in &self.pending_call_type_args {
             let resolved: Vec<type_defs::TypeBinding> = vars.iter().map(|(name, v)| {
                 let applied = self.ctx.apply(v);
-                type_defs::TypeBinding::new(
-                    name.clone(),
-                    Self::normalize_named_types(&applied, &id_to_name),
-                )
+                // Ids kept: monomorphization spells a name only where it builds
+                // a symbol or a copied declaration (#1393).
+                type_defs::TypeBinding::new(name.clone(), applied)
             }).collect();
             let unsettled = |b: &type_defs::TypeBinding| Self::contains_type_var(&b.ty);
             let fully_resolved = !resolved.iter().any(unsettled);
@@ -1014,6 +1046,9 @@ impl TypeChecker {
             channel_send_sites: self.channel_send_sites,
             inferred_fn_ret,
             inferred_fn_params,
+            derived_decls: self.derived_decls,
+            wrapper_eq_calls: self.wrapper_eq_calls,
+            wrapper_fns: self.wrapper_fns,
         };
 
         (program, errors)
@@ -1145,20 +1180,25 @@ impl Default for TypeChecker {
 // Public API
 // ============================================================================
 
+///
+/// Takes the declarations mutably to add the ones the checker wrote
+/// (`TypedProgram::attach_derived`): every caller goes on to read every body.
 pub fn typecheck(
     resolved: ResolvedProgram,
-    decls: &[Decl],
+    decls: &mut Vec<Decl>,
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
-    checker.check(decls)
+    let mut typed = checker.check(decls)?;
+    typed.attach_derived(decls);
+    Ok(typed)
 }
 
 /// Typecheck with stdlib type/method declarations registered but not body-checked.
 pub fn typecheck_with_stdlib(
     resolved: ResolvedProgram,
-    decls: &[Decl],
+    decls: &mut Vec<Decl>,
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
@@ -1169,7 +1209,9 @@ pub fn typecheck_with_stdlib(
     checker.types.stdlib_mode = true;
     checker.collect_type_declarations(stdlib_decls);
     checker.types.stdlib_mode = false;
-    checker.check(decls)
+    let mut typed = checker.check(decls)?;
+    typed.attach_derived(decls);
+    Ok(typed)
 }
 
 /// Lenient typecheck: always returns the (partial) TypedProgram plus errors.
@@ -1180,7 +1222,7 @@ pub fn typecheck_with_stdlib(
 /// instead of fixing them one category at a time.
 pub fn typecheck_with_stdlib_lenient(
     resolved: ResolvedProgram,
-    decls: &[Decl],
+    decls: &mut Vec<Decl>,
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> (TypedProgram, Vec<TypeError>) {
@@ -1206,5 +1248,7 @@ pub fn typecheck_with_stdlib_lenient(
         .filter(|d| matches!(d.kind,
             rask_ast::decl::DeclKind::Fn(_) | rask_ast::decl::DeclKind::Impl(_)))
         .collect();
-    checker.check_lenient_with_stdlib(&bodies, decls)
+    let (mut typed, errors) = checker.check_lenient_with_stdlib(&bodies, decls);
+    typed.attach_derived(decls);
+    (typed, errors)
 }

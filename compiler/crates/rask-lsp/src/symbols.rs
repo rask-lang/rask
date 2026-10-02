@@ -87,9 +87,9 @@ fn decl_to_symbol(decl: &Decl, source: &str, idx: &LineIndex) -> Option<Document
 }
 
 fn impl_name(i: &ImplDecl) -> String {
-    match &i.interface_name {
-        None => i.target_ty.clone(),
-        Some(t) => format!("{} implements {}", i.target_ty, t),
+    match &i.interface {
+        None => i.target_ty.source(),
+        Some(t) => format!("{} implements {}", i.target_ty.source(), t.source()),
     }
 }
 
@@ -97,7 +97,7 @@ fn struct_children(s: &StructDecl, source: &str, idx: &LineIndex) -> Vec<Documen
     let mut children = Vec::new();
     for field in &s.fields {
         let range = idx.span_to_range(source, field.name_span);
-        children.push(symbol(&field.name, Some(field.ty.clone()), SymbolKind::FIELD, range, None));
+        children.push(symbol(&field.name, Some(field.ty.source()), SymbolKind::FIELD, range, None));
     }
     for m in &s.methods {
         let range = idx.span_to_range(source, m.span);
@@ -136,10 +136,13 @@ fn impl_children(i: &ImplDecl, source: &str, idx: &LineIndex) -> Vec<DocumentSym
 
 fn f_detail(f: &FnDecl) -> Option<String> {
     let params = f.params.iter()
-        .map(|p| format!("{}: {}", p.name, p.ty))
+        .map(|p| match &p.ty {
+            Some(ty) => format!("{}: {}", p.name, ty.source()),
+            None => p.name.clone(),
+        })
         .collect::<Vec<_>>()
         .join(", ");
-    let ret = f.ret_ty.clone().unwrap_or_default();
+    let ret = f.ret_ty.as_ref().map(|t| t.source()).unwrap_or_default();
     Some(if ret.is_empty() {
         format!("({})", params)
     } else {

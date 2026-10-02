@@ -141,7 +141,7 @@ impl<'a> MirLowerer<'a> {
                     .ctx
                     .type_names
                     .get(base)
-                    .is_some_and(|n| n.split('<').next() == Some("Vec")) =>
+                    .is_some_and(|n| n == "Vec") =>
             {
                 return true;
             }
@@ -155,7 +155,7 @@ impl<'a> MirLowerer<'a> {
                 if meta.type_prefix.as_deref() == Some("Vec") {
                     return true;
                 }
-                if meta.full_type.as_deref().is_some_and(|t| t.trim_start().starts_with("Vec")) {
+                if meta.full_type.as_ref().is_some_and(|t| t.name().as_deref() == Some("Vec")) {
                     return true;
                 }
             }
@@ -194,8 +194,8 @@ impl<'a> MirLowerer<'a> {
             if typed_iterator {
                 return true;
             }
-            if self.meta(name).and_then(|m| m.full_type.as_deref())
-                .is_some_and(|t| t.trim_start().starts_with("Iterator"))
+            if self.meta(name).and_then(|m| m.full_type.as_ref())
+                .is_some_and(|t| t.name().as_deref() == Some("Iterator"))
             {
                 return true;
             }
@@ -458,13 +458,13 @@ impl<'a> MirLowerer<'a> {
             }
             _ => return false,
         };
-        name.split('<').next().unwrap_or(&name).trim() == "Iterator"
+        name.as_str().trim() == "Iterator"
     }
 
     fn prefix_is(prefix: &Option<String>, want: &str) -> bool {
         prefix
             .as_deref()
-            .is_some_and(|p| p.split('<').next().unwrap_or(p).trim() == want)
+            .is_some_and(|p| p.trim() == want)
     }
 
     /// `m.modify_with_default(k, || default, f)`: insert the default when `k`
@@ -1277,7 +1277,7 @@ impl<'a> MirLowerer<'a> {
                             scalar_mutate_params: Vec::new(),
                             aggregate_mutate_params: Vec::new(),
                             ret_vec_elem: None,
-                            param_ty_strs: Vec::new(),
+                            param_tys: Vec::new(),
                         },
                     );
                 }
@@ -2283,7 +2283,7 @@ impl<'a> MirLowerer<'a> {
             scalar_mutate_params: Vec::new(),
             aggregate_mutate_params: Vec::new(),
             ret_vec_elem: None,
-            param_ty_strs: Vec::new(),
+            param_tys: Vec::new(),
         });
         self.synthesized_functions.push(wb.finish());
 

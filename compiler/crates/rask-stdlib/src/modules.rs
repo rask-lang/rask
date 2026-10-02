@@ -201,7 +201,7 @@ pub fn enum_decls() -> &'static HashMap<String, rask_ast::decl::EnumDecl> {
         StubRegistry::all_type_decls()
             .into_iter()
             .filter_map(|decl| match decl.kind {
-                DeclKind::Enum(e) => Some((base_name(&e.name), e)),
+                DeclKind::Enum(e) => Some((e.name.to_string(), e)),
                 _ => None,
             })
             .collect()
@@ -228,7 +228,7 @@ pub fn impl_methods() -> &'static HashMap<String, Vec<rask_ast::decl::FnDecl>> {
         let mut out: HashMap<String, Vec<rask_ast::decl::FnDecl>> = HashMap::new();
         for decl in StubRegistry::all_type_decls() {
             let DeclKind::Impl(i) = decl.kind else { continue };
-            let target = base_name(&i.target_ty);
+            let target = i.target_ty.name().unwrap_or_default();
             if !enums.contains_key(&target) {
                 continue;
             }
@@ -256,7 +256,7 @@ fn derived() -> HashMap<String, ModuleExports> {
     for decl in StubRegistry::all_type_decls() {
         if let DeclKind::Enum(e) = &decl.kind {
             variants.insert(
-                base_name(&e.name),
+                e.name.to_string(),
                 e.variants.iter().map(|v| v.name.clone()).collect(),
             );
         }
@@ -290,10 +290,6 @@ fn type_module(name: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn base_name(name: &str) -> String {
-    name.split('<').next().unwrap_or(name).to_string()
-}
-
 static EMPTY: OnceLock<ModuleExports> = OnceLock::new();
 
 /// What `module` brings into scope. Empty for an unknown module.
@@ -308,22 +304,16 @@ pub fn exports_type(module: &str, name: &str) -> bool {
     exports(module).exports_type(name)
 }
 
-/// `time.Duration` → `Duration`: drop the module a type is reached through.
+/// `time.Duration` → `Duration`: drop the module a dotted name is reached
+/// through.
 ///
 /// A module import binds the module and nothing else (structure.modules/IM1), so
-/// the qualified spelling is the ordinary way to write a stdlib type in a type
-/// position, and the checker has to reduce it to the same name the bare spelling
-/// gives. The question is asked here, next to the module list it's asked against.
+/// the qualified spelling is the ordinary way to write a stdlib type, and the
+/// checker has to reduce it to the same name the bare spelling gives.
 ///
 /// Only the head is dropped, and only when it names a real module — a wrong strip
 /// here changes which type resolves, and `c.Rect` names the C namespace's struct
-/// while bare `Rect` names nothing (#948). Monomorphization's `parse_field_type`
-/// takes the last segment unconditionally instead, because a namespace says
-/// nothing about a type's size and what it replaces there is a guess.
-///
-/// `Vec<os.Output>` splits at the first dot into `Vec<os`, which is not a module,
-/// so the outer type is left alone and the argument is stripped when the parser
-/// recurses into it.
+/// while bare `Rect` names nothing (#948).
 pub fn strip_module_qualifier(ty: &str) -> &str {
     let Some((head, tail)) = ty.split_once('.') else { return ty };
     let plain = !head.is_empty() && head.chars().all(|c| c.is_alphanumeric() || c == '_');

@@ -111,19 +111,15 @@ pub fn decode_wrapper(tag: i64) -> Option<(Wrapper, i64, i64)> {
     Some((kind, ok, err))
 }
 
-/// The tag for an element that *is* a container.
+/// The tag for an element that *is* a container, from its type's head name.
 ///
 /// MIR types a nested container as `Ptr`, which is what every pointer is — so
 /// `tag_of` can't tell `Map<string, Vec<i32>>`'s values from a raw address and
-/// answered "owns nothing". The checker's type knows, so this takes the
-/// rendered name. `Vec<i64>?` and `Vec<i64> or E` are wrappers around the
-/// handle rather than the handle, and a `Rack` is an arena whose nodes outlive
-/// any one element (mem.racks).
-pub fn container_tag(rendered: &str) -> Option<i64> {
-    if rendered.ends_with('?') || rendered.contains(" or ") {
-        return None;
-    }
-    match rendered.split('<').next().unwrap_or(rendered).trim() {
+/// answered "owns nothing". The checker's type knows. A `Rack` is an arena whose
+/// nodes outlive any one element (mem.racks), and an optional or a result has no
+/// head name, so a wrapper around a container is never mistaken for one.
+pub fn container_tag(head: &str) -> Option<i64> {
+    match head {
         "Vec" => Some(ELEM_VEC),
         "Map" => Some(ELEM_MAP),
         _ => None,
@@ -157,33 +153,20 @@ pub const BOX_PAYLOAD_CLOSURE: i64 = 3;
 /// its own release, and the runtime calls that (#1302).
 pub const BOX_PAYLOAD_BOX: i64 = 4;
 
-/// The payload kind for a rendered type name.
-pub fn box_payload_kind(rendered: &str) -> i64 {
-    match container_tag(rendered) {
-        Some(ELEM_VEC) => BOX_PAYLOAD_VEC,
-        Some(ELEM_MAP) => BOX_PAYLOAD_MAP,
-        _ if is_box_type(rendered) => BOX_PAYLOAD_BOX,
-        _ => BOX_PAYLOAD_NONE,
-    }
-}
-
-fn is_box_type(rendered: &str) -> bool {
-    !rendered.ends_with('?')
-        && !rendered.contains(" or ")
-        && rendered.split('<').next().unwrap_or(rendered).trim() == "Shared"
-}
-
-/// The payload kind for a checker type, with its rendered head where it has
-/// one.
+/// The payload kind for a checker type and its head name.
 ///
-/// A function type has no head name to render — `head_name` answers `None` for
-/// it — so asking by string alone could only ever say `NONE`, and every
-/// `Shared.local(|x| …)` leaked the closure.
-pub fn box_payload_kind_of(ty: &rask_types::Type, rendered_head: Option<&str>) -> i64 {
+/// A function type has no head name, so asking by name alone could only ever say
+/// `NONE`, and every `Shared.local(|x| …)` leaked the closure.
+pub fn box_payload_kind_of(ty: &rask_types::Type, head: Option<&str>) -> i64 {
     if matches!(ty, rask_types::Type::Fn { .. }) {
         return BOX_PAYLOAD_CLOSURE;
     }
-    rendered_head.map(box_payload_kind).unwrap_or(BOX_PAYLOAD_NONE)
+    match head.and_then(container_tag) {
+        Some(ELEM_VEC) => BOX_PAYLOAD_VEC,
+        Some(ELEM_MAP) => BOX_PAYLOAD_MAP,
+        _ if head == Some("Shared") => BOX_PAYLOAD_BOX,
+        _ => BOX_PAYLOAD_NONE,
+    }
 }
 
 /// Which `Map` constructor a key type wants.
@@ -289,6 +272,8 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Map_with_capacity_string_keys", 3, 2, "Map_free"),
     ("Map_with_capacity_link_keys", 3, 2, "Map_free"),
     ("Map_new_link_keys", 2, 2, "Map_free"),
+    ("Map_new_keyed", 4, 2, "Map_free"),
+    ("Map_with_capacity_keyed", 5, 2, "Map_free"),
     // `keys`, `values` and `entries` walk a map and hand back a fresh Vec of
     // what they found — a `Map_` name with a `Vec` result, which is why the
     // free is written down rather than read off the prefix.

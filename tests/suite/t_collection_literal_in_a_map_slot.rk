@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `[a, b]` takes its shape from the slot it fills, std.collections/C9 (#1388).
+//
+// A method's parameter isn't known where its arguments are typed, so the slot
+// is read off the declaration with the receiver's type arguments put in. That
+// used to stop at non-generic receivers, and #1233 patched `Vec<Vec<T>>` alone
+// on top, so a `Map` whose values are collections still rejected the literal:
+//
+//     index.insert("a", [1, 2])   // expected `Vec<i64>`, found `[i32; 2]`
+//
+// `bag.add(…)` below also covers a lowering bug the same file turned up: a
+// method a program writes as `add` on a generic struct over a `Vec` was lowered
+// as the `+` instruction, and the call vanished.
+
+struct Bag<T> {
+    items: Vec<T>
+}
+
+extend Bag<T> {
+    func add(mutate self, take item: T) {
+        self.items.push(item)
+    }
+}
+
+test "a Map's value slot" {
+    mut index: Map<string, Vec<i64>> = Map.new()
+    index.insert("a", [1, 2])
+    index.insert("b", [3])
+    assert index.len() == 2
+    assert index.get_clone("a")!.len() == 2
+}
+
+test "a Map's key slot" {
+    mut seen: Map<Vec<i64>, string> = Map.new()
+    seen.insert([1, 2], "pair")
+    assert seen.len() == 1
+}
+
+test "a user generic's slot" {
+    mut bag = Bag<Vec<i64>> { items: Vec.new() }
+    bag.add([4, 5, 6])
+    assert bag.items[0].len() == 3
+}
+
+test "a Vec's slot at a later position" {
+    mut vv: Vec<Vec<i64>> = Vec.new()
+    vv.push([1])
+    vv.insert(0, [7, 8])
+    assert vv[0][1] == 8
+}

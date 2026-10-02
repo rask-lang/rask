@@ -5,7 +5,7 @@
 //! from_* → returns Self, into_* → takes self, is_* → returns bool, etc.
 
 use rask_ast::decl::*;
-use rask_ast::type_str;
+use rask_ast::ty::TypeExpr;
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 
@@ -14,7 +14,8 @@ use crate::util;
 
 /// Context for a method: which type it belongs to.
 struct MethodContext<'a> {
-    type_name: &'a str,
+    /// The type's name without its parameters.
+    type_name: String,
     method: &'a FnDecl,
     span: rask_ast::Span,
 }
@@ -28,7 +29,7 @@ fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
             DeclKind::Struct(s) => {
                 for m in &s.methods {
                     methods.push(MethodContext {
-                        type_name: &s.name,
+                        type_name: s.name.clone(),
                         method: m,
                         span: m.span,
                     });
@@ -37,7 +38,7 @@ fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
             DeclKind::Enum(e) => {
                 for m in &e.methods {
                     methods.push(MethodContext {
-                        type_name: &e.name,
+                        type_name: e.name.clone(),
                         method: m,
                         span: m.span,
                     });
@@ -46,7 +47,7 @@ fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
             DeclKind::Impl(imp) => {
                 for m in &imp.methods {
                     methods.push(MethodContext {
-                        type_name: &imp.target_ty,
+                        type_name: imp.target_ty.name().unwrap_or_default(),
                         method: m,
                         span: m.span,
                     });
@@ -84,6 +85,9 @@ fn make_diagnostic(
 }
 
 /// naming/from: `from_*` should return Self or Self or E.
+///
+/// A generic `from_value<T>(…) -> T` builds whatever `T` is, so its own type
+/// parameter stands where `Self` would.
 pub fn check_from(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
     let mut diags = Vec::new();
     for ctx in collect_methods(decls) {
@@ -91,15 +95,15 @@ pub fn check_from(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            let ret_lower = ret.to_lowercase();
             let type_lower = ctx.type_name.to_lowercase();
-            if !ret_lower.contains(&type_lower) && !ret.contains("Self") {
+            let own_param = |n: &str| ctx.method.type_params.iter().any(|p| p.name == n);
+            if !ret.mentions(&|n| n.to_lowercase() == type_lower || n == "Self" || own_param(n)) {
                 diags.push(make_diagnostic(
                     "naming/from",
                     Severity::Warning,
                     format!(
                         "`{}` should return `{}` or `{} or E`, found `{}`",
-                        ctx.method.name, ctx.type_name, ctx.type_name, ret
+                        ctx.method.name, ctx.type_name, ctx.type_name, ret.source()
                     ),
                     format!(
                         "change return type to `{}` or `{} or E`",
@@ -189,22 +193,25 @@ pub fn check_as(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 }
 
 /// A type that can be handed back without allocating.
-fn cheap_view_type(ret: &str) -> bool {
+fn cheap_view_type(ret: &TypeExpr) -> bool {
     const CHEAP: &[&str] = &[
         "bool", "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64",
         "u128", "f32", "f64", "char", "usize", "isize", "string", "StringView",
-        "Span", "()",
+        "Span",
     ];
-    // An optional over a cheap thing is still cheap — the flag costs nothing.
-    let bare = ret.trim().trim_end_matches('?').trim();
-    // A `Sequence<T>` walks the receiver in place, so the type argument doesn't
-    // change the answer.
-    let base = bare.split('<').next().unwrap_or(bare).trim();
-    // `*T` is a cast, `[]T` a view: both as cheap as it gets.
-    bare.starts_with('*')
-        || bare.starts_with("[]")
-        || CHEAP.contains(&bare)
-        || matches!(base, "Sequence" | "SequenceMut")
+    match ret {
+        // An optional over a cheap thing is still cheap — the flag costs nothing.
+        TypeExpr::Optional(inner) => cheap_view_type(inner),
+        // `*T` is a cast: as cheap as it gets.
+        TypeExpr::RawPtr(_) | TypeExpr::Unit => true,
+        // A `Sequence<T>` walks the receiver in place, so the type argument
+        // doesn't change the answer.
+        TypeExpr::Named { .. } => {
+            ret.bare_name().is_some_and(|n| CHEAP.contains(&n))
+                || matches!(ret.name().as_deref(), Some("Sequence" | "SequenceMut"))
+        }
+        _ => false,
+    }
 }
 
 /// Whether every `return` in the body hands back something that already exists
@@ -326,7 +333,7 @@ pub fn check_is(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            if ret != "bool" {
+            if !ret.is_name("bool") {
                 diags.push(make_diagnostic(
                     "naming/is",
                     Severity::Error,
@@ -351,11 +358,11 @@ pub fn check_is(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
                 continue;
             }
             if let Some(ret) = &f.ret_ty {
-                if ret != "bool" {
+                if !ret.is_name("bool") {
                     diags.push(make_diagnostic(
                         "naming/is",
                         Severity::Error,
-                        format!("`{}` must return `bool`, found `{}`", f.name, ret),
+                        format!("`{}` must return `bool`, found `{}`", f.name, ret.source()),
                         "change return type to `bool`, or rename to remove the `is_` prefix"
                             .to_string(),
                         source,
@@ -377,7 +384,7 @@ pub fn check_with(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            if ret != ctx.type_name && ret != "Self" {
+            if ret.name().as_deref() != Some(ctx.type_name.as_str()) && !ret.is_name("Self") {
                 diags.push(make_diagnostic(
                     "naming/with",
                     Severity::Warning,
@@ -399,10 +406,9 @@ pub fn check_with(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
 ///
 /// The optional arrives rendered as `Option<T>` as well as `T?`, depending on
 /// where it was written.
-fn answers_whether_it_worked(ret: &str) -> bool {
-    type_str::is_result(ret)
-        || type_str::is_optional(ret)
-        || ret.trim().starts_with("Option<")
+fn answers_whether_it_worked(ret: &TypeExpr) -> bool {
+    matches!(ret, TypeExpr::Result { .. } | TypeExpr::Optional(_))
+        || ret.name().as_deref() == Some("Option")
 }
 
 /// naming/try: `try_*` answers whether it worked — `T or E`, or `T?` when
@@ -432,7 +438,7 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
                     format!(
                         "`{}` must say whether it worked — `T or E`, or `T?` when \
                          there is no error to report. Found `{}`",
-                        ctx.method.name, type_str::to_source(ret)
+                        ctx.method.name, ret.source()
                     ),
                     "change return type to `T or E`, or `T?`".to_string(),
                     source,
@@ -456,7 +462,7 @@ pub fn check_try(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
                         format!(
                             "`{}` must say whether it worked — `T or E`, or `T?` when \
                              there is no error to report. Found `{}`",
-                            f.name, type_str::to_source(ret)
+                            f.name, ret.source()
                         ),
                         "change return type to `T or E`, or `T?`".to_string(),
                         source,
@@ -478,13 +484,13 @@ pub fn check_or_suffix(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
             continue;
         }
         if let Some(ret) = &ctx.method.ret_ty {
-            if type_str::is_result(ret) || type_str::is_optional(ret) {
+            if matches!(ret, TypeExpr::Result { .. } | TypeExpr::Optional(_)) {
                 diags.push(make_diagnostic(
                     "naming/or_suffix",
                     Severity::Warning,
                     format!(
                         "`{}` should return unwrapped `T`, found `{}`",
-                        ctx.method.name, type_str::to_source(ret)
+                        ctx.method.name, ret.source()
                     ),
                     "return the unwrapped value type — `*_or` provides a fallback".to_string(),
                     source,

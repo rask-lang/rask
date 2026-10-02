@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Symbol definitions and symbol table.
 
+use rask_ast::ty::TypeExpr;
 use rask_ast::Span;
 use crate::package::PackageId;
 
@@ -28,8 +29,8 @@ pub enum SymbolKind {
     Function {
         /// SymbolIds of parameters.
         params: Vec<SymbolId>,
-        /// Return type as a string (for now).
-        ret_ty: Option<String>,
+        /// Return type as written.
+        ret_ty: Option<TypeExpr>,
         /// Whether this is an `unsafe func`.
         is_unsafe: bool,
     },
@@ -37,10 +38,10 @@ pub enum SymbolKind {
     ExternFunction {
         /// ABI string (e.g., "C").
         abi: String,
-        /// Parameter type strings.
-        params: Vec<String>,
-        /// Return type as a string (None = void).
-        ret_ty: Option<String>,
+        /// Parameter types as written.
+        params: Vec<TypeExpr>,
+        /// Return type as written (None = void).
+        ret_ty: Option<TypeExpr>,
     },
     /// A struct type.
     Struct {
@@ -61,8 +62,8 @@ pub enum SymbolKind {
     Interface {
         /// Method SymbolIds.
         methods: Vec<SymbolId>,
-        /// Super-interface names.
-        super_interfaces: Vec<String>,
+        /// Super-interfaces as written.
+        super_interfaces: Vec<TypeExpr>,
     },
     /// A struct field.
     Field {
@@ -91,8 +92,8 @@ pub enum SymbolKind {
     },
     /// A type alias.
     TypeAlias {
-        /// The target type name.
-        target: String,
+        /// The target type as written.
+        target: TypeExpr,
         /// Bound by `import m.T as A` rather than by a `type alias` declaration.
         ///
         /// The two have to be told apart. An aliased import is transparent — `A`
@@ -267,18 +268,11 @@ pub fn module_builtin_type(module: &str, name: &str) -> Option<BuiltinTypeKind> 
         .map(|t| t.kind)
 }
 
-/// The compiler-provided types `module` brings into scope.
-pub fn module_builtin_types(module: &str) -> impl Iterator<Item = &'static BuiltinTypeEntry> + use<'_> {
-    BUILTIN_TYPES.iter().filter(move |t| t.module == Some(module))
-}
-
 /// A builtin function, the name it's in scope under, and whether a program may
 /// declare its own.
 pub struct BuiltinFnEntry {
     pub name: &'static str,
     pub kind: BuiltinFunctionKind,
-    /// Return type as the resolver records it — `"!"` for the diverging ones.
-    pub ret_ty: Option<&'static str>,
     /// BF3 refuses a program's own declaration of this name.
     ///
     /// True for BF1's eight, which the compiler knows the signatures of and
@@ -292,30 +286,29 @@ pub struct BuiltinFnEntry {
 const fn bf(
     name: &'static str,
     kind: BuiltinFunctionKind,
-    ret_ty: Option<&'static str>,
     reserved: bool,
 ) -> BuiltinFnEntry {
-    BuiltinFnEntry { name, kind, ret_ty, reserved }
+    BuiltinFnEntry { name, kind, reserved }
 }
 
 /// Functions in scope with no import. The `reserved` ones are BF1's, which BF3
 /// won't let a program redeclare.
 pub const BUILTIN_FUNCTIONS: &[BuiltinFnEntry] = &[
-    bf("println", BuiltinFunctionKind::Println, None, true),
-    bf("print", BuiltinFunctionKind::Print, None, true),
-    bf("panic", BuiltinFunctionKind::Panic, Some("!"), true),
-    bf("format", BuiltinFunctionKind::Format, None, true),
-    bf("todo", BuiltinFunctionKind::Todo, Some("!"), true),
-    bf("unreachable", BuiltinFunctionKind::Unreachable, Some("!"), true),
-    bf("transmute", BuiltinFunctionKind::Transmute, None, true),
+    bf("println", BuiltinFunctionKind::Println, true),
+    bf("print", BuiltinFunctionKind::Print, true),
+    bf("panic", BuiltinFunctionKind::Panic, true),
+    bf("format", BuiltinFunctionKind::Format, true),
+    bf("todo", BuiltinFunctionKind::Todo, true),
+    bf("unreachable", BuiltinFunctionKind::Unreachable, true),
+    bf("transmute", BuiltinFunctionKind::Transmute, true),
     // `spawn` is BF1's eighth. It's registered by `async`'s companions rather
     // than here, because `spawn(|| …)` needs `using Multitasking` in scope.
-    bf("min", BuiltinFunctionKind::Min, None, false),
-    bf("max", BuiltinFunctionKind::Max, None, false),
-    bf("clamp", BuiltinFunctionKind::Clamp, None, false),
-    bf("skip", BuiltinFunctionKind::Skip, Some("!"), false),
-    bf("expect_fail", BuiltinFunctionKind::ExpectFail, None, false),
-    bf("drop", BuiltinFunctionKind::Drop, None, false),
+    bf("min", BuiltinFunctionKind::Min, false),
+    bf("max", BuiltinFunctionKind::Max, false),
+    bf("clamp", BuiltinFunctionKind::Clamp, false),
+    bf("skip", BuiltinFunctionKind::Skip, false),
+    bf("expect_fail", BuiltinFunctionKind::ExpectFail, false),
+    bf("drop", BuiltinFunctionKind::Drop, false),
 ];
 
 /// BF1's set — the names BF3 reserves.
@@ -399,7 +392,7 @@ pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
     /// Type annotation, if any.
-    pub ty: Option<String>,
+    pub ty: Option<TypeExpr>,
     /// Where this symbol was declared.
     pub span: Span,
     /// Whether this symbol is public.
@@ -418,7 +411,7 @@ impl SymbolTable {
     }
 
     /// Insert a new symbol and return its ID.
-    pub fn insert(&mut self, name: String, kind: SymbolKind, ty: Option<String>, span: Span, is_pub: bool) -> SymbolId {
+    pub fn insert(&mut self, name: String, kind: SymbolKind, ty: Option<TypeExpr>, span: Span, is_pub: bool) -> SymbolId {
         let id = SymbolId(self.symbols.len() as u32);
         self.symbols.push(Symbol {
             id,

@@ -30,6 +30,8 @@
 
 use std::collections::HashMap;
 
+use rask_ast::ty::TypeExpr;
+
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 use rask_ast::qualify::{self, declared_name};
@@ -175,40 +177,12 @@ impl ReferenceQualifier<'_> {
 }
 
 impl Rewrite for ReferenceQualifier<'_> {
-    fn ty(&mut self, t: &mut String) {
-        // `libpkg.Cat`, anywhere inside a written type. Word-level again, but
-        // the word to match is two words and a dot.
-        let mut out = String::with_capacity(t.len());
-        let mut rest = t.as_str();
-        while let Some(dot) = rest.find('.') {
-            let (head, tail) = rest.split_at(dot);
-            let pkg_start = head.len() - ident_suffix_len(head);
-            let after = &tail[1..];
-            let name_len = ident_prefix_len(after);
-            let pkg = &head[pkg_start..];
-            let name = &after[..name_len];
-            match (pkg.is_empty() || name.is_empty()).then_some(()) {
-                Some(()) => {
-                    out.push_str(head);
-                    out.push('.');
-                    rest = after;
-                }
-                None => match self.resolve(pkg, name) {
-                    Some(q) => {
-                        out.push_str(&head[..pkg_start]);
-                        out.push_str(q);
-                        rest = &after[name_len..];
-                    }
-                    None => {
-                        out.push_str(head);
-                        out.push('.');
-                        rest = after;
-                    }
-                },
-            }
-        }
-        out.push_str(rest);
-        *t = out;
+    fn ty(&mut self, t: &mut TypeExpr) {
+        // `libpkg.Cat`, anywhere inside a written type.
+        *t = t.substitute_paths(&|path| match path {
+            [pkg, name] => self.resolve(pkg, name).map(|q| vec![q.clone()]),
+            _ => None,
+        });
     }
 
     fn expr(&mut self, e: &mut Expr) {
@@ -233,9 +207,10 @@ impl Rewrite for ReferenceQualifier<'_> {
                 None => None,
             },
             // `libpkg.Cat { … }` — the parser keeps the package in the name.
-            ExprKind::StructLit { name, fields, spread } => match name.split_once('.') {
+            ExprKind::StructLit { name, type_args, fields, spread } => match name.split_once('.') {
                 Some((pkg, tail)) => self.resolve(pkg, tail).map(|q| ExprKind::StructLit {
                     name: q.clone(),
+                    type_args: type_args.clone(),
                     fields: fields.clone(),
                     spread: spread.clone(),
                 }),
@@ -281,21 +256,6 @@ fn package_binding(object: &Expr) -> Option<&str> {
 /// about the rewritten call still points at what was written.
 fn ident_like(at: &Expr, name: &str) -> Expr {
     Expr { id: at.id, span: at.span, kind: ExprKind::Ident(name.to_string()) }
-}
-
-fn ident_prefix_len(s: &str) -> usize {
-    s.chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .map(char::len_utf8)
-        .sum()
-}
-
-fn ident_suffix_len(s: &str) -> usize {
-    s.chars()
-        .rev()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .map(char::len_utf8)
-        .sum()
 }
 
 /// Write a dependency's names back the way the program spells them, in every

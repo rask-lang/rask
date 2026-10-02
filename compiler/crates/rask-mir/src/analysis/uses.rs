@@ -35,6 +35,7 @@ fn visit_rvalue_uses(rv: &MirRValue, f: &mut impl FnMut(LocalId)) {
     match rv {
         MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_uses(o, f),
         MirRValue::Ref(id) => f(*id),
+        MirRValue::FuncAddr(_) => {}
         MirRValue::BinaryOp { left, right, .. } => {
             visit_operand_uses(left, f);
             visit_operand_uses(right, f);
@@ -121,6 +122,7 @@ fn visit_rvalue_locals_mut(rv: &mut MirRValue, f: &mut impl FnMut(&mut LocalId, 
     match rv {
         MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_local_mut(o, f),
         MirRValue::Ref(id) => f(id, UseKind::AddressOf),
+        MirRValue::FuncAddr(_) => {}
         MirRValue::BinaryOp { left, right, .. } => {
             visit_operand_local_mut(left, f);
             visit_operand_local_mut(right, f);

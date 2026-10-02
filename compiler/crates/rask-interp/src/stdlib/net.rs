@@ -3,12 +3,11 @@
 //!
 //! Layer: RUNTIME — socket operations require OS access.
 
-use indexmap::IndexMap;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{MapData, MapKey, Value};
+use crate::value::Value;
 
 /// Build a Result.Ok(value).
 fn make_result_ok(value: Value) -> Value {

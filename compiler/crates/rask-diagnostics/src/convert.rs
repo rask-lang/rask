@@ -555,7 +555,7 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             ForeignCoreConformance {
-                ty, interface_name, owner, here, encoding, span, declared_at,
+                ty, type_name, interface_name, owner, here, encoding, span, declared_at,
             } => {
                 // A builtin belongs to the standard library, and the program
                 // that extends it belongs to nobody in particular when the
@@ -568,8 +568,7 @@ impl ToDiagnostic for rask_types::TypeError {
                     Some(p) => format!("`{}`", p),
                     None => "this program".to_string(),
                 };
-                let bare = ty.rsplit('.').next().unwrap_or(ty);
-                let bare = bare.split('<').next().unwrap_or(bare);
+                let bare = type_name;
                 let mut d = if *encoding {
                     Diagnostic::error(format!("only {} can make `{}` {}", owner_name, ty,
                         if interface_name.starts_with("Decode") { "decodable" } else { "encodable" }))
@@ -735,18 +734,16 @@ impl ToDiagnostic for rask_types::TypeError {
                         "for everything else. Mixed signedness is the one deliberate ",
                         "exception here [type.operators/ORD4]",
                     ).to_string())
-                } else if r.contains(" or ") || r.ends_with('?') {
+                } else if let Some(inner) = match right {
+                    rask_types::Type::Result { ok, .. } => Some(ok.to_string()),
+                    t if t.is_option() => t.as_option().map(|i| i.to_string()),
+                    _ => None,
+                } {
                     // A `T or E` or a `T?` as an operand. "Give it the
                     // operator" is nonsense for a wrapper — nobody extends
                     // `i64 or ParseError`. The answer is always to extract the
                     // value first, which is what these wrappers exist to make
                     // you do.
-                    let inner = r
-                        .split(" or ")
-                        .next()
-                        .unwrap_or(&r)
-                        .trim_end_matches('?')
-                        .to_string();
                     diag.with_fix(format!(
                         "take the value out first — `try expr`, `expr!`, or a `match` \
                          arm binding the `{inner}` — then apply `{op}` to that"
@@ -839,7 +836,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 // `Heap` has no methods at all, so "check available methods on
                 // `Heap`" is a dead end. Allocation is an operator and reading
                 // is a dereference — say that instead (mem.heap/HP3).
-                if ty_name.split('<').next() == Some("Heap") {
+                if matches!(ty, rask_types::Type::UnresolvedGeneric { name, .. } | rask_types::Type::UnresolvedNamed(name) if name == "Heap") {
                     return diag
                         .with_help("`Heap` has no methods — `Heap(expr)` allocates and `*ptr` reads")
                         .with_fix("let ptr = Heap(expr)")
@@ -899,7 +896,7 @@ impl ToDiagnostic for rask_types::TypeError {
                      surfacing later as a missing function during codegen"
                 )
             }
-            NotDisplayable { ty, interpolated, span } => {
+            NotDisplayable { ty, is_collection, is_wrapper, interpolated, span } => {
                 let site = if *interpolated { "this placeholder" } else { "this call" };
                 let mut diag = Diagnostic::error(format!(
                     "`{}` does not implement `Displayable`",
@@ -915,11 +912,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 ));
                 // A container or tuple can't be extended, and doesn't want to
                 // be — `{v:debug}` already renders it (std.fmt/G2).
-                let is_container = ty.starts_with('(')
-                    || ty.starts_with('[')
-                    || ["Vec", "Map", "Set", "Rack", "Iterator"]
-                        .iter()
-                        .any(|n| ty.starts_with(n) && ty[n.len()..].starts_with('<'));
+                let is_container = *is_collection;
                 // The cases have genuinely different fixes.
                 if is_container {
                     diag = diag
@@ -928,7 +921,7 @@ impl ToDiagnostic for rask_types::TypeError {
                             ty
                         ))
                         .with_fix("ask for the debug view: `{value:debug}`");
-                } else if ty.ends_with('?') || ty.contains(" or ") {
+                } else if *is_wrapper {
                     diag = diag
                         .with_help(format!(
                             "{} holds a `{}`, which may not have a value to show",
@@ -2087,7 +2080,7 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             MethodOutsideInterface { ty, interface_name, method, span } => {
-                let base = interface_name.split('<').next().unwrap_or(interface_name);
+                let base = interface_name;
                 Diagnostic::error(format!("`{}` is not part of `{}`", method, base))
                     .with_code("E0893")
                     .with_primary(*span, format!("`{}` doesn't ask for this", base))
@@ -2096,7 +2089,7 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
             InterfaceArity { interface_name, params, expected, found, span } => {
-                let base = interface_name.split('<').next().unwrap_or(interface_name);
+                let base = interface_name;
                 let written = if *expected == 1 { "argument" } else { "arguments" };
                 let d = Diagnostic::error(format!(
                     "`{}` takes {} type {}, found {}",

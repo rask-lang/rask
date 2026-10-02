@@ -401,7 +401,6 @@ pub struct RackData {
     pub slots: Vec<Option<Arc<Mutex<StructData>>>>,
     pub free_list: Vec<u32>,
     pub len: usize,
-    pub type_param: Option<String>,
     /// Incoming edges per node: who points at me. This is what makes `delete`
     /// cost O(in-degree) instead of a scan.
     /// Keyed by slot so registration and unlinking are both O(1) — a hub with
@@ -425,16 +424,11 @@ impl RackData {
             slots: Vec::new(),
             free_list: Vec::new(),
             len: 0,
-            type_param: None,
             incoming: HashMap::new(),
             slot_of: HashMap::new(),
             origin_id: None,
             origin: HashMap::new(),
         }
-    }
-
-    pub fn with_type_param(type_param: Option<String>) -> Self {
-        Self { type_param, ..Self::new() }
     }
 
     /// Insert a node, returning its slot index.
@@ -545,6 +539,38 @@ pub enum TypeConstructorKind {
     Mutex,
     Atomic,
     Ordering,
+}
+
+impl TypeConstructorKind {
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "Vec" => Self::Vec,
+            "Map" => Self::Map,
+            "string" => Self::String,
+            "char" => Self::Char,
+            "Rack" => Self::Rack,
+            "Cell" => Self::Cell,
+            "Channel" => Self::Channel,
+            "Shared" => Self::Shared,
+            "Mutex" => Self::Mutex,
+            "Atomic" => Self::Atomic,
+            "Ordering" => Self::Ordering,
+            _ => return None,
+        })
+    }
+}
+
+impl Value {
+    /// What a type's name evaluates to. One answer however the name got into
+    /// scope: an import binding `Channel` used to get a plain `Type` while the
+    /// unimported spelling got the constructor, so `Channel.buffered(4)` broke
+    /// as soon as the program wrote `import async.{Channel}`.
+    pub fn for_type_name(name: &str) -> Value {
+        match TypeConstructorKind::from_name(name) {
+            Some(kind) => Value::TypeConstructor(kind),
+            None => Value::Type(name.to_string()),
+        }
+    }
 }
 
 /// Module kinds for stdlib modules.
@@ -884,15 +910,33 @@ pub struct StructData {
     pub resource_id: Option<u64>,
 }
 
-/// A Map key. Hash/Eq delegate to `Interpreter::value_hash`/`value_eq` — the
-/// same structural comparison every other Value equality check in the
-/// interpreter uses — so a key found by `==` is always the key a Map finds too.
+/// A Map key: the value, and what its type's own `hash` said about it.
+///
+/// The interpreter computes the hash when it builds the key
+/// (`Interpreter::map_key`), and finds a key by comparing candidates with the
+/// type's own `eq` (`Interpreter::map_index`) — the same two methods `==` and
+/// `.hash()` call, so a user's `Version implements Equal` decides what counts
+/// as the same key here as it does natively (#1391). The structural equality
+/// below is only what `IndexMap` falls back on when it inserts a key the
+/// interpreter already knows isn't there.
 #[derive(Debug, Clone)]
-pub struct MapKey(pub Value);
+pub struct MapKey {
+    pub value: Value,
+    pub hash: u64,
+}
+
+impl MapKey {
+    /// A string key, for the places that build a map without an interpreter
+    /// (JSON decoding). Same hash `string.hash()` answers.
+    pub fn string(s: String) -> MapKey {
+        let hash = crate::builtins::fnv1a(s.as_bytes());
+        MapKey { value: Value::String(Arc::new(Mutex::new(s))), hash }
+    }
+}
 
 impl PartialEq for MapKey {
     fn eq(&self, other: &Self) -> bool {
-        crate::interp::Interpreter::value_eq(&self.0, &other.0)
+        self.hash == other.hash && crate::interp::Interpreter::value_eq(&self.value, &other.value)
     }
 }
 
@@ -900,7 +944,7 @@ impl Eq for MapKey {}
 
 impl std::hash::Hash for MapKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64(crate::interp::Interpreter::value_hash(&self.0));
+        state.write_u64(self.hash);
     }
 }
 
@@ -937,12 +981,12 @@ fn map_order_seed() -> u64 {
 /// given key set within one process, but neither insertion order nor
 /// guessable across processes.
 pub fn map_entries_seeded(map: &MapData) -> Vec<(Value, Value)> {
-    let mut entries: Vec<(Value, Value)> = map.iter()
-        .map(|(k, v)| (k.0.clone(), v.clone()))
-        .collect();
     let seed = map_order_seed();
-    entries.sort_by_key(|(k, _)| crate::interp::Interpreter::value_hash(k) ^ seed);
-    entries
+    let mut entries: Vec<(u64, Value, Value)> = map.iter()
+        .map(|(k, v)| (k.hash ^ seed, k.value.clone(), v.clone()))
+        .collect();
+    entries.sort_by_key(|(order, _, _)| *order);
+    entries.into_iter().map(|(_, k, v)| (k, v)).collect()
 }
 
 /// A vector's elements plus its capacity bound (`std.collections/CP1-CP3`).
@@ -1051,10 +1095,7 @@ pub enum Value {
     /// `(1, "x")`, and "is this a tuple?" had no answer at all (#1063).
     Tuple(Arc<Vec<Value>>),
     /// Type constructor (for static method calls like Vec.new())
-    TypeConstructor {
-        kind: TypeConstructorKind,
-        type_param: Option<String>,
-    },
+    TypeConstructor(TypeConstructorKind),
     /// Enum variant constructor (e.g., Option.Some before calling with args)
     EnumConstructor {
         enum_name: String,
@@ -1384,7 +1425,7 @@ impl Value {
             Value::Vec(_) => "Vec",
             Value::Tuple(_) => "tuple",
             Value::Wide(_) => "Wide",
-            Value::TypeConstructor { .. } => "type",
+            Value::TypeConstructor(_) => "type",
             Value::EnumConstructor { .. } => "enum constructor",
             Value::Module(_) => "module",
             Value::Package(_) => "package",
@@ -1417,9 +1458,12 @@ impl Value {
         }
     }
 
-    /// Produce the default value for a type string (DF4).
-    pub fn default_for_type(ty: &str) -> Value {
-        match ty {
+    /// Produce the default value for a written type (DF4).
+    pub fn default_for_type(ty: &rask_ast::ty::TypeExpr) -> Value {
+        if *ty == rask_ast::ty::TypeExpr::Unit {
+            return Value::Unit;
+        }
+        match ty.bare_name().unwrap_or_default() {
             "i8" | "i16" | "i32" | "i64" | "int" | "isize" |
             "u8" => Value::Int(0, IntKind::U8),
             "u16" => Value::Int(0, IntKind::U16),
@@ -1432,7 +1476,6 @@ impl Value {
             "bool" => Value::Bool(false),
             "char" => Value::Char('\0'),
             "string" => Value::String(Arc::new(Mutex::new(String::new()))),
-            "()" => Value::Unit,
             _ => Value::Unit,
         }
     }
@@ -1524,7 +1567,7 @@ impl Value {
             Value::Map(m) => {
                 let map = m.lock().unwrap();
                 let deep: MapData = map.iter()
-                    .map(|(k, v)| (MapKey(k.0.deep_clone()), v.deep_clone()))
+                    .map(|(k, v)| (MapKey { value: k.value.deep_clone(), hash: k.hash }, v.deep_clone()))
                     .collect();
                 Value::Map(Arc::new(Mutex::new(deep)))
             }
@@ -1653,7 +1696,7 @@ impl fmt::Display for Value {
                 write!(f, ")")
             }
             Value::Wide(_) => write!(f, "<Wide plan>"),
-            Value::TypeConstructor { kind, type_param } => {
+            Value::TypeConstructor(kind) => {
                 let base_name = match kind {
                     TypeConstructorKind::Vec => "Vec",
                     TypeConstructorKind::Map => "Map",
@@ -1667,11 +1710,7 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Atomic => "Atomic",
                     TypeConstructorKind::Ordering => "Ordering",
                 };
-                if let Some(param) = type_param {
-                    write!(f, "{}<{}>", base_name, param)
-                } else {
-                    write!(f, "{}", base_name)
-                }
+                write!(f, "{}", base_name)
             },
             Value::EnumConstructor {
                 enum_name,

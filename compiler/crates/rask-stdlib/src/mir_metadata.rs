@@ -5,6 +5,7 @@
 //! of it for the two questions that aren't about layout. Keeps the stub files
 //! as the single source of truth for stdlib API shapes.
 
+use rask_ast::ty::TypeExpr;
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -99,14 +100,8 @@ pub struct StdlibMethodMeta {
     /// return type name one of the type's parameters? — now that MIR resolves
     /// the type string itself. See `ret_ty`.
     pub ret_category: RetCategory,
-    /// The stub's return type, verbatim.
-    ///
-    /// MIR's `resolve_type_str` already parses these, and does it properly: it
-    /// knows `f32` from `f64`, transparent aliases, arrays, unions, generic
-    /// instantiations, and which named stdlib types are word-sized runtime
-    /// handles. `RetCategory` was a second, coarser parser standing beside it
-    /// (#1025).
-    pub ret_ty: std::string::String,
+    /// The stub's return type as written.
+    pub ret_ty: TypeExpr,
     /// Type prefix of the return value (for local_type_prefix tracking).
     /// E.g., "fs_open" returns File → prefix "File".
     pub ret_type_prefix: Option<std::string::String>,
@@ -159,7 +154,7 @@ fn build_cache() -> MetadataCache {
 
         for method in reg.methods(type_name) {
             let qualified = format!("{}_{}", type_name, method.name);
-            let ret_cat = parse_ret_ty(&method.ret_ty);
+            let ret_cat = ret_category(&method.ret_ty);
             let ret_prefix = ret_type_prefix(&ret_cat);
             method_metas.push(StdlibMethodMeta {
                 qualified_name: qualified,
@@ -175,7 +170,7 @@ fn build_cache() -> MetadataCache {
 
     // Top-level functions (println, print, etc. are builtins — skip them)
     for func in reg.functions() {
-        let ret_cat = parse_ret_ty(&func.ret_ty);
+        let ret_cat = ret_category(&func.ret_ty);
         let ret_prefix = ret_type_prefix(&ret_cat);
         method_metas.push(StdlibMethodMeta {
             qualified_name: func.name.clone(),
@@ -877,111 +872,52 @@ pub fn borrows_receiver(qualified_name: &str) -> bool {
     matches!(internal_spelling(base), Some(Internal::FreshFromReceiver))
 }
 
-// ── Return type string parsing ──────────────────────────────────
+// ── Return types ─────────────────────────────────────────────────
 
-/// Parse a return type string from a stub into a RetCategory.
-///
-/// The parser transforms `T or E` syntax into `Result<T, E>`, so we
-/// handle both forms. Examples:
-///   "" → Void
-///   "()" → Void
-///   "bool" → Bool
-///   "string" → String
-///   "i64" → I64, "usize" / "u64" / "u8" / … → Int(width)
-///   "f64" / "f32" → F64
-///   "Result<File, IoError>" → Result { ok: Named("File"), err: Named("IoError") }
-///   "Result<(), IoError>" → Result { ok: Void, err: Named("IoError") }
-///   "Option<T>" → Option(I64)
-///   "T?" → Option(I64)
-///   "string?" → Option(String)
-///   "*u8" → Ptr
-fn parse_ret_ty(ret_ty: &str) -> RetCategory {
-    let s = ret_ty.trim();
-    if s.is_empty() || s == "()" {
-        return RetCategory::Void;
-    }
-
-    // "Result<T, E>" — parser transforms "T or E" into this form
-    if let Some(inner) = strip_generic(s, "Result") {
-        if let Some(comma) = find_top_level_comma(inner) {
-            let ok_str = inner[..comma].trim();
-            let err_str = inner[comma + 1..].trim();
-            return RetCategory::Result {
-                ok: Box::new(parse_simple_type(ok_str)),
-                err: Box::new(parse_simple_type(err_str)),
-            };
+/// What a stub's declared return type is, in the categories MIR asks about.
+fn ret_category(t: &TypeExpr) -> RetCategory {
+    match t {
+        TypeExpr::Unit => RetCategory::Void,
+        TypeExpr::Result { ok, err } => RetCategory::Result {
+            ok: Box::new(ret_category(ok)),
+            err: Box::new(ret_category(err)),
+        },
+        TypeExpr::Optional(inner) => RetCategory::Option(Box::new(ret_category(inner))),
+        TypeExpr::RawPtr(_) => RetCategory::Ptr,
+        TypeExpr::Tuple(parts) => RetCategory::Tuple(parts.iter().map(ret_category).collect()),
+        TypeExpr::Named { args, .. } if t.name().as_deref() == Some("Option") && args.len() == 1 => {
+            RetCategory::Option(Box::new(ret_category(&args[0])))
         }
-    }
-
-    // "T or E" pattern (in case raw syntax appears)
-    if let Some(idx) = find_or_keyword(s) {
-        let ok_str = s[..idx].trim();
-        let err_str = s[idx + 4..].trim();
-        return RetCategory::Result {
-            ok: Box::new(parse_simple_type(ok_str)),
-            err: Box::new(parse_simple_type(err_str)),
-        };
-    }
-
-    // "T?" shorthand for Option<T>
-    if s.ends_with('?') {
-        let inner = &s[..s.len() - 1];
-        return RetCategory::Option(Box::new(parse_simple_type(inner)));
-    }
-
-    // "Option<T>"
-    if let Some(inner) = strip_generic(s, "Option") {
-        return RetCategory::Option(Box::new(parse_simple_type(inner)));
-    }
-
-    parse_simple_type(s)
-}
-
-/// Parse a simple (non-result, non-option) type string.
-fn parse_simple_type(s: &str) -> RetCategory {
-    let s = s.trim();
-    match s {
-        "" | "()" => RetCategory::Void,
-        "bool" => RetCategory::Bool,
-        "char" => RetCategory::Char,
-        "string" => RetCategory::String,
-        "i64" => RetCategory::I64,
-        "i8" => RetCategory::Int(IntWidth::I8),
-        "i16" => RetCategory::Int(IntWidth::I16),
-        "i32" => RetCategory::Int(IntWidth::I32),
-        "i128" => RetCategory::Int(IntWidth::I128),
-        "u8" => RetCategory::Int(IntWidth::U8),
-        "u16" => RetCategory::Int(IntWidth::U16),
-        "u32" => RetCategory::Int(IntWidth::U32),
-        "u64" => RetCategory::Int(IntWidth::U64),
-        "u128" => RetCategory::Int(IntWidth::U128),
-        "usize" => RetCategory::Int(IntWidth::Usize),
-        "isize" => RetCategory::Int(IntWidth::Isize),
-        "f32" | "f64" => RetCategory::F64,
-        _ if s.starts_with('*') => RetCategory::Ptr,
-        _ if s.starts_with('(') && s.ends_with(')') => {
-            let inner = &s[1..s.len() - 1];
-            if inner.is_empty() {
-                return RetCategory::Void;
-            }
-            let parts = split_top_level(inner, ',');
-            RetCategory::Tuple(parts.into_iter().map(|p| parse_simple_type(p.trim())).collect())
-        }
-        _ => {
-            // Named type: "File", "Vec<string>", "Iterator<char>", etc.
-            // Extract the base name before any '<'
-            let base = if let Some(idx) = s.find('<') {
-                &s[..idx]
-            } else {
-                s
-            };
-            // A generic type variable like "T" is not a type — it's a hole.
-            if base.len() == 1 && base.chars().next().unwrap().is_uppercase() {
-                RetCategory::TypeParam(base.to_string())
-            } else {
-                RetCategory::Named(base.to_string())
+        TypeExpr::Named { path, .. } => {
+            let name = path.join(".");
+            match name.as_str() {
+                "bool" => RetCategory::Bool,
+                "char" => RetCategory::Char,
+                "string" => RetCategory::String,
+                "i64" => RetCategory::I64,
+                "i8" => RetCategory::Int(IntWidth::I8),
+                "i16" => RetCategory::Int(IntWidth::I16),
+                "i32" => RetCategory::Int(IntWidth::I32),
+                "i128" => RetCategory::Int(IntWidth::I128),
+                "u8" => RetCategory::Int(IntWidth::U8),
+                "u16" => RetCategory::Int(IntWidth::U16),
+                "u32" => RetCategory::Int(IntWidth::U32),
+                "u64" => RetCategory::Int(IntWidth::U64),
+                "u128" => RetCategory::Int(IntWidth::U128),
+                "usize" => RetCategory::Int(IntWidth::Usize),
+                "isize" => RetCategory::Int(IntWidth::Isize),
+                "f32" | "f64" => RetCategory::F64,
+                // A generic type variable like `T` is not a type — it's a hole.
+                _ if t.bare_name().is_some_and(|n| {
+                    n.len() == 1 && n.chars().all(|c| c.is_ascii_uppercase())
+                }) =>
+                {
+                    RetCategory::TypeParam(name)
+                }
+                _ => RetCategory::Named(name),
             }
         }
+        _ => RetCategory::Named(t.to_string()),
     }
 }
 
@@ -1008,170 +944,108 @@ fn ret_type_prefix(cat: &RetCategory) -> Option<std::string::String> {
     }
 }
 
-/// Split a string by a separator at nesting depth 0 (respecting `<...>` and `(...)` brackets).
-fn split_top_level(s: &str, sep: char) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth = depth.saturating_sub(1),
-            c2 if c2 == sep && depth == 0 => {
-                parts.push(&s[start..i]);
-                start = i + c2.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    parts.push(&s[start..]);
-    parts
-}
-
-/// Find first comma at nesting depth 0 (respecting `<...>` brackets).
-fn find_top_level_comma(s: &str) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Find " or " keyword at top level (not inside <...> brackets).
-fn find_or_keyword(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut depth = 0usize;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'<' => depth += 1,
-            b'>' => depth = depth.saturating_sub(1),
-            b' ' if depth == 0 && i + 4 <= bytes.len() => {
-                if &bytes[i..i + 4] == b" or " {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
-}
-
-/// Strip a generic wrapper: "Option<string>" → Some("string"), "Vec<T>" → Some("T")
-fn strip_generic<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
-    let rest = s.strip_prefix(prefix)?;
-    let rest = rest.strip_prefix('<')?;
-    let rest = rest.strip_suffix('>')?;
-    Some(rest)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn parse_void() {
-        assert_eq!(parse_ret_ty(""), RetCategory::Void);
-        assert_eq!(parse_ret_ty("()"), RetCategory::Void);
+    fn n(name: &str) -> TypeExpr {
+        TypeExpr::named(name)
+    }
+
+    fn result(ok: TypeExpr, err: TypeExpr) -> TypeExpr {
+        TypeExpr::Result { ok: Box::new(ok), err: Box::new(err) }
     }
 
     #[test]
-    fn parse_primitives() {
-        assert_eq!(parse_ret_ty("bool"), RetCategory::Bool);
-        assert_eq!(parse_ret_ty("string"), RetCategory::String);
-        assert_eq!(parse_ret_ty("i64"), RetCategory::I64);
-        assert_eq!(parse_ret_ty("f64"), RetCategory::F64);
+    fn void() {
+        assert_eq!(ret_category(&TypeExpr::Unit), RetCategory::Void);
+    }
+
+    #[test]
+    fn primitives() {
+        assert_eq!(ret_category(&n("bool")), RetCategory::Bool);
+        assert_eq!(ret_category(&n("string")), RetCategory::String);
+        assert_eq!(ret_category(&n("i64")), RetCategory::I64);
+        assert_eq!(ret_category(&n("f64")), RetCategory::F64);
         // Every other width carries itself. They all used to collapse to `I64`,
         // so a `u64` that filled its range rendered as the signed reading of its
         // bits (#823).
-        assert_eq!(parse_ret_ty("usize"), RetCategory::Int(IntWidth::Usize));
-        assert_eq!(parse_ret_ty("u64"), RetCategory::Int(IntWidth::U64));
-        assert_eq!(parse_ret_ty("u8"), RetCategory::Int(IntWidth::U8));
-        assert_eq!(parse_ret_ty("i32"), RetCategory::Int(IntWidth::I32));
-        assert_eq!(parse_ret_ty("u128"), RetCategory::Int(IntWidth::U128));
+        assert_eq!(ret_category(&n("usize")), RetCategory::Int(IntWidth::Usize));
+        assert_eq!(ret_category(&n("u64")), RetCategory::Int(IntWidth::U64));
+        assert_eq!(ret_category(&n("u8")), RetCategory::Int(IntWidth::U8));
+        assert_eq!(ret_category(&n("i32")), RetCategory::Int(IntWidth::I32));
+        assert_eq!(ret_category(&n("u128")), RetCategory::Int(IntWidth::U128));
     }
 
     #[test]
-    fn parse_result() {
-        // Parser transforms "File or IoError" → "Result<File, IoError>"
-        // The error side is parsed, not assumed. It used to be hardcoded I64,
+    fn results() {
+        // The error side is read, not assumed. It used to be hardcoded I64,
         // which cost `T or JoinError` its enum identity all the way to codegen
         // (#677) and left every other error enum in the same shape.
         assert_eq!(
-            parse_ret_ty("Result<File, IoError>"),
+            ret_category(&result(n("File"), n("IoError"))),
             RetCategory::Result {
                 ok: Box::new(RetCategory::Named("File".into())),
                 err: Box::new(RetCategory::Named("IoError".into())),
             }
         );
         assert_eq!(
-            parse_ret_ty("Result<(), IoError>"),
+            ret_category(&result(TypeExpr::Unit, n("IoError"))),
             RetCategory::Result {
                 ok: Box::new(RetCategory::Void),
                 err: Box::new(RetCategory::Named("IoError".into())),
             }
         );
-        // Also handle raw "or" syntax as fallback
-        assert_eq!(
-            parse_ret_ty("File or IoError"),
-            RetCategory::Result {
-                ok: Box::new(RetCategory::Named("File".into())),
-                err: Box::new(RetCategory::Named("IoError".into())),
-            }
-        );
     }
 
     #[test]
-    fn parse_option() {
+    fn options() {
         assert_eq!(
-            parse_ret_ty("string?"),
+            ret_category(&TypeExpr::Optional(Box::new(n("string")))),
             RetCategory::Option(Box::new(RetCategory::String))
         );
         assert_eq!(
-            parse_ret_ty("Option<usize>"),
+            ret_category(&TypeExpr::generic("Option", vec![n("usize")])),
             RetCategory::Option(Box::new(RetCategory::Int(IntWidth::Usize)))
         );
     }
 
     #[test]
-    fn parse_named() {
-        assert_eq!(parse_ret_ty("File"), RetCategory::Named("File".into()));
-        assert_eq!(parse_ret_ty("Vec<string>"), RetCategory::Named("Vec".into()));
+    fn named() {
+        assert_eq!(ret_category(&n("File")), RetCategory::Named("File".into()));
+        assert_eq!(
+            ret_category(&TypeExpr::generic("Vec", vec![n("string")])),
+            RetCategory::Named("Vec".into())
+        );
     }
 
     #[test]
-    fn parse_ptr() {
-        assert_eq!(parse_ret_ty("*u8"), RetCategory::Ptr);
+    fn pointers() {
+        assert_eq!(ret_category(&TypeExpr::RawPtr(Box::new(n("u8")))), RetCategory::Ptr);
     }
 
     #[test]
-    fn parse_generic_t() {
+    fn a_type_parameter_is_a_hole() {
         // A single-letter type variable is a hole, not a type. It used to be
         // recorded as I64, which is how a `Vec<string>.remove(i)` destination
         // got an 8-byte slot (#1020).
-        assert_eq!(parse_ret_ty("T"), RetCategory::TypeParam("T".into()));
-        assert!(parse_ret_ty("T").names_a_type_param());
-        assert!(parse_ret_ty("T?").names_a_type_param());
-        assert!(parse_ret_ty("T or IoError").names_a_type_param());
-        assert!(!parse_ret_ty("string").names_a_type_param());
-        assert!(!parse_ret_ty("File").names_a_type_param());
+        assert_eq!(ret_category(&n("T")), RetCategory::TypeParam("T".into()));
+        assert!(ret_category(&n("T")).names_a_type_param());
+        assert!(ret_category(&TypeExpr::Optional(Box::new(n("T")))).names_a_type_param());
+        assert!(ret_category(&result(n("T"), n("IoError"))).names_a_type_param());
+        assert!(!ret_category(&n("string")).names_a_type_param());
+        assert!(!ret_category(&n("File")).names_a_type_param());
     }
 
     #[test]
     fn result_prefix_is_ok_type() {
-        let cat = parse_ret_ty("File or IoError");
+        let cat = ret_category(&result(n("File"), n("IoError")));
         assert_eq!(ret_type_prefix(&cat), Some("File".into()));
     }
 
     #[test]
     fn void_result_has_no_prefix() {
-        let cat = parse_ret_ty("() or IoError");
+        let cat = ret_category(&result(TypeExpr::Unit, n("IoError")));
         assert_eq!(ret_type_prefix(&cat), None);
     }
 
@@ -1230,25 +1104,16 @@ mod tests {
     /// PascalCase type names a signature string mentions, with generic
     /// arguments, `T or E` branches and pointer/optional markers peeled off.
     /// Single letters are type parameters, not types.
-    fn named_types_in(ty: &str) -> Vec<std::string::String> {
+    fn named_types_in(ty: &TypeExpr) -> Vec<std::string::String> {
         let mut out = Vec::new();
-        let mut word = std::string::String::new();
-        for ch in ty.chars() {
-            if ch.is_alphanumeric() || ch == '_' {
-                word.push(ch);
-            } else {
-                take_word(&mut word, &mut out);
+        ty.walk_paths(&mut |path| {
+            for w in path {
+                if w.len() > 1 && w.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    out.push(w.clone());
+                }
             }
-        }
-        take_word(&mut word, &mut out);
+        });
         out
-    }
-
-    fn take_word(word: &mut std::string::String, out: &mut Vec<std::string::String>) {
-        let w = std::mem::take(word);
-        if w.len() > 1 && w.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
-            out.push(w);
-        }
     }
 
     /// Every named type a stub signature mentions has to be one that exists.
@@ -1265,7 +1130,7 @@ mod tests {
         let known = stdlib_type_names();
         let mut missing: Vec<std::string::String> = Vec::new();
 
-        let mut check = |ty: &str, at: std::string::String, missing: &mut Vec<std::string::String>| {
+        let mut check = |ty: &TypeExpr, at: std::string::String, missing: &mut Vec<std::string::String>| {
             for name in named_types_in(ty) {
                 if !known.contains(&name) && !PENDING_STUB_TYPES.contains(&name.as_str()) {
                     missing.push(format!("{} names unknown type `{}`", at, name));

@@ -4,7 +4,7 @@
 
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
-    operand::MirConst, types::StructLayoutId, FunctionRef,
+    operand::MirConst, FunctionRef,
     MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
@@ -175,12 +175,10 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        if let ExprKind::Ident(var_name) = &object.kind {
-            if let Some(full_type) = self.meta(var_name).and_then(|m| m.full_type.as_deref()) {
-                let inner = full_type.split('<').nth(1)
-                    .and_then(|s| s.strip_suffix('>'));
-                if let Some(name) = inner {
-                    return Some(name.to_string());
+        if let Some(var_name) = object.name() {
+            if let Some(full_type) = self.meta(var_name).and_then(|m| m.full_type.as_ref()) {
+                if let Some(inner) = full_type.args().first() {
+                    return Some(inner.to_string());
                 }
             }
         }
@@ -208,12 +206,10 @@ impl<'a> MirLowerer<'a> {
         }
         // The declared spelling, when the checker's type didn't survive:
         // "Shared<Queue, Mutex>" -> Mutex.
-        if let ExprKind::Ident(var_name) = &object.kind {
-            if let Some(full) = self.meta(var_name).and_then(|m| m.full_type.as_deref()) {
-                if let Some(inner) = full.split_once('<').and_then(|(_, r)| r.strip_suffix('>')) {
-                    if let Some((_, strategy)) = inner.rsplit_once(',') {
-                        return SharedStrategy::from_name(strategy);
-                    }
+        if let Some(var_name) = object.name() {
+            if let Some(full) = self.meta(var_name).and_then(|m| m.full_type.as_ref()) {
+                if let [_, strategy] = full.args() {
+                    return SharedStrategy::from_name(strategy.bare_name().unwrap_or_default());
                 }
             }
         }
@@ -280,12 +276,7 @@ impl<'a> MirLowerer<'a> {
         // acquire hands back; anything word-sized is loaded into the local
         // (codegen does the load), which is why it needs writing back.
         let inner_type_name = self.resolve_shared_inner_type_name(object);
-        let mut guard_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::unknown_type("lower/concurrency:278"));
-        if let Some(ref type_name) = inner_type_name {
-            if let Some((layout_idx, sl)) = self.ctx.find_struct(type_name) {
-                guard_ty = MirType::Struct(StructLayoutId::new(layout_idx, sl.size, sl.align));
-            }
-        }
+        let guard_ty = self.resolve_sync_payload_mir(object).unwrap_or_else(|| crate::fallback::unknown_type("lower/concurrency:278"));
         let by_address = guard_ty.passed_by_address();
 
         let guard_local = self.builder.alloc_local(binding_name.to_string(), guard_ty.clone());
@@ -412,9 +403,9 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn is_sync_box_expr(&self, object: &Expr, box_name: &str) -> bool {
         let from_type = self.ctx.lookup_raw_type(object.id)
             .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .map(|p| p.split('<').next().unwrap_or(&p).trim() == box_name)
+            .map(|p| p.as_str().trim() == box_name)
             .unwrap_or(false);
-        let from_prefix = if let ExprKind::Ident(var_name) = &object.kind {
+        let from_prefix = if let Some(var_name) = object.name() {
             self.meta(var_name)
                 .and_then(|m| m.type_prefix.as_deref())
                 .map(|p| p == box_name)
@@ -485,10 +476,10 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<(MirOperand, String, crate::LocalId, MirType), LoweringError> {
         let (box_op, _) = self.lower_expr(box_obj)?;
         let inner_name = self.resolve_shared_inner_type_name(box_obj);
-        let guard_ty = inner_name.as_ref()
-            .and_then(|n| self.ctx.find_struct(n))
-            .map(|(idx, sl)| MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)))
-            .unwrap_or(MirType::Ptr);
+        let guard_ty = match self.resolve_sync_payload_mir(box_obj) {
+            Some(ty @ MirType::Struct(_)) => ty,
+            _ => MirType::Ptr,
+        };
         let guard_name = format!("__lock_guard_{}", self.closure_counter);
         self.closure_counter += 1;
         let guard_local = self.builder.alloc_local(guard_name.clone(), guard_ty.clone());

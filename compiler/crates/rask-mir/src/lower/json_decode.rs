@@ -651,7 +651,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn json_decode_target(
         &self,
         expr: &rask_ast::expr::Expr,
-        type_args: &Option<Vec<String>>,
+        type_args: &Option<Vec<rask_ast::ty::TypeExpr>>,
     ) -> Result<Type, LoweringError> {
         if let Some(Type::Result { ok, .. }) = self.ctx.lookup_raw_type(expr.id) {
             if !matches!(**ok, Type::Var(_)) {
@@ -659,7 +659,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         if let Some(written) = type_args.as_ref().and_then(|a| a.first()) {
-            return Ok(parse_type_str(written));
+            return Ok(rask_mono::field_type(written));
         }
         Err(LoweringError::InvalidConstruct(
             "json.decode needs to know what to build — write it as \
@@ -667,69 +667,6 @@ impl<'a> MirLowerer<'a> {
                 .to_string(),
         ))
     }
-}
-
-/// A written type argument, back into a checker `Type`. Only the shapes JSON
-/// can produce need to survive this: primitives, `Vec<T>`, `Map<K, V>`, `T?`,
-/// and named structs.
-fn parse_type_str(s: &str) -> Type {
-    let s = s.trim();
-    if let Some(inner) = s.strip_suffix('?') {
-        return Type::Result {
-            ok: Box::new(parse_type_str(inner)),
-            err: Box::new(Type::None),
-        };
-    }
-    if let Some(open) = s.find('<') {
-        if s.ends_with('>') {
-            let name = s[..open].trim().to_string();
-            let args = split_type_args(&s[open + 1..s.len() - 1])
-                .into_iter()
-                .map(|a| GenericArg::Type(Box::new(parse_type_str(&a))))
-                .collect();
-            return Type::UnresolvedGeneric { name, args };
-        }
-    }
-    match s {
-        "bool" => Type::Bool,
-        "i8" => Type::I8,
-        "i16" => Type::I16,
-        "i32" => Type::I32,
-        "i64" => Type::I64,
-        "isize" => Type::isize_ty(),
-        "u8" => Type::U8,
-        "u16" => Type::U16,
-        "u32" => Type::U32,
-        "u64" => Type::U64,
-        "usize" => Type::usize_ty(),
-        "f32" => Type::F32,
-        "f64" => Type::F64,
-        "string" => Type::String,
-        other => Type::UnresolvedNamed(other.to_string()),
-    }
-}
-
-/// Split on commas that aren't inside a nested `<…>`.
-fn split_type_args(s: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => {
-                out.push(s[start..i].trim().to_string());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    let tail = s[start..].trim();
-    if !tail.is_empty() {
-        out.push(tail.to_string());
-    }
-    out
 }
 
 fn prim_shape_kind(ty: &Type) -> Option<i64> {

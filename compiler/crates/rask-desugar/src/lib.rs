@@ -18,6 +18,7 @@ mod generalize;
 mod interface_defaults;
 pub use defaults::is_valid_default_expr;
 
+use rask_ast::ty::TypeExpr;
 use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, InterfaceDecl, ImplDecl};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ConvertKind, Expr, ExprKind, MatchArm, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
@@ -142,6 +143,7 @@ fn desugar_inner_from(
     // sees a `message()` an interface supplied by default.
     let injected = interface_defaults::inject(decls);
 
+
     // Before anything rewrites an operator: this reads the body's operators as
     // written, and turns an inferred parameter that is only ever an operand
     // into a real type parameter with the operator's bound (type.gradual/IN3).
@@ -248,8 +250,10 @@ impl Desugarer {
                 }
                 DeclKind::Impl(i) => {
                     if has_message(&i.methods) {
-                        self.error_message_types.insert(i.target_ty.clone());
-                        self.hand_written_message.insert(i.target_ty.clone());
+                        if let Some(name) = i.target_ty.name() {
+                            self.error_message_types.insert(name.clone());
+                            self.hand_written_message.insert(name);
+                        }
                     }
                 }
                 _ => {}
@@ -425,12 +429,12 @@ impl Desugarer {
             params: vec![Param {
                 name: "self".to_string(),
                 name_span: sp,
-                ty: "Self".to_string(),
+                ty: Some(TypeExpr::named("Self")),
                 is_take: false,
                 is_mutate: false, is_deleting: false,
                 default: None,
             }],
-            ret_ty: Some("string".to_string()),
+            ret_ty: Some(TypeExpr::named("string")),
             body: vec![return_stmt],
             is_pub: true,
             is_private: false,
@@ -461,7 +465,9 @@ impl Desugarer {
         // their declaration isn't in this compilation unit's decl set.
         if variant.fields.len() == 1 {
             let payload_ty = &variant.fields[0].ty;
-            if self.error_message_types.contains(payload_ty) || is_error_type_name(payload_ty) {
+            let delegates = payload_ty.name().is_some_and(|n| self.error_message_types.contains(&n))
+                || payload_ty.last_segment().is_some_and(is_error_type_name);
+            if delegates {
                 return MessageTemplate::Delegate(variant.fields[0].name.clone());
             }
         }
@@ -768,7 +774,7 @@ impl Desugarer {
             | ExprKind::Float(_, _)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
-            | ExprKind::Ident(_)
+            | ExprKind::Ident(_) | ExprKind::GenericName { .. }
             | ExprKind::Null
             | ExprKind::None
             => {}
@@ -791,8 +797,12 @@ impl Desugarer {
                 // Special case for != which is !a.eq(b)
                 self.operator_calls.insert(expr.id);
                 if op == BinOp::Ne {
+                    // The `eq` call is the one the checker and lowering see,
+                    // so it's the one that has to read as an operator.
+                    let eq_id = self.fresh_id();
+                    self.operator_calls.insert(eq_id);
                     let eq_call = Expr {
-                        id: self.fresh_id(),
+                        id: eq_id,
                         kind: ExprKind::MethodCall {
                             object: Box::new(left_expr),
                             method: "eq".to_string(),
@@ -1108,7 +1118,7 @@ impl Desugarer {
         }
         let Some(targets) = type_args.as_ref() else { return };
         let [target] = targets.as_slice() else { return };
-        if !is_numeric_primitive(target) {
+        if !target.bare_name().is_some_and(is_numeric_primitive) {
             return;
         }
         let kind = match method.as_str() {
@@ -1326,7 +1336,7 @@ fn humanize_variant(name: &str, fields: &[rask_ast::decl::Field]) -> String {
     let parts: Vec<String> = fields
         .iter()
         .map(|f| {
-            if renders_as_display(&f.ty) {
+            if f.ty.bare_name().is_some_and(renders_as_display) {
                 format!("{{{}}}", f.name)
             } else {
                 format!("{{{}:debug}}", f.name)
@@ -1351,7 +1361,7 @@ fn humanize_variant(name: &str, fields: &[rask_ast::decl::Field]) -> String {
 /// spec's own `unexpected end: {ctx}` still reads that way.
 fn renders_as_display(ty: &str) -> bool {
     matches!(
-        ty.trim(),
+        ty,
         "string"
             | "char"
             | "bool"
@@ -1543,7 +1553,7 @@ mod tests {
 /// The types a conversion can target (type.primitives/CV11–CV16).
 fn is_numeric_primitive(name: &str) -> bool {
     matches!(
-        name.trim(),
+        name,
         "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
             | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
             | "f32" | "f64"

@@ -26,7 +26,9 @@ use rask_mir::elem_strs::{
     ELEM_STRUCT_BASE, ELEM_TRAITBOX, ELEM_VEC,
 };
 use rask_mono::{EnumLayout, FieldLayout, StructLayout};
-use rask_types::Type as RaskType;
+use std::collections::HashMap;
+
+use rask_types::{Type as RaskType, TypeId};
 
 /// How deep to look for a string inside a type before giving up. A recursive
 /// type reaches MIR through a pointer, which this walk doesn't follow, so the
@@ -103,9 +105,10 @@ pub fn string_offsets_for_tag(
     tag: i64,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
+    names: &HashMap<TypeId, String>,
 ) -> Option<Vec<i32>> {
     let mut out = Vec::new();
-    describe_tag(tag, 0, layouts, enums, &mut out)?;
+    describe_tag(tag, 0, layouts, enums, names, &mut out)?;
     (!out.is_empty()).then_some(out)
 }
 
@@ -115,10 +118,11 @@ fn describe_tag(
     base: i32,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
+    names: &HashMap<TypeId, String>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     if let Some((kind, ok, err)) = decode_wrapper(tag) {
-        return wrapper_arms(kind, ok, err, base, layouts, enums, out);
+        return wrapper_arms(kind, ok, err, base, layouts, enums, names, out);
     }
     match tag {
         ELEM_STRING => out.push(entry(base, KIND_STRING)),
@@ -133,12 +137,12 @@ fn describe_tag(
         n if n >= ELEM_STRUCT_BASE => {
             let idx = usize::try_from(n - ELEM_STRUCT_BASE).ok()?;
             let layout = layouts.get(idx)?;
-            flatten(&layout.fields, base, layouts, enums, 0, None, out)?;
+            flatten(&layout.fields, base, layouts, enums, names, 0, None, out)?;
         }
         n if n <= ELEM_ENUM_BASE => {
             let idx = usize::try_from(ELEM_ENUM_BASE - n).ok()?;
             let layout = enums.get(idx)?;
-            enum_arms(layout, base, layouts, enums, 0, None, out)?;
+            enum_arms(layout, base, layouts, enums, names, 0, None, out)?;
         }
         _ => {}
     }
@@ -154,6 +158,7 @@ fn wrapper_arms(
     base: i32,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
+    names: &HashMap<TypeId, String>,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     let (tag_offset, payload_offset) = match kind {
@@ -166,7 +171,7 @@ fn wrapper_arms(
             continue;
         }
         let mut arm = Vec::new();
-        describe_tag(side, base + payload_offset as i32, layouts, enums, &mut arm)?;
+        describe_tag(side, base + payload_offset as i32, layouts, enums, names, &mut arm)?;
         if arm.is_empty() {
             continue;
         }
@@ -186,6 +191,7 @@ fn enum_arms(
     base: i32,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
+    names: &HashMap<TypeId, String>,
     depth: u32,
     self_name: Option<&str>,
     out: &mut Vec<i32>,
@@ -202,7 +208,7 @@ fn enum_arms(
             .iter()
             .map(|f| FieldLayout { offset: variant.payload_offset + f.offset, ..f.clone() })
             .collect();
-        flatten(&fields, base, layouts, enums, depth + 1, self_name, &mut arm)?;
+        flatten(&fields, base, layouts, enums, names, depth + 1, self_name, &mut arm)?;
         if arm.is_empty() {
             continue;
         }
@@ -217,6 +223,7 @@ fn flatten(
     base: i32,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
+    names: &HashMap<TypeId, String>,
     depth: u32,
     self_name: Option<&str>,
     out: &mut Vec<i32>,
@@ -226,8 +233,8 @@ fn flatten(
     }
     for f in fields {
         let at = base + f.offset as i32;
-        if let Some(payload) = heap_payload_name(&f.ty) {
-            let payload = layout_name(&payload, layouts, enums);
+        if let Some(payload) = heap_payload(&f.ty) {
+            let payload = layout_name(payload, layouts, enums);
             // Only where a self-reference has a name to match. The
             // container-element path passes `None`, because a `retain` would
             // have to copy the block and a block carries no size to copy — so
@@ -238,13 +245,13 @@ fn flatten(
             if payload == sn {
                 body.push(entry(0, KIND_SELF));
             } else {
-                describe_named(&payload, 0, layouts, enums, depth + 1, Some(&payload), &mut body)?;
+                describe_named(&payload, 0, layouts, enums, names, depth + 1, Some(&payload), &mut body)?;
             }
             out.push(heap_entry(at, body.len())?);
             out.extend(body);
             continue;
         }
-        if let Some(kind) = container_kind(&f.ty) {
+        if let Some(kind) = container_kind(&f.ty, names) {
             // The nested container carries its own element list, set when it was
             // built, so freeing it walks its elements without this one knowing
             // what they are.
@@ -256,12 +263,12 @@ fn flatten(
             RaskType::UnresolvedNamed(_) | RaskType::UnresolvedGeneric { .. } => {
                 // A nested struct flattens into the same list. A nested *enum*
                 // contributes its own guards, at this field's offset.
-                let name = &layout_name(&format!("{}", f.ty), layouts, enums);
+                let name = &layout_name(&f.ty, layouts, enums);
                 if let Some(l) = layouts.iter().find(|l| &l.name == name) {
                     let nested = l.fields.clone();
-                    flatten(&nested, at, layouts, enums, depth + 1, self_name, out)?;
+                    flatten(&nested, at, layouts, enums, names, depth + 1, self_name, out)?;
                 } else if let Some(l) = enums.iter().find(|l| &l.name == name) {
-                    enum_arms(l, at, layouts, enums, depth + 1, self_name, out)?;
+                    enum_arms(l, at, layouts, enums, names, depth + 1, self_name, out)?;
                 }
             }
             _ => {}
@@ -292,10 +299,11 @@ pub fn heap_field_descriptor(
     ty: &RaskType,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
+    names: &HashMap<TypeId, String>,
 ) -> Option<Vec<i32>> {
-    let payload = layout_name(&heap_payload_name(ty)?, layouts, enums);
+    let payload = layout_name(heap_payload(ty)?, layouts, enums);
     let mut out = Vec::new();
-    describe_named(&payload, 0, layouts, enums, 0, Some(&payload), &mut out)?;
+    describe_named(&payload, 0, layouts, enums, names, 0, Some(&payload), &mut out)?;
     Some(out)
 }
 
@@ -311,14 +319,14 @@ pub fn generic_as_layout(
     if !matches!(ty, RaskType::UnresolvedGeneric { .. }) {
         return None;
     }
-    let name = layout_name(&format!("{}", ty), layouts, enums);
+    let name = layout_name(ty, layouts, enums);
     let known = layouts.iter().any(|l| l.name == name) || enums.iter().any(|l| l.name == name);
     known.then(|| RaskType::UnresolvedNamed(name))
 }
 
 /// The layout name a written type goes by — see `rask_mono::layout_name_for`.
-fn layout_name(written: &str, layouts: &[StructLayout], enums: &[EnumLayout]) -> String {
-    rask_mono::layout_name_for(written, |n| {
+fn layout_name(ty: &RaskType, layouts: &[StructLayout], enums: &[EnumLayout]) -> String {
+    rask_mono::layout_name_for(ty, |n| {
         layouts.iter().any(|l| l.name == n) || enums.iter().any(|l| l.name == n)
     })
 }
@@ -330,6 +338,7 @@ fn describe_named(
     base: i32,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
+    names: &HashMap<TypeId, String>,
     depth: u32,
     self_name: Option<&str>,
     out: &mut Vec<i32>,
@@ -339,10 +348,10 @@ fn describe_named(
     }
     if let Some(l) = layouts.iter().find(|l| l.name == name) {
         let fields = l.fields.clone();
-        return flatten(&fields, base, layouts, enums, depth, self_name, out);
+        return flatten(&fields, base, layouts, enums, names, depth, self_name, out);
     }
     if let Some(l) = enums.iter().find(|l| l.name == name) {
-        return enum_arms(l, base, layouts, enums, depth, self_name, out);
+        return enum_arms(l, base, layouts, enums, names, depth, self_name, out);
     }
     Some(())
 }
@@ -350,27 +359,27 @@ fn describe_named(
 /// Is this field a `Heap<T>`? The release walk asks before it looks at
 /// anything else, the way it asks about an interface object.
 pub fn is_heap_field(ty: &RaskType) -> bool {
-    heap_payload_name(ty).is_some()
+    heap_payload(ty).is_some()
 }
 
 /// `Heap<Big>` → `Big`. A wrapper around the handle is a different thing, the
 /// same way it is for a container.
-fn heap_payload_name(ty: &RaskType) -> Option<String> {
-    let rendered = format!("{}", ty);
-    if rendered.ends_with('?') || rendered.contains(" or ") {
-        return None;
+fn heap_payload(ty: &RaskType) -> Option<&RaskType> {
+    match ty {
+        RaskType::UnresolvedGeneric { name, args } if name == "Heap" => match args.as_slice() {
+            [rask_types::GenericArg::Type(inner)] => Some(inner),
+            _ => None,
+        },
+        _ => None,
     }
-    let inner = rendered.trim().strip_prefix("Heap<")?.strip_suffix('>')?;
-    Some(inner.trim().to_string())
 }
 
 /// Is this field a container the element owns, and which one.
 ///
-/// The same head-of-the-rendered-type test `container_free_for` uses, and for
-/// the same reasons: `Vec<i64>?` is a wrapper around the handle rather than the
-/// handle, and a `Rack` is an arena whose nodes outlive any one
-/// node (mem.racks).
-fn container_kind(ty: &RaskType) -> Option<i32> {
+/// Read off the type's head, as `container_free_for` does: an optional or a
+/// result is a wrapper around the handle rather than the handle, and a `Rack`
+/// is an arena whose nodes outlive any one node (mem.racks).
+fn container_kind(ty: &RaskType, names: &HashMap<TypeId, String>) -> Option<i32> {
     // A closure a field holds is the aggregate's — storing one moves it in, and
     // the frame stops dropping it the moment it does, the same rule
     // `container_free_for` states for a frame's own walk. Without it the
@@ -380,11 +389,7 @@ fn container_kind(ty: &RaskType) -> Option<i32> {
     if matches!(ty, RaskType::Fn { .. }) {
         return Some(KIND_CLOSURE);
     }
-    let rendered = format!("{}", ty);
-    if rendered.ends_with('?') || rendered.contains(" or ") {
-        return None;
-    }
-    match rendered.split('<').next().unwrap_or(&rendered).trim() {
+    match ty.head_name(names)? {
         "Vec" => Some(KIND_VEC),
         // A `Set<T>` is a struct holding a `Map<T, bool>`, so it reaches this
         // through the nested-struct arm above.

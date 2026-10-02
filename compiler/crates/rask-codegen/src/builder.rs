@@ -187,6 +187,9 @@ struct CodegenCtx<'a> {
     func_refs: &'a HashMap<String, FuncRef>,
     struct_layouts: &'a [StructLayout],
     enum_layouts: &'a [EnumLayout],
+    /// The checker's name for each type id, so a resolved type's head can be
+    /// read off it rather than off its rendering.
+    type_names: &'a HashMap<rask_types::TypeId, String>,
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<String, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -314,6 +317,7 @@ pub struct FunctionBuilder<'a> {
     struct_layouts: &'a [StructLayout],
     /// Enum layouts from monomorphization
     enum_layouts: &'a [EnumLayout],
+    type_names: &'a HashMap<rask_types::TypeId, String>,
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<String, GlobalValue>,
@@ -372,6 +376,7 @@ impl<'a> FunctionBuilder<'a> {
         func_refs: &'a HashMap<String, FuncRef>,
         struct_layouts: &'a [StructLayout],
         enum_layouts: &'a [EnumLayout],
+        type_names: &'a HashMap<rask_types::TypeId, String>,
         string_globals: &'a HashMap<String, GlobalValue>,
     string_header_globals: &'a HashMap<String, GlobalValue>,
     element_offset_globals: &'a HashMap<Vec<i32>, GlobalValue>,
@@ -390,6 +395,7 @@ impl<'a> FunctionBuilder<'a> {
             func_refs,
             struct_layouts,
             enum_layouts,
+            type_names,
             string_globals,
             string_header_globals,
             element_offset_globals,
@@ -673,6 +679,7 @@ impl<'a> FunctionBuilder<'a> {
             func_refs: self.func_refs,
             struct_layouts: self.struct_layouts,
             enum_layouts: self.enum_layouts,
+            type_names: self.type_names,
             string_globals: self.string_globals,
             string_header_globals: self.string_header_globals,
             element_offset_globals: self.element_offset_globals,
@@ -1968,6 +1975,7 @@ impl<'a> FunctionBuilder<'a> {
             | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 | RaskType::U128
             | RaskType::F32 | RaskType::F64
             | RaskType::Char
+            | RaskType::RawPtr(_)
             | RaskType::Fn { .. } => false,
             // Runtime-opaque pointer types (Vec, Map, Rack, Channel, ...)
             RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,
@@ -2178,6 +2186,11 @@ impl<'a> FunctionBuilder<'a> {
             // Address-of: return the pointer that the local already holds (for aggregates
             // and address-taken scalars) or spill a scalar to a stack slot and return
             // its address.
+            MirRValue::FuncAddr(name) => {
+                let func_ref = ctx.func_refs.get(name.as_str())
+                    .ok_or_else(|| CodegenError::FunctionNotFound(name.clone()))?;
+                Ok(builder.ins().func_addr(types::I64, *func_ref))
+            }
             MirRValue::Ref(local_id) => {
                 let var = ctx.var_map.get(local_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Ref: local not found".to_string()))?;
@@ -7125,7 +7138,7 @@ impl<'a> FunctionBuilder<'a> {
     /// guessed, because a wrong offset here releases sixteen bytes that were
     /// never a string. Those elements leak; see #1027.
     fn element_string_offsets(tag: Option<i64>, ctx: &CodegenCtx) -> Option<Vec<i32>> {
-        crate::elem_offsets::string_offsets_for_tag(tag?, ctx.struct_layouts, ctx.enum_layouts)
+        crate::elem_offsets::string_offsets_for_tag(tag?, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names)
     }
 
     /// The offsets as read-only data, one object per distinct list.
@@ -7229,7 +7242,7 @@ impl<'a> FunctionBuilder<'a> {
         if depth > Self::RC_WALK_DEPTH {
             return false;
         }
-        if crate::drop_fields::container_free_for(ty).is_some() {
+        if crate::drop_fields::container_free_for(ty, ctx.type_names).is_some() {
             return true;
         }
         // A box a field holds is the aggregate's: it was moved in, so the block
@@ -7349,7 +7362,7 @@ impl<'a> FunctionBuilder<'a> {
                     .map(|f| (f.offset as i32, f.ty.clone()))
                     .collect();
                 for (field_offset, field_ty) in fields {
-                    if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty) {
+                    if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty, ctx.type_names) {
                         Self::emit_container_release(
                             builder, base, offset + field_offset, free_fn, ctx,
                         )?;
@@ -7411,7 +7424,7 @@ impl<'a> FunctionBuilder<'a> {
         // hands back `Vec<Point> or JsonError`, and releasing the wrapper
         // released neither side. `holds_string_ty` has always answered "yes" to
         // this shape, so the walk ran and did nothing at all.
-        if let Some(free_fn) = crate::drop_fields::container_free_for(ty) {
+        if let Some(free_fn) = crate::drop_fields::container_free_for(ty, ctx.type_names) {
             return Self::emit_container_release(builder, base, offset, free_fn, ctx);
         }
         // Same shape as the MIR-typed arm: the slot *is* the fat pointer, and
@@ -7457,7 +7470,7 @@ impl<'a> FunctionBuilder<'a> {
                         // container behind an `Option`'s tag is reached through
                         // the wrapper instead, and freeing it here ran before
                         // the reads (`h.v!.len()` gave 1361822157891490808).
-                        if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty) {
+                        if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty, ctx.type_names) {
                             Self::emit_container_release(
                                 builder, base, offset + field_offset, free_fn, ctx,
                             )?;
@@ -7532,7 +7545,7 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
         let Some(desc) = crate::elem_offsets::heap_field_descriptor(
-            ty, ctx.struct_layouts, ctx.enum_layouts,
+            ty, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names,
         ) else {
             return Ok(());
         };
@@ -7730,7 +7743,7 @@ impl<'a> FunctionBuilder<'a> {
                 // `enum Shape { Many(Vec<i64>) }` released nothing and every
                 // vector inside one leaked — which is most of what a decoded
                 // `JsonValue` holds.
-                if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty) {
+                if let Some(free_fn) = crate::drop_fields::container_free_for(&field_ty, ctx.type_names) {
                     Self::emit_container_release(
                         builder, base, offset + field_offset, free_fn, ctx,
                     )?;
@@ -8180,7 +8193,7 @@ impl<'a> FunctionBuilder<'a> {
         let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
         let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
         let tag = rask_mir::elem_strs::ELEM_STRUCT_BASE + layout_id.id as i64;
-        crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts, ctx.enum_layouts)
+        crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names)
             .unwrap_or_default()
     }
 

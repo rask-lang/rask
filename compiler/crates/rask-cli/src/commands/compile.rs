@@ -47,17 +47,17 @@ pub(super) fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask
     typed.types.type_name_map()
 }
 
-/// Nominal newtype name → the type string it wraps.
+/// Nominal newtype name → the type it wraps.
 ///
 /// `type Id = u64 implements …` has no layout: it *is* a u64 with its own
 /// identity, so MIR treats it as transparent (#445).
 pub(super) fn build_nominal_underlying(
     typed: &rask_types::TypedProgram,
-) -> HashMap<String, String> {
+) -> HashMap<String, rask_types::Type> {
     typed.types.iter()
         .filter_map(|def| match def {
             rask_types::TypeDef::NominalAlias { name, underlying, .. } => {
-                Some((name.clone(), format!("{}", underlying)))
+                Some((name.clone(), underlying.clone()))
             }
             _ => None,
         })
@@ -231,7 +231,8 @@ fn setup_codegen(
         if let DeclKind::Extern(e) = &d.kind {
             Some(rask_codegen::ExternFuncSig {
                 name: e.name.clone(),
-                param_types: e.params.iter().map(|p| p.ty.clone()).collect(),
+                // The parser rejects an extern parameter without a type.
+                param_types: e.params.iter().filter_map(|p| p.ty.clone()).collect(),
                 ret_ty: e.ret_ty.clone(),
             })
         } else {
@@ -317,14 +318,13 @@ pub fn compile_to_object(
     .with_extern_funcs(&extern_funcs)
     .with_package_modules(package_modules)
     .with_interface_methods(interface_methods.clone())
-    .with_call_rewrites(&mono.call_rewrites)
+    .with_mono_calls(&mono)
     .with_nominal_underlying(&nominal_underlying);
     // These three arrive as already-built Options from the caller rather than as
     // values, so they're set directly.
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
     mir_ctx.comptime_interp = comptime_interp;
-    let mir_ctx = mir_ctx;
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
 
@@ -405,7 +405,7 @@ fn collect_vtables(
                         // no second holder for either.
                         let mut visited = HashSet::new();
                         let owned = rask_codegen::drop_fields::owned_fields(
-                            concrete_type, 0, &mono.struct_layouts, &mut visited,
+                            concrete_type, 0, &mono.struct_layouts, &mono.type_names, &mut visited,
                         );
 
                         vtables.push(rask_codegen::vtable::VTableInfo {
@@ -635,12 +635,11 @@ pub fn compile_tests_to_object(
         .with_comptime_globals(comptime_globals)
         .with_extern_funcs(&extern_funcs)
         .with_interface_methods(interface_methods)
-        .with_call_rewrites(&mono.call_rewrites)
+        .with_mono_calls(&mono)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
     mir_ctx.comptime_interp = comptime_interp;
-    let mir_ctx = mir_ctx;
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
 
@@ -831,12 +830,11 @@ pub fn compile_benchmarks_to_object(
         .with_comptime_globals(comptime_globals)
         .with_extern_funcs(&extern_funcs)
         .with_interface_methods(interface_methods)
-        .with_call_rewrites(&mono.call_rewrites)
+        .with_mono_calls(&mono)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
     mir_ctx.comptime_interp = comptime_interp;
-    let mir_ctx = mir_ctx;
 
     let (mut mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
 

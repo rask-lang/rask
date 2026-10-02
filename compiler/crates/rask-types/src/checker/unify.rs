@@ -549,7 +549,7 @@ impl TypeChecker {
             return false;
         }
         match (head(a), head(b)) {
-            (Some(x), Some(y)) => x.split('<').next() == y.split('<').next(),
+            (Some(x), Some(y)) => x == y,
             _ => false,
         }
     }

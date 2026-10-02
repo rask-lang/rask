@@ -2,6 +2,8 @@
 //! Type definitions for the type system.
 
 use std::fmt;
+
+use rask_ast::ty::TypeExpr;
 use std::hash::Hash;
 
 /// Unique identifier for user-defined types (structs, enums, interfaces).
@@ -107,6 +109,19 @@ pub enum Type {
     None,
     /// Error placeholder for recovery
     Error,
+}
+
+impl Type {
+    /// The name at the head of a named type: `Vec` for `Vec<i64>`, `Point` for
+    /// `Point`. A resolved type carries its id, so `names` says what it's
+    /// called. `None` for anything structural — an optional, a result, a tuple.
+    pub fn head_name<'a>(&'a self, names: &'a std::collections::HashMap<TypeId, String>) -> Option<&'a str> {
+        match self {
+            Type::Named(id) | Type::Generic { base: id, .. } => names.get(id).map(String::as_str),
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => Some(name),
+            _ => None,
+        }
+    }
 }
 
 impl Type {
@@ -287,6 +302,53 @@ impl fmt::Display for GenericArg {
         match self {
             GenericArg::Type(ty) => write!(f, "{}", ty),
             GenericArg::ConstUsize(n) => write!(f, "{}", n),
+        }
+    }
+}
+
+impl Type {
+    /// The type as it would be written. A part with no written form — an
+    /// interned id, an inference variable — keeps its `Display` spelling as a
+    /// name, which is what monomorphization substituted before there was a
+    /// structured form to substitute into.
+    pub fn to_type_expr(&self) -> TypeExpr {
+        let arg = |a: &GenericArg| match a {
+            GenericArg::Type(t) => t.to_type_expr(),
+            GenericArg::ConstUsize(n) => TypeExpr::Int(n.to_string()),
+        };
+        match self {
+            Type::Unit => TypeExpr::Unit,
+            Type::None => TypeExpr::NoneType,
+            Type::UnresolvedNamed(name) => TypeExpr::named(name.clone()),
+            Type::Generic { base, args } => TypeExpr::Named {
+                path: vec![format!("<type#{}>", base.0)],
+                args: args.iter().map(arg).collect(),
+            },
+            Type::UnresolvedGeneric { name, args } => {
+                TypeExpr::generic(name.clone(), args.iter().map(arg).collect())
+            }
+            Type::Fn { params, ret } => TypeExpr::Func {
+                params: params.iter().map(Type::to_type_expr).collect(),
+                ret: Box::new(ret.to_type_expr()),
+            },
+            Type::Tuple(elems) => TypeExpr::Tuple(elems.iter().map(Type::to_type_expr).collect()),
+            Type::Array { elem, len } => TypeExpr::Array {
+                elem: Box::new(elem.to_type_expr()),
+                len: len.to_string(),
+            },
+            Type::Result { ok, err } if **err == Type::None => {
+                TypeExpr::Optional(Box::new(ok.to_type_expr()))
+            }
+            Type::Result { ok, err } => TypeExpr::Result {
+                ok: Box::new(ok.to_type_expr()),
+                err: Box::new(err.to_type_expr()),
+            },
+            Type::Union(members) => TypeExpr::Union(members.iter().map(Type::to_type_expr).collect()),
+            Type::RawPtr(inner) => TypeExpr::RawPtr(Box::new(inner.to_type_expr())),
+            Type::InterfaceObject { interface_name } => {
+                TypeExpr::Any(Box::new(TypeExpr::named(interface_name.clone())))
+            }
+            other => TypeExpr::named(other.to_string()),
         }
     }
 }

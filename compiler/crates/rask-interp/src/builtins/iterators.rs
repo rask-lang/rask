@@ -229,7 +229,7 @@ impl Interpreter {
             // earlier ones — the same as repeated `insert`. The checker has
             // already rejected a non-pair element type.
             "to_map" => {
-                let mut map = crate::value::MapData::new();
+                let map = std::sync::Arc::new(Mutex::new(crate::value::MapData::new()));
                 loop {
                     let Some(item) = self.iter_next(iter)? else { break };
                     let Some(pair) = item.as_tuple_elements() else {
@@ -242,9 +242,9 @@ impl Interpreter {
                             "to_map needs a sequence of (key, value) pairs".to_string(),
                         ));
                     }
-                    map.insert(crate::value::MapKey(pair[0].clone()), pair[1].clone());
+                    self.map_insert(&map, pair[0].clone(), pair[1].clone())?;
                 }
-                Ok(Value::Map(std::sync::Arc::new(Mutex::new(map))))
+                Ok(Value::Map(map))
             }
             "map" => {
                 let mapper = args.into_iter().next().unwrap_or(Value::Unit);

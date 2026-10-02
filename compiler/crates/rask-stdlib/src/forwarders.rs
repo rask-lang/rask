@@ -18,12 +18,23 @@
 //! this.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
+use rask_ast::ty::TypeExpr;
 
 /// A type that reaches the sequence surface through `as_sequence`.
 ///
 /// `(extend header, element type)`. The element is what `Sequence<T>`'s `T`
 /// stands for on this host, and it's substituted into every signature.
-const HOSTS: &[(&str, &str)] = &[("Vec<T>", "T"), ("Map<K, V>", "(K, V)"), ("Set<T>", "T")];
+fn hosts() -> Vec<(TypeExpr, TypeExpr)> {
+    let t = || TypeExpr::named("T");
+    vec![
+        (TypeExpr::generic("Vec", vec![t()]), t()),
+        (
+            TypeExpr::generic("Map", vec![TypeExpr::named("K"), TypeExpr::named("V")]),
+            TypeExpr::Tuple(vec![TypeExpr::named("K"), TypeExpr::named("V")]),
+        ),
+        (TypeExpr::generic("Set", vec![t()]), t()),
+    ]
+}
 
 /// Rask source declaring every host's generated forwarders.
 pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
@@ -34,22 +45,13 @@ pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
         "// SPDX-License-Identifier: (MIT OR Apache-2.0)\n\
          // Generated from `extend Sequence<T>` — see rask-stdlib/src/forwarders.rs.\n\n",
     );
-    for (header, elem) in HOSTS {
-        let base = header.split('<').next().unwrap_or(header);
-        let host_params: Vec<String> = header
-            .find('<')
-            .map(|i| {
-                header[i + 1..]
-                    .trim_end_matches('>')
-                    .split(',')
-                    .map(|p| p.trim().to_string())
-                    .filter(|p| !p.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
+    for (header, elem) in hosts() {
+        let base = header.name().unwrap_or_default();
+        let host_params: Vec<String> =
+            header.args().iter().filter_map(|a| a.bare_name().map(str::to_string)).collect();
         let declared: Vec<String> = host_srcs
             .iter()
-            .flat_map(|src| declared_methods(&parse(src), base))
+            .flat_map(|src| declared_methods(&parse(src), &base))
             .collect();
 
         let mut block = String::new();
@@ -60,7 +62,7 @@ pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
             // A terminal that rebuilds the host is `clone` under another name,
             // and `std.api/SD5` gives one operation one spelling. `to_vec` on a
             // `Vec` is the whole of that case; on a `Set` it converts and stays.
-            if m.params.len() == 1 && m.ret_ty.as_deref() == Some(*header) {
+            if m.params.len() == 1 && m.ret_ty.as_ref() == Some(&header) {
                 continue;
             }
             // `count` walks to work out something the host already knows: a
@@ -70,10 +72,10 @@ pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
             if m.name == "count" && declared.iter().any(|d| d == "len") {
                 continue;
             }
-            block.push_str(&forwarder(m, elem, &host_params));
+            block.push_str(&forwarder(m, &elem, &host_params));
         }
         if !block.is_empty() {
-            out.push_str(&format!("extend {} {{\n{}}}\n\n", header, block));
+            out.push_str(&format!("extend {} {{\n{}}}\n\n", header.source(), block));
         }
     }
     out
@@ -81,13 +83,20 @@ pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
 
 /// One forwarder: the sequence method's signature over the host, body
 /// delegating through `as_sequence`.
-fn forwarder(m: &FnDecl, elem: &str, host_params: &[String]) -> String {
+fn forwarder(m: &FnDecl, elem: &TypeExpr, host_params: &[String]) -> String {
     // The method's own parameters, renamed off any the host already uses.
     // `Sequence.min_by_key<K>` over a `Map<K, V>` would otherwise declare a `K`
     // that hides the map's key type, and `func((K, V)) -> K` then means two
     // different things in one signature.
     let renames = collisions(m, elem, host_params);
     let name_of = |n: &str| renames.get(n).cloned().unwrap_or_else(|| n.to_string());
+    // Renames first, while the method's `K` is still the only `K` in the type;
+    // the host's element goes in after, so its own `K` is never renamed.
+    let over_host = |t: &TypeExpr| {
+        let mut t = t.clone();
+        t.rename(&|n| renames.get(n).cloned());
+        t.substitute(&|n| (n == "T").then(|| elem.clone())).source()
+    };
 
     let type_params = if m.type_params.is_empty() {
         String::new()
@@ -99,7 +108,8 @@ fn forwarder(m: &FnDecl, elem: &str, host_params: &[String]) -> String {
                 if p.bounds.is_empty() {
                     name_of(&p.name)
                 } else {
-                    format!("{}: {}", name_of(&p.name), p.bounds.join(" + "))
+                    let bounds: Vec<String> = p.bounds.iter().map(|b| b.source()).collect();
+                    format!("{}: {}", name_of(&p.name), bounds.join(" + "))
                 }
             })
             .collect();
@@ -110,17 +120,16 @@ fn forwarder(m: &FnDecl, elem: &str, host_params: &[String]) -> String {
     let rest = &m.params[1..];
     let params: Vec<String> = rest
         .iter()
-        .map(|p| format!("{}: {}", p.name, substitute(&rename(&p.ty, &renames), elem)))
+        .map(|p| {
+            let ty = p.ty.as_ref().map(&over_host).unwrap_or_default();
+            format!("{}: {}", p.name, ty)
+        })
         .collect();
     let args: Vec<String> = rest.iter().map(|p| p.name.clone()).collect();
-    let returns_nothing = matches!(m.ret_ty.as_deref(), None | Some("()") | Some("void"));
-    let ret = if returns_nothing {
-        String::new()
-    } else {
-        format!(
-            " -> {}",
-            substitute(&rename(m.ret_ty.as_deref().unwrap_or("void"), &renames), elem)
-        )
+    let returns_nothing = matches!(m.ret_ty, None | Some(TypeExpr::Unit));
+    let ret = match &m.ret_ty {
+        Some(t) if !returns_nothing => format!(" -> {}", over_host(t)),
+        _ => String::new(),
     };
 
     let signature = format!(
@@ -146,11 +155,14 @@ fn forwarder(m: &FnDecl, elem: &str, host_params: &[String]) -> String {
 /// spells, picked from the letters neither of them uses.
 fn collisions(
     m: &FnDecl,
-    elem: &str,
+    elem: &TypeExpr,
     host_params: &[String],
 ) -> std::collections::HashMap<String, String> {
     let mut taken: std::collections::HashSet<String> = host_params.iter().cloned().collect();
     taken.extend(m.type_params.iter().map(|p| p.name.clone()));
+    elem.walk_names(&mut |n| {
+        taken.insert(n.to_string());
+    });
     let mut out = std::collections::HashMap::new();
     for p in &m.type_params {
         if !host_params.iter().any(|h| h == &p.name) {
@@ -158,70 +170,12 @@ fn collisions(
         }
         let free = ('A'..='Z')
             .map(|c| c.to_string())
-            .find(|c| !taken.contains(c) && !elem.contains(c.as_str()))
+            .find(|c| !taken.contains(c))
             .unwrap_or_else(|| format!("{}_", p.name));
         taken.insert(free.clone());
         out.insert(p.name.clone(), free);
     }
     out
-}
-
-/// Apply `collisions`' renames to a rendered type, whole words only.
-///
-/// Runs *before* the element substitution, so that a method's `K` becomes `A`
-/// while it is still the only `K` in the string — substituting `(K, V)` in
-/// first would make the host's key indistinguishable from it.
-fn rename(ty: &str, renames: &std::collections::HashMap<String, String>) -> String {
-    if renames.is_empty() {
-        return ty.to_string();
-    }
-    map_words(ty, |w| renames.get(w).cloned().unwrap_or_else(|| w.to_string()))
-}
-
-/// Rewrite `Sequence<T>`'s element name to the host's.
-///
-/// Whole-word only: `T` in `func(T) -> bool` is the element, the `T` inside
-/// `Token` is not.
-fn substitute(ty: &str, elem: &str) -> String {
-    if elem == "T" {
-        return to_source(ty);
-    }
-    to_source(&map_words(ty, |w| {
-        if w == "T" { elem.to_string() } else { w.to_string() }
-    }))
-}
-
-/// Rewrite each identifier in a rendered type, leaving the punctuation alone.
-fn map_words(ty: &str, f: impl Fn(&str) -> String) -> String {
-    let mut out = String::with_capacity(ty.len());
-    let bytes = ty.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let c = bytes[i] as char;
-        if c.is_alphanumeric() || c == '_' {
-            let start = i;
-            while i < bytes.len() && {
-                let c = bytes[i] as char;
-                c.is_alphanumeric() || c == '_'
-            } {
-                i += 1;
-            }
-            out.push_str(&f(&ty[start..i]));
-        } else {
-            out.push(c);
-            i += 1;
-        }
-    }
-    out
-}
-
-/// Undo the parser's internal spelling for a closure that returns nothing.
-///
-/// `func(T)` is stored as `func(T) -> ()`, and `()` isn't a type you can write
-/// — the parser rejects it with "use `void`". Same rule the formatter applies
-/// on the way out (`rask-fmt/src/printer.rs`).
-fn to_source(ty: &str) -> String {
-    ty.replace(" -> ()", "")
 }
 
 /// Methods of every unconditional `extend Sequence<T>` block.
@@ -234,16 +188,18 @@ fn sequence_surface(decls: &[Decl]) -> Vec<FnDecl> {
         .iter()
         .filter_map(|d| match &d.kind {
             DeclKind::Impl(i)
-                if i.target_ty == "Sequence<T>"
+                if i.target_ty == TypeExpr::generic("Sequence", vec![TypeExpr::named("T")])
                     && i.where_bounds.is_empty()
-                    && i.interface_name.is_none() =>
+                    && i.interface.is_none() =>
             {
                 Some(i.methods.clone())
             }
             _ => None,
         })
         .flatten()
-        .filter(|m| m.is_pub && m.params.first().is_some_and(|p| p.ty == "Self"))
+        .filter(|m| {
+            m.is_pub && m.params.first().is_some_and(|p| p.ty.as_ref().is_some_and(|t| t.is_name("Self")))
+        })
         .collect()
 }
 
@@ -252,7 +208,7 @@ fn declared_methods(decls: &[Decl], base: &str) -> Vec<String> {
     decls
         .iter()
         .filter_map(|d| match &d.kind {
-            DeclKind::Impl(i) if i.target_ty.split('<').next() == Some(base) => {
+            DeclKind::Impl(i) if i.target_ty.name().as_deref() == Some(base) => {
                 Some(i.methods.iter().map(|m| m.name.clone()).collect::<Vec<_>>())
             }
             _ => None,

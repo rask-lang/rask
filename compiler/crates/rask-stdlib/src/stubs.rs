@@ -6,6 +6,7 @@
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::Span;
+use rask_ast::ty::TypeExpr;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -78,6 +79,21 @@ fn all_sources() -> &'static [(&'static str, &'static str)] {
 fn stub_file_id(index: usize) -> u16 {
     debug_assert!(index < STDLIB_FILE_COUNT as usize, "stub index out of range");
     STDLIB_FILE_ID_BASE + index as u16
+}
+
+/// Every stdlib file, parsed once. Each accessor below is a view of this, so a
+/// declaration has one `NodeId` whichever list it reached a pass through — the
+/// resolver's symbol for `spawn` and the checker's declaration of it agree on
+/// which node they mean. They used to be six separate parses, each numbering
+/// from its own base.
+fn parsed_stdlib() -> &'static [Option<Vec<Decl>>] {
+    static PARSED: OnceLock<Vec<Option<Vec<Decl>>>> = OnceLock::new();
+    PARSED.get_or_init(|| {
+        let mut next_id: u32 = 1_000_000;
+        (0..all_sources().len())
+            .map(|i| parse_stub(i, &mut next_id))
+            .collect()
+    })
 }
 
 /// One stub file's declarations, parsed with ids from `next_id` (which comes
@@ -198,7 +214,7 @@ pub struct MethodStub {
     pub mutate_self: bool,
     /// True if declared `take self` — method consumes the receiver.
     pub take_self: bool,
-    pub params: Vec<(String, String)>, // (name, type)
+    pub params: Vec<(String, TypeExpr)>, // (name, type)
     /// Each parameter's declared mode, positionally matching `params`.
     ///
     /// `take` on a parameter is the declaration saying the callee keeps what it
@@ -207,7 +223,8 @@ pub struct MethodStub {
     /// over, `m.get(k)` only reads it — and before this it had to guess from a
     /// list of method names kept by hand in two passes.
     pub param_modes: Vec<StubParamMode>,
-    pub ret_ty: String,
+    /// `void` when nothing is declared.
+    pub ret_ty: TypeExpr,
     pub doc: Option<String>,
     pub source_file: String,
     /// Byte offset span of the method name within the stub source.
@@ -251,7 +268,7 @@ pub struct MethodStub {
     /// checker builds module signatures from these stubs, and without the bound
     /// `json.decode<WithPtr>` type-checked clean and failed later, in MIR
     /// lowering on native and as a bogus "missing field" on interp.
-    pub type_param_bounds: Vec<(String, String)>,
+    pub type_param_bounds: Vec<(String, TypeExpr)>,
 }
 
 /// A type extracted from a stub file.
@@ -282,7 +299,11 @@ pub struct StubParamMode {
 #[derive(Debug, Clone)]
 pub struct FunctionStub {
     pub name: String,
-    pub params: Vec<(String, String)>,
+    /// The declaration this came from, as every other stdlib accessor numbers it.
+    pub decl_id: rask_ast::NodeId,
+    /// Parameters with no written type are left out of a stub's signature:
+    /// every stdlib parameter is annotated.
+    pub params: Vec<(String, TypeExpr)>,
     /// Each parameter's declared mode, positionally matching `params`.
     ///
     /// Kept beside the name/type pairs rather than folded into them because the
@@ -291,7 +312,8 @@ pub struct FunctionStub {
     /// defaulted to `false` there would quietly reject a correct `mutate` at a
     /// call site.
     pub param_modes: Vec<StubParamMode>,
-    pub ret_ty: String,
+    /// `void` when nothing is declared.
+    pub ret_ty: TypeExpr,
     pub doc: Option<String>,
     pub source_file: String,
     /// Byte offset span of the function name within the stub source.
@@ -330,11 +352,9 @@ impl StubRegistry {
                 functions: Vec::new(),
                 sources: HashMap::new(),
             };
-
-            let mut next_id: u32 = 5_000_000;
             for (stub_index, (filename, source)) in all_sources().iter().enumerate() {
                 registry.sources.insert(filename.to_string(), source);
-                let Some(decls) = parse_stub(stub_index, &mut next_id) else { continue };
+                let Some(decls) = parsed_stdlib()[stub_index].clone() else { continue };
                 for decl in &decls {
                     registry.process_decl(decl, filename, source);
                 }
@@ -352,10 +372,9 @@ impl StubRegistry {
     /// its parameter/return types, even when the body is empty.
     pub fn typecheck_decls() -> Vec<Decl> {
         let mut decls = Vec::new();
-        let mut next_id: u32 = 1_000_000;
 
         for stub_index in 0..all_sources().len() {
-            let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
+            let Some(parsed) = parsed_stdlib()[stub_index].clone() else { continue };
             for decl in parsed {
                 match &decl.kind {
                     DeclKind::Fn(_) | DeclKind::Impl(_) | DeclKind::Extern(_)
@@ -386,10 +405,9 @@ impl StubRegistry {
     pub fn compilable() -> CompilableStdlib {
         let mut decls = Vec::new();
         // Start NodeIds high to avoid collision with user code NodeIds.
-        let mut next_id: u32 = 1_000_000;
 
         for stub_index in 0..all_sources().len() {
-            let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
+            let Some(parsed) = parsed_stdlib()[stub_index].clone() else { continue };
             let has_fn_body = parsed.iter().any(|d| match &d.kind {
                 DeclKind::Fn(f) => !f.body.is_empty(),
                 DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
@@ -432,31 +450,6 @@ impl StubRegistry {
         CompilableStdlib { decls, operator_calls: desugared.operator_calls }
     }
 
-    /// Return struct/enum definitions from stdlib files that have compilable
-    /// function bodies. Injected into the monomorphizer for layout computation.
-    pub fn compilable_struct_defs() -> Vec<Decl> {
-        let mut decls = Vec::new();
-        let mut next_id: u32 = 2_000_000;
-
-        for stub_index in 0..all_sources().len() {
-            let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
-            let has_fn_body = parsed.iter().any(|d| match &d.kind {
-                DeclKind::Fn(f) => !f.body.is_empty(),
-                DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
-                _ => false,
-            });
-            if has_fn_body {
-                for decl in parsed {
-                    if matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_)) {
-                        decls.push(decl);
-                    }
-                }
-            }
-        }
-
-        decls
-    }
-
     /// Stdlib declarations that carry a default somewhere — a defaulted
     /// parameter or a defaulted struct field.
     ///
@@ -477,11 +470,10 @@ impl StubRegistry {
         static CACHE: OnceLock<Vec<Decl>> = OnceLock::new();
         CACHE.get_or_init(|| {
             let mut decls = Vec::new();
-            let mut next_id: u32 = 4_000_000;
 
             let defaulted = |f: &FnDecl| f.params.iter().any(|p| p.default.is_some());
             for stub_index in 0..all_sources().len() {
-                let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
+                let Some(parsed) = parsed_stdlib()[stub_index].clone() else { continue };
                 for decl in parsed {
                     let keep = match &decl.kind {
                         DeclKind::Fn(f) => defaulted(f),
@@ -507,10 +499,9 @@ impl StubRegistry {
     /// that the type checker needs for field access and pattern matching.
     pub fn all_type_decls() -> Vec<Decl> {
         let mut decls = Vec::new();
-        let mut next_id: u32 = 3_000_000;
 
         for stub_index in 0..all_sources().len() {
-            let Some(parsed) = parse_stub(stub_index, &mut next_id) else { continue };
+            let Some(parsed) = parsed_stdlib()[stub_index].clone() else { continue };
             for decl in parsed {
                 if matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_) | DeclKind::Impl(_)) {
                     decls.push(decl);
@@ -525,7 +516,7 @@ impl StubRegistry {
         let decl_span = decl.span;
         match &decl.kind {
             DeclKind::Struct(s) => {
-                let base_name = strip_type_params(&s.name);
+                let base_name = s.name.clone();
                 let name_span = find_name_span(source, &base_name, "struct", decl_span);
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name,
@@ -541,7 +532,7 @@ impl StubRegistry {
                 }
             }
             DeclKind::Enum(e) => {
-                let base_name = strip_type_params(&e.name);
+                let base_name = e.name.clone();
                 let name_span = find_name_span(source, &base_name, "enum", decl_span);
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name,
@@ -557,7 +548,7 @@ impl StubRegistry {
                 }
             }
             DeclKind::Impl(i) => {
-                let base_name = strip_type_params(&i.target_ty);
+                let base_name = i.target_ty.name().unwrap_or_default();
                 // OR6: `i64 implements Mul<Duration>` is a conformance, not a
                 // declaration that `i64` is a stdlib type. Filing it as one made
                 // `i64.MAX` a member of a type rather than a numeric constant,
@@ -567,7 +558,7 @@ impl StubRegistry {
                 // stdlib-implemented — `extend char { … }` in char.rk is where
                 // their methods come from — so an inherent block on a primitive
                 // still files the type it's written on.
-                if i.interface_name.is_some() && rask_ast::primitives::is_scalar(&base_name) {
+                if i.interface.is_some() && rask_ast::primitives::is_scalar(&base_name) {
                     if let Some(entry) = self.types.get_mut(&base_name) {
                         for m in &i.methods {
                             entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
@@ -591,9 +582,10 @@ impl StubRegistry {
                 let name_span = find_func_name_span(source, &f.name, decl_span);
                 self.functions.push(FunctionStub {
                     name: f.name.clone(),
+                    decl_id: decl.id,
                     params: f.params.iter()
                         .filter(|p| p.name != "self")
-                        .map(|p| (p.name.clone(), p.ty.clone()))
+                        .filter_map(|p| Some((p.name.clone(), p.ty.clone()?)))
                         .collect(),
                     param_modes: f.params.iter()
                         .filter(|p| p.name != "self")
@@ -603,7 +595,7 @@ impl StubRegistry {
                             is_deleting: p.is_deleting,
                         })
                         .collect(),
-                    ret_ty: f.ret_ty.clone().unwrap_or_default(),
+                    ret_ty: f.ret_ty.clone().unwrap_or(TypeExpr::Unit),
                     doc: f.doc.clone(),
                     source_file: format!("stdlib/{}", filename),
                     span: name_span,
@@ -676,10 +668,10 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
     for decl in decls.iter_mut() {
         let (target_ty, methods) = match &mut decl.kind {
             DeclKind::Enum(e) if !e.methods.is_empty() => {
-                (e.name.clone(), std::mem::take(&mut e.methods))
+                (declared_type(&e.name, &e.type_params), std::mem::take(&mut e.methods))
             }
             DeclKind::Struct(s) if !s.methods.is_empty() => {
-                (s.name.clone(), std::mem::take(&mut s.methods))
+                (declared_type(&s.name, &s.type_params), std::mem::take(&mut s.methods))
             }
             _ => continue,
         };
@@ -687,7 +679,7 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
             id: decl.id,
             span: decl.span,
             kind: DeclKind::Impl(rask_ast::decl::ImplDecl {
-                interface_name: None,
+                interface: None,
                 target_ty,
                 methods,
                 assoc_bindings: Vec::new(),
@@ -701,14 +693,23 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
     decls.extend(lifted);
 }
 
+/// The type a declaration declares, written the way an `extend` header would
+/// name it: `Vec<T>` for `struct Vec<T>`.
+fn declared_type(name: &str, type_params: &[rask_ast::decl::TypeParam]) -> TypeExpr {
+    TypeExpr::generic(
+        name.to_string(),
+        type_params.iter().map(|p| TypeExpr::named(p.name.clone())).collect(),
+    )
+}
+
 fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span) -> MethodStub {
     let self_param = f.params.iter().find(|p| p.name == "self");
     let takes_self = self_param.is_some();
     let mutate_self = self_param.map_or(false, |p| p.is_mutate);
     let take_self = self_param.map_or(false, |p| p.is_take);
-    let params: Vec<(String, String)> = f.params.iter()
+    let params: Vec<(String, TypeExpr)> = f.params.iter()
         .filter(|p| p.name != "self")
-        .map(|p| (p.name.clone(), p.ty.clone()))
+        .filter_map(|p| Some((p.name.clone(), p.ty.clone()?)))
         .collect();
     let param_modes: Vec<StubParamMode> = f.params.iter()
         .filter(|p| p.name != "self")
@@ -720,7 +721,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         .collect();
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
-    let bare_name = strip_type_params(&f.name);
+    let bare_name = f.name.clone();
     let span = find_func_name_span(source, &bare_name, parent_span);
 
     MethodStub {
@@ -730,7 +731,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         take_self,
         params,
         param_modes,
-        ret_ty: f.ret_ty.clone().unwrap_or_default(),
+        ret_ty: f.ret_ty.clone().unwrap_or(TypeExpr::Unit),
         doc: f.doc.clone(),
         source_file: format!("stdlib/{}", filename),
         span,
@@ -794,14 +795,6 @@ fn find_func_name_span(source: &str, name: &str, within: Span) -> Span {
 /// - Impl/extend blocks where at least one method has a non-empty body
 /// - Extern declarations (needed for C interop in stdlib)
 
-/// Strip type parameters from a name: "Vec<T>" → "Vec", "Map<K, V>" → "Map"
-fn strip_type_params(name: &str) -> String {
-    if let Some(idx) = name.find('<') {
-        name[..idx].to_string()
-    } else {
-        name.to_string()
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -812,7 +805,7 @@ mod tests {
             .find(|m| m.name == "decode")
             .expect("json.decode stub")
             .clone();
-        assert_eq!(m.type_param_bounds, vec![("T".to_string(), "Decode".to_string())]);
+        assert_eq!(m.type_param_bounds, vec![("T".to_string(), TypeExpr::named("Decode"))]);
     }
 
     use super::*;
@@ -1104,7 +1097,7 @@ mod tests {
         for (ty, method) in &checks {
             let m = reg.lookup_method(ty, method)
                 .unwrap_or_else(|| panic!("{}.{} not found", ty, method));
-            assert!(!m.ret_ty.is_empty(), "{}.{}() has empty return type", ty, method);
+            assert!(m.ret_ty != TypeExpr::Unit, "{}.{}() has no return type", ty, method);
         }
     }
 

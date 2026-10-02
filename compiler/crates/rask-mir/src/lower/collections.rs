@@ -10,6 +10,7 @@ use crate::{
     MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::ty::TypeExpr;
 use rask_mono::StructLayout;
 
 impl<'a> MirLowerer<'a> {
@@ -128,9 +129,9 @@ impl<'a> MirLowerer<'a> {
 
     /// Map.from([(k, v), ...]) → Map.new() + Map.insert() per pair.
     ///
-    /// `call` is the `Map.from(...)` expression and `name` the receiver as
-    /// written, because between them they say what the key and value types
-    /// are — and the constructor needs to be told.
+    /// `call` is the `Map.from(...)` expression and `written` the receiver's
+    /// type arguments, because between them they say what the key and value
+    /// types are — and the constructor needs to be told.
     ///
     /// It used to be told nothing: the call went out with no arguments and
     /// codegen filled in its generic defaults, one machine word per slot. A
@@ -141,20 +142,17 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn lower_map_from_pairs(
         &mut self,
         call: &Expr,
-        name: &str,
+        written: &[TypeExpr],
         elems: &[Expr],
     ) -> Result<TypedOperand, LoweringError> {
         // The checker knows the map's own type; the spelling answers when it
         // doesn't (`Map<string, i64>.from(…)` inside a stdlib body has no
         // recorded type). The first pair is the last resort.
-        let spelled = super::generic_args_of_str(name);
         let arg_ty = |i: usize| -> Option<MirType> {
             self.container_elem_mir_type(call.id, i)
         };
         let spelled_ty = |i: usize| -> Option<MirType> {
-            spelled.as_ref()
-                .and_then(|args| args.get(i).copied())
-                .map(|arg| self.ctx.resolve_type_str(arg))
+            written.get(i).map(|arg| self.ctx.resolve_type_expr(arg))
         };
         let pair_ty = |i: usize| -> Option<MirType> {
             elems.first().and_then(|e| match &e.kind {
@@ -170,18 +168,25 @@ impl<'a> MirLowerer<'a> {
         let val_ty = arg_ty(1).or_else(|| spelled_ty(1)).or_else(|| pair_ty(1))
             .unwrap_or(MirType::I64);
 
-        let ctor = crate::elem_strs::map_ctor_for(&key_ty);
         let tag = |ty: &MirType| crate::elem_strs::tag_of(Some(ty));
+        let mut args = vec![
+            MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
+            MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
+        ];
+        let ctor = match self.map_key_fn_addrs(call.id, &key_ty) {
+            Some((hash, eq)) => {
+                args.extend([hash, eq]);
+                "Map_new_keyed"
+            }
+            None => crate::elem_strs::map_ctor_for(&key_ty),
+        };
+        args.push(MirOperand::Constant(MirConst::Int(tag(&key_ty))));
+        args.push(MirOperand::Constant(MirConst::Int(tag(&val_ty))));
         let map_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map_local),
             func: FunctionRef::internal(ctor.to_string()),
-            args: vec![
-                MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
-                MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
-                MirOperand::Constant(MirConst::Int(tag(&key_ty))),
-                MirOperand::Constant(MirConst::Int(tag(&val_ty))),
-            ],
+            args,
         }));
 
         for elem in elems {
@@ -965,10 +970,8 @@ impl<'a> MirLowerer<'a> {
         // to an 8-byte slot silently halved every `string` value stored in it.
         if self.ctx.lookup_raw_type(node_id).is_none() {
             if let Some(hint) = self.field_type_hint.clone() {
-                if let Some(inner) = super::generic_args_of_str(&hint) {
-                    if let Some(arg) = inner.get(index) {
-                        return Self::mir_slot_size(&self.ctx.resolve_type_str(arg));
-                    }
+                if let Some(GenericArg::Type(arg)) = generic_args(&hint).and_then(|a| a.get(index)) {
+                    return Self::mir_slot_size(&self.ctx.type_to_mir(arg));
                 }
             }
         }
@@ -1071,26 +1074,8 @@ impl<'a> MirLowerer<'a> {
         self.head_name(&ty)
     }
 
-    /// The head name of a type, for the container tests. Associated rather than
-    /// a method where the caller has a borrowed type; `head_name` is the
-    /// borrowing form.
-    fn rask_type_head(ty: &rask_types::Type) -> Option<String> {
-        use rask_types::Type;
-        match ty {
-            Type::UnresolvedGeneric { name, .. } | Type::UnresolvedNamed(name) => {
-                Some(name.clone())
-            }
-            _ => None,
-        }
-    }
-
     pub(super) fn head_name(&self, ty: &rask_types::Type) -> Option<String> {
-        use rask_types::Type;
-        match ty {
-            Type::Generic { base, .. } => self.ctx.type_names.get(base).cloned(),
-            Type::Named(id) => self.ctx.type_names.get(id).cloned(),
-            other => Self::rask_type_head(other),
-        }
+        ty.head_name(self.ctx.type_names).map(str::to_string)
     }
 
     /// How wide one channel element is, for the receive buffer.
@@ -1101,7 +1086,7 @@ impl<'a> MirLowerer<'a> {
     /// to its own `Receiver<T>` type — otherwise a 24-byte struct was received
     /// into an 8-byte buffer and smashed the stack (#360).
     pub(super) fn channel_elem_size(&self, object: &rask_ast::expr::Expr) -> i64 {
-        if let rask_ast::expr::ExprKind::Ident(var_name) = &object.kind {
+        if let Some(var_name) = object.name() {
             if let Some(size) = self.meta(var_name).and_then(|m| m.channel_elem_size) {
                 return size;
             }

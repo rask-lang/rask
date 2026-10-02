@@ -12,6 +12,7 @@ use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
 use rask_ast::decl::{field_attrs, StructDecl};
+use rask_ast::ty::TypeExpr;
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{FloatKind, MapData, MapKey, Value};
@@ -77,38 +78,35 @@ impl Interpreter {
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
                 value_to_json(&value, &self.struct_decls, &self.enums)
             }
-            "decode" => {
-                // decode(type_name, json_string) — type_name injected from type_args
-                if args.len() < 2 {
-                    return Err(RuntimeError::ArityMismatch {
-                        expected: 2,
-                        got: args.len(),
-                    });
-                }
-                let type_name = self.expect_string(&args, 0)?;
-                let input = self.expect_string(&args, 1)?;
-                // The untyped path is a Rask function — `json.parse` in
-                // stdlib/json.rk, which is also what native calls. Its
-                // JsonParser is the grammar; the Rust one below is only still
-                // here for the typed path, where the target's fields come from
-                // struct declarations rather than from the text.
-                if type_name == "JsonValue" {
-                    let text = Value::String(Arc::new(Mutex::new(input)));
-                    return self.call_rask_static("json", "parse", vec![text]);
-                }
-                let parsed = match parse_json(&input) {
-                    Ok(v) => v,
-                    Err(e) => return Ok(make_result_err(JsonErrKind::Parse, &e)),
-                };
-                match json_to_typed(&parsed, &type_name, "", &self.struct_decls) {
-                    Ok(value) => Ok(make_result_ok(value)),
-                    Err(e) => Ok(make_result_err(e.kind, &e.message)),
-                }
-            }
+            "decode" => Err(RuntimeError::TypeError(
+                "json.decode needs the target type: json.decode<T>(text)".into(),
+            )),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "json".to_string(),
                 method: method.to_string(),
             }),
+        }
+    }
+
+    /// `json.decode<T>(text)`.
+    pub(crate) fn json_decode(&mut self, ty: &TypeExpr, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        let input = self.expect_string(&args, 0)?;
+        // The untyped path is a Rask function — `json.parse` in stdlib/json.rk,
+        // which is also what native calls. Its JsonParser is the grammar; the
+        // Rust one below is only still here for the typed path, where the
+        // target's fields come from struct declarations rather than from the
+        // text.
+        if ty.is_name("JsonValue") {
+            let text = Value::String(Arc::new(Mutex::new(input)));
+            return self.call_rask_static("json", "parse", vec![text]);
+        }
+        let parsed = match parse_json(&input) {
+            Ok(v) => v,
+            Err(e) => return Ok(make_result_err(JsonErrKind::Parse, &e)),
+        };
+        match json_to_typed(&parsed, ty, "", &self.struct_decls) {
+            Ok(value) => Ok(make_result_ok(value)),
+            Err(e) => Ok(make_result_err(e.kind, &e.message)),
         }
     }
 
@@ -250,7 +248,7 @@ impl<'a> JsonParser<'a> {
     fn parse_string_raw(&mut self) -> Result<String, String> {
         self.expect(b'"')?;
         let mut bytes: Vec<u8> = Vec::new();
-        let mut push_char = |bytes: &mut Vec<u8>, c: char| {
+        let push_char = |bytes: &mut Vec<u8>, c: char| {
             let mut buf = [0u8; 4];
             bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
         };
@@ -562,7 +560,7 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
             if map.is_empty() {
                 return "{}".to_string();
             }
-            let key_of = |k: &MapKey| match &k.0 {
+            let key_of = |k: &MapKey| match &k.value {
                 Value::String(s) => escape_json_string(&s.lock().unwrap()),
                 other => escape_json_string(&format!("{}", other)),
             };
@@ -758,7 +756,7 @@ fn value_to_json(
             let map = m.lock().unwrap();
             let mut entries = Vec::with_capacity(map.len());
             for (k, v) in map.iter() {
-                let key = match &k.0 {
+                let key = match &k.value {
                     Value::String(s) => s.lock().unwrap().clone(),
                     other => format!("{}", other),
                 };
@@ -943,7 +941,7 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
     // Last value wins for a repeated key (J5) — `insert` already does that.
     let mut pairs = MapData::with_capacity(entries.len());
     for (k, v) in entries {
-        pairs.insert(MapKey(Value::String(Arc::new(Mutex::new(k)))), v);
+        pairs.insert(MapKey::string(k), v);
     }
     Value::Enum {
         name: "JsonValue".to_string(),
@@ -1008,19 +1006,16 @@ fn child_path(path: &str, name: &str) -> String {
     }
 }
 
-/// Convert a parsed JsonValue into a typed Rask value. `ty` is the target's
-/// written type — the same strings struct declarations carry, so `Vec<Tag>`,
-/// `Map<string, i64>` and `string?` all arrive here verbatim.
+/// Convert a parsed JsonValue into a typed Rask value. `ty` is the target as
+/// written — the same types struct declarations carry.
 fn json_to_typed(
     json: &Value,
-    ty: &str,
+    ty: &TypeExpr,
     path: &str,
     struct_decls: &HashMap<String, StructDecl>,
 ) -> Result<Value, JsonErr> {
-    let ty = ty.trim();
-
     // `T?` — null or absent becomes none, anything else Some(T).
-    if let Some(inner) = strip_optional(ty) {
+    if let TypeExpr::Optional(inner) = ty {
         if is_json_null(json) {
             return Ok(option_none());
         }
@@ -1028,58 +1023,59 @@ fn json_to_typed(
     }
 
     // The untyped tree, handed back as-is.
-    if ty == "JsonValue" {
+    if ty.is_name("JsonValue") {
         return Ok(json.clone());
     }
 
     let raw = unwrap_json_value(json);
 
-    if let Some(inner) = generic_arg(ty, "Vec") {
-        let Value::Vec(items) = raw else {
-            return Err(type_err(path, "a list", json));
-        };
-        let items = items.lock().unwrap().clone();
-        let mut out = Vec::with_capacity(items.len());
-        for (i, item) in items.iter().enumerate() {
-            let base = if path.is_empty() { "the list" } else { path };
-            out.push(json_to_typed(item, &inner, &format!("{}[{}]", base, i), struct_decls)?);
+    match (ty.name().as_deref(), ty.args()) {
+        (Some("Vec"), [elem]) => {
+            let Value::Vec(items) = raw else {
+                return Err(type_err(path, "a list", json));
+            };
+            let items = items.lock().unwrap().clone();
+            let mut out = Vec::with_capacity(items.len());
+            for (i, item) in items.iter().enumerate() {
+                let base = if path.is_empty() { "the list" } else { path };
+                out.push(json_to_typed(item, elem, &format!("{}[{}]", base, i), struct_decls)?);
+            }
+            return Ok(Value::vec(out));
         }
-        return Ok(Value::vec(out));
-    }
-
-    if let Some(args) = generic_args(ty, "Map") {
-        if args.len() == 2 {
-            if args[0].trim() != "string" {
+        (Some("Map"), [key, value_ty]) => {
+            if !key.is_name("string") {
                 return Err(JsonErr {
                     kind: JsonErrKind::Type,
                     message: format!(
                         "a Map decoded from JSON needs string keys, not `{}` — JSON object keys are always strings",
-                        args[0].trim()
+                        key.source()
                     ),
                 });
             }
             let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
             let mut pairs = MapData::with_capacity(entries.len());
             for (k, v) in entries {
-                let value = json_to_typed(&v, &args[1], &child_path(path, &k), struct_decls)?;
-                pairs.insert(MapKey(Value::String(Arc::new(Mutex::new(k)))), value);
+                let value = json_to_typed(&v, value_ty, &child_path(path, &k), struct_decls)?;
+                pairs.insert(MapKey::string(k), value);
             }
             return Ok(Value::Map(Arc::new(Mutex::new(pairs))));
         }
+        _ => {}
     }
 
-    match ty {
+    let name = ty.bare_name().unwrap_or_default();
+    match name {
         "string" => extract_string(raw).map_err(|_| type_err(path, "string", json)),
         "bool" => extract_bool(raw).map_err(|_| type_err(path, "bool", json)),
-        "f32" | "f64" | "float" => extract_float(raw).map_err(|_| type_err(path, ty, json)),
-        _ if rask_ast::primitives::is_machine_integer(ty)
-            || rask_ast::primitives::INT_ALIASES.contains(&ty) => {
-            extract_int(raw, int_kind(ty)).map_err(|_| type_err(path, "an integer", json))
+        "f32" | "f64" | "float" => extract_float(raw).map_err(|_| type_err(path, name, json)),
+        _ if rask_ast::primitives::is_machine_integer(name)
+            || rask_ast::primitives::INT_ALIASES.contains(&name) => {
+            extract_int(raw, int_kind(name)).map_err(|_| type_err(path, "an integer", json))
         }
         _ => {
-            let decl = struct_decls.get(ty).ok_or_else(|| JsonErr {
+            let decl = struct_decls.get(name).ok_or_else(|| JsonErr {
                 kind: JsonErrKind::Type,
-                message: format!("`{}` isn't a type json.decode knows how to build", ty),
+                message: format!("`{}` isn't a type json.decode knows how to build", ty.source()),
             })?;
             let entries = object_entries(raw).ok_or_else(|| type_err(path, "an object", json))?;
             let mut fields = IndexMap::new();
@@ -1105,7 +1101,7 @@ fn json_to_typed(
                         fields.insert(field.name.clone(), value);
                     }
                     // A `T?` field takes `none`; anything else has to be there (J9).
-                    None if strip_optional(&field.ty).is_some() => {
+                    None if matches!(field.ty, TypeExpr::Optional(_)) => {
                         fields.insert(field.name.clone(), option_none());
                     }
                     // `@default` covers a missing key, and so does a declared
@@ -1127,7 +1123,7 @@ fn json_to_typed(
                 }
             }
             // Keys the struct doesn't declare are skipped (J10).
-            Ok(Value::new_struct(ty.to_string(), fields, None))
+            Ok(Value::new_struct(name.to_string(), fields, None))
         }
     }
 }
@@ -1175,8 +1171,8 @@ fn default_value(
     empty_value(&field.ty, struct_decls)
 }
 
-fn literal_value(literal: &str, ty: &str) -> Option<Value> {
-    let ty = ty.trim();
+fn literal_value(literal: &str, ty: &TypeExpr) -> Option<Value> {
+    let ty = ty.bare_name()?;
     match ty {
         "string" => field_attrs::string_literal(literal)
             .map(|s| Value::String(Arc::new(Mutex::new(s)))),
@@ -1190,30 +1186,31 @@ fn literal_value(literal: &str, ty: &str) -> Option<Value> {
     }
 }
 
-fn empty_value(ty: &str, struct_decls: &HashMap<String, StructDecl>) -> Value {
-    let ty = ty.trim();
-    if strip_optional(ty).is_some() {
+fn empty_value(ty: &TypeExpr, struct_decls: &HashMap<String, StructDecl>) -> Value {
+    if matches!(ty, TypeExpr::Optional(_)) {
         return option_none();
     }
-    if generic_arg(ty, "Vec").is_some() {
-        return Value::vec(Vec::new());
+    match ty.name().as_deref() {
+        Some("Vec") if !ty.args().is_empty() => return Value::vec(Vec::new()),
+        Some("Map") if !ty.args().is_empty() => {
+            return Value::Map(Arc::new(Mutex::new(MapData::new())));
+        }
+        _ => {}
     }
-    if generic_args(ty, "Map").is_some() {
-        return Value::Map(Arc::new(Mutex::new(MapData::new())));
-    }
-    match ty {
+    let name = ty.bare_name().unwrap_or_default();
+    match name {
         "string" => Value::String(Arc::new(Mutex::new(String::new()))),
         "bool" => Value::Bool(false),
         "f32" | "f64" | "float" => Value::Float(0.0, FloatKind::Untyped),
-        _ if rask_ast::primitives::is_machine_integer(ty)
-            || rask_ast::primitives::INT_ALIASES.contains(&ty) => Value::Int(0, int_kind(ty)),
-        _ => match struct_decls.get(ty) {
+        _ if rask_ast::primitives::is_machine_integer(name)
+            || rask_ast::primitives::INT_ALIASES.contains(&name) => Value::Int(0, int_kind(name)),
+        _ => match struct_decls.get(name) {
             Some(decl) => {
                 let mut fields = IndexMap::new();
                 for f in &decl.fields {
                     fields.insert(f.name.clone(), empty_value(&f.ty, struct_decls));
                 }
-                Value::new_struct(ty.to_string(), fields, None)
+                Value::new_struct(name.to_string(), fields, None)
             }
             None => Value::Unit,
         },
@@ -1235,38 +1232,6 @@ fn int_kind(ty: &str) -> crate::value::IntKind {
         "usize" => IntKind::usize_kind(),
         _ => IntKind::Untyped,
     }
-}
-
-/// `T?` → `T`. Only the trailing `?` counts; `Map<string, i64?>` keeps its own.
-fn strip_optional(ty: &str) -> Option<&str> {
-    ty.trim().strip_suffix('?').map(str::trim)
-}
-
-fn generic_arg(ty: &str, name: &str) -> Option<String> {
-    generic_args(ty, name)?.into_iter().next()
-}
-
-/// The arguments of `Name<…>`, split on commas outside nested angle brackets.
-fn generic_args(ty: &str, name: &str) -> Option<Vec<String>> {
-    let ty = ty.trim();
-    let rest = ty.strip_prefix(name)?.trim_start();
-    let inner = rest.strip_prefix('<')?.strip_suffix('>')?;
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => {
-                out.push(inner[start..i].trim().to_string());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    out.push(inner[start..].trim().to_string());
-    Some(out)
 }
 
 /// Unwrap a JsonValue enum to its inner content for easier inspection.
@@ -1331,7 +1296,7 @@ fn object_entries(v: &Value) -> Option<Vec<(String, Value)>> {
             let map = m.lock().unwrap();
             let mut out = Vec::with_capacity(map.len());
             for (k, val) in map.iter() {
-                let Value::String(s) = &k.0 else { continue };
+                let Value::String(s) = &k.value else { continue };
                 out.push((s.lock().unwrap().clone(), val.clone()));
             }
             Some(out)

@@ -84,7 +84,26 @@ test "a struct without an eq body still compares field by field" {
     assert p != r
 }
 
+// The derived `eq` has no body, so calling it by name has to reach the same
+// structural comparison `==` does, not look for a `Pair_eq` that was never
+// emitted.
+test "a derived eq called by name" {
+    let p = Pair { a: 1, b: 2 }
+    let q = Pair { a: 1, b: 2 }
+    let r = Pair { a: 1, b: 3 }
+    assert p.eq(q)
+    assert p.eq(r) == false
+    assert Level.Low.label() == "low"
+    assert Shade.Red.eq(Shade.Red)
+    assert Shade.Red.eq(Shade.Blue) == false
+}
+
 struct Pair {
     public a: i64
     public b: i64
+}
+
+enum Shade {
+    Red
+    Blue
 }

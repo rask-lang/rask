@@ -19,6 +19,8 @@
 /// `Equal` and `Comparable` are absent on purpose — OR9 keeps comparison
 /// same-type on both sides, so `eq`/`lt`/… are not resolved on the pair and
 /// their conformances need no disambiguation.
+use crate::ty::TypeExpr;
+
 pub const OPERATOR_TRAITS: &[(&str, &str)] = &[
     ("add", "Add"),
     ("sub", "Sub"),
@@ -62,22 +64,41 @@ pub fn is_unary_operator_interface(interface_base: &str) -> bool {
 /// `target_ty` is the `extend` header's type, which is what `Rhs` defaults to
 /// (`type.generics/GT4`): `Point implements Add` is `Add<Point>`.
 pub fn conformance_method_name(
-    target_ty: &str,
-    interface_ref: Option<&str>,
+    target_ty: &TypeExpr,
+    interface: Option<&TypeExpr>,
     method: &str,
 ) -> Option<String> {
-    let self_base = base_name(target_ty);
-    let interface_ref = interface_ref?;
-    let base = base_name(interface_ref);
-    if operator_interface_method(base) != Some(method) {
+    let interface = interface?;
+    let rhs = interface.args().first().and_then(TypeExpr::name);
+    filed_operator_method(&target_ty.name()?, &interface.name()?, rhs.as_deref(), method)
+}
+
+/// `conformance_method_name` on names: the receiver's, the interface's, and the
+/// head of its applied `Rhs` when one is written.
+pub fn filed_operator_method(
+    self_base: &str,
+    interface_base: &str,
+    rhs: Option<&str>,
+    method: &str,
+) -> Option<String> {
+    if operator_interface_method(interface_base) != Some(method) {
         return None;
     }
-    if is_unary_operator_interface(base) {
+    let rhs = filed_rhs(self_base, interface_base, rhs)?;
+    Some(format!("{}${}", method, rhs))
+}
+
+/// The `Rhs` an operator conformance's method is filed under: what the header
+/// wrote, or the receiver when it wrote nothing or `Self`. `None` for a unary
+/// interface, which has no `Rhs`.
+pub fn filed_rhs(self_base: &str, interface_base: &str, rhs: Option<&str>) -> Option<String> {
+    if is_unary_operator_interface(interface_base) {
         return None;
     }
-    let rhs = interface_ref_arg(interface_ref).unwrap_or(self_base);
-    let rhs = if rhs == "Self" { self_base } else { rhs };
-    Some(format!("{}${}", method, base_name(rhs)))
+    Some(match rhs {
+        None | Some("Self") => self_base.to_string(),
+        Some(r) => r.to_string(),
+    })
 }
 
 /// The operator method a filed name stands for: `mul$f64` → `mul`.
@@ -88,62 +109,44 @@ pub fn method_display(name: &str) -> &str {
     }
 }
 
-/// The `Rhs` a filed operator method names: `mul$f64` → `f64`.
-pub fn method_rhs(name: &str) -> Option<&str> {
-    match name.split_once('$') {
-        Some((base, rhs)) if operator_interface_method_exists(base) => Some(rhs),
-        _ => None,
-    }
-}
-
 fn operator_interface_method_exists(method: &str) -> bool {
     OPERATOR_TRAITS.iter().any(|(m, _)| *m == method)
-}
-
-/// The written type argument of an interface reference: `Mul<f64>` → `f64`.
-fn interface_ref_arg(interface_ref: &str) -> Option<&str> {
-    let (_, rest) = interface_ref.split_once('<')?;
-    let inner = rest.trim().strip_suffix('>')?;
-    let first = inner.split(',').next()?.trim();
-    (!first.is_empty()).then_some(first)
-}
-
-fn base_name(s: &str) -> &str {
-    s.split('<').next().unwrap_or(s).trim()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn n(s: &str) -> TypeExpr {
+        TypeExpr::named(s)
+    }
+
     #[test]
     fn the_applied_argument_goes_into_the_name() {
-        let iface = Some("Mul<f64>");
+        let iface = TypeExpr::generic("Mul", vec![n("f64")]);
         assert_eq!(
-            conformance_method_name("Meters", iface, "mul").as_deref(),
+            conformance_method_name(&n("Meters"), Some(&iface), "mul").as_deref(),
             Some("mul$f64")
         );
     }
 
     #[test]
     fn a_bare_header_means_the_receiver() {
-        let iface = Some("Add");
         assert_eq!(
-            conformance_method_name("Point", iface, "add").as_deref(),
+            conformance_method_name(&n("Point"), Some(&n("Add")), "add").as_deref(),
             Some("add$Point")
         );
     }
 
     #[test]
     fn a_unary_operator_keeps_its_name() {
-        let iface = Some("Neg");
-        assert_eq!(conformance_method_name("Point", iface, "neg"), None);
+        assert_eq!(conformance_method_name(&n("Point"), Some(&n("Neg")), "neg"), None);
     }
 
     #[test]
     fn a_method_the_interface_did_not_ask_for_keeps_its_name() {
-        let iface = Some("Mul<f64>");
-        assert_eq!(conformance_method_name("Meters", iface, "scaled"), None);
+        let iface = TypeExpr::generic("Mul", vec![n("f64")]);
+        assert_eq!(conformance_method_name(&n("Meters"), Some(&iface), "scaled"), None);
     }
 
     #[test]
@@ -152,7 +155,5 @@ mod tests {
         assert_eq!(method_display("mul"), "mul");
         // Not an operator method: a `$` in some other name stays put.
         assert_eq!(method_display("render$html"), "render$html");
-        assert_eq!(method_rhs("mul$Meters"), Some("Meters"));
-        assert_eq!(method_rhs("scale"), None);
     }
 }

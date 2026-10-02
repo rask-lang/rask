@@ -11,85 +11,11 @@ use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
 use super::errors::{IndexErrorKind, InvalidCastClass, TypeError};
 use super::inference::{LiteralKind, TypeConstraint};
-use super::parse_type::{parse_type_string, split_type_args};
+use super::parse_type::resolve_type_expr;
+use rask_ast::ty::TypeExpr;
 use super::TypeChecker;
 
 use crate::types::{GenericArg, Type};
-
-/// Parse a type argument string into a Type, handling nested generics.
-/// "Map<string, bool>" → UnresolvedGeneric { name: "Map", args: [string, bool] }
-/// "Route" → UnresolvedNamed("Route")
-fn parse_type_arg(s: &str) -> Type {
-    // A function type, before the generic test below: `func(Vec<i64>) -> i64`
-    // has a `<` in it and is not a generic. Without this arm the argument of
-    // `Map<string, func(i64) -> i64>.new()` stayed a bare name, so the closure
-    // handed to `insert` never learned what its parameter was — `|x| x + 1`
-    // lowered as pointer arithmetic and answered 13 for 5 (#1151).
-    if let Some(rest) = s.trim().strip_prefix("func(") {
-        let mut depth = 1usize;
-        let close = rest.char_indices().find_map(|(i, c)| match c {
-            '(' => {
-                depth += 1;
-                None
-            }
-            ')' => {
-                depth -= 1;
-                (depth == 0).then_some(i)
-            }
-            _ => None,
-        });
-        if let Some(close) = close {
-            let params = split_type_args(&rest[..close])
-                .into_iter()
-                .map(parse_type_arg)
-                .collect();
-            let ret = rest[close + 1..]
-                .trim()
-                .strip_prefix("->")
-                .map(|r| parse_type_arg(r.trim()))
-                .unwrap_or(Type::Unit);
-            return Type::Fn { params, ret: Box::new(ret) };
-        }
-    }
-    if let Some(open) = s.find('<') {
-        let base = &s[..open];
-        let inner = &s[open+1..s.len()-1];
-        let args = split_type_args(inner)
-            .into_iter()
-            .map(|a| GenericArg::Type(Box::new(parse_type_arg(a))))
-            .collect();
-        Type::UnresolvedGeneric {
-            name: base.to_string(),
-            args,
-        }
-    } else {
-        // Map primitive names directly; otherwise they leak as UnresolvedNamed
-        // and method resolution can't dispatch (e.g. `Vec<i32>.new()` followed
-        // by `v[0] + 5` looking up `i32.add`).
-        match s {
-            "i8" => Type::I8,
-            "i16" => Type::I16,
-            "i32" => Type::I32,
-            "i64" | "int" => Type::I64,
-            "isize" => Type::isize_ty(),
-            "i128" => Type::I128,
-            "u8" => Type::U8,
-            "u16" => Type::U16,
-            "u32" => Type::U32,
-            "u64" | "uint" => Type::U64,
-            "usize" => Type::usize_ty(),
-            "u128" => Type::U128,
-            "f32" => Type::F32,
-            "f64" => Type::F64,
-            "bool" => Type::Bool,
-            "char" => Type::Char,
-            "string" => Type::String,
-            "void" | "()" => Type::Unit,
-            "none" => Type::None,
-            _ => Type::UnresolvedNamed(s.to_string()),
-        }
-    }
-}
 
 impl TypeChecker {
     /// Walk a block body and return the type it produces.
@@ -297,13 +223,13 @@ impl TypeChecker {
     fn collection_elem_type(&self, expected: &Type) -> Option<Type> {
         let elem = match expected {
             Type::Array { elem, .. } => (**elem).clone(),
-            Type::Generic { base, args } if self.types.type_name(*base).split('<').next() == Some("Vec") => {
+            Type::Generic { base, args } if self.types.type_name(*base) == "Vec" => {
                 match args.first()? {
                     GenericArg::Type(t) => (**t).clone(),
                     _ => return None,
                 }
             }
-            Type::UnresolvedGeneric { name, args } if name.split('<').next() == Some("Vec") => {
+            Type::UnresolvedGeneric { name, args } if name == "Vec" => {
                 match args.first()? {
                     GenericArg::Type(t) => (**t).clone(),
                     _ => return None,
@@ -318,19 +244,18 @@ impl TypeChecker {
     }
 
     /// A generic *enum* named with its type arguments written out —
-    /// `Holder<i64>` — as the instantiated type. `None` for anything else, so an
-    /// undefined variable still reports as one and a struct or container keeps
-    /// whatever path it already took.
-    fn spelled_out_enum_name(&self, name: &str) -> Option<Type> {
-        if !name.contains('<') {
+    /// `Holder<i64>` — as the instantiated type. `None` for anything else, so a
+    /// struct or container keeps whatever path it already took.
+    fn spelled_out_enum(&self, name: &str, type_args: &[TypeExpr]) -> Option<Type> {
+        if type_args.is_empty() {
             return None;
         }
-        let base = name.split('<').next()?.trim();
+        let base = rask_stdlib::modules::strip_module_qualifier(name);
         let type_id = self.types.get_type_id(base)?;
         if !matches!(self.types.get(type_id), Some(TypeDef::Enum { .. })) {
             return None;
         }
-        match parse_type_string(name, &self.types) {
+        match resolve_type_expr(&TypeExpr::generic(base, type_args.to_vec()), &self.types) {
             Ok(ty @ Type::Generic { .. }) => Some(ty),
             _ => None,
         }
@@ -363,7 +288,7 @@ impl TypeChecker {
     /// at the first method call (#335, #474, #481).
     /// An explicit `x as any Interface` boxes itself, so it needs no second box.
     fn is_any_cast(expr: &Expr) -> bool {
-        matches!(&expr.kind, ExprKind::Cast { ty, .. } if ty.starts_with("any "))
+        matches!(&expr.kind, ExprKind::Cast { ty: TypeExpr::Any(_), .. })
     }
 
     /// The same question for a collection element whose container only settled
@@ -543,7 +468,7 @@ impl TypeChecker {
             // OPT3: `none` is `T?` with inner type inferred from context.
             ExprKind::None => Type::option(self.ctx.fresh_var()),
 
-            ExprKind::Ident(name) => {
+            ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
                 // D1: use after discard is a compile error
                 if let Some(&discard_span) = self.discarded_bindings.get(name.as_str()) {
                     self.errors.push(TypeError::UseAfterDiscard {
@@ -553,17 +478,13 @@ impl TypeChecker {
                     });
                     return Type::Error;
                 }
-                // `Holder<i64>.Empty` — the parser folds written type arguments into
-                // the name, so the object of that field access is an identifier
-                // nobody declared. The resolver still points it at the enum's
-                // symbol, whose type carries no arguments, so the variant reference
-                // came out with a fresh variable for `T` and the binding was
-                // "type is still open". A fieldless variant has no payload to infer
-                // from, so the written arguments are the only place `T` can come
-                // from. Ahead of the ordinary lookups because the resolver's answer
-                // is the one that loses them — and no variable is spelled with
-                // angle brackets (#782).
-                if let Some(ty) = self.spelled_out_enum_name(name) {
+                // `Holder<i64>.Empty`: the resolver points the name at the enum's
+                // symbol, whose type carries no arguments, so the variant
+                // reference came out with a fresh variable for `T` and the
+                // binding was "type is still open". A fieldless variant has no
+                // payload to infer from, so the written arguments are the only
+                // place `T` can come from (#782).
+                if let Some(ty) = self.spelled_out_enum(name, expr.written_type_args()) {
                     return ty;
                 }
                 if let Some(ty) = self.lookup_local(name) {
@@ -597,8 +518,8 @@ impl TypeChecker {
                     ty
                 } else if let Some(type_id) = self
                     .types
-                    .alias_target(name)
-                    .and_then(|target| self.types.get_type_id(target))
+                    .alias_target_name(name)
+                    .and_then(|target| self.types.get_type_id(&target))
                 {
                     // A transparent alias used where a type name goes — the
                     // receiver of `Zwibble.make(7)`, say. The resolver points
@@ -740,6 +661,9 @@ impl TypeChecker {
                 self.in_stmt_expr = false;
                 let ty = self
                     .check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span);
+                if method == "eq" && args.len() == 1 && self.operator_calls.contains(&expr.id) {
+                    self.pending_wrapper_eq.push((expr.id, object.id, args[0].expr.id));
+                }
                 // ST1: `staged()` hands back a working copy and commits it when
                 // a scope exits, so it only means anything as the source of
                 // one. `let v = s.staged()` type-checked as an ordinary method
@@ -1096,11 +1020,8 @@ impl TypeChecker {
                 result
             }
 
-            ExprKind::StructLit { name, fields, spread } => {
-                // A struct-lit name may carry explicit generic args:
-                // `Ring<i64> { ... }`. Look up the base, remember the args.
-                //
-                // And it may carry the module that exports it. Types are filed
+            ExprKind::StructLit { name, type_args, fields, spread } => {
+                // A struct-lit name may carry the module that exports it. Types are filed
                 // under the bare name, so `http.Response { … }` missed the
                 // lookup and skipped *everything* below — the field types went
                 // unchecked and FD4's "every field must be given" never fired,
@@ -1109,9 +1030,7 @@ impl TypeChecker {
                 // #1113). `strip_module_qualifier` only strips a head that
                 // really is a module, so an enum variant's `A4.N { v: 5 }` is
                 // untouched.
-                let base_name = rask_stdlib::modules::strip_module_qualifier(
-                    name.split('<').next().unwrap_or(name),
-                );
+                let base_name = rask_stdlib::modules::strip_module_qualifier(name);
                 // Annotations are comptime data — attached with @name(...),
                 // read through reflect, never constructed as runtime values.
                 if self.annotation_types.contains(base_name) {
@@ -1124,13 +1043,13 @@ impl TypeChecker {
                     });
                     return Type::Error;
                 }
-                let explicit_args: Option<Vec<GenericArg>> = if name.contains('<') {
-                    match parse_type_string(name, &self.types) {
+                let explicit_args: Option<Vec<GenericArg>> = if type_args.is_empty() {
+                    None
+                } else {
+                    match resolve_type_expr(&TypeExpr::generic(base_name, type_args.clone()), &self.types) {
                         Ok(Type::Generic { args, .. }) => Some(args),
                         _ => None,
                     }
-                } else {
-                    None
                 };
                 if let Some(ty) = self.types.lookup(base_name) {
                     if let Type::Named(type_id) = &ty {
@@ -1756,7 +1675,7 @@ impl TypeChecker {
                     .iter()
                     .map(|p| {
                         p.ty.as_ref()
-                            .and_then(|t| parse_type_string(t, &self.types).ok())
+                            .and_then(|t| resolve_type_expr(t, &self.types).ok())
                             .unwrap_or_else(|| self.ctx.fresh_var())
                     })
                     .collect();
@@ -1804,7 +1723,7 @@ impl TypeChecker {
 
                 // Check declared return type if present
                 let ret_ty = if let Some(declared) = declared_ret {
-                    let expected_ret = parse_type_string(declared, &self.types)
+                    let expected_ret = resolve_type_expr(declared, &self.types)
                         .unwrap_or(Type::Error);
                     if let Err(err) = self.unify(&closure_return_type, &expected_ret, expr.span) {
                         self.errors.push(err);
@@ -1833,7 +1752,7 @@ impl TypeChecker {
 
             ExprKind::Cast { expr: inner, ty } => {
                 let inner_ty = self.infer_expr(inner);
-                let target = parse_type_string(ty, &self.types).unwrap_or(Type::Error);
+                let target = resolve_type_expr(ty, &self.types).unwrap_or(Type::Error);
 
                 // Validate interface satisfaction for `as any Interface` casts
                 if let Type::InterfaceObject { ref interface_name } = target {
@@ -1858,7 +1777,7 @@ impl TypeChecker {
                     self.pending_casts.push(PendingCast {
                         source: inner_ty,
                         target: target.clone(),
-                        target_name: ty.clone(),
+                        target_name: ty.to_string(),
                         convert: None,
                         span: expr.span,
                     });
@@ -1880,7 +1799,7 @@ impl TypeChecker {
                     if !self.in_unsafe {
                         self.errors.push(TypeError::AsCastNotConvertible {
                             src_ty: inner_ty.clone(),
-                            target_name: ty.clone(),
+                            target_name: ty.to_string(),
                             span: expr.span,
                         });
                     }
@@ -1891,11 +1810,11 @@ impl TypeChecker {
 
             ExprKind::Convert { expr: inner, target, kind } => {
                 let inner_ty = self.infer_expr(inner);
-                let target_ty = parse_type_string(target, &self.types).unwrap_or(Type::Error);
+                let target_ty = resolve_type_expr(target, &self.types).unwrap_or(Type::Error);
                 self.pending_casts.push(PendingCast {
                     source: inner_ty,
                     target: target_ty.clone(),
-                    target_name: target.clone(),
+                    target_name: target.to_string(),
                     convert: Some(*kind),
                     span: expr.span,
                 });
@@ -2059,10 +1978,6 @@ impl TypeChecker {
                     // type, so the compiler can decide it — and ctrl.panic/S7
                     // says a condition fixed at the declaration is a diagnostic,
                     // not a runtime message.
-                    let stages = matches!(
-                        &binding.source.kind,
-                        ExprKind::MethodCall { method, .. } if method == "staged"
-                    );
                     // `source_ty` is the type of the whole `box.staged()` call —
                     // the payload — so the strategy has to come off the receiver.
                     let staged_recv = match &binding.source.kind {
@@ -2556,13 +2471,13 @@ impl TypeChecker {
     }
 
     pub(super) fn check_call(&mut self, call_id: NodeId, func: &Expr, args: &[CallArg], span: Span) -> Type {
-        if let ExprKind::Ident(name) = &func.kind {
+        if let Some(name) = func.name() {
             // OPT2/ER2: reject legacy `Some(x)`, `Ok(x)`, `Err(x)` constructors.
             // The new model auto-wraps bare values at return/assignment, and
             // error values use their own constructor (e.g., `DivError.ByZero`).
-            if matches!(name.as_str(), "Some" | "Ok" | "Err") {
+            if matches!(name, "Some" | "Ok" | "Err") {
                 self.errors.push(TypeError::LegacyWrapperConstructor {
-                    name: name.clone(),
+                    name: name.to_string(),
                     span,
                 });
                 for arg in args { self.infer_expr(&arg.expr); }
@@ -2609,7 +2524,7 @@ impl TypeChecker {
                 for arg in args {
                     self.infer_expr(&arg.expr);
                 }
-                return match name.as_str() {
+                return match name {
                     "panic" | "todo" | "unreachable" | "skip" => Type::Never,
                     "format" => Type::String,
                     _ => Type::Unit,
@@ -2657,7 +2572,7 @@ impl TypeChecker {
                 }
             }
         }
-        if let ExprKind::Ident(_) = &func.kind {
+        if let Some(_) = func.name() {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
                 if let Some(sym) = self.resolved.symbols.get(sym_id) {
                     // CC1: spawn() outside any using Multitasking block
@@ -2698,7 +2613,7 @@ impl TypeChecker {
         // CALL6: record the resolved free-function target once, keyed by the
         // call node. Downstream passes read this instead of re-deriving the
         // callee from its name.
-        if let ExprKind::Ident(_) = &func.kind {
+        if let Some(_) = func.name() {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
                 self.call_targets.insert(call_id, super::Callee::Free(sym_id));
             }
@@ -2721,12 +2636,12 @@ impl TypeChecker {
         // parameter, so it only showed when none did: a parameter appearing
         // solely in the return type stayed a free variable, however explicitly
         // the call had spelled it (#712).
-        let written_type_args: Vec<Type> = match &func.kind {
-            ExprKind::Ident(name) => Self::written_type_args(name),
-            _ => Vec::new(),
-        };
-
-        let generic_subst: Option<Vec<(String, Type)>> = if let ExprKind::Ident(_) = &func.kind {
+        let written_type_args: Vec<Type> = func
+            .written_type_args()
+            .iter()
+            .map(|t| self.resolve_type_name(t))
+            .collect();
+        let generic_subst: Option<Vec<(String, Type)>> = if func.name().is_some() {
             // Resolve the callee's SymbolId, then look up its type params
             self.resolved.resolutions.get(&func.id).copied()
                 .and_then(|sym_id| self.fn_type_params.get(&sym_id).cloned().map(|tp| (sym_id, tp)))
@@ -2825,7 +2740,7 @@ impl TypeChecker {
                     if let Type::InterfaceObject { ref interface_name } = param {
                         let is_explicit_cast = matches!(
                             &arg.expr.kind,
-                            ExprKind::Cast { ty, .. } if ty.starts_with("any ")
+                            ExprKind::Cast { ty: TypeExpr::Any(_), .. }
                         );
                         if !is_explicit_cast {
                             let arg_ty = self.infer_expr(&arg.expr);
@@ -2947,7 +2862,7 @@ impl TypeChecker {
         use rask_resolve::SymbolKind;
 
         // Get the function's symbol ID
-        let sym_id = if let ExprKind::Ident(_) = &func.kind {
+        let sym_id = if let Some(_) = func.name() {
             self.resolved.resolutions.get(&func.id).copied()
         } else {
             None
@@ -2996,8 +2911,8 @@ impl TypeChecker {
             // guarantee that makes `n: Link<T>` a usable read-only view.
             let arg_is_link = param_sym
                 .ty
-                .as_deref()
-                .is_some_and(|t| t.starts_with("Link<"));
+                .as_ref()
+                .is_some_and(|t| t.name().as_deref() == Some("Link") && !t.args().is_empty());
             if is_mutate && !is_take {
                 if let ExprKind::Ident(arg_name) = &arg.expr.kind {
                     match self.lookup_binding_kind(arg_name) {
@@ -3199,7 +3114,7 @@ impl TypeChecker {
         args: &[CallArg],
         span: Span,
     ) -> Option<Type> {
-        let ExprKind::Ident(ns) = &object.kind else { return None };
+        let Some(ns) = object.name() else { return None };
         if self.local_shadows_namespace(ns) {
             return None;
         }
@@ -3251,7 +3166,7 @@ impl TypeChecker {
     ) -> Option<Type> {
         // The receiver has to be the namespace itself. A local of the same name
         // wins, the way it does for the builtin modules.
-        let ExprKind::Ident(ns) = &object.kind else { return None };
+        let Some(ns) = object.name() else { return None };
         if self.lookup_local(ns).is_some() {
             return None;
         }
@@ -3429,7 +3344,7 @@ impl TypeChecker {
         object: &Expr,
         method: &str,
         args: &[CallArg],
-        type_args: Option<&[String]>,
+        type_args: Option<&[TypeExpr]>,
         span: Span,
     ) -> Type {
         // AN8: a `get<A>()` that reaches here wasn't field-projected — the
@@ -3437,10 +3352,10 @@ impl TypeChecker {
         // the receiver. So this is a bare read: a binding, an argument, a
         // returned value. There is no annotation value to be any of those.
         if method == "get" {
-            if let Some(name) = type_args.and_then(|ta| ta.first()) {
+            if let Some(name) = type_args.and_then(|ta| ta.first()).and_then(TypeExpr::bare_name) {
                 if self.annotation_types.contains(name) {
                     self.errors.push(TypeError::BadAnnotation {
-                        name: name.clone(),
+                        name: name.to_string(),
                         problem: "an annotation read has to name a field".to_string(),
                         fix: format!("read one field: `.get<{}>().<field>`", name),
                         why: "there is no annotation value to hold — `get` splices the field's constant, so a read that names no field has no result [type.annotations/AN6, AN8]",
@@ -3462,7 +3377,7 @@ impl TypeChecker {
         if let Some(ta) = type_args {
             let written: Vec<Type> = ta
                 .iter()
-                .map(|name| self.resolve_type_name(name, span))
+                .map(|ty| self.resolve_type_name(ty))
                 .collect();
             self.written_method_type_args.insert(call_id, written);
         }
@@ -3495,7 +3410,7 @@ impl TypeChecker {
         // of the same name wins — `let fs = Vec.new()` is an ordinary variable,
         // and routing `fs.len()` to the filesystem module reported "no method
         // `len` found for type `fs`".
-        if let ExprKind::Ident(name) = &object.kind {
+        if let Some(name) = object.name() {
             if self.types.builtin_modules.is_module(name) && !self.local_shadows_namespace(name) {
                 return self.check_module_method(name, method, args, type_args, span);
             }
@@ -3510,7 +3425,7 @@ impl TypeChecker {
         // complaint. It failed much later, in MIR, as "unresolved variable
         // `i64`", and only if that line was reached (#1026). raido's lexer has
         // been carrying one of these.
-        if let ExprKind::Ident(name) = &object.kind {
+        if let Some(name) = object.name() {
             if let Some(prim) = Self::primitive_type_named(name) {
                 if self.lookup_local(name).is_none() {
                     let arg_types: Vec<_> =
@@ -3531,8 +3446,7 @@ impl TypeChecker {
 
         // MN1: `Labeled.label(d)` names the interface where a value belongs.
         // Without this it type-checked as a static call and died in lowering.
-        if let ExprKind::Ident(name) = &object.kind {
-            let spelled = name.split('<').next().unwrap_or(name);
+        if let Some(spelled) = object.name() {
             if self.lookup_local(spelled).is_none() {
                 if let Some(id) = self.types.get_type_id(spelled) {
                     if matches!(self.types.get(id), Some(TypeDef::Interface { .. })) {
@@ -3551,9 +3465,8 @@ impl TypeChecker {
         // emit UnresolvedNamed directly instead of calling infer_expr
         // (which would return Type::Error for unregistered type names).
         // Also handles generic forms like Vec<Route>.from().
-        if let ExprKind::Ident(name) = &object.kind {
-            // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
-            let spelled = name.split('<').next().unwrap_or(name);
+        if let Some(spelled) = object.name() {
+            let type_args = object.written_type_args();
             // IM3: a transparent alias names the same type, so a namespace call
             // through one is a call on the target. The gate below asks the stub
             // registry by spelling, and `import time.Duration as Span` puts
@@ -3561,18 +3474,13 @@ impl TypeChecker {
             // was skipped, the receiver went through `infer_expr`, and `let d =
             // Span.from_millis(1)` came back "couldn't work out the type of `d`"
             // (#923).
-            let base_name = self.types.alias_target(spelled).unwrap_or(spelled);
-            let name = if base_name == spelled {
-                name.clone()
-            } else {
-                name.replacen(spelled, base_name, 1)
-            };
-            let name = &name;
+            let aliased = self.types.alias_target_name(spelled);
+            let base_name = aliased.as_deref().unwrap_or(spelled);
             // A real local of the same name wins. The stub registry holds the
             // module namespaces (`fs`, `io`, `os`, `time`, `http`, …) as types,
             // so `let fs = Vec.new()` used to land here and answer "no method
             // `len` found for type `fs`".
-            let shadowed = !name.contains('<') && self.local_shadows_namespace(spelled);
+            let shadowed = type_args.is_empty() && self.local_shadows_namespace(spelled);
             if !shadowed
                 // `Heap` is in this list rather than in the stub registry
                 // because it has no `extend Heap` block to be in: allocation is
@@ -3588,20 +3496,16 @@ impl TypeChecker {
                 && (matches!(base_name, "Vec" | "Map" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic" | "Heap")
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
-                let obj_ty = if name.contains('<') {
-                    // Parse generic args, respecting nested angle brackets:
-                    // "Shared<Map<string, bool>>" → ["Map<string, bool>"]
-                    let inner = &name[base_name.len()+1..name.len()-1];
-                    let generic_args = split_type_args(inner)
-                        .into_iter()
-                        .map(|s| GenericArg::Type(Box::new(parse_type_arg(s))))
-                        .collect();
+                let obj_ty = if type_args.is_empty() {
+                    Type::UnresolvedNamed(base_name.to_string())
+                } else {
                     Type::UnresolvedGeneric {
                         name: base_name.to_string(),
-                        args: generic_args,
+                        args: type_args
+                            .iter()
+                            .map(|a| GenericArg::Type(Box::new(self.resolve_type_name(a))))
+                            .collect(),
                     }
-                } else {
-                    Type::UnresolvedNamed(name.clone())
                 };
                 // The slot picks an array literal's shape (std.collections/C9).
                 // The method resolves through a deferred constraint, but a
@@ -3609,11 +3513,11 @@ impl TypeChecker {
                 // the stub registry. `sim.require(faults: [Fault.IoError])`
                 // typed the literal as `[Fault; 1]` and failed against
                 // `Vec<Fault>`.
-                let slots = if name.contains('<') {
+                let slots = if !type_args.is_empty() {
                     Vec::new()
                 } else {
                     let base = base_name.to_string();
-                    self.stub_static_param_types(&base, method, span)
+                    self.stub_static_param_types(&base, method)
                 };
                 let arg_types: Vec<_> = args
                     .iter()
@@ -3682,7 +3586,7 @@ impl TypeChecker {
                     };
                     (fields, ty)
                 };
-                // C4: the slot picks the shape, and a declared payload is a
+                // C9: the slot picks the shape, and a declared payload is a
                 // slot. Inferring the argument on its own first made
                 // `Node.Branch([1, 2, 3])` a `[i32; 3]` against a `Vec<i32>`
                 // payload and rejected it — while the same literal filled a
@@ -3718,7 +3622,7 @@ impl TypeChecker {
         }
 
         // ESAD Phase 1: Push borrow for the object being called
-        if let ExprKind::Ident(var_name) = &object.kind {
+        if let Some(var_name) = object.name() {
             let mode = self.method_borrow_mode(var_name, method);
 
             // Deep const: reject `mutate self` methods on const bindings and read-only params.
@@ -3741,7 +3645,7 @@ impl TypeChecker {
             if self.method_mutates_self(var_name, method) && recv_open {
                 if let Some(kind) = self.lookup_binding_kind(var_name) {
                     self.pending_self_mutations.push(super::PendingSelfMutation {
-                        root: var_name.clone(),
+                        root: var_name.to_string(),
                         ty: recv_ty,
                         kind,
                         method: method.to_string(),
@@ -3752,7 +3656,7 @@ impl TypeChecker {
                 match self.lookup_binding_kind(var_name) {
                     Some(super::BindingKind::Let) => {
                         self.errors.push(TypeError::MutateConst {
-                            name: var_name.clone(),
+                            name: var_name.to_string(),
                             span: object.span,
                         });
                     }
@@ -3763,26 +3667,26 @@ impl TypeChecker {
                     {
                         let ty = self.render_type(&self.resolve_named(&self.ctx.apply(&recv_ty)));
                         self.errors.push(TypeError::MutatePackageState {
-                            name: var_name.clone(),
+                            name: var_name.to_string(),
                             ty,
                             span: object.span,
                         });
                     }
                     Some(super::BindingKind::WithRead) => {
                         self.errors.push(TypeError::MutateWithBinding {
-                            name: var_name.clone(),
+                            name: var_name.to_string(),
                             span: object.span,
                         });
                     }
                     Some(super::BindingKind::Param) => {
                         self.errors.push(TypeError::MutateReadOnlyParam {
-                            name: var_name.clone(),
+                            name: var_name.to_string(),
                             span: object.span,
                         });
                     }
                     Some(super::BindingKind::Bound(from)) => {
                         self.errors.push(TypeError::MutateBoundName {
-                            name: var_name.clone(),
+                            name: var_name.to_string(),
                             from,
                             span: object.span,
                         });
@@ -3795,7 +3699,7 @@ impl TypeChecker {
             if matches!(mode, BorrowMode::Exclusive) {
                 if let Some(borrow) = self.check_persistent_borrow_conflict(var_name) {
                     self.errors.push(TypeError::MutateBorrowedSource {
-                        source_var: var_name.clone(),
+                        source_var: var_name.to_string(),
                         view_var: borrow.view_var.clone(),
                         borrow_span: borrow.borrow_span,
                         mutate_span: object.span,
@@ -3803,7 +3707,7 @@ impl TypeChecker {
                 }
             }
 
-            self.push_borrow(var_name.clone(), mode, object.span);
+            self.push_borrow(var_name.to_string(), mode, object.span);
         }
 
         let obj_ty_raw = self.infer_expr(object);
@@ -3835,45 +3739,30 @@ impl TypeChecker {
             }
             _ => obj_ty,
         };
-        // std.collections/C4 says the slot picks a collection literal's shape,
-        // and for a method the slot is the parameter — which isn't known here:
-        // a method resolves through a deferred constraint, after the arguments
-        // have already been given types. So `vv.push([7, 42])` on a
-        // `Vec<Vec<i64>>` typed the literal from its own elements and then
-        // failed against the parameter: "expected `Vec<i64>`, found `[i32; 2]`"
-        // (#1233).
+        // std.collections/C9: the slot picks a collection literal's shape, and
+        // for a method the slot is the parameter. A method resolves through a
+        // deferred constraint, after the arguments have already been given
+        // types, so the parameter is read off the declaration here, with the
+        // receiver's type arguments substituted in. `vv.push([7, 42])` on a
+        // `Vec<Vec<i64>>` (#1233), `index.insert("a", [1, 2])` on a
+        // `Map<string, Vec<i64>>` (#1388) and `sink.feed([1, 2])` on a plain
+        // struct each typed the literal from its own elements and then failed
+        // against the parameter: "expected `Vec<i64>`, found `[i32; 2]`".
         //
-        // What *is* known here is the receiver. A `Vec<C>` deals in exactly one
-        // collection — its element type — so an array literal handed to any of
-        // its methods can only be meant as one of those, whatever position it
-        // sits in. That is the C4 rule read off the receiver instead of off the
-        // parameter, not a guess about which method it is.
-        //
-        // Only when the element is itself a collection shape: on a `Vec<i64>`
-        // an array-literal argument isn't an element and this says nothing. A
-        // `Map`'s value slot is positional and isn't covered — `Vec.from([…])`
-        // is still the spelling there.
-        let elem_shape = self
-            .first_type_arg(&self.ctx.apply(&obj_ty), "Vec")
-            .filter(|t| self.collection_elem_type(t).is_some());
-        // The other case where the slot *is* known here: the receiver's type is
-        // settled — it names the type (a static call) or is a value already
-        // typed — so the method is its declared one and the parameter types can
-        // be read off the declaration. `sim.require(faults: [Fault.IoError])`
-        // and `sink.feed([1, 2])` typed the literal as an array and then failed
-        // against `Vec<…>`, while the same call to a free function worked.
+        // A slot that still has unknowns in it, on a receiver whose element type
+        // hasn't been pinned yet, says nothing, and the literal types itself.
         let declared_params = self.declared_method_params(object, &obj_ty, method);
         let arg_types: Vec<_> = args
             .iter()
             .enumerate()
             .map(|(i, a)| {
-                let param = declared_params.as_ref().and_then(|p| p.get(i)).cloned();
-                match (&a.expr.kind, &elem_shape, param) {
-                    (ExprKind::Array(_), _, Some(want)) => self.infer_expr_expecting(&a.expr, &want),
-                    (ExprKind::Array(_), Some(want), None) => {
-                        let want = want.clone();
-                        self.infer_expr_expecting(&a.expr, &want)
-                    }
+                let slot = declared_params
+                    .as_ref()
+                    .and_then(|p| p.get(i))
+                    .map(|t| self.ctx.apply(t))
+                    .filter(|t| !t.has_unsolved_var());
+                match (&a.expr.kind, slot) {
+                    (ExprKind::Array(_), Some(want)) => self.infer_expr_expecting(&a.expr, &want),
                     _ => self.infer_expr(&a.expr),
                 }
             })
@@ -3951,7 +3840,7 @@ impl TypeChecker {
         // (#986). Recorded before either path runs, since both need it.
         if method == "cast" {
             if let Some(first) = type_args.and_then(|a| a.first()) {
-                if let Ok(target) = parse_type_string(first, &self.types) {
+                if let Ok(target) = resolve_type_expr(first, &self.types) {
                     self.ptr_cast_targets.insert(span, target);
                 }
             }
@@ -4149,7 +4038,7 @@ impl TypeChecker {
         module: &str,
         method: &str,
         args: &[CallArg],
-        type_args: Option<&[String]>,
+        type_args: Option<&[TypeExpr]>,
         span: Span,
     ) -> Type {
         // The slot picks an array literal's shape (std.collections/C9), and a
@@ -4234,7 +4123,7 @@ impl TypeChecker {
             let param_type_params = sig.param_type_params.clone();
             if let Some(ta) = type_args {
                 if ta.len() == 1 {
-                    let explicit_ty = self.resolve_type_name(&ta[0], span);
+                    let explicit_ty = self.resolve_type_name(&ta[0]);
                     // The stub's bound is the whole check on this path — there's
                     // no body to infer from. `json.decode<T: Decode>` with a T
                     // that isn't Decode used to type-check clean and then fail in
@@ -4311,7 +4200,7 @@ impl TypeChecker {
     /// Unresolved names are skipped — a bare type parameter forwarded from an
     /// enclosing generic isn't concrete yet, and reporting it here would blame
     /// the wrong call site.
-    fn check_type_arg_bound(&mut self, ty: &Type, bound: &str, span: Span) {
+    fn check_type_arg_bound(&mut self, ty: &Type, bound: &TypeExpr, span: Span) {
         let resolved = self.resolve_named(ty);
         match &resolved {
             Type::Var(_) | Type::Error => return,
@@ -4321,7 +4210,7 @@ impl TypeChecker {
         // XC3: the bound is a place that needs the conformance, so it's a place
         // two of them collide.
         self.check_bound_conformance_ambiguity(&resolved, bound, span);
-        let interface_bound = crate::interfaces::InterfaceBound::new("_", vec![bound.to_string()]);
+        let interface_bound = crate::interfaces::InterfaceBound::new("_", vec![bound.clone()]);
         if let Err(errs) = crate::interfaces::verify_instantiation(
             &self.types,
             &resolved,
@@ -4336,33 +4225,12 @@ impl TypeChecker {
         }
     }
 
-    /// The type arguments written at a call, read back out of the callee's
-    /// name.
-    ///
-    /// The parser folds `make<i32>` into one identifier rather than a separate
-    /// node, so this is where the written arguments live. Empty for a call with
-    /// none, and for a name whose `<…>` isn't a well-formed argument list.
-    fn written_type_args(callee: &str) -> Vec<Type> {
-        let Some(open) = callee.find('<') else { return Vec::new() };
-        if !callee.ends_with('>') {
-            return Vec::new();
-        }
-        split_type_args(&callee[open + 1..callee.len() - 1])
-            .into_iter()
-            .map(parse_type_arg)
-            .collect()
-    }
-
-    /// Resolve a type name string to a Type.
-    ///
-    /// Generic spellings have to be parsed, not wrapped whole: `json.decode
-    /// <Vec<Point>>` handed back `UnresolvedNamed("Vec<Point>")`, and nothing
-    /// finds `len` on a type whose name is that string.
-    fn resolve_type_name(&self, name: &str, _span: Span) -> Type {
-        let parsed = parse_type_arg(name.trim());
-        match &parsed {
-            Type::UnresolvedNamed(_) => self.resolve_named(&parsed),
-            _ => parsed,
+    /// A type written as a call's type argument: `json.decode<Vec<Point>>`.
+    fn resolve_type_name(&self, ty: &TypeExpr) -> Type {
+        let resolved = resolve_type_expr(ty, &self.types).unwrap_or(Type::Error);
+        match &resolved {
+            Type::UnresolvedNamed(_) => self.resolve_named(&resolved),
+            _ => resolved,
         }
     }
 
@@ -4527,11 +4395,11 @@ impl TypeChecker {
         if method != "get" {
             return None;
         }
-        let name = type_args.as_ref()?.first()?;
-        if !self.annotation_types.contains(name) {
+        let name = type_args.as_ref()?.first()?.bare_name()?.to_string();
+        if !self.annotation_types.contains(&name) {
             return None;
         }
-        let id = match self.types.lookup(name) {
+        let id = match self.types.lookup(&name) {
             Some(Type::Named(id)) => id,
             _ => return Some(Type::Error),
         };
@@ -4601,7 +4469,7 @@ impl TypeChecker {
         }
 
         // Primitive type constants: u64.MAX, i32.MIN, etc.
-        if let ExprKind::Ident(name) = &object.kind {
+        if let Some(name) = object.name() {
             if let Some(ty) = Self::primitive_type_constant(name, field) {
                 return ty;
             }
@@ -4704,7 +4572,7 @@ impl TypeChecker {
         match &e.kind {
             ExprKind::Ident(n) => Some(n.clone()),
             ExprKind::Field { object, field } => {
-                let ExprKind::Ident(head) = &object.kind else { return None };
+                let Some(head) = object.name() else { return None };
                 (self.lookup_local(head).is_none() && !self.type_owns_member(head, field))
                     .then(|| field.clone())
             }
@@ -4794,13 +4662,13 @@ impl TypeChecker {
                         .filter_map(|pid| {
                             self.resolved.symbols.get(*pid).and_then(|p| {
                                 p.ty.as_ref()
-                                    .and_then(|t| parse_type_string(t, &self.types).ok())
+                                    .and_then(|t| resolve_type_expr(t, &self.types).ok())
                             })
                         })
                         .collect();
                     let ret = ret_ty
                         .as_ref()
-                        .and_then(|t| parse_type_string(t, &self.types).ok())
+                        .and_then(|t| resolve_type_expr(t, &self.types).ok())
                         .unwrap_or(Type::Unit);
                     return Type::Fn {
                         params: param_types,
@@ -4810,11 +4678,11 @@ impl TypeChecker {
                 SymbolKind::ExternFunction { params, ret_ty, .. } => {
                     let param_types: Vec<_> = params
                         .iter()
-                        .filter_map(|p| parse_type_string(p, &self.types).ok())
+                        .filter_map(|p| resolve_type_expr(p, &self.types).ok())
                         .collect();
                     let ret = ret_ty
                         .as_ref()
-                        .and_then(|t| parse_type_string(t, &self.types).ok())
+                        .and_then(|t| resolve_type_expr(t, &self.types).ok())
                         .unwrap_or(Type::Unit);
                     return Type::Fn {
                         params: param_types,
@@ -4823,7 +4691,7 @@ impl TypeChecker {
                 }
                 SymbolKind::Variable { .. } | SymbolKind::Parameter { .. } => {
                     if let Some(ty_str) = &sym.ty {
-                        if let Ok(ty) = parse_type_string(ty_str, &self.types) {
+                        if let Ok(ty) = resolve_type_expr(ty_str, &self.types) {
                             return ty;
                         }
                     }
@@ -4991,18 +4859,25 @@ impl TypeChecker {
             // `CasFailed` for a `CasFailed<i64>` branch. Only when the base
             // name picks out one branch; two instantiations of the same type
             // would both answer to it and neither would be covered.
-            let base_of = |t: &str| t.split('<').next().unwrap_or(t).to_string();
+            let bases: Vec<String> = leaves
+                .iter()
+                .map(|t| match t {
+                    Type::Named(id) | Type::Generic { base: id, .. } => self.types.type_name(*id),
+                    Type::UnresolvedGeneric { name, .. } => name.clone(),
+                    other => self.fmt_ty(other),
+                })
+                .collect();
             let missing: Vec<String> = required
                 .iter()
-                .filter(|r| {
+                .zip(&bases)
+                .filter(|(r, base)| {
                     if covered.contains(*r) {
                         return false;
                     }
-                    let base = base_of(r);
-                    let same_base = required.iter().filter(|o| base_of(o) == base).count();
-                    !(same_base == 1 && covered.contains(&base))
+                    let same_base = bases.iter().filter(|b| b == base).count();
+                    !(same_base == 1 && covered.contains(*base))
                 })
-                .cloned()
+                .map(|(r, _)| r.clone())
                 .collect();
 
             if !missing.is_empty() {
@@ -5179,8 +5054,8 @@ impl TypeChecker {
                     *has_wildcard = true;
                 }
             }
-            Pattern::TypePat { ty_name, .. } => {
-                covered.insert(ty_name.clone());
+            Pattern::TypePat { ty, .. } => {
+                covered.insert(ty.to_string());
             }
             Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => hit(name),
             Pattern::Or(alts) => {
@@ -5242,13 +5117,13 @@ impl TypeChecker {
         pattern: &Pattern,
         scrutinee_ty: &Type,
     ) -> Option<Type> {
-        let Pattern::TypePat { ty_name, .. } = pattern else { return None };
+        let Pattern::TypePat { ty, .. } = pattern else { return None };
         let resolved = self.ctx.apply(scrutinee_ty);
         if !matches!(resolved, Type::Result { .. }) {
             return None;
         }
         let named = super::check_pattern::normalize_type(
-            &super::parse_type::parse_type_string(ty_name, &self.types).ok()?,
+            &resolve_type_expr(ty, &self.types).ok()?,
             &self.types,
         );
         let leaves = super::check_pattern::two_branch_leaves(&mut self.ctx, &self.types, &resolved);
@@ -5345,20 +5220,19 @@ impl TypeChecker {
     /// where the declared type mentions a type parameter — that needs the
     /// instantiation, which isn't bound yet. Type parameters are the
     /// single-letter names (E0357), so the spelling says which is which.
-    fn stub_static_param_types(&mut self, type_name: &str, method: &str, span: Span) -> Vec<Option<Type>> {
+    fn stub_static_param_types(&mut self, type_name: &str, method: &str) -> Vec<Option<Type>> {
         let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method(type_name, method) else {
             return Vec::new();
         };
         if stub.takes_self {
             return Vec::new();
         }
-        let mentions_type_param = |ty: &str| {
-            ty.split(|c: char| !c.is_alphanumeric() && c != '_')
-                .any(|w| w.len() == 1 && w.chars().all(|c| c.is_ascii_uppercase()))
+        let mentions_type_param = |ty: &TypeExpr| {
+            ty.mentions(&|w| w.len() == 1 && w.chars().all(|c| c.is_ascii_uppercase()))
         };
         stub.params
             .iter()
-            .map(|(_, ty)| (!mentions_type_param(ty)).then(|| self.resolve_type_name(ty, span)))
+            .map(|(_, ty)| (!mentions_type_param(ty)).then(|| self.resolve_type_name(ty)))
             .collect()
     }
 
@@ -5375,20 +5249,36 @@ impl TypeChecker {
         method: &str,
     ) -> Option<Vec<Type>> {
         let names_type = matches!(&object.kind, ExprKind::Ident(name) if self.lookup_local(name).is_none());
-        let Type::Named(id) = self.ctx.apply(obj_ty) else { return None };
-        if !self.declared_type_params(id).is_empty() {
-            return None;
-        }
-        let methods = match self.types.get(id) {
-            Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => methods,
+        let applied = self.ctx.apply(obj_ty);
+        let (id, type_args): (_, &[GenericArg]) = match &applied {
+            Type::Named(id) => (*id, &[]),
+            Type::Generic { base, args } => (*base, args.as_slice()),
             _ => return None,
         };
+        let (methods, type_params) = match self.types.get(id) {
+            Some(TypeDef::Struct { methods, type_params, .. })
+            | Some(TypeDef::Enum { methods, type_params, .. }) => (methods, type_params),
+            _ => return None,
+        };
+        if type_params.len() != type_args.len() {
+            return None;
+        }
         let sig = methods.iter().find(|m| {
             m.name == method
                 && m.type_params.is_empty()
                 && names_type == matches!(m.self_param, crate::SelfParam::None)
         })?;
-        Some(sig.params.iter().map(|(t, _)| t.clone()).collect())
+        // The receiver's arguments stand in for the type's parameters, and an
+        // `extend` header's names for their parts: the same substitution the
+        // deferred resolution makes, so the slot read here is the one the
+        // argument is later checked against.
+        let mut subst = Self::build_type_param_subst(type_params, type_args);
+        let header: Vec<(String, Type)> =
+            self.build_owner_pattern_subst(&sig.owner_patterns, type_args).into_iter().collect();
+        for (name, bound) in &header {
+            subst.insert(name.as_str(), bound.clone());
+        }
+        Some(sig.params.iter().map(|(t, _)| Self::substitute_type_params(t, &subst)).collect())
     }
 
     /// ER47: bare `try` on a result needs a return with an error branch. False
@@ -6220,9 +6110,8 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, .. } => name.clone(),
             _ => return false,
         };
-        let base = name.split('<').next().unwrap_or(&name);
-        base.starts_with("Atomic")
-            || matches!(base, "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver")
+        name.starts_with("Atomic")
+            || matches!(name.as_str(), "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver")
     }
 
     pub(super) fn validate_pending_mutations(&mut self) {

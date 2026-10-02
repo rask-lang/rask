@@ -1,0 +1,133 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A key is the same key as another when `==` says so, and a map buckets it by
+// what `.hash()` says (#1391).
+//
+// Neither backend asked. Native hashed and compared a key's bytes, so a struct
+// holding a heap string found nothing once the probe's string sat at another
+// address, and `Name.hash()` didn't exist at all: nothing emitted it. The
+// interpreter compared keys structurally, which agreed with the derived methods
+// and ignored a type's own `Equal`. Derived `eq`/`hash` are written out as
+// methods now, `Vec` has both in Rask, and both backends' maps call them.
+
+struct Name {
+    first: string
+    n: i64
+}
+
+struct Version {
+    major: u32
+    minor: u32
+}
+
+Version implements Equal {
+    func eq(self, other: Version) -> bool {
+        return self.major == other.major
+    }
+}
+
+Version implements Hashable {
+    func hash(self) -> u64 {
+        return self.major.hash()
+    }
+}
+
+enum Key {
+    Id(i64)
+    Label(string)
+}
+
+struct Row {
+    cells: Vec<i64>
+    note: string?
+}
+
+func long_name(s: string) -> Name {
+    return Name { first: s.to_lowercase(), n: 1 }
+}
+
+test "a struct holding a heap string is found by an equal one" {
+    let a = long_name("A STRING WELL PAST THE INLINE LIMIT")
+    let b = long_name("a string well past the inline limit")
+    assert a == b
+    assert a.hash() == b.hash()
+    mut m: Map<Name, i64> = Map.new()
+    m.insert(a, 7)
+    assert m.get(b) ?? 0 == 7
+}
+
+test "a type's own Equal and Hashable decide what the same key is" {
+    mut m: Map<Version, string> = Map.new()
+    m.insert(Version { major: 1, minor: 0 }, "one")
+    assert m.contains(Version { major: 1, minor: 9 })
+    m.insert(Version { major: 1, minor: 4 }, "uno")
+    assert m.len() == 1
+    assert m.get(Version { major: 1, minor: 2 }) ?? "" == "uno"
+}
+
+test "an enum key with a string payload" {
+    mut m: Map<Key, i64> = Map.with_capacity(4)
+    m.insert(Key.Label("X".to_lowercase()), 5)
+    assert m.get(Key.Label("x")) ?? -1 == 5
+    assert !m.contains(Key.Id(5))
+}
+
+test "a Vec key compares by its elements" {
+    mut m: Map<Vec<i64>, string> = Map.new()
+    m.insert([1, 2, 3], "abc")
+    let probe: Vec<i64> = [1, 2, 3]
+    assert m.get(probe) ?? "" == "abc"
+    let other: Vec<i64> = [1, 2]
+    assert !m.contains(other)
+}
+
+test "Map.from builds with the key's own functions" {
+    let m = Map.from([(Key.Id(1), "one"), (Key.Id(2), "two")])
+    assert m.get(Key.Id(2)) ?? "" == "two"
+}
+
+test "Vec equality goes through the element's own eq" {
+    let a: Vec<Version> = [Version { major: 1, minor: 0 }]
+    let b: Vec<Version> = [Version { major: 1, minor: 5 }]
+    assert a == b
+    assert a.hash() == b.hash()
+}
+
+test "a struct with a Vec and an optional field" {
+    let a = Row { cells: [1, 2], note: none }
+    let b = Row { cells: [1, 2], note: none }
+    let c = Row { cells: [1, 2], note: "x" }
+    assert a == b
+    assert a != c
+    assert a.hash() == b.hash()
+    assert a.hash() != c.hash()
+}
+
+test "a tuple and an optional compare through their parts' own eq" {
+    let a = (Version { major: 1, minor: 0 }, 2)
+    let b = (Version { major: 1, minor: 5 }, 2)
+    assert a == b
+    let c: Version? = Version { major: 1, minor: 0 }
+    let d: Version? = Version { major: 1, minor: 5 }
+    assert c == d
+    let x: (Vec<i64>, i64) = ([1], 2)
+    let y: (Vec<i64>, i64) = ([1], 2)
+    assert x == y
+    let p: Vec<i64>? = [1]
+    let q: Vec<i64>? = [1]
+    assert p == q
+}
+
+test "a tuple key holding a heap string" {
+    mut m: Map<(string, i64), i64> = Map.new()
+    m.insert(("A STRING WELL PAST THE INLINE LIMIT".to_lowercase(), 1), 5)
+    assert m.contains(("a string well past the inline limit", 1))
+}
+
+test "a tuple key holding a type with its own Equal" {
+    mut m: Map<(Version, i64), string> = Map.new()
+    m.insert((Version { major: 2, minor: 0 }, 1), "x")
+    assert m.get((Version { major: 2, minor: 7 }, 1)) ?? "" == "x"
+}
+
+func main() {}

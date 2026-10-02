@@ -235,7 +235,7 @@ func print_help() {
     println("  h/help                  - Show this help")
 }
 
-func main() -> void or EditError|fs.IoError {
+func main() -> void or EditError | fs.IoError {
     mut doc = Document.new()
 
     println("Simple Text Editor - type 'help' for commands")

@@ -55,8 +55,7 @@ impl Callee {
 pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
     match ty {
         Type::Named(id) | Type::Generic { base: id, .. } => {
-            let name = types.type_name(*id);
-            (!name.starts_with('<')).then_some(name)
+            types.get(*id).map(|_| types.type_name(*id))
         }
         Type::UnresolvedNamed(name) => Some(name.clone()),
         Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
@@ -90,9 +89,9 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
 pub struct InterfaceTypeParam {
     pub name: String,
     /// GT5: what a conformance's argument must satisfy.
-    pub bounds: Vec<String>,
+    pub bounds: Vec<rask_ast::ty::TypeExpr>,
     /// GT4: what the bare interface name means. `None` makes the argument required.
-    pub default: Option<String>,
+    pub default: Option<rask_ast::ty::TypeExpr>,
 }
 
 /// AT1/AT4/AT5: an associated type a conformance supplies.
@@ -100,9 +99,9 @@ pub struct InterfaceTypeParam {
 pub struct InterfaceAssocType {
     pub name: String,
     /// AT5: what the conformance's binding must satisfy.
-    pub bounds: Vec<String>,
+    pub bounds: Vec<rask_ast::ty::TypeExpr>,
     /// AT4: what a conformance that omits the binding gets.
-    pub default: Option<String>,
+    pub default: Option<rask_ast::ty::TypeExpr>,
 }
 
 #[derive(Debug, Clone)]
@@ -155,7 +154,7 @@ pub enum TypeDef {
         name: String,
         /// GT1: `interface Scale<Rhs>` — bound by the conformance header.
         type_params: Vec<InterfaceTypeParam>,
-        super_interfaces: Vec<String>,
+        super_interfaces: Vec<rask_ast::ty::TypeExpr>,
         methods: Vec<MethodSig>,
         /// AT1: types a conformance supplies.
         assoc_types: Vec<InterfaceAssocType>,
@@ -189,7 +188,7 @@ pub enum TypeDef {
     NominalAlias {
         name: String,
         underlying: Type,
-        with_interfaces: Vec<String>,
+        with_interfaces: Vec<rask_ast::ty::TypeExpr>,
         /// Methods from `extend` blocks. A nominal newtype has its own identity,
         /// so it carries its own methods like structs and enums.
         methods: Vec<MethodSig>,
@@ -218,7 +217,7 @@ pub fn conformance_symbol(base: &str, package: &str) -> String {
 }
 
 pub(crate) fn method_base(name: &str) -> &str {
-    name.split('<').next().unwrap_or(name)
+    name
 }
 
 impl TypeDef {
@@ -269,7 +268,7 @@ pub struct MethodSig {
     /// e.g. the `E` in `func tag<E>(self, e: E) -> E`, or `T: Named`. Separate
     /// from the receiver type's own parameters: these get a fresh variable per
     /// *call*, not per receiver.
-    pub type_params: Vec<(String, Vec<String>)>,
+    pub type_params: Vec<(String, Vec<rask_ast::ty::TypeExpr>)>,
     /// The extend header's target arguments as written, one per parameter the
     /// receiving type declares: `["(K, V)"]` for `extend Sequence<(K, V)>` on a
     /// `Sequence<T>`, `["K", "V"]` for `extend Map<K, V>`.
@@ -284,7 +283,10 @@ pub struct MethodSig {
     ///
     /// Empty for a method with no generic receiver, and for the derived and
     /// interface-supplied signatures, which have no header to read.
-    pub owner_patterns: Vec<String>,
+    pub owner_patterns: Vec<rask_ast::ty::TypeExpr>,
+    /// The checker supplied it (EQ1, HA1, ORD1 and the rest): a signature with
+    /// no body behind it, which the backends answer structurally.
+    pub derived: bool,
 }
 
 /// How self is passed to a method.
@@ -313,11 +315,11 @@ pub struct ModuleMethodSig {
     /// Interface bounds on the method's own type parameters, as the stub wrote them
     /// (`decode<T: Decode>` → `[("T", "Decode")]`). Checked against the written
     /// type argument at the call site.
-    pub type_param_bounds: Vec<(String, String)>,
+    pub type_param_bounds: Vec<(String, rask_ast::ty::TypeExpr)>,
     /// Which bounded type parameter each parameter *is*, when its declared type
     /// is exactly one — `encode<T: Encode>(value: T)` gives `[Some("T")]`.
     ///
-    /// `params` can't answer this: `parse_stub_type` turns a single-letter type
+    /// `params` can't answer this: `stub_type` turns a single-letter type
     /// parameter into the `_Any` wildcard, which is what the return-type
     /// freshening runs on, so by then the name is gone. Without it a call that
     /// didn't write the type argument had nothing to check the bound against.
@@ -372,6 +374,43 @@ pub struct TypeBinding {
 impl TypeBinding {
     pub fn new(param: impl Into<String>, ty: Type) -> Self {
         Self { param: param.into(), ty }
+    }
+}
+
+impl TypedProgram {
+    /// Hand the checker's own declarations to the program: the derived
+    /// `eq`/`hash`/`compare` bodies and wrapper functions it wrote and
+    /// checked, and every `==` on two wrappers turned into a call to the
+    /// wrapper's `eq` (`checker/derive.rs`).
+    ///
+    /// Done here, by the entry points that check a program, rather than by
+    /// whoever runs next: every pass after this one reads the declarations,
+    /// and none of them should have to know the checker wrote some.
+    pub fn attach_derived(&mut self, decls: &mut Vec<rask_ast::decl::Decl>) {
+        struct Calls<'a>(&'a HashMap<NodeId, (NodeId, String)>);
+        impl rask_ast::rewrite::Rewrite for Calls<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                use rask_ast::expr::{Expr, ExprKind, CallArg, ArgMode};
+                let Some((callee, name)) = self.0.get(&e.id) else { return };
+                let old = std::mem::replace(&mut e.kind, ExprKind::Bool(false));
+                let ExprKind::MethodCall { object, mut args, .. } = old else {
+                    e.kind = old;
+                    return;
+                };
+                let rhs = args.remove(0);
+                e.kind = ExprKind::Call {
+                    func: Box::new(Expr { id: *callee, kind: ExprKind::Ident(name.clone()), span: e.span }),
+                    args: vec![
+                        CallArg { name: None, mode: ArgMode::Default, expr: *object },
+                        CallArg { name: None, mode: ArgMode::Default, expr: rhs.expr },
+                    ],
+                };
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.wrapper_eq_calls));
+        let mut derived = std::mem::take(&mut self.derived_decls);
+        rask_ast::rewrite::rewrite_decls(&mut derived, &mut Calls(&self.wrapper_eq_calls));
+        decls.extend(derived);
     }
 }
 
@@ -481,4 +520,12 @@ pub struct TypedProgram {
     /// `string` parameter reached MIR as a void and printed as an address
     /// (#905). Written back into the declarations after checking.
     pub inferred_fn_params: HashMap<String, Vec<(String, Type)>>,
+    /// Declarations the checker wrote and checked (`checker/derive.rs`).
+    /// `attach_derived` moves them into the program.
+    pub derived_decls: Vec<rask_ast::decl::Decl>,
+    /// `==` calls on two wrappers that go through the wrapper's `eq`:
+    /// call node → (callee node, function name). Applied by `attach_derived`.
+    pub wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
+    /// The `eq`/`hash` written for each wrapper type, for a map keyed by one.
+    pub wrapper_fns: Vec<super::derive::WrapperFns>,
 }

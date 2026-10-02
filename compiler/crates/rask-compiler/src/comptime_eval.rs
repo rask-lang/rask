@@ -370,7 +370,7 @@ fn try_eval_comptime_mir(
     let body = match &init.kind {
         ExprKind::Comptime { body } => body.clone(),
         ExprKind::Call { func, args } => {
-            if let ExprKind::Ident(func_name) = &func.kind {
+            if let Some(func_name) = func.name() {
                 let fn_decl = decls.iter().find_map(|d| match &d.kind {
                     DeclKind::Fn(f) if f.name == *func_name && f.is_comptime => Some(f),
                     _ => None,
@@ -428,7 +428,7 @@ fn try_eval_comptime_mir(
             name: synth_name.clone(),
             type_params: vec![],
             params: vec![],
-            ret_ty: ret_ty_str.map(|s| s.to_string()),
+            ret_ty: ret_ty_str.map(rask_ast::ty::TypeExpr::named),
             body: synth_body,
             is_pub: false,
             is_private: false,

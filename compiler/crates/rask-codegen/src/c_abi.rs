@@ -60,18 +60,15 @@ const MAX_REGISTER_BYTES: u32 = 16;
 /// `scalar` is the type the parameter would have if it weren't an aggregate —
 /// the caller has already mapped the type string, so this only has to decide
 /// whether a struct layout by that name overrides it.
-pub fn classify(type_name: &str, scalar: Type, layouts: &[StructLayout]) -> CArg {
-    match find_layout(type_name, layouts) {
+pub fn classify(ty: &rask_ast::ty::TypeExpr, scalar: Type, layouts: &[StructLayout]) -> CArg {
+    match find_layout(ty, layouts) {
         Some(layout) => classify_aggregate(layout.size, &abi_fields(layout)),
         None => CArg::Scalar(scalar),
     }
 }
 
-fn find_layout<'a>(name: &str, layouts: &'a [StructLayout]) -> Option<&'a StructLayout> {
-    let name = name.trim();
-    if name.starts_with('*') {
-        return None;
-    }
+fn find_layout<'a>(ty: &rask_ast::ty::TypeExpr, layouts: &'a [StructLayout]) -> Option<&'a StructLayout> {
+    let name = ty.name()?;
     layouts.iter().find(|l| l.name == name)
 }
 
@@ -187,11 +184,11 @@ mod tests {
 
     #[test]
     fn a_scalar_parameter_is_left_alone() {
-        assert_eq!(classify("i32", types::I32, &[]), CArg::Scalar(types::I32));
+        assert_eq!(classify(&rask_ast::ty::TypeExpr::named("i32"), types::I32, &[]), CArg::Scalar(types::I32));
     }
 
     #[test]
     fn a_pointer_to_a_struct_is_still_a_pointer() {
-        assert_eq!(classify("*Rect", types::I64, &[]), CArg::Scalar(types::I64));
+        assert_eq!(classify(&rask_ast::ty::TypeExpr::RawPtr(Box::new(rask_ast::ty::TypeExpr::named("Rect"))), types::I64, &[]), CArg::Scalar(types::I64));
     }
 }

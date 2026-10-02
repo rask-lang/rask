@@ -337,7 +337,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     let (mut typed, type_errors) =
         rask_types::typecheck_with_stdlib_lenient(
             resolved,
-            &parse_result.decls,
+            &mut parse_result.decls,
             &stdlib_decls,
             &desugared.operator_calls,
         );
@@ -358,7 +358,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     }
 
     // --- Effects (IO propagation + frozen check) ---
-    let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
+    let (_effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
     for w in &effect_warnings {
         let d = rask_diagnostics::Diagnostic::warning(&w.message)
             .with_code(w.code)

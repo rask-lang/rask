@@ -16,23 +16,38 @@ mod reachability;
 pub use instantiate::instantiate_function;
 pub use layout::{
     arg_owns_storage, compute_enum_layout, compute_struct_layout, compute_union_layout,
-    is_stdlib_span, ordering_layout, parse_field_type, type_size_align,
+    is_stdlib_span, ordering_layout, field_type, type_size_align,
     EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::NodeId;
+use rask_ast::ty::TypeExpr;
 use rask_types::{Type, TypeBinding, TypedProgram};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Monomorphized program with all generics eliminated
+/// The symbols a map calls to hash and compare its keys.
+#[derive(Debug, Clone)]
+pub struct MapKeyFns {
+    pub hash: String,
+    pub eq: String,
+}
+
 pub struct MonoProgram {
     pub functions: Vec<MonoFunction>,
     pub struct_layouts: Vec<StructLayout>,
     pub enum_layouts: Vec<EnumLayout>,
+    /// The checker's name for each type id. A resolved type carries an id, and
+    /// whatever needs to know what it is — which handle a field owns, say —
+    /// reads the name here rather than off the type's rendering.
+    pub type_names: HashMap<rask_types::TypeId, String>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: HashMap<NodeId, String>,
+    /// Calls that build a `Map` whose key compares through its own `eq`/`hash`,
+    /// and the functions that are (#1391).
+    pub map_key_fns: HashMap<NodeId, MapKeyFns>,
     /// Types and dispatch targets for the nodes of instantiated generic bodies.
     ///
     /// Those nodes don't exist in the checker's output — they were created
@@ -193,7 +208,7 @@ pub fn compute_declared_layouts(
             DeclKind::Struct(s) => {
                 let mut layout = layout::compute_shared_struct_layout(decl, &layout_cache);
                 // Strip type params from name so struct literals ("Box") match
-                let base_name = bare_type_name(&s.name);
+                let base_name = s.name.to_string();
                 layout.name = base_name.clone();
                 if !concrete.contains(&base_name) {
                     layout_cache.insert(base_name, (layout.size, layout.align));
@@ -202,7 +217,7 @@ pub fn compute_declared_layouts(
             }
             DeclKind::Enum(e) => {
                 let mut layout = layout::compute_shared_enum_layout(decl, &layout_cache);
-                let base_name = bare_type_name(&e.name);
+                let base_name = e.name.to_string();
                 layout.name = base_name.clone();
                 if !concrete.contains(&base_name) {
                     layout_cache.insert(base_name, (layout.size, layout.align));
@@ -221,7 +236,7 @@ pub fn compute_declared_layouts(
             // struct's later fields overlapped it (#445).
             DeclKind::TypeAlias(a) if !a.is_transparent && a.type_params.is_empty() => {
                 let (size, align) = type_size_align(
-                    &Type::UnresolvedNamed(a.target.clone()),
+                    &layout::field_type(&a.target),
                     &layout_cache,
                 );
                 layout_cache.insert(a.name.clone(), (size, align));
@@ -255,14 +270,14 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
     for (i, decl) in decls.iter().enumerate() {
         match &decl.kind {
             DeclKind::Struct(s) => {
-                let name = bare_type_name(&s.name);
+                let name = s.name.to_string();
                 if s.type_params.is_empty() || !concrete.contains(&name) {
                     name_to_idx.insert(name, i);
                 }
                 type_indices.push(i);
             }
             DeclKind::Enum(e) => {
-                let name = bare_type_name(&e.name);
+                let name = e.name.to_string();
                 if e.type_params.is_empty() || !concrete.contains(&name) {
                     name_to_idx.insert(name, i);
                 }
@@ -288,19 +303,19 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
 
     for &idx in &type_indices {
         let mut field_deps = HashSet::new();
-        let fields: Vec<&str> = match &decls[idx].kind {
-            DeclKind::Struct(s) => s.fields.iter().map(|f| f.ty.as_str()).collect(),
+        let fields: Vec<&TypeExpr> = match &decls[idx].kind {
+            DeclKind::Struct(s) => s.fields.iter().map(|f| &f.ty).collect(),
             DeclKind::Enum(e) => e.variants.iter()
-                .flat_map(|v| v.fields.iter().map(|f| f.ty.as_str()))
+                .flat_map(|v| v.fields.iter().map(|f| &f.ty))
                 .collect(),
-            DeclKind::Union(u) => u.fields.iter().map(|f| f.ty.as_str()).collect(),
-            DeclKind::TypeAlias(a) => vec![a.target.as_str()],
+            DeclKind::Union(u) => u.fields.iter().map(|f| &f.ty).collect(),
+            DeclKind::TypeAlias(a) => vec![&a.target],
             _ => vec![],
         };
 
         let mut type_names = HashSet::new();
-        for ty_str in fields {
-            let parsed = layout::parse_field_type(ty_str);
+        for ty in fields {
+            let parsed = layout::field_type(ty);
             collect_type_deps(&parsed, &mut type_names);
         }
 
@@ -379,14 +394,15 @@ pub fn generic_instance_name(
 
 /// The layout a written type is laid out by: `Tagged<string>` is
 /// `Tagged$string` when that instance was made, else the shared `Tagged`.
-/// Codegen describes what a value owns by reading layouts by name, and a field
-/// type is written text — so without this a generic's nodes matched no layout
-/// and a `Heap` holding one freed nothing inside it.
-pub fn layout_name_for(written: &str, exists: impl Fn(&str) -> bool) -> String {
-    if exists(written) {
-        return written.to_string();
+/// Codegen describes what a value owns by reading layouts by name — so without
+/// this a generic's nodes matched no layout and a `Heap` holding one freed
+/// nothing inside it.
+pub fn layout_name_for(ty: &Type, exists: impl Fn(&str) -> bool) -> String {
+    let written = ty.to_string();
+    if exists(&written) {
+        return written;
     }
-    if let Type::UnresolvedGeneric { name, args } = layout::parse_field_type(written) {
+    if let Type::UnresolvedGeneric { name, args } = ty {
         let tys: Vec<Type> = args
             .iter()
             .filter_map(|a| match a {
@@ -394,21 +410,17 @@ pub fn layout_name_for(written: &str, exists: impl Fn(&str) -> bool) -> String {
                 _ => None,
             })
             .collect();
-        if let Some(instance) = generic_instance_name(&name, &tys, &HashMap::new()) {
+        if let Some(instance) = generic_instance_name(name, &tys, &HashMap::new()) {
             if exists(&instance) {
                 return instance;
             }
         }
-        let base = bare_type_name(&name);
+        let base = name.to_string();
         if exists(&base) {
             return base;
         }
     }
-    written.to_string()
-}
-
-fn bare_type_name(name: &str) -> String {
-    name.split('<').next().unwrap_or(name).trim().to_string()
+    written
 }
 
 /// The head name of a type argument, in whichever spelling it arrives in.
@@ -418,10 +430,10 @@ fn bare_type_name(name: &str) -> String {
 fn arg_head_name(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> Option<String> {
     match ty {
         Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-            Some(bare_type_name(name))
+            Some(name.to_string())
         }
         Type::Named(id) | Type::Generic { base: id, .. } => {
-            type_names.get(id).map(|n| bare_type_name(n))
+            type_names.get(id).map(|n| n.to_string())
         }
         _ => None,
     }
@@ -454,13 +466,13 @@ fn type_arg_key(
         Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
         | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
         | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Unit => format!("{}", ty),
-        Type::Named(id) => bare_type_name(type_names.get(id)?),
+        Type::Named(id) => type_names.get(id)?.to_string(),
         // An argument substituted into an instantiated copy is named, not
         // interned — the copy's types were built by rewriting strings, not by
         // going back through the checker's table (#814).
-        Type::UnresolvedNamed(name) => bare_type_name(name),
+        Type::UnresolvedNamed(name) => name.to_string(),
         Type::UnresolvedGeneric { name, args } => {
-            let base = bare_type_name(name);
+            let base = name.to_string();
             let mut parts = Vec::with_capacity(args.len());
             for arg in args {
                 let GenericArg::Type(inner) = arg else { return None };
@@ -469,7 +481,7 @@ fn type_arg_key(
             format!("{}${}", base, parts.join("$"))
         }
         Type::Generic { base, args } => {
-            let base = bare_type_name(type_names.get(base)?);
+            let base = type_names.get(base)?.to_string();
             let mut parts = Vec::with_capacity(args.len());
             for arg in args {
                 let GenericArg::Type(inner) = arg else { return None };
@@ -532,7 +544,7 @@ fn inline_arg_size(
             inline_arg_size(&Type::Named(id), type_names, type_defs, cache)
         }
         Type::UnresolvedGeneric { name, args } => {
-            let base_name = bare_type_name(name);
+            let base_name = name.to_string();
             let arg_tys: Vec<Type> = args
                 .iter()
                 .filter_map(|a| match a {
@@ -554,13 +566,13 @@ fn inline_arg_size(
             ) {
                 return None;
             }
-            let name = bare_type_name(type_names.get(id)?);
+            let name = type_names.get(id)?.to_string();
             cache.get(&name).map(|(size, _)| *size)
         }
         // A nested instantiation is as wide as *its* layout — `One<One<Big>>` has
         // to see 24, not the 8 the shared `One` layout reports.
         Type::Generic { base, args } => {
-            let base_name = bare_type_name(type_names.get(base)?);
+            let base_name = type_names.get(base)?.to_string();
             let arg_tys: Vec<Type> = args
                 .iter()
                 .filter_map(|a| match a {
@@ -620,10 +632,10 @@ fn arg_as_cache_name(
     match ty {
         Type::Named(id) => type_names
             .get(id)
-            .map(|n| Type::UnresolvedNamed(bare_type_name(n)))
+            .map(|n| Type::UnresolvedNamed(n.to_string()))
             .unwrap_or_else(|| ty.clone()),
         Type::Generic { base, args } => {
-            let Some(base_name) = type_names.get(base).map(|n| bare_type_name(n)) else {
+            let Some(base_name) = type_names.get(base).map(|n| n.to_string()) else {
                 return ty.clone();
             };
             let arg_tys: Vec<Type> = args
@@ -675,7 +687,7 @@ fn collect_generic_instances(
                     })
                     .collect();
                 if arg_tys.len() == args.len() {
-                    out.push((bare_type_name(name), arg_tys));
+                    out.push((name.to_string(), arg_tys));
                 }
             }
             for arg in args {
@@ -693,7 +705,7 @@ fn collect_generic_instances(
                 })
                 .collect();
             if arg_tys.len() == args.len() {
-                out.push((bare_type_name(name), arg_tys));
+                out.push((name.to_string(), arg_tys));
             }
             for arg in args {
                 if let GenericArg::Type(inner) = arg {
@@ -848,10 +860,10 @@ fn monomorphize_inner(
                 // shared one — where every parameter is a single word — and its
                 // 16-byte string field was written into an 8-byte slot (#913).
                 DeclKind::Struct(s) if !rask_types::struct_type_param_names(s).is_empty() => {
-                    Some((s.name.split('<').next().unwrap_or(&s.name).to_string(), d))
+                    Some((s.name.as_str().to_string(), d))
                 }
                 DeclKind::Enum(e) if !rask_types::enum_type_param_names(e).is_empty() => {
-                    Some((e.name.split('<').next().unwrap_or(&e.name).to_string(), d))
+                    Some((e.name.as_str().to_string(), d))
                 }
                 _ => None,
             })
@@ -884,8 +896,8 @@ fn monomorphize_inner(
             .into_iter()
             .enumerate()
             .filter_map(|(pos, idx)| match &decls[idx].kind {
-                DeclKind::Struct(s) => Some((bare_type_name(&s.name), pos)),
-                DeclKind::Enum(e) => Some((bare_type_name(&e.name), pos)),
+                DeclKind::Struct(s) => Some((s.name.to_string(), pos)),
+                DeclKind::Enum(e) => Some((e.name.to_string(), pos)),
                 _ => None,
             })
             .collect();
@@ -971,7 +983,9 @@ fn monomorphize_inner(
         functions: mono.results,
         struct_layouts,
         enum_layouts,
+        type_names: program.types.type_name_map(),
         call_rewrites: mono.call_rewrites,
+        map_key_fns: mono.map_key_fns,
         instantiated_node_types: mono.instantiated_node_types,
         instantiated_call_targets: mono.instantiated_call_targets,
         instantiated_operator_targets: mono.instantiated_operator_targets,
@@ -1097,13 +1111,13 @@ mod tests {
                     .map(|(n, ty)| Param {
                         name: n.to_string(),
                         name_span: sp(),
-                        ty: ty.to_string(),
+                        ty: rask_parser::parse_type(ty),
                         is_take: false,
                         is_mutate: false, is_deleting: false,
                         default: None,
                     })
                     .collect(),
-                ret_ty: ret_ty.map(|s| s.to_string()),
+                ret_ty: ret_ty.map(|s| rask_parser::parse_type(s).unwrap()),
                 body,
                 is_pub: false,
                 is_private: false,
@@ -1145,13 +1159,13 @@ mod tests {
                     .map(|(n, ty)| Param {
                         name: n.to_string(),
                         name_span: sp(),
-                        ty: ty.to_string(),
+                        ty: rask_parser::parse_type(ty),
                         is_take: false,
                         is_mutate: false, is_deleting: false,
                         default: None,
                     })
                     .collect(),
-                ret_ty: ret_ty.map(|s| s.to_string()),
+                ret_ty: ret_ty.map(|s| rask_parser::parse_type(s).unwrap()),
                 body,
                 is_pub: false,
                 is_private: false,
@@ -1192,6 +1206,9 @@ mod tests {
             channel_send_sites: std::collections::HashSet::new(),
             inferred_fn_ret: std::collections::HashMap::new(),
             inferred_fn_params: std::collections::HashMap::new(),
+            derived_decls: Vec::new(),
+            wrapper_eq_calls: std::collections::HashMap::new(),
+            wrapper_fns: Vec::new(),
         }
     }
 
@@ -1331,8 +1348,8 @@ mod tests {
                     name: "Point".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "x".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "y".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -1393,8 +1410,8 @@ mod tests {
                     name: "Container".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "kind".to_string(), name_span: sp(), ty: "Kind".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                        Field { name: "value".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "kind".to_string(), name_span: sp(), ty: rask_parser::parse_type("Kind").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "value".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -1413,8 +1430,8 @@ mod tests {
                             name: "Alpha".to_string(),
                             name_span: sp(),
                             fields: vec![
-                                Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                                Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                                Field { name: "x".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                                Field { name: "y".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                             ],
                             attrs: vec![],
                             discriminant: None,
@@ -1464,7 +1481,7 @@ mod tests {
         let result = instantiate_function(&decl, &[Type::I32]);
         if let DeclKind::Fn(f) = &result.kind {
             assert!(f.type_params.is_empty());
-            assert_eq!(f.params[0].ty, "i32"); // substituted
+            assert_eq!(f.params[0].ty.as_ref().map(|t| t.to_string()).as_deref(), Some("i32")); // substituted
         } else {
             panic!("Expected function declaration");
         }
@@ -1608,13 +1625,13 @@ mod tests {
                 .map(|(n, ty)| Param {
                     name: n.to_string(),
                     name_span: sp(),
-                    ty: ty.to_string(),
+                    ty: rask_parser::parse_type(ty),
                     is_take: false,
                     is_mutate: false, is_deleting: false,
                     default: None,
                 })
                 .collect(),
-            ret_ty: ret_ty.map(|s| s.to_string()),
+            ret_ty: ret_ty.map(|s| rask_parser::parse_type(s).unwrap()),
             body,
             is_pub: false,
             is_private: false,
@@ -1647,8 +1664,8 @@ mod tests {
                     name: "Point".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
-                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "x".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
+                        Field { name: "y".to_string(), name_span: sp(), ty: rask_parser::parse_type("i32").unwrap(), visibility: FieldVisibility::Package, attrs: vec![], default: None, doc: None },
                     ],
                     methods: vec![
                         make_method("new", vec![], Some("Point"), vec![return_stmt(None)]),
@@ -1687,8 +1704,8 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    interface_name: None,
-                    target_ty: "Point".to_string(),
+                    interface: None,
+                    target_ty: rask_parser::parse_type("Point").unwrap(),
                     methods: vec![
                         make_method("distance", vec![("self", "Point")], Some("f64"), vec![return_stmt(None)]),
                     ],
@@ -1729,8 +1746,8 @@ mod tests {
             Decl {
                 id: NodeId(0),
                 kind: DeclKind::Impl(ImplDecl {
-                    interface_name: None,
-                    target_ty: "Counter".to_string(),
+                    interface: None,
+                    target_ty: rask_parser::parse_type("Counter").unwrap(),
                     methods: vec![
                         make_method("increment", vec![("self", "Counter")], None, vec![return_stmt(None)]),
                     ],

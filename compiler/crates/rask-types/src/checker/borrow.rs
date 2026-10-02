@@ -282,11 +282,11 @@ impl TypeChecker {
                 }
             }
             ExprKind::MethodCall { object, method: _, args, .. } => {
-                if let ExprKind::Ident(name) = &object.kind {
-                    if !skip.contains(name.as_str()) {
+                if let Some(name) = object.name() {
+                    if !skip.contains(name) {
                         if let Some(borrow) = self.check_borrow_conflict(name, BorrowMode::Exclusive) {
                             self.errors.push(TypeError::AliasingViolation {
-                                var: name.clone(),
+                                var: name.to_string(),
                                 borrow_span: borrow.span,
                                 access_span: object.span,
                             });

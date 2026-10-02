@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::ptr::RawPtr;
-use crate::value::{map_entries_seeded, FloatKind, IteratorState, MapData, MapKey, RackData, StructData, TypeConstructorKind, Value, VecData};
+use crate::value::{map_entries_seeded, FloatKind, MapData, RackData, StructData, TypeConstructorKind, Value, VecData};
 
 /// UTF-8 or a clear error. `from_raw` promises no validation natively, but a
 /// Rust `String` can't carry the malformed bytes, so saying so beats inventing
@@ -278,28 +278,9 @@ impl Interpreter {
                     .join(&sep);
                 Ok(Value::String(Arc::new(Mutex::new(joined))))
             }
-            "eq" => {
-                if let Some(Value::Vec(other)) = args.first() {
-                    let eq = with_two_vecs(v, other, |a, b| {
-                        a.len() == b.len()
-                            && a.iter().zip(b.iter()).all(|(x, y)| Self::value_eq(x, y))
-                    });
-                    Ok(Value::Bool(eq))
-                } else {
-                    Ok(Value::Bool(false))
-                }
-            }
-            "ne" => {
-                if let Some(Value::Vec(other)) = args.first() {
-                    let eq = with_two_vecs(v, other, |a, b| {
-                        a.len() == b.len()
-                            && a.iter().zip(b.iter()).all(|(x, y)| Self::value_eq(x, y))
-                    });
-                    Ok(Value::Bool(!eq))
-                } else {
-                    Ok(Value::Bool(true))
-                }
-            }
+            // No `eq` or `hash` here: `collections.rk` writes both, element by
+            // element through the element type's own, and this one compared
+            // elements structurally — past a user `eq` on them (#1391).
             // `freeze` is what a `comptime` block ends with to say the Vec it
             // built is the constant's value. The block has already been
             // evaluated by the time anything asks, so there is nothing left to
@@ -314,8 +295,9 @@ impl Interpreter {
             // earlier ones — the same as repeated `insert`. Reachable on the
             // collection because a chain's head is the collection itself.
             "to_map" => {
-                let mut map = crate::value::MapData::new();
-                for item in v.lock().unwrap().items.iter() {
+                let map = Arc::new(Mutex::new(crate::value::MapData::new()));
+                let items = v.lock().unwrap().items.clone();
+                for item in items.iter() {
                     // A pair is a `Value::Tuple` since #1063, and a two-element
                     // `Vec` where a producer outside the interpreter built one.
                     let Some(pair) = item.as_tuple_elements() else {
@@ -328,9 +310,9 @@ impl Interpreter {
                             "to_map needs a Vec of (key, value) pairs".to_string(),
                         ));
                     }
-                    map.insert(crate::value::MapKey(pair[0].clone()), pair[1].clone());
+                    self.map_insert(&map, pair[0].clone(), pair[1].clone())?;
                 }
-                Ok(Value::Map(Arc::new(Mutex::new(map))))
+                Ok(Value::Map(map))
             }
             "set" => {
                 let idx = self.expect_int(&args, 0)? as usize;
@@ -969,7 +951,7 @@ impl Interpreter {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit).copy_on_bind();
                 let value = args.get(1).cloned().unwrap_or(Value::Unit).copy_on_bind();
                 let inserted = value.clone();
-                let old = m.lock().unwrap().insert(MapKey(key), value);
+                let old = self.map_insert(&m, key, value)?;
                 // A secondary index (`by_name: Map<string, Link<Task>>`) holds
                 // edges: deleting the node drops its entry, which is the
                 // database's index-maintenance move. Overwriting a key can
@@ -980,17 +962,17 @@ impl Interpreter {
             }
             "get" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let found = m.lock().unwrap().get(&MapKey(key)).cloned();
+                let found = self.map_get(&m, key)?;
                 Ok(option_of(found))
             }
             "remove" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let removed = m.lock().unwrap().remove(&MapKey(key));
+                let removed = self.map_remove(&m, key)?;
                 Ok(option_of(removed))
             }
             "contains" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                Ok(Value::Bool(m.lock().unwrap().contains_key(&MapKey(key))))
+                Ok(Value::Bool(self.map_contains(&m, key)?))
             }
             // The identity, same as `Vec.freeze` — see the note there (#1069).
             "freeze" => {
@@ -1031,11 +1013,9 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                let key_exists = m.lock().unwrap().contains_key(&MapKey(key.clone()));
-                if !key_exists {
-                    // Key doesn't exist, call factory and insert
+                if !self.map_contains(&m, key.clone())? {
                     let new_value = self.call_closure_no_args(factory)?;
-                    m.lock().unwrap().insert(MapKey(key), new_value);
+                    self.map_insert(&m, key, new_value)?;
                 }
 
                 Ok(Value::Unit)
@@ -1051,13 +1031,12 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                let existing = m.lock().unwrap().get(&MapKey(key.clone())).cloned();
+                let existing = self.map_get(&m, key.clone())?;
                 let value_to_modify = match existing {
                     Some(v) => v,
                     None => {
-                        // Key doesn't exist, call factory and insert
                         let new_value = self.call_closure_no_args(factory)?;
-                        m.lock().unwrap().insert(MapKey(key.clone()), new_value.clone());
+                        self.map_insert(&m, key.clone(), new_value.clone())?;
                         new_value
                     }
                 };
@@ -1068,7 +1047,7 @@ impl Interpreter {
                 // `|u| { u.last_seen = now(); u.visit_count += 1 }` — the whole
                 // reason the entry API exists is that the write lands (#843).
                 if let Some(new_value) = written {
-                    m.lock().unwrap().insert(MapKey(key), new_value);
+                    self.map_insert(&m, key, new_value)?;
                 }
                 Ok(result)
             }
@@ -1088,7 +1067,7 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                let found = m.lock().unwrap().get(&MapKey(key)).cloned();
+                let found = self.map_get(&m, key)?;
                 match found {
                     Some(v) => {
                         let result = self.call_value(closure.clone(), vec![v])?;
@@ -1104,7 +1083,7 @@ impl Interpreter {
                     got: args.len(),
                 })?;
 
-                let found = m.lock().unwrap().get(&MapKey(key.clone())).cloned();
+                let found = self.map_get(&m, key.clone())?;
                 match found {
                     Some(v) => {
                         let (result, written) =
@@ -1112,7 +1091,7 @@ impl Interpreter {
                         // Same as `Vec.modify`: keep what the closure left
                         // behind, which is the whole point of the name (#843).
                         if let Some(new_value) = written {
-                            m.lock().unwrap().insert(MapKey(key), new_value);
+                            self.map_insert(&m, key, new_value)?;
                         }
                         Ok(option_of(Some(result)))
                     }
@@ -1128,9 +1107,8 @@ impl Interpreter {
 
     /// Handle type constructor method calls (Vec.new(), string.new(), etc.).
     pub(crate) fn call_type_constructor_method(
-        &self,
+        &mut self,
         kind: &TypeConstructorKind,
-        type_param: Option<String>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
@@ -1237,7 +1215,7 @@ impl Interpreter {
                 Ok(opt)
             }
             (TypeConstructorKind::Rack, "new") => {
-                let rack = Arc::new(Mutex::new(RackData::with_type_param(type_param.clone())));
+                let rack = Arc::new(Mutex::new(RackData::new()));
                 crate::value::register_rack(&rack);
                 Ok(Value::Rack(rack))
             }
@@ -1267,8 +1245,8 @@ impl Interpreter {
                 })?;
                 match arr {
                     Value::Vec(v) => {
-                        let vec = v.lock().unwrap();
-                        let mut pairs = MapData::with_capacity(vec.len());
+                        let vec = v.lock().unwrap().items.clone();
+                        let pairs = Arc::new(Mutex::new(MapData::with_capacity(vec.len())));
                         for item in vec.iter() {
                             // #1063 split tuples out of `Value::Vec`; matching
                             // `Vec` alone silently built an empty map.
@@ -1284,9 +1262,9 @@ impl Interpreter {
                                     t.len()
                                 )));
                             }
-                            pairs.insert(MapKey(t[0].clone()), t[1].clone());
+                            self.map_insert(&pairs, t[0].clone(), t[1].clone())?;
                         }
-                        Ok(Value::Map(Arc::new(Mutex::new(pairs))))
+                        Ok(Value::Map(pairs))
                     }
                     _ => Err(RuntimeError::TypeError(
                         "Map.from expects an array of pairs".to_string(),

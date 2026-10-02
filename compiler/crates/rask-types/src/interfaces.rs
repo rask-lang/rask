@@ -7,6 +7,7 @@
 use crate::types::{GenericArg, Type, TypeId};
 use crate::checker::{TypeTable, TypeDef, MethodSig, SelfParam, ParamMode};
 use rask_ast::Span;
+use rask_ast::ty::TypeExpr;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -20,21 +21,21 @@ pub struct InterfaceBound {
     /// The type parameter name (e.g., "T").
     pub type_param: String,
     /// The interfaces it must satisfy.
-    pub interfaces: Vec<String>,
+    pub interfaces: Vec<TypeExpr>,
 }
 
 impl InterfaceBound {
-    pub fn new(type_param: impl Into<String>, interfaces: Vec<String>) -> Self {
+    pub fn new(type_param: impl Into<String>, interfaces: Vec<TypeExpr>) -> Self {
         Self {
             type_param: type_param.into(),
             interfaces,
         }
     }
 
-    pub fn single(type_param: impl Into<String>, interface_name: impl Into<String>) -> Self {
+    pub fn single(type_param: impl Into<String>, interface: TypeExpr) -> Self {
         Self {
             type_param: type_param.into(),
-            interfaces: vec![interface_name.into()],
+            interfaces: vec![interface],
         }
     }
 }
@@ -109,7 +110,10 @@ impl<'a> InterfaceChecker<'a> {
             if let TypeDef::Interface { name, super_interfaces, methods, .. } = def {
                 self.interface_methods.insert(name.clone(), methods.clone());
                 if !super_interfaces.is_empty() {
-                    super_map.push((name.clone(), super_interfaces.clone()));
+                    super_map.push((
+                        name.clone(),
+                        super_interfaces.iter().map(TypeTable::conformance_key).collect(),
+                    ));
                 }
             }
         }
@@ -140,7 +144,7 @@ impl<'a> InterfaceChecker<'a> {
     /// eligibility and keep structural matching; only user-declared interfaces
     /// require an explicit `T implements Interface` conformance.
     fn is_nominal_user_interface(&self, interface_name: &str) -> bool {
-        let base = interface_name.split('<').next().unwrap_or(interface_name);
+        let base = interface_name;
         // A compiler-provided interface is satisfied by shape, whether or not
         // `stdlib/` also writes the declaration down. `Displayable` means "has
         // `to_string`" — std.fmt/D5 says an error type gets it from `message()`
@@ -193,7 +197,7 @@ impl<'a> InterfaceChecker<'a> {
     pub fn check_satisfies(
         &mut self,
         ty: &Type,
-        interface_name: &str,
+        interface: &TypeExpr,
         span: Span,
     ) -> Result<(), InterfaceError> {
         // Encode/Decode are structural markers (std.encoding E12–E17): a type
@@ -201,7 +205,9 @@ impl<'a> InterfaceChecker<'a> {
         // container of encodable elements, or a struct/enum whose fields all
         // encode qualifies. These aren't registered as interfaces, so short-circuit
         // before the method-based logic (which would fail with UnknownInterface).
-        let base_interface = interface_name.split('<').next().unwrap_or(interface_name);
+        let interface_name = interface.to_string();
+        let base = TypeTable::conformance_key(interface);
+        let base_interface = base.as_str();
 
         // NT1–NT3: every primitive of the right kind satisfies `Numeric`,
         // `Integer` and `Float` — that's what the rules say those names mean,
@@ -233,7 +239,7 @@ impl<'a> InterfaceChecker<'a> {
             if self.opts_out_of(ty, base_interface) {
                 return Err(InterfaceError::NotSatisfied {
                     ty: self.type_name(ty),
-                    interface_name: interface_name.to_string(),
+                    interface_name: interface_name.clone(),
                     span,
                 });
             }
@@ -249,7 +255,7 @@ impl<'a> InterfaceChecker<'a> {
             }
             return Err(InterfaceError::NotSatisfied {
                 ty: self.type_name(ty),
-                interface_name: interface_name.to_string(),
+                interface_name: interface_name.clone(),
                 span,
             });
         }
@@ -260,22 +266,31 @@ impl<'a> InterfaceChecker<'a> {
         // ever get a conformance this way — and it had none, so `Map<(i64, i64),
         // V>` failed the moment the Map key bound became a real check (#812).
         //
-        // A fixed array is the same argument with one element type.
+        // A fixed array is the same argument with one element type, and so is
+        // a `Vec`: equal when its elements are, hashed element by element.
         if matches!(base_interface, "Equal" | "Hashable" | "Cloneable") {
             let elems: Option<Vec<Type>> = match ty {
                 Type::Tuple(elems) => Some(elems.clone()),
                 Type::Array { elem, .. } => Some(vec![(**elem).clone()]),
+                Type::Generic { base, args }
+                    if self.types.type_name(*base) == "Vec" =>
+                {
+                    match args.first() {
+                        Some(crate::types::GenericArg::Type(elem)) => Some(vec![(**elem).clone()]),
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
             if let Some(elems) = elems {
                 if elems.iter().all(|e| {
-                    self.check_satisfies(e, base_interface, span).is_ok()
+                    self.check_satisfies(e, &TypeExpr::named(base_interface), span).is_ok()
                 }) {
                     return Ok(());
                 }
                 return Err(InterfaceError::NotSatisfied {
                     ty: self.type_name(ty),
-                    interface_name: interface_name.to_string(),
+                    interface_name: interface_name.clone(),
                     span,
                 });
             }
@@ -294,7 +309,7 @@ impl<'a> InterfaceChecker<'a> {
             self.named_type_id(ty).and_then(|id| self.types.get(id))
         {
             if with_interfaces.iter().any(|t| {
-                t.split('<').next().unwrap_or(t).trim() == base_interface
+                TypeTable::conformance_key(t) == base_interface
             }) {
                 return Ok(());
             }
@@ -303,18 +318,18 @@ impl<'a> InterfaceChecker<'a> {
         // G1 nominal gate: a user struct/enum satisfies a user-declared interface
         // only through a declared `T implements Interface` (or auto-derive). A
         // matching shape without the declaration is rejected — the flip.
-        if self.is_nominal_user_interface(interface_name) {
+        if self.is_nominal_user_interface(base_interface) {
             if let Some(type_id) = self.user_type_id(ty) {
-                if !self.types.declares_conformance(type_id, interface_name) {
+                if !self.types.declares_conformance(type_id, interface) {
                     return Err(InterfaceError::NotSatisfied {
                         ty: self.type_name(ty),
-                        interface_name: interface_name.to_string(),
+                        interface_name: interface_name.clone(),
                         span,
                     });
                 }
                 // CC1: a conditional conformance holds only for instantiations
                 // that satisfy the `where` clause, checked here per instantiation.
-                if let Some(cond) = self.types.conformance_condition(type_id, interface_name).cloned() {
+                if let Some(cond) = self.types.conformance_condition(type_id, interface).cloned() {
                     if let Some(err) = self.check_conformance_condition(ty, type_id, &cond, span) {
                         return Err(err);
                     }
@@ -327,9 +342,9 @@ impl<'a> InterfaceChecker<'a> {
         // signature still says `Rhs` and `Self.Out`, neither of which any
         // implementation can match — which is what made every conformance to a
         // generic interface fail claiming a missing method (#1164).
-        let subst = self.conformance_substitution(ty, interface_name);
+        let subst = self.conformance_substitution(ty, interface);
         let required_methods: Vec<MethodSig> = self
-            .get_interface_methods(interface_name)?
+            .get_interface_methods(base_interface)?
             .into_iter()
             .map(|m| substitute_signature(&m, &subst))
             .collect();
@@ -371,7 +386,7 @@ impl<'a> InterfaceChecker<'a> {
                 if !self.has_builtin_method(ty, &required.name) {
                     return Err(InterfaceError::MissingMethod {
                         ty: self.type_name(ty),
-                        interface_name: interface_name.to_string(),
+                        interface_name: interface_name.clone(),
                         method: required.name.clone(),
                         signature: self.format_signature(required),
                         span,
@@ -694,7 +709,7 @@ impl<'a> InterfaceChecker<'a> {
         &mut self,
         ty: &Type,
         type_id: crate::types::TypeId,
-        cond: &[(String, Vec<String>)],
+        cond: &[(String, Vec<TypeExpr>)],
         span: Span,
     ) -> Option<InterfaceError> {
         use crate::types::GenericArg;
@@ -766,23 +781,22 @@ impl<'a> InterfaceChecker<'a> {
     pub fn conformance_substitution(
         &self,
         self_ty: &Type,
-        interface_ref: &str,
+        interface_ref: &TypeExpr,
     ) -> HashMap<String, Type> {
         let mut map = HashMap::new();
-        let base = interface_ref.split('<').next().unwrap_or(interface_ref).trim();
+        let base = TypeTable::conformance_key(interface_ref);
         let Some(TypeDef::Interface { type_params, assoc_types, .. }) =
-            self.types.get_type_id(base).and_then(|id| self.types.get(id))
+            self.types.get_type_id(&base).and_then(|id| self.types.get(id))
         else {
             return map;
         };
 
-        let written = crate::checker::type_table::interface_ref_args(interface_ref);
+        let written = interface_ref.args();
         for (i, p) in type_params.iter().enumerate() {
-            let arg = written.get(i).cloned().or_else(|| p.default.clone());
-            if let Some(arg) = arg {
-                if arg == "Self" {
+            if let Some(arg) = written.get(i).or(p.default.as_ref()) {
+                if arg.is_name("Self") {
                     map.insert(p.name.clone(), self_ty.clone());
-                } else if let Ok(t) = crate::checker::parse_type_string(&arg, self.types) {
+                } else if let Ok(t) = crate::checker::resolve_type_expr(arg, self.types) {
                     map.insert(p.name.clone(), t);
                 }
             }
@@ -796,9 +810,9 @@ impl<'a> InterfaceChecker<'a> {
             let bound = type_id
                 .and_then(|id| self.types.assoc_binding(id, interface_ref, &a.name))
                 .cloned()
-                .or_else(|| match a.default.as_deref() {
-                    Some("Self") => Some(self_ty.clone()),
-                    Some(d) => crate::checker::parse_type_string(d, self.types).ok(),
+                .or_else(|| match &a.default {
+                    Some(d) if d.is_name("Self") => Some(self_ty.clone()),
+                    Some(d) => crate::checker::resolve_type_expr(d, self.types).ok(),
                     None => None,
                 });
             if let Some(t) = bound {
@@ -814,9 +828,9 @@ impl<'a> InterfaceChecker<'a> {
 
     /// MN3: what a conformance of `interface_ref` by `self_ty` has to provide, with
     /// the interface's parameters and associated types already filled in.
-    pub fn required_signatures(&self, self_ty: &Type, interface_ref: &str) -> Vec<MethodSig> {
+    pub fn required_signatures(&self, self_ty: &Type, interface_ref: &TypeExpr) -> Vec<MethodSig> {
         let subst = self.conformance_substitution(self_ty, interface_ref);
-        self.get_interface_methods(interface_ref)
+        self.get_interface_methods(&TypeTable::conformance_key(interface_ref))
             .unwrap_or_default()
             .into_iter()
             .map(|m| substitute_signature(&m, &subst))
@@ -836,13 +850,11 @@ impl<'a> InterfaceChecker<'a> {
         self.signatures_match(a, b)
     }
 
-    /// Get methods required by an interface.
+    /// Get methods required by an interface, by its name.
     fn get_interface_methods(&self, interface_name: &str) -> Result<Vec<MethodSig>, InterfaceError> {
-        // Strip generic args: "Iterator<i64>" → "Iterator"
-        let base_name = interface_name.split('<').next().unwrap_or(interface_name);
+        let base_name = interface_name;
         self.interface_methods
             .get(interface_name)
-            .or_else(|| self.interface_methods.get(base_name))
             .cloned()
             .or_else(|| self.get_builtin_interface_methods(base_name))
             .ok_or_else(|| InterfaceError::UnknownInterface(interface_name.to_string()))
@@ -863,6 +875,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
     {
         match interface_name {
             "Add" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "add".to_string(),
@@ -871,6 +884,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Sub" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "sub".to_string(),
@@ -879,6 +893,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Mul" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "mul".to_string(),
@@ -887,6 +902,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Div" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "div".to_string(),
@@ -895,6 +911,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Rem" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "rem".to_string(),
@@ -903,6 +920,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Neg" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "neg".to_string(),
@@ -911,6 +929,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Equal" | "Eq" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "eq".to_string(),
@@ -920,6 +939,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             }]),
             "Comparable" | "Ord" => Some(vec![
                 MethodSig {
+                    derived: false,
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "compare".to_string(),
@@ -933,6 +953,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::UnresolvedNamed("Ordering".to_string()),
                 },
                 MethodSig {
+                    derived: false,
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "lt".to_string(),
@@ -941,6 +962,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    derived: false,
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "le".to_string(),
@@ -949,6 +971,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    derived: false,
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "gt".to_string(),
@@ -957,6 +980,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    derived: false,
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "ge".to_string(),
@@ -966,6 +990,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 },
             ]),
             "Clone" | "Cloneable" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "clone".to_string(),
@@ -974,6 +999,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Default" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "default".to_string(),
@@ -983,6 +1009,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             }]),
             "Hashable" => Some(vec![
                 MethodSig {
+                    derived: false,
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "hash".to_string(),
@@ -991,6 +1018,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::U64,
                 },
                 MethodSig {
+                    derived: false,
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "eq".to_string(),
@@ -1000,6 +1028,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 },
             ]),
             "Displayable" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "to_string".to_string(),
@@ -1008,6 +1037,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::String,
             }]),
             "Debug" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "debug".to_string(),
@@ -1017,6 +1047,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             }]),
             // Iterator<Item> interface — single method `next(mutate self) -> Item?`
             "Iterator" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "next".to_string(),
@@ -1047,6 +1078,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 let mut sigs = numeric_method_sigs();
                 sigs.extend(ordered_method_sigs());
                 sigs.push(MethodSig {
+                    derived: false,
                     owner_patterns: Vec::new(),
                     type_params: Vec::new(),
                     name: "is_nan".to_string(),
@@ -1058,6 +1090,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             }
             // ER4/ER32: the Error interface — `func message(self) -> string`
             "Error" => Some(vec![MethodSig {
+                derived: false,
                 owner_patterns: Vec::new(),
                 type_params: Vec::new(),
                 name: "message".to_string(),
@@ -1265,7 +1298,7 @@ impl<'a> InterfaceChecker<'a> {
                 ParamMode::Default => self.type_name(t),
             }
         }).collect();
-        let base = sig.name.split('<').next().unwrap_or(&sig.name);
+        let base = sig.name.as_str();
         let ret = self.type_name(&sig.ret);
         if ret == "()" {
             return format!("func {}({}{})", base, self_str, params_str.join(", "));
@@ -1386,6 +1419,7 @@ fn is_abstract_arg(ty: &Type) -> bool {
 /// saturate.
 fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
+        derived: false,
         owner_patterns: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
@@ -1420,6 +1454,7 @@ fn ordered_method_sigs() -> Vec<MethodSig> {
 
 fn numeric_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
+        derived: false,
         owner_patterns: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
@@ -1428,6 +1463,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         ret: Type::Var(crate::types::TypeVarId(0)),
     };
     let nullary = |name: &str, self_param| MethodSig {
+        derived: false,
         owner_patterns: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
@@ -1444,6 +1480,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         nullary("zero", SelfParam::None),
         nullary("one", SelfParam::None),
         MethodSig {
+            derived: false,
             owner_patterns: Vec::new(),
             type_params: Vec::new(),
             name: "from_int".to_string(),
@@ -1510,7 +1547,7 @@ fn object_compatible_methods_seen(
     interface_name: &str,
     seen: &mut Vec<String>,
 ) -> Vec<String> {
-    let base = interface_name.split('<').next().unwrap_or(interface_name);
+    let base = interface_name;
     if seen.iter().any(|s| s == base) {
         return Vec::new();
     }
@@ -1530,7 +1567,7 @@ fn object_compatible_methods_seen(
             // construction whatever the order is.
             if let TypeDef::Interface { super_interfaces, .. } = def {
                 for parent in super_interfaces {
-                    for m in object_compatible_methods_seen(types, parent, seen) {
+                    for m in object_compatible_methods_seen(types, &TypeTable::conformance_key(parent), seen) {
                         if !names.contains(&m) {
                             names.push(m);
                         }
@@ -1558,7 +1595,7 @@ pub fn implements_interface(
     interface_name: &str,
 ) -> bool {
     let mut checker = InterfaceChecker::new(types);
-    checker.check_satisfies(ty, interface_name, Span::new(0, 0)).is_ok()
+    checker.check_satisfies(ty, &TypeExpr::named(interface_name), Span::new(0, 0)).is_ok()
 }
 
 /// Get all interfaces that a type implements.
@@ -1574,7 +1611,7 @@ pub fn implemented_interfaces(types: &TypeTable, ty: &Type) -> Vec<String> {
 
     for interface_name in known_interfaces {
         let mut checker = InterfaceChecker::new(types);
-        if checker.check_satisfies(ty, interface_name, Span::new(0, 0)).is_ok() {
+        if checker.check_satisfies(ty, &TypeExpr::named(interface_name), Span::new(0, 0)).is_ok() {
             result.push(interface_name.to_string());
         }
     }
@@ -1606,6 +1643,7 @@ mod tests {
 
         let mut types = TypeTable::new();
         let show = || MethodSig {
+            derived: false,
             owner_patterns: Vec::new(),
             type_params: Vec::new(),
             name: "show".to_string(),
@@ -1671,10 +1709,11 @@ mod tests {
         });
 
         // Ring<T> implements Show where T: Show
-        types.record_conformance(ring, "Show");
-        types.record_conformance_condition(ring, "Show", vec![("T".to_string(), vec!["Show".to_string()])]);
+        let show = TypeExpr::named("Show");
+        types.record_conformance(ring, &show);
+        types.record_conformance_condition(ring, &show, vec![("T".to_string(), vec![show.clone()])]);
         // Coin implements Show
-        types.record_conformance(coin, "Show");
+        types.record_conformance(coin, &show);
 
         let ring_of = |arg: crate::types::TypeId| Type::Generic {
             base: ring,
@@ -1682,9 +1721,9 @@ mod tests {
         };
 
         let mut checker = InterfaceChecker::new(&types);
-        assert!(checker.check_satisfies(&ring_of(coin), "Show", Span::new(0, 0)).is_ok(),
+        assert!(checker.check_satisfies(&ring_of(coin), &show, Span::new(0, 0)).is_ok(),
             "Ring<Coin> should satisfy Show (Coin: Show)");
-        assert!(checker.check_satisfies(&ring_of(blob), "Show", Span::new(0, 0)).is_err(),
+        assert!(checker.check_satisfies(&ring_of(blob), &show, Span::new(0, 0)).is_err(),
             "Ring<Blob> must NOT satisfy Show (Blob is not Show)");
     }
 }
@@ -1695,6 +1734,7 @@ pub fn substitute_signature(m: &MethodSig, map: &HashMap<String, Type>) -> Metho
         return m.clone();
     }
     MethodSig {
+        derived: m.derived,
         owner_patterns: m.owner_patterns.clone(),
         type_params: m.type_params.clone(),
         name: m.name.clone(),

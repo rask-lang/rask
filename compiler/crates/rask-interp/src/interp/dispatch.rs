@@ -319,7 +319,7 @@ impl Interpreter {
     /// `generics` is the frame for `method`'s body, from the call site. Only
     /// that body gets it: a builtin that calls some other Rask function on the
     /// way (`sort` reaching `compare`) hands that one nothing.
-    pub(super) fn call_method(
+    pub(crate) fn call_method(
         &mut self,
         receiver: Value,
         method: &str,
@@ -692,14 +692,10 @@ impl Interpreter {
         let mut names = vec![target.method.clone()];
         // A bare `T: Mul` bound files the method under the parameter's own name
         // (`mul$T`). The argument in hand is what it stands for.
-        if let Some(rhs) = rask_ast::operators::method_rhs(&target.method) {
+        if let Some(rhs) = &target.rhs {
             if let Some(arg) = args.first().and_then(Self::runtime_type_name) {
-                if arg != rhs {
-                    names.push(format!(
-                        "{}${}",
-                        rask_ast::operators::method_display(&target.method),
-                        arg
-                    ));
+                if &arg != rhs {
+                    names.push(format!("{}${}", target.operator, arg));
                 }
             }
         }

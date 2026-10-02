@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use super::type_defs::TypeDef;
 use super::TypeChecker;
+use rask_ast::ty::TypeExpr;
 
 use crate::types::{GenericArg, Type, TypeVarId};
 
@@ -19,35 +20,34 @@ impl TypeChecker {
     /// type of `T`, which no binding in such a block ever fills — so the copy
     /// dropped the record and `for (k, v) in self` fell through to the
     /// index-based path and walked a closure as if it were a Vec (#1046).
-    pub(super) fn resolve_impl_self_type(&self, target_ty: &str) -> Option<Type> {
-        let base_name = target_ty.split('<').next().unwrap_or(target_ty);
-        let Some(type_id) = self.types.get_type_id(base_name) else {
+    pub(super) fn resolve_impl_self_type(&self, target_ty: &TypeExpr) -> Option<Type> {
+        let base_name = target_ty.name()?;
+        let Some(type_id) = self.types.get_type_id(&base_name) else {
             // `extend string` and `extend char` have no TypeId to find — a
             // primitive is its own `Type` variant, not an entry in the table.
             // This answered `None` for them, so `self` inside such a body was
             // never given a type and every `self.other()` call recorded its
             // receiver as the literal name `Self`. Dispatch then mangled
-            // `Self_first_nul`, which nothing declares. Only stdlib bodies can
-            // extend a primitive, and until `string.to_cstring()` there wasn't
-            // one that called a sibling (#949).
-            return crate::parse_type_string(base_name, &self.types)
+            // `Self_first_nul`, which nothing declares (#949).
+            return super::resolve_type_expr(&TypeExpr::named(base_name), &self.types)
                 .ok()
                 .filter(|t| !matches!(t, Type::UnresolvedNamed(_) | Type::Error));
         };
 
         let declared = self.declared_type_params(type_id).len();
-        let header_args = extend_target_args(target_ty);
+        let header_args = target_ty.args();
         if !header_args.is_empty() && header_args.len() == declared {
             let args = header_args
                 .iter()
                 .map(|arg| {
                     // A bare parameter name stays symbolic — resolving it would
                     // find any type that happens to share the letter.
-                    let ty = if super::declarations::is_type_param_name(arg) {
-                        Type::UnresolvedNamed(arg.clone())
-                    } else {
-                        crate::parse_type_string(arg, &self.types)
-                            .unwrap_or_else(|_| Type::UnresolvedNamed(arg.clone()))
+                    let ty = match arg.bare_name() {
+                        Some(n) if super::declarations::is_type_param_name(n) => {
+                            Type::UnresolvedNamed(n.to_string())
+                        }
+                        _ => super::resolve_type_expr(arg, &self.types)
+                            .unwrap_or_else(|_| Type::UnresolvedNamed(arg.to_string())),
                     };
                     GenericArg::Type(Box::new(ty))
                 })
@@ -322,7 +322,7 @@ impl TypeChecker {
     /// which leaves the name unbound rather than bound to the wrong type.
     pub(super) fn build_owner_pattern_subst(
         &self,
-        patterns: &[String],
+        patterns: &[TypeExpr],
         args: &[GenericArg],
     ) -> HashMap<String, Type> {
         let mut subst = HashMap::new();
@@ -356,7 +356,7 @@ impl TypeChecker {
         seen: &mut HashMap<String, Type>,
     ) -> Type {
         fn is_param(name: &str) -> bool {
-            // `parse_stub_type` has already rewritten single uppercase names in
+            // `stub_type` has already rewritten single uppercase names in
             // a stub signature to `_Any`, so both spellings arrive here.
             if name == "_Any" {
                 return true;
@@ -527,50 +527,19 @@ impl TypeChecker {
 }
 
 /// The parameter names an extend header's target argument introduces:
-/// `["K", "V"]` for `(K, V)`, `["T"]` for `T`, and nothing for a concrete
-/// spelling like `i64`.
-pub(super) fn pattern_names(pattern: &str) -> Vec<String> {
-    let pattern = pattern.trim();
-    if let Some(members) = pattern.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
-        return super::parse_type::split_type_args(members)
-            .into_iter()
-            .flat_map(pattern_names)
-            .collect();
+/// `["K", "V"]` for `(K, V)`, `["T"]` for `T`, `["U"]` for `Sequence<U>`, and
+/// nothing for a concrete spelling like `i64`.
+pub(super) fn pattern_names(pattern: &TypeExpr) -> Vec<String> {
+    match pattern {
+        TypeExpr::Tuple(parts) => parts.iter().flat_map(pattern_names).collect(),
+        TypeExpr::Named { args, .. } if !args.is_empty() => {
+            args.iter().flat_map(pattern_names).collect()
+        }
+        _ => match pattern.bare_name() {
+            Some(n) if super::declarations::is_type_param_name(n) => vec![n.to_string()],
+            _ => Vec::new(),
+        },
     }
-    // `Sequence<U>` introduces `U`, the same way `(K, V)` introduces both.
-    if let Some(inner) = generic_args_of(pattern) {
-        return super::parse_type::split_type_args(inner)
-            .into_iter()
-            .flat_map(pattern_names)
-            .collect();
-    }
-    if super::declarations::is_type_param_name(pattern) {
-        vec![pattern.to_string()]
-    } else {
-        Vec::new()
-    }
-}
-
-/// The argument list inside `Name<…>`, or `None` if there isn't one.
-fn generic_args_of(pattern: &str) -> Option<&str> {
-    let open = pattern.find('<')?;
-    let inner = pattern[open + 1..].trim_end().strip_suffix('>')?;
-    (!pattern[..open].trim().is_empty()).then_some(inner)
-}
-
-/// An `extend` header's target arguments as written, nesting kept and bounds
-/// dropped: `["(K, V)"]` for `Sequence<(K, V)>`, `["K", "V"]` for
-/// `Map<K, V: Hash>`, `["i64"]` for `Holder<i64>`, nothing for `Holder`.
-pub fn extend_target_args(target_ty: &str) -> Vec<String> {
-    let Some((_, rest)) = target_ty.split_once('<') else { return Vec::new() };
-    // Exactly one `>`, not every trailing one: `Vec<Vec<T>>` closes the outer
-    // bracket here and the inner one belongs to the argument.
-    let Some(inner) = rest.trim_end().strip_suffix('>') else { return Vec::new() };
-    super::parse_type::split_type_args(inner)
-        .into_iter()
-        .map(|a| a.split(':').next().unwrap_or(a).trim().to_string())
-        .filter(|a| !a.is_empty())
-        .collect()
 }
 
 /// Match one `extend` header argument, as written, against the type the
@@ -587,48 +556,43 @@ pub fn extend_target_args(target_ty: &str) -> Vec<String> {
 /// names stand for.
 pub fn bind_header_pattern(
     types: &super::TypeTable,
-    pattern: &str,
+    pattern: &TypeExpr,
     actual: &Type,
     out: &mut Vec<(String, Type)>,
 ) -> bool {
-    let pattern = pattern.trim();
-    if let Some(members) = pattern.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
-        let Type::Tuple(elems) = actual else { return false };
-        let parts = super::parse_type::split_type_args(members);
-        if parts.len() != elems.len() {
-            return false;
+    match pattern {
+        TypeExpr::Tuple(parts) => {
+            let Type::Tuple(elems) = actual else { return false };
+            parts.len() == elems.len()
+                && parts.iter().zip(elems).all(|(p, a)| bind_header_pattern(types, p, a, out))
         }
-        return parts
-            .iter()
-            .zip(elems.iter())
-            .all(|(p, a)| bind_header_pattern(types, p, a, out));
-    }
-    if let Some(inner) = generic_args_of(pattern) {
-        let head = pattern.split('<').next().unwrap_or(pattern).trim();
-        let bare = |n: &str| n.split('<').next().unwrap_or(n).trim().to_string();
-        let (actual_head, actual_args) = match actual {
-            Type::Generic { base, args } => (bare(&types.type_name(*base)), args),
-            Type::UnresolvedGeneric { name, args } => (bare(name), args),
-            _ => return false,
-        };
-        let parts = super::parse_type::split_type_args(inner);
-        if actual_head != head || parts.len() != actual_args.len() {
-            return false;
+        TypeExpr::Named { path, args } if !args.is_empty() => {
+            let bare = |n: &str| n.trim().to_string();
+            let (actual_head, actual_args) = match actual {
+                Type::Generic { base, args } => (bare(&types.type_name(*base)), args),
+                Type::UnresolvedGeneric { name, args } => (bare(name), args),
+                _ => return false,
+            };
+            if actual_head != path.join(".") || args.len() != actual_args.len() {
+                return false;
+            }
+            args.iter().zip(actual_args).all(|(p, a)| match a {
+                GenericArg::Type(t) => bind_header_pattern(types, p, t, out),
+                GenericArg::ConstUsize(_) => false,
+            })
         }
-        return parts.iter().zip(actual_args.iter()).all(|(p, a)| match a {
-            GenericArg::Type(t) => bind_header_pattern(types, p, t, out),
-            GenericArg::ConstUsize(_) => false,
-        });
+        _ => {
+            out.push((pattern.to_string(), actual.clone()));
+            true
+        }
     }
-    out.push((pattern.to_string(), actual.clone()));
-    true
 }
 
 /// Every header argument against the receiver's type arguments. `None` unless
 /// each one lines up, so a name is never left bound to the wrong thing.
 pub fn bind_header_patterns(
     types: &super::TypeTable,
-    patterns: &[String],
+    patterns: &[TypeExpr],
     args: &[GenericArg],
 ) -> Option<Vec<(String, Type)>> {
     if patterns.len() != args.len() {

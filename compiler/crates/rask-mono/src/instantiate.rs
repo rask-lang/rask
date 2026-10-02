@@ -10,32 +10,9 @@ use rask_ast::{
     stmt::{Stmt, StmtKind},
     NodeId,
 };
+use rask_ast::ty::TypeExpr;
 use rask_types::Type;
 use std::collections::HashMap;
-
-/// Split a comma-separated type argument string, respecting nested angle brackets.
-/// e.g. "Vec<i32>, E" → ["Vec<i32>", "E"]
-fn split_type_args(s: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0;
-    for (i, ch) in s.char_indices() {
-        match ch {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                parts.push(s[start..i].trim());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    let last = s[start..].trim();
-    if !last.is_empty() {
-        parts.push(last);
-    }
-    parts
-}
 
 /// Type substitutor - clones AST while replacing type parameters
 struct TypeSubstitutor {
@@ -75,99 +52,13 @@ impl TypeSubstitutor {
         id
     }
 
-    /// Substitute type parameter names with concrete types.
+    /// The written type with each type parameter replaced by its argument.
     ///
-    /// Handles bare names ("T"), compound generics ("Vec<T>", "Result<T, E>"),
-    /// option shorthand ("T?"), and result infix ("T or E").
-    fn substitute_type_string(&self, type_str: &str) -> String {
-        let s = type_str.trim();
-
-        // Exact match on a type parameter name
-        if let Some(ty) = self.substitutions.get(s) {
-            return format!("{}", ty);
-        }
-
-        // `func(A, B) -> R` — a function type. Its parts are types too, and
-        // nothing substituted them: `f: func() -> V` in a `Map<K, V>` method
-        // stayed `func() -> V` in the copy, so the call through it took the
-        // return as a word. A `V` that was a string came back as a pointer and
-        // the value stored was garbage (#887).
-        //
-        // Before the ` or ` split and the generic branch: `func() -> i64 or E`
-        // would split at the arrow's right and `func() -> Vec<V>` ends in `>`.
-        if let Some(rest) = s.strip_prefix("func") {
-            let rest = rest.trim_start();
-            if let Some(close) = closing_paren(rest) {
-                let params = &rest[1..close];
-                let tail = rest[close + 1..].trim();
-                let params_sub = if params.trim().is_empty() {
-                    String::new()
-                } else {
-                    split_type_args(params)
-                        .iter()
-                        .map(|a| self.substitute_type_string(a))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-                return match tail.strip_prefix("->") {
-                    Some(r) if !r.trim().is_empty() => format!(
-                        "func({}) -> {}",
-                        params_sub,
-                        self.substitute_type_string(r.trim()),
-                    ),
-                    _ => format!("func({})", params_sub),
-                };
-            }
-        }
-
-        // Option shorthand: "T?" → substitute T, re-append "?"
-        if let Some(inner) = s.strip_suffix('?') {
-            let inner_sub = self.substitute_type_string(inner);
-            return format!("{}?", inner_sub);
-        }
-
-        // Result infix: "T or E" → substitute both sides
-        if let Some(idx) = s.find(" or ") {
-            let ok_part = self.substitute_type_string(&s[..idx]);
-            let err_part = self.substitute_type_string(&s[idx + 4..]);
-            return format!("{} or {}", ok_part, err_part);
-        }
-
-        // Compound generic: "Name<A, B, ...>" → substitute each argument
-        if let Some(open) = s.find('<') {
-            if s.ends_with('>') {
-                let base = &s[..open];
-                let args_str = &s[open + 1..s.len() - 1];
-                let substituted_args = split_type_args(args_str)
-                    .iter()
-                    .map(|a| self.substitute_type_string(a))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                // Substitute the base name itself in case it's a type param
-                let base_sub = if let Some(ty) = self.substitutions.get(base) {
-                    format!("{}", ty)
-                } else {
-                    base.to_string()
-                };
-                return format!("{}<{}>", base_sub, substituted_args);
-            }
-        }
-
-        // Tuple: "(A, B)" → substitute each element
-        if s.starts_with('(') && s.ends_with(')') {
-            let inner = &s[1..s.len() - 1];
-            if inner.is_empty() {
-                return s.to_string(); // unit "()"
-            }
-            let substituted = split_type_args(inner)
-                .iter()
-                .map(|a| self.substitute_type_string(a))
-                .collect::<Vec<_>>()
-                .join(", ");
-            return format!("({})", substituted);
-        }
-
-        s.to_string()
+    /// Function types are walked too: `f: func() -> V` in a `Map<K, V>` method
+    /// has to come out as `func() -> string` in the copy, or the call through
+    /// it takes the return as a word (#887).
+    fn substitute_type(&self, ty: &TypeExpr) -> TypeExpr {
+        ty.substitute(&|name| self.substitutions.get(name).map(Type::to_type_expr))
     }
 
     fn clone_decl(&mut self, decl: &Decl) -> Decl {
@@ -191,7 +82,7 @@ impl TypeSubstitutor {
             fields: s.fields.iter().map(|f| rask_ast::decl::Field {
                 name: f.name.clone(),
                 name_span: f.name_span.clone(),
-                ty: self.substitute_type_string(&f.ty),
+                ty: self.substitute_type(&f.ty),
                 visibility: f.visibility,
                 attrs: f.attrs.clone(),
                 default: f.default.clone(),
@@ -214,7 +105,7 @@ impl TypeSubstitutor {
                 fields: v.fields.iter().map(|f| rask_ast::decl::Field {
                     name: f.name.clone(),
                     name_span: f.name_span.clone(),
-                    ty: self.substitute_type_string(&f.ty),
+                    ty: self.substitute_type(&f.ty),
                     visibility: f.visibility,
                     attrs: f.attrs.clone(),
                     default: f.default.clone(),
@@ -239,7 +130,7 @@ impl TypeSubstitutor {
             ret_ty: fn_decl
                 .ret_ty
                 .as_ref()
-                .map(|ty| self.substitute_type_string(ty)),
+                .map(|ty| self.substitute_type(ty)),
             body: fn_decl.body.iter().map(|s| self.clone_stmt(s)).collect(),
             is_pub: fn_decl.is_pub,
             is_private: fn_decl.is_private,
@@ -257,7 +148,7 @@ impl TypeSubstitutor {
         Param {
             name: param.name.clone(),
             name_span: param.name_span.clone(),
-            ty: self.substitute_type_string(&param.ty),
+            ty: param.ty.as_ref().map(|t| self.substitute_type(t)),
             is_take: param.is_take,
             is_mutate: param.is_mutate, is_deleting: false,
             default: param.default.as_ref().map(|e| self.clone_expr(e)),
@@ -280,7 +171,7 @@ impl TypeSubstitutor {
                 } => StmtKind::Mut {
                     name: name.clone(),
                     name_span: name_span.clone(),
-                    ty: ty.as_ref().map(|t| self.substitute_type_string(t)),
+                    ty: ty.as_ref().map(|t| self.substitute_type(t)),
                     init: self.clone_expr(init),
                 },
 
@@ -297,7 +188,7 @@ impl TypeSubstitutor {
                 } => StmtKind::Let {
                     name: name.clone(),
                     name_span: name_span.clone(),
-                    ty: ty.as_ref().map(|t| self.substitute_type_string(t)),
+                    ty: ty.as_ref().map(|t| self.substitute_type(t)),
                     init: self.clone_expr(init),
                 },
 
@@ -418,6 +309,10 @@ impl TypeSubstitutor {
 
                 // Variables
                 ExprKind::Ident(name) => ExprKind::Ident(name.clone()),
+                ExprKind::GenericName { name, type_args } => ExprKind::GenericName {
+                    name: name.clone(),
+                    type_args: type_args.iter().map(|t| self.substitute_type(t)).collect(),
+                },
 
                 // Operators
                 ExprKind::Binary { op, left, right } => ExprKind::Binary {
@@ -445,7 +340,7 @@ impl TypeSubstitutor {
                     method: method.clone(),
                     type_args: type_args.as_ref().map(|tas| {
                         tas.iter()
-                            .map(|t| self.substitute_type_string(t))
+                            .map(|t| self.substitute_type(t))
                             .collect()
                     }),
                     args: args.iter().map(|a| CallArg { name: a.name.clone(), mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
@@ -556,10 +451,12 @@ impl TypeSubstitutor {
                 // Aggregates
                 ExprKind::StructLit {
                     name,
+                    type_args,
                     fields,
                     spread,
                 } => ExprKind::StructLit {
                     name: name.clone(),
+                    type_args: type_args.iter().map(|t| self.substitute_type(t)).collect(),
                     fields: fields
                         .iter()
                         .map(|f| FieldInit {
@@ -590,25 +487,25 @@ impl TypeSubstitutor {
                         .iter()
                         .map(|p| ClosureParam {
                             name: p.name.clone(),
-                            ty: p.ty.as_ref().map(|t| self.substitute_type_string(t)),
+                            ty: p.ty.as_ref().map(|t| self.substitute_type(t)),
                             is_mutate: false,
                             is_take: false,
                         })
                         .collect(),
-                    ret_ty: ret_ty.as_ref().map(|t| self.substitute_type_string(t)),
+                    ret_ty: ret_ty.as_ref().map(|t| self.substitute_type(t)),
                     body: Box::new(self.clone_expr(body)),
                 },
 
                 // Type cast
                 ExprKind::Cast { expr, ty } => ExprKind::Cast {
                     expr: Box::new(self.clone_expr(expr)),
-                    ty: self.substitute_type_string(ty),
+                    ty: self.substitute_type(ty),
                 },
 
                 // Explicit conversion (CV5–CV10)
                 ExprKind::Convert { expr, target, kind } => ExprKind::Convert {
                     expr: Box::new(self.clone_expr(expr)),
-                    target: self.substitute_type_string(target),
+                    target: self.substitute_type(target),
                     kind: *kind,
                 },
 
@@ -697,8 +594,8 @@ impl TypeSubstitutor {
                 start: start.clone(),
                 end: end.clone(),
             },
-            Pattern::TypePat { ty_name, binding } => Pattern::TypePat {
-                ty_name: ty_name.clone(),
+            Pattern::TypePat { ty, binding } => Pattern::TypePat {
+                ty: self.substitute_type(ty),
                 binding: binding.clone(),
             },
         }
@@ -806,16 +703,16 @@ pub fn instantiate_function_with_params(
     (cloned, substitutor.node_origin)
 }
 
-/// Apply an instantiation's type arguments to a type written as a string.
+/// Apply an instantiation's type arguments to a checker type, as written.
 ///
 /// The same substitution `instantiate_function_with_params` does to a copy's
 /// signature, for a type the declaration didn't carry — the return type the
 /// checker inferred, which can name a type parameter.
-pub fn substitute_type_in_string(
-    type_str: &str,
+pub fn substitute_written_type(
+    ty: &Type,
     param_names: &[String],
     type_args: &[Type],
-) -> String {
+) -> TypeExpr {
     let params: Vec<TypeParam> = param_names
         .iter()
         .map(|name| TypeParam {
@@ -826,7 +723,7 @@ pub fn substitute_type_in_string(
             default: None,
         })
         .collect();
-    TypeSubstitutor::new(&params, type_args).substitute_type_string(type_str)
+    TypeSubstitutor::new(&params, type_args).substitute_type(&ty.to_type_expr())
 }
 
 /// Turn a PC1 name list back into `TypeParam`s, keeping whatever the explicit
@@ -907,26 +804,4 @@ pub fn instantiate_function_from(
     let cloned = substitutor.clone_decl(decl);
     *next_node_id = substitutor.next_node_id;
     (cloned, substitutor.node_origin)
-}
-
-/// The `)` matching a leading `(`, or `None` when `s` doesn't start with one or
-/// the parens don't balance.
-fn closing_paren(s: &str) -> Option<usize> {
-    if !s.starts_with('(') {
-        return None;
-    }
-    let mut depth = 0usize;
-    for (i, b) in s.bytes().enumerate() {
-        match b {
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }

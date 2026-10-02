@@ -17,9 +17,10 @@ pub use error::{
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{ArgMode, Expr, ExprKind, Pattern, UnaryOp};
+use rask_ast::expr::{Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
+use rask_ast::ty::TypeExpr;
 use rask_types::{ParamMode, Type, TypedProgram};
 
 /// Result of ownership analysis.
@@ -189,8 +190,8 @@ pub struct OwnershipChecker<'a> {
     /// A `delete` of one of those bindings is picking an arbitrary node rather
     /// than a node the caller named, so it invalidates every other link local.
     rack_iterations: Vec<(Option<String>, Vec<String>)>,
-    /// Parameter type strings: param name → type annotation (e.g. "Vec<Entity>").
-    param_type_strings: HashMap<String, String>,
+    /// Every parameter, with its written type when it has one.
+    param_types: HashMap<String, Option<TypeExpr>>,
     /// SL1: Bindings created by `const` from non-copy expressions (block-scoped borrows).
     /// Maps binding name → block_id where the borrow was created.
     borrow_bindings: HashMap<String, u32>,
@@ -323,7 +324,7 @@ impl<'a> OwnershipChecker<'a> {
             identified_links: HashSet::new(),
             link_delete_spans: std::collections::HashSet::new(),
             rack_iterations: Vec::new(),
-            param_type_strings: HashMap::new(),
+            param_types: HashMap::new(),
             borrow_bindings: HashMap::new(),
             binding_decl_blocks: HashMap::new(),
             scope_limited_closures: HashMap::new(),
@@ -370,12 +371,7 @@ impl<'a> OwnershipChecker<'a> {
             // `purge` is declared `deleting self`, and the receiver is where that
             // declaration sits.
             if let DeclKind::Impl(impl_decl) = &decl.kind {
-                let ty = impl_decl
-                    .target_ty
-                    .split('<')
-                    .next()
-                    .unwrap_or(&impl_decl.target_ty)
-                    .to_string();
+                let ty = impl_decl.target_ty.name().unwrap_or_default();
                 for m in &impl_decl.methods {
                     let self_deleting = m
                         .params
@@ -564,7 +560,7 @@ impl<'a> OwnershipChecker<'a> {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::SmallInstantiationTooBig {
                     type_name: rendered,
-                    base_name: name.split('<').next().unwrap_or(&name).to_string(),
+                    base_name: name.as_str().to_string(),
                     size: total,
                     offending_field: offender,
                 },
@@ -642,7 +638,7 @@ impl<'a> OwnershipChecker<'a> {
         // that body's write at that body's line.
         self.closure_literals.clear();
         self.mutable_captures.clear();
-        self.param_type_strings.clear();
+        self.param_types.clear();
         self.identified_links.clear();
         self.coarse_resources.clear();
         self.resource_field_debts.clear();
@@ -669,13 +665,13 @@ impl<'a> OwnershipChecker<'a> {
         self.reset_body_state();
 
         for param in &fn_decl.params {
-            if param.is_take && param.ty.starts_with("Link<") {
+            if param.is_take && is_written_link(&param.ty) {
                 self.take_link_params.insert(param.name.clone());
             }
             if param.is_deleting {
                 self.deleting_params.insert(param.name.clone());
             }
-            if param.ty.starts_with("Link<") {
+            if is_written_link(&param.ty) {
                 self.link_params.insert(param.name.clone());
                 if param.is_mutate || param.is_deleting {
                     self.writable_links.insert(param.name.clone());
@@ -684,9 +680,9 @@ impl<'a> OwnershipChecker<'a> {
         }
 
         // Register parameter type strings for W2 pool detection
-        self.param_type_strings.clear();
+        self.param_types.clear();
         for param in &fn_decl.params {
-            self.param_type_strings.insert(param.name.clone(), param.ty.clone());
+            self.param_types.insert(param.name.clone(), param.ty.clone());
         }
 
         // A rack reached through a `mutate`/`deleting` parameter is writable; one
@@ -710,7 +706,7 @@ impl<'a> OwnershipChecker<'a> {
             if param.name == "self" {
                 continue;
             }
-            if let Some(ty) = self.type_from_name(&param.ty) {
+            if let Some(ty) = param.ty.as_ref().and_then(|t| self.type_from_name(t)) {
                 self.binding_types.insert(param.name.clone(), ty);
             }
         }
@@ -725,7 +721,7 @@ impl<'a> OwnershipChecker<'a> {
                 // a `mutate` borrow can't be given away even if something is put
                 // back, so it joins the borrows instead — consume-and-replace is
                 // for ordinary move-only values, where the spec is silent.
-                if self.is_resource_type_name(&param.ty) {
+                if param.ty.as_ref().is_some_and(|t| self.is_resource_type_name(t)) {
                     self.borrowed_params
                         .insert(param.name.clone(), (param.name_span, true));
                 } else {
@@ -749,8 +745,8 @@ impl<'a> OwnershipChecker<'a> {
                 // `take` parameter: owned
                 self.bindings.insert(param.name.clone(), BindingState::Owned);
                 // Check if it's a resource type
-                if self.is_resource_type_name(&param.ty) {
-                    let ty = self.declared_type_from_name(&param.ty);
+                if let Some(pty) = param.ty.as_ref().filter(|t| self.is_resource_type_name(t)) {
+                    let ty = self.declared_type_from_name(pty);
                     self.register_resource_binding(&param.name.clone(), ty.as_ref());
                     // A `take` parameter arrives owed, same as a local the body
                     // acquired. The signature is where it came from, so that's
@@ -1670,7 +1666,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
             | ExprKind::StringInterp(_)
-            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None => {}
+            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null | ExprKind::None | ExprKind::GenericName { .. } => {}
 
             ExprKind::Binary { left, op: _, right } => {
                 self.check_expr(left);
@@ -1692,7 +1688,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(func);
                 // #296/PM3: a `take` parameter consumes its argument regardless of
                 // call-site `own`. Look up the callee's take-parameter positions.
-                let callee_takes: Option<Vec<bool>> = if let ExprKind::Ident(name) = &func.kind {
+                let callee_takes: Option<Vec<bool>> = if let Some(name) = func.name() {
                     // `drop` is a compiler builtin, so it has no declaration in
                     // `decls` for the take-parameter scan to find — and without
                     // that, `drop(p)` didn't consume `p`: the leak was reported on
@@ -1707,7 +1703,7 @@ impl<'a> OwnershipChecker<'a> {
                 } else {
                     None
                 };
-                let callee_deletings: Option<Vec<bool>> = if let ExprKind::Ident(name) = &func.kind {
+                let callee_deletings: Option<Vec<bool>> = if let Some(name) = func.name() {
                     self.fn_deleting_params.get(name).cloned()
                 } else {
                     None
@@ -1905,14 +1901,14 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 // W2: Check structural mutations inside `with` blocks
                 if matches!(method.as_str(), "insert" | "remove" | "clear" | "push" | "pop") {
-                    if let ExprKind::Ident(coll_name) = &object.kind {
+                    if let Some(coll_name) = object.name() {
                         for wb in &self.active_with_bindings {
                             if wb.collection_name == *coll_name {
                                 // W2: a structural mutation can reallocate the
                                 // buffer the binding names.
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::WithBlockStructuralMutation {
-                                        collection: coll_name.clone(),
+                                        collection: coll_name.to_string(),
                                         operation: method.clone(),
                                         binding_span: wb.span,
                                     },
@@ -1925,12 +1921,12 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 // LP14: Check structural mutations on collection during `for mutate`
                 if matches!(method.as_str(), "insert" | "remove" | "clear" | "push" | "pop" | "drain") {
-                    if let ExprKind::Ident(coll_name) = &object.kind {
+                    if let Some(coll_name) = object.name() {
                         for fm in &self.active_for_mutates {
                             if fm.collection_name == *coll_name {
                                 self.errors.push(OwnershipError {
                                     kind: OwnershipErrorKind::ForMutateStructuralMutation {
-                                        collection: coll_name.clone(),
+                                        collection: coll_name.to_string(),
                                         operation: method.clone(),
                                         loop_span: fm.span,
                                     },
@@ -1980,7 +1976,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(index);
                 // Index creates an instant borrow for growable types
             }
-            ExprKind::StructLit { name: _, fields, spread } => {
+            ExprKind::StructLit { fields, spread, .. } => {
                 for field in fields {
                     self.check_expr(&field.value);
                     // SL2: scope-limited closure stored in a struct field
@@ -2289,7 +2285,7 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
             }
-            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch, else_binding } => {
+            ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch, else_binding: _ } => {
                 self.check_expr(scrutinee);
                 let pre_branch = self.bindings.clone();
                 let scrutinee_ty = self.program.node_types.get(&scrutinee.id).cloned();
@@ -2468,9 +2464,9 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(&binding.source);
                     // W2: Track binding info for structural mutation checking
                     if let ExprKind::Index { object, .. } = &binding.source.kind {
-                        if let ExprKind::Ident(coll_name) = &object.kind {
+                        if let Some(coll_name) = object.name() {
                             self.active_with_bindings.push(WithBindingInfo {
-                                collection_name: coll_name.clone(),
+                                collection_name: coll_name.to_string(),
                                 span: binding.source.span,
                             });
                         }
@@ -2773,9 +2769,9 @@ impl<'a> OwnershipChecker<'a> {
             .is_some_and(|ty| self.is_link_type(ty));
         if !is_link && !self.take_link_params.contains(&root) {
             let param_link = self
-                .param_type_strings
+                .param_types
                 .get(&root)
-                .is_some_and(|t| t.starts_with("Link<"));
+                .is_some_and(is_written_link);
             if !param_link {
                 return;
             }
@@ -2874,7 +2870,7 @@ impl<'a> OwnershipChecker<'a> {
             }
         };
         // A parameter rack outlives this body, so nothing can escape it here.
-        if self.param_type_strings.contains_key(&rack) {
+        if self.param_types.contains_key(&rack) {
             return;
         }
         let Some(&rack_block) = self.binding_decl_blocks.get(&rack) else { return };
@@ -3013,9 +3009,9 @@ impl<'a> OwnershipChecker<'a> {
             // Parameters aren't in `binding_types`, so fall back to the declared
             // type name.
             None => self
-                .param_type_strings
+                .param_types
                 .get(name)
-                .is_some_and(|t| t.starts_with("Link<")),
+                .is_some_and(is_written_link),
         };
         if !is_link || self.is_identified_link(arg) {
             return;
@@ -3049,7 +3045,7 @@ impl<'a> OwnershipChecker<'a> {
         let Some(root) = Self::extract_root_and_fields(rack).0 else {
             return;
         };
-        if !self.param_type_strings.contains_key(&root) || self.deleting_params.contains(&root) {
+        if !self.param_types.contains_key(&root) || self.deleting_params.contains(&root) {
             return;
         }
         self.errors.push(OwnershipError {
@@ -3129,18 +3125,19 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Is this name a parameter whose type carries a `Rack`?
     fn name_holds_rack(&self, name: &str) -> bool {
-        self.param_type_strings
+        self.param_types
             .get(name)
+            .and_then(Option::as_ref)
             .is_some_and(|ty| self.type_string_holds_rack(ty))
     }
 
     /// Does a declared type name hold a `Rack` — directly or in a field?
-    fn type_string_holds_rack(&self, ty_str: &str) -> bool {
-        let base = ty_str.split('<').next().unwrap_or(ty_str).trim();
+    fn type_string_holds_rack(&self, ty: &TypeExpr) -> bool {
+        let Some(base) = ty.name() else { return false };
         if base == "Rack" {
             return true;
         }
-        match self.program.types.get_type_id(base) {
+        match self.program.types.get_type_id(&base) {
             Some(id) => self.rack_elem_of(&rask_types::Type::Named(id)).is_some(),
             None => false,
         }
@@ -3168,15 +3165,15 @@ impl<'a> OwnershipChecker<'a> {
     fn type_name_of(&self, ty: &rask_types::Type) -> Option<String> {
         match ty {
             rask_types::Type::UnresolvedGeneric { name, .. } => {
-                Some(name.split('<').next().unwrap_or(name).to_string())
+                Some(name.to_string())
             }
             rask_types::Type::Generic { base, .. } => {
                 let n = self.program.types.type_name(*base);
-                Some(n.split('<').next().unwrap_or(&n).to_string())
+                Some(n.as_str().to_string())
             }
             rask_types::Type::Named(id) => {
                 let n = self.program.types.type_name(*id);
-                Some(n.split('<').next().unwrap_or(&n).to_string())
+                Some(n.as_str().to_string())
             }
             _ => None,
         }
@@ -3587,8 +3584,8 @@ impl<'a> OwnershipChecker<'a> {
         match &iter.kind {
             ExprKind::Ident(name) => Some(name.clone()),
             ExprKind::MethodCall { object, .. } => {
-                if let ExprKind::Ident(name) = &object.kind {
-                    Some(name.clone())
+                if let Some(name) = object.name() {
+                    Some(name.to_string())
                 } else {
                     None
                 }
@@ -3706,37 +3703,31 @@ impl<'a> OwnershipChecker<'a> {
         if let Some(t) = self.binding_types.get(name) {
             return self.is_copy(t) || self.is_link_type(t);
         }
-        if let Some(tn) = self.param_type_strings.get(name) {
+        if let Some(Some(tn)) = self.param_types.get(name) {
             if let Some(t) = self.type_from_name(tn) {
                 return self.is_copy(&t) || self.is_link_type(&t);
             }
         }
         // A parameter whose annotation didn't resolve: fall back to the spelling,
         // so a `Link<T>` param behaves the same as a resolved one.
-        self.param_type_strings
+        self.param_types
             .get(name)
-            .is_some_and(|tn| tn.starts_with("Link<"))
+            .is_some_and(is_written_link)
     }
 
     /// Resolve a simple type-annotation string to a `Type`. Handles primitives,
     /// plain named types, and a generic spelling reduced to its base name;
     /// anything else returns None (treated as non-Copy, the safe default).
-    fn type_from_name(&self, name: &str) -> Option<Type> {
+    fn type_from_name(&self, ty: &TypeExpr) -> Option<Type> {
         // `Handle<Item>` has to reach `is_copy`, which answers by base name for
         // `Link` and stays conservative for every other container.
         // Returning None here made a captured `n: Handle<Item>` parameter look
         // non-Copy, so an `own` closure marked it moved (#768). The arguments
         // aren't needed — nothing downstream inspects them.
-        if let Some(base) = name.split('<').next().filter(|b| *b != name) {
-            let base = base.trim();
-            if base.is_empty() {
-                return None;
-            }
-            return Some(Type::UnresolvedGeneric {
-                name: base.to_string(),
-                args: Vec::new(),
-            });
+        if !ty.args().is_empty() {
+            return Some(Type::UnresolvedGeneric { name: ty.name()?, args: Vec::new() });
         }
+        let name = ty.bare_name()?;
         Some(match name {
             "bool" => Type::Bool,
             "char" => Type::Char,
@@ -4208,7 +4199,7 @@ impl<'a> OwnershipChecker<'a> {
             Type::Named(id) => *id,
             Type::Generic { base, .. } => *base,
             Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 self.program.types.get_type_id(base)?
             }
             _ => return None,
@@ -4254,7 +4245,7 @@ impl<'a> OwnershipChecker<'a> {
                 .iter()
                 .find_map(|v| self.variant_payload_for(v, &variant_name)),
             Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 let id = self.program.types.get_type_id(base)?;
                 self.variant_payload_in_def(id, &variant_name)
             }
@@ -4444,7 +4435,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.register_pattern_bindings_typed(pat, scrutinee_ty, pattern_span, lender);
                 }
             }
-            Pattern::TypePat { ty_name, binding } => {
+            Pattern::TypePat { ty, binding } => {
                 if let Some(name) = binding {
                     self.bindings.insert(name.clone(), BindingState::Owned);
                     match lender {
@@ -4456,10 +4447,10 @@ impl<'a> OwnershipChecker<'a> {
                             self.borrowed_parts.remove(name);
                         }
                     }
-                    // Resolve the narrowed type to determine linearity. Strip
-                    // generic args ("FileError<T>" → "FileError") for lookup.
-                    let base = ty_name.split('<').next().unwrap_or(ty_name);
-                    if let Some(id) = self.program.types.get_type_id(base) {
+                    // Resolve the narrowed type to determine linearity, by its
+                    // head: `FileError<T>` → `FileError`.
+                    let base = ty.name().unwrap_or_default();
+                    if let Some(id) = self.program.types.get_type_id(&base) {
                         let narrow_ty = Type::Named(id);
                         self.binding_types.insert(name.clone(), narrow_ty.clone());
                         if owned && self.type_is_resource(&narrow_ty) {
@@ -6038,7 +6029,7 @@ impl<'a> OwnershipChecker<'a> {
             Type::Named(id) => *id,
             Type::Generic { base, .. } => *base,
             Type::UnresolvedNamed(name) => {
-                return Some(name.split('<').next().unwrap_or(name).to_string());
+                return Some(name.to_string());
             }
             Type::UnresolvedGeneric { name, .. } => return Some(name.clone()),
             _ => return None,
@@ -6050,7 +6041,7 @@ impl<'a> OwnershipChecker<'a> {
             | rask_types::TypeDef::Union { name, .. }
             | rask_types::TypeDef::NominalAlias { name, .. }
             | rask_types::TypeDef::Primitive { name, .. } => {
-                Some(name.split('<').next().unwrap_or(name).to_string())
+                Some(name.to_string())
             }
         }
     }
@@ -6088,7 +6079,7 @@ impl<'a> OwnershipChecker<'a> {
         // Fallback: receiver type is concrete. TypeDef names carry their generic
         // params ("Sender<T>"); match the base.
         self.receiver_type_name(object)
-            .map(|n| n.split('<').next() == Some("Sender"))
+            .map(|n| n == "Sender")
             .unwrap_or(false)
     }
 
@@ -6100,27 +6091,20 @@ impl<'a> OwnershipChecker<'a> {
     /// nothing, so the annotation said "not a resource" and the binding was never
     /// registered. `mut maybe: Conn? = Conn { … }` then dropped it with no
     /// diagnostic at all (#827).
-    fn is_resource_type_name(&self, ty_name: &str) -> bool {
-        let name = Self::strip_optional(ty_name);
-        let base = name.split('<').next().unwrap_or(name);
-        if let Some(id) = self.program.types.get_type_id(base.trim()) {
+    fn is_resource_type_name(&self, ty: &TypeExpr) -> bool {
+        let Some(base) = Self::strip_optional(ty).name() else { return false };
+        if let Some(id) = self.program.types.get_type_id(&base) {
             return self.program.types.is_transitive_resource_by_id(id);
         }
         false
     }
 
     /// `Conn?` and `Conn or none` → `Conn`. Repeats, so `Conn??` gets there too.
-    fn strip_optional(ty_name: &str) -> &str {
-        let mut name = ty_name.trim();
-        loop {
-            let next = name
-                .strip_suffix('?')
-                .or_else(|| name.strip_suffix(" or none"))
-                .map(str::trim);
-            match next {
-                Some(inner) if inner != name => name = inner,
-                _ => return name,
-            }
+    fn strip_optional(ty: &TypeExpr) -> &TypeExpr {
+        match ty {
+            TypeExpr::Optional(inner) => Self::strip_optional(inner),
+            TypeExpr::Result { ok, err } if **err == TypeExpr::NoneType => Self::strip_optional(ok),
+            _ => ty,
         }
     }
 
@@ -6147,7 +6131,7 @@ impl<'a> OwnershipChecker<'a> {
         }
         if let Type::UnresolvedGeneric { name, args } = ty {
             if !args.is_empty() {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 return Some(Self::container_shape(base));
             }
         }
@@ -6157,7 +6141,7 @@ impl<'a> OwnershipChecker<'a> {
             _ => return Some("a type the checker does not recognise".to_string()),
         };
         let name = self.program.types.type_name(id);
-        let base = name.split('<').next().unwrap_or(&name).to_string();
+        let base = name.as_str().to_string();
         if !args.is_empty() {
             return Some(Self::container_shape(&base));
         }
@@ -6326,7 +6310,7 @@ impl<'a> OwnershipChecker<'a> {
     /// Read off the type table, which is authoritative for type names — a
     /// variant can share its name with one from another enum.
     fn names_a_variant(&self, object: &Expr, method: &str) -> bool {
-        let ExprKind::Ident(name) = &object.kind else { return false };
+        let Some(name) = object.name() else { return false };
         let Some(type_id) = self.program.types.get_type_id(name) else { return false };
         matches!(
             self.program.types.get(type_id),
@@ -6619,10 +6603,9 @@ impl<'a> OwnershipChecker<'a> {
     /// The declared type a written name refers to, optional stripped — the shape
     /// `resource_field_paths` needs, which `type_from_name` doesn't give for a
     /// declared struct (it answers `UnresolvedGeneric` for anything with `<`).
-    fn declared_type_from_name(&self, ty_name: &str) -> Option<Type> {
-        let name = Self::strip_optional(ty_name);
-        let base = name.split('<').next().unwrap_or(name).trim();
-        self.program.types.get_type_id(base).map(Type::Named)
+    fn declared_type_from_name(&self, ty: &TypeExpr) -> Option<Type> {
+        let base = Self::strip_optional(ty).name()?;
+        self.program.types.get_type_id(&base).map(Type::Named)
     }
 
     /// The `TypeId` behind a named or unresolved-named type.
@@ -6630,7 +6613,7 @@ impl<'a> OwnershipChecker<'a> {
         match ty {
             Type::Named(id) => Some(*id),
             Type::UnresolvedNamed(name) => {
-                let base = name.split('<').next().unwrap_or(name).trim();
+                let base = name.trim();
                 self.program.types.get_type_id(base)
             }
             Type::Generic { base, .. } => Some(*base),
@@ -6857,4 +6840,9 @@ fn substitute_params(ty: &Type, subst: &HashMap<&str, &Type>) -> Type {
         },
         _ => ty.clone(),
     }
+}
+
+/// A parameter declared as `Link<T>`.
+fn is_written_link(ty: &Option<TypeExpr>) -> bool {
+    ty.as_ref().is_some_and(|t| t.name().as_deref() == Some("Link") && !t.args().is_empty())
 }

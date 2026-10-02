@@ -20,7 +20,7 @@ use std::collections::HashMap;
 
 use super::errors::TypeError;
 use super::TypeChecker;
-use crate::types::{GenericArg, Type};
+use crate::types::Type;
 
 /// Is the open-node census switched on?
 pub(crate) fn tracing_open_nodes() -> bool {
@@ -39,10 +39,10 @@ fn suggest(ty: &Type, names: &HashMap<crate::TypeId, String>) -> Option<String> 
     let (head, args) = match ty {
         Type::Generic { base, args } => {
             let n = names.get(base)?.clone();
-            (n.split('<').next()?.trim().to_string(), args)
+            (n.trim().to_string(), args)
         }
         Type::UnresolvedGeneric { name, args } => {
-            (name.split('<').next()?.trim().to_string(), args)
+            (name.trim().to_string(), args)
         }
         _ => return None,
     };

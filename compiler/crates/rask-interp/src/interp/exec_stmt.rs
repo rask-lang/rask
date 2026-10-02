@@ -2,6 +2,7 @@
 //! Statement execution.
 
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
+use rask_ast::ty::TypeExpr;
 
 use crate::value::{map_entries_seeded, FloatKind, MapKey, Value};
 
@@ -39,7 +40,7 @@ impl Interpreter {
             StmtKind::Mut { name, name_span: _, ty, init } => {
                 let value = self.eval_owned(init)?;
                 // Coerce Vec to SimdF32x8 when type annotation says f32x8
-                let value = if ty.as_deref() == Some("f32x8") {
+                let value = if ty.as_ref().is_some_and(|t| t.is_name("f32x8")) {
                     Self::coerce_to_simd_f32x8(value)
                         .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?
                 } else {
@@ -373,9 +374,13 @@ impl Interpreter {
                             if let ForBinding::Tuple(names) = binding {
                                 if names.len() >= 2 {
                                     if let Some(v) = self.env.get(&names[1]) {
+                                        let stored = self.map_key(key.clone())
+                                            .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                                         let mut guard = map_arc.lock().unwrap();
-                                        if let Some(slot) = guard.get_mut(&MapKey(key.clone())) {
-                                            *slot = v;
+                                        if let Some(i) = self.map_index(&guard, &stored)
+                                            .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?
+                                        {
+                                            guard[i] = v;
                                         }
                                     }
                                 }
@@ -659,8 +664,7 @@ impl Interpreter {
 /// the *outermost* absent, so it never gains a layer no matter how deep the
 /// annotation is — `const x: T?? = none` means "nothing at all", not "an empty
 /// inner slot" (OPT29).
-pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_literal: bool) -> Value {
-    let ty = ty.trim();
+pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &TypeExpr, rhs_is_none_literal: bool) -> Value {
     // `i128`/`u128` are 16-byte types (type.primitives), and the interpreter has
     // a value variant for each with full 128-bit arithmetic behind it. What was
     // missing was ever *producing* one: `IntKind` is a tag on an i64 payload and
@@ -673,7 +677,7 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
         // #517), so widening it has to go through u64 or `18446744073709551615`
         // arrives as -1.
         let widened = if kind.signed() { n as i128 } else { n as u64 as i128 };
-        match ty {
+        match ty.bare_name().unwrap_or_default() {
             "i128" => return Value::Int128(widened),
             // A genuinely negative value has no u128 to widen into; leave it for
             // the ordinary signedness check rather than wrapping it here.
@@ -693,13 +697,7 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
     // outright, so `let o: (i64, bool)? = (42, true)` bound the tuple bare and
     // `if o? as v` then found no `Some` to open — and `Option<(i64, bool)>`
     // was never recognised here at all (#1238).
-    let want = if ty.ends_with('?') {
-        ty.chars().rev().take_while(|c| *c == '?').count()
-    } else if ty.starts_with("Option<") && ty.ends_with('>') {
-        1
-    } else {
-        0
-    };
+    let want = super::call::optional_depth(ty);
     if want > 0 {
         if rhs_is_none_literal {
             return value;
@@ -729,21 +727,21 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
                 // `none` carries its layer, and `value_option_depth` counts it,
                 // so nothing double-wraps.
                 let taken = std::mem::replace(item, Value::Unit);
-                *item = auto_wrap_for_annotation(taken, &elem_ty, false);
+                *item = auto_wrap_for_annotation(taken, elem_ty, false);
             }
         }
         return value;
     }
-    if ty.starts_with("Result<") && ty.ends_with('>') {
+    if let Some((_, err)) = super::call::result_sides(ty) {
         if matches!(&value, Value::Enum { name, .. } if name == "Result") {
             return value;
         }
-        let err_names = extract_err_names(ty);
+        let err_names = super::call::err_arms(err);
         let is_err = match &value {
-            Value::Enum { name, .. } => err_names.iter().any(|n| n == name),
+            Value::Enum { name, .. } => err_names.iter().any(|n| super::call::same_nominal(n, name)),
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();
-                err_names.iter().any(|n| n == &guard.name)
+                err_names.iter().any(|n| super::call::same_nominal(n, &guard.name))
             }
             _ => false,
         };
@@ -764,19 +762,14 @@ pub(crate) fn auto_wrap_for_annotation(value: Value, ty: &str, rhs_is_none_liter
 /// want the same treatment, but its annotation carries two type arguments and
 /// the interpreter's map value isn't a `Value::Vec`, so that's its own case
 /// rather than a widening of this one.
-fn container_element_type(ty: &str) -> Option<String> {
-    let ty = ty.trim();
-    if let Some(inner) = ty.strip_prefix("Vec<").and_then(|r| r.strip_suffix('>')) {
-        return Some(inner.trim().to_string());
+fn container_element_type(ty: &TypeExpr) -> Option<&TypeExpr> {
+    match ty {
+        TypeExpr::Named { path, args } if path.len() == 1 && path[0] == "Vec" && args.len() == 1 => {
+            Some(&args[0])
+        }
+        TypeExpr::Array { elem, .. } => Some(elem),
+        _ => None,
     }
-    if let Some(inner) = ty.strip_prefix("[]") {
-        return Some(inner.trim().to_string());
-    }
-    if let Some(inner) = ty.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
-        let elem = inner.split_once(';').map_or(inner, |(e, _)| e);
-        return Some(elem.trim().to_string());
-    }
-    None
 }
 
 /// OPT29: is this expression a bare `none` literal?
@@ -793,26 +786,5 @@ fn value_option_depth(value: &Value) -> usize {
         }
         _ => 0,
     }
-}
-
-/// The names on the error side of `Result<T, E>`, one per arm of a union.
-///
-/// The split is `rask_ast::type_str`'s, not a copy: this one counted the `>` of
-/// a function type's `->` as a closing bracket, so `Result<(func(i64) -> i64),
-/// Oops>` had no top-level comma, the error side came back empty, and `return
-/// Oops.Bad` was wrapped as the success branch (#1244).
-fn extract_err_names(ty: &str) -> Vec<String> {
-    let Some((_, err_str)) = rask_ast::type_str::result_parts(ty) else {
-        return Vec::new();
-    };
-    // `(E1 | E2)` — the parens are the union's, not a type's.
-    let err_str = err_str
-        .strip_prefix('(').and_then(|s| s.strip_suffix(')'))
-        .map(str::trim)
-        .unwrap_or(err_str);
-    rask_ast::type_str::split_all_top_level(err_str, '|')
-        .into_iter()
-        .map(str::to_string)
-        .collect()
 }
 

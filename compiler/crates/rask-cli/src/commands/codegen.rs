@@ -109,12 +109,15 @@ pub fn cmd_mono(path: &str, format: Format) {
             let params: Vec<String> = fn_decl
                 .params
                 .iter()
-                .map(|p| format!("{}: {}", p.name, p.ty))
+                .map(|p| match &p.ty {
+                    Some(ty) => format!("{}: {}", p.name, ty.source()),
+                    None => p.name.clone(),
+                })
                 .collect();
             let ret = fn_decl
                 .ret_ty
-                .as_deref()
-                .map(|t| format!(" -> {}", t))
+                .as_ref()
+                .map(|t| format!(" -> {}", t.source()))
                 .unwrap_or_default();
             let type_args = if mono_fn.type_args.is_empty() {
                 String::new()
@@ -256,12 +259,11 @@ pub fn cmd_mir(path: &str, format: Format) {
         .with_comptime_globals(&comptime_globals)
         .with_extern_funcs(&extern_funcs)
         .with_interface_methods(interface_methods)
-        .with_call_rewrites(&mono.call_rewrites)
+        .with_mono_calls(&mono)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = Some(path);
     mir_ctx.comptime_interp = Some(std::cell::RefCell::new(mir_interp));
-    let mir_ctx = mir_ctx;
 
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
 
@@ -332,11 +334,10 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         .with_extern_funcs(&extern_funcs)
         .with_package_modules(&package_modules)
         .with_interface_methods(interface_methods.clone())
-        .with_call_rewrites(&mono.call_rewrites)
+        .with_mono_calls(&mono)
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = Some(path);
-    let mir_ctx = mir_ctx;
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
@@ -494,12 +495,12 @@ pub fn collect_c_import_extern_sigs(
                 })
                 .map(|(name, _)| name.as_str())
                 .collect();
-            let qualify = |ty: &String| {
-                if structs.contains(ty.as_str()) {
-                    format!("{}.{}", sym.name, ty)
-                } else {
-                    ty.clone()
-                }
+            let qualify = |ty: &rask_ast::ty::TypeExpr| match ty.bare_name() {
+                Some(name) if structs.contains(name) => rask_ast::ty::TypeExpr::Named {
+                    path: vec![sym.name.clone(), name.to_string()],
+                    args: Vec::new(),
+                },
+                _ => ty.clone(),
             };
 
             for (_, &member_id) in members {
