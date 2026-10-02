@@ -1067,26 +1067,8 @@ impl<'a> MirLowerer<'a> {
         self.head_name(&ty)
     }
 
-    /// The head name of a type, for the container tests. Associated rather than
-    /// a method where the caller has a borrowed type; `head_name` is the
-    /// borrowing form.
-    fn rask_type_head(ty: &rask_types::Type) -> Option<String> {
-        use rask_types::Type;
-        match ty {
-            Type::UnresolvedGeneric { name, .. } | Type::UnresolvedNamed(name) => {
-                Some(name.clone())
-            }
-            _ => None,
-        }
-    }
-
     pub(super) fn head_name(&self, ty: &rask_types::Type) -> Option<String> {
-        use rask_types::Type;
-        match ty {
-            Type::Generic { base, .. } => self.ctx.type_names.get(base).cloned(),
-            Type::Named(id) => self.ctx.type_names.get(id).cloned(),
-            other => Self::rask_type_head(other),
-        }
+        ty.head_name(self.ctx.type_names).map(str::to_string)
     }
 
     /// How wide one channel element is, for the receive buffer.

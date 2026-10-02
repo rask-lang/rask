@@ -212,7 +212,7 @@ impl<'a> MirLowerer<'a> {
         self.ctx
             .lookup_raw_type(expr.id)
             .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .is_some_and(|p| p.split('<').next() == Some("Vec"))
+            .is_some_and(|p| p == "Vec")
     }
 
     /// True when `expr` refers to a `Map`. Same two sources as `is_vec_expr`,
@@ -227,7 +227,7 @@ impl<'a> MirLowerer<'a> {
         self.ctx
             .lookup_raw_type(expr.id)
             .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .is_some_and(|p| p.split('<').next() == Some("Map"))
+            .is_some_and(|p| p == "Map")
     }
 
     /// Peel a `.f.g.h` chain off a place, returning what it's rooted at and the
@@ -1693,14 +1693,14 @@ impl<'a> MirLowerer<'a> {
                     .filter(|ty| !matches!(ty, rask_types::Type::Result { .. })
                         && !ty.is_option())
                     .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-                    .map(|p| p.split('<').next().unwrap_or(&p).to_string());
+                    .map(|p| p.as_str().to_string());
                 if let (true, Some(prefix)) = (super::is_type_constructor_name(obj_name), checked) {
                     self.meta_mut(name).type_prefix = Some(prefix);
                 } else if super::is_type_constructor_name(obj_name) {
                     // Type.method() → prefix is the type name.
                     // Covers stdlib (Vec, Map, string) and user types (Person, Document).
                     // Strip generic args: Map<string, JsonValue> → Map
-                    let base_name = obj_name.split('<').next().unwrap_or(obj_name);
+                    let base_name = obj_name;
                     let is_module = rask_stdlib::mir_metadata::stdlib_module_names()
                         .contains(base_name);
                     if !is_module && (super::MirContext::stdlib_type_prefix(
@@ -1880,7 +1880,7 @@ impl<'a> MirLowerer<'a> {
                         ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
                         _ => None,
                     }?;
-                    let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                    let base = prefix.as_str().trim();
                     self.func_sigs
                         .get(&format!("{}_{}", base, method))
                         .and_then(|s| s.ret_vec_elem.clone())
@@ -2049,7 +2049,7 @@ impl<'a> MirLowerer<'a> {
         let is_channel_create = match &init.kind {
             ExprKind::MethodCall { object, method, .. } => {
                 if let Some(type_name) = object.name() {
-                    let base = type_name.split('<').next().unwrap_or(type_name);
+                    let base = type_name;
                     base == "Channel" && (method == "buffered" || method == "unbuffered")
                 } else { false }
             }
@@ -2125,17 +2125,15 @@ impl<'a> MirLowerer<'a> {
             // 8-byte buffer and smashed the stack (#463).
             if let ExprKind::MethodCall { object, method, .. } = &init.kind {
                 if let Some(type_name) = object.name() {
-                    let base = type_name.split('<').next().unwrap_or(type_name);
+                    let base = type_name;
                     if base == "Channel" && (method == "buffered" || method == "unbuffered") {
                         // Same source the constructor uses for its elem_size arg,
                         // falling back to the annotation's inner type name.
                         let mut elem_size = self.generic_arg_slot_size(init.id, 0);
                         if elem_size <= 8 {
-                            if let Some(tn) = type_name.split('<').nth(1)
-                                .and_then(|s| s.strip_suffix('>'))
-                            {
-                                if let Some((_, l)) = self.ctx.find_struct(tn) {
-                                    elem_size = l.size as i64;
+                            if let Some(arg) = object.written_type_args().first() {
+                                if let MirType::Struct(id) = self.ctx.resolve_type_expr(arg) {
+                                    elem_size = id.byte_size as i64;
                                 }
                             }
                         }
@@ -2307,7 +2305,7 @@ impl<'a> MirLowerer<'a> {
         // missed it entirely.
         let is_map = self.ctx.lookup_raw_type(iter_expr.id).map_or(false, |ty| {
             super::MirContext::type_prefix(ty, self.ctx.type_names)
-                .is_some_and(|p| p.split('<').next() == Some("Map"))
+                .is_some_and(|p| p == "Map")
         });
 
         // Index-based iteration: for item in collection { ... }

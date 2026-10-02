@@ -84,14 +84,21 @@ pub fn filed_operator_method(
     if operator_interface_method(interface_base) != Some(method) {
         return None;
     }
+    let rhs = filed_rhs(self_base, interface_base, rhs)?;
+    Some(format!("{}${}", method, rhs))
+}
+
+/// The `Rhs` an operator conformance's method is filed under: what the header
+/// wrote, or the receiver when it wrote nothing or `Self`. `None` for a unary
+/// interface, which has no `Rhs`.
+pub fn filed_rhs(self_base: &str, interface_base: &str, rhs: Option<&str>) -> Option<String> {
     if is_unary_operator_interface(interface_base) {
         return None;
     }
-    let rhs = match rhs {
-        None | Some("Self") => self_base,
-        Some(r) => r,
-    };
-    Some(format!("{}${}", method, rhs))
+    Some(match rhs {
+        None | Some("Self") => self_base.to_string(),
+        Some(r) => r.to_string(),
+    })
 }
 
 /// The operator method a filed name stands for: `mul$f64` → `mul`.
@@ -99,14 +106,6 @@ pub fn method_display(name: &str) -> &str {
     match name.split_once('$') {
         Some((base, _)) if operator_interface_method_exists(base) => base,
         _ => name,
-    }
-}
-
-/// The `Rhs` a filed operator method names: `mul$f64` → `f64`.
-pub fn method_rhs(name: &str) -> Option<&str> {
-    match name.split_once('$') {
-        Some((base, rhs)) if operator_interface_method_exists(base) => Some(rhs),
-        _ => None,
     }
 }
 
@@ -156,7 +155,5 @@ mod tests {
         assert_eq!(method_display("mul"), "mul");
         // Not an operator method: a `$` in some other name stays put.
         assert_eq!(method_display("render$html"), "render$html");
-        assert_eq!(method_rhs("mul$Meters"), Some("Meters"));
-        assert_eq!(method_rhs("scale"), None);
     }
 }

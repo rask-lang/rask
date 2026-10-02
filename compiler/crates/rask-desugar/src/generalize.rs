@@ -72,9 +72,9 @@ enum Shape {
 
 fn generalize_fn(f: &mut FnDecl) {
     // GC5: a public function's signature is written out, so there is nothing to
-    // infer. A function that already declares type parameters — in the list or
-    // in its name — has been given its answer too.
-    if f.is_pub || !f.type_params.is_empty() || f.name.contains('<') {
+    // infer. A function that already declares type parameters has been given
+    // its answer too.
+    if f.is_pub || !f.type_params.is_empty() {
         return;
     }
 

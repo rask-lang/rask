@@ -403,7 +403,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn is_sync_box_expr(&self, object: &Expr, box_name: &str) -> bool {
         let from_type = self.ctx.lookup_raw_type(object.id)
             .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
-            .map(|p| p.split('<').next().unwrap_or(&p).trim() == box_name)
+            .map(|p| p.as_str().trim() == box_name)
             .unwrap_or(false);
         let from_prefix = if let Some(var_name) = object.name() {
             self.meta(var_name)

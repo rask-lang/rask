@@ -332,7 +332,7 @@ impl<'a> Monomorphizer<'a> {
             if params.is_empty() {
                 continue;
             }
-            let bare = name.split('<').next().unwrap_or(name).trim().to_string();
+            let bare = name.trim().to_string();
             owner_params.insert(bare, params);
         }
 
@@ -360,7 +360,7 @@ impl<'a> Monomorphizer<'a> {
                     fn_table.insert(f.name.clone(), decl);
                     // Also register under base name for generic functions:
                     // parser stores "foo<T: Interface>" but call sites use "foo"
-                    let base = f.name.split('<').next().unwrap_or(&f.name);
+                    let base = f.name.as_str();
                     if base != f.name {
                         fn_table.insert(base.to_string(), decl);
                     }
@@ -580,22 +580,22 @@ impl<'a> Monomorphizer<'a> {
                     // A bare `T: Mul` bound files the method under the
                     // parameter's own name (`mul$T`); it means this
                     // instantiation's type.
-                    let method = rask_ast::operators::method_rhs(&target.method)
+                    let rhs = target
+                        .rhs
+                        .as_deref()
                         .and_then(|rhs| bindings.get(rhs).copied())
-                        .and_then(|bound| Self::type_spelling(bound))
-                        .map(|name| {
-                            format!(
-                                "{}${}",
-                                rask_ast::operators::method_display(&target.method),
-                                name
-                            )
-                        })
-                        .unwrap_or_else(|| target.method.clone());
+                        .and_then(|bound| Self::type_spelling(bound));
+                    let method = match &rhs {
+                        Some(name) => format!("{}${}", target.operator, name),
+                        None => target.method.clone(),
+                    };
                     self.instantiated_operator_targets.insert(
                         new_id,
                         rask_types::OperatorTarget {
                             recv,
                             method,
+                            operator: target.operator.clone(),
+                            rhs: rhs.or_else(|| target.rhs.clone()),
                             applied: target.applied.clone(),
                             builtin: target.builtin,
                         },
@@ -858,7 +858,7 @@ impl<'a> Monomorphizer<'a> {
     /// so enqueue every implementation of each compatible method name — the
     /// same conservative widening used for ordinary instance calls.
     fn mark_interface_object_methods(&mut self, interface_name: &str) {
-        let base = interface_name.split('<').next().unwrap_or(interface_name);
+        let base = interface_name;
         let Some(methods) = self.interface_methods.get(base).cloned() else { return };
         for method in methods {
             if let Some(qualified_names) = self.method_by_bare_name.get(&method).cloned() {
@@ -1049,7 +1049,7 @@ impl<'a> Monomorphizer<'a> {
                         // Keyed by the declaration's name, which carries an
                         // explicit `<T>` list where the work item doesn't.
                         let base = |n: &str| {
-                            n.split('<').next().unwrap_or(n).to_string()
+                            n.to_string()
                         };
                         let want = base(&item.name);
                         let inferred = self.typed.and_then(|t| {
@@ -1255,7 +1255,7 @@ impl<'a> Monomorphizer<'a> {
     /// some part of the type has no name at all — an inference variable, a type
     /// parameter still standing for itself.
     pub fn nameable_type(ty: &Type, types: &rask_types::TypeTable) -> Option<Type> {
-        let bare = |n: &str| n.split('<').next().unwrap_or(n).trim().to_string();
+        let bare = |n: &str| n.trim().to_string();
         match ty {
             Type::Named(id) => {
                 let name = bare(&types.type_name(*id));

@@ -516,7 +516,7 @@ impl StubRegistry {
         let decl_span = decl.span;
         match &decl.kind {
             DeclKind::Struct(s) => {
-                let base_name = strip_type_params(&s.name);
+                let base_name = s.name.clone();
                 let name_span = find_name_span(source, &base_name, "struct", decl_span);
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name,
@@ -532,7 +532,7 @@ impl StubRegistry {
                 }
             }
             DeclKind::Enum(e) => {
-                let base_name = strip_type_params(&e.name);
+                let base_name = e.name.clone();
                 let name_span = find_name_span(source, &base_name, "enum", decl_span);
                 let entry = self.types.entry(base_name.clone()).or_insert_with(|| TypeStub {
                     name: base_name,
@@ -697,7 +697,7 @@ fn lift_inline_methods(decls: &mut Vec<Decl>) {
 /// name it: `Vec<T>` for `struct Vec<T>`.
 fn declared_type(name: &str, type_params: &[rask_ast::decl::TypeParam]) -> TypeExpr {
     TypeExpr::generic(
-        strip_type_params(name),
+        name.to_string(),
         type_params.iter().map(|p| TypeExpr::named(p.name.clone())).collect(),
     )
 }
@@ -721,7 +721,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
         .collect();
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
-    let bare_name = strip_type_params(&f.name);
+    let bare_name = f.name.clone();
     let span = find_func_name_span(source, &bare_name, parent_span);
 
     MethodStub {
@@ -795,14 +795,6 @@ fn find_func_name_span(source: &str, name: &str, within: Span) -> Span {
 /// - Impl/extend blocks where at least one method has a non-empty body
 /// - Extern declarations (needed for C interop in stdlib)
 
-/// Strip type parameters from a name: "Vec<T>" → "Vec", "Map<K, V>" → "Map"
-fn strip_type_params(name: &str) -> String {
-    if let Some(idx) = name.find('<') {
-        name[..idx].to_string()
-    } else {
-        name.to_string()
-    }
-}
 
 #[cfg(test)]
 mod tests {

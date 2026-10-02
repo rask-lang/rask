@@ -14,6 +14,7 @@
 //! it survives into the binary (OR10).
 
 use rask_ast::{NodeId, Span};
+use rask_ast::ty::TypeExpr;
 
 use super::type_defs::{MethodSig, TypeDef};
 use super::TypeChecker;
@@ -35,7 +36,7 @@ pub fn is_unary_operator(method: &str) -> bool {
 pub fn conformance_spelling(ty: &Type, types: &super::TypeTable) -> Option<String> {
     match ty {
         Type::Named(id) | Type::Generic { base: id, .. } => Some(types.type_name(*id)),
-        Type::UnresolvedNamed(name) => Some(name.split('<').next().unwrap_or(name).to_string()),
+        Type::UnresolvedNamed(name) => Some(name.clone()),
         Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
         _ => super::type_table::primitive_spelling(ty).map(str::to_string),
     }
@@ -62,9 +63,13 @@ pub(super) struct OperatorMatch {
     pub out: Type,
     /// The name the conformance's method is filed under (`mul$f64`).
     pub filed: String,
+    /// The operator's own method (`mul`).
+    pub operator: String,
+    /// The right operand's type name `filed` was built from (`f64`).
+    pub rhs: Option<String>,
     /// The applied interface as the conformance table holds it (`Mul<Meters>`),
     /// for diagnostics and for the symbol the backends dispatch to.
-    pub applied: String,
+    pub applied: TypeExpr,
     /// OR12: the conformance has no body — the compiler answers this pair.
     pub builtin: bool,
 }
@@ -112,7 +117,7 @@ impl TypeChecker {
             if !args.is_empty() {
                 return PairOutcome::NotAnOperator;
             }
-            interface_base.to_string()
+            TypeExpr::named(interface_base)
         } else {
             let [arg] = args else { return PairOutcome::NotAnOperator };
             let rhs = self.resolve_named(&self.ctx.apply(arg));
@@ -134,7 +139,7 @@ impl TypeChecker {
                 // an integer and `2.0` only a float. One conformance of the
                 // right kind is the only answer — which is what `duration / 2`
                 // needs, against `Div<i64>` and `Div<Duration>`.
-                let kind_match: Vec<&String> = declared
+                let kind_match: Vec<&TypeExpr> = declared
                     .iter()
                     .filter(|applied| {
                         self.applied_rhs_type(applied)
@@ -158,7 +163,7 @@ impl TypeChecker {
             let Some(spelling) = conformance_spelling(&rhs, &self.types) else {
                 return PairOutcome::NotAnOperator;
             };
-            format!("{}<{}>", interface_base, spelling)
+            TypeExpr::generic(interface_base, vec![TypeExpr::named(spelling)])
         };
 
         if !self.types.declares_conformance(self_id, &applied) {
@@ -248,7 +253,7 @@ impl TypeChecker {
             return Ok(None);
         }
         let Some(spelling) = conformance_spelling(&rhs, &self.types) else { return Ok(None) };
-        let applied = format!("{}<{}>", interface_base, spelling);
+        let applied = TypeExpr::generic(interface_base, vec![TypeExpr::named(spelling)]);
 
         let mut found: Vec<Type> = Vec::new();
         for id in self.types.conformers_of(&applied) {
@@ -257,7 +262,7 @@ impl TypeChecker {
             if !rask_ast::primitives::is_scalar(&name) {
                 continue;
             }
-            let Ok(candidate) = super::parse_type_string(&name, &self.types) else { continue };
+            let Ok(candidate) = super::resolve_type_expr(&TypeExpr::named(name), &self.types) else { continue };
             if self.literal_could_be(recv, &candidate) {
                 found.push(candidate);
             }
@@ -270,16 +275,8 @@ impl TypeChecker {
     }
 
     /// The type an applied conformance's `Rhs` names: `Mul<f64>` → `f64`.
-    fn applied_rhs_type(&self, applied: &str) -> Option<Type> {
-        let rhs = rask_ast::operators::method_rhs(&format!(
-            "{}${}",
-            rask_ast::operators::operator_interface_method(
-                applied.split('<').next().unwrap_or(applied)
-            )?,
-            applied.split_once('<')?.1.trim_end_matches('>').trim(),
-        ))?
-        .to_string();
-        super::parse_type_string(&rhs, &self.types).ok()
+    fn applied_rhs_type(&self, applied: &TypeExpr) -> Option<Type> {
+        super::resolve_type_expr(applied.args().first()?, &self.types).ok()
     }
 
     /// The receiver's declared type parameters bound to what it actually is:
@@ -330,17 +327,18 @@ impl TypeChecker {
     fn matched(
         &self,
         self_id: TypeId,
-        applied: &str,
+        applied: &TypeExpr,
         method: &str,
         args: &[Type],
     ) -> PairOutcome {
         // OR4: the conformance's method is filed under the applied argument.
         let self_name = self.types.type_name(self_id);
-        let self_base = self_name.split('<').next().unwrap_or(&self_name).trim();
-        let applied_base = applied.split('<').next().unwrap_or(applied).trim();
-        let rhs = super::type_table::interface_ref_args(applied).into_iter().next();
-        let rhs = rhs.as_deref().map(|r| r.split('<').next().unwrap_or(r).trim());
-        let filed = rask_ast::operators::filed_operator_method(self_base, applied_base, rhs, method)
+        let applied_base = super::TypeTable::conformance_key(applied);
+        let written_rhs = applied.args().first().and_then(TypeExpr::name);
+        let rhs = rask_ast::operators::filed_rhs(&self_name, &applied_base, written_rhs.as_deref());
+        let filed = rhs
+            .as_ref()
+            .map(|r| format!("{}${}", method, r))
             .unwrap_or_else(|| method.to_string());
         let Some(sig) = self.conformance_method(self_id, &filed, args) else {
             // The conformance is declared and its method isn't there: the block
@@ -359,7 +357,9 @@ impl TypeChecker {
             sig,
             out,
             filed,
-            applied: applied.to_string(),
+            operator: method.to_string(),
+            rhs,
+            applied: applied.clone(),
             builtin,
         })
     }
@@ -458,6 +458,8 @@ impl TypeChecker {
                 OperatorTarget {
                     recv: recv.clone(),
                     method: found.filed.clone(),
+                    operator: found.operator,
+                    rhs: found.rhs,
                     applied: found.applied,
                     builtin: found.builtin,
                 },
@@ -495,8 +497,13 @@ pub struct OperatorTarget {
     pub recv: Type,
     /// The conformance method as it is filed (`mul$f64`).
     pub method: String,
+    /// The operator's own method (`mul`), without the right operand.
+    pub operator: String,
+    /// The right operand's type name `method` was filed under (`f64`, or a
+    /// type parameter's name inside a generic body). `None` for a unary one.
+    pub rhs: Option<String>,
     /// The applied interface the pair resolved to (`Mul<Meters>`).
-    pub applied: String,
+    pub applied: TypeExpr,
     /// OR12: the conformance declares what the pair answers with and leaves the
     /// arithmetic to the compiler — `instant - instant` is a machine
     /// subtraction. There is no body, so the backends keep their own lowering

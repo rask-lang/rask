@@ -157,13 +157,7 @@ fn check_fn_return_type(
     }
 }
 
-/// Strip generic type parameters from a name (e.g., "wrap<T>" → "wrap").
-fn strip_generics(s: &str) -> &str {
-    s.split('<').next().unwrap_or(s)
-}
-
 fn is_snake_case(s: &str) -> bool {
-    let s = strip_generics(s);
     if s.is_empty() {
         return true;
     }
@@ -173,7 +167,6 @@ fn is_snake_case(s: &str) -> bool {
 }
 
 fn is_pascal_case(s: &str) -> bool {
-    let s = strip_generics(s);
     if s.is_empty() {
         return true;
     }

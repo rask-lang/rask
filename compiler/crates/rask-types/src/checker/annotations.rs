@@ -255,7 +255,7 @@ impl TypeChecker {
     /// `check_user_annotations`, but a `let`/`mut` annotation lives in a
     /// statement, and the sweep never gets there.
     ///
-    /// Not folded into `parse_type_string`: that's a free function over the
+    /// Not folded into `resolve_type_expr`: that's a free function over the
     /// type table with no span and no error channel, called from stdlib and
     /// stub paths where a user diagnostic has nowhere to go.
     pub(super) fn reject_annotation_binding_type(&mut self, ty: &TypeExpr, span: Span) {

@@ -480,8 +480,7 @@ impl<'a> MirLowerer<'a> {
         // `type_prefix` is the shared answer to "what is this type called", and
         // it knows about stdlib types the local name table doesn't carry.
         let name = super::MirContext::type_prefix(ty, self.ctx.type_names)?;
-        let head = name.split('<').next();
-        if head != Some("Sequence") && head != Some("SequenceMut") {
+        if name != "Sequence" && name != "SequenceMut" {
             return None;
         }
         let args = match ty {

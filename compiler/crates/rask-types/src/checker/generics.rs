@@ -567,7 +567,7 @@ pub fn bind_header_pattern(
                 && parts.iter().zip(elems).all(|(p, a)| bind_header_pattern(types, p, a, out))
         }
         TypeExpr::Named { path, args } if !args.is_empty() => {
-            let bare = |n: &str| n.split('<').next().unwrap_or(n).trim().to_string();
+            let bare = |n: &str| n.trim().to_string();
             let (actual_head, actual_args) = match actual {
                 Type::Generic { base, args } => (bare(&types.type_name(*base)), args),
                 Type::UnresolvedGeneric { name, args } => (bare(name), args),

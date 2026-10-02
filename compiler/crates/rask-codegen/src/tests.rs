@@ -1967,6 +1967,7 @@ mod tests {
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
+            type_names: Default::default(),
             call_rewrites: std::collections::HashMap::new(),
         }
     }
@@ -2020,6 +2021,7 @@ mod tests {
                 },
             ],
             enum_layouts: vec![],
+            type_names: Default::default(),
             call_rewrites: std::collections::HashMap::new(),
         }
     }
@@ -2027,6 +2029,7 @@ mod tests {
     /// MonoProgram with Result { Ok(i32), Err(i32) } enum at index 0.
     fn mono_with_result_enum() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {
+            type_names: Default::default(),
             instantiated_node_types: Default::default(),
             instantiated_call_targets: Default::default(),
             instantiated_operator_targets: Default::default(),

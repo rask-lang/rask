@@ -54,6 +54,7 @@ pub fn owned_fields(
     type_name: &str,
     base_offset: u32,
     struct_layouts: &[rask_mono::StructLayout],
+    names: &std::collections::HashMap<rask_types::TypeId, String>,
     visited: &mut std::collections::HashSet<String>,
 ) -> Vec<DropField> {
     if !visited.insert(type_name.to_string()) {
@@ -65,7 +66,7 @@ pub fn owned_fields(
     let mut out = Vec::new();
     for field in &layout.fields {
         let at = base_offset + field.offset;
-        if let Some(free_fn) = container_free_for(&field.ty) {
+        if let Some(free_fn) = container_free_for(&field.ty, names) {
             out.push(DropField { offset: at, free_fn, shape: ReleaseShape::ByHandle });
             continue;
         }
@@ -76,7 +77,7 @@ pub fn owned_fields(
                 shape: ReleaseShape::ByAddress,
             }),
             RaskType::UnresolvedNamed(name) => {
-                out.extend(owned_fields(name, at, struct_layouts, visited));
+                out.extend(owned_fields(name, at, struct_layouts, names, visited));
             }
             _ => {}
         }

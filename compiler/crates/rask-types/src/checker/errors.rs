@@ -86,6 +86,11 @@ pub enum TypeError {
     #[error("`{ty}` does not implement `Displayable`")]
     NotDisplayable {
         ty: String,
+        /// A collection or tuple, which can't be extended and is already
+        /// rendered by `{:debug}`.
+        is_collection: bool,
+        /// A `T?` or `T or E`, which may have no value to show.
+        is_wrapper: bool,
         /// `Some` when it came from an interpolation, so the message can name
         /// the placeholder instead of a `to_string()` the user never wrote.
         interpolated: bool,
@@ -1230,8 +1235,10 @@ pub enum TypeError {
     /// a wire at all — both are answers a type gets once, from its owner.
     #[error("`{interface_name}` for `{ty}` belongs to whoever declares `{ty}`")]
     ForeignCoreConformance {
-        /// The type being extended.
+        /// The type being extended, as the block writes it.
         ty: String,
+        /// Its bare name, for the suggested wrapper's name.
+        type_name: String,
         /// The interface, spelled as the block writes it.
         interface_name: String,
         /// The package that declares the type. `None` is the standard library,

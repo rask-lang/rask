@@ -560,7 +560,7 @@ impl<'a> OwnershipChecker<'a> {
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::SmallInstantiationTooBig {
                     type_name: rendered,
-                    base_name: name.split('<').next().unwrap_or(&name).to_string(),
+                    base_name: name.as_str().to_string(),
                     size: total,
                     offending_field: offender,
                 },
@@ -3165,15 +3165,15 @@ impl<'a> OwnershipChecker<'a> {
     fn type_name_of(&self, ty: &rask_types::Type) -> Option<String> {
         match ty {
             rask_types::Type::UnresolvedGeneric { name, .. } => {
-                Some(name.split('<').next().unwrap_or(name).to_string())
+                Some(name.to_string())
             }
             rask_types::Type::Generic { base, .. } => {
                 let n = self.program.types.type_name(*base);
-                Some(n.split('<').next().unwrap_or(&n).to_string())
+                Some(n.as_str().to_string())
             }
             rask_types::Type::Named(id) => {
                 let n = self.program.types.type_name(*id);
-                Some(n.split('<').next().unwrap_or(&n).to_string())
+                Some(n.as_str().to_string())
             }
             _ => None,
         }
@@ -4199,7 +4199,7 @@ impl<'a> OwnershipChecker<'a> {
             Type::Named(id) => *id,
             Type::Generic { base, .. } => *base,
             Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 self.program.types.get_type_id(base)?
             }
             _ => return None,
@@ -4245,7 +4245,7 @@ impl<'a> OwnershipChecker<'a> {
                 .iter()
                 .find_map(|v| self.variant_payload_for(v, &variant_name)),
             Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 let id = self.program.types.get_type_id(base)?;
                 self.variant_payload_in_def(id, &variant_name)
             }
@@ -6029,7 +6029,7 @@ impl<'a> OwnershipChecker<'a> {
             Type::Named(id) => *id,
             Type::Generic { base, .. } => *base,
             Type::UnresolvedNamed(name) => {
-                return Some(name.split('<').next().unwrap_or(name).to_string());
+                return Some(name.to_string());
             }
             Type::UnresolvedGeneric { name, .. } => return Some(name.clone()),
             _ => return None,
@@ -6041,7 +6041,7 @@ impl<'a> OwnershipChecker<'a> {
             | rask_types::TypeDef::Union { name, .. }
             | rask_types::TypeDef::NominalAlias { name, .. }
             | rask_types::TypeDef::Primitive { name, .. } => {
-                Some(name.split('<').next().unwrap_or(name).to_string())
+                Some(name.to_string())
             }
         }
     }
@@ -6079,7 +6079,7 @@ impl<'a> OwnershipChecker<'a> {
         // Fallback: receiver type is concrete. TypeDef names carry their generic
         // params ("Sender<T>"); match the base.
         self.receiver_type_name(object)
-            .map(|n| n.split('<').next() == Some("Sender"))
+            .map(|n| n == "Sender")
             .unwrap_or(false)
     }
 
@@ -6131,7 +6131,7 @@ impl<'a> OwnershipChecker<'a> {
         }
         if let Type::UnresolvedGeneric { name, args } = ty {
             if !args.is_empty() {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 return Some(Self::container_shape(base));
             }
         }
@@ -6141,7 +6141,7 @@ impl<'a> OwnershipChecker<'a> {
             _ => return Some("a type the checker does not recognise".to_string()),
         };
         let name = self.program.types.type_name(id);
-        let base = name.split('<').next().unwrap_or(&name).to_string();
+        let base = name.as_str().to_string();
         if !args.is_empty() {
             return Some(Self::container_shape(&base));
         }
@@ -6613,7 +6613,7 @@ impl<'a> OwnershipChecker<'a> {
         match ty {
             Type::Named(id) => Some(*id),
             Type::UnresolvedNamed(name) => {
-                let base = name.split('<').next().unwrap_or(name).trim();
+                let base = name.trim();
                 self.program.types.get_type_id(base)
             }
             Type::Generic { base, .. } => Some(*base),

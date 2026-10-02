@@ -141,7 +141,7 @@ impl TypeChecker {
                 self.current_type_param_bounds
                     .entry(tp.name.clone())
                     .or_default()
-                    .extend(tp.bounds.iter().map(|b| b.to_string()));
+                    .extend(tp.bounds.iter().cloned());
             }
         }
         // The method's own parameters on top of the extend header's, which

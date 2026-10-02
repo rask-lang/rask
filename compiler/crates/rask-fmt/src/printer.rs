@@ -332,15 +332,6 @@ impl<'a> Printer<'a> {
         }
     }
 
-    /// Strip type params from names (parser includes `<T, U>` in names).
-    fn strip_type_params<'b>(&self, name: &'b str) -> &'b str {
-        if let Some(idx) = name.find('<') {
-            &name[..idx]
-        } else {
-            name
-        }
-    }
-
     /// A written type in Rask syntax.
     fn format_type(&self, ty: &rask_ast::ty::TypeExpr) -> String {
         ty.source()
@@ -550,7 +541,7 @@ impl<'a> Printer<'a> {
             self.emit("unsafe ");
         }
         self.emit("func ");
-        let name = self.strip_type_params(&f.name);
+        let name = f.name.as_str();
         self.emit(name);
 
         if !f.type_params.is_empty() {
@@ -673,7 +664,7 @@ impl<'a> Printer<'a> {
             self.emit("public ");
         }
         self.emit("struct ");
-        let name = self.strip_type_params(&s.name);
+        let name = s.name.as_str();
         self.emit(name);
 
         if !s.type_params.is_empty() {
@@ -887,7 +878,7 @@ impl<'a> Printer<'a> {
             self.emit("public ");
         }
         self.emit("enum ");
-        let name = self.strip_type_params(&e.name);
+        let name = e.name.as_str();
         self.emit(name);
 
         if !e.type_params.is_empty() {

@@ -8,7 +8,9 @@
 //! They used to be two tables, and the MIR one was shorter — a `Heap<Vec<i64>>`
 //! gave its buffer back and a `Heap<func(i64) -> i64>` didn't (#1256).
 
-use rask_types::Type as RaskType;
+use std::collections::HashMap;
+
+use rask_types::{GenericArg, Type as RaskType, TypeId};
 
 /// The release for a container or a box a field holds, if it holds one.
 ///
@@ -17,10 +19,12 @@ use rask_types::Type as RaskType;
 /// string field, whose slot is the header and whose release takes the slot's
 /// address.
 ///
-/// A field's type in a layout is a resolved `Type::Generic`, which carries a
-/// TypeId and no name, and there is no table here to look one up in. Rendering
-/// it and taking the head is what works.
-pub fn container_free_for(ty: &RaskType) -> Option<&'static str> {
+/// Only the container itself. `Vec<i64>?` is a different thing: the slot holds
+/// a tag and a payload, the handle is behind the tag, and MIR reaches it through
+/// the wrapper rather than straight off the struct — so freeing it here ran
+/// before the reads (`h.v!.len()` gave 1361822157891490808). An optional or a
+/// result has no head name, so it answers `None`.
+pub fn container_free_for(ty: &RaskType, names: &HashMap<TypeId, String>) -> Option<&'static str> {
     // A closure a field holds is the aggregate's: storing one moves it in, and
     // the frame stops dropping it the moment it does. The block describes
     // itself — `rask_closure_free` reads its size and its environment glue out
@@ -29,26 +33,7 @@ pub fn container_free_for(ty: &RaskType) -> Option<&'static str> {
     if matches!(ty, RaskType::Fn { .. }) {
         return Some("rask_closure_free");
     }
-    container_free_for_rendered(&format!("{}", ty))
-}
-
-/// The same question asked with the type already written out.
-///
-/// The rendering is what the answer is read off, and a caller that has better
-/// names than `Display` does should render its own: a resolved `Type::Generic`
-/// carries TypeIds, so `Shared<i64, Local>` comes out without the word `Local`
-/// in it and the strategy below can't be told apart (#1256).
-pub fn container_free_for_rendered(rendered: &str) -> Option<&'static str> {
-    // Only the container itself. `Vec<i64>?` renders with the same head and is
-    // a different thing: the slot holds a tag and a payload, the handle is
-    // behind the tag, and MIR reaches it through the wrapper rather than
-    // straight off the struct — so freeing it here ran before the reads
-    // (`h.v!.len()` gave 1361822157891490808).
-    if rendered.ends_with('?') || rendered.contains(" or ") {
-        return None;
-    }
-    let head = rendered.split('<').next().unwrap_or(rendered).trim();
-    match head {
+    match ty.head_name(names)? {
         "Vec" => Some("rask_vec_free"),
         // A map's tables are the same shape of ownership as a vector's buffer,
         // and 72 suite files were leaking one: `Set<T>` is a struct holding a
@@ -67,13 +52,7 @@ pub fn container_free_for_rendered(rendered: &str) -> Option<&'static str> {
         // A box in a field. The release is a decrement, so it is right whether
         // or not somebody else still holds one — which is what makes a box safe
         // to hand to a task and still free here.
-        //
-        // Which decrement depends on the strategy, because each builds its own
-        // runtime object: `Shared<T, Local>` is a cell, `Shared<T, Mutex>` is a
-        // mutex, and a bare `Shared<T>` is `Readers` (conc.sync/SH2).
-        // `io.Buffer` keeps its read position in a `Shared<i64, Local>` and
-        // leaked two allocations per buffer.
-        "Shared" | "Cell" | "Mutex" => Some(box_release_for(rendered)),
+        "Shared" | "Cell" | "Mutex" => Some(box_release_for(ty, names)),
         // One-word handles onto a heap block the runtime made. Not containers —
         // they hold no elements — but the same ownership: the field owns the
         // block, and nothing else was going to give it back. `Random.from_seed`
@@ -91,15 +70,22 @@ pub fn container_free_for_rendered(rendered: &str) -> Option<&'static str> {
     }
 }
 
-/// Which of the three box releases a `Shared`/`Cell`/`Mutex` field needs, read
-/// off the strategy in its type arguments.
-pub fn box_release_for(rendered: &str) -> &'static str {
-    let args = rendered.split_once('<').map(|(_, rest)| rest).unwrap_or("");
-    if args.contains("Local") || rendered.starts_with("Cell") {
-        return "rask_cell_free";
+/// Which of the three box releases a `Shared`/`Cell`/`Mutex` field needs.
+///
+/// Each strategy builds its own runtime object: `Shared<T, Local>` is a cell,
+/// `Shared<T, Mutex>` is a mutex, and a bare `Shared<T>` is `Readers`
+/// (conc.sync/SH2). The strategy is the second type argument.
+pub fn box_release_for(ty: &RaskType, names: &HashMap<TypeId, String>) -> &'static str {
+    let strategy = match ty {
+        RaskType::Generic { args, .. } | RaskType::UnresolvedGeneric { args, .. } => match args.get(1) {
+            Some(GenericArg::Type(s)) => s.head_name(names),
+            _ => None,
+        },
+        _ => None,
+    };
+    match (ty.head_name(names), strategy) {
+        (Some("Cell"), _) | (_, Some("Local")) => "rask_cell_free",
+        (Some("Mutex"), _) | (_, Some("Mutex")) => "rask_mutex_drop",
+        _ => "rask_shared_drop_i64",
     }
-    if args.contains("Mutex") || rendered.starts_with("Mutex") {
-        return "rask_mutex_drop";
-    }
-    "rask_shared_drop_i64"
 }

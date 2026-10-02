@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use rask_ast::{NodeId, Span};
+use rask_ast::ty::TypeExpr;
 
 use super::builtins::BuiltinModules;
 use super::type_defs::{BinaryStructInfo, TypeDef};
@@ -79,7 +80,7 @@ pub struct TypeTable {
     /// Built-in type names mapped to Type.
     pub(super) builtins: HashMap<String, Type>,
     /// Type alias name → target type string.
-    pub(super) type_aliases: HashMap<String, String>,
+    pub(super) type_aliases: HashMap<String, TypeExpr>,
     /// Type parameter names in scope right now — the declaration or signature
     /// being checked.
     ///
@@ -125,16 +126,16 @@ pub struct TypeTable {
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
     /// G1: declared/derived interface conformances (nominal). TypeId → interface base
     /// names the type conforms to, from `T implements Interface` and auto-derive.
-    pub(super) conformances: HashMap<TypeId, std::collections::HashSet<String>>,
+    pub(super) conformances: HashMap<TypeId, std::collections::HashSet<TypeExpr>>,
     /// AT2/AT8: `(type, applied interface) → associated type → what it answers with`.
-    pub(super) assoc_bindings: HashMap<(TypeId, String), HashMap<String, Type>>,
+    pub(super) assoc_bindings: HashMap<(TypeId, TypeExpr), HashMap<String, Type>>,
     /// MN3/XC3: where each conformance was written, so a collision between two
     /// of them is reported once, on the later one.
-    pub(super) conformance_spans: HashMap<(TypeId, String), Vec<ConformanceSite>>,
+    pub(super) conformance_spans: HashMap<(TypeId, TypeExpr), Vec<ConformanceSite>>,
     /// CC1/CC2: conditional-conformance conditions. (TypeId, interface base) → the
     /// `where` bounds (type-param name → required interface names) that must hold
     /// for the conformance, checked per instantiation.
-    pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<String>)>>,
+    pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<TypeExpr>)>>,
     /// XC4/XC5: which package's `extend` block each method on a type came from,
     /// and which block that was. `(TypeId, method name) → [(package, impl decl)]`.
     ///
@@ -148,7 +149,7 @@ pub struct TypeTable {
     /// declaration. Empty in every program that doesn't have a collision, which
     /// is nearly all of them — the use-site check reads this first and does
     /// nothing when it's empty.
-    pub(super) ambiguous_conformances: std::collections::HashSet<(TypeId, String)>,
+    pub(super) ambiguous_conformances: std::collections::HashSet<(TypeId, TypeExpr)>,
     /// XC1: who declares each type. Anything unrecorded is a builtin, and
     /// builtins are the stdlib's.
     pub(super) declared_by: HashMap<TypeId, TypeOwner>,
@@ -162,7 +163,7 @@ pub struct TypeTable {
     /// `3 * duration` asks "which type forms this pair with `Duration`", which
     /// the by-`Self` table can only answer by walking every entry. One insert
     /// here on the way in makes it a lookup.
-    pub(super) conformers_by_pair: HashMap<String, Vec<TypeId>>,
+    pub(super) conformers_by_pair: HashMap<TypeExpr, Vec<TypeId>>,
     /// OR12: conformance methods declared `@builtin` — the pair's types are
     /// written in the stdlib and the arithmetic is the compiler's, so there is
     /// no body to call. Keyed `(type, filed method name)`.
@@ -332,7 +333,7 @@ impl TypeTable {
         //
         // Match on the base name (strip generic params) since the parser
         // stores names with their generic signature (e.g. "Option<T>").
-        let base_name = name.split('<').next().unwrap_or(&name);
+        let base_name = name.as_str();
         let builtin_id = match base_name {
             "Option" => self.option_type_id,
             "Result" => self.result_type_id,
@@ -350,13 +351,7 @@ impl TypeTable {
         let id = TypeId(self.types.len() as u32);
         self.types.push(def);
 
-        let mut names = vec![name.clone()];
-        // Also register the base name (without <...>) for generic type lookup
-        if let Some(base_end) = name.find('<') {
-            names.push(name[..base_end].to_string());
-        }
-
-        for n in names {
+        for n in [name.clone()] {
             if self.stdlib_mode {
                 // Stdlib code always means this one.
                 self.stdlib_type_names.insert(n.clone(), id);
@@ -403,61 +398,50 @@ impl TypeTable {
     }
 
     /// Register a transparent type alias.
-    pub fn register_alias(&mut self, name: String, target: String) {
+    pub fn register_alias(&mut self, name: String, target: TypeExpr) {
         self.type_aliases.insert(name, target);
     }
 
-    /// The type `name` is an alias for, following a chain. `None` if it isn't an
-    /// alias.
+    /// The type `name` is an alias for, following a chain of aliases that name
+    /// other aliases. `None` if it isn't an alias.
     ///
     /// Public because a name used as a *namespace* — `Span.from_millis(1)` — is
     /// matched against the stub registry by its spelling, and an alias isn't in
     /// there under its own name.
-    pub fn alias_target<'a>(&'a self, name: &'a str) -> Option<&'a str> {
-        self.resolve_alias(name)
+    pub fn alias_target(&self, name: &str) -> Option<&TypeExpr> {
+        let mut target = self.type_aliases.get(name)?;
+        let mut seen = vec![name];
+        // A cycle was rejected at registration; `seen` only keeps a bad table
+        // from looping.
+        while let Some(next) = target.bare_name().and_then(|n| self.type_aliases.get(n)) {
+            let n = target.bare_name().unwrap_or_default();
+            if seen.contains(&n) {
+                return None;
+            }
+            seen.push(n);
+            target = next;
+        }
+        Some(target)
     }
 
-    /// Resolve a type alias chain, returning the final target string.
-    /// Returns None if name is not an alias.
-    fn resolve_alias<'a>(&'a self, name: &'a str) -> Option<&'a str> {
-        let mut current = name;
-        let mut visited = Vec::new();
-        loop {
-            match self.type_aliases.get(current) {
-                Some(target) => {
-                    if visited.contains(&current) {
-                        // Cycle — caller should have caught this at registration
-                        return None;
-                    }
-                    visited.push(current);
-                    current = target.as_str();
-                }
-                None => {
-                    if current == name {
-                        return None;
-                    }
-                    return Some(current);
-                }
-            }
-        }
+    /// The name an alias stands for, when its target is a plain named type.
+    pub fn alias_target_name(&self, name: &str) -> Option<String> {
+        self.alias_target(name).filter(|t| t.args().is_empty()).and_then(TypeExpr::name)
     }
 
     /// Check if registering `name -> target` would create a cycle.
     /// Returns the cycle path if so.
-    pub fn check_alias_cycle(&self, name: &str, target: &str) -> Option<Vec<String>> {
-        let mut current = target;
+    pub fn check_alias_cycle(&self, name: &str, target: &TypeExpr) -> Option<Vec<String>> {
         let mut path = vec![name.to_string(), target.to_string()];
+        let mut current = target;
         loop {
-            if current == name {
+            let current_name = current.bare_name()?;
+            if current_name == name {
                 return Some(path);
             }
-            match self.type_aliases.get(current) {
-                Some(next) => {
-                    path.push(next.clone());
-                    current = next.as_str();
-                }
-                None => return None,
-            }
+            let next = self.type_aliases.get(current_name)?;
+            path.push(next.to_string());
+            current = next;
         }
     }
 
@@ -466,12 +450,8 @@ impl TypeTable {
         if let Some(ty) = self.builtins.get(name) {
             return Some(ty.clone());
         }
-        // Check type aliases
-        if let Some(target) = self.resolve_alias(name) {
-            if let Some(ty) = self.builtins.get(target) {
-                return Some(ty.clone());
-            }
-            return self.resolve_name(target).map(Type::Named);
+        if let Some(target) = self.alias_target(name) {
+            return super::parse_type::resolve_type_expr(target, self).ok();
         }
         self.resolve_name(name).map(Type::Named)
     }
@@ -501,9 +481,9 @@ impl TypeTable {
         self.types.get_mut(id.0 as usize)
     }
 
-    /// The base name of an interface reference: `Mul<f64>` → `Mul`.
-    pub(super) fn conformance_key(interface_name: &str) -> String {
-        interface_name.split('<').next().unwrap_or(interface_name).trim().to_string()
+    /// The interface an interface reference names: `Mul<f64>` → `Mul`.
+    pub(crate) fn conformance_key(interface: &TypeExpr) -> String {
+        interface.name().unwrap_or_default()
     }
 
     /// GT2/GT3: the key a conformance is filed under — the interface *with its
@@ -512,45 +492,35 @@ impl TypeTable {
     /// Written-out defaults are filled in and `Self` becomes the conforming
     /// type's name, so `Meters implements Mul` and `Meters implements
     /// Mul<Meters>` land on the same key when `Rhs` defaults to `Self`.
-    /// An interface with no parameters keys on its bare name, exactly as before.
-    pub fn applied_conformance_key(&self, interface_name: &str, self_name: &str) -> String {
-        let base = Self::conformance_key(interface_name);
+    /// An interface with no parameters keys on its bare name.
+    pub fn applied_conformance_key(&self, interface: &TypeExpr, self_name: &str) -> TypeExpr {
+        let base = Self::conformance_key(interface);
         let Some(TypeDef::Interface { type_params, .. }) =
             self.get_type_id(&base).and_then(|id| self.get(id))
         else {
-            return base;
+            return TypeExpr::named(base);
         };
         if type_params.is_empty() {
-            return base;
+            return TypeExpr::named(base);
         }
-        let written = interface_ref_args(interface_name);
+        let written = interface.args();
         let mut args = Vec::new();
         for (i, p) in type_params.iter().enumerate() {
-            let arg = match written.get(i) {
-                Some(a) => a.clone(),
-                None => match &p.default {
-                    Some(d) => d.to_string(),
-                    // GT4: no argument and no default. The arity error is
-                    // reported at the header; key on what was written so the
-                    // conformance still exists for everything else.
-                    None => return base,
-                },
+            let arg = match written.get(i).or(p.default.as_ref()) {
+                Some(a) => a,
+                // GT4: no argument and no default. The arity error is
+                // reported at the header; key on what was written so the
+                // conformance still exists for everything else.
+                None => return TypeExpr::named(base),
             };
-            args.push(if arg == "Self" { self_name.to_string() } else { arg });
+            args.push(if arg.is_name("Self") { TypeExpr::named(self_name) } else { arg.clone() });
         }
-        format!("{}<{}>", base, args.join(", "))
-    }
-
-    /// The interface base name as an error should print it.
-    pub(super) fn conformance_display(interface_name: &str) -> String {
-        Self::conformance_key(interface_name)
+        TypeExpr::generic(base, args)
     }
 
     /// G1: record that a type conforms to an interface (declared or auto-derived).
-    pub fn record_conformance(&mut self, type_id: TypeId, interface_name: &str) {
-        let self_name = self.type_name(type_id);
-        let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
-        let key = self.applied_conformance_key(interface_name, &self_base);
+    pub fn record_conformance(&mut self, type_id: TypeId, interface: &TypeExpr) {
+        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
         let conformers = self.conformers_by_pair.entry(key.clone()).or_default();
         if !conformers.contains(&type_id) {
             conformers.push(type_id);
@@ -560,7 +530,7 @@ impl TypeTable {
 
     /// OR1: every type that conforms to this applied interface, in declaration
     /// order. `Mul<Duration>` answers with the `i64` the stdlib wrote.
-    pub fn conformers_of(&self, applied: &str) -> &[TypeId] {
+    pub fn conformers_of(&self, applied: &TypeExpr) -> &[TypeId] {
         self.conformers_by_pair.get(applied).map_or(&[], |v| v.as_slice())
     }
 
@@ -568,13 +538,11 @@ impl TypeTable {
     pub fn record_assoc_binding(
         &mut self,
         type_id: TypeId,
-        interface_name: &str,
+        interface: &TypeExpr,
         assoc: &str,
         ty: Type,
     ) {
-        let self_name = self.type_name(type_id);
-        let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
-        let key = self.applied_conformance_key(interface_name, &self_base);
+        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
         self.assoc_bindings
             .entry((type_id, key))
             .or_default()
@@ -582,18 +550,16 @@ impl TypeTable {
     }
 
     /// AT6: read an associated type off a conformance. A lookup, never a search.
-    pub fn assoc_binding(&self, type_id: TypeId, interface_name: &str, assoc: &str) -> Option<&Type> {
-        let self_name = self.type_name(type_id);
-        let self_base = self_name.split('<').next().unwrap_or(&self_name);
-        let key = self.applied_conformance_key(interface_name, self_base);
+    pub fn assoc_binding(&self, type_id: TypeId, interface: &TypeExpr, assoc: &str) -> Option<&Type> {
+        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
         if let Some(t) = self.assoc_bindings.get(&(type_id, key)).and_then(|m| m.get(assoc)) {
             return Some(t);
         }
         // A bare `Mul` asking about a type with exactly one `Mul<...>`
         // conformance still has one answer. Two of them is the caller's
         // problem to disambiguate, and it gets nothing here.
-        let base = Self::conformance_key(interface_name);
-        if interface_name.contains('<') {
+        let base = Self::conformance_key(interface);
+        if !interface.args().is_empty() {
             return None;
         }
         let mut found = None;
@@ -625,14 +591,12 @@ impl TypeTable {
     pub fn record_conformance_span(
         &mut self,
         type_id: TypeId,
-        interface_name: &str,
+        interface: &TypeExpr,
         decl: NodeId,
         span: Span,
         package: Option<String>,
     ) -> Option<Span> {
-        let self_name = self.type_name(type_id);
-        let self_base = self_name.split('<').next().unwrap_or(&self_name).to_string();
-        let key = self.applied_conformance_key(interface_name, &self_base);
+        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
         let from_stdlib = self.stdlib_mode;
         let mine = ConformanceSite { span, decl, from_stdlib, package: package.clone() };
         let sites = self.conformance_spans.entry((type_id, key.clone())).or_default();
@@ -701,7 +665,7 @@ impl TypeTable {
     }
 
     /// XC3: the applied interface keys this type has more than one declaration of.
-    pub(super) fn ambiguous_conformance_keys(&self, type_id: TypeId) -> Vec<String> {
+    pub(super) fn ambiguous_conformance_keys(&self, type_id: TypeId) -> Vec<TypeExpr> {
         self.ambiguous_conformances
             .iter()
             .filter(|(id, _)| *id == type_id)
@@ -714,11 +678,9 @@ impl TypeTable {
     pub(super) fn conformance_sites(
         &self,
         type_id: TypeId,
-        interface_name: &str,
+        interface: &TypeExpr,
     ) -> &[ConformanceSite] {
-        let self_name = self.type_name(type_id);
-        let self_base = self_name.split('<').next().unwrap_or(&self_name);
-        let key = self.applied_conformance_key(interface_name, self_base);
+        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
         self.conformance_spans
             .get(&(type_id, key))
             .map(|v| v.as_slice())
@@ -746,10 +708,8 @@ impl TypeTable {
         self.declared_at.get(&type_id).copied()
     }
 
-    pub fn conformance_span(&self, type_id: TypeId, interface_name: &str) -> Option<Span> {
-        let self_name = self.type_name(type_id);
-        let self_base = self_name.split('<').next().unwrap_or(&self_name);
-        let key = self.applied_conformance_key(interface_name, self_base);
+    pub fn conformance_span(&self, type_id: TypeId, interface: &TypeExpr) -> Option<Span> {
+        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
         self.conformance_spans
             .get(&(type_id, key))
             .and_then(|v| v.first())
@@ -781,16 +741,16 @@ impl TypeTable {
     }
 
     /// GT3: every applied form of `base` this type conforms to.
-    pub fn applied_conformances(&self, type_id: TypeId, base: &str) -> Vec<String> {
+    pub fn applied_conformances(&self, type_id: TypeId, base: &str) -> Vec<TypeExpr> {
         self.conformances
             .get(&type_id)
             .map(|set| {
-                let mut v: Vec<String> = set
+                let mut v: Vec<TypeExpr> = set
                     .iter()
                     .filter(|k| Self::conformance_key(k) == base)
                     .cloned()
                     .collect();
-                v.sort();
+                v.sort_by_key(|k| k.to_string());
                 v
             })
             .unwrap_or_default()
@@ -803,18 +763,16 @@ impl TypeTable {
     /// `Horn implements Shouty` — where `interface Shouty: Speak` — left
     /// `horn as any Speak` refused for an interface the type demonstrably implements,
     /// and pushing one into a `Vec<any Speak>` was a type error (#873).
-    pub fn declares_conformance(&self, type_id: TypeId, interface_name: &str) -> bool {
-        let base = Self::conformance_key(interface_name);
+    pub fn declares_conformance(&self, type_id: TypeId, interface: &TypeExpr) -> bool {
+        let base = Self::conformance_key(interface);
         let Some(set) = self.conformances.get(&type_id) else {
             return false;
         };
         // GT3: `Mul` asks whether any applied form is declared; `Mul<f64>` asks
         // for that one. The canonical key fills in defaults and `Self`, so a
         // bare header and its written-out equivalent agree.
-        if interface_name.contains('<') {
-            let self_name = self.type_name(type_id);
-            let self_base = self_name.split('<').next().unwrap_or(&self_name);
-            let key = self.applied_conformance_key(interface_name, self_base);
+        if !interface.args().is_empty() {
+            let key = self.applied_conformance_key(interface, &self.type_name(type_id));
             if set.contains(&key) {
                 return true;
             }
@@ -838,7 +796,7 @@ impl TypeTable {
         else {
             return false;
         };
-        let parents: Vec<String> = super_interfaces.iter().map(|s| Self::conformance_key(s)).collect();
+        let parents: Vec<String> = super_interfaces.iter().map(Self::conformance_key).collect();
         parents
             .iter()
             .any(|p| p == target || self.interface_extends(p, target, seen))
@@ -848,22 +806,20 @@ impl TypeTable {
     pub fn record_conformance_condition(
         &mut self,
         type_id: TypeId,
-        interface_name: &str,
-        bounds: Vec<(String, Vec<String>)>,
+        interface: &TypeExpr,
+        bounds: Vec<(String, Vec<TypeExpr>)>,
     ) {
         self.conformance_conditions
-            .insert((type_id, Self::conformance_key(interface_name)), bounds);
+            .insert((type_id, Self::conformance_key(interface)), bounds);
     }
 
     /// CC1: the `where` condition for a conformance, if it's conditional.
     pub fn conformance_condition(
         &self,
         type_id: TypeId,
-        interface_name: &str,
-    ) -> Option<&Vec<(String, Vec<String>)>> {
-        let base = Self::conformance_key(interface_name);
-        let base = base.as_str();
-        self.conformance_conditions.get(&(type_id, base.to_string()))
+        interface: &TypeExpr,
+    ) -> Option<&Vec<(String, Vec<TypeExpr>)>> {
+        self.conformance_conditions.get(&(type_id, Self::conformance_key(interface)))
     }
 
     /// Check if a name is registered.
@@ -879,8 +835,8 @@ impl TypeTable {
         if let Some(id) = self.resolve_name(name) {
             return Some(id);
         }
-        if let Some(target) = self.resolve_alias(name) {
-            return self.resolve_name(target);
+        if let Some(target) = self.alias_target_name(name) {
+            return self.resolve_name(&target);
         }
         None
     }
@@ -937,13 +893,13 @@ impl TypeTable {
             }
             Type::Union(variants) => variants.iter().any(|v| self.type_is_transitive_resource(v)),
             Type::UnresolvedNamed(name) => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 self.type_names
                     .get(base)
                     .map_or(false, |id| self.is_transitive_resource_by_id(*id))
             }
             Type::UnresolvedGeneric { name, args } => {
-                let base_name = name.split('<').next().unwrap_or(name);
+                let base_name = name;
                 if let Some(&id) = self.type_names.get(base_name) {
                     if self.is_transitive_resource_by_id(id) {
                         return true;
@@ -991,11 +947,11 @@ impl TypeTable {
             Type::Named(id) => self.is_transitive_resource_by_id(*id),
             Type::Generic { base, .. } => {
                 let full = self.type_name(*base);
-                let name = full.split('<').next().unwrap_or(&full);
+                let name = full.as_str();
                 !Self::is_nonlinear_wrapper(name) && self.is_transitive_resource_by_id(*base)
             }
             Type::UnresolvedGeneric { name, .. } => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 !Self::is_nonlinear_wrapper(base)
                     && self
                         .type_names
@@ -1003,7 +959,7 @@ impl TypeTable {
                         .is_some_and(|&id| self.is_transitive_resource_by_id(id))
             }
             Type::UnresolvedNamed(name) => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 self.type_names
                     .get(base)
                     .map_or(false, |id| self.is_transitive_resource_by_id(*id))
@@ -1045,14 +1001,14 @@ impl TypeTable {
         match ty {
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
-                let name = full.split('<').next().unwrap_or(&full);
+                let name = full.as_str();
                 !Self::is_nonlinear_wrapper(name)
                     && args
                         .iter()
                         .any(|a| matches!(a, GenericArg::Type(t) if self.holds_linear_value(t)))
             }
             Type::UnresolvedGeneric { name, args } => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 !Self::is_nonlinear_wrapper(base)
                     && args
                         .iter()
@@ -1149,16 +1105,16 @@ impl TypeTable {
         match ty {
             Type::Named(id) => self.def_holds_link(*id, seen),
             Type::UnresolvedNamed(name) => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 self.type_names.get(base).is_some_and(|&id| self.def_holds_link(id, seen))
             }
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
-                let name = full.split('<').next().unwrap_or(&full);
+                let name = full.as_str();
                 generic(name, args, seen) || self.def_holds_link(*base, seen)
             }
             Type::UnresolvedGeneric { name, args } => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 generic(base, args, seen)
                     || self.type_names.get(base).is_some_and(|&id| self.def_holds_link(id, seen))
             }
@@ -1262,7 +1218,7 @@ impl TypeTable {
         let args = match ty {
             Type::Generic { base, args } => {
                 let full = self.type_name(*base);
-                if full.split('<').next() == Some("Map") {
+                if full == "Map" {
                     if let Some(GenericArg::Type(k)) = args.first() {
                         if let Some(bad) = self.unhashable_key(k) {
                             return Some(bad);
@@ -1272,7 +1228,7 @@ impl TypeTable {
                 Some(args)
             }
             Type::UnresolvedGeneric { name, args } => {
-                if name.split('<').next() == Some("Map") {
+                if name == "Map" {
                     if let Some(GenericArg::Type(k)) = args.first() {
                         if let Some(bad) = self.unhashable_key(k) {
                             return Some(bad);
@@ -1312,14 +1268,14 @@ impl TypeTable {
             Type::Generic { base, args } => {
                 // `type_name` includes generic params ("Vec<T>"); strip them.
                 let full = self.type_name(*base);
-                let name = full.split('<').next().unwrap_or(&full);
+                let name = full.as_str();
                 if let Some(hit) = self.container_violation(name, args) {
                     return Some(hit);
                 }
                 self.first_container_in_args(args)
             }
             Type::UnresolvedGeneric { name, args } => {
-                let base = name.split('<').next().unwrap_or(name);
+                let base = name;
                 if let Some(hit) = self.container_violation(base, args) {
                     return Some(hit);
                 }
@@ -1431,7 +1387,7 @@ impl TypeTable {
         match ty {
             Type::Named(id) => Some(self.type_name(*id)),
             Type::UnresolvedNamed(name) => {
-                Some(name.split('<').next().unwrap_or(name).trim().to_string())
+                Some(name.trim().to_string())
             }
             _ => None,
         }
@@ -1551,7 +1507,7 @@ impl TypeTable {
             Some(TypeDef::Primitive { name, .. }) => name,
             None => return format!("<type#{}>", id.0),
         };
-        name.split('<').next().unwrap_or(name).to_string()
+        name.to_string()
     }
 
     /// Get the underlying type for a nominal alias.
@@ -1671,35 +1627,6 @@ impl TypeTable {
     pub fn const_length(&self, name: &str) -> Option<usize> {
         self.const_lengths.get(name).copied()
     }
-}
-
-/// The written-out arguments of an interface reference: `Mul<f64, i64>` → `["f64", "i64"]`.
-pub fn interface_ref_args(interface_ref: &str) -> Vec<String> {
-    let Some(open) = interface_ref.find('<') else { return Vec::new() };
-    let Some(close) = interface_ref.rfind('>') else { return Vec::new() };
-    if close <= open + 1 {
-        return Vec::new();
-    }
-    let inner = &interface_ref[open + 1..close];
-    let mut args = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (i, c) in inner.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth -= 1,
-            ',' if depth == 0 => {
-                args.push(inner[start..i].trim().to_string());
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    let last = inner[start..].trim();
-    if !last.is_empty() {
-        args.push(last.to_string());
-    }
-    args
 }
 
 /// OR6: the primitives a conformance may be written against.

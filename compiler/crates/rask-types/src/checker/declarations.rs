@@ -29,13 +29,13 @@ impl TypeChecker {
     /// Runs before the declarations, so a program's own `type alias` of the same
     /// name overwrites this one rather than the other way round.
     pub(super) fn collect_import_aliases(&mut self) {
-        let aliases: Vec<(String, String)> = self
+        let aliases: Vec<(String, TypeExpr)> = self
             .resolved
             .symbols
             .iter()
             .filter_map(|sym| match &sym.kind {
                 rask_resolve::SymbolKind::TypeAlias { target, from_import: true } => {
-                    Some((sym.name.clone(), target.name()?))
+                    Some((sym.name.clone(), target.clone()))
                 }
                 _ => None,
             })
@@ -248,9 +248,9 @@ impl TypeChecker {
                             self.fn_type_params.insert(sym_id, type_param_names);
                             // #314: record bounds so call sites can verify the
                             // type arg satisfies the declared interface bounds.
-                            let bounds: std::collections::HashMap<String, Vec<String>> = f.type_params.iter()
+                            let bounds: std::collections::HashMap<String, Vec<TypeExpr>> = f.type_params.iter()
                                 .filter(|tp| !tp.bounds.is_empty())
-                                .map(|tp| (tp.name.clone(), tp.bounds.iter().map(|b| b.to_string()).collect()))
+                                .map(|tp| (tp.name.clone(), tp.bounds.clone()))
                                 .collect();
                             if !bounds.is_empty() {
                                 self.fn_type_param_bounds.insert(sym_id, bounds);
@@ -444,7 +444,7 @@ impl TypeChecker {
             return true;
         }
         self.errors.push(TypeError::InterfaceArity {
-            interface_name: interface_ref.to_string(),
+            interface_name: TypeTable::conformance_key(interface_ref),
             expected: if found > type_params.len() { type_params.len() } else { required },
             params,
             found,
@@ -479,7 +479,7 @@ impl TypeChecker {
     /// An unknown interface is reported elsewhere, so nothing is said here.
     fn check_block_is_the_contract(&mut self, i: &ImplDecl) {
         let Some(interface) = &i.interface else { return };
-        let interface_name = interface.to_string();
+        let interface_name = TypeTable::conformance_key(interface);
         let allowed = {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
             checker.declared_method_names(&interface_name)
@@ -509,11 +509,11 @@ impl TypeChecker {
         };
         let Some(interface) = &i.interface else { return };
         let Some(base) = interface.name() else { return };
-        let interface_ref = &interface.to_string();
+        let interface_ref = interface;
         if rask_ast::operators::operator_interface_method(&base).is_some() {
             return;
         }
-        let siblings: Vec<String> = self
+        let siblings: Vec<TypeExpr> = self
             .types
             .applied_conformances(type_id, &base)
             .into_iter()
@@ -547,8 +547,8 @@ impl TypeChecker {
             if let Some(method) = clash {
                 self.errors.push(TypeError::OverlappingInterfaceConformance {
                     ty: i.target_ty.to_string(),
-                    first: other,
-                    second: interface_ref.clone(),
+                    first: other.to_string(),
+                    second: interface_ref.to_string(),
                     method,
                     span,
                 });
@@ -558,7 +558,7 @@ impl TypeChecker {
     }
 
     /// Do two written interface references name the same conformance of this type?
-    fn same_applied_interface(&self, a: &str, b: &str, self_ty: &TypeExpr) -> bool {
+    fn same_applied_interface(&self, a: &TypeExpr, b: &TypeExpr, self_ty: &TypeExpr) -> bool {
         let base = self_ty.name().unwrap_or_default();
         self.types.applied_conformance_key(a, &base) == self.types.applied_conformance_key(b, &base)
     }
@@ -651,7 +651,7 @@ impl TypeChecker {
                     for want in failed {
                         self.errors.push(TypeError::InterfaceNotSatisfied {
                             ty: bound.to_string(),
-                            interface_name: want,
+                            interface_name: want.to_string(),
                             context: super::InterfaceBoundContext::ConformanceHeader,
                             missing: None,
                             span: bound_span,
@@ -688,7 +688,7 @@ impl TypeChecker {
     pub(super) fn check_conformance_ambiguity(
         &mut self,
         type_id: crate::types::TypeId,
-        interface_key: &str,
+        interface_key: &TypeExpr,
         span: rask_ast::Span,
     ) {
         let here = self.package_of(span).map(str::to_string);
@@ -718,7 +718,7 @@ impl TypeChecker {
         }
         self.errors.push(TypeError::AmbiguousConformance {
             ty: self.types.type_name(type_id),
-            interface_name: TypeTable::conformance_display(interface_key),
+            interface_name: TypeTable::conformance_key(interface_key),
             sites: visible,
             span,
         });
@@ -730,7 +730,7 @@ impl TypeChecker {
     pub(super) fn check_bound_conformance_ambiguity(
         &mut self,
         ty: &Type,
-        bound: &str,
+        bound: &TypeExpr,
         span: rask_ast::Span,
     ) {
         if self.types.ambiguous_conformances.is_empty() {
@@ -760,7 +760,7 @@ impl TypeChecker {
             return;
         }
         for key in self.types.ambiguous_conformance_keys(type_id) {
-            let base = key.split('<').next().unwrap_or(&key).to_string();
+            let base = TypeTable::conformance_key(&key);
             let declares = matches!(
                 self.types.get_type_id(&base).and_then(|id| self.types.get(id)),
                 Some(TypeDef::Interface { methods, .. })
@@ -822,11 +822,12 @@ impl TypeChecker {
             return;
         }
         let Some(interface) = &i.interface else { return };
-        let interface_name = &interface.to_string();
-        let Some(encoding) = Self::core_interface(interface_name) else { return };
+        let interface_name = interface;
+        let Some(encoding) = Self::core_interface(&TypeTable::conformance_key(interface_name)) else { return };
         self.errors.push(TypeError::ForeignCoreConformance {
             ty: i.target_ty.to_string(),
-            interface_name: TypeTable::conformance_display(interface_name),
+            type_name: i.target_ty.last_segment().unwrap_or_default().to_string(),
+            interface_name: TypeTable::conformance_key(interface_name),
             owner: None,
             here: match &here {
                 TypeOwner::Package(p) => Some(p.clone()),
@@ -881,7 +882,7 @@ impl TypeChecker {
     /// how the type serializes, it changes whether it does, which is the same
     /// thing `@no_encode` says no to.
     fn core_interface(name: &str) -> Option<bool> {
-        match name.split('<').next().unwrap_or(name) {
+        match name {
             "Equal" | "Eq" | "Hashable" | "Comparable" | "Ord" | "Cloneable" | "Clone" => {
                 Some(false)
             }
@@ -892,7 +893,7 @@ impl TypeChecker {
 
     pub(super) fn register_impl_methods(&mut self, i: &ImplDecl, decl_id: rask_ast::NodeId, span: rask_ast::Span) {
         let base_name = &i.target_ty.name().unwrap_or_default();
-        let interface_name = i.interface.as_ref().map(|t| t.to_string());
+        let interface_name = i.interface.clone();
         // OR6: a primitive's own methods are the compiler's. An `extend f64 {
         // … }` block used to register nowhere at all and the method simply
         // didn't exist — `(2.0).doubled()` came back "no method `doubled` on
@@ -933,15 +934,15 @@ impl TypeChecker {
         let mut dup_pair = false;
         // CC1/CC2: a `where` clause makes every listed conformance conditional
         // (CD3: one condition per block).
-        let condition: Vec<(String, Vec<String>)> = i.where_bounds.iter()
-            .map(|tp| (tp.name.clone(), tp.bounds.iter().map(|b| b.to_string()).collect()))
+        let condition: Vec<(String, Vec<TypeExpr>)> = i.where_bounds.iter()
+            .map(|tp| (tp.name.clone(), tp.bounds.clone()))
             .collect();
         if let Some(interface_name) = &interface_name {
             self.types.record_conformance(type_id, interface_name);
             // XC1: six interfaces belong to the package that declares the type.
             // Checked before the duplicate rule below, because a foreign block
             // claiming one of them is wrong whether or not the owner wrote one.
-            if let Some(encoding) = Self::core_interface(interface_name) {
+            if let Some(encoding) = Self::core_interface(&TypeTable::conformance_key(interface_name)) {
                 use super::type_table::TypeOwner;
                 let here = self.type_owner(span);
                 let owner = self.types.declared_by(type_id);
@@ -955,7 +956,8 @@ impl TypeChecker {
                         // `type MyVec = Vec<i64>` names the same thing the
                         // rejected header did.
                         ty: i.target_ty.to_string(),
-                        interface_name: TypeTable::conformance_display(interface_name),
+                        type_name: i.target_ty.last_segment().unwrap_or_default().to_string(),
+                        interface_name: TypeTable::conformance_key(interface_name),
                         owner: name_of(&owner),
                         here: name_of(&here),
                         encoding,
@@ -982,7 +984,7 @@ impl TypeChecker {
                 dup_pair = true;
                 self.errors.push(TypeError::DuplicateConformance {
                     ty: base_name.to_string(),
-                    interface_name: TypeTable::conformance_display(interface_name),
+                    interface_name: TypeTable::conformance_key(interface_name),
                     first,
                     span,
                 });
@@ -1010,7 +1012,7 @@ impl TypeChecker {
         // code came back unresolved.
         let self_ty = self.resolve_impl_self_type(&i.target_ty);
         if let Some(interface_name) = &interface_name {
-            let base = interface_name.split('<').next().unwrap_or(interface_name).trim().to_string();
+            let base = TypeTable::conformance_key(interface_name);
             if let Some(TypeDef::Interface { assoc_types, .. }) =
                 self.types.get_type_id(&base).and_then(|id| self.types.get(id))
             {
@@ -1118,12 +1120,11 @@ impl TypeChecker {
         // wanting one method (E0889) are each already reported with a message
         // that names the real problem, so they are not reported again here.
         let same_base_sibling = i.interface.as_ref().map_or(false, |iface| {
-            let n = &iface.to_string();
             let base = iface.name().unwrap_or_default();
             self.types
                 .applied_conformances(type_id, &base)
                 .iter()
-                .any(|k| !self.same_applied_interface(k, n, &i.target_ty))
+                .any(|k| !self.same_applied_interface(k, iface, &i.target_ty))
         });
         // Copied default bodies never collide here: the desugar injects one
         // per name, and only when no block of the type defines it.
@@ -1498,7 +1499,7 @@ impl TypeChecker {
                 }
                 errors.push(TypeError::UnknownAssocType {
                     assoc: name,
-                    interface_name: t.name.split('<').next().unwrap_or(&t.name).to_string(),
+                    interface_name: t.name.as_str().to_string(),
                     known: assoc_names.to_vec(),
                     span,
                 });
@@ -1525,14 +1526,14 @@ impl TypeChecker {
             .filter(|p| !p.is_comptime)
             .map(|p| super::InterfaceTypeParam {
                 name: p.name.clone(),
-                bounds: p.bounds.iter().map(|b| b.to_string()).collect(),
+                bounds: p.bounds.clone(),
                 default: p.default.clone(),
             })
             .collect();
         let assoc_types = t.assoc_types.iter()
             .map(|a| super::InterfaceAssocType {
                 name: a.name.clone(),
-                bounds: a.bounds.iter().map(|b| b.to_string()).collect(),
+                bounds: a.bounds.clone(),
                 default: a.default.clone(),
             })
             .collect();
@@ -1540,7 +1541,7 @@ impl TypeChecker {
         self.types.register_type(TypeDef::Interface {
             name: t.name.clone(),
             type_params,
-            super_interfaces: t.super_interfaces.iter().map(|t| t.to_string()).collect(),
+            super_interfaces: t.super_interfaces.clone(),
             methods,
             assoc_types,
             generic_methods,
@@ -1552,15 +1553,14 @@ impl TypeChecker {
     pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl, span: rask_ast::Span) {
         if a.is_transparent {
             // T6: check for cycles before registering
-            let target_name = a.target.to_string();
-            if let Some(path) = self.types.check_alias_cycle(&a.name, &target_name) {
+            if let Some(path) = self.types.check_alias_cycle(&a.name, &a.target) {
                 self.errors.push(TypeError::CyclicTypeAlias {
                     cycle: path.join(" → "),
                     span,
                 });
                 return;
             }
-            self.types.register_alias(a.name.clone(), target_name);
+            self.types.register_alias(a.name.clone(), a.target.clone());
             // RC1/RC3: `alias Files = Vec<File>` is itself a rejected type.
             if let Ok(target) = resolve_type_expr(&a.target, &self.types) {
                 self.note_linear_container_site(span, target);
@@ -1575,7 +1575,7 @@ impl TypeChecker {
             self.types.register_type(TypeDef::NominalAlias {
                 name: a.name.clone(),
                 underlying,
-                with_interfaces: a.with_interfaces.iter().map(|t| t.to_string()).collect(),
+                with_interfaces: a.with_interfaces.clone(),
                 methods: Vec::new(),
             });
         }
@@ -1679,7 +1679,7 @@ impl TypeChecker {
             // stored name is `tag<E>`. Method lookup compares against what the
             // call site writes — `tag` — so strip it back off and keep the
             // parameters where they can be instantiated.
-            name: m.name.split('<').next().unwrap_or(&m.name).to_string(),
+            name: m.name.as_str().to_string(),
             self_param,
             params,
             ret,
@@ -1715,7 +1715,7 @@ impl TypeChecker {
                     .map(|name| {
                         let bounds = declared
                             .get(name.as_str())
-                            .map(|b| b.iter().map(|t| t.to_string()).collect())
+                            .map(|b| (*b).clone())
                             .unwrap_or_default();
                         (name, bounds)
                     })
@@ -1966,11 +1966,11 @@ impl TypeChecker {
                     let clone_ok = field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
                         && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
                     let cmp_ok = field_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_conformance(id, "Equal"); }
-                    if hash_ok { self.types.record_conformance(id, "Hashable"); }
-                    if clone_ok { self.types.record_conformance(id, "Cloneable"); }
-                    if cmp_ok { self.types.record_conformance(id, "Comparable"); }
-                    self.types.record_conformance(id, "Debug");
+                    if eq_ok { self.types.record_conformance(id, &TypeExpr::named("Equal")); }
+                    if hash_ok { self.types.record_conformance(id, &TypeExpr::named("Hashable")); }
+                    if clone_ok { self.types.record_conformance(id, &TypeExpr::named("Cloneable")); }
+                    if cmp_ok { self.types.record_conformance(id, &TypeExpr::named("Comparable")); }
+                    self.types.record_conformance(id, &TypeExpr::named("Debug"));
                 }
                 TypeDef::Enum { variants, methods, type_params, .. } => {
                     let payload_types: Vec<Type> = variants.iter()
@@ -2083,11 +2083,11 @@ impl TypeChecker {
                     let clone_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
                         && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
                     let cmp_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_conformance(id, "Equal"); }
-                    if hash_ok { self.types.record_conformance(id, "Hashable"); }
-                    if clone_ok { self.types.record_conformance(id, "Cloneable"); }
-                    if cmp_ok { self.types.record_conformance(id, "Comparable"); }
-                    self.types.record_conformance(id, "Debug");
+                    if eq_ok { self.types.record_conformance(id, &TypeExpr::named("Equal")); }
+                    if hash_ok { self.types.record_conformance(id, &TypeExpr::named("Hashable")); }
+                    if clone_ok { self.types.record_conformance(id, &TypeExpr::named("Cloneable")); }
+                    if cmp_ok { self.types.record_conformance(id, &TypeExpr::named("Comparable")); }
+                    self.types.record_conformance(id, &TypeExpr::named("Debug"));
                 }
                 _ => {}
             }
@@ -2389,7 +2389,7 @@ impl TypeChecker {
                         let mut interface_errors = Vec::new();
                         {
                             let mut checker = crate::interfaces::InterfaceChecker::new(&self.types);
-                            if let Some(interface_name) = &i.interface.as_ref().map(|t| t.to_string()) {
+                            if let Some(interface_name) = &i.interface {
                                 if let Err(e) = checker.check_satisfies(&target_ty, interface_name, decl.span) {
                                     interface_errors.push((interface_name.clone(), e));
                                 }
@@ -2401,7 +2401,7 @@ impl TypeChecker {
                             // may well define everything the author meant.
                             if matches!(e, crate::interfaces::InterfaceError::UnknownInterface(_)) {
                                 self.errors.push(TypeError::NoSuchInterface {
-                                    interface_name,
+                                    interface_name: interface_name.to_string(),
                                     known: self.declared_interface_names(),
                                     span: decl.span,
                                 });
@@ -2422,7 +2422,7 @@ impl TypeChecker {
                                     .unwrap_or(decl.span);
                                 self.errors.push(TypeError::ConformanceSignatureMismatch {
                                     ty: i.target_ty.to_string(),
-                                    interface_name,
+                                    interface_name: interface_name.to_string(),
                                     method: method.clone(),
                                     expected: expected.clone(),
                                     found: found.clone(),
@@ -2438,7 +2438,7 @@ impl TypeChecker {
                             };
                             self.errors.push(TypeError::InterfaceNotSatisfied {
                                 ty: i.target_ty.to_string(),
-                                interface_name,
+                                interface_name: interface_name.to_string(),
                                 context: super::InterfaceBoundContext::ConformanceHeader,
                                 missing,
                                 span: decl.span,
@@ -2451,7 +2451,7 @@ impl TypeChecker {
                 // inside one of these methods needs to see them the same way
                 // a method's own `where` clause would (#838).
                 self.current_impl_type_param_bounds = i.where_bounds.iter()
-                    .map(|tp| (tp.name.clone(), tp.bounds.iter().map(|b| b.to_string()).collect()))
+                    .map(|tp| (tp.name.clone(), tp.bounds.clone()))
                     .collect();
                 // `extend Vec<T>` binds `T` for every method in the block,
                 // whether or not a `where` clause says anything about it.

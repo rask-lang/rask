@@ -90,7 +90,7 @@ fn typecheck_single(path: &str, format: Format, multi: bool, verbose: bool) {
                     if with_interfaces.is_empty() {
                         println!("  type {} = {:?}", name, underlying);
                     } else {
-                        println!("  type {} = {:?} implements {}", name, underlying, with_interfaces.join(", "));
+                        println!("  type {} = {:?} implements {}", name, underlying, with_interfaces.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", "));
                     }
                 }
                 // A primitive's entry exists to carry conformances (OR6); it

@@ -55,8 +55,7 @@ impl Callee {
 pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
     match ty {
         Type::Named(id) | Type::Generic { base: id, .. } => {
-            let name = types.type_name(*id);
-            (!name.starts_with('<')).then_some(name)
+            types.get(*id).map(|_| types.type_name(*id))
         }
         Type::UnresolvedNamed(name) => Some(name.clone()),
         Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
@@ -90,7 +89,7 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
 pub struct InterfaceTypeParam {
     pub name: String,
     /// GT5: what a conformance's argument must satisfy.
-    pub bounds: Vec<String>,
+    pub bounds: Vec<rask_ast::ty::TypeExpr>,
     /// GT4: what the bare interface name means. `None` makes the argument required.
     pub default: Option<rask_ast::ty::TypeExpr>,
 }
@@ -100,7 +99,7 @@ pub struct InterfaceTypeParam {
 pub struct InterfaceAssocType {
     pub name: String,
     /// AT5: what the conformance's binding must satisfy.
-    pub bounds: Vec<String>,
+    pub bounds: Vec<rask_ast::ty::TypeExpr>,
     /// AT4: what a conformance that omits the binding gets.
     pub default: Option<rask_ast::ty::TypeExpr>,
 }
@@ -155,7 +154,7 @@ pub enum TypeDef {
         name: String,
         /// GT1: `interface Scale<Rhs>` — bound by the conformance header.
         type_params: Vec<InterfaceTypeParam>,
-        super_interfaces: Vec<String>,
+        super_interfaces: Vec<rask_ast::ty::TypeExpr>,
         methods: Vec<MethodSig>,
         /// AT1: types a conformance supplies.
         assoc_types: Vec<InterfaceAssocType>,
@@ -189,7 +188,7 @@ pub enum TypeDef {
     NominalAlias {
         name: String,
         underlying: Type,
-        with_interfaces: Vec<String>,
+        with_interfaces: Vec<rask_ast::ty::TypeExpr>,
         /// Methods from `extend` blocks. A nominal newtype has its own identity,
         /// so it carries its own methods like structs and enums.
         methods: Vec<MethodSig>,
@@ -218,7 +217,7 @@ pub fn conformance_symbol(base: &str, package: &str) -> String {
 }
 
 pub(crate) fn method_base(name: &str) -> &str {
-    name.split('<').next().unwrap_or(name)
+    name
 }
 
 impl TypeDef {
@@ -269,7 +268,7 @@ pub struct MethodSig {
     /// e.g. the `E` in `func tag<E>(self, e: E) -> E`, or `T: Named`. Separate
     /// from the receiver type's own parameters: these get a fresh variable per
     /// *call*, not per receiver.
-    pub type_params: Vec<(String, Vec<String>)>,
+    pub type_params: Vec<(String, Vec<rask_ast::ty::TypeExpr>)>,
     /// The extend header's target arguments as written, one per parameter the
     /// receiving type declares: `["(K, V)"]` for `extend Sequence<(K, V)>` on a
     /// `Sequence<T>`, `["K", "V"]` for `extend Map<K, V>`.
@@ -316,7 +315,7 @@ pub struct ModuleMethodSig {
     /// Interface bounds on the method's own type parameters, as the stub wrote them
     /// (`decode<T: Decode>` → `[("T", "Decode")]`). Checked against the written
     /// type argument at the call site.
-    pub type_param_bounds: Vec<(String, String)>,
+    pub type_param_bounds: Vec<(String, rask_ast::ty::TypeExpr)>,
     /// Which bounded type parameter each parameter *is*, when its declared type
     /// is exactly one — `encode<T: Encode>(value: T)` gives `[Some("T")]`.
     ///

@@ -16,7 +16,7 @@ mod reachability;
 pub use instantiate::instantiate_function;
 pub use layout::{
     arg_owns_storage, compute_enum_layout, compute_struct_layout, compute_union_layout,
-    is_stdlib_span, ordering_layout, field_type, parse_field_type, type_size_align,
+    is_stdlib_span, ordering_layout, field_type, type_size_align,
     EnumLayout, FieldLayout, LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::{mangle_name, Monomorphizer};
@@ -32,6 +32,10 @@ pub struct MonoProgram {
     pub functions: Vec<MonoFunction>,
     pub struct_layouts: Vec<StructLayout>,
     pub enum_layouts: Vec<EnumLayout>,
+    /// The checker's name for each type id. A resolved type carries an id, and
+    /// whatever needs to know what it is — which handle a field owns, say —
+    /// reads the name here rather than off the type's rendering.
+    pub type_names: HashMap<rask_types::TypeId, String>,
     /// Call expression NodeId → mangled callee name for generic function calls.
     pub call_rewrites: HashMap<NodeId, String>,
     /// Types and dispatch targets for the nodes of instantiated generic bodies.
@@ -194,7 +198,7 @@ pub fn compute_declared_layouts(
             DeclKind::Struct(s) => {
                 let mut layout = layout::compute_shared_struct_layout(decl, &layout_cache);
                 // Strip type params from name so struct literals ("Box") match
-                let base_name = bare_type_name(&s.name);
+                let base_name = s.name.to_string();
                 layout.name = base_name.clone();
                 if !concrete.contains(&base_name) {
                     layout_cache.insert(base_name, (layout.size, layout.align));
@@ -203,7 +207,7 @@ pub fn compute_declared_layouts(
             }
             DeclKind::Enum(e) => {
                 let mut layout = layout::compute_shared_enum_layout(decl, &layout_cache);
-                let base_name = bare_type_name(&e.name);
+                let base_name = e.name.to_string();
                 layout.name = base_name.clone();
                 if !concrete.contains(&base_name) {
                     layout_cache.insert(base_name, (layout.size, layout.align));
@@ -256,14 +260,14 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
     for (i, decl) in decls.iter().enumerate() {
         match &decl.kind {
             DeclKind::Struct(s) => {
-                let name = bare_type_name(&s.name);
+                let name = s.name.to_string();
                 if s.type_params.is_empty() || !concrete.contains(&name) {
                     name_to_idx.insert(name, i);
                 }
                 type_indices.push(i);
             }
             DeclKind::Enum(e) => {
-                let name = bare_type_name(&e.name);
+                let name = e.name.to_string();
                 if e.type_params.is_empty() || !concrete.contains(&name) {
                     name_to_idx.insert(name, i);
                 }
@@ -401,16 +405,12 @@ pub fn layout_name_for(ty: &Type, exists: impl Fn(&str) -> bool) -> String {
                 return instance;
             }
         }
-        let base = bare_type_name(name);
+        let base = name.to_string();
         if exists(&base) {
             return base;
         }
     }
     written
-}
-
-fn bare_type_name(name: &str) -> String {
-    name.split('<').next().unwrap_or(name).trim().to_string()
 }
 
 /// The head name of a type argument, in whichever spelling it arrives in.
@@ -420,10 +420,10 @@ fn bare_type_name(name: &str) -> String {
 fn arg_head_name(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> Option<String> {
     match ty {
         Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
-            Some(bare_type_name(name))
+            Some(name.to_string())
         }
         Type::Named(id) | Type::Generic { base: id, .. } => {
-            type_names.get(id).map(|n| bare_type_name(n))
+            type_names.get(id).map(|n| n.to_string())
         }
         _ => None,
     }
@@ -456,13 +456,13 @@ fn type_arg_key(
         Type::Bool | Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
         | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
         | Type::F32 | Type::F64 | Type::Char | Type::String | Type::Unit => format!("{}", ty),
-        Type::Named(id) => bare_type_name(type_names.get(id)?),
+        Type::Named(id) => type_names.get(id)?.to_string(),
         // An argument substituted into an instantiated copy is named, not
         // interned — the copy's types were built by rewriting strings, not by
         // going back through the checker's table (#814).
-        Type::UnresolvedNamed(name) => bare_type_name(name),
+        Type::UnresolvedNamed(name) => name.to_string(),
         Type::UnresolvedGeneric { name, args } => {
-            let base = bare_type_name(name);
+            let base = name.to_string();
             let mut parts = Vec::with_capacity(args.len());
             for arg in args {
                 let GenericArg::Type(inner) = arg else { return None };
@@ -471,7 +471,7 @@ fn type_arg_key(
             format!("{}${}", base, parts.join("$"))
         }
         Type::Generic { base, args } => {
-            let base = bare_type_name(type_names.get(base)?);
+            let base = type_names.get(base)?.to_string();
             let mut parts = Vec::with_capacity(args.len());
             for arg in args {
                 let GenericArg::Type(inner) = arg else { return None };
@@ -534,7 +534,7 @@ fn inline_arg_size(
             inline_arg_size(&Type::Named(id), type_names, type_defs, cache)
         }
         Type::UnresolvedGeneric { name, args } => {
-            let base_name = bare_type_name(name);
+            let base_name = name.to_string();
             let arg_tys: Vec<Type> = args
                 .iter()
                 .filter_map(|a| match a {
@@ -556,13 +556,13 @@ fn inline_arg_size(
             ) {
                 return None;
             }
-            let name = bare_type_name(type_names.get(id)?);
+            let name = type_names.get(id)?.to_string();
             cache.get(&name).map(|(size, _)| *size)
         }
         // A nested instantiation is as wide as *its* layout — `One<One<Big>>` has
         // to see 24, not the 8 the shared `One` layout reports.
         Type::Generic { base, args } => {
-            let base_name = bare_type_name(type_names.get(base)?);
+            let base_name = type_names.get(base)?.to_string();
             let arg_tys: Vec<Type> = args
                 .iter()
                 .filter_map(|a| match a {
@@ -622,10 +622,10 @@ fn arg_as_cache_name(
     match ty {
         Type::Named(id) => type_names
             .get(id)
-            .map(|n| Type::UnresolvedNamed(bare_type_name(n)))
+            .map(|n| Type::UnresolvedNamed(n.to_string()))
             .unwrap_or_else(|| ty.clone()),
         Type::Generic { base, args } => {
-            let Some(base_name) = type_names.get(base).map(|n| bare_type_name(n)) else {
+            let Some(base_name) = type_names.get(base).map(|n| n.to_string()) else {
                 return ty.clone();
             };
             let arg_tys: Vec<Type> = args
@@ -677,7 +677,7 @@ fn collect_generic_instances(
                     })
                     .collect();
                 if arg_tys.len() == args.len() {
-                    out.push((bare_type_name(name), arg_tys));
+                    out.push((name.to_string(), arg_tys));
                 }
             }
             for arg in args {
@@ -695,7 +695,7 @@ fn collect_generic_instances(
                 })
                 .collect();
             if arg_tys.len() == args.len() {
-                out.push((bare_type_name(name), arg_tys));
+                out.push((name.to_string(), arg_tys));
             }
             for arg in args {
                 if let GenericArg::Type(inner) = arg {
@@ -850,10 +850,10 @@ fn monomorphize_inner(
                 // shared one — where every parameter is a single word — and its
                 // 16-byte string field was written into an 8-byte slot (#913).
                 DeclKind::Struct(s) if !rask_types::struct_type_param_names(s).is_empty() => {
-                    Some((s.name.split('<').next().unwrap_or(&s.name).to_string(), d))
+                    Some((s.name.as_str().to_string(), d))
                 }
                 DeclKind::Enum(e) if !rask_types::enum_type_param_names(e).is_empty() => {
-                    Some((e.name.split('<').next().unwrap_or(&e.name).to_string(), d))
+                    Some((e.name.as_str().to_string(), d))
                 }
                 _ => None,
             })
@@ -886,8 +886,8 @@ fn monomorphize_inner(
             .into_iter()
             .enumerate()
             .filter_map(|(pos, idx)| match &decls[idx].kind {
-                DeclKind::Struct(s) => Some((bare_type_name(&s.name), pos)),
-                DeclKind::Enum(e) => Some((bare_type_name(&e.name), pos)),
+                DeclKind::Struct(s) => Some((s.name.to_string(), pos)),
+                DeclKind::Enum(e) => Some((e.name.to_string(), pos)),
                 _ => None,
             })
             .collect();
@@ -973,6 +973,7 @@ fn monomorphize_inner(
         functions: mono.results,
         struct_layouts,
         enum_layouts,
+        type_names: program.types.type_name_map(),
         call_rewrites: mono.call_rewrites,
         instantiated_node_types: mono.instantiated_node_types,
         instantiated_call_targets: mono.instantiated_call_targets,

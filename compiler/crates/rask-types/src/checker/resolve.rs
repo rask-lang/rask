@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use rask_ast::{NodeId, Span};
+use rask_ast::ty::TypeExpr;
 
 use super::type_defs::{Callee, MethodSig, TypeDef};
 use super::errors::TypeError;
@@ -484,7 +485,7 @@ impl TypeChecker {
                 // (type.aliases/T10), so its `implements` list is the answer —
                 // and an `extend` block that writes `to_string` counts too.
                 if let Some(TypeDef::NominalAlias { with_interfaces, methods, .. }) = self.types.get(*id) {
-                    return with_interfaces.iter().any(|t| t == "Displayable")
+                    return with_interfaces.iter().any(|t| t.is_name("Displayable"))
                         || methods.iter().any(|m| m.name == "to_string" || m.name == "message");
                 }
                 let has = |name: &str| {
@@ -516,14 +517,14 @@ impl TypeChecker {
     fn inherited_interface_method(
         &self,
         ty: &Type,
-        with_interfaces: &[String],
+        with_interfaces: &[TypeExpr],
         method: &str,
     ) -> Option<MethodSig> {
         let checker = crate::interfaces::InterfaceChecker::new(&self.types);
         let self_var = Type::Var(TypeVarId(0));
         for interface_name in with_interfaces {
             let Some(mut sig) = checker
-                .get_interface_methods_public(interface_name)
+                .get_interface_methods_public(&super::TypeTable::conformance_key(interface_name))
                 .into_iter()
                 .find(|m| m.name == method)
             else {
@@ -700,8 +701,20 @@ impl TypeChecker {
                 .map(|n| self.debug_fmt_calls.contains(&n))
                 .unwrap_or(false);
             if !is_debug && !self.is_displayable(&ty) {
+                let is_collection = match &ty {
+                    Type::Tuple(_) | Type::Array { .. } => true,
+                    Type::Generic { base, .. } => {
+                        matches!(self.types.type_name(*base).as_str(), "Vec" | "Map" | "Set" | "Rack" | "Iterator")
+                    }
+                    Type::UnresolvedGeneric { name, .. } => {
+                        matches!(name.as_str(), "Vec" | "Map" | "Set" | "Rack" | "Iterator")
+                    }
+                    _ => false,
+                };
                 return Err(TypeError::NotDisplayable {
                     ty: self.render_type(&ty),
+                    is_collection,
+                    is_wrapper: matches!(ty, Type::Result { .. }) || ty.is_option(),
                     interpolated: method == "__fmt",
                     span,
                 });
@@ -1606,9 +1619,8 @@ impl TypeChecker {
         let sig = {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
             bounds.iter().find_map(|tr| {
-                let base = tr.split('<').next().unwrap_or(tr);
                 checker
-                    .get_interface_methods_public(base)
+                    .get_interface_methods_public(&super::TypeTable::conformance_key(tr))
                     .into_iter()
                     .find(|m| m.name == method)
             })
@@ -1623,16 +1635,16 @@ impl TypeChecker {
             if let Some(applied) = bounds
                 .iter()
                 .find(|b| {
-                    let base = b.split('<').next().unwrap_or(b).trim();
-                    rask_ast::operators::operator_interface_method(base) == Some(method.as_str())
+                    rask_ast::operators::operator_interface_method(&super::TypeTable::conformance_key(b))
+                        == Some(method.as_str())
                 })
                 .cloned()
             {
-                let applied_base = applied.split('<').next().unwrap_or(&applied).trim();
-                let rhs = super::type_table::interface_ref_args(&applied).into_iter().next();
-                let rhs = rhs.as_deref().map(|r| r.split('<').next().unwrap_or(r).trim());
+                let applied_base = super::TypeTable::conformance_key(&applied);
+                let written_rhs = applied.args().first().and_then(TypeExpr::name);
+                let rhs = rask_ast::operators::filed_rhs(&param, &applied_base, written_rhs.as_deref());
                 if let Some(filed) =
-                    rask_ast::operators::filed_operator_method(&param, applied_base, rhs, &method)
+                    rask_ast::operators::filed_operator_method(&param, &applied_base, written_rhs.as_deref(), &method)
                 {
                     // CALL6: dispatch keys on this, and mono carries it into
                     // each instantiation with `T` replaced — which is what
@@ -1650,6 +1662,8 @@ impl TypeChecker {
                         super::operators::OperatorTarget {
                             recv: receiver.clone(),
                             method: filed,
+                            operator: method.clone(),
+                            rhs,
                             applied,
                             // A bound names the interface, not the conformance, so
                             // whether the instantiation's is `@builtin` isn't
@@ -1668,7 +1682,7 @@ impl TypeChecker {
             return Err(TypeError::UnboundedTypeParamMethod {
                 param,
                 method,
-                bounds,
+                bounds: bounds.iter().map(TypeExpr::to_string).collect(),
                 span,
             });
         };
@@ -3207,7 +3221,7 @@ impl TypeChecker {
         span: Span,
     ) -> Option<Result<bool, TypeError>> {
         // Strip generic params from name: "Vec<T>" → "Vec"
-        let base_name = type_name.split('<').next().unwrap_or(type_name);
+        let base_name = type_name;
         match base_name {
             "Vec" if type_args.is_empty() => {
                 Some(self.resolve_vec_static_method(method, args, ret, span))
@@ -3307,11 +3321,6 @@ impl TypeChecker {
             },
             // `Atomic.new(0)` with no written argument — the value settles it.
             Type::UnresolvedNamed(name) if name == "Atomic" => Some(self.ctx.fresh_var()),
-            // A static call keeps its written arguments in the name.
-            Type::UnresolvedNamed(name) if name.starts_with("Atomic<") => {
-                let inner = name.strip_prefix("Atomic<")?.strip_suffix('>')?.trim();
-                Some(crate::checker::parse_type_string(inner, &self.types).ok()?)
-            }
             _ => None,
         }
     }

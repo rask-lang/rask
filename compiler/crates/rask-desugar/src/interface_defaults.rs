@@ -20,10 +20,6 @@ use std::collections::{HashMap, HashSet};
 /// types.
 pub(crate) type Injected = HashMap<usize, HashSet<usize>>;
 
-fn bare(name: &str) -> String {
-    name.split('<').next().unwrap_or(name).trim().to_string()
-}
-
 pub(crate) fn inject(decls: &mut [Decl]) -> Injected {
     // Interface name → (super-interfaces, methods that came with a body).
     let mut interfaces: HashMap<String, (Vec<String>, Vec<FnDecl>)> = HashMap::new();
@@ -41,7 +37,7 @@ pub(crate) fn inject(decls: &mut [Decl]) -> Injected {
                 .cloned()
                 .collect();
             let supers = t.super_interfaces.iter().filter_map(|s| s.name()).collect();
-            interfaces.insert(bare(&t.name), (supers, defaults));
+            interfaces.insert(t.name.to_string(), (supers, defaults));
         }
     }
     if interfaces.values().all(|(_, d)| d.is_empty()) {
@@ -55,8 +51,8 @@ pub(crate) fn inject(decls: &mut [Decl]) -> Injected {
     let mut owned: HashMap<String, HashSet<String>> = HashMap::new();
     for decl in decls.iter() {
         let (ty, methods) = match &decl.kind {
-            DeclKind::Struct(s) => (bare(&s.name), &s.methods),
-            DeclKind::Enum(e) => (bare(&e.name), &e.methods),
+            DeclKind::Struct(s) => (s.name.to_string(), &s.methods),
+            DeclKind::Enum(e) => (e.name.to_string(), &e.methods),
             DeclKind::Impl(i) => (i.target_ty.name().unwrap_or_default(), &i.methods),
             _ => continue,
         };

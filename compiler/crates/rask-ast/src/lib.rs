@@ -14,7 +14,6 @@ pub mod interfaces;
 pub mod operators;
 pub mod fmt_spec;
 pub mod primitives;
-pub mod type_str;
 pub mod ty;
 pub mod rewrite;
 pub mod qualify;

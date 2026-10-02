@@ -5,7 +5,6 @@
 //! from_* → returns Self, into_* → takes self, is_* → returns bool, etc.
 
 use rask_ast::decl::*;
-use rask_ast::type_str;
 use rask_ast::ty::TypeExpr;
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
@@ -21,11 +20,6 @@ struct MethodContext<'a> {
     span: rask_ast::Span,
 }
 
-/// A declaration's name without the `<T>` the parser appends to it.
-fn decl_base_name(name: &str) -> String {
-    type_str::generic_base_name(name).unwrap_or_else(|| name.to_string())
-}
-
 /// Collect all methods with their owning type name.
 fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
     let mut methods = Vec::new();
@@ -35,7 +29,7 @@ fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
             DeclKind::Struct(s) => {
                 for m in &s.methods {
                     methods.push(MethodContext {
-                        type_name: decl_base_name(&s.name),
+                        type_name: s.name.clone(),
                         method: m,
                         span: m.span,
                     });
@@ -44,7 +38,7 @@ fn collect_methods(decls: &[Decl]) -> Vec<MethodContext<'_>> {
             DeclKind::Enum(e) => {
                 for m in &e.methods {
                     methods.push(MethodContext {
-                        type_name: decl_base_name(&e.name),
+                        type_name: e.name.clone(),
                         method: m,
                         span: m.span,
                     });

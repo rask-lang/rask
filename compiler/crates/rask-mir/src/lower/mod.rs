@@ -79,7 +79,7 @@ pub(crate) fn niche_option_sentinel_named(ty: &Type) -> Option<i64> {
 /// type argument attached — a resolved generic names its base by the
 /// declaration's own spelling, `"Handle<T>"` and all.
 pub(crate) fn niche_sentinel_for_head(head: &str) -> Option<i64> {
-    match head.split('<').next().unwrap_or(head).trim() {
+    match head.trim() {
         "Link" => Some(LINK_NONE_SENTINEL),
         _ => None,
     }
@@ -705,7 +705,7 @@ impl<'a> MirContext<'a> {
             Type::UnresolvedGeneric { name, args } => (name.clone(), args),
             _ => return None,
         };
-        let bare = base.split('<').next().unwrap_or(&base).trim();
+        let bare = base.as_str().trim();
         let id = self.type_defs.get_type_id(bare)?;
         let rask_types::TypeDef::Enum { type_params, variants, .. } = self.type_defs.get(id)?
         else {
@@ -755,41 +755,13 @@ impl<'a> MirContext<'a> {
         args: &[rask_types::GenericArg],
     ) -> Option<String> {
         let base_name = self.type_names.get(base)?;
-        let bare = base_name.split('<').next().unwrap_or(base_name).trim();
+        let bare = base_name.trim();
         let mut arg_tys = Vec::with_capacity(args.len());
         for arg in args {
             let rask_types::GenericArg::Type(t) = arg else { return None };
             arg_tys.push((**t).clone());
         }
         rask_mono::generic_instance_name(bare, &arg_tys, self.type_names)
-    }
-
-    /// `One<Big>` in written form → the `One$Big` layout, if mono emitted one.
-    ///
-    /// The written arguments are parsed back into types and handed to the same
-    /// `rask_mono::generic_instance_name` that named the layout, so there is one
-    /// spelling rather than two that have to agree.
-    ///
-    /// They didn't. This used to build the key by hand from the source text,
-    /// which matched for a name and a nested `<…>` and parted company on a
-    /// tuple: mono names `Holder<(i64, string)>`'s layout `Holder$tupi64$string`
-    /// and this looked for `Holder$(i64, string)`, found nothing, and fell back
-    /// to the shared 8-byte layout. `first(h)` then read eight bytes of a
-    /// 24-byte tuple and the string came back empty — the answer was wrong, not
-    /// just slow, and only on native.
-    fn instance_layout_from_str(&self, base: &str, full: &str) -> Option<MirType> {
-        let args = generic_args_of_str(full)?;
-        if args.is_empty() {
-            return None;
-        }
-        let parsed: Vec<rask_types::Type> =
-            args.iter().map(|a| rask_mono::parse_field_type(a)).collect();
-        let name = rask_mono::generic_instance_name(base.trim(), &parsed, self.type_names)?;
-        if let Some((idx, sl)) = self.find_struct(&name) {
-            return Some(MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)));
-        }
-        let (idx, el) = self.find_enum(&name)?;
-        Some(MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)))
     }
 
     /// The instance layout name for a checker type, in either spelling.
@@ -801,7 +773,7 @@ impl<'a> MirContext<'a> {
         match ty? {
             Type::Generic { base, args } => self.generic_instance_layout_name(base, args),
             Type::UnresolvedGeneric { name, args } => {
-                let bare = name.split('<').next().unwrap_or(name).trim();
+                let bare = name.trim();
                 let mut arg_tys = Vec::with_capacity(args.len());
                 for arg in args {
                     let rask_types::GenericArg::Type(t) = arg else { return None };
@@ -841,20 +813,20 @@ impl<'a> MirContext<'a> {
         if let Some(found) = self.find_enum(name) {
             return Some(found);
         }
-        // IM3, the same reason `resolve_type_str` follows aliases: a transparent
+        // IM3, the same reason `resolve_type_name` follows aliases: a transparent
         // alias is its target, so a variant reached through it is the target's
         // variant. Without this `Shade.Red` under `type alias Shade = Colour`
         // found no enum, fell through to a bare constant, and the comparison
         // that followed read that integer as an address — a segfault, not a
         // wrong answer (#998).
-        if let Some(target) = self.type_defs.alias_target(name) {
+        if let Some(target) = self.type_defs.alias_target_name(name) {
             if target != name {
-                if let Some(found) = self.find_enum(target) {
+                if let Some(found) = self.find_enum(&target) {
                     return Some(found);
                 }
             }
         }
-        let base = name.split('<').next()?.trim();
+        let base = name.trim();
         if base == name {
             return None;
         }
@@ -999,9 +971,7 @@ impl<'a> MirContext<'a> {
         // target's: `let d: Span = …` under `import time.Duration as Span` was
         // matching `stdlib/builtins.rk`'s own `Span` layout by name (#923, #975).
         if let Some(target) = self.type_defs.alias_target(name) {
-            if target != name {
-                return self.resolve_type_str(target);
-            }
+            return self.resolve_type_expr(target);
         }
         match name {
             "i8" => MirType::I8,
@@ -1044,227 +1014,6 @@ impl<'a> MirContext<'a> {
         }
     }
 
-
-    /// Resolve a type string to MirType, looking up struct/enum names in layouts.
-    pub fn resolve_type_str(&self, s: &str) -> MirType {
-        // IM3: a transparent alias is its target, so the layout to find is the
-        // target's. Every type string reaches MIR through here, which makes this
-        // the one place it has to happen — `let d: Span = …` under
-        // `import time.Duration as Span` was matching `stdlib/builtins.rk`'s own
-        // `Span` layout by name, so the binding got that struct's slot and a
-        // `Duration` was copied into it (#923 crossed with #975).
-        let trimmed = s.trim();
-        if let Some(target) = self.type_defs.alias_target(trimmed) {
-            if target != trimmed {
-                return self.resolve_type_str(target);
-            }
-        }
-        match trimmed {
-            "i8" => MirType::I8,
-            "i16" => MirType::I16,
-            "i32" => MirType::I32,
-            "i64" => MirType::I64,
-            "i128" => MirType::I128,
-            "isize" => MirType::isize_ty(),
-            "u8" => MirType::U8,
-            "u16" => MirType::U16,
-            "u32" => MirType::U32,
-            "u64" => MirType::U64,
-            "u128" => MirType::U128,
-            "usize" => MirType::usize_ty(),
-            "f32" => MirType::F32,
-            "f64" => MirType::F64,
-            "bool" => MirType::Bool,
-            "char" => MirType::Char,
-            "string" => MirType::String,
-            // std.strings/V1: a view is a `RaskStr` that shares the source's
-            // heap buffer and holds a refcount on it — same 16 bytes, same copy
-            // semantics, read-only API. Its stdlib methods already point at the
-            // `rask_string_*` runtime functions, so the representation has to
-            // agree with them.
-            "StringView" => MirType::String,
-            "()" | "" => MirType::Void,
-            name => {
-                // "[T; N]" → fixed-size array. Without this an annotated
-                // `const a: [i32; 5]` fell through to the pointer default, and
-                // the array's length was gone by the time `a.len()` looked for
-                // it — the call failed dispatch outright while the same code
-                // without the annotation worked.
-                if name.starts_with('[') && name.ends_with(']') {
-                    let inner = &name[1..name.len() - 1];
-                    if let Some(semi) = inner.rfind(';') {
-                        let elem = self.resolve_type_str(inner[..semi].trim());
-                        // A literal length, then a module-level `const` naming
-                        // one — read from the checker's table rather than
-                        // re-derived here, so the two can't disagree about how
-                        // long the array is (#906). Anything still symbolic (a
-                        // comptime parameter) keeps 0, which preserves the
-                        // element type and matches what the checker does.
-                        let len_str = inner[semi + 1..].trim();
-                        let len = len_str
-                            .parse::<u32>()
-                            .ok()
-                            .or_else(|| {
-                                self.type_defs
-                                    .const_length(len_str)
-                                    .and_then(|n| u32::try_from(n).ok())
-                            })
-                            .unwrap_or(0);
-                        return MirType::Array { elem: Box::new(elem), len };
-                    }
-                }
-                // "(A | B)" → Union. Before the tuple branch: an error union is
-                // written in parentheses, so the tuple case claimed it and
-                // answered `Tuple([Ptr])` — the member types were gone by the
-                // time anything wanted to tell them apart (#776).
-                {
-                    let bare = if name.starts_with('(') && name.ends_with(')') {
-                        name[1..name.len() - 1].trim()
-                    } else {
-                        name
-                    };
-                    let mut parts = split_top_level_parens(bare, '|');
-                    if parts.len() > 1 {
-                        // Same order the checker canonicalizes to — by member
-                        // name. A union's member index is what says which member
-                        // is present, so the frame that writes one and the frame
-                        // that reads it have to agree, and this path reading the
-                        // written order while the checker read a sorted one is
-                        // how `AErr`'s slot came back as a `BErr` (#1103).
-                        parts.sort_by(|a, b| a.trim().cmp(b.trim()));
-                        return MirType::Union(
-                            parts.iter().map(|p| self.resolve_type_str(p.trim())).collect()
-                        );
-                    }
-                }
-                // "(T1, T2, ...)" → Tuple
-                if name.starts_with('(') && name.ends_with(')') {
-                    let inner = &name[1..name.len() - 1];
-                    if inner.is_empty() {
-                        return MirType::Void;
-                    }
-                    let parts = split_top_level_parens(inner, ',');
-                    return MirType::Tuple(
-                        parts.iter().map(|p| self.resolve_type_str(p.trim())).collect()
-                    );
-                }
-                // "T or E" → Result<T, E>
-                if let Some(or_pos) = find_top_level_or(name) {
-                    let ok_str = name[..or_pos].trim();
-                    let err_str = name[or_pos + 4..].trim();
-                    return MirType::Result {
-                        ok: Box::new(self.payload_from_str(ok_str)),
-                        err: Box::new(self.payload_from_str(err_str)),
-                    };
-                }
-                // "Result<T, E>" → MirType::Result
-                if let Some(inner) = name.strip_prefix("Result<").and_then(|s| s.strip_suffix('>')) {
-                    // Split on top-level comma (respecting nested <...>)
-                    if let Some(comma) = find_top_level_comma(inner) {
-                        let ok_str = inner[..comma].trim();
-                        let err_str = inner[comma + 1..].trim();
-                        return MirType::Result {
-                            ok: Box::new(self.payload_from_str(ok_str)),
-                            err: Box::new(self.payload_from_str(err_str)),
-                        };
-                    }
-                }
-                // "Option<T>" → MirType::Option
-                if let Some(inner) = name.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
-                    return option_of(self.payload_from_str(inner));
-                }
-                // "T?" → MirType::Option (shorthand syntax from type annotations)
-                if let Some(inner) = name.strip_suffix('?') {
-                    return option_of(self.payload_from_str(inner));
-                }
-                // "any InterfaceName" → InterfaceObject. After the wrapper shapes above,
-                // not before: the parser normalizes `(any Shape)?` to
-                // `any Shape?`, and claiming that first made the interface's name
-                // "Shape?" instead of building an Option. Nothing then saw a
-                // depth mismatch to wrap, so `let a: (any Shape)? = c as any
-                // Shape` stored a bare fat pointer in the slot and the read took
-                // the data pointer's low bits for a tag — always `none` (#764).
-                // The checker's `parse_type_string` has the same two checks in
-                // this order, which is why only native was wrong.
-                if let Some(interface_name) = rask_ast::interfaces::interface_object_name(name) {
-                    return MirType::InterfaceObject { interface_name: interface_name.to_string() };
-                }
-                // Bare `Error` is the same type written short (#1095). Nothing
-                // named `Error` reaches here but the interface — BI2 reserves the
-                // name and monomorphization has already substituted any type
-                // parameter — so this needs none of the checker's ordering care.
-                if rask_ast::interfaces::is_bare_error(name) {
-                    return MirType::InterfaceObject { interface_name: "Error".to_string() };
-                }
-                // Generic collection types: Vec<T>, Map<K,V>, etc. are heap pointers
-                if name.starts_with("Vec<") || name == "Vec" {
-                    return MirType::Ptr; // Vec handle (opaque pointer)
-                }
-                if name.starts_with("Map<") || name == "Map" {
-                    return MirType::Ptr; // Map handle (opaque pointer)
-                }
-                // A closure, spelled. `type_to_mir` answers this from the
-                // checker's `Type::Fn`; an annotation reaches MIR as a string
-                // and came through here as a bare `Ptr`, so
-                // `let o: func(i64) -> i64? = …` typed its slot the same as any
-                // other address and nothing gave the block back (#1253).
-                if Self::is_callable_ty_str(name)
-                    && !name.starts_with("Sequence<")
-                    && !name.starts_with("SequenceMut<")
-                {
-                    return MirType::FuncPtr(crate::types::SignatureId(0));
-                }
-                if let Some(node) = name.strip_prefix("Link<").and_then(|s| s.strip_suffix('>')) {
-                    return match self.resolve_type_str(node.trim()) {
-                        MirType::Struct(sid) => MirType::Link(sid),
-                        _ => MirType::Ptr,
-                    };
-                }
-                if name.starts_with("Rack<") || name == "Rack" {
-                    return MirType::Ptr;
-                }
-                // `Heap<T>` is a block address, always — that is what makes it
-                // a type rather than a fact about a binding. The payload keeps
-                // its container kind, since the payload sits at the block's
-                // start and `drop` has to free what it points at.
-                if let Some(inner) = name.strip_prefix("Heap<").and_then(|s| s.strip_suffix('>')) {
-                    return MirType::Heap(Box::new(self.payload_from_str(inner.trim())));
-                }
-                if name.starts_with("Channel<") || name.starts_with("Sender<")
-                    || name.starts_with("Receiver<") || name.starts_with("Shared<")
-                {
-                    return MirType::Ptr;
-                }
-                // A nominal newtype has no layout — it is whatever it wraps.
-                if let Some(underlying) = self.nominal_underlying.get(name) {
-                    return self.type_to_mir(underlying);
-                }
-                if let Some((idx, sl)) = self.find_struct(name) {
-                    self.struct_or_handle(name, idx, sl)
-                } else if let Some((idx, el)) = self.find_enum(name) {
-                    MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
-                } else if let Some(base) = name.split('<').next() {
-                    // "One<Big>" written out — a generic instantiation whose type
-                    // argument is an inline aggregate has a layout of its own, and
-                    // it isn't found under the base name. A monomorphized body
-                    // reaches this spelling: `first$Big(o: One<Big>)` was given the
-                    // shared 8-byte layout while its caller passed 24 bytes (#781).
-                    if let Some(instance) = self.instance_layout_from_str(base, name) {
-                        return instance;
-                    }
-                    if let Some((idx, sl)) = self.find_struct(base) {
-                        self.struct_or_handle(base, idx, sl)
-                    } else if let Some((idx, el)) = self.find_enum(base) {
-                        MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
-                    } else {
-                        self.module_qualified_mir_type(name)
-                    }
-                } else {
-                    self.module_qualified_mir_type(name)
-                }
-            }
-        }
-    }
 
     /// A type reached through its module — `http.Response`, or `h.Response`
     /// under `import http as h`.
@@ -1380,7 +1129,7 @@ impl<'a> MirContext<'a> {
             Type::Generic { base, .. } => self.type_names.get(base)?.clone(),
             _ => return None,
         };
-        Some(name.split('<').next().unwrap_or(&name).to_string())
+        Some(name.as_str().to_string())
     }
 
     /// `Link<T>` — the node's address, carrying `T`'s layout so a field access
@@ -1428,25 +1177,11 @@ impl<'a> MirContext<'a> {
             Type::Generic { base, args } => (self.type_names.get(base)?.clone(), args),
             _ => return None,
         };
-        let payload = match name.split('<').next().unwrap_or(&name).trim() {
+        let payload = match name.as_str().trim() {
             "Link" => self.link_mir_type(args.first()),
             _ => return None,
         };
         Some(MirType::Option(Box::new(payload)))
-    }
-
-    /// Convert a Type from the type checker to MirType.
-    /// A wrapper's payload, from the type's written name — the string route
-    /// into the same rule `payload_to_mir` applies to a checker type.
-    fn payload_from_str(&self, name: &str) -> MirType {
-        let mir = self.resolve_type_str(name);
-        if mir != MirType::Ptr {
-            return mir;
-        }
-        match crate::ContainerKind::from_head(name.split('<').next().unwrap_or(name)) {
-            Some(kind) => MirType::Container(kind),
-            None => mir,
-        }
     }
 
     /// A wrapper's payload. Same as `type_to_mir`, except a container keeps
@@ -1793,8 +1528,8 @@ impl<'a> MirContext<'a> {
             return Some(self.type_to_mir(ret));
         }
         let head = Self::type_prefix(ty, type_names)?;
-        match head.split('<').next() {
-            Some("Sequence") | Some("SequenceMut") => Some(MirType::Void),
+        match head.as_str() {
+            "Sequence" | "SequenceMut" => Some(MirType::Void),
             _ => None,
         }
     }
@@ -2237,7 +1972,7 @@ impl<'a> MirLowerer<'a> {
             Type::Generic { base, args } => (self.ctx.type_names.get(base)?.clone(), args),
             _ => return None,
         };
-        let bare = name.split('<').next().unwrap_or(&name).trim().to_string();
+        let bare = name.as_str().trim().to_string();
         Some((bare, args))
     }
 
@@ -2371,7 +2106,7 @@ impl<'a> MirLowerer<'a> {
                 .lookup_raw_type(object.id)
                 .and_then(|ty| MirContext::type_prefix(ty, self.ctx.type_names))
         })?;
-        Some(prefix.split('<').next().unwrap_or(&prefix).trim().to_string())
+        Some(prefix.as_str().trim().to_string())
     }
 
     /// Write every open `for mutate` binding back into its collection, innermost
@@ -2680,7 +2415,7 @@ impl<'a> MirLowerer<'a> {
                     ExprKind::Ident(n) => self.meta(n).and_then(|m| m.type_prefix.clone()),
                     _ => None,
                 }?;
-                let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                let base = prefix.as_str().trim();
                 self.func_sigs
                     .get(&format!("{}_{}", base, method))
                     .and_then(|s| s.ret_vec_elem.clone())
@@ -4611,7 +4346,7 @@ impl<'a> MirLowerer<'a> {
                     .ctx
                     .type_names
                     .get(base)
-                    .is_some_and(|n| n.split('<').next() == Some("Vec")) => args,
+                    .is_some_and(|n| n == "Vec") => args,
             _ => return None,
         };
         match args.first()? {
@@ -5887,50 +5622,6 @@ fn collect_pattern_names(
 // Operator mappings
 // =================================================================
 
-/// Parameter type strings of a function-type annotation, e.g.
-/// `"func(Request) -> Response"` → `["Request"]`. The parser normalizes
-/// `|T| -> R` to the `func(...)` form, so only that spelling needs handling.
-pub(crate) fn fn_type_param_strs(ty: &str) -> Option<Vec<String>> {
-    let inner = ty.trim().strip_prefix("func(")?;
-    let params = &inner[..fn_type_params_end(inner)?];
-    if params.trim().is_empty() {
-        return Some(Vec::new());
-    }
-    Some(
-        split_top_level_parens(params, ',')
-            .iter()
-            .map(|p| p.trim().to_string())
-            .collect(),
-    )
-}
-
-/// Where the parameter list of a `func(...)` spelling closes — the paren that
-/// matches the one already stripped, not a nested one, since a parameter can be
-/// a function type of its own.
-fn fn_type_params_end(inner: &str) -> Option<usize> {
-    let mut depth = 1usize;
-    inner.char_indices().find_map(|(i, c)| match c {
-        '(' => {
-            depth += 1;
-            None
-        }
-        ')' => {
-            depth -= 1;
-            (depth == 0).then_some(i)
-        }
-        _ => None,
-    })
-}
-
-/// What a function-type annotation answers, e.g. `"func(i64) -> i64"` → `"i64"`.
-/// `None` for anything that isn't one, and for a function type written without
-/// a return.
-pub(crate) fn fn_type_ret_str(ty: &str) -> Option<&str> {
-    let inner = ty.trim().strip_prefix("func(")?;
-    let rest = inner[fn_type_params_end(inner)? + 1..].trim();
-    Some(rest.strip_prefix("->")?.trim())
-}
-
 /// Element type of a declared `Vec<T>` return type: `Vec<SeedSpec>` →
 /// `Struct(SeedSpec)`. `None` for anything that isn't a Vec.
 fn vec_elem_of_type(ret_ty: Option<&TypeExpr>, ctx: &MirContext) -> Option<MirType> {
@@ -6222,36 +5913,6 @@ fn stdlib_return_mir_type_known(func_name: &str, ctx: Option<&MirContext>) -> Op
     None
 }
 
-/// MIR type prefix derived from a MirType (fallback when local_type_prefix is absent).
-/// Find the first comma at nesting depth 0 (respecting `<...>` brackets).
-/// Split a string on a separator character at nesting depth 0,
-/// respecting `<>` and `()` brackets.
-fn split_top_level_parens(s: &str, sep: char) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0usize;
-    let mut start = 0;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth = depth.saturating_sub(1),
-            c2 if c2 == sep && depth == 0 => {
-                parts.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    parts.push(&s[start..]);
-    parts
-}
-
-/// Generic arguments of a type written as `Name<A, B>`, split at top level.
-pub(super) fn generic_args_of_str(s: &str) -> Option<Vec<&str>> {
-    let open = s.find('<')?;
-    let inner = s[open + 1..].strip_suffix('>')?;
-    Some(split_top_level_parens(inner, ',').into_iter().map(str::trim).collect())
-}
-
 /// True if this method writes through `self`.
 ///
 /// `mutate self` and `take self` are visible right here on the parameter. An
@@ -6294,25 +5955,6 @@ fn method_mutates_self(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> bool {
     }
 }
 
-/// The first ` or ` that isn't inside `<…>` or `(…)`.
-///
-/// `Wrap<i64 or MyErr>` is one type, not a result. Splitting on the first ` or `
-/// anywhere made it `Wrap<i64` or `MyErr>`, so a method on it took a `self` typed
-/// as a result of two nonsense halves (#872).
-fn find_top_level_or(s: &str) -> Option<usize> {
-    let bytes = s.as_bytes();
-    let mut depth = 0usize;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth = depth.saturating_sub(1),
-            ' ' if depth == 0 && bytes[i..].starts_with(b" or ") => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
 /// Do these two spellings name the same nominal type?
 ///
 /// A pattern carries the type arguments the source wrote — `Refused<i64>` — and
@@ -6320,23 +5962,10 @@ fn find_top_level_or(s: &str) -> Option<usize> {
 /// been through it. So the comparison is on what comes before either.
 fn same_nominal(a: &str, b: &str) -> bool {
     fn base(n: &str) -> &str {
-        let n = n.split('<').next().unwrap_or(n).trim();
+        let n = n.trim();
         n.split('$').next().unwrap_or(n).trim()
     }
     base(a) == base(b)
-}
-
-fn find_top_level_comma(s: &str) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' | '(' => depth += 1,
-            '>' | ')' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => return Some(i),
-            _ => {}
-        }
-    }
-    None
 }
 
 /// The method-name prefix for a receiver with no nominal name of its own.
@@ -6423,7 +6052,7 @@ pub fn type_prefix_from_str(s: &str) -> Option<String> {
     // Strip module prefix (time.Instant → Instant)
     let base = s.rsplit('.').next().unwrap_or(s);
     // Strip generic args (Vec<i64> → Vec)
-    let name = base.split('<').next().unwrap_or(base).trim();
+    let name = base.trim();
     // Reject primitives and empty
     if name.is_empty() { return None; }
     match name {

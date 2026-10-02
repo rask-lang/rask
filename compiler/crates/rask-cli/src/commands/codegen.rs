@@ -264,7 +264,6 @@ pub fn cmd_mir(path: &str, format: Format) {
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = Some(path);
     mir_ctx.comptime_interp = Some(std::cell::RefCell::new(mir_interp));
-    let mir_ctx = mir_ctx;
 
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);
 
@@ -339,7 +338,6 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
         .with_nominal_underlying(&nominal_underlying);
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = Some(path);
-    let mir_ctx = mir_ctx;
 
     let all_mono_decls = super::compile::build_mono_decls(&mono, &decls, true);
     rask_mir::lower::MirLowerer::compute_const_slot_types(&all_mono_decls, &mir_ctx);

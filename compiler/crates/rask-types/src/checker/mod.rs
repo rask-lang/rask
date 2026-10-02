@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use rask_ast::decl::Decl;
 use rask_ast::NodeId;
+use rask_ast::ty::TypeExpr;
 use rask_resolve::{ResolvedProgram, SymbolId};
 
 use crate::types::Type;
@@ -34,7 +35,7 @@ pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
-pub use parse_type::{parse_type_string, resolve_type_expr};
+pub use parse_type::resolve_type_expr;
 pub use generics::{bind_header_pattern, bind_header_patterns};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};
 
@@ -202,7 +203,7 @@ pub struct TypeChecker {
     pub(super) current_self_type: Option<Type>,
     /// Interface bounds on the current function's type params (name → interface names).
     /// Lets `g.greet()` resolve against `T: Greeter` for static dispatch (#314).
-    pub(super) current_type_param_bounds: HashMap<String, Vec<String>>,
+    pub(super) current_type_param_bounds: HashMap<String, Vec<TypeExpr>>,
     /// Interface bounds from the enclosing `extend Foo<T> where T: Interface { }`
     /// block's own where-clause, distinct from a method's own bounds (those
     /// live on the method's `FnDecl` and are folded into
@@ -210,7 +211,7 @@ pub struct TypeChecker {
     /// level covers every method in the block, so `check_fn` seeds
     /// `current_type_param_bounds` from this before layering the method's own
     /// bounds on top (#838).
-    pub(super) current_impl_type_param_bounds: HashMap<String, Vec<String>>,
+    pub(super) current_impl_type_param_bounds: HashMap<String, Vec<TypeExpr>>,
     /// Every type parameter name in scope right here — the enclosing `extend
     /// Foo<T>`'s and the method's own, bounded or not.
     ///
@@ -288,14 +289,14 @@ pub struct TypeChecker {
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
     /// SymbolId → (type param name → interface bounds) for generic functions.
     /// Used to check bound satisfaction at call sites (#314).
-    pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<String>>>,
+    pub(super) fn_type_param_bounds: HashMap<SymbolId, HashMap<String, Vec<TypeExpr>>>,
     /// Names declared as annotations (type.annotations). Registered as struct
     /// types for `has<A>()` name resolution, but comptime-only: runtime
     /// construction is rejected.
     pub(super) annotation_types: std::collections::HashSet<String>,
     /// Call-site bound obligations: (type-arg var, bound interface names, span).
     /// Verified after constraint solving resolves the var to a concrete type.
-    pub(super) pending_bound_checks: Vec<(Type, Vec<String>, rask_ast::Span)>,
+    pub(super) pending_bound_checks: Vec<(Type, Vec<TypeExpr>, rask_ast::Span)>,
     /// ER3a: call-site disjointness obligations read off the callee's signature.
     /// Verified after constraint solving resolves the type-arg vars.
     pub(super) pending_disjointness: Vec<validate::DisjointObligation>,

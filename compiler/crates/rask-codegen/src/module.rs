@@ -21,6 +21,8 @@ pub struct CodeGenerator {
     func_ids: HashMap<String, cranelift_module::FuncId>,
     /// Struct layouts from monomorphization
     struct_layouts: Vec<StructLayout>,
+    /// The checker's name for each type id, from monomorphization.
+    type_names: HashMap<rask_types::TypeId, String>,
     /// Enum layouts from monomorphization
     enum_layouts: Vec<EnumLayout>,
     /// String literal data (content → DataId in the object module)
@@ -116,6 +118,7 @@ impl CodeGenerator {
             c_abi_args: HashMap::new(),
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
+            type_names: HashMap::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
@@ -184,6 +187,7 @@ impl CodeGenerator {
             c_abi_args: HashMap::new(),
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
+            type_names: HashMap::new(),
             string_data: HashMap::new(),
             string_header_data: HashMap::new(),
             element_offset_data: HashMap::new(),
@@ -1237,6 +1241,7 @@ impl CodeGenerator {
     pub fn declare_functions(&mut self, mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()> {
         // Store layouts for use during code generation
         self.struct_layouts = mono.struct_layouts.clone();
+        self.type_names = mono.type_names.clone();
         self.enum_layouts = mono.enum_layouts.clone();
 
         for mir_fn in mir_functions {
@@ -1735,14 +1740,14 @@ impl CodeGenerator {
 
         // Every offset list this function's container frees will ask for. Has
         // to happen before the borrow below, and before any body references one.
-        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts, &self.enum_layouts) {
+        for offsets in collect_element_offsets(mir_fn, &self.struct_layouts, &self.enum_layouts, &self.type_names) {
             self.register_element_offsets(&offsets)?;
         }
         // And one per `Heap<T>` field anywhere in the program. Not per function:
         // which frames release which aggregate is the release walk's business,
         // and the walk asks for the list by its contents — so the list has to
         // already be data. Registering is idempotent and the set is tiny.
-        for offsets in collect_heap_descriptors(&self.struct_layouts, &self.enum_layouts) {
+        for offsets in collect_heap_descriptors(&self.struct_layouts, &self.enum_layouts, &self.type_names) {
             self.register_element_offsets(&offsets)?;
         }
 
@@ -1839,6 +1844,7 @@ impl CodeGenerator {
             &func_refs,
             &self.struct_layouts,
             &self.enum_layouts,
+            &self.type_names,
             &string_globals,
             &string_header_globals,
             &element_offset_globals,
@@ -2318,18 +2324,19 @@ impl crate::Backend for CodeGenerator {
 fn collect_heap_descriptors(
     struct_layouts: &[rask_mono::StructLayout],
     enum_layouts: &[rask_mono::EnumLayout],
+    names: &HashMap<rask_types::TypeId, String>,
 ) -> Vec<Vec<i32>> {
-    let mut out = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut out: Vec<Vec<i32>> = Vec::new();
     let mut take = |ty: &rask_types::Type, out: &mut Vec<Vec<i32>>| {
-        let rendered = format!("{}", ty);
-        if !rendered.trim().starts_with("Heap<") || !seen.insert(rendered) {
+        if !crate::elem_offsets::is_heap_field(ty) {
             return;
         }
         if let Some(d) =
-            crate::elem_offsets::heap_field_descriptor(ty, struct_layouts, enum_layouts)
+            crate::elem_offsets::heap_field_descriptor(ty, struct_layouts, enum_layouts, names)
         {
-            out.push(d);
+            if !out.contains(&d) {
+                out.push(d);
+            }
         }
     };
     for l in struct_layouts {
@@ -2351,6 +2358,7 @@ fn collect_element_offsets(
     mir_fn: &MirFunction,
     struct_layouts: &[rask_mono::StructLayout],
     enum_layouts: &[rask_mono::EnumLayout],
+    names: &HashMap<rask_types::TypeId, String>,
 ) -> Vec<Vec<i32>> {
     let mut lists = Vec::new();
     for block in &mir_fn.blocks {
@@ -2366,7 +2374,7 @@ fn collect_element_offsets(
                     continue;
                 };
                 if let Some(offs) = crate::elem_offsets::string_offsets_for_tag(
-                    *tag, struct_layouts, enum_layouts,
+                    *tag, struct_layouts, enum_layouts, names,
                 ) {
                     lists.push(offs);
                 }

@@ -141,7 +141,7 @@ impl<'a> MirLowerer<'a> {
                     .ctx
                     .type_names
                     .get(base)
-                    .is_some_and(|n| n.split('<').next() == Some("Vec")) =>
+                    .is_some_and(|n| n == "Vec") =>
             {
                 return true;
             }
@@ -458,13 +458,13 @@ impl<'a> MirLowerer<'a> {
             }
             _ => return false,
         };
-        name.split('<').next().unwrap_or(&name).trim() == "Iterator"
+        name.as_str().trim() == "Iterator"
     }
 
     fn prefix_is(prefix: &Option<String>, want: &str) -> bool {
         prefix
             .as_deref()
-            .is_some_and(|p| p.split('<').next().unwrap_or(p).trim() == want)
+            .is_some_and(|p| p.trim() == want)
     }
 
     /// `m.modify_with_default(k, || default, f)`: insert the default when `k`

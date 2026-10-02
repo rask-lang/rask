@@ -33,7 +33,7 @@ impl BuiltinModules {
                     params: m.params.iter().map(|(_, ty)| stub_type(ty)).collect(),
                     ret: stub_type(&m.ret_ty),
                     type_param_bounds: m.type_param_bounds.iter()
-                        .map(|(n, b)| (n.clone(), b.to_string()))
+                        .map(|(n, b)| (n.clone(), b.clone()))
                         .collect(),
                     // The declared type is still intact here, before
                     // `stub_type` erases a type parameter into `_Any`.

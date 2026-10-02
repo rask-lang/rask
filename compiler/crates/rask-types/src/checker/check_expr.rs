@@ -518,8 +518,8 @@ impl TypeChecker {
                     ty
                 } else if let Some(type_id) = self
                     .types
-                    .alias_target(name)
-                    .and_then(|target| self.types.get_type_id(target))
+                    .alias_target_name(name)
+                    .and_then(|target| self.types.get_type_id(&target))
                 {
                     // A transparent alias used where a type name goes — the
                     // receiver of `Zwibble.make(7)`, say. The resolver points
@@ -3471,7 +3471,8 @@ impl TypeChecker {
             // was skipped, the receiver went through `infer_expr`, and `let d =
             // Span.from_millis(1)` came back "couldn't work out the type of `d`"
             // (#923).
-            let base_name = self.types.alias_target(spelled).unwrap_or(spelled);
+            let aliased = self.types.alias_target_name(spelled);
+            let base_name = aliased.as_deref().unwrap_or(spelled);
             // A real local of the same name wins. The stub registry holds the
             // module namespaces (`fs`, `io`, `os`, `time`, `http`, …) as types,
             // so `let fs = Vec.new()` used to land here and answer "no method
@@ -4196,7 +4197,7 @@ impl TypeChecker {
     /// Unresolved names are skipped — a bare type parameter forwarded from an
     /// enclosing generic isn't concrete yet, and reporting it here would blame
     /// the wrong call site.
-    fn check_type_arg_bound(&mut self, ty: &Type, bound: &str, span: Span) {
+    fn check_type_arg_bound(&mut self, ty: &Type, bound: &TypeExpr, span: Span) {
         let resolved = self.resolve_named(ty);
         match &resolved {
             Type::Var(_) | Type::Error => return,
@@ -4206,7 +4207,7 @@ impl TypeChecker {
         // XC3: the bound is a place that needs the conformance, so it's a place
         // two of them collide.
         self.check_bound_conformance_ambiguity(&resolved, bound, span);
-        let interface_bound = crate::interfaces::InterfaceBound::new("_", vec![bound.to_string()]);
+        let interface_bound = crate::interfaces::InterfaceBound::new("_", vec![bound.clone()]);
         if let Err(errs) = crate::interfaces::verify_instantiation(
             &self.types,
             &resolved,

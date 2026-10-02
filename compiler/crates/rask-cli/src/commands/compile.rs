@@ -325,7 +325,6 @@ pub fn compile_to_object(
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
     mir_ctx.comptime_interp = comptime_interp;
-    let mir_ctx = mir_ctx;
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
 
@@ -406,7 +405,7 @@ fn collect_vtables(
                         // no second holder for either.
                         let mut visited = HashSet::new();
                         let owned = rask_codegen::drop_fields::owned_fields(
-                            concrete_type, 0, &mono.struct_layouts, &mut visited,
+                            concrete_type, 0, &mono.struct_layouts, &mono.type_names, &mut visited,
                         );
 
                         vtables.push(rask_codegen::vtable::VTableInfo {
@@ -641,7 +640,6 @@ pub fn compile_tests_to_object(
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
     mir_ctx.comptime_interp = comptime_interp;
-    let mir_ctx = mir_ctx;
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
 
@@ -837,7 +835,6 @@ pub fn compile_benchmarks_to_object(
     mir_ctx.line_map = line_map.as_ref();
     mir_ctx.source_file = source_file;
     mir_ctx.comptime_interp = comptime_interp;
-    let mir_ctx = mir_ctx;
 
     let (mut mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
 

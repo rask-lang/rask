@@ -18,7 +18,7 @@ impl Interpreter {
     /// only the former should fail the arm outright on a mismatch instead of
     /// falling through to bind.
     fn is_known_type_name(&self, name: &str) -> bool {
-        let base = name.split('<').next().unwrap_or(name);
+        let base = name;
         // The wide set here on purpose: a match arm can name `string`, and the
         // interpreter still accepts the `int`/`uint` spellings.
         rask_ast::primitives::is_builtin_scalar_or_string(base)

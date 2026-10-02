@@ -1054,7 +1054,7 @@ impl<'a> MirLowerer<'a> {
         else {
             return false;
         };
-        let base = prefix.split('<').next().unwrap_or(&prefix);
+        let base = prefix.as_str();
         self.mutate_self_methods
             .contains(&format!("{}_{}", base, method))
     }
@@ -2613,12 +2613,7 @@ impl<'a> MirLowerer<'a> {
                     let handle_free = arg_expr
                         .and_then(|e| self.ctx.lookup_raw_type(e.id))
                         .map(|t| t.peel_heap())
-                        .and_then(|t| {
-                            rask_mono::drop_names::container_free_for_rendered(
-                                &self.rendered_with_names(t),
-                            )
-                            .or_else(|| rask_mono::drop_names::container_free_for(t))
-                        });
+                        .and_then(|t| rask_mono::drop_names::container_free_for(t, self.ctx.type_names));
                     match handle_free {
                         Some(free_fn) => {
                             let handle = self.builder.alloc_temp(MirType::Ptr);
@@ -3185,7 +3180,7 @@ impl<'a> MirLowerer<'a> {
             let index_name = type_prefix
                 .map(|prefix| {
                     // Strip generic parameters: "Vec<T>" → "Vec"
-                    let base = prefix.split('<').next().unwrap_or(&prefix);
+                    let base = prefix.as_str();
                     // Map indexing: `m[k]` panics on missing key — same shape
                     // as `Map_get_unwrap` (the unwrapping form of Map_get).
                     if base == "Map" {
@@ -5078,8 +5073,7 @@ impl<'a> MirLowerer<'a> {
             let aliased = self
                 .ctx
                 .type_defs
-                .alias_target(name)
-                .map(str::to_string);
+                .alias_target_name(name);
             let name = match &aliased {
                 Some(target) if !self.locals.contains_key(name) => target.as_str(),
                 _ => name,
@@ -5748,7 +5742,7 @@ impl<'a> MirLowerer<'a> {
                     .lookup_raw_type(object.id)
                     .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
             })
-            .map(|p| p.split('<').next().unwrap_or(&p).trim().to_string())
+            .map(|p| p.as_str().trim().to_string())
             .unwrap_or_default();
         let dispatch_method = self.dispatch_method_name(expr.id, &dispatch_prefix, &method);
         let callee_sig = {
@@ -5853,7 +5847,7 @@ impl<'a> MirLowerer<'a> {
             // rejected `string.push_str`, which codegen has and no stub
             // declares, sending a call the checker had already resolved back
             // to the guessing chain.
-            let base = prefix.split('<').next().unwrap_or(prefix).trim();
+            let base = prefix.trim();
             let mut chars = base.chars();
             !matches!((chars.next(), chars.next()),
                       (Some(c), None) if c.is_ascii_uppercase())
@@ -5942,7 +5936,7 @@ impl<'a> MirLowerer<'a> {
                 // Strip generic params from the prefix before mangling:
                 // "Vec<T>" → "Vec", "Map<K, V>" → "Map". Otherwise the
                 // call name is `Vec<T>_len` which has no codegen entry.
-                let base = prefix.split('<').next().unwrap_or(&prefix).trim();
+                let base = prefix.as_str().trim();
                 format!("{}_{}", base, dispatch_method)
             });
         let qualified_name = match qualified_name {
@@ -6404,7 +6398,6 @@ impl<'a> MirLowerer<'a> {
 
         let result_local = self.builder.alloc_temp(ret_ty.clone());
         let container_edge = self.container_edge_call(&final_name, &final_args);
-        let final_args = final_args;
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_local),
             func: FunctionRef::internal(final_name.clone()),
@@ -7159,42 +7152,6 @@ impl<'a> MirLowerer<'a> {
             ) => self.pointee_size(expr),
             _ => None,
         }
-    }
-
-    /// The MIR type the block of a `Heap(x)` holds.
-    ///
-    /// The lowered type of the payload, except that a container keeps its kind:
-    /// the handle sits at the block's start, and `drop` frees what it points at
-    /// as well as the block. Lowering types every handle as a bare pointer, so
-    /// the kind has to come off the checker's type — the same route a wrapper's
-    /// payload takes.
-    /// A type written out with its names put back.
-    ///
-    /// `Display` on a resolved `Type::Generic` prints TypeIds, so
-    /// `Shared<i64, Local>` comes out with no `Local` in it and the release
-    /// table can't tell the strategies apart. The layout side never hits this
-    /// because a field's type is still a name there.
-    fn rendered_with_names(&self, ty: &rask_types::Type) -> String {
-        use rask_types::{GenericArg, Type};
-        let Some(head) = super::MirContext::type_prefix(ty, self.ctx.type_names) else {
-            return format!("{}", ty);
-        };
-        let args = match ty {
-            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
-            _ => return head,
-        };
-        if args.is_empty() {
-            return head;
-        }
-        let written: Vec<String> = args
-            .iter()
-            .map(|a| match a {
-                GenericArg::Type(t) => super::MirContext::type_prefix(t, self.ctx.type_names)
-                    .unwrap_or_else(|| format!("{}", t)),
-                other => format!("{}", other),
-            })
-            .collect();
-        format!("{}<{}>", head, written.join(", "))
     }
 
     /// HP5 on the lowering side: a `Heap<T>` standing where a `T` is expected.
