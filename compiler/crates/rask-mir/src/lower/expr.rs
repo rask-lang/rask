@@ -7478,34 +7478,23 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
-        // `a + b` desugars to `a.add(b)`, and on a primitive receiver that
-        // call is the machine instruction. A call the program wrote as a method
-        // is that method, whatever it's called (the checker reads it the same
-        // way): `bag.add(v)` on a `Bag<Vec<i64>>` used to lower as a pointer
-        // add, which nothing read, so the push inside never happened.
+        // `a + b` desugars to `a.add(b)`, so a method call here may be either.
+        // Whether it is the machine instruction is a question about the
+        // receiver's type: if that type declares a method of this name with a
+        // body, the call is that method, however it was written. `bag.add(v)`
+        // on a `Bag<Vec<i64>>` used to lower as a pointer add that nothing
+        // read, so the push inside never happened; `a < b` on a `Tag` with its
+        // own `lt` calls it (#400). A derived `eq`/`lt` has no body, and
+        // reaches codegen's structural comparison as a BinaryOp, whether
+        // written `a == b` or `a.eq(b)` (#399/#463).
         //
-        // This replaces guessing from the function table. That looked for
-        // `{Type}_{method}` under the receiver's names, and missed whenever the
-        // layout's name and mono's mangling disagreed: `Bag$Vec$i64_add`
-        // against the registered `Bag_add$Vec$i64` (#838, #445 were earlier
-        // shapes of the same miss).
-        //
-        // An operator that resolved to a conformance already returned above.
-        // One left here on a type that declares the method itself, without an
-        // `implements`, calls it: `a < b` on a `Tag` with its own `lt` (#400).
-        // What the receiver is comes from the checker's record of the call,
-        // and whether it declares the method from the type table. Anything
-        // else on an aggregate is a derived `==`/`!=`, which reaches codegen's
-        // structural comparison as a BinaryOp (#399/#463).
-        let scalar_receiver = raw_type_is_numeric
-            || matches!(
-                obj_ty,
-                MirType::Bool | MirType::Char
-                    | MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64 | MirType::I128
-                    | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128
-                    | MirType::F32 | MirType::F64
-            );
-        let written_as_method = !self.ctx.operator_calls.contains(&call);
+        // The receiver comes from the checker's record of the call, the method
+        // from the type table. This replaces guessing from the function table,
+        // which looked for `{Type}_{method}` under the receiver's names and
+        // missed whenever the layout's name and mono's mangling disagreed:
+        // `Bag$Vec$i64_add` against the registered `Bag_add$Vec$i64` (#838,
+        // #445 were earlier shapes of the same miss). Calls that resolved to an
+        // `implements` conformance already returned above.
         let declares_method = self
             .ctx
             .call_targets
@@ -7520,8 +7509,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 _ => false,
             });
-        let skip_binop =
-            skip_binop || declares_method || (written_as_method && !scalar_receiver);
+        let skip_binop = skip_binop || declares_method;
 
         // std.bits B1 on an integer receiver. These aren't operator methods —
         // they're named calls — but they lower the same way, to a single

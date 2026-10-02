@@ -323,7 +323,6 @@ impl<'a> MirContext<'a> {
             operator_targets: &records.operator_targets,
             error_wraps: &records.error_wraps,
             fallback_keeps_shape: &records.fallback_keeps_shape,
-            operator_calls: &records.operator_calls,
             escaping_closures: &records.escaping_closures,
             task_bound_closures: &records.task_bound_closures,
             type_names,
@@ -469,8 +468,6 @@ pub struct MirContext<'a> {
     /// ER14a: `??` sites whose right side is still wrapped, so the present
     /// path hands back the left operand instead of its payload.
     pub fallback_keeps_shape: &'a std::collections::HashSet<NodeId>,
-    /// Method calls desugared from an operator.
-    pub operator_calls: &'a std::collections::HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them. Those
     /// carry their captures; the rest hold the address and write through it.
     pub escaping_closures: &'a std::collections::HashSet<NodeId>,
@@ -595,7 +592,6 @@ impl<'a> MirContext<'a> {
             interface_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
-            operator_calls: &EMPTY_COALESCE_SHAPE,
             escaping_closures: &EMPTY_ESCAPING,
             task_bound_closures: &EMPTY_ESCAPING,
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
@@ -7392,7 +7388,6 @@ mod tests {
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
-            operator_calls: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
@@ -7473,7 +7468,6 @@ mod tests {
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
-            operator_calls: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
@@ -7563,7 +7557,6 @@ mod tests {
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
-            operator_calls: &empty_fallback_shape,
             escaping_closures: &empty_escaping,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,

@@ -46,7 +46,6 @@ pub struct MonoProgram {
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
-    pub instantiated_operator_calls: HashSet<NodeId>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
     /// Closures in instantiated bodies that may not reach another task, each
     /// decided from its copy's concrete capture types (#1356).
@@ -71,8 +70,6 @@ pub struct NodeRecords {
     pub error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: `??` sites that keep the optional shape.
     pub fallback_keeps_shape: HashSet<NodeId>,
-    /// Calls written as an operator, not as the method they desugar to.
-    pub operator_calls: HashSet<NodeId>,
     /// CM1: closure literals that outlive the frame that built them.
     pub escaping_closures: HashSet<NodeId>,
     /// Closure literals that may not reach another task (#1356).
@@ -88,7 +85,6 @@ impl NodeRecords {
             operator_targets: typed.operator_targets.clone(),
             error_wraps: typed.error_wraps.clone(),
             fallback_keeps_shape: typed.fallback_keeps_shape.clone(),
-            operator_calls: typed.operator_calls.clone(),
             escaping_closures: typed.escaping_closures.clone(),
             task_bound_closures: typed.task_bound_closures.clone(),
         }
@@ -106,7 +102,6 @@ impl MonoProgram {
             .extend(self.instantiated_operator_targets.iter().map(|(k, v)| (*k, v.clone())));
         r.error_wraps.extend(self.instantiated_error_wraps.iter().map(|(k, v)| (*k, v.clone())));
         r.fallback_keeps_shape.extend(self.instantiated_fallback_keeps_shape.iter().copied());
-        r.operator_calls.extend(self.instantiated_operator_calls.iter().copied());
         r.escaping_closures.extend(self.instantiated_escaping_closures.iter().copied());
         r.task_bound_closures.extend(self.instantiated_task_bound_closures.iter().copied());
         r
@@ -982,7 +977,6 @@ fn monomorphize_inner(
         instantiated_operator_targets: mono.instantiated_operator_targets,
         instantiated_error_wraps: mono.instantiated_error_wraps,
         instantiated_fallback_keeps_shape: mono.instantiated_fallback_keeps_shape,
-        instantiated_operator_calls: mono.instantiated_operator_calls,
         instantiated_escaping_closures: mono.instantiated_escaping_closures,
         instantiated_task_bound_closures: mono.instantiated_task_bound_closures,
     })
@@ -1189,7 +1183,6 @@ mod tests {
             conformance_disambiguation: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
-            operator_calls: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: std::collections::HashMap::new(),

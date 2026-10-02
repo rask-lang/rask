@@ -1003,7 +1003,6 @@ impl TypeChecker {
             conformance_disambiguation: self.conformance_disambiguation,
             error_wraps,
             fallback_keeps_shape,
-            operator_calls: std::mem::take(&mut self.operator_calls),
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::mem::take(&mut self.task_bound_closures),
