@@ -13,7 +13,7 @@
 //! The wrapper shapes have no methods: `T?`, `T or E` and tuples are
 //! operator-only. So a wrapper that needs comparing through its parts' own
 //! `eq` — a tuple holding a `Vec`, an optional user struct — gets a free
-//! function, `__derived_eq_N`, written from its shape. A field of that type
+//! function, `derived#eq#N`, written from its shape. A field of that type
 //! calls it, a `==` on two of them is rewritten to call it
 //! (`TypedProgram::wrapper_eq_calls`), and a map keyed by one hashes and
 //! compares through the pair (`TypedProgram::wrapper_fns`) (#1392).
@@ -417,10 +417,10 @@ impl TypeChecker {
         let n = self.wrapper_fns.len();
         let fns = WrapperFns {
             ty: ty.clone(),
-            eq: self.type_has_method(ty, "eq").then(|| format!("__derived_eq_{n}")),
-            hash: self.type_has_method(ty, "hash").then(|| format!("__derived_hash_{n}")),
+            eq: self.type_has_method(ty, "eq").then(|| derived_fn_name("eq", n)),
+            hash: self.type_has_method(ty, "hash").then(|| derived_fn_name("hash", n)),
             compare: (matches!(ty, Type::Tuple(_)) && self.type_has_method(ty, "compare"))
-                .then(|| format!("__derived_compare_{n}")),
+                .then(|| derived_fn_name("compare", n)),
         };
         // Registered before the bodies are written: one holding another
         // wrapper asks for that one's pair while this one is half built.
@@ -818,6 +818,16 @@ impl TypeChecker {
         }
         fn_decl(name, params, ret, body)
     }
+}
+
+/// The name of a function the compiler wrote: `derived#eq#3`.
+///
+/// `#` can't appear in an identifier, so no program can declare one of these
+/// or call one by name, and a program's own `derived_eq_3` stays its own.
+/// Not `$`: that is what an instance's symbol is mangled with, and passes
+/// split names on it.
+fn derived_fn_name(what: &str, n: usize) -> String {
+    format!("derived#{what}#{n}")
 }
 
 fn param(name: &str, ty: TypeExpr) -> Param {
