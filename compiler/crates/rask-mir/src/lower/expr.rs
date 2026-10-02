@@ -7467,24 +7467,11 @@ impl<'a> MirLowerer<'a> {
         // `Bag$Vec$i64_add` against the registered `Bag_add$Vec$i64` (#838,
         // #445 were earlier shapes of the same miss). Calls that resolved to an
         // `implements` conformance already returned above.
-        // An instantiated copy names its receiver rather than pointing at it:
-        // monomorphization spells a type argument `Version`, so `self[i] !=
-        // other[i]` inside `Vec_eq$Version` arrives with a receiver that has
-        // no id. Without the name lookup that compare became a field-by-field
-        // one and skipped `Version`'s own `eq` (#1391). Workaround: mono
-        // should hand down the id, not a name (#1393).
         let declares_method = self
             .ctx
             .call_targets
             .get(&call)
-            .and_then(|target| match target {
-                rask_types::Callee::Method {
-                    recv: rask_types::Type::UnresolvedNamed(name)
-                        | rask_types::Type::UnresolvedGeneric { name, .. },
-                    ..
-                } => self.ctx.type_defs.get_type_id(name),
-                _ => target.recv_type_id(),
-            })
+            .and_then(|target| target.recv_type_id())
             .and_then(|id| self.ctx.type_defs.get(id))
             .is_some_and(|def| match def {
                 rask_types::TypeDef::Struct { methods, .. }

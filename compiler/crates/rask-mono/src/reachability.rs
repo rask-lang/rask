@@ -42,12 +42,22 @@ pub struct AmbiguousMethod {
 
 /// Generate a mangled name for a generic function instantiation.
 /// e.g., ("render_children", [Inline]) → "render_children$Inline"
-pub fn mangle_name(base: &str, type_args: &[TypeBinding]) -> String {
+///
+/// Bindings carry the checker's types, ids and all; this is the one place they
+/// become names, because a symbol is text (#1393).
+pub fn mangle_name(base: &str, type_args: &[TypeBinding], types: Option<&rask_types::TypeTable>) -> String {
     if type_args.is_empty() {
         return base.to_string();
     }
-    let args_str: Vec<String> =
-        type_args.iter().map(|b| symbol_spelling(&b.ty)).collect();
+    let args_str: Vec<String> = type_args
+        .iter()
+        .map(|b| {
+            let named = types
+                .and_then(|t| Monomorphizer::nameable_type(&b.ty, t))
+                .unwrap_or_else(|| b.ty.clone());
+            symbol_spelling(&named)
+        })
+        .collect();
     format!("{}${}", base, args_str.join("_"))
 }
 
@@ -99,7 +109,9 @@ pub struct Monomorphizer<'a> {
     /// External package module names — `pkg.func()` enqueues `func`, not `pkg_func`
     package_modules: std::collections::HashSet<String>,
     /// Already processed (name, type_args) pairs
-    seen: HashMap<(String, Vec<TypeBinding>), bool>,
+    /// Keyed by the symbol an item is emitted under. Two spellings of one type
+    /// (`Version` by id and by name) are one instance.
+    seen: HashMap<String, bool>,
     /// BFS work queue
     queue: VecDeque<WorkItem>,
     /// Resulting instantiated functions
@@ -996,7 +1008,7 @@ impl<'a> Monomorphizer<'a> {
     /// Run until fixpoint: process queue, instantiate, discover more calls
     pub fn run(&mut self) {
         while let Some(item) = self.queue.pop_front() {
-            let key = (item.name.clone(), item.type_args.clone());
+            let key = mangle_name(&item.name, &item.type_args, self.typed.map(|t| &t.types));
             if let Some(visited) = self.seen.get(&key) {
                 if *visited {
                     continue;
@@ -1072,7 +1084,8 @@ impl<'a> Monomorphizer<'a> {
                         }
                     }
                 }
-                self.carry_node_records(&origins, &bound_args, &param_names);
+                let typed_args: Vec<Type> = item.type_args.iter().map(|b| b.ty.clone()).collect();
+                self.carry_node_records(&origins, &typed_args, &param_names);
                 cloned
             };
 
@@ -1086,7 +1099,7 @@ impl<'a> Monomorphizer<'a> {
                 self.in_test_body = false;
             }
 
-            let mangled = mangle_name(&item.name, &item.type_args);
+            let mangled = mangle_name(&item.name, &item.type_args, self.typed.map(|t| &t.types));
             self.results.push(MonoFunction {
                 name: mangled,
                 type_args: item.type_args,
@@ -1112,7 +1125,14 @@ impl<'a> Monomorphizer<'a> {
         bindings: &[TypeBinding],
     ) -> (Vec<String>, Vec<Type>, Option<TypeExpr>) {
         let names: Vec<String> = bindings.iter().map(|b| b.param.clone()).collect();
-        let args: Vec<Type> = bindings.iter().map(|b| b.ty.clone()).collect();
+        // The copy is a declaration, and a declaration names its types: these
+        // are what gets written into it. The bindings themselves keep the ids,
+        // and `carry_node_records` hands those down.
+        let spelled = |ty: &Type| match self.typed {
+            Some(t) => Self::nameable_type(ty, &t.types).unwrap_or_else(|| ty.clone()),
+            None => ty.clone(),
+        };
+        let args: Vec<Type> = bindings.iter().map(|b| spelled(&b.ty)).collect();
 
         // `self` is spelled `Self`, which nothing substitutes, so a copy made
         // for `One<Big>` otherwise kept the shared placeholder layout while its
@@ -1128,7 +1148,7 @@ impl<'a> Monomorphizer<'a> {
                 return None;
             }
             Some(owner.template.substitute(&|name| {
-                bindings.iter().find(|b| b.param == name).map(|b| b.ty.to_type_expr())
+                bindings.iter().find(|b| b.param == name).map(|b| spelled(&b.ty).to_type_expr())
             }))
         });
         (names, args, self_ty)
@@ -1170,25 +1190,10 @@ impl<'a> Monomorphizer<'a> {
             .or_else(|| self.instantiated_call_type_args.get(&id))
             .cloned()
             .unwrap_or_default();
-        // An argument that is itself an instantiation has to be spelled by name.
-        // Left as a `Generic` it displays as `<type#84><i32>`, so
-        // `unwrap_or(j, fallback)` on a `Maybe<Wrap<i64>>` mangled to a symbol
-        // carrying a type id and substituted a string nothing could resolve —
-        // the copy took its `Wrap<i64>` parameter as a bare pointer and its
-        // match arm loaded the payload word instead of pointing at it (#871).
-        let Some(typed) = self.typed else { return args };
-        args.into_iter()
-            .map(|b| match &b.ty {
-                Type::Generic { .. }
-                | Type::UnresolvedGeneric { .. }
-                | Type::Result { .. } => {
-                    let named = Self::nameable_type(&b.ty, &typed.types)
-                        .unwrap_or_else(|| b.ty.clone());
-                    TypeBinding::new(b.param, named)
-                }
-                _ => b,
-            })
-            .collect()
+        // Kept as the checker typed them, ids and all: names are spelled where a
+        // symbol or a copied declaration needs text (`mangle_name`, `run`), and
+        // nowhere else (#1393).
+        args
     }
 
     /// The receiver's own type parameters, bound to what this call site fixed
@@ -1231,10 +1236,10 @@ impl<'a> Monomorphizer<'a> {
         let mut actuals = Vec::with_capacity(args.len());
         for arg in args {
             let rask_types::GenericArg::Type(t) = arg else { return Vec::new() };
-            match Self::nameable_type(t.as_ref(), &typed.types) {
-                Some(named) => actuals.push(rask_types::GenericArg::Type(Box::new(named))),
-                None => return Vec::new(),
+            if Self::nameable_type(t.as_ref(), &typed.types).is_none() {
+                return Vec::new();
             }
+            actuals.push(rask_types::GenericArg::Type(t.clone()));
         }
 
         let templates = owner.template.args();
@@ -1443,7 +1448,7 @@ impl<'a> Monomorphizer<'a> {
                     if bindings.is_empty() {
                         return None;
                     }
-                    let mangled = mangle_name(&qualified, &bindings);
+                    let mangled = mangle_name(&qualified, &bindings, Some(&typed.types));
                     reach.enqueue(qualified, bindings);
                     Some(mangled)
                 }
@@ -1477,7 +1482,7 @@ impl<'a> Monomorphizer<'a> {
     }
 
     fn enqueue(&mut self, name: String, type_args: Vec<TypeBinding>) {
-        let key = (name.clone(), type_args.clone());
+        let key = mangle_name(&name, &type_args, self.typed.map(|t| &t.types));
         if !self.seen.contains_key(&key) {
             self.seen.insert(key, false);
             self.queue.push_back(WorkItem { name, type_args });
@@ -1576,7 +1581,7 @@ impl<'a> Monomorphizer<'a> {
                     // signature but resolves to one C entry point, so mangling
                     // it produced a call to `spawn$i64` that nothing emits.
                     if !type_args.is_empty() && self.has_instantiable_body(name) {
-                        let mangled = mangle_name(name, &type_args);
+                        let mangled = mangle_name(name, &type_args, self.typed.map(|t| &t.types));
                         self.call_rewrites.insert(expr.id, mangled);
                     }
                     self.enqueue(name.clone(), type_args);
@@ -1729,7 +1734,7 @@ impl<'a> Monomorphizer<'a> {
                             if !type_args.is_empty() && self.has_instantiable_body(&qualified) {
                                 self.call_rewrites.insert(
                                     expr.id,
-                                    mangle_name(&qualified, &type_args),
+                                    mangle_name(&qualified, &type_args, self.typed.map(|t| &t.types)),
                                 );
                             }
                             self.enqueue(qualified, type_args);
@@ -2105,7 +2110,7 @@ impl<'a> Monomorphizer<'a> {
                 // call to the uninstantiated `T_greet` that nothing emits.
                 let type_args = self.type_args_at(expr.id);
                 if !type_args.is_empty() && self.has_instantiable_body(name) {
-                    self.call_rewrites.insert(expr.id, mangle_name(name, &type_args));
+                    self.call_rewrites.insert(expr.id, mangle_name(name, &type_args, self.typed.map(|t| &t.types)));
                     self.enqueue(name.clone(), type_args);
                 } else if self.is_plain_fn(name) {
                     self.enqueue(name.clone(), Vec::new());
