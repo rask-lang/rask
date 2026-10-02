@@ -273,6 +273,7 @@ Equality on `T or none` follows the general union equality rule:
 
 - `x is none` — the absent check (canonical). Presence is `x?`
 - `x == y` where both are `T?` — true if both absent, or both present and inner values equal
+- `x == v` where `v` is a bare `T` — `v` is made present first, so it's true when `x` is present and its payload equals `v`. Inner values compare through `T`'s own `eq` (`type.generics/EQ5`)
 
 No optional-specific equality rule.
 

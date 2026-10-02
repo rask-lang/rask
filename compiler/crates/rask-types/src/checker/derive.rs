@@ -351,7 +351,10 @@ impl TypeChecker {
         for (call, recv, arg) in pending {
             let ty_of = |this: &Self, id: NodeId| this.node_types.get(&id).map(|t| this.ctx.apply(t));
             let (Some(a), Some(b)) = (ty_of(self, recv), ty_of(self, arg)) else { continue };
-            if a != b || !Self::is_wrapper(&a) || !Self::wrapper_needs_fns(&a) {
+            // `opt == value` is the optional against the value made present:
+            // the same `eq`, with the bare side widened at the call.
+            let same = a == b || a.as_option() == Some(&b);
+            if !same || !Self::is_wrapper(&a) || !Self::wrapper_needs_fns(&a) {
                 continue;
             }
             let Some(name) = self.wrapper_fns(&a).eq else { continue };
