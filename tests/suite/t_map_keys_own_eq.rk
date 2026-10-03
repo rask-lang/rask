@@ -141,4 +141,19 @@ test "an optional compares with a bare value through the payload's own eq" {
     assert p == w
 }
 
+test "a bare value on the left compares the same way" {
+    let c: Version? = Version { major: 1, minor: 0 }
+    assert Version { major: 1, minor: 5 } == c
+    assert Version { major: 2, minor: 0 } != c
+    let n: Version? = none
+    assert !(Version { major: 1, minor: 0 } == n)
+    let i: i64? = 3
+    assert 3 == i
+    let s: string? = "abc".to_uppercase()
+    assert "ABC" == s
+    let p: Vec<i64>? = [1, 2]
+    let w: Vec<i64> = [1, 2]
+    assert w == p
+}
+
 func main() {}

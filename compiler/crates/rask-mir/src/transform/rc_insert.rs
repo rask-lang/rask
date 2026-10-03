@@ -517,11 +517,6 @@ fn insert_aggregate_release(
                         // handed. `Link_register_struct(h)` is the reason: the
                         // whole struct goes to the runtime so a rack can find
                         // its link fields.
-                        // A runtime helper whose line in `INTERNAL_SPELLINGS`
-                        // says outright that it keeps none of what it is
-                        // handed. `Link_register_struct(h)` is the reason: the
-                        // whole struct goes to the runtime so a rack can find
-                        // its link fields.
                         //
                         // And a struct handed to a stdlib method that declares
                         // the parameter borrowed: `m.get(k)` with a struct key
