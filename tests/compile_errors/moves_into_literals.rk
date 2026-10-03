@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A value stored in a literal moves into it (mem.ownership/O2), a loop's
+// element is only lent (ctrl.loops/LP6), and `T: Copy` is checked at the call
+// (type.generics/G1a). Each `// ERROR` below is one rejection.
+
+struct Holder {
+    v: Vec<i64>
+}
+
+struct Wrapper<T> {
+    value: T
+}
+
+func wrap<T: Copy>(value: T) -> Wrapper<T> {
+    return Wrapper { value }
+}
+
+func into_tuple() {
+    let v: Vec<i64> = [1]
+    let t = (v, 1)
+    // ERROR: use of moved value — the tuple owns `v` now (E0800)
+    println(v.len())
+    println(t.1)
+}
+
+func into_struct() {
+    let v: Vec<i64> = [1]
+    let h = Holder { v: v }
+    // ERROR: use of moved value (E0800)
+    println(v.len())
+    println(h.v.len())
+}
+
+func borrowed_into_struct(v: Vec<i64>) -> Holder {
+    // ERROR: `v` is borrowed, so it can't go into the struct (E0835)
+    return Holder { v: v }
+}
+
+func loop_element_pushed(groups: Vec<Vec<i64>>) -> Vec<Vec<i64>> {
+    mut out: Vec<Vec<i64>> = Vec.new()
+    for g in groups {
+        // ERROR: the loop only lends `g` out of `groups` (E0902)
+        out.push(g)
+    }
+    return out
+}
+
+func loop_element_bound(groups: Vec<Vec<i64>>) {
+    for g in groups {
+        // ERROR: `let` would be a second owner of the element (E0902)
+        let kept = g
+        println(kept.len())
+    }
+}
+
+func not_copy() {
+    let v: Vec<i64> = [1]
+    // ERROR: `Vec<i64>` isn't Copy, and `wrap` needs `T: Copy` (E0333)
+    let w = wrap(v)
+    println(w.value.len())
+}
+
+func main() {}

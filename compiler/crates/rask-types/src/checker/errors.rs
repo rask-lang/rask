@@ -1337,6 +1337,9 @@ pub enum InterfaceBoundContext {
     /// primitive types rather than method lists, so "implement it" is not
     /// advice anyone can act on.
     NumericBound,
+    /// `T: Copy` — the copy rule, not a method list, so there is nothing to
+    /// implement either.
+    CopyBound,
 }
 
 /// Why an `as` cast is rejected — drives the diagnostic and suggested fix.

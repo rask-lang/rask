@@ -1992,9 +1992,14 @@ impl ToDiagnostic for rask_types::TypeError {
 
             InterfaceNotSatisfied { ty, interface_name, context, missing, span } => {
                 use rask_types::InterfaceBoundContext as Ctx;
-                let d = Diagnostic::error(format!("`{}` does not implement `{}`", ty, interface_name))
+                let title = match context {
+                    Ctx::CopyBound => format!("`{}` isn't Copy", ty),
+                    _ => format!("`{}` does not implement `{}`", ty, interface_name),
+                };
+                let d = Diagnostic::error(title)
                     .with_code("E0333")
                     .with_primary(*span, match (context, missing) {
+                        (Ctx::CopyBound, _) => format!("this needs a value that copies, and `{}` moves", ty),
                         (Ctx::NumericBound, _) => format!("`{}` is not one of the types `{}` covers", ty, interface_name),
                         // Name it. An interface can require more than the one method
                         // its name suggests — `Hashable` needs `eq` too — and
@@ -2031,6 +2036,10 @@ impl ToDiagnostic for rask_types::TypeError {
                             ),
                         })
                         .with_why("the header is the claim and the block is the evidence — a conformance is only declared once the methods are there [type.generics/G1]"),
+                    // The copy rule, not a method list: nothing to implement.
+                    Ctx::CopyBound => d
+                        .with_fix("pass a type that copies (scalars, `string`, and small structs, tuples and enums of those), or have the function `take` its argument instead of requiring `Copy`")
+                        .with_why("a value copies when everything in it does and it fits in 16 bytes; `T: Copy` is what lets a function keep a copy of a value it only borrowed [mem.value/VS1]"),
                     Ctx::InterfaceObjectCast => d
                         .with_fix(format!(
                             "implement the interface before boxing:\n    {} implements {} {{ … }}",

@@ -116,6 +116,8 @@ pub struct OwnershipChecker<'a> {
     /// binding can't be given away any more than a borrowed parameter can
     /// (LP6). Scoped to the loop body.
     borrowed_loop_items: HashMap<String, (Span, String)>,
+    /// Type parameters in scope bounded by `Copy`, whose values copy.
+    copy_params: HashSet<String>,
     /// Loops being walked, innermost last: the label, and the join of the
     /// binding states at every `break` that leaves it. What a `break` path
     /// consumed is consumed after the loop too.
@@ -309,6 +311,7 @@ impl<'a> OwnershipChecker<'a> {
             borrowed_params: HashMap::new(),
             borrowed_parts: HashMap::new(),
             borrowed_loop_items: HashMap::new(),
+            copy_params: HashSet::new(),
             loop_exits: Vec::new(),
             refills: HashMap::new(),
             borrowed_captures: HashMap::new(),
@@ -444,7 +447,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             let Some(type_id) = self.program.types.get_type_id(&s.name) else { continue };
             let ty = rask_types::Type::Named(type_id);
-            let size = self.type_size(&ty);
+            let size = self.program.types.value_size(&ty);
             if size <= 16 {
                 continue;
             }
@@ -463,7 +466,7 @@ impl<'a> OwnershipChecker<'a> {
                 .and_then(|fields| {
                     let mut running = 0usize;
                     for (name, field_ty) in &fields {
-                        let field_size = self.type_size(field_ty);
+                        let field_size = self.program.types.value_size(field_ty);
                         running += field_size;
                         if running > 16 {
                             return Some((name.clone(), field_size));
@@ -551,7 +554,7 @@ impl<'a> OwnershipChecker<'a> {
             let mut offender = None;
             for (field_name, field_ty) in &fields {
                 let concrete = substitute_params(field_ty, &subst);
-                let field_size = self.type_size(&concrete);
+                let field_size = self.program.types.value_size(&concrete);
                 total += field_size;
                 if total > 16 && offender.is_none() {
                     let ty_text =
@@ -577,23 +580,23 @@ impl<'a> OwnershipChecker<'a> {
 
     fn check_decl(&mut self, decl: &Decl) {
         match &decl.kind {
-            DeclKind::Fn(fn_decl) => self.check_fn(fn_decl),
+            DeclKind::Fn(fn_decl) => self.check_fn(fn_decl, &[]),
             DeclKind::Struct(s) => {
                 // Check methods
                 for method in &s.methods {
-                    self.check_fn(method);
+                    self.check_fn(method, &s.type_params);
                 }
             }
             DeclKind::Enum(e) => {
                 for method in &e.methods {
-                    self.check_fn(method);
+                    self.check_fn(method, &e.type_params);
                 }
             }
             DeclKind::Interface(_) => {}
             DeclKind::Extern(_) => {}
             DeclKind::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
-                    self.check_fn(method);
+                    self.check_fn(method, &impl_decl.where_bounds);
                 }
             }
             DeclKind::Import(_) => {}
@@ -668,8 +671,14 @@ impl<'a> OwnershipChecker<'a> {
         self.current_stmt = 0;
     }
 
-    fn check_fn(&mut self, fn_decl: &FnDecl) {
+    fn check_fn(&mut self, fn_decl: &FnDecl, owner_params: &[rask_ast::decl::TypeParam]) {
         self.reset_body_state();
+        self.copy_params = owner_params
+            .iter()
+            .chain(&fn_decl.type_params)
+            .filter(|p| p.bounds.iter().any(|b| b.name().as_deref() == Some("Copy")))
+            .map(|p| p.name.clone())
+            .collect();
 
         for param in &fn_decl.params {
             if param.is_take && is_written_link(&param.ty) {
@@ -1113,7 +1122,7 @@ impl<'a> OwnershipChecker<'a> {
             Type::Named(id) => self.program.types.get(*id).is_some(),
             Type::Generic { base, .. } => {
                 let name = self.program.types.type_name(*base);
-                Self::is_native_opaque_generic(&name) || self.program.types.get(*base).is_some()
+                rask_types::TypeTable::is_native_opaque_generic(&name) || self.program.types.get(*base).is_some()
             }
             _ => false,
         };
@@ -3783,282 +3792,10 @@ impl<'a> OwnershipChecker<'a> {
         })
     }
 
-    /// Compiler-native generic containers whose layout lives in the runtime
-    /// rather than in a visible struct decl (an empty `struct Vec<T> { }`
-    /// stub) — field-based size/Copy inference can't see them, so they're
-    /// named explicitly instead.
-    fn is_native_opaque_generic(base_name: &str) -> bool {
-        matches!(base_name,
-            "Vec" | "Map" | "Wide" | "Cell"
-            | "Rack" | "Link"
-            | "Handle" | "Sender" | "Receiver")
-    }
-
-    /// Map a generic struct/enum's own type parameter names to the concrete
-    /// types plugged in at this instantiation (`Wrapping<u32>`'s `T` -> `u32`).
-    /// Const-generic args have nothing to bind to a type parameter and are
-    /// skipped.
-    fn generic_field_subst(type_params: &[String], args: &[rask_types::GenericArg]) -> std::collections::HashMap<String, Type> {
-        type_params.iter().zip(args.iter()).filter_map(|(name, arg)| match arg {
-            rask_types::GenericArg::Type(t) => Some((name.clone(), (**t).clone())),
-            rask_types::GenericArg::ConstUsize(_) => None,
-        }).collect()
-    }
-
-    /// Replace a struct/enum field's type parameter with the concrete type
-    /// from `subst`, recursing through the same compound shapes
-    /// `substitute_type_params` (rask-types) handles for method signatures —
-    /// duplicated here rather than shared because that one is
-    /// checker-internal (`pub(super)`).
-    fn substitute_generic_field(ty: &Type, subst: &std::collections::HashMap<String, Type>) -> Type {
-        match ty {
-            Type::UnresolvedNamed(name) => subst.get(name).cloned().unwrap_or_else(|| ty.clone()),
-            Type::Array { elem, len } => Type::Array {
-                elem: Box::new(Self::substitute_generic_field(elem, subst)),
-                len: *len,
-            },
-            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::substitute_generic_field(e, subst)).collect()),
-            ty if ty.is_option() => Type::option(Self::substitute_generic_field(ty.as_option().unwrap(), subst)),
-            Type::Generic { base, args } => Type::Generic {
-                base: *base,
-                args: args.iter().map(|a| match a {
-                    rask_types::GenericArg::Type(t) => rask_types::GenericArg::Type(Box::new(Self::substitute_generic_field(t, subst))),
-                    other => other.clone(),
-                }).collect(),
-            },
-            _ => ty.clone(),
-        }
-    }
-
+    /// Copied rather than moved (mem.value/VS1). A type parameter is when this
+    /// function or its owner bounds it by `Copy`.
     fn is_copy(&self, ty: &Type) -> bool {
-        // L1: a linear value is never Copy, whatever its size or its fields.
-        // `@resource struct Conn { id: i64 }` is eight bytes of Copy field, so
-        // this said Copy — and `consume_arg` skips a Copy argument, so passing a
-        // connection to a `take` parameter consumed nothing and the caller was
-        // then told it had leaked the value it had just handed away.
-        if self.program.types.is_linear_value(ty) {
-            return false;
-        }
-        match ty {
-            // Primitives are always Copy
-            Type::Unit | Type::None | Type::Bool | Type::Char => true,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => true,
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => true,
-            Type::F32 | Type::F64 => true,
-            Type::Never => true,
-
-            // String is Copy (immutable, refcounted, 16 bytes — std.strings/S1)
-            Type::String => true,
-
-            // Arrays: Copy if element is Copy and size <= 16 bytes
-            Type::Array { elem, len: _ } => {
-                self.is_copy(elem) && self.type_size(ty) <= 16
-            }
-
-            // Tuples: Copy if all elements are Copy and size <= 16 bytes
-            Type::Tuple(elems) => {
-                elems.iter().all(|t| self.is_copy(t)) && self.type_size(ty) <= 16
-            }
-
-            // Option (T or none): Copy if inner is Copy and size <= 16 bytes
-            ty if ty.is_option() => {
-                let inner = ty.as_option().unwrap();
-                self.is_copy(inner) && self.type_size(ty) <= 16
-            }
-
-            // Result: NOT Copy (usually contains error info)
-            Type::Result { .. } => false,
-
-            // Union: NOT Copy (error union types)
-            Type::Union(_) => false,
-
-            // User-defined types: need to check size and fields
-            Type::Named(type_id) => {
-                if let Some(def) = self.program.types.get(*type_id) {
-                    match def {
-                        rask_types::TypeDef::Struct { fields, is_unique, .. } => {
-                            // U1: @unique disables implicit copy regardless of size
-                            if *is_unique { return false; }
-                            fields.iter().all(|(_, t)| self.is_copy(t))
-                                && self.type_size(ty) <= 16
-                        }
-                        rask_types::TypeDef::Enum { variants, .. } => {
-                            variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(t)))
-                                && self.type_size(ty) <= 16
-                        }
-                        // A primitive is always Copy; it never reaches here as
-                        // a `Named` anyway.
-                        rask_types::TypeDef::Primitive { .. } => true,
-                        rask_types::TypeDef::Interface { .. } => false,
-                        rask_types::TypeDef::Union { fields, .. } => {
-                            fields.iter().all(|(_, t)| self.is_copy(t))
-                                && self.type_size(ty) <= 16
-                        }
-                        rask_types::TypeDef::NominalAlias { underlying, .. } => {
-                            self.is_copy(underlying)
-                        }
-                    }
-                } else {
-                    false
-                }
-            }
-
-            // A `Link` is Copy: a machine word naming a node,
-            // whose whole point is to be duplicated freely (mem.racks). For
-            // `Link<T>` the rack spec says so from the other side — RK5 has
-            // using one after its node is deleted reported "as a use after free
-            // rather than as a move", which only reads as a rule if links copy.
-            // Without it, `v.push(link)` consumed the name and a later
-            // `rack.delete(link)` drew a bogus use-after-move.
-            //
-            // The other compiler-native generics (Vec, Map, Rack, ...) have no
-            // fields visible to the type system — their layout lives in the
-            // runtime, not in a struct decl — so field-based inference can't
-            // see them and they stay hardcoded move-only.
-            //
-            // A user-defined generic struct (`struct Wrapping<T> { value: T }`)
-            // *does* have real fields, so its Copy-ness depends on what T ends
-            // up being at this instantiation — same rule as a non-generic
-            // struct, just substituted first (W4).
-            Type::Generic { base, args } => {
-                let base_name = self.program.types.type_name(*base);
-                if Self::is_native_opaque_generic(&base_name) {
-                    base_name.as_str() == "Link"
-                } else if let Some(def) = self.program.types.get(*base) {
-                    match def {
-                        rask_types::TypeDef::Struct { type_params, fields, is_unique, .. } => {
-                            if *is_unique { return false; }
-                            let subst = Self::generic_field_subst(type_params, args);
-                            fields.iter().all(|(_, t)| self.is_copy(&Self::substitute_generic_field(t, &subst)))
-                                && self.type_size(ty) <= 16
-                        }
-                        rask_types::TypeDef::Enum { type_params, variants, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(&Self::substitute_generic_field(t, &subst))))
-                                && self.type_size(ty) <= 16
-                        }
-                        // A primitive is always Copy; it never reaches here as
-                        // a `Named` anyway.
-                        rask_types::TypeDef::Primitive { .. } => true,
-                        rask_types::TypeDef::Interface { .. } => false,
-                        // Unions aren't generic (no type_params to substitute) —
-                        // reaching this arm through a `Type::Generic` would mean
-                        // a union name got parsed with type arguments, which
-                        // shouldn't happen.
-                        rask_types::TypeDef::Union { .. } => false,
-                        rask_types::TypeDef::NominalAlias { underlying, .. } => {
-                            self.is_copy(underlying)
-                        }
-                    }
-                } else {
-                    false
-                }
-            }
-
-            // Function types are Copy (just a pointer)
-            Type::Fn { .. } => true,
-
-            // Type variables: conservative
-            Type::Var(_) => false,
-
-            // AT6: a projection is read off a conformance during type
-            // checking, so one reaching here never resolved. Conservative,
-            // same as a type variable.
-            Type::Assoc { .. } => false,
-
-            // Raw pointers are always Copy (just an address)
-            Type::RawPtr(_) => true,
-
-            // SIMD vectors: NOT Copy (large, stack-allocated)
-            Type::SimdVector { .. } => false,
-
-            // Unresolved types: conservative, except `Link`,
-            // which are Copy regardless of how the name was spelled — same
-            // three as the resolved `Type::Generic` arm above.
-            Type::UnresolvedGeneric { name, .. } => {
-                name.as_str() == "Link"
-            }
-            Type::UnresolvedNamed(_) => false,
-
-            // Interface objects: never Copy (TR11 — owns heap data)
-            Type::InterfaceObject { .. } => false,
-
-            // Error: don't report more errors
-            Type::Error => true,
-        }
-    }
-
-    /// Estimate type size in bytes (simplified).
-    fn type_size(&self, ty: &Type) -> usize {
-        match ty {
-            Type::Unit | Type::None => 0,
-            Type::Bool | Type::I8 | Type::U8 => 1,
-            Type::I16 | Type::U16 => 2,
-            Type::I32 | Type::U32 | Type::F32 | Type::Char => 4,
-            Type::I64 | Type::U64 | Type::F64 => 8,
-            // Two words, and the only scalar that is. Falling through to the
-            // 8-byte default made `struct Wide { a: i128, b: i64 }` measure 16
-            // instead of 24, so it sat on the Copy threshold instead of over it
-            // and two bindings aliased one value with nothing said (#936).
-            Type::I128 | Type::U128 => 16,
-            Type::Tuple(elems) => elems.iter().map(|t| self.type_size(t)).sum(),
-            Type::Array { elem, len } => self.type_size(elem) * len,
-            ty if ty.is_option() => self.type_size(ty.as_option().unwrap()) + 1, // tag byte
-            Type::Named(type_id) => {
-                if let Some(def) = self.program.types.get(*type_id) {
-                    match def {
-                        rask_types::TypeDef::Struct { fields, .. } => {
-                            fields.iter().map(|(_, t)| self.type_size(t)).sum()
-                        }
-                        rask_types::TypeDef::Enum { variants, .. } => {
-                            let max_variant = variants
-                                .iter()
-                                .map(|(_, data)| data.iter().map(|t| self.type_size(t)).sum::<usize>())
-                                .max()
-                                .unwrap_or(0);
-                            max_variant + 1
-                        }
-                        _ => 8,
-                    }
-                } else {
-                    8
-                }
-            }
-            // A user-defined generic struct/enum is sized the same way as a
-            // non-generic one, once its own type parameter is substituted
-            // with the type argument at this instantiation (`Wrapping<u8>` is
-            // one byte, not whatever the unsubstituted `T` would default to).
-            // The compiler-native generics (Vec, Map, ...) declare an empty
-            // field list — their real layout lives in the runtime, not in the
-            // struct decl — so summing fields would say 0 instead of their
-            // actual size. Keep them at the old flat 8-byte guess rather than
-            // let an empty sum silently answer 0.
-            Type::Generic { base, args } if !Self::is_native_opaque_generic(&self.program.types.type_name(*base)) => {
-                if let Some(def) = self.program.types.get(*base) {
-                    match def {
-                        rask_types::TypeDef::Struct { type_params, fields, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            fields.iter().map(|(_, t)| self.type_size(&Self::substitute_generic_field(t, &subst))).sum()
-                        }
-                        rask_types::TypeDef::Enum { type_params, variants, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
-                            let max_variant = variants
-                                .iter()
-                                .map(|(_, data)| data.iter().map(|t| self.type_size(&Self::substitute_generic_field(t, &subst))).sum::<usize>())
-                                .max()
-                                .unwrap_or(0);
-                            max_variant + 1
-                        }
-                        _ => 8,
-                    }
-                } else {
-                    8
-                }
-            }
-            // Strings, closures and interface objects: fat pointer
-            Type::String | Type::Fn { .. } | Type::InterfaceObject { .. } => 16,
-            _ => 8,
-        }
+        self.program.types.is_copy_with(ty, &|name| self.copy_params.contains(name))
     }
 
     /// Determine why a type is move-only (not Copy).
@@ -4094,7 +3831,7 @@ impl<'a> OwnershipChecker<'a> {
                 let base_name = self.program.types.type_name(*base);
                 // The compiler-native generics have no fields to blame — same
                 // gap `is_copy` has to work around for the same reason.
-                if Self::is_native_opaque_generic(&base_name) {
+                if rask_types::TypeTable::is_native_opaque_generic(&base_name) {
                     if matches!(base_name.as_str(), "Vec" | "Map") {
                         MoveReason::OwnsHeapMemory { type_name }
                     } else {
@@ -4106,21 +3843,21 @@ impl<'a> OwnershipChecker<'a> {
                             if *is_unique {
                                 return MoveReason::Unique { type_name };
                             }
-                            let subst = Self::generic_field_subst(type_params, args);
+                            let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
                             let all_fields_copy = fields.iter()
-                                .all(|(_, t)| self.is_copy(&Self::substitute_generic_field(t, &subst)));
+                                .all(|(_, t)| self.is_copy(&rask_types::TypeTable::substitute_generic_field(t, &subst)));
                             if all_fields_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.value_size(ty) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
                         }
                         rask_types::TypeDef::Enum { type_params, variants, .. } => {
-                            let subst = Self::generic_field_subst(type_params, args);
+                            let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
                             let all_copy = variants.iter().all(|(_, data)| data.iter()
-                                .all(|t| self.is_copy(&Self::substitute_generic_field(t, &subst))));
+                                .all(|t| self.is_copy(&rask_types::TypeTable::substitute_generic_field(t, &subst))));
                             if all_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.value_size(ty) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -4141,7 +3878,7 @@ impl<'a> OwnershipChecker<'a> {
                             }
                             let all_fields_copy = fields.iter().all(|(_, t)| self.is_copy(t));
                             if all_fields_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.value_size(ty) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -4149,7 +3886,7 @@ impl<'a> OwnershipChecker<'a> {
                         rask_types::TypeDef::Enum { variants, .. } => {
                             let all_copy = variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(t)));
                             if all_copy {
-                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.program.types.value_size(ty) }
                             } else {
                                 MoveReason::OwnsHeapMemory { type_name }
                             }
@@ -4162,7 +3899,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             Type::Result { .. } | Type::Union(_) => MoveReason::OwnsHeapMemory { type_name },
             _ => {
-                let size = self.type_size(ty);
+                let size = self.program.types.value_size(ty);
                 if size > 16 {
                     MoveReason::SizeExceedsThreshold { type_name, size }
                 } else {

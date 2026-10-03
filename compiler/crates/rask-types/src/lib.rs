@@ -6,6 +6,7 @@
 mod types;
 mod checker;
 mod interfaces;
+mod copy_rule;
 pub mod reflect;
 
 pub use types::{GenericArg, Type, TypeId, TypeVarId};

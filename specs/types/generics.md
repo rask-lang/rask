@@ -13,6 +13,7 @@ Interface conformance is declared — `Type implements Interface` says the type 
 | Rule | Description |
 |------|-------------|
 | **G1: Declared conformance** | A type satisfies an interface through a declared `Type implements Interface` block, checked against the interface's signatures. `duck interface` opts an interface into shape-matching (no declaration needed) within its own package — see DT1–DT4. The four core interfaces (Equal, Hashable, Comparable, Cloneable) are auto-derived for eligible types — compiler-provided conformance, overridable per EQ2/HA2/CO2 and subject to OC1. `Debug` (all types), `Encode`/`Decode` (markers), and `Error` (enums, `type.errors/ER6`) are also auto-derived. Of those, the four plus `Encode`/`Decode` may be overridden only by the package that declares the type (XC1) |
+| **G1a: `Copy` bound** | `T: Copy` holds where a value of `T` copies (`mem.value/VS1`): a primitive, `string`, or a struct, tuple or enum of Copy parts within 16 bytes. Nothing to implement, so no conformance block. In the body a `T` copies, so a borrowed `value: T` can be stored or handed to a `take` parameter without `take` on the parameter. Without the bound a `T` is assumed to move |
 | **G2: Checked at use site** | The compiler verifies interface matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | **G4: Operator expansion** | `a + b` becomes `a.add(b)` before interface checking |
