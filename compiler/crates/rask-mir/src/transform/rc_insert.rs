@@ -477,34 +477,23 @@ fn insert_aggregate_release(
                     }
                 }
                 MirStmtKind::Call { func: fref, args, dst } => {
-                    let borrows_recv = rask_stdlib::mir_metadata::borrows_receiver(&fref.name);
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if !is_tracked(&id) {
                             continue;
                         }
-                        // `h.items[0]` is `Vec_index(items, 0)`: the receiver
-                        // is borrowed, so the call keeps nothing. Only for a
-                        // handle read out of an aggregate. A *struct* reaching
-                        // a call is one whose fields might now be somebody
-                        // else's, whatever the callee does with argument zero.
-                        if i == 0 && borrows_recv && !aggregates.contains(&id) {
-                            continue;
-                        }
-                        // Giving back what a field held, right before the field
-                        // holds something else. Argument zero is the handle
-                        // that was in the slot; the aggregate is untouched
-                        // (#1198).
-                        if i == 0 && rask_stdlib::mir_metadata::frees_a_replaced_slot(&fref.name) {
-                            continue;
-                        }
-                        // A callee whose body this pass can read, and which
-                        // demonstrably doesn't hold on to the aggregate, leaves
-                        // it to this frame. Both sides refusing is how a `take
-                        // self` struct's `Vec` came to be freed by nobody
-                        // (`os.Command.spawn`). Only for a callee in `kept`: a
-                        // runtime helper has no body to read.
-                        if kept.get(&fref.name).is_some_and(|v| !v.get(i).copied().unwrap_or(true)) {
+                        // What the callee does with it: from the body when this
+                        // pass can read one (`kept`), from the declaration when
+                        // it can't. Both sides refusing is how a `take self`
+                        // struct's `Vec` came to be freed by nobody
+                        // (`os.Command.spawn`), and a struct handed to `m.get`
+                        // left its strings to nobody (#1394).
+                        let lent = match kept.get(&fref.name) {
+                            Some(v) => !v.get(i).copied().unwrap_or(true),
+                            None => rask_stdlib::mir_metadata::argument_mode(&fref.name, i)
+                                == Some(rask_stdlib::mir_metadata::ArgMode::Lent),
+                        };
+                        if lent {
                             // It may still write into it: a `mutate`
                             // parameter is the caller's slot, by address.
                             if aggregates.contains(&id) {
@@ -512,24 +501,11 @@ fn insert_aggregate_release(
                             }
                             continue;
                         }
-                        // A runtime helper whose line in `INTERNAL_SPELLINGS`
-                        // says outright that it keeps none of what it is
-                        // handed. `Link_register_struct(h)` is the reason: the
-                        // whole struct goes to the runtime so a rack can find
-                        // its link fields.
-                        //
-                        // And a struct handed to a stdlib method that declares
-                        // the parameter borrowed: `m.get(k)` with a struct key
-                        // only reads it, and handing it over left the key's
-                        // strings to nobody (#1394). Declared methods only — a
-                        // runtime helper's silence isn't a promise.
-                        if rask_stdlib::mir_metadata::keeps_no_arguments(&fref.name)
-                            || (aggregates.contains(&id)
-                                && rask_stdlib::mir_metadata::borrows_argument(&fref.name, i))
-                        {
-                            if aggregates.contains(&id) {
-                                ev.push(ownership::Event::WriteThrough(id));
-                            }
+                        // Freeing what a field held, right before the field
+                        // holds something else: argument zero is the handle
+                        // that was in the slot, and the aggregate is untouched
+                        // (#1198).
+                        if i == 0 && rask_stdlib::mir_metadata::frees_a_replaced_slot(&fref.name) {
                             continue;
                         }
                         ev.push(ownership::Event::HandOver(id));
