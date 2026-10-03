@@ -96,7 +96,7 @@ struct Chunk {
 // Top-level functions the host can call
 
 extend Chunk {
-    func new(main: Prototype) -> Chunk {
+    func new(take main: Prototype) -> Chunk {
         return Chunk {
             main: main,
             imports: Vec.new(),

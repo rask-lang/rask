@@ -6561,8 +6561,13 @@ impl<'a> OwnershipChecker<'a> {
                 for f in fields {
                     self.consume_owned_into_aggregate(&f.value);
                 }
-                if let Some(s) = spread {
-                    self.consume_owned_into_aggregate(s);
+                // A spread reads the fields nobody listed (type.structs/FD5),
+                // so `Config { port, ..base }` works on a borrowed `base`. Only
+                // a box or a resource has to go along with what it holds.
+                if let Some(ExprKind::Ident(name)) = spread.as_deref().map(|s| &s.kind) {
+                    if self.owned_bindings.contains(name) || self.resource_bindings.contains(name) {
+                        self.consume_binding(name, expr.span, None);
+                    }
                 }
             }
             ExprKind::MethodCall { object, method, args, .. }
