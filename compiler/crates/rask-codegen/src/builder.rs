@@ -1238,17 +1238,14 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmtKind::RcDecContents { local } => {
-                // An aggregate dying gives back the strings it holds — and the
-                // container behind its tag, if it has one. MIR stores the plain
-                // type and the kind separately (`MirType::Container` says why),
-                // so put them back together for the walk.
+                // An aggregate dying gives back the strings it holds, and any
+                // container inside it. The walk reads the full type, which
+                // still says which pointers are containers
+                // (`MirType::Container` says why `ty` doesn't).
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };
-                let ty = match entry.container {
-                    Some(kind) => Self::with_container_kind(&entry.ty, kind),
-                    None => entry.ty.clone(),
-                };
+                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
                 if !Self::holds_string_mir(&ty, ctx, 0) {
                     return Ok(());
                 }
@@ -7127,18 +7124,10 @@ impl<'a> FunctionBuilder<'a> {
     /// panicked). The JoinError variant tags and its message field's offset come
     /// from the destination's own error layout, so renaming or reordering the
     /// enum in stdlib/async.rk doesn't silently change what gets built.
-    /// Where the strings sit inside one container element.
-    ///
-    /// `container_drop.rs` says what the element *is* — nothing, a string, or a
-    /// struct with a given layout — and this answers where its strings are,
-    /// which needs the layouts. `None` means "leave the elements alone".
-    ///
-    /// Only offsets that hold a string unconditionally. Anything tag-dependent
-    /// inside an element — an optional field, an enum — is skipped rather than
-    /// guessed, because a wrong offset here releases sixteen bytes that were
-    /// never a string. Those elements leak; see #1027.
-    fn element_string_offsets(tag: Option<i64>, ctx: &CodegenCtx) -> Option<Vec<i32>> {
-        crate::elem_offsets::string_offsets_for_tag(tag?, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names)
+    /// What one container element owns, and where. `None` means "leave the
+    /// elements alone".
+    fn element_owned_offsets(elem: Option<&MirType>, ctx: &CodegenCtx) -> Option<Vec<i32>> {
+        crate::elem_offsets::owned_offsets(elem?, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names)
     }
 
     /// The offsets as read-only data, one object per distinct list.
@@ -7212,24 +7201,9 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// The local's type with its container kind put back into the wrapper's
-    /// payload — the one type the release walk gets to see it in.
-    fn with_container_kind(ty: &MirType, kind: ContainerKind) -> MirType {
-        match ty {
-            MirType::Option(inner) if **inner == MirType::Ptr => {
-                MirType::Option(Box::new(MirType::Container(kind)))
-            }
-            MirType::Result { ok, err } if **ok == MirType::Ptr => MirType::Result {
-                ok: Box::new(MirType::Container(kind)),
-                err: err.clone(),
-            },
-            other => other.clone(),
-        }
-    }
-
     /// What frees a container MIR named as one. The type-name route
     /// (`container_free_for`) reads a field's declared type; this one reads a
-    /// wrapper payload, where the kind travels in the MIR type instead.
+    /// local's full type, where the kind travels in the MIR type instead.
     fn container_free_for_kind(kind: ContainerKind) -> &'static str {
         match kind {
             ContainerKind::Vec => "rask_vec_free",
@@ -8191,9 +8165,10 @@ impl<'a> FunctionBuilder<'a> {
     ) -> Vec<i32> {
         let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) else { return Vec::new() };
         let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) else { return Vec::new() };
-        let MirType::Struct(layout_id) = &local.ty else { return Vec::new() };
-        let tag = rask_mir::elem_strs::ELEM_STRUCT_BASE + layout_id.id as i64;
-        crate::elem_offsets::string_offsets_for_tag(tag, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names)
+        if !matches!(local.ty, MirType::Struct(_)) {
+            return Vec::new();
+        }
+        crate::elem_offsets::owned_offsets(&local.ty, ctx.struct_layouts, ctx.enum_layouts, ctx.type_names)
             .unwrap_or_default()
     }
 
@@ -8332,11 +8307,11 @@ impl<'a> FunctionBuilder<'a> {
                 // null map, which says the elements own nothing.
                 let mut expanded: Vec<Value> = Vec::new();
                 for i in 0..tags as usize {
-                    let tag = mir_args.get(leading + i).and_then(|a| match a {
-                        MirOperand::Constant(MirConst::Int(n)) => Some(*n),
+                    let elem = mir_args.get(leading + i).and_then(|a| match a {
+                        MirOperand::Constant(MirConst::Elem(ty)) => Some(ty),
                         _ => None,
                     });
-                    match Self::element_string_offsets(tag, ctx) {
+                    match Self::element_owned_offsets(elem, ctx) {
                         Some(offs) if !offs.is_empty() => {
                             let n = offs.len() as i64;
                             expanded.push(Self::element_offsets_global(builder, &offs, ctx));
@@ -9043,6 +9018,10 @@ impl<'a> FunctionBuilder<'a> {
                     MirConst::Char(c) => {
                         Ok(builder.ins().iconst(types::I32, *c as i64))
                     }
+                    // Only ever a container constructor's argument, which the
+                    // call adapter replaces with an offsets pointer and count
+                    // (`ArgAdapt::ContainerCtor`). The placeholder is dead.
+                    MirConst::Elem(_) => Ok(builder.ins().iconst(types::I64, 0)),
                     MirConst::String(s) => {
                         // Build the 16-byte `RaskStr` in a stack slot directly.
                         //

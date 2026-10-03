@@ -2,7 +2,7 @@
 
 //! MIR function representation - control-flow graph of basic blocks.
 
-use crate::{ContainerKind, MirStmt, MirTerminator, MirType};
+use crate::{MirStmt, MirTerminator, MirType};
 
 /// MIR function
 #[derive(Debug, Clone)]
@@ -63,15 +63,15 @@ pub struct MirLocal {
     pub name: Option<String>,
     pub ty: MirType,
     pub is_param: bool,
-    /// The container behind this local's wrapper tag, when it has one.
+    /// This local's type with its containers still named, when `ty` lost any.
     ///
     /// `ty` calls every container a bare `Ptr`, so a local holding
-    /// `Vec<Point> or JsonError` says nothing about the vector on its ok side
-    /// and releasing it walked straight past it. The checker's type knows;
-    /// lowering hands the answer to `BlockBuilder`, which records it here and
-    /// keeps `ty` the plain spelling everything else compares against
+    /// `Vec<Point> or JsonError` or `(Vec<i64>, i64)` says nothing about the
+    /// vector inside it, and releasing it walked straight past it. Lowering
+    /// hands the full type to `BlockBuilder`, which keeps it here and keeps
+    /// `ty` the plain spelling everything else compares against
     /// (`MirType::Container` says why that matters).
-    pub container: Option<ContainerKind>,
+    pub unerased: Option<MirType>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

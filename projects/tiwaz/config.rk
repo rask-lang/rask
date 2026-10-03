@@ -15,7 +15,7 @@ func routes() -> Vec<Route> {
     return Vec<Route>.from([
         Route { 
             prefix: "/", 
-            pool: backend_pool
+            pool: backend_pool.clone()
         }
     ])
 }

@@ -5,17 +5,22 @@
 use crate::{BlockId, LocalId, MirBlock, MirFunction, MirLocal, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType};
 use rask_ast::Span;
 
-/// Split a type lowering handed over into the spelling MIR stores and the
-/// container kind that spelling loses.
+/// Split a type lowering handed over into the spelling MIR stores and, when
+/// that spelling lost a container, the full type.
 ///
 /// `MirType::Container` exists so lowering can say which container a pointer
 /// points at, and it must not survive into a stored type — MIR compares types
 /// for equality all over, and two spellings of `Vec<i64>?` is a bug factory
 /// (see `MirType::Container`). So every local made here keeps the plain type
-/// and the kind side by side.
-fn split_container(ty: MirType) -> (MirType, Option<crate::ContainerKind>) {
-    let kind = ty.wrapper_container();
-    (ty.without_container_kinds(), kind)
+/// and the full one side by side.
+///
+/// Only for a container *inside* something. A bare container local is freed by
+/// the pass that tracks handles (`container_drop`); naming it here as well
+/// would have the aggregate walk free it a second time.
+fn split_container(ty: MirType) -> (MirType, Option<MirType>) {
+    let erased = ty.without_container_kinds();
+    let unerased = (erased != ty && !matches!(ty, MirType::Container(_))).then_some(ty);
+    (erased, unerased)
 }
 
 pub struct BlockBuilder {
@@ -97,7 +102,7 @@ impl BlockBuilder {
             name: None,
             ty,
             is_param: false,
-            container,
+            unerased: container,
         });
         id
     }
@@ -111,7 +116,7 @@ impl BlockBuilder {
             name: Some(name),
             ty,
             is_param: false,
-            container,
+            unerased: container,
         });
         id
     }
@@ -133,7 +138,7 @@ impl BlockBuilder {
             name: Some(name),
             ty,
             is_param: true,
-            container,
+            unerased: container,
         };
         self.function.params.push(local.clone());
         self.function.locals.push(local);
@@ -156,7 +161,7 @@ impl BlockBuilder {
         let (ty, container) = split_container(ty);
         if let Some(local) = self.function.locals.iter_mut().find(|l| l.id == id) {
             local.ty = ty;
-            local.container = container;
+            local.unerased = container;
         }
     }
 

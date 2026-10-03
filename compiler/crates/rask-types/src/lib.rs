@@ -6,11 +6,12 @@
 mod types;
 mod checker;
 mod interfaces;
+mod copy_rule;
 pub mod reflect;
 
 pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{
-    typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, TypeTable, TypeDef,
+    typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, WrapperFns, TypeTable, TypeDef,
     TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
     ParamMode, Callee, ErrorWrap, receiver_name, conformance_symbol, BoundFrom, TypeBinding,
     OperatorTarget, operator_interface, primitive_spelling, TaskBound,

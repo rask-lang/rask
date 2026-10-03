@@ -504,5 +504,8 @@ fn const_to_value(c: &MirConst, expected: Option<&MirType>) -> MiriValue {
         MirConst::Bool(v) => MiriValue::Bool(*v),
         MirConst::Char(v) => MiriValue::Char(*v),
         MirConst::String(v) => MiriValue::String(v.clone()),
+        // A container constructor's element description. This evaluator keeps
+        // containers as values and frees nothing, so it has no use for one.
+        MirConst::Elem(_) => MiriValue::I64(0),
     }
 }

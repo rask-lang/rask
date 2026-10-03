@@ -23,7 +23,7 @@ struct Wrapper<T> {
 }
 
 extend Wrapper<T> {
-    func new(value: T) -> Wrapper<T> {
+    func new(take value: T) -> Wrapper<T> {
         return Wrapper { value }
     }
 
@@ -32,7 +32,7 @@ extend Wrapper<T> {
     }
 }
 
-func wrap<T>(value: T) -> Wrapper<T> {
+func wrap<T>(take value: T) -> Wrapper<T> {
     return Wrapper { value }
 }
 

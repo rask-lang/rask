@@ -151,7 +151,7 @@ fn retain_handle_captures(func: &mut MirFunction) {
                     name: None,
                     ty,
                     is_param: false,
-                    container: None,
+                    unerased: None,
                 });
                 clones.push(MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(to),
@@ -549,7 +549,7 @@ fn build_env_drop(
         name: Some("__env".to_string()),
         ty: MirType::Ptr,
         is_param: true,
-        container: None,
+        unerased: None,
     };
     let mut locals = vec![param.clone()];
     let mut statements = Vec::new();
@@ -560,7 +560,7 @@ fn build_env_drop(
             name: None,
             ty: MirType::Ptr,
             is_param: false,
-            container: None,
+            unerased: None,
         });
         let (access, free) = match slot.holds {
             Holds::Handle(free) => (crate::CaptureAccess::Value, free),
@@ -2106,7 +2106,7 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
                 name: None,
                 ty: MirType::Ptr,
                 is_param: false,
-                container: None,
+                unerased: None,
             });
             func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::Assign {
                 dst: tmp,

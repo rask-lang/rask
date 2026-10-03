@@ -375,6 +375,18 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
+    /// ctrl.loops/LP6: a value-mode loop's element given away. The loop lends
+    /// each element; the collection still holds it.
+    #[error("cannot give away `{name}` — the loop only lends it out of `{from}`")]
+    ConsumeLoopItem {
+        name: String,
+        /// The collection the loop walks.
+        from: String,
+        /// The `for` statement.
+        loop_at: Span,
+        sink: Option<String>,
+    },
+
     /// A non-`own` closure consumed a linear value it only borrowed.
     ///
     /// The parameter version of this is `ConsumeBorrowedParam` (#804). Same

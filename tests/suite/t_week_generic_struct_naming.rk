@@ -32,7 +32,7 @@ extend Wrapper {
     }
 }
 
-func make(a: T, b: U) -> Pair<T, U> {
+func make(take a: T, take b: U) -> Pair<T, U> {
     return Pair { first: a, second: b }
 }
 

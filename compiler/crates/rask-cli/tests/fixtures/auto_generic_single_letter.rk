@@ -2,7 +2,7 @@
 // PC1: single uppercase letters in signature types are type parameters,
 // no <T> declaration needed.
 
-func swap(a: T, b: T) -> (T, T) {
+func swap(take a: T, take b: T) -> (T, T) {
     return (b, a)
 }
 

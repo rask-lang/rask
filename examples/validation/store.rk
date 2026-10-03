@@ -160,11 +160,11 @@ extend Store {
     // consumes tx via commit(), cancelling the ensure. Definite at every
     // exit (ctrl.ensure/C3–C5).
 
-    func apply_batch(mutate self, ops: Vec<TxOp>) -> void or StoreError {
+    func apply_batch(mutate self, take ops: Vec<TxOp>) -> void or StoreError {
         mut tx = TaskTx.begin()
         ensure tx.rollback()
 
-        for op in ops {
+        for op in ops.take_all() {
             try self.check_op(op)
             tx.stage(op)
         }

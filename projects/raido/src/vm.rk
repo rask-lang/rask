@@ -76,7 +76,7 @@ struct Vm {
 }
 
 extend Vm {
-    func new(chunk: Chunk, fuel: i64) -> Vm {
+    func new(take chunk: Chunk, fuel: i64) -> Vm {
         mut regs = Vec.new()
         mut i = 0
         while i < 256 {

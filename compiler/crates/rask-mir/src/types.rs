@@ -43,26 +43,6 @@ impl MirType {
             other => other.clone(),
         }
     }
-
-    /// The container behind this wrapper's good tag, if that is what it holds.
-    ///
-    /// Only a wrapper's own payload. Deeper than that there is nothing to
-    /// record it on, and nothing that needs it: a container in a struct field
-    /// is described by the field's declared type in the layout, and a bare
-    /// handle in a local is freed by the pass that tracks handles.
-    pub fn wrapper_container(&self) -> Option<ContainerKind> {
-        match self {
-            MirType::Option(inner) => match inner.as_ref() {
-                MirType::Container(k) => Some(*k),
-                _ => None,
-            },
-            MirType::Result { ok, .. } => match ok.as_ref() {
-                MirType::Container(k) => Some(*k),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
 }
 
 impl ContainerKind {

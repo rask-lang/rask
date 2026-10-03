@@ -27,7 +27,7 @@ fn run_pipeline(path: &str, format: Format) -> PipelineResult {
     let output = rask_compiler::compile_file(path, &config);
 
     // Build source_files for display
-    let source_files: Vec<(std::path::PathBuf, String)> = if let Some(ref r) = output.result {
+    let source_files: Vec<(std::path::PathBuf, String)> = if output.result.is_some() {
         // Use the source from the compile result's check phase
         vec![] // compile doesn't track source_files directly — read if needed
     } else {

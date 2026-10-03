@@ -412,6 +412,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Rack_free", Internal::ConsumesReceiver),
     ("Random_free", Internal::ConsumesReceiver),
 
+
     // ── `Atomic<T>` ─────────────────────────────────────────────
     // A compiler type with no stdlib file, so every one of its spellings needs
     // a line here — and it needs them now that `Atomic_new` is a constructor
@@ -779,29 +780,83 @@ fn internal_spelling(base: &str) -> Option<Internal> {
     INTERNAL_SPELLINGS.iter().find(|(n, _)| *n == base).map(|(_, i)| *i)
 }
 
-/// Does this call demonstrably keep none of what it is handed?
+/// Runtime functions lowering calls by their own names, with no stdlib
+/// declaration behind them: which arguments each gives away, by position. The
+/// rest it only reads.
 ///
-/// A stronger claim than `keeps_argument` can make. That one answers "keeps
-/// everything" for a name nobody wrote down, so a caller reading it can't tell
-/// "declared not to keep it" from "unaccounted for" — and the drop pass has to
-/// treat both as a reason to leave the value alone. Here the default is `false`
-/// and only a line in `INTERNAL_SPELLINGS` says otherwise, which is what makes
-/// a `true` worth acting on.
+/// Kept apart from `INTERNAL_SPELLINGS` because these aren't spellings of a
+/// stdlib method, and a head listed there becomes a family whose every member
+/// has to be listed: `rask_free` there made each `rask_*` call in every
+/// program print an unmapped-spelling warning.
+const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
+    // `[a, b]` builds a vector from a stack array, and the array's elements
+    // move into it.
+    ("rask_vec_from_static", &[0]),
+    ("rask_free", &[0]),
+    // A failed `assert a == b` prints both sides and stops; it keeps nothing.
+    ("assert_fail_cmp_i64", &[]),
+    ("assert_fail_cmp_f32", &[]),
+    ("assert_fail_cmp_f64", &[]),
+    ("assert_fail_cmp_str", &[]),
+    // The JSON encoder's buffer copies what it is handed into its own bytes.
+    ("json_buf_add_i64", &[]),
+    ("json_buf_array_add_i64", &[]),
+    ("json_buf_array_add_string", &[]),
+    ("concat", &[]),
+    ("i64_to_string", &[]),
+    ("u64_to_string", &[]),
+    ("RawPtr_add", &[]),
+    ("RawPtr_offset", &[]),
+    ("RawPtr_read", &[]),
+];
+
+/// What a call does with the argument at `arg_index`, by its declaration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArgMode {
+    /// Read, or written through for a `mutate` parameter. The caller still
+    /// owns it afterwards.
+    Lent,
+    /// Kept or freed: the caller has given it away.
+    Given,
+}
+
+/// How this call treats the argument at `arg_index`, or `None` when nothing
+/// says: a name that is neither declared nor listed in `INTERNAL_SPELLINGS`.
+/// A caller that has to guess for `None` guesses `Given`, which leaks where
+/// the other guess frees twice.
 ///
-/// `FreshFromReceiver` and `NoReceiver` both say it in words: the receiver is
-/// borrowed or absent, no argument is kept, and nothing handed back points
-/// inside. The rack registrars are the family that needed this —
-/// `Link_register_struct(h)` hands the whole struct to the runtime so it can
-/// record which fields hold links, and a struct reaching *any* call was reason
-/// enough to give up on releasing it. So every struct with a rack in it leaked
-/// the arena and everything in it.
-pub fn keeps_no_arguments(qualified_name: &str) -> bool {
+/// A declared method answers from its signature: `take` gives, anything else
+/// lends. A runtime function answers from `RUNTIME_FUNCTIONS`, and an internal
+/// spelling from its line: `ConsumesReceiver` gives argument zero,
+/// `FreshFromReceiver` and `NoReceiver` keep nothing.
+pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> {
+    let mode = |given: bool| if given { ArgMode::Given } else { ArgMode::Lent };
+    if let Some(m) = declared(qualified_name) {
+        let param_index = if m.takes_self {
+            match arg_index.checked_sub(1) {
+                Some(i) => i,
+                None => return Some(mode(m.take_self)),
+            }
+        } else {
+            arg_index
+        };
+        // Past the declared parameters: an argument lowering added (an
+        // element size, a function address), which carries nothing owned.
+        return Some(mode(m.takes.get(param_index).copied().unwrap_or(false)));
+    }
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
-    matches!(
-        internal_spelling(base),
-        Some(Internal::FreshFromReceiver) | Some(Internal::NoReceiver)
-    )
+    if let Some((_, gives)) = RUNTIME_FUNCTIONS.iter().find(|(n, _)| *n == base) {
+        return Some(mode(gives.contains(&arg_index)));
+    }
+    match internal_spelling(base)? {
+        Internal::SameAs(_) => None,
+        Internal::FreshFromReceiver | Internal::NoReceiver => Some(ArgMode::Lent),
+        // A free gives argument zero away. So does freeing what a slot held
+        // (`ReplacesSlot`): argument zero is that handle, and the aggregate it
+        // came out of is untouched.
+        Internal::ConsumesReceiver | Internal::ReplacesSlot => Some(mode(arg_index == 0)),
+    }
 }
 
 /// Runtime helpers that take a callback, call it, and keep nothing.

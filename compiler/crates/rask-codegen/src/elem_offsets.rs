@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! Turning a container's element tag into what one element owns and where.
+//! Turning a container's element type into what one element owns and where.
 //!
 //! Lowering says *what* the elements are (`rask_mir::elem_strs`); only codegen
 //! has the layouts to say *where* the owned things sit. Two places need the
@@ -21,10 +21,7 @@
 //! particular value, and one enum contributes a guard per variant that owns
 //! anything. The header describes the packing; `owned_walk` in `vec.c` reads it.
 
-use rask_mir::elem_strs::{
-    decode_wrapper, Wrapper, ELEM_CLOSURE, ELEM_ENUM_BASE, ELEM_MAP, ELEM_NONE, ELEM_STRING,
-    ELEM_STRUCT_BASE, ELEM_TRAITBOX, ELEM_VEC,
-};
+use rask_mir::{ContainerKind, MirType};
 use rask_mono::{EnumLayout, FieldLayout, StructLayout};
 use std::collections::HashMap;
 
@@ -99,66 +96,99 @@ fn tag_guard(tag_offset: i32, tag_value: u64, count: usize, tag_size: u32) -> Op
     Some(entry(packed, KIND_TAG_IF))
 }
 
-/// What one element of a container tagged `tag` owns, and where, or `None` when
-/// it owns nothing.
-pub fn string_offsets_for_tag(
-    tag: i64,
+/// What one element of type `ty` owns, and where, or `None` when it owns
+/// nothing.
+pub fn owned_offsets(
+    ty: &MirType,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
     names: &HashMap<TypeId, String>,
 ) -> Option<Vec<i32>> {
     let mut out = Vec::new();
-    describe_tag(tag, 0, layouts, enums, names, &mut out)?;
+    describe(ty, 0, layouts, enums, names, 0, &mut out)?;
     (!out.is_empty()).then_some(out)
 }
 
-/// What a value tagged `tag` at offset `base` owns, appended to `out`.
-fn describe_tag(
-    tag: i64,
+/// What a value of type `ty` at offset `base` owns, appended to `out`.
+fn describe(
+    ty: &MirType,
     base: i32,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
     names: &HashMap<TypeId, String>,
+    depth: u32,
     out: &mut Vec<i32>,
 ) -> Option<()> {
-    if let Some((kind, ok, err)) = decode_wrapper(tag) {
-        return wrapper_arms(kind, ok, err, base, layouts, enums, names, out);
+    if depth > MAX_DEPTH {
+        return None;
     }
-    match tag {
-        ELEM_STRING => out.push(entry(base, KIND_STRING)),
+    match ty {
+        MirType::String => out.push(entry(base, KIND_STRING)),
         // The element is the container. Its own list travels with it, so this
-        // level says "a Vec lives at offset 0" and stops there.
-        ELEM_VEC => out.push(entry(base, KIND_VEC)),
-        ELEM_MAP => out.push(entry(base, KIND_MAP)),
+        // level says "a Vec lives here" and stops there. A rack is an arena
+        // whose nodes outlive any one element (mem.racks), so it's nobody's
+        // here.
+        MirType::Container(ContainerKind::Vec) => out.push(entry(base, KIND_VEC)),
+        MirType::Container(ContainerKind::Map) => out.push(entry(base, KIND_MAP)),
         // The element *is* the pointer, so there is nothing to flatten: one
         // entry saying what kind of block it names.
-        ELEM_CLOSURE => out.push(entry(base, KIND_CLOSURE)),
-        ELEM_TRAITBOX => out.push(entry(base, KIND_TRAITBOX)),
-        n if n >= ELEM_STRUCT_BASE => {
-            let idx = usize::try_from(n - ELEM_STRUCT_BASE).ok()?;
-            let layout = layouts.get(idx)?;
-            flatten(&layout.fields, base, layouts, enums, names, 0, None, out)?;
+        MirType::FuncPtr(_) => out.push(entry(base, KIND_CLOSURE)),
+        MirType::InterfaceObject { .. } => out.push(entry(base, KIND_TRAITBOX)),
+        MirType::Struct(id) => {
+            let fields = layouts.get(id.id as usize)?.fields.clone();
+            flatten(&fields, base, layouts, enums, names, depth + 1, None, out)?;
         }
-        n if n <= ELEM_ENUM_BASE => {
-            let idx = usize::try_from(ELEM_ENUM_BASE - n).ok()?;
-            let layout = enums.get(idx)?;
-            enum_arms(layout, base, layouts, enums, names, 0, None, out)?;
+        MirType::Enum(id) => {
+            let layout = enums.get(id.id as usize)?;
+            enum_arms(layout, base, layouts, enums, names, depth + 1, None, out)?;
+        }
+        // A niche option is the payload's own word with `none` reserved: no
+        // tag, and nothing it points at is the container's.
+        MirType::Option(inner) if !inner.is_niche_payload() => {
+            let none = MirType::Void;
+            wrapper_arms(Wrapper::Option, inner, &none, base, layouts, enums, names, depth, out)?;
+        }
+        MirType::Result { ok, err } => {
+            wrapper_arms(Wrapper::Result, ok, err, base, layouts, enums, names, depth, out)?;
+        }
+        // Parts at their natural offsets, the packing tuple lowering uses.
+        MirType::Tuple(parts) => {
+            let mut at = 0u32;
+            for part in parts {
+                let align = part.align().max(1);
+                at = (at + align - 1) & !(align - 1);
+                describe(part, base + at as i32, layouts, enums, names, depth + 1, out)?;
+                at += part.size();
+            }
+        }
+        MirType::Array { elem, len } => {
+            let stride = elem.size() as i32;
+            for i in 0..*len as i32 {
+                describe(elem, base + i * stride, layouts, enums, names, depth + 1, out)?;
+            }
         }
         _ => {}
     }
     Some(())
 }
 
+#[derive(Clone, Copy)]
+enum Wrapper {
+    Result,
+    Option,
+}
+
 /// A `T or E` or tagged `T?`: one guard per side that owns anything, on the
 /// wrapper's own tag, with the side described at the payload offset.
 fn wrapper_arms(
     kind: Wrapper,
-    ok: i64,
-    err: i64,
+    ok: &MirType,
+    err: &MirType,
     base: i32,
     layouts: &[StructLayout],
     enums: &[EnumLayout],
     names: &HashMap<TypeId, String>,
+    depth: u32,
     out: &mut Vec<i32>,
 ) -> Option<()> {
     let (tag_offset, payload_offset) = match kind {
@@ -167,11 +197,8 @@ fn wrapper_arms(
     };
     // Tag 0 is the ok side (`Some` for an option), tag 1 the error side.
     for (tag_value, side) in [(0u64, ok), (1u64, err)] {
-        if side == ELEM_NONE {
-            continue;
-        }
         let mut arm = Vec::new();
-        describe_tag(side, base + payload_offset as i32, layouts, enums, names, &mut arm)?;
+        describe(side, base + payload_offset as i32, layouts, enums, names, depth + 1, &mut arm)?;
         if arm.is_empty() {
             continue;
         }

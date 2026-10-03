@@ -972,9 +972,9 @@ mod tests {
         insert_all_closure_drops(fns);
     }
 
-    fn temp(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: false, container: None } }
+    fn temp(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: false, unerased: None } }
 
-    fn param(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: true, container: None } }
+    fn param(id: u32, ty: MirType) -> MirLocal { MirLocal { id: LocalId(id), name: None, ty, is_param: true, unerased: None } }
 
     fn block(id: u32, stmts: Vec<MirStmt>, term: MirTerminator) -> MirBlock {
         MirBlock { id: BlockId(id), statements: stmts, terminator: term }

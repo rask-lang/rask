@@ -298,7 +298,7 @@ fn insert_aggregate_release(
         // when nothing in it is a string: `Vec<i64>?` is a tag beside a handle,
         // and the vector behind that tag was nobody's. The kind is on the local
         // rather than in the type — `MirType::Container` says why.
-        .filter(|l| aggregate_may_hold_string(&l.ty) || l.container.is_some())
+        .filter(|l| aggregate_may_hold_string(&l.ty) || l.unerased.is_some())
         .map(|l| l.id)
         .collect();
     if aggregates.is_empty() {
@@ -477,34 +477,23 @@ fn insert_aggregate_release(
                     }
                 }
                 MirStmtKind::Call { func: fref, args, dst } => {
-                    let borrows_recv = rask_stdlib::mir_metadata::borrows_receiver(&fref.name);
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if !is_tracked(&id) {
                             continue;
                         }
-                        // `h.items[0]` is `Vec_index(items, 0)`: the receiver
-                        // is borrowed, so the call keeps nothing. Only for a
-                        // handle read out of an aggregate. A *struct* reaching
-                        // a call is one whose fields might now be somebody
-                        // else's, whatever the callee does with argument zero.
-                        if i == 0 && borrows_recv && !aggregates.contains(&id) {
-                            continue;
-                        }
-                        // Giving back what a field held, right before the field
-                        // holds something else. Argument zero is the handle
-                        // that was in the slot; the aggregate is untouched
-                        // (#1198).
-                        if i == 0 && rask_stdlib::mir_metadata::frees_a_replaced_slot(&fref.name) {
-                            continue;
-                        }
-                        // A callee whose body this pass can read, and which
-                        // demonstrably doesn't hold on to the aggregate, leaves
-                        // it to this frame. Both sides refusing is how a `take
-                        // self` struct's `Vec` came to be freed by nobody
-                        // (`os.Command.spawn`). Only for a callee in `kept`: a
-                        // runtime helper has no body to read.
-                        if kept.get(&fref.name).is_some_and(|v| !v.get(i).copied().unwrap_or(true)) {
+                        // What the callee does with it: from the body when this
+                        // pass can read one (`kept`), from the declaration when
+                        // it can't. Both sides refusing is how a `take self`
+                        // struct's `Vec` came to be freed by nobody
+                        // (`os.Command.spawn`), and a struct handed to `m.get`
+                        // left its strings to nobody (#1394).
+                        let lent = match kept.get(&fref.name) {
+                            Some(v) => !v.get(i).copied().unwrap_or(true),
+                            None => rask_stdlib::mir_metadata::argument_mode(&fref.name, i)
+                                == Some(rask_stdlib::mir_metadata::ArgMode::Lent),
+                        };
+                        if lent {
                             // It may still write into it: a `mutate`
                             // parameter is the caller's slot, by address.
                             if aggregates.contains(&id) {
@@ -512,15 +501,11 @@ fn insert_aggregate_release(
                             }
                             continue;
                         }
-                        // A runtime helper whose line in `INTERNAL_SPELLINGS`
-                        // says outright that it keeps none of what it is
-                        // handed. `Link_register_struct(h)` is the reason: the
-                        // whole struct goes to the runtime so a rack can find
-                        // its link fields.
-                        if rask_stdlib::mir_metadata::keeps_no_arguments(&fref.name) {
-                            if aggregates.contains(&id) {
-                                ev.push(ownership::Event::WriteThrough(id));
-                            }
+                        // Freeing what a field held, right before the field
+                        // holds something else: argument zero is the handle
+                        // that was in the slot, and the aggregate is untouched
+                        // (#1198).
+                        if i == 0 && rask_stdlib::mir_metadata::frees_a_replaced_slot(&fref.name) {
                             continue;
                         }
                         ev.push(ownership::Event::HandOver(id));
@@ -1108,7 +1093,7 @@ mod tests {
     fn local(id: u32) -> LocalId { LocalId(id) }
 
     fn string_local(id: u32, name: &str) -> MirLocal {
-        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, container: None }
+        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, unerased: None }
     }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
@@ -1159,14 +1144,14 @@ mod tests {
             name: Some("title".into()),
             ty: MirType::String,
             is_param: true,
-            container: None,
+            unerased: None,
         };
         let mut f = MirFunction {
             name: "put".to_string(),
             params: vec![param.clone()],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("self".into()), ty: MirType::Ptr, is_param: true, container: None },
+                MirLocal { id: local(0), name: Some("self".into()), ty: MirType::Ptr, is_param: true, unerased: None },
                 param,
             ],
             blocks: vec![MirBlock {
@@ -1202,7 +1187,7 @@ mod tests {
         let mut f = make_fn(
             vec![
                 string_local(0, "s"),
-                MirLocal { id: local(1), name: Some("addr".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("addr".into()), ty: MirType::I64, is_param: false, unerased: None },
             ],
             vec![MirBlock {
                 id: BlockId(0),
@@ -1257,8 +1242,8 @@ mod tests {
         let mut f = make_fn(
             vec![
                 string_local(0, "s"),
-                MirLocal { id: local(1), name: Some("p".into()), ty: MirType::Ptr, is_param: false, container: None },
-                MirLocal { id: local(2), name: Some("n".into()), ty: MirType::U64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("p".into()), ty: MirType::Ptr, is_param: false, unerased: None },
+                MirLocal { id: local(2), name: Some("n".into()), ty: MirType::U64, is_param: false, unerased: None },
             ],
             vec![MirBlock {
                 id: BlockId(0),
@@ -1310,7 +1295,7 @@ mod tests {
     fn a_string_built_only_where_it_panics_is_not_released_where_it_does_not() {
         let mut f = make_fn(
             vec![
-                MirLocal { id: local(0), name: Some("c".into()), ty: MirType::Bool, is_param: false, container: None },
+                MirLocal { id: local(0), name: Some("c".into()), ty: MirType::Bool, is_param: false, unerased: None },
                 string_local(1, "msg"),
             ],
             vec![
@@ -1380,7 +1365,7 @@ mod tests {
                         err: Box::new(MirType::String),
                     },
                     is_param: false,
-                    container: None,
+                    unerased: None,
                 },
                 string_local(1, "payload"),
             ],
@@ -1574,7 +1559,7 @@ mod tests {
     #[test]
     fn no_ops_for_non_string_locals() {
         let mut f = make_fn(
-            vec![MirLocal { id: local(0), name: Some("x".into()), ty: MirType::I64, is_param: false, container: None, }],
+            vec![MirLocal { id: local(0), name: Some("x".into()), ty: MirType::I64, is_param: false, unerased: None, }],
             vec![MirBlock {
                 id: BlockId(0),
                 statements: vec![MirStmt::dummy(MirStmtKind::Assign {

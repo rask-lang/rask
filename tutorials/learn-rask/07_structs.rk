@@ -129,7 +129,7 @@ struct Projectile {
 
 extend Projectile {
     // Create a projectile at the origin with given velocity
-    func launch(velocity: Vec3) -> Projectile {
+    func launch(take velocity: Vec3) -> Projectile {
         todo()
     }
 

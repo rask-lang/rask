@@ -389,7 +389,7 @@ mod tests {
             name: None,
             ty,
             is_param: false,
-            container: None,
+            unerased: None,
         }
     }
 
@@ -399,7 +399,7 @@ mod tests {
             name: None,
             ty,
             is_param: true,
-            container: None,
+            unerased: None,
         }
     }
 

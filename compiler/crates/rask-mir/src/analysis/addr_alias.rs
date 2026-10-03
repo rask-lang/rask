@@ -141,7 +141,7 @@ mod tests {
             ret_ty: MirType::Void,
             locals: locals
                 .into_iter()
-                .map(|(id, ty)| MirLocal { id: LocalId(id), name: None, ty, is_param: false, container: None })
+                .map(|(id, ty)| MirLocal { id: LocalId(id), name: None, ty, is_param: false, unerased: None })
                 .collect(),
             blocks: vec![MirBlock {
                 id: BlockId(0),

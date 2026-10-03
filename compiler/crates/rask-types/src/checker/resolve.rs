@@ -565,6 +565,22 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
 
+        // `v == opt`: the bare value made present, the way `opt == v` makes
+        // its right side present, and compared with the optional's `eq`.
+        // Equality doesn't care which side was written first.
+        // `settle_derived_wrappers` sends the call through that `eq`, whose
+        // parameter widens the receiver.
+        if method == "eq" && args.len() == 1 && call_node.is_some_and(|n| self.operator_calls.contains(&n)) {
+            let arg = self.ctx.apply(&args[0]);
+            if let Some(inner) = arg.as_option() {
+                if !ty.is_option() && !matches!(ty, Type::Var(_)) && !matches!(inner, Type::Var(_)) {
+                    let inner = inner.clone();
+                    self.unify(&inner, &ty, span)?;
+                    return self.resolve_method(Type::option(ty), method, args, ret, span, call_node);
+                }
+            }
+        }
+
         // Type arguments the call wrote, if any. They bind the method's own type
         // parameters where a stub signature has them (#1029).
         let written: Vec<Type> = call_node

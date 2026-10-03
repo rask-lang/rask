@@ -4,7 +4,7 @@
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::ty::TypeExpr;
 
-use crate::value::{map_entries_seeded, FloatKind, MapKey, Value};
+use crate::value::{map_entries_seeded, FloatKind, Value};
 
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
