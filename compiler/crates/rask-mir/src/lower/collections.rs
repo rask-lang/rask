@@ -1147,14 +1147,19 @@ impl<'a> MirLowerer<'a> {
         });
 
         if needs_switch {
+            // At the tag's own offset and width. Without the byte offset
+            // codegen read `field_index` as a field index and loaded the first
+            // variant's payload instead, so `Leaf(1).clone()` took tag 1 —
+            // `Node` — and cloned the map at address 0x1.
+            let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
             let tag = self.builder.alloc_temp(MirType::I64);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: tag,
                 rvalue: MirRValue::Field {
                     base: MirOperand::Local(result),
-                    field_index: layout.tag_offset,
-                    byte_offset: None,
-                    access: FieldAccess::Word,
+                    field_index: 0,
+                    byte_offset: Some(layout.tag_offset),
+                    access: FieldAccess::Sized(tag_size),
                 },
             }));
 
@@ -1216,7 +1221,7 @@ impl<'a> MirLowerer<'a> {
                             rvalue: MirRValue::Field {
                                 base: MirOperand::Local(result),
                                 field_index: abs_offset,
-                                byte_offset: None,
+                                byte_offset: Some(abs_offset),
                                 access: FieldAccess::Word,
                             },
                         }));
