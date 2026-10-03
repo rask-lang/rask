@@ -1238,17 +1238,14 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmtKind::RcDecContents { local } => {
-                // An aggregate dying gives back the strings it holds — and the
-                // container behind its tag, if it has one. MIR stores the plain
-                // type and the kind separately (`MirType::Container` says why),
-                // so put them back together for the walk.
+                // An aggregate dying gives back the strings it holds, and any
+                // container inside it. The walk reads the full type, which
+                // still says which pointers are containers
+                // (`MirType::Container` says why `ty` doesn't).
                 let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
                     return Ok(());
                 };
-                let ty = match entry.container {
-                    Some(kind) => Self::with_container_kind(&entry.ty, kind),
-                    None => entry.ty.clone(),
-                };
+                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
                 if !Self::holds_string_mir(&ty, ctx, 0) {
                     return Ok(());
                 }
@@ -7212,24 +7209,9 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    /// The local's type with its container kind put back into the wrapper's
-    /// payload — the one type the release walk gets to see it in.
-    fn with_container_kind(ty: &MirType, kind: ContainerKind) -> MirType {
-        match ty {
-            MirType::Option(inner) if **inner == MirType::Ptr => {
-                MirType::Option(Box::new(MirType::Container(kind)))
-            }
-            MirType::Result { ok, err } if **ok == MirType::Ptr => MirType::Result {
-                ok: Box::new(MirType::Container(kind)),
-                err: err.clone(),
-            },
-            other => other.clone(),
-        }
-    }
-
     /// What frees a container MIR named as one. The type-name route
     /// (`container_free_for`) reads a field's declared type; this one reads a
-    /// wrapper payload, where the kind travels in the MIR type instead.
+    /// local's full type, where the kind travels in the MIR type instead.
     fn container_free_for_kind(kind: ContainerKind) -> &'static str {
         match kind {
             ContainerKind::Vec => "rask_vec_free",

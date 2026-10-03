@@ -298,7 +298,7 @@ fn insert_aggregate_release(
         // when nothing in it is a string: `Vec<i64>?` is a tag beside a handle,
         // and the vector behind that tag was nobody's. The kind is on the local
         // rather than in the type — `MirType::Container` says why.
-        .filter(|l| aggregate_may_hold_string(&l.ty) || l.container.is_some())
+        .filter(|l| aggregate_may_hold_string(&l.ty) || l.unerased.is_some())
         .map(|l| l.id)
         .collect();
     if aggregates.is_empty() {
@@ -1122,7 +1122,7 @@ mod tests {
     fn local(id: u32) -> LocalId { LocalId(id) }
 
     fn string_local(id: u32, name: &str) -> MirLocal {
-        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, container: None }
+        MirLocal { id: local(id), name: Some(name.into()), ty: MirType::String, is_param: false, unerased: None }
     }
 
     fn make_fn(locals: Vec<MirLocal>, blocks: Vec<MirBlock>) -> MirFunction {
@@ -1173,14 +1173,14 @@ mod tests {
             name: Some("title".into()),
             ty: MirType::String,
             is_param: true,
-            container: None,
+            unerased: None,
         };
         let mut f = MirFunction {
             name: "put".to_string(),
             params: vec![param.clone()],
             ret_ty: MirType::Void,
             locals: vec![
-                MirLocal { id: local(0), name: Some("self".into()), ty: MirType::Ptr, is_param: true, container: None },
+                MirLocal { id: local(0), name: Some("self".into()), ty: MirType::Ptr, is_param: true, unerased: None },
                 param,
             ],
             blocks: vec![MirBlock {
@@ -1216,7 +1216,7 @@ mod tests {
         let mut f = make_fn(
             vec![
                 string_local(0, "s"),
-                MirLocal { id: local(1), name: Some("addr".into()), ty: MirType::I64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("addr".into()), ty: MirType::I64, is_param: false, unerased: None },
             ],
             vec![MirBlock {
                 id: BlockId(0),
@@ -1271,8 +1271,8 @@ mod tests {
         let mut f = make_fn(
             vec![
                 string_local(0, "s"),
-                MirLocal { id: local(1), name: Some("p".into()), ty: MirType::Ptr, is_param: false, container: None },
-                MirLocal { id: local(2), name: Some("n".into()), ty: MirType::U64, is_param: false, container: None },
+                MirLocal { id: local(1), name: Some("p".into()), ty: MirType::Ptr, is_param: false, unerased: None },
+                MirLocal { id: local(2), name: Some("n".into()), ty: MirType::U64, is_param: false, unerased: None },
             ],
             vec![MirBlock {
                 id: BlockId(0),
@@ -1324,7 +1324,7 @@ mod tests {
     fn a_string_built_only_where_it_panics_is_not_released_where_it_does_not() {
         let mut f = make_fn(
             vec![
-                MirLocal { id: local(0), name: Some("c".into()), ty: MirType::Bool, is_param: false, container: None },
+                MirLocal { id: local(0), name: Some("c".into()), ty: MirType::Bool, is_param: false, unerased: None },
                 string_local(1, "msg"),
             ],
             vec![
@@ -1394,7 +1394,7 @@ mod tests {
                         err: Box::new(MirType::String),
                     },
                     is_param: false,
-                    container: None,
+                    unerased: None,
                 },
                 string_local(1, "payload"),
             ],
@@ -1588,7 +1588,7 @@ mod tests {
     #[test]
     fn no_ops_for_non_string_locals() {
         let mut f = make_fn(
-            vec![MirLocal { id: local(0), name: Some("x".into()), ty: MirType::I64, is_param: false, container: None, }],
+            vec![MirLocal { id: local(0), name: Some("x".into()), ty: MirType::I64, is_param: false, unerased: None, }],
             vec![MirBlock {
                 id: BlockId(0),
                 statements: vec![MirStmt::dummy(MirStmtKind::Assign {

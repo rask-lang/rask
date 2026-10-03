@@ -20,7 +20,7 @@ use crate::{
 
 /// What a new SSA version of a local copies from the original: its name, its
 /// type, and the container behind its wrapper tag.
-type LocalInfo = (Option<String>, crate::MirType, Option<crate::ContainerKind>);
+type LocalInfo = (Option<String>, crate::MirType, Option<crate::MirType>);
 
 // ---------------------------------------------------------------------------
 // SSA construction
@@ -208,7 +208,7 @@ fn rename_variables(
     let orig_local_info: Vec<LocalInfo> = {
         let mut info = Vec::with_capacity(num_orig_locals);
         for param in &func.params {
-            info.push((param.name.clone(), param.ty.clone(), param.container));
+            info.push((param.name.clone(), param.ty.clone(), param.unerased.clone()));
         }
         for local in &func.locals {
             if (local.id.0 as usize) >= info.len() {
@@ -216,7 +216,7 @@ fn rename_variables(
                 while info.len() < local.id.0 as usize {
                     info.push((None, crate::MirType::I64, None));
                 }
-                info.push((local.name.clone(), local.ty.clone(), local.container));
+                info.push((local.name.clone(), local.ty.clone(), local.unerased.clone()));
             }
         }
         while info.len() < num_orig_locals {
@@ -256,13 +256,13 @@ fn new_version(
     let version = version_counter[orig];
     let new_id = LocalId((func.locals.len() + func.params.len()) as u32);
 
-    let (ref name, ref ty, container) = orig_local_info[orig];
+    let (ref name, ref ty, ref unerased) = orig_local_info[orig];
     func.locals.push(MirLocal {
         id: new_id,
         name: name.as_ref().map(|n| format!("{}_v{}", n, version)),
         ty: ty.clone(),
         is_param: false,
-        container,
+        unerased: unerased.clone(),
     });
 
     version_stack[orig].push(new_id);
@@ -743,7 +743,7 @@ mod tests {
     fn block(n: u32) -> BlockId { BlockId(n) }
     fn local(n: u32) -> LocalId { LocalId(n) }
 
-    fn make_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: Some(format!("_{}", id)), ty: MirType::I32, is_param: false, container: None } }
+    fn make_local(id: u32) -> MirLocal { MirLocal { id: local(id), name: Some(format!("_{}", id)), ty: MirType::I32, is_param: false, unerased: None } }
 
     fn assign_const(dst: u32, val: i64) -> MirStmt {
         MirStmt::dummy(MirStmtKind::Assign {
@@ -977,7 +977,7 @@ mod tests {
         // bb3: return p0
         let mut func = MirFunction {
             name: "test".to_string(),
-            params: vec![MirLocal { id: local(0), name: Some("p0".into()), ty: MirType::I32, is_param: true, container: None }],
+            params: vec![MirLocal { id: local(0), name: Some("p0".into()), ty: MirType::I32, is_param: true, unerased: None }],
             ret_ty: MirType::I32,
             locals: vec![],
             blocks: vec![

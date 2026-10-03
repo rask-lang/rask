@@ -351,8 +351,8 @@ impl fmt::Display for MirFunction {
         // or "who frees the vector behind this tag" is invisible.
         for local in &self.locals {
             if !local.is_param {
-                let holds = match local.container {
-                    Some(k) => format!(" [{:?}]", k),
+                let holds = match &local.unerased {
+                    Some(t) => format!(" [{}]", t),
                     None => String::new(),
                 };
                 if let Some(name) = &local.name {
