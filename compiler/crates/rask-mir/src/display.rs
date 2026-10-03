@@ -78,6 +78,7 @@ impl fmt::Display for MirConst {
             MirConst::Int128(n) => write!(f, "{}", n),
             MirConst::Char(c) => write!(f, "'{}'", c),
             MirConst::String(s) => write!(f, "\"{}\"", s),
+            MirConst::Elem(t) => write!(f, "elem<{}>", t),
         }
     }
 }

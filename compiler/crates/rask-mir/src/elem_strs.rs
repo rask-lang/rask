@@ -1,129 +1,31 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! What a container's elements are, as one number.
+//! What a container's elements are, and which calls build one.
 //!
 //! A container is a byte store. It knows how big an element is and nothing
 //! else, so it can't tell a sixteen-byte string from a sixteen-byte struct —
 //! and `free` has to know, or the strings inside never come back (#1027).
 //!
 //! The answer is settled once, where a container is constructed, by the only
-//! place that has it: lowering, reading the checker's type. It travels as this
-//! tag, codegen turns it into the byte offsets of the strings inside one
-//! element, and the runtime keeps that map on the container itself. Nothing
-//! downstream re-derives it — not the drop pass, not the caller of a function
-//! that hands a container back, not an inlined copy.
+//! place that has it: lowering, reading the checker's type. It travels as the
+//! element's own type (`MirConst::Elem`), with its containers still named;
+//! codegen turns it into the offsets of what one element owns, and the runtime
+//! keeps that list on the container itself. Nothing downstream re-derives it —
+//! not the drop pass, not the caller of a function that hands a container
+//! back, not an inlined copy.
 //!
-//! Encoding, shared by the one place that writes it and the one that reads it:
-//!
-//!   0            the elements own nothing
-//!   1            the element *is* a string
-//!   2            the element *is* a Vec
-//!   3            the element *is* a Map
-//!   4            the element *is* a closure — a pointer to its block
-//!   5            the element *is* an interface box — a `[data, vtable]` fat pointer
-//!   6 + index    a struct with that layout
-//!   -1 - index   an enum with that layout
-//!   bit 62 set   a `T or E` or a tagged `T?`, with a tag for each side packed
-//!                below it (`wrapper_tag`)
+//! It used to travel as one `i64`: small numbers for a string or a container,
+//! a range for struct layouts, another for enums, a flag bit for wrappers. A
+//! tuple fit nowhere in that, so `Vec<(string, i64)>` described its elements
+//! as owning nothing and every string in it leaked (#1395).
 
-use crate::MirType;
+use crate::{MirConst, MirOperand, MirType};
 
-pub const ELEM_NONE: i64 = 0;
-pub const ELEM_STRING: i64 = 1;
-pub const ELEM_VEC: i64 = 2;
-pub const ELEM_MAP: i64 = 3;
-/// The element is a closure: one pointer to a block that describes itself.
-/// `rask_closure_free` reads its size and its environment-drop glue out of the
-/// header words before the pointer, so releasing one needs nothing
-/// type-specific and retaining one is a count on the same header (#1149).
-pub const ELEM_CLOSURE: i64 = 4;
-/// The element is an interface box: a `[data, vtable]` fat pointer whose `data`
-/// block the container has to free. The block's size is the vtable's first
-/// word, so releasing one needs nothing generated either (#1149).
-///
-/// Its *contents* are a separate question with no answer yet: a box in a
-/// container has no frame outliving it, and #1144's rule is that the frame owns
-/// them. So this frees the block and leaves what the value holds — which is
-/// what happened to every box before, minus the block.
-pub const ELEM_TRAITBOX: i64 = 5;
-pub const ELEM_STRUCT_BASE: i64 = 6;
-/// An enum element: `ELEM_ENUM_BASE - index` into the enum layouts.
-///
-/// Below zero because the struct range grows upward without a bound. Where an
-/// enum's string or container sits depends on its tag, so codegen describes one
-/// as a guard per variant rather than a flat list — `RASK_OWNED_TAG_IF` in
-/// `rask_runtime.h`.
-pub const ELEM_ENUM_BASE: i64 = -1;
-
-/// A `T or E` or tagged `T?` element: bit 62, which wrapper in bit 56, and the
-/// tag of each side in 28 bits each below that.
-///
-/// Where a side's string sits depends on the wrapper's own tag, the same
-/// problem an enum has, so codegen describes each side under a guard. Before
-/// this a `Vec<i64 or Oops>` described its elements as owning nothing, and
-/// every `Oops.Bad(msg)` in it leaked its message when the vector went (#1357).
-const WRAPPER_FLAG: i64 = 1 << 62;
-const WRAPPER_KIND_SHIFT: u32 = 56;
-const SIDE_BITS: u32 = 28;
-const SIDE_MASK: i64 = (1 << SIDE_BITS) - 1;
-/// Added to a side's tag so an enum's negative tag packs as a positive field.
-const SIDE_BIAS: i64 = 1 << (SIDE_BITS - 1);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Wrapper {
-    /// `T or E`: tag 0 holds `T`, tag 1 holds `E`.
-    Result,
-    /// A tagged `T?`: tag 0 holds `T`, tag 1 is `none`.
-    Option,
-}
-
-/// The tag for a wrapper element whose sides have tags `ok` and `err`.
-///
-/// `ELEM_NONE` when neither side owns anything, and also when a side is itself
-/// a wrapper: one tag can't hold two levels, so a `T? or E` element is left
-/// undescribed. That leaks rather than frees the wrong bytes.
-pub fn wrapper_tag(kind: Wrapper, ok: i64, err: i64) -> i64 {
-    if ok == ELEM_NONE && err == ELEM_NONE {
-        return ELEM_NONE;
-    }
-    let fits = |t: i64| decode_wrapper(t).is_none() && (-SIDE_BIAS..SIDE_BIAS).contains(&t);
-    if !fits(ok) || !fits(err) {
-        return ELEM_NONE;
-    }
-    let kind_bit = match kind {
-        Wrapper::Result => 0,
-        Wrapper::Option => 1,
-    };
-    WRAPPER_FLAG
-        | (kind_bit << WRAPPER_KIND_SHIFT)
-        | (((ok + SIDE_BIAS) & SIDE_MASK) << SIDE_BITS)
-        | ((err + SIDE_BIAS) & SIDE_MASK)
-}
-
-/// The wrapper and the two side tags `wrapper_tag` packed, if `tag` is one.
-pub fn decode_wrapper(tag: i64) -> Option<(Wrapper, i64, i64)> {
-    if tag < 0 || tag & WRAPPER_FLAG == 0 {
-        return None;
-    }
-    let kind = if (tag >> WRAPPER_KIND_SHIFT) & 1 == 0 { Wrapper::Result } else { Wrapper::Option };
-    let ok = ((tag >> SIDE_BITS) & SIDE_MASK) - SIDE_BIAS;
-    let err = (tag & SIDE_MASK) - SIDE_BIAS;
-    Some((kind, ok, err))
-}
-
-/// The tag for an element that *is* a container, from its type's head name.
-///
-/// MIR types a nested container as `Ptr`, which is what every pointer is — so
-/// `tag_of` can't tell `Map<string, Vec<i32>>`'s values from a raw address and
-/// answered "owns nothing". The checker's type knows. A `Rack` is an arena whose
-/// nodes outlive any one element (mem.racks), and an optional or a result has no
-/// head name, so a wrapper around a container is never mistaken for one.
-pub fn container_tag(head: &str) -> Option<i64> {
-    match head {
-        "Vec" => Some(ELEM_VEC),
-        "Map" => Some(ELEM_MAP),
-        _ => None,
-    }
+/// The constructor argument describing elements of type `ty`. Pass the type
+/// with its containers named (`payload_to_mir`), or a `Vec<Vec<i64>>` frees
+/// none of its inner vectors.
+pub fn elem(ty: MirType) -> MirOperand {
+    MirOperand::Constant(MirConst::Elem(ty))
 }
 
 /// What a box holds, as the number the runtime stores on it.
@@ -161,10 +63,10 @@ pub fn box_payload_kind_of(ty: &rask_types::Type, head: Option<&str>) -> i64 {
     if matches!(ty, rask_types::Type::Fn { .. }) {
         return BOX_PAYLOAD_CLOSURE;
     }
-    match head.and_then(container_tag) {
-        Some(ELEM_VEC) => BOX_PAYLOAD_VEC,
-        Some(ELEM_MAP) => BOX_PAYLOAD_MAP,
-        _ if head == Some("Shared") => BOX_PAYLOAD_BOX,
+    match head {
+        Some("Vec") => BOX_PAYLOAD_VEC,
+        Some("Map") => BOX_PAYLOAD_MAP,
+        Some("Shared") => BOX_PAYLOAD_BOX,
         _ => BOX_PAYLOAD_NONE,
     }
 }
@@ -204,44 +106,14 @@ pub fn map_ctor_with_capacity(key_ty: &MirType) -> &'static str {
     }
 }
 
-/// The tag for `ty`, or `ELEM_NONE` if it owns no strings this can point at.
-///
-/// An enum used to be `ELEM_NONE` — a flat list of offsets can't say where a
-/// variant's string is, and codegen walks the tag branches for an enum reached
-/// any other way, so an enum *inside a container element* was the one gap. It
-/// was not a narrow one: every array and object in a decoded `JsonValue` is a
-/// variant payload sitting in a `Vec` or a `Map`, and the elements walk left
-/// all of it behind. Guards close it.
-pub fn tag_of(ty: Option<&MirType>) -> i64 {
-    match ty {
-        Some(MirType::String) => ELEM_STRING,
-        // A closure owns a block the container has to free, and it isn't
-        // describable as offsets inside the element: the element *is* the
-        // pointer. So it gets its own kind rather than a struct layout.
-        Some(MirType::FuncPtr(_)) => ELEM_CLOSURE,
-        Some(MirType::InterfaceObject { .. }) => ELEM_TRAITBOX,
-        Some(MirType::Struct(id)) => ELEM_STRUCT_BASE + id.id as i64,
-        Some(MirType::Enum(id)) => ELEM_ENUM_BASE - id.id as i64,
-        Some(MirType::Result { ok, err }) => {
-            wrapper_tag(Wrapper::Result, tag_of(Some(ok)), tag_of(Some(err)))
-        }
-        // A niche option is the payload's own word with `none` reserved: no
-        // tag, and nothing it points at is the container's.
-        Some(MirType::Option(inner)) if !inner.is_niche_payload() => {
-            wrapper_tag(Wrapper::Option, tag_of(Some(inner)), ELEM_NONE)
-        }
-        _ => ELEM_NONE,
-    }
-}
-
 /// Every call that hands back a container the caller owns: how many size
-/// arguments come first, how many element tags follow them, and what frees the
+/// arguments come first, how many element descriptions follow them, and what frees the
 /// result.
 ///
-/// One list, read by everything that needs it: lowering appends that many tags,
-/// codegen's dispatch table builds the C signature from it and expands the tags
+/// One list, read by everything that needs it: lowering appends that many descriptions,
+/// codegen's dispatch table builds the C signature from it and expands the descriptions
 /// into offset pointers, the pre-pass that registers those offset blobs finds
-/// the tags with it, and the drop pass knows a fresh container when it sees one
+/// the descriptions with it, and the drop pass knows a fresh container when it sees one
 /// come out of a call to one of these.
 ///
 /// The free function is spelled out rather than guessed from the name, because
@@ -255,14 +127,14 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Vec_with_capacity", 2, 1, "Vec_free"),
     ("Vec_fixed", 2, 1, "Vec_free"),
     // `skip`/`take` outside a fused chain call the runtime, which hands back a
-    // freshly allocated Vec. No size arguments and no element tags — the source
+    // freshly allocated Vec. No size arguments and no element descriptions — the source
     // Vec already carries both, and the runtime copies them across — so these
     // are here only to tell the drop pass the result is the caller's to free.
     ("Vec_skip", 0, 0, "Vec_free"),
     ("Vec_take", 0, 0, "Vec_free"),
     // `chunks` hands back a fresh `Vec<Vec<T>>`, and the runtime builds it
     // with an element map saying the elements are Vec handles — so freeing it
-    // frees the chunks too. The zero here is this table's own tag, which
+    // frees the chunks too. The zero here is this table's own count, which
     // describes what *lowering* knows; the nested answer is settled at the
     // construction site in `rask_vec_chunks`.
     ("Vec_chunks", 0, 0, "Vec_free"),
@@ -280,7 +152,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     ("Map_keys", 0, 0, "Vec_free"),
     ("Map_values", 0, 0, "Vec_free"),
     ("Map_entries", 0, 0, "Vec_free"),
-    // Racks and pools carry no element tag: a rack is told about its fields
+    // Racks and pools carry no element description: a rack is told about its fields
     // separately, through `Link_register_*`, and a pool's slots are opaque
     // bytes. They are here so the drop pass recognises one coming out of a
     // constructor — `rask_rack_free` and `rask_pool_free` have existed all
@@ -335,7 +207,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // the caller still holds.
     ("os_env_vars", 0, 0, "Vec_free"),
     ("os_args", 0, 0, "Vec_free"),
-    // A `Shared` box carries no element tag — its payload is opaque bytes it
+    // A `Shared` box carries no element description — its payload is opaque bytes it
     // was handed, the same as a pool slot. It is here for the same reason
     // `Rack_new` is: `rask_shared_free` has existed all along with nothing
     // calling it, so `Shared.new(0)` and nothing else leaked the box and its
@@ -411,7 +283,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // above and they are not. Measured both ways on #1050.
 ];
 
-/// `(leading sizes, element tags)` for a container constructor, by the name MIR
+/// `(leading sizes, element descriptions)` for a container constructor, by the name MIR
 /// calls it — monomorphization's `$` suffix and any module path stripped.
 pub fn ctor_shape(name: &str) -> Option<(usize, usize)> {
     entry(name).map(|(_, l, t, _)| (*l as usize, *t as usize))

@@ -2142,10 +2142,10 @@ impl<'a> MirLowerer<'a> {
                     // told it holds strings so that what it hands out is
                     // retained and released like one.
                     let holds_strings = meta.elem_type.as_deref() == Some("string");
-                    let (elem_size, elem_tag) = if holds_strings {
-                        (16, crate::elem_strs::ELEM_STRING)
+                    let (elem_size, elem_desc) = if holds_strings {
+                        (16, MirType::String)
                     } else {
-                        (8, crate::elem_strs::ELEM_NONE)
+                        (8, MirType::I64)
                     };
                     let vec_local = self.builder.alloc_temp(MirType::I64);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -2155,7 +2155,7 @@ impl<'a> MirLowerer<'a> {
                             MirOperand::Local(global_local),
                             MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
                             MirOperand::Constant(MirConst::Int(elem_size)),
-                            MirOperand::Constant(MirConst::Int(elem_tag)),
+                            crate::elem_strs::elem(elem_desc),
                         ],
                     }));
                     self.meta_mut(&name).type_prefix = Some("Vec".to_string());
@@ -5000,7 +5000,7 @@ impl<'a> MirLowerer<'a> {
                 buffer,
                 MirOperand::Constant(MirConst::Int(*len as i64)),
                 MirOperand::Constant(MirConst::Int(slot_size as i64)),
-                MirOperand::Constant(MirConst::Int(crate::elem_strs::tag_of(Some(elem)))),
+                crate::elem_strs::elem((**elem).clone()),
             ],
         }));
         Some((MirOperand::Local(vec_local), MirType::I64))
@@ -5529,8 +5529,7 @@ impl<'a> MirLowerer<'a> {
                                 // What the elements are, settled here and kept
                                 // by the container for the rest of its life —
                                 // see `elem_strs`.
-                                let tag = self.container_elem_tag(expr.id, 0);
-                                arg_operands.push(MirOperand::Constant(MirConst::Int(tag)));
+                                arg_operands.push(self.container_elem_desc(expr.id, 0));
                             }
                             // Map.new() / Map.with_capacity(n): inject
                             // key_size, val_size. with_capacity keeps its `n`
@@ -5540,10 +5539,8 @@ impl<'a> MirLowerer<'a> {
                                 let val_size = self.generic_arg_slot_size(expr.id, 1);
                                 arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
                                 arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
-                                let key_tag = self.container_elem_tag(expr.id, 0);
-                                let val_tag = self.container_elem_tag(expr.id, 1);
-                                arg_operands.push(MirOperand::Constant(MirConst::Int(key_tag)));
-                                arg_operands.push(MirOperand::Constant(MirConst::Int(val_tag)));
+                                arg_operands.push(self.container_elem_desc(expr.id, 0));
+                                arg_operands.push(self.container_elem_desc(expr.id, 1));
                                 // A key with its own `eq`/`hash`: their addresses
                                 // follow the sizes, and the capacity if there is one.
                                 if let Some(key_ty) = self.container_elem_mir_type(expr.id, 0) {
@@ -8785,8 +8782,6 @@ impl<'a> MirLowerer<'a> {
 
         let key_ty = self.ctx.resolve_type_name(key_name);
         let val_ty = self.ctx.resolve_type_name(val_name);
-        let tag = |ty: &MirType| crate::elem_strs::tag_of(Some(ty));
-
         let pairs = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(pairs),
@@ -8798,7 +8793,7 @@ impl<'a> MirLowerer<'a> {
                 // The pairs are this loop's own and every string in them is a
                 // literal with a sentinel refcount, so there is nothing for the
                 // vector to retain or release.
-                MirOperand::Constant(MirConst::Int(crate::elem_strs::ELEM_NONE)),
+                crate::elem_strs::elem(MirType::I64),
             ],
         }));
 
@@ -8810,8 +8805,8 @@ impl<'a> MirLowerer<'a> {
             args: vec![
                 MirOperand::Constant(MirConst::Int(key_ty.size() as i64)),
                 MirOperand::Constant(MirConst::Int(val_ty.size() as i64)),
-                MirOperand::Constant(MirConst::Int(tag(&key_ty))),
-                MirOperand::Constant(MirConst::Int(tag(&val_ty))),
+                crate::elem_strs::elem(key_ty.clone()),
+                crate::elem_strs::elem(val_ty.clone()),
             ],
         }));
 
@@ -8949,7 +8944,7 @@ impl<'a> MirLowerer<'a> {
             func: FunctionRef::internal("Vec_new".to_string()),
             args: vec![
                 MirOperand::Constant(MirConst::Int(16)),
-                MirOperand::Constant(MirConst::Int(crate::elem_strs::ELEM_STRING)),
+                crate::elem_strs::elem(MirType::String),
             ],
         }));
 
@@ -9657,7 +9652,7 @@ impl<'a> MirLowerer<'a> {
                 MirOperand::Local(arr),
                 MirOperand::Constant(MirConst::Int(consts.len() as i64)),
                 MirOperand::Constant(MirConst::Int(elem_size as i64)),
-                MirOperand::Constant(MirConst::Int(crate::elem_strs::tag_of(Some(&elem_ty)))),
+                crate::elem_strs::elem(elem_ty.clone()),
             ],
         }));
         self.collected_elem_types.insert(vec_local, elem_ty);

@@ -960,7 +960,7 @@ impl<'a> MirContext<'a> {
 
     /// A wrapper's payload as written: same as `resolve_type_expr`, except a
     /// container keeps what it is instead of collapsing to a bare pointer.
-    fn payload_of_expr(&self, ty: &TypeExpr) -> MirType {
+    pub(crate) fn payload_of_expr(&self, ty: &TypeExpr) -> MirType {
         let mir = self.resolve_type_expr(ty);
         if mir != MirType::Ptr {
             return mir;
