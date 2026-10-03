@@ -351,9 +351,23 @@ impl TypeChecker {
         for (call, recv, arg) in pending {
             let ty_of = |this: &Self, id: NodeId| this.node_types.get(&id).map(|t| this.ctx.apply(t));
             let (Some(a), Some(b)) = (ty_of(self, recv), ty_of(self, arg)) else { continue };
-            if a != b || !Self::is_wrapper(&a) || !Self::wrapper_needs_fns(&a) {
+            // `opt == value` is the optional against the value made present:
+            // the same `eq`, with the bare side widened at the call. `value ==
+            // opt` goes through the function whatever the payload is, since
+            // only a call widens a receiver.
+            let (wrapper, mixed) = if a == b {
+                (a.clone(), false)
+            } else if a.as_option() == Some(&b) {
+                (a.clone(), false)
+            } else if b.as_option() == Some(&a) {
+                (b.clone(), true)
+            } else {
+                continue;
+            };
+            if !Self::is_wrapper(&wrapper) || !(mixed || Self::wrapper_needs_fns(&wrapper)) {
                 continue;
             }
+            let a = wrapper;
             let Some(name) = self.wrapper_fns(&a).eq else { continue };
             let sym = self.wrapper_symbols[&name];
             let callee = self.derived_id();

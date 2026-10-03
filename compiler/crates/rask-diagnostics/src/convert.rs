@@ -1992,9 +1992,14 @@ impl ToDiagnostic for rask_types::TypeError {
 
             InterfaceNotSatisfied { ty, interface_name, context, missing, span } => {
                 use rask_types::InterfaceBoundContext as Ctx;
-                let d = Diagnostic::error(format!("`{}` does not implement `{}`", ty, interface_name))
+                let title = match context {
+                    Ctx::CopyBound => format!("`{}` isn't Copy", ty),
+                    _ => format!("`{}` does not implement `{}`", ty, interface_name),
+                };
+                let d = Diagnostic::error(title)
                     .with_code("E0333")
                     .with_primary(*span, match (context, missing) {
+                        (Ctx::CopyBound, _) => format!("this needs a value that copies, and `{}` moves", ty),
                         (Ctx::NumericBound, _) => format!("`{}` is not one of the types `{}` covers", ty, interface_name),
                         // Name it. An interface can require more than the one method
                         // its name suggests — `Hashable` needs `eq` too — and
@@ -2031,6 +2036,10 @@ impl ToDiagnostic for rask_types::TypeError {
                             ),
                         })
                         .with_why("the header is the claim and the block is the evidence — a conformance is only declared once the methods are there [type.generics/G1]"),
+                    // The copy rule, not a method list: nothing to implement.
+                    Ctx::CopyBound => d
+                        .with_fix("pass a type that copies (scalars, `string`, and small structs, tuples and enums of those), or have the function `take` its argument instead of requiring `Copy`")
+                        .with_why("a value copies when everything in it does and it fits in 16 bytes; `T: Copy` is what lets a function keep a copy of a value it only borrowed [mem.value/VS1]"),
                     Ctx::InterfaceObjectCast => d
                         .with_fix(format!(
                             "implement the interface before boxing:\n    {} implements {} {{ … }}",
@@ -3878,6 +3887,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why(format!(
                     "matching a borrowed value doesn't take it apart — the caller still holds `{}`, `{}` included, so giving `{}` away would leave them holding something that's gone. [mem.parameters/PM1, mem.linear/L1]",
                     from, name, name
+                ))
+            }
+
+            ConsumeLoopItem { name, from, loop_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),
+                    None => format!("this takes ownership, and `{}` is still in `{}`", name, from),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — the loop only lends it out of `{}`",
+                    name, from
+                ))
+                .with_code("E0902")
+                .with_primary(self.span, label)
+                .with_secondary(*loop_at, format!("each `{}` is borrowed from `{}`", name, from))
+                .with_fix(format!("{}.clone()", name))
+                .with_why(format!(
+                    "a `for` loop lends each element and `{}` keeps it, so giving `{}` away would leave two owners of one value. [ctrl.loops/LP6]",
+                    from, name
                 ))
             }
 

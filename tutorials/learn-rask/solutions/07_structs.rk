@@ -51,7 +51,7 @@ struct Projectile {
 }
 
 extend Projectile {
-    func launch(velocity: Vec3) -> Projectile {
+    func launch(take velocity: Vec3) -> Projectile {
         return Projectile { position: Vec3.zero(), velocity: velocity }
     }
 

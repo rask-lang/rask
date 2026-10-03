@@ -438,4 +438,3 @@ t_shared_freed.rk  # 2 allocations, deferred — the handle `s.clone()` hands ba
 # exactly that shape. Reachable at all only since `own` went: the same
 # programs needed the keyword before, and nothing in the suite wrote it.
 t_returned_closure_captures.rk  # 2 allocations — a carried Vec in a closure env, #1045
-t_map_keys_own_eq.rk  # 6 allocations, #1394 — the probe key handed to `m.get(b)` keeps its string.

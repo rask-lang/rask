@@ -478,6 +478,8 @@ impl TypeChecker {
         if interface_name != "Encode" && interface_name != "Decode" {
             let context = if matches!(interface_name.as_str(), "Numeric" | "Integer" | "Float") {
                 super::InterfaceBoundContext::NumericBound
+            } else if interface_name == "Copy" {
+                super::InterfaceBoundContext::CopyBound
             } else {
                 super::InterfaceBoundContext::GenericBound
             };

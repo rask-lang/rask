@@ -8,7 +8,6 @@ use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_diagnostics::formatter::DiagnosticFormatter;
 use rask_mono::MonoProgram;
-use rask_types::Type;
 use std::collections::{HashMap, HashSet};
 
 /// Module-level constant names in declaration order — the order their init

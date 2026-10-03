@@ -40,7 +40,7 @@ enum Tree {
 func entries(m: Map<string, Tree>) -> Vec<(string, Tree)> {
     mut out: Vec<(string, Tree)> = Vec.new()
     for (k, v) in m {
-        out.push((k, v))
+        out.push((k, v.clone()))
     }
     out.sort_by(|a, b| a.0.compare(b.0))
     return out

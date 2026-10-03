@@ -31,10 +31,10 @@ func biggest<T>(items: Vec<T>) -> T? where T: Comparable {
     for it in items {
         if best? as b {
             if it > b {
-                best = it
+                best = it.clone()
             }
         } else {
-            best = it
+            best = it.clone()
         }
     }
     return best

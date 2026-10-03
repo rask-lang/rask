@@ -18,7 +18,7 @@ struct Wrapper<T> {
 
 // Methods on generic types
 extend Wrapper<T> {
-    func new(value: T) -> Wrapper<T> {
+    func new(take value: T) -> Wrapper<T> {
         return Wrapper { value }
     }
 
@@ -45,7 +45,7 @@ func max_value(a: T, b: T, compare: func(T, T) -> bool) -> T {
 }
 
 // Generic function with type inference
-func wrap<T>(value: T) -> Wrapper<T> {
+func wrap<T>(take value: T) -> Wrapper<T> {
     return Wrapper { value }
 }
 

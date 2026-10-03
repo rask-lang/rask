@@ -130,4 +130,30 @@ test "a tuple key holding a type with its own Equal" {
     assert m.get((Version { major: 2, minor: 7 }, 1)) ?? "" == "x"
 }
 
+test "an optional compares with a bare value through the payload's own eq" {
+    let c: Version? = Version { major: 1, minor: 0 }
+    assert c == Version { major: 1, minor: 5 }
+    assert !(c == Version { major: 2, minor: 0 })
+    let n: Version? = none
+    assert !(n == Version { major: 1, minor: 0 })
+    let p: Vec<i64>? = [1, 2]
+    let w: Vec<i64> = [1, 2]
+    assert p == w
+}
+
+test "a bare value on the left compares the same way" {
+    let c: Version? = Version { major: 1, minor: 0 }
+    assert Version { major: 1, minor: 5 } == c
+    assert Version { major: 2, minor: 0 } != c
+    let n: Version? = none
+    assert !(Version { major: 1, minor: 0 } == n)
+    let i: i64? = 3
+    assert 3 == i
+    let s: string? = "abc".to_uppercase()
+    assert "ABC" == s
+    let p: Vec<i64>? = [1, 2]
+    let w: Vec<i64> = [1, 2]
+    assert w == p
+}
+
 func main() {}

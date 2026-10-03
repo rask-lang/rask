@@ -26,6 +26,11 @@ pub enum MirConst {
     Bool(bool),
     Char(char),
     String(String),
+    /// What one element of a container is, for the constructor that builds
+    /// it: the element's type with its containers still named
+    /// (`MirType::Container`). Codegen turns it into the offsets of what each
+    /// element owns; it never becomes a runtime value itself.
+    Elem(MirType),
 }
 
 /// How a field read hands its value back.

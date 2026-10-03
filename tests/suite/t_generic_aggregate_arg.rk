@@ -53,7 +53,7 @@ extend Pair<A, B> {
         return Pair { first: self.second, second: self.first }
     }
 
-    func tagged<C>(self, extra: C) -> Pair<A, C> {
+    func tagged<C>(self, take extra: C) -> Pair<A, C> {
         return Pair { first: self.first, second: extra }
     }
 }

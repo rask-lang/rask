@@ -225,6 +225,19 @@ impl<'a> InterfaceChecker<'a> {
         // narrow<T: Integer>` reported "`_` does not implement `Integer`" —
         // `_` because an unknown interface has no type to blame, and unknown
         // because nothing had ever registered the name (#713).
+        // mem.value/VS1: `Copy` names the copy rule itself rather than a set
+        // of methods, so `T: Copy` holds exactly where a value of `T` copies.
+        if base_interface == "Copy" {
+            if self.types.is_copy(ty) {
+                return Ok(());
+            }
+            return Err(InterfaceError::NotSatisfied {
+                ty: self.type_name(ty),
+                interface_name: interface_name.clone(),
+                span,
+            });
+        }
+
         if let Some(members) = numeric_interface_members(base_interface) {
             if members(ty) {
                 return Ok(());

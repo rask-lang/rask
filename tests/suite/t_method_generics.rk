@@ -20,7 +20,7 @@ struct Util { seed: i64 }
 
 extend Util {
     func echo<E>(self, e: E) -> E { return e }
-    func both<A, B>(self, a: A, b: B) -> (A, B) { return (a, b) }
+    func both<A, B>(self, take a: A, take b: B) -> (A, B) { return (a, b) }
     func describe<T: Named>(self, x: T) -> string { return x.label() }
     func uses_field<E>(self, e: E) -> E {
         if self.seed > 0 { return e }

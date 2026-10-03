@@ -524,21 +524,23 @@ func write_value(value: JsonValue, mutate out: StringBuilder) {
         JsonValue.Object(map) => {
             out.push_char('{')
             mut first = true
-            for entry in sorted_entries(map) {
-                if !first {
-                    out.push_char(',')
+            for key in sorted_keys(map) {
+                if map.get(key)? as value {
+                    if !first {
+                        out.push_char(',')
+                    }
+                    write_escaped(key, mutate out)
+                    out.push_char(':')
+                    write_value(value, mutate out)
+                    first = false
                 }
-                write_escaped(entry.0, mutate out)
-                out.push_char(':')
-                write_value(entry.1, mutate out)
-                first = false
             }
             out.push_char('}')
         }
     }
 }
 
-/// An object's entries, ordered by key.
+/// An object's keys, sorted.
 ///
 /// A Map's iteration order is seeded per process (determinism/D7), so encoding
 /// an object by walking the map gave a different key order on every run — one
@@ -549,20 +551,19 @@ func write_value(value: JsonValue, mutate out: StringBuilder) {
 /// Sorted rather than document order: a Map has no insertion order to recover,
 /// and giving it one would undo the property D7 exists for. So decode-then-
 /// encode reorders a document's keys — the output is stable, not byte-identical
-/// to the input. Costs one Vec and a sort per object.
+/// to the input.
 ///
-/// Takes key and value together in a single pass rather than sorting the keys
-/// and looking each one back up: iterating `map.keys()` and then calling
-/// `map.get()` in a loop hangs the interpreter outright. That's a bug in the
-/// interpreter, not a rule about this code — see the note in the commit — but
-/// one pass is the better shape here anyway.
-func sorted_entries(map: Map<string, JsonValue>) -> Vec<(string, JsonValue)> {
-    mut entries: Vec<(string, JsonValue)> = Vec.new()
-    for (key, value) in map {
-        entries.push((key, value))
+/// Keys only, with each value read back where it lives. Collecting
+/// `(key, value)` pairs put a second owner of every value in the Vec, and once
+/// a Vec freed what its tuple elements held, freeing it freed the document's
+/// arrays and objects under the caller (#1395).
+func sorted_keys(map: Map<string, JsonValue>) -> Vec<string> {
+    mut keys: Vec<string> = Vec.new()
+    for (key, _) in map {
+        keys.push(key)
     }
-    entries.sort_by(|a, b| a.0.compare(b.0))
-    return entries
+    keys.sort_by(|a, b| a.compare(b))
+    return keys
 }
 
 /// The quoted, escaped form of `s`, appended to `out`.
@@ -666,15 +667,17 @@ func stringify_pretty_inner(value: JsonValue, mutate out: StringBuilder, indent:
             }
             out.push("{\n")
             mut first = true
-            for entry in sorted_entries(map) {
-                if !first {
-                    out.push(",\n")
+            for key in sorted_keys(map) {
+                if map.get(key)? as value {
+                    if !first {
+                        out.push(",\n")
+                    }
+                    write_indent(mutate out, indent + 1)
+                    write_escaped(key, mutate out)
+                    out.push(": ")
+                    stringify_pretty_inner(value, mutate out, indent + 1)
+                    first = false
                 }
-                write_indent(mutate out, indent + 1)
-                write_escaped(entry.0, mutate out)
-                out.push(": ")
-                stringify_pretty_inner(entry.1, mutate out, indent + 1)
-                first = false
             }
             out.push_char('\n')
             write_indent(mutate out, indent)

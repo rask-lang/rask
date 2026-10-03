@@ -2311,11 +2311,6 @@ impl crate::Backend for CodeGenerator {
     }
 }
 
-/// The offset lists this function's container frees will ask for.
-///
-/// Mirrors the tag encoding `container_drop.rs` writes and the flattening
-/// `FunctionBuilder::element_string_offsets` does — kept here because the data
-/// objects have to exist before any function body references one.
 /// One descriptor per distinct `Heap<T>` field type in the program.
 ///
 /// Keyed by the list's own contents, the way every other offset list is, so the
@@ -2354,6 +2349,9 @@ fn collect_heap_descriptors(
     out
 }
 
+/// The offset lists this function's container constructors will ask for, from
+/// the element types lowering wrote on them. Collected up front because the
+/// data objects have to exist before any function body references one.
 fn collect_element_offsets(
     mir_fn: &MirFunction,
     struct_layouts: &[rask_mono::StructLayout],
@@ -2368,13 +2366,13 @@ fn collect_element_offsets(
                 continue;
             };
             for i in 0..tags {
-                let Some(rask_mir::MirOperand::Constant(rask_mir::MirConst::Int(tag))) =
+                let Some(rask_mir::MirOperand::Constant(rask_mir::MirConst::Elem(ty))) =
                     args.get(leading + i)
                 else {
                     continue;
                 };
-                if let Some(offs) = crate::elem_offsets::string_offsets_for_tag(
-                    *tag, struct_layouts, enum_layouts, names,
+                if let Some(offs) = crate::elem_offsets::owned_offsets(
+                    ty, struct_layouts, enum_layouts, names,
                 ) {
                     lists.push(offs);
                 }

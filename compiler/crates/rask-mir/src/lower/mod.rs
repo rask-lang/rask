@@ -867,7 +867,7 @@ impl<'a> MirContext<'a> {
                 MirType::Union(members.into_iter().map(|m| self.resolve_type_expr(m)).collect())
             }
             TypeExpr::Tuple(elems) => {
-                MirType::Tuple(elems.iter().map(|e| self.resolve_type_expr(e)).collect())
+                MirType::Tuple(elems.iter().map(|e| self.payload_of_expr(e)).collect())
             }
             // A literal length, then a module-level `const` naming one — read
             // from the checker's table so the two can't disagree (#906). Anything
@@ -960,7 +960,7 @@ impl<'a> MirContext<'a> {
 
     /// A wrapper's payload as written: same as `resolve_type_expr`, except a
     /// container keeps what it is instead of collapsing to a bare pointer.
-    fn payload_of_expr(&self, ty: &TypeExpr) -> MirType {
+    pub(crate) fn payload_of_expr(&self, ty: &TypeExpr) -> MirType {
         let mir = self.resolve_type_expr(ty);
         if mir != MirType::Ptr {
             return mir;
@@ -1281,9 +1281,12 @@ impl<'a> MirContext<'a> {
             // address — and nothing freed it (#1253). It is also what makes
             // `func(…) -> …?` a niche: a present closure is never null.
             Type::Fn { .. } => MirType::FuncPtr(crate::types::SignatureId(0)),
-            // Tuple → struct-like layout with positional fields
+            // Tuple → struct-like layout with positional fields. A container
+            // part keeps its kind, as a wrapper's payload does: the release
+            // walk has no other way to tell `(Vec<i64>, i64)`'s vector from a
+            // plain word (#1395). `BlockBuilder` strips it from stored types.
             Type::Tuple(fields) => {
-                MirType::Tuple(fields.iter().map(|t| self.type_to_mir(t)).collect())
+                MirType::Tuple(fields.iter().map(|t| self.payload_to_mir(t)).collect())
             }
             // Array → real array with element type and length
             Type::Array { elem, len } => MirType::Array {

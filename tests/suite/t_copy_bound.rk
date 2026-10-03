@@ -1,0 +1,65 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `T: Copy` lets a generic body keep a value it only borrowed (type.generics/G1a).
+//
+// Without the bound a `T` is assumed to move, so storing a borrowed `value: T`
+// is giving away something the caller still holds (E0835). With it, the value
+// copies, and the bound is checked at the call instead.
+
+struct Wrapper<T> {
+    value: T
+}
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+func wrap<T: Copy>(value: T) -> Wrapper<T> {
+    return Wrapper { value }
+}
+
+func both<T>(a: T, b: T) -> (T, T) where T: Copy {
+    return (a, b)
+}
+
+func biggest<T: Copy + Comparable>(items: Vec<T>) -> T? {
+    mut best: T? = none
+    for it in items {
+        if best? as b {
+            if it > b {
+                best = it
+            }
+        } else {
+            best = it
+        }
+    }
+    return best
+}
+
+func main() {}
+
+test "a scalar wraps without take" {
+    let n = 3
+    let w = wrap(n)
+    assert w.value == 3
+    assert n == 3
+}
+
+test "a small struct is Copy too" {
+    let p = Point { x: 1, y: 2 }
+    let w = wrap(p)
+    assert w.value.y == 2
+    assert p.x == 1
+}
+
+test "a where clause says the same" {
+    let t = both("a", "b")
+    assert t.0 == "a"
+    assert t.1 == "b"
+}
+
+test "a loop's element can be kept when it copies" {
+    let v: Vec<i64> = [3, 9, 4]
+    assert biggest(v) ?? 0 == 9
+}

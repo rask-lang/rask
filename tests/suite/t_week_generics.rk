@@ -69,12 +69,12 @@ func pick_first(a: T, b: T) -> T {
     return a
 }
 
-func swap_them(a: T, b: T) -> (T, T) {
+func swap_them(take a: T, take b: T) -> (T, T) {
     return (b, a)
 }
 
 // Two parameters.
-func make_pair(a: T, b: U) -> Pair<T, U> {
+func make_pair(take a: T, take b: U) -> Pair<T, U> {
     return Pair { first: a, second: b }
 }
 

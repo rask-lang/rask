@@ -4,7 +4,7 @@
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::TuplePat;
 
-use crate::value::{MapKey, Value};
+use crate::value::Value;
 
 use super::{Interpreter, RuntimeError};
 
