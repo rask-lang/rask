@@ -111,6 +111,11 @@ pub struct OwnershipChecker<'a> {
     /// only lent gives `c` on the same loan, so `c` is neither owed nor
     /// the arm's to give away. Scoped to the arm that bound it.
     borrowed_parts: HashMap<String, (Span, String)>,
+    /// Bindings of a value-mode `for` over a collection: name → (the loop, the
+    /// collection). The loop lends each element (ctrl.loops/LP1), so the
+    /// binding can't be given away any more than a borrowed parameter can
+    /// (LP6). Scoped to the loop body.
+    borrowed_loop_items: HashMap<String, (Span, String)>,
     /// Loops being walked, innermost last: the label, and the join of the
     /// binding states at every `break` that leaves it. What a `break` path
     /// consumed is consumed after the loop too.
@@ -303,6 +308,7 @@ impl<'a> OwnershipChecker<'a> {
             lent_locals: HashMap::new(),
             borrowed_params: HashMap::new(),
             borrowed_parts: HashMap::new(),
+            borrowed_loop_items: HashMap::new(),
             loop_exits: Vec::new(),
             refills: HashMap::new(),
             borrowed_captures: HashMap::new(),
@@ -644,6 +650,7 @@ impl<'a> OwnershipChecker<'a> {
         self.resource_field_debts.clear();
         self.borrowed_params.clear();
         self.borrowed_parts.clear();
+        self.borrowed_loop_items.clear();
         self.loop_exits.clear();
         self.refills.clear();
         self.mutate_params.clear();
@@ -1545,7 +1552,20 @@ impl<'a> OwnershipChecker<'a> {
                         });
                     }
                 }
+                let saved_items = self.borrowed_loop_items.clone();
+                let lender = if *mutate { None } else { self.loop_lender(iter) };
+                for name in &binding_names {
+                    match &lender {
+                        Some(from) => {
+                            self.borrowed_loop_items.insert(name.clone(), (stmt.span, from.clone()));
+                        }
+                        None => {
+                            self.borrowed_loop_items.remove(name);
+                        }
+                    }
+                }
                 self.check_loop_body(body, &binding_names, label.as_ref(), false);
+                self.borrowed_loop_items = saved_items;
                 if *mutate {
                     self.active_for_mutates.pop();
                 }
@@ -2325,7 +2345,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_block(stmts);
             }
             ExprKind::Match { scrutinee, arms } => {
-                self.check_expr(scrutinee);
+                self.check_scrutinee(scrutinee);
                 let scrutinee_ty = self.program.node_types.get(&scrutinee.id).cloned();
                 // L5: matching destructures the scrutinee. For a non-Copy
                 // owned binding, ownership transfers into the arms — the
@@ -2440,7 +2460,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(else_branch);
             }
             ExprKind::IsPattern { expr, pattern: _ } => {
-                self.check_expr(expr);
+                self.check_scrutinee(expr);
             }
             ExprKind::NullCoalesce { value, default } => {
                 self.check_expr(value);
@@ -3281,6 +3301,17 @@ impl<'a> OwnershipChecker<'a> {
                                     },
                                     span,
                                 });
+                                return;
+                            }
+                            // A loop's element is lent, the same as a part
+                            // matched out of a borrowed value: `let q = item`
+                            // would be a second owner of what the collection
+                            // still holds.
+                            BindingState::Owned
+                                if self.borrowed_loop_items.contains_key(&source_name)
+                                    || self.borrowed_parts.contains_key(&source_name) =>
+                            {
+                                self.consume_binding(&source_name, span, None);
                                 return;
                             }
                             BindingState::Owned => {}
@@ -5963,6 +5994,48 @@ impl<'a> OwnershipChecker<'a> {
         self.borrowed_params.contains_key(name) || self.mutate_params.contains_key(name)
     }
 
+    /// A scrutinee is read, not stored. `match (a, b)` builds a tuple only to
+    /// match its parts, so the tuple takes nothing from `a` and `b` the way
+    /// one bound or handed on would.
+    fn check_scrutinee(&mut self, scrutinee: &Expr) {
+        match &scrutinee.kind {
+            ExprKind::Tuple(parts) => {
+                for part in parts {
+                    self.check_expr(part);
+                }
+            }
+            _ => self.check_expr(scrutinee),
+        }
+    }
+
+    /// The collection a value-mode `for` lends its elements out of, when it is
+    /// one: a `Vec`, `Map` or array named by a binding or a field path. A call
+    /// or an adapter chain yields values the loop owns (`take_all()`, a `map`),
+    /// and a range yields integers.
+    fn loop_lender(&self, iter: &Expr) -> Option<String> {
+        let place = Self::place_text(iter)?;
+        let ty = self.program.node_types.get(&iter.id)?;
+        let lends = match ty {
+            Type::Array { .. } => true,
+            Type::Generic { base, .. } => {
+                matches!(self.program.types.type_name(*base).as_str(), "Vec" | "Map")
+            }
+            Type::UnresolvedGeneric { name, .. } => matches!(name.as_str(), "Vec" | "Map"),
+            _ => false,
+        };
+        lends.then_some(place)
+    }
+
+    /// `items` or `self.items`, for a message; `None` for anything that isn't
+    /// a place.
+    fn place_text(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, field } => Some(format!("{}.{}", Self::place_text(object)?, field)),
+            _ => None,
+        }
+    }
+
     fn consume_binding(&mut self, name: &str, span: Span, sink: Option<&str>) {
         // O11: a const is not the function's to give away. Every function sees
         // the same one, so a move would leave the others holding nothing —
@@ -6001,6 +6074,18 @@ impl<'a> OwnershipChecker<'a> {
                     name: name.to_string(),
                     from,
                     matched_at,
+                    sink: sink.map(str::to_string),
+                },
+                span,
+            });
+            return;
+        }
+        if let Some((loop_at, from)) = self.borrowed_loop_items.get(name).cloned() {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ConsumeLoopItem {
+                    name: name.to_string(),
+                    from,
+                    loop_at,
                     sink: sink.map(str::to_string),
                 },
                 span,
@@ -6458,6 +6543,13 @@ impl<'a> OwnershipChecker<'a> {
                 // `h.c` and there is nothing left for `c` to be consumed by (#882).
                 if self.owned_bindings.contains(name) || self.resource_bindings.contains(name) {
                     self.consume_binding(name, expr.span, None);
+                } else {
+                    // Any other non-Copy value moves in too (mem.ownership/O2):
+                    // the aggregate owns it from here. Not recording that left
+                    // `let t = (v, 1)` with two owners of one vector, and a
+                    // loop's borrowed element could be stored away and freed
+                    // twice (#1395).
+                    self.consume_arg(expr, None);
                 }
             }
             ExprKind::Tuple(elems) | ExprKind::Array(elems) => {

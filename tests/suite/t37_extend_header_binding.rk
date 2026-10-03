@@ -91,7 +91,7 @@ extend Pairs<(K, V)> {
     public func keys_only(self) -> Vec<K> {
         mut out = Vec<K>.new()
         for (k, v) in self.items {
-            out.push(k)
+            out.push(k.clone())
         }
         return out
     }
@@ -136,7 +136,7 @@ struct Cell<T> {
 }
 
 extend Cell<T> {
-    public func hold(value: T) -> Cell<T> {
+    public func hold(take value: T) -> Cell<T> {
         return Cell { value }
     }
 

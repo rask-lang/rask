@@ -3881,6 +3881,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
             }
 
+            ConsumeLoopItem { name, from, loop_at, sink } => {
+                let label = match sink {
+                    Some(s) => format!("`{}` takes ownership, and `{}` is still in `{}`", s, name, from),
+                    None => format!("this takes ownership, and `{}` is still in `{}`", name, from),
+                };
+                Diagnostic::error(format!(
+                    "cannot give away `{}` — the loop only lends it out of `{}`",
+                    name, from
+                ))
+                .with_code("E0902")
+                .with_primary(self.span, label)
+                .with_secondary(*loop_at, format!("each `{}` is borrowed from `{}`", name, from))
+                .with_fix(format!("{}.clone()", name))
+                .with_why(format!(
+                    "a `for` loop lends each element and `{}` keeps it, so giving `{}` away would leave two owners of one value. [ctrl.loops/LP6]",
+                    from, name
+                ))
+            }
+
             ConsumeBorrowedCapture { name, closure_at } => {
                 Diagnostic::error(format!(
                     "cannot consume `{}` — the closure borrowed it",
