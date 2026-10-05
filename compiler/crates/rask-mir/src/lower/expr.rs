@@ -3218,7 +3218,7 @@ impl<'a> MirLowerer<'a> {
             // truncated (#649).
             let checked_elem = match self.ctx.node_types.get(&expr.id).cloned() {
                 Some(rask_types::Type::Array { elem, .. }) => {
-                    Some(self.ctx.type_to_mir(&elem))
+                    Some(self.ctx.payload_to_mir(&elem))
                 }
                 _ => None,
             };
@@ -3231,9 +3231,16 @@ impl<'a> MirLowerer<'a> {
                 }
                 lowered.push((elem_op, ty));
             }
-            if let Some(ty) = checked_elem {
-                elem_ty = ty;
-            }
+            // The array keeps a container element's kind, or its release reads
+            // a `Vec` as a plain word and leaks it (#1403). Stores and wrapping
+            // want the spelling MIR stores.
+            let kept_elem = match checked_elem {
+                Some(ty) => {
+                    elem_ty = ty.without_container_kinds();
+                    ty
+                }
+                None => elem_ty.clone(),
+            };
             // A bare `T` filling a `T?` slot gets its layers here, the same
             // way a struct field's does. `[1, none, 3]` in a `[i32?; 3]` used
             // to store the bare 1 where the tag belongs, so the second read
@@ -3247,7 +3254,7 @@ impl<'a> MirLowerer<'a> {
             let elem_size = elem_ty.size();
             let elem_ty_for_store = elem_ty.clone();
             let array_ty = MirType::Array {
-                elem: Box::new(elem_ty),
+                elem: Box::new(kept_elem),
                 len: elems.len() as u32,
             };
             let result_local = self.builder.alloc_temp(array_ty.clone());
@@ -3310,7 +3317,12 @@ impl<'a> MirLowerer<'a> {
                     .into_iter()
                     .zip(target.into_iter())
                     .map(|(got, want)| {
-                        if Self::is_sized_scalar(&got) && Self::is_sized_scalar(&want) {
+                        // A part the checker knows is a container keeps that
+                        // kind, or the temporary's release reads `Vec` as a
+                        // plain word and leaks it (#1403).
+                        if (Self::is_sized_scalar(&got) && Self::is_sized_scalar(&want))
+                            || want.without_container_kinds() == got
+                        {
                             want
                         } else {
                             got

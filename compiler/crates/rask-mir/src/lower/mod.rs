@@ -1293,9 +1293,10 @@ impl<'a> MirContext<'a> {
             Type::Tuple(fields) => {
                 MirType::Tuple(fields.iter().map(|t| self.payload_to_mir(t)).collect())
             }
-            // Array → real array with element type and length
+            // Array → real array with element type and length. A container
+            // element keeps its kind, the same as a tuple part (#1403).
             Type::Array { elem, len } => MirType::Array {
-                elem: Box::new(self.type_to_mir(elem)),
+                elem: Box::new(self.payload_to_mir(elem)),
                 len: *len as u32,
             },
             // Option (T or none): niche-optimized handle, or a tagged union.

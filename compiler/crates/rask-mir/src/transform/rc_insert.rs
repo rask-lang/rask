@@ -201,10 +201,12 @@ fn insert_rc_inc(func: &mut MirFunction, string_locals: &[LocalId]) {
                 // Call returning a string — new allocation, refcount starts at 1. No inc.
                 MirStmtKind::Call { dst: Some(dst), .. } if string_set.contains(dst) => {}
 
-                // Field access extracting a string — this is a copy of the string
-                // from a struct field, needs inc.
-                MirStmtKind::Assign { dst, rvalue: MirRValue::Field { .. } }
-                    if string_set.contains(dst) =>
+                // Field or array element extracting a string — this is a copy of
+                // the string out of an aggregate, needs inc.
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { .. } | MirRValue::ArrayIndex { .. },
+                } if string_set.contains(dst) =>
                 {
                     insertions.push((si + 1, MirStmt::new(
                         MirStmtKind::RcInc { local: *dst },
@@ -375,7 +377,11 @@ fn insert_aggregate_release(
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
                     tracked.contains(src).then_some(*dst)
                 }
-                MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } => {
+                // An array element is a part the same way a field is (#1403).
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { base, .. } | MirRValue::ArrayIndex { base, .. },
+                } => {
                     uses::operand_local(base)
                         .filter(|b| tracked.contains(b))
                         .and_then(|b| {
@@ -461,7 +467,10 @@ fn insert_aggregate_release(
                         ev.push(ownership::Event::Other(*dst));
                     }
                 }
-                MirStmtKind::Assign { dst, rvalue: MirRValue::Field { base, .. } } if is_tracked(dst) => {
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { base, .. } | MirRValue::ArrayIndex { base, .. },
+                } if is_tracked(dst) => {
                     match uses::operand_local(base).filter(|b| is_tracked(b)) {
                         Some(b) if part_of_field(*dst, b, &aggregates, &ty_of) => {
                             ev.push(ownership::Event::Part { dst: *dst, base: b })
