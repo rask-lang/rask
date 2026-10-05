@@ -269,6 +269,7 @@ fn decide_allocation(func: &mut MirFunction, callee_escapes: &HashMap<String, Ve
 /// frame captures by value in all of them.
 pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
     let callee_escapes = build_callee_escape_map(fns, true);
+    let routes = build_param_routes(fns);
     let mut names = HashSet::new();
 
     for func in fns {
@@ -277,6 +278,7 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
             continue;
         }
         let aliases = closure_aliases(func, &created);
+        let leaving = leaves_the_frame(func, &routes);
         // Only a closure that actually borrows something has a borrow to
         // withdraw, so the map is built from those creates alone.
         let borrows: HashMap<LocalId, &str> = func
@@ -306,7 +308,7 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
         for block in &func.blocks {
             for stmt in &block.statements {
                 match &stmt.kind {
-                    MirStmtKind::Call { func: callee, args, .. } => {
+                    MirStmtKind::Call { dst, func: callee, args } => {
                         for (idx, arg) in args.iter().enumerate() {
                             let Some(id) = uses::operand_local(arg) else { continue };
                             // A callee nobody wrote down might keep it, and
@@ -319,7 +321,20 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
                                 .unwrap_or_else(|| {
                                     !rask_stdlib::mir_metadata::borrows_its_callback(&callee.name)
                                 });
-                            if keeps {
+                            // A callee that keeps it only inside what it hands
+                            // back keeps it exactly as long as that result
+                            // lives (mem.closures/SL4). `filter(pred)` returns
+                            // an adapter holding `pred`; consumed by `count()`
+                            // on the same line, the adapter dies in this frame
+                            // and `pred` never left it, so its write to
+                            // `total` has to land (#1279). Returned or stored,
+                            // the adapter takes `pred` with it.
+                            let only_in_result = routes
+                                .get(&callee.name)
+                                .and_then(|r| r.get(idx))
+                                .is_some_and(|r| *r == Route::IntoResult);
+                            let result_stays = dst.is_none_or(|d| !leaving.contains(&d));
+                            if keeps && !(only_in_result && result_stays) {
                                 names.extend(name_of(id));
                             }
                         }
@@ -350,6 +365,145 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
     }
 
     names
+}
+
+/// Where a parameter can go once the callee has it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Route {
+    /// Nowhere: the callee is done with it when it returns.
+    Stays,
+    /// Only into the value the callee returns — captured by a closure it hands
+    /// back, or handed back itself. It lives as long as the caller keeps that
+    /// result (mem.closures/SL4).
+    IntoResult,
+    /// Somewhere the caller can't follow: stored, boxed, or given to a callee
+    /// that keeps it.
+    Away,
+}
+
+/// `Route` for every parameter of every function, as a fixed point — a
+/// parameter handed to another function goes wherever that one sends it.
+fn build_param_routes(fns: &[MirFunction]) -> HashMap<String, Vec<Route>> {
+    let mut routes: HashMap<String, Vec<Route>> = fns
+        .iter()
+        .map(|f| (f.name.clone(), vec![Route::Stays; f.params.len()]))
+        .collect();
+    // Routes only rise, so this settles.
+    loop {
+        let mut changed = false;
+        for func in fns {
+            let (into_result, away) = frame_routes(func, &routes);
+            for (i, p) in func.params.iter().enumerate() {
+                let r = if away.contains(&p.id) {
+                    Route::Away
+                } else if into_result.contains(&p.id) {
+                    Route::IntoResult
+                } else {
+                    Route::Stays
+                };
+                let Some(slot) = routes.get_mut(&func.name).and_then(|r| r.get_mut(i)) else {
+                    continue;
+                };
+                if r > *slot {
+                    *slot = r;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return routes;
+        }
+    }
+}
+
+/// The locals in `func` whose value may outlive it: returned, stored, or
+/// handed on to something that keeps it.
+fn leaves_the_frame(func: &MirFunction, routes: &HashMap<String, Vec<Route>>) -> HashSet<LocalId> {
+    let (into_result, away) = frame_routes(func, routes);
+    into_result.union(&away).copied().collect()
+}
+
+/// Which locals of `func` reach its return value, and which go somewhere else
+/// that outlives the call.
+///
+/// Walked backwards from where values leave: whatever is copied into, captured
+/// by, or handed to a callee alongside a leaving value leaves with it. A
+/// callee's `IntoResult` parameter leaves exactly the way the call's own result
+/// does, which is the part a plain "does it escape" can't say.
+fn frame_routes(
+    func: &MirFunction,
+    routes: &HashMap<String, Vec<Route>>,
+) -> (HashSet<LocalId>, HashSet<LocalId>) {
+    let mut into_result: HashSet<LocalId> = HashSet::new();
+    let mut away: HashSet<LocalId> = HashSet::new();
+    for block in &func.blocks {
+        match &block.terminator.kind {
+            MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+            | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => {
+                into_result.insert(*id);
+            }
+            _ => {}
+        }
+    }
+    // `src` leaves wherever `dst` does.
+    fn follow(
+        into_result: &mut HashSet<LocalId>,
+        away: &mut HashSet<LocalId>,
+        dst: LocalId,
+        src: LocalId,
+    ) -> bool {
+        let mut grew = false;
+        if into_result.contains(&dst) {
+            grew |= into_result.insert(src);
+        }
+        if away.contains(&dst) {
+            grew |= away.insert(src);
+        }
+        grew
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            match &stmt.kind {
+                MirStmtKind::Store { value: MirOperand::Local(id), .. }
+                | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
+                | MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. } => {
+                    changed |= away.insert(*id);
+                }
+                MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } => {
+                    changed |= follow(&mut into_result, &mut away, *dst, *src);
+                }
+                MirStmtKind::ClosureCreate { dst, captures, .. } => {
+                    for cap in captures {
+                        changed |= follow(&mut into_result, &mut away, *dst, cap.local_id);
+                    }
+                }
+                MirStmtKind::Call { dst, func: callee, args } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        let route = match routes.get(&callee.name) {
+                            Some(r) => r.get(i).copied().unwrap_or(Route::Away),
+                            None if rask_stdlib::mir_metadata::borrows_its_callback(&callee.name) => {
+                                Route::Stays
+                            }
+                            None => Route::Away,
+                        };
+                        match (route, dst) {
+                            (Route::Stays, _) => {}
+                            (Route::Away, _) => changed |= away.insert(id),
+                            (Route::IntoResult, Some(d)) => {
+                                changed |= follow(&mut into_result, &mut away, *d, id);
+                            }
+                            (Route::IntoResult, None) => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (into_result, away)
 }
 
 /// Free the heap closures this frame is left holding.

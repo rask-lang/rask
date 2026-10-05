@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure handed to a sequence adapter writes to the caller's local (#1279).
+//
+//     mut total = 0
+//     let n = v.as_sequence().filter(|x| { total = total + x; return true }).count()
+//
+// answered `total 0` natively and `total 6` on the interpreter. `filter`
+// returns an adapter that holds the predicate, and the compiler read "holds"
+// as "the predicate leaves this frame", so it gave the predicate a copy of
+// `total` and the writes went to the copy. But the adapter only lives as long
+// as the result of `filter`, and here `count()` uses that up on the same line:
+// nothing outlives the frame, so the predicate points at `total` and the write
+// lands (mem.closures/CM1, SL4). Returned or stored, the adapter would take
+// the predicate with it, and that case still copies.
+
+import sequence.Sequence
+
+func evens_of(s: Sequence<i32>, keep: func(i32) -> bool) -> Sequence<i32> {
+    return s.filter(keep)
+}
+
+func over_a_local(v: Vec<i32>) -> Sequence<i32> {
+    let tags: Vec<i32> = [2, 3]
+    return v.as_sequence().filter(|x| tags.contains(x))
+}
+
+test "a filter predicate's write lands" {
+    let v: Vec<i32> = [1, 2, 3]
+    mut total = 0
+    let n = v.as_sequence().filter(|x| {
+        total = total + x
+        return true
+    }).count()
+    assert n == 3
+    assert total == 6
+}
+
+test "two adapters, both writing" {
+    let v: Vec<i32> = [1, 2, 3, 4]
+    mut seen = 0
+    mut mapped = 0
+    let s = v.as_sequence().filter(|x| {
+        seen += 1
+        return x > 1
+    }).map(|x| {
+        mapped += 1
+        return x * 10
+    }).sum()
+    assert s == 90
+    assert seen == 4
+    assert mapped == 3
+}
+
+test "a chain held in a local, consumed later in the frame" {
+    let v: Vec<i32> = [5, 6, 7]
+    mut calls = 0
+    let chain = v.as_sequence().filter(|x| {
+        calls += 1
+        return x != 6
+    })
+    assert calls == 0
+    assert chain.count() == 2
+    assert calls == 3
+}
+
+test "a for loop over the chain" {
+    let v: Vec<i32> = [1, 2, 3]
+    mut asked = 0
+    mut got = 0
+    for x in v.as_sequence().filter(|x| {
+        asked += 1
+        return x > 1
+    }) {
+        got += x
+    }
+    assert asked == 3
+    assert got == 5
+}
+
+test "through a function that returns the adapter" {
+    let v: Vec<i32> = [1, 2, 3, 4]
+    mut asked = 0
+    let n = evens_of(v.as_sequence(), |x| {
+        asked += 1
+        return x % 2 == 0
+    }).count()
+    assert n == 2
+    assert asked == 4
+}
+
+test "a returned chain still carries what its predicate captured" {
+    let v: Vec<i32> = [1, 2, 3]
+    assert over_a_local(v).count() == 2
+}
