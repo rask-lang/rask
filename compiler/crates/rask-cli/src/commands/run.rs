@@ -390,7 +390,18 @@ fn run_test_file_interp(
     format: Format,
     require_tests: bool,
 ) -> bool {
-    let result = crate::run_check_or_exit(path, format);
+    // A file that doesn't check is a failed file, not the end of the run. Exiting
+    // here stopped `rask test --interp tests/suite/` at the first such file,
+    // with every file after it never run.
+    let result = match crate::run_check(path, format) {
+        Ok(result) => result,
+        Err(err_count) => {
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Check", err_count));
+            }
+            return false;
+        }
+    };
 
     // Same as `cmd_run`: the program name is argv[0], so a test that reads
     // `os.args()` sees what it would see natively (std.os/A1).
@@ -485,25 +496,34 @@ pub fn cmd_test_files_interp(dir: &str, filter: Option<String>, format: Format) 
             "===".dimmed(), output::file_path(dir), files.len(), "===".dimmed());
     }
 
-    let mut failed_files = 0;
-    for file in &files {
-        if !run_test_file_interp(file, filter.as_deref(), format, false) {
-            failed_files += 1;
-        }
-    }
+    let failed: Vec<&String> = files
+        .iter()
+        .filter(|file| !run_test_file_interp(file, filter.as_deref(), format, false))
+        .collect();
+    finish_test_dir(format, files.len(), &failed);
+}
 
-    if format == Format::Human && files.len() > 1 {
+/// The end of a directory run: the tally, then the failed files by name, then
+/// the exit code.
+///
+/// A count alone sends the reader back through the scrollback to find which
+/// files they were, and a failure that prints no header of its own reads as
+/// part of the file above it (#1369).
+fn finish_test_dir(format: Format, total: usize, failed: &[&String]) {
+    if format == Format::Human && total > 1 {
         println!();
         println!("{}", output::separator(50));
-        if failed_files == 0 {
-            println!("{} all {} files passed", output::status_pass(), files.len());
+        if failed.is_empty() {
+            println!("{} all {} files passed", output::status_pass(), total);
         } else {
-            println!("{} {} of {} files failed",
-                output::status_fail(), failed_files, files.len());
+            println!("{} {} of {} files failed:", output::status_fail(), failed.len(), total);
+            for file in failed {
+                println!("    {}", output::file_path(file.as_str()));
+            }
         }
     }
 
-    if failed_files > 0 {
+    if !failed.is_empty() {
         process::exit(1);
     }
 }
@@ -713,8 +733,13 @@ pub fn build_test_binary(
         &mono, &result.typed, &result.decls, &comptime_globals,
         &tests, Some(path), source_files.first().map(|(_, s)| s.as_str()), &obj_path, Some(&cfg),
     ) {
+        // The file is named because nothing else here does. A failure at
+        // this point prints no `=== Testing` header, so in a directory run
+        // an unnamed error sat under the previous file's results and was
+        // blamed on it — #1369 read three tracked failures that way as
+        // state leaking between files.
         for e in &errors {
-            eprintln!("{}: compile: {}", output::error_label(), e);
+            eprintln!("{}: compile: {}: {}", output::error_label(), path, e);
         }
         let _ = std::fs::remove_file(&obj_path);
         return Err(TestOutcome::Failed);
@@ -722,7 +747,7 @@ pub fn build_test_binary(
 
     let link_opts = super::link::LinkOptions { sim, ..Default::default() };
     if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, false, None) {
-        eprintln!("{}: link: {}", output::error_label(), e);
+        eprintln!("{}: link: {}: {}", output::error_label(), path, e);
         let _ = std::fs::remove_file(&obj_path);
         return Err(TestOutcome::Failed);
     }
@@ -771,27 +796,11 @@ pub fn cmd_test_files_native(dir: &str, filter: Option<String>, format: Format) 
             "===".dimmed(), output::file_path(dir), files.len(), "===".dimmed());
     }
 
-    let mut failed_files = 0;
-    for file in &files {
-        if !run_test_file_native(file, filter.as_deref(), format).tests_passed() {
-            failed_files += 1;
-        }
-    }
-
-    if format == Format::Human && files.len() > 1 {
-        println!();
-        println!("{}", output::separator(50));
-        if failed_files == 0 {
-            println!("{} all {} files passed", output::status_pass(), files.len());
-        } else {
-            println!("{} {} of {} files failed",
-                output::status_fail(), failed_files, files.len());
-        }
-    }
-
-    if failed_files > 0 {
-        process::exit(1);
-    }
+    let failed: Vec<&String> = files
+        .iter()
+        .filter(|file| !run_test_file_native(file, filter.as_deref(), format).tests_passed())
+        .collect();
+    finish_test_dir(format, files.len(), &failed);
 }
 
 // ─── Result records ─────────────────────────────────────────
