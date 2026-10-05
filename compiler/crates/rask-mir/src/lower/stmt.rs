@@ -275,13 +275,15 @@ impl<'a> MirLowerer<'a> {
     /// whatever it holds. Leaving the aggregates out leaked the old value of
     /// `self.active = MemTable.new()` (tiered_store).
     ///
-    /// An aggregate the new value may have been built out of — `self.list =
-    /// More(h, Heap(self.list))` — is still the slot's value, and releasing it
-    /// frees what the new one points at, so a value that names the place keeps
-    /// it. Strings are counted, so one moved into the new value took its own
-    /// reference. Containers are released whatever the value says: the common
-    /// shape, `n.kids = n.kids.filter(…).to_vec()`, only borrows the old one.
-    fn replaced_slot_type(&self, target: &Expr, value: &Expr, fty: &MirType) -> Option<MirType> {
+    /// `reuses_old` is the ownership pass's word that the new value was built
+    /// out of the old one — `self.list = More(h, Heap(self.list))` — so the
+    /// old value is the new one's now, and releasing it would free what the
+    /// new one points at. Only a string is released anyway: it is counted,
+    /// and one moved into the new value took its own reference.
+    fn replaced_slot_type(&self, target: &Expr, reuses_old: bool, fty: &MirType) -> Option<MirType> {
+        if reuses_old && !matches!(fty, MirType::String) {
+            return None;
+        }
         if let Some(ty) = self.ctx.lookup_raw_type(target.id) {
             if let Some(head) = self.head_name(&ty) {
                 if let Some(kind) = crate::ContainerKind::from_head(&head) {
@@ -289,15 +291,11 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        match fty {
-            MirType::String => Some(fty.clone()),
-            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
-                if !may_move_from_place(value, target) =>
-            {
-                Some(fty.clone())
-            }
-            _ => None,
-        }
+        matches!(
+            fty,
+            MirType::String | MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+        )
+        .then(|| fty.clone())
     }
 
     /// Byte offset, MIR type and recorded byte size of `field` within an
@@ -528,6 +526,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             StmtKind::Assign { target, value, .. } => {
+                let reuses_old = self.ctx.field_reuses.contains(&stmt.id);
                 // mem.owned/OW3: `*p = v` writes through a borrow of a
                 // transparent `Owned`, so it names the same place as `p = v`.
                 // Left as a Deref target it matched no arm below and the store
@@ -649,11 +648,11 @@ impl<'a> MirLowerer<'a> {
                             let replaced = if !assigns_through {
                                 None
                             } else if matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_))
-                                && !may_move_from_place(value, target)
+                                && !reuses_old
                             {
                                 Some(dst_ty.clone())
                             } else if scalar_mutate.as_ref().is_some_and(is_runtime_handle) {
-                                self.replaced_slot_type(target, value, &dst_ty)
+                                self.replaced_slot_type(target, reuses_old, &dst_ty)
                                     .filter(|t| matches!(t, MirType::Container(_)))
                             } else {
                                 None
@@ -700,7 +699,7 @@ impl<'a> MirLowerer<'a> {
                             {
                                 // The value the slot is about to lose, exactly
                                 // as the place-chain path below gives it back.
-                                if let Some(old) = self.replaced_slot_type(target, value, &fty) {
+                                if let Some(old) = self.replaced_slot_type(target, reuses_old, &fty) {
                                     self.builder.push_stmt(MirStmt::dummy(
                                         MirStmtKind::ReleaseSlot { addr: guard_local, offset, ty: old },
                                     ));
@@ -760,7 +759,7 @@ impl<'a> MirLowerer<'a> {
                             // there is no "is this the first write" to get
                             // wrong here, which is why this is lowering's job
                             // rather than a pass's (#1198).
-                            if let Some(old) = self.replaced_slot_type(target, value, &fty) {
+                            if let Some(old) = self.replaced_slot_type(target, reuses_old, &fty) {
                                 self.builder.push_stmt(MirStmt::dummy(
                                     MirStmtKind::ReleaseSlot { addr: base, offset, ty: old },
                                 ));
@@ -817,7 +816,7 @@ impl<'a> MirLowerer<'a> {
                                         // here, as a direct field write does:
                                         // `lines[0].text = t` leaked the old
                                         // text on every edit.
-                                        if let Some(old) = self.replaced_slot_type(target, value, &fty) {
+                                        if let Some(old) = self.replaced_slot_type(target, reuses_old, &fty) {
                                             self.builder.push_stmt(MirStmt::dummy(
                                                 MirStmtKind::ReleaseSlot { addr: tmp, offset, ty: old },
                                             ));
@@ -3403,47 +3402,4 @@ pub(crate) fn is_runtime_handle(ty: &MirType) -> bool {
 /// lends, and nothing reads it as a receiver.
 pub(crate) fn mutate_param_needs_own_pointer(name: &str, ty: &MirType) -> bool {
     !mutate_param_by_pointer(ty) || (name != "self" && is_runtime_handle(ty))
-}
-
-/// The place an expression names, as root and field names: `self.list` is
-/// `["self", "list"]`. Every element of a vector is one `[]`, so `v[i]` and
-/// `v[j]` count as the same place. `None` for anything that isn't a place.
-fn place_path(expr: &Expr) -> Option<Vec<&str>> {
-    match &expr.kind {
-        ExprKind::Ident(name) => Some(vec![name.as_str()]),
-        ExprKind::Field { object, field } => {
-            let mut p = place_path(object)?;
-            p.push(field.as_str());
-            Some(p)
-        }
-        ExprKind::Index { object, .. } => {
-            let mut p = place_path(object)?;
-            p.push("[]");
-            Some(p)
-        }
-        _ => None,
-    }
-}
-
-/// Whether `value` names `target`, something inside it, or something
-/// holding it — any of which may hand the slot's current value to the new
-/// one. Answers "yes" to a borrow as well (`self.bag.tag.clone()`), which
-/// keeps the old value alive past the write: a leak, never a double free.
-fn may_move_from_place(value: &Expr, target: &Expr) -> bool {
-    let Some(t) = place_path(target) else { return true };
-    let mut hit = false;
-    rask_ast::visit::walk_expr_pruned(value, &mut |e| {
-        if hit {
-            return false;
-        }
-        match place_path(e) {
-            Some(p) => {
-                let n = p.len().min(t.len());
-                hit = p[..n] == t[..n];
-                false
-            }
-            None => true,
-        }
-    });
-    hit
 }

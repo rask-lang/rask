@@ -325,6 +325,7 @@ impl<'a> MirContext<'a> {
             fallback_keeps_shape: &records.fallback_keeps_shape,
             pattern_unwraps: &records.pattern_unwraps,
             escaping_closures: &records.escaping_closures,
+            field_reuses: &records.field_reuses,
             task_bound_closures: &records.task_bound_closures,
             type_names,
             // Straight off the checker — never optional.
@@ -479,6 +480,9 @@ pub struct MirContext<'a> {
     /// CM1: closure literals that outlive the frame that built them. Those
     /// carry their captures; the rest hold the address and write through it.
     pub escaping_closures: &'a std::collections::HashSet<NodeId>,
+    /// Assignments whose new value takes the old one: the slot's old value is
+    /// the new one's now, so nothing is released before the write (ownership).
+    pub field_reuses: &'a std::collections::HashSet<NodeId>,
     /// Closures that captured a link or a `Local` box (#1356).
     pub task_bound_closures: &'a std::collections::HashSet<NodeId>,
     /// ER16a: `try` node → the postfix-chain step it attaches to. The branch
@@ -606,6 +610,7 @@ impl<'a> MirContext<'a> {
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
             pattern_unwraps: &EMPTY_PATTERN_UNWRAPS,
             escaping_closures: &EMPTY_ESCAPING,
+            field_reuses: &EMPTY_ESCAPING,
             task_bound_closures: &EMPTY_ESCAPING,
             try_chain_placement: &EMPTY_TRY_PLACEMENT,
             call_rewrites: &EMPTY_REWRITES,
@@ -7235,6 +7240,7 @@ mod tests {
             fallback_keeps_shape: &empty_fallback_shape,
             pattern_unwraps: &empty_pattern_unwraps,
             escaping_closures: &empty_escaping,
+            field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
@@ -7318,6 +7324,7 @@ mod tests {
             fallback_keeps_shape: &empty_fallback_shape,
             pattern_unwraps: &empty_pattern_unwraps,
             escaping_closures: &empty_escaping,
+            field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,
@@ -7410,6 +7417,7 @@ mod tests {
             fallback_keeps_shape: &empty_fallback_shape,
             pattern_unwraps: &empty_pattern_unwraps,
             escaping_closures: &empty_escaping,
+            field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
             try_chain_placement: &empty_try_placement,
             call_rewrites: &empty_rewrites,

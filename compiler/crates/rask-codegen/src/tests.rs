@@ -1964,6 +1964,7 @@ mod tests {
             instantiated_fallback_keeps_shape: Default::default(),
             instantiated_pattern_unwraps: Default::default(),
         instantiated_escaping_closures: Default::default(),
+        instantiated_field_reuses: Default::default(),
         instantiated_task_bound_closures: Default::default(),
             functions: vec![],
             struct_layouts: vec![],
@@ -1984,6 +1985,7 @@ mod tests {
             instantiated_fallback_keeps_shape: Default::default(),
             instantiated_pattern_unwraps: Default::default(),
         instantiated_escaping_closures: Default::default(),
+        instantiated_field_reuses: Default::default(),
         instantiated_task_bound_closures: Default::default(),
             functions: vec![],
             struct_layouts: vec![
@@ -2041,6 +2043,7 @@ mod tests {
             instantiated_fallback_keeps_shape: Default::default(),
             instantiated_pattern_unwraps: Default::default(),
         instantiated_escaping_closures: Default::default(),
+        instantiated_field_reuses: Default::default(),
         instantiated_task_bound_closures: Default::default(),
             functions: vec![],
             struct_layouts: vec![],

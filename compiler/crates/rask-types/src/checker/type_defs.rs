@@ -476,6 +476,10 @@ pub struct TypedProgram {
     /// ownership pass and written back here, because lowering and the
     /// interpreter both have to agree with it.
     pub escaping_closures: std::collections::HashSet<NodeId>,
+    /// Assignments whose new value is built out of the old one, so the slot's
+    /// old value isn't released before the write (`rask_ownership`). Worked out
+    /// by the ownership pass and written back here, like `escaping_closures`.
+    pub field_reuses: std::collections::HashSet<NodeId>,
     /// Closure literals that capture a link or a `Local` box, so they may not
     /// reach another task (mem.ownership/T2, conc.sync/SH7). A `spawn` written
     /// around the closure is rejected at compile time; one that reaches the

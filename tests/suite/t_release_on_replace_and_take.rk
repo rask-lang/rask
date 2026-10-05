@@ -8,7 +8,8 @@
 //   - `take` out of a `mutate self` field: the value became the method's,
 //     but was still counted as part of the caller's struct, so nobody freed it.
 //   - The new value built out of the old one, `self.list = More(Heap(self.list))`,
-//     must not free the old one; that is the list's tail now.
+//     must not free the old one; that is the list's tail now. One that only
+//     reads the old value must still free it. The ownership pass says which.
 //   - A string read out of a struct, then a `?? { continue }` past its last
 //     use: lowering leaves an unreachable block after `continue`, and the
 //     release pass took it as a path where the string was never assigned.
@@ -31,6 +32,11 @@ struct Holder {
 extend Holder {
     func reset(mutate self) {
         self.bag = Bag { items: Vec.new(), tag: "a fresh bag with a long tag".to_uppercase() }
+    }
+
+    // Reads the old bag while building the new one, and keeps none of it.
+    func relabel(mutate self) {
+        self.bag = Bag { items: Vec.new(), tag: self.bag.tag.clone() }
     }
 
     func swap_spare(mutate self) -> string {
@@ -89,6 +95,14 @@ test "a struct field written over frees the old struct" {
     h.bag.items.push("two".to_string())
     assert h.bag.items.len() == 1
     assert h.bag.tag == "A FRESH BAG WITH A LONG TAG"
+}
+
+test "a new value that only reads the old one still frees it" {
+    mut h = Holder { bag: Bag { items: Vec.new(), tag: "kept tag, long enough for the heap".to_uppercase() }, spare: none }
+    h.bag.items.push("dropped with the old bag".to_uppercase())
+    h.relabel()
+    assert h.bag.tag == "KEPT TAG, LONG ENOUGH FOR THE HEAP"
+    assert h.bag.items.len() == 0
 }
 
 test "take out of a mutate self field frees what was taken" {

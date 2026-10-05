@@ -32,6 +32,11 @@ pub struct OwnershipResult {
     /// and the interpreter read this to decide whether a capture is the value
     /// or a pointer to it — it is the whole of what `own` used to say.
     pub escaping_closures: HashSet<rask_ast::NodeId>,
+    /// Assignments `place = value` whose new value takes the old one, whole
+    /// or in part: `self.list = More(h, Heap(self.list))`. The old value is
+    /// the new one's now, so lowering must not release it before the write.
+    /// Every other assignment over a slot releases what the slot held.
+    pub field_reuses: HashSet<rask_ast::NodeId>,
 }
 
 impl OwnershipResult {
@@ -232,6 +237,14 @@ pub struct OwnershipChecker<'a> {
     /// carry their captures instead of pointing at them. Collected before any
     /// body is walked — see `collect_escaping_closures`.
     escaping_closures: HashSet<rask_ast::NodeId>,
+    /// While the value of `place = value` is checked: the place, as a path
+    /// (`["self", "list"]`), and the assignment.
+    reuse_target: Option<(Vec<String>, rask_ast::NodeId)>,
+    /// Assignments `place = value` whose new value takes the old one, whole
+    /// or in part: `self.list = More(h, Heap(self.list))`. The old value is
+    /// the new one's now, so lowering must not release it before the write.
+    /// Every other assignment over a slot releases what the slot held.
+    field_reuses: HashSet<rask_ast::NodeId>,
     /// Closure literals whose body assigns to something they captured. MC4
     /// promises the caller sees those writes, which only a borrow capture can
     /// deliver, so these are never swept up by the call-result rule in
@@ -341,6 +354,8 @@ impl<'a> OwnershipChecker<'a> {
             closure_scope_limits: HashMap::new(),
             closure_literals: HashMap::new(),
             escaping_closures: HashSet::new(),
+            reuse_target: None,
+            field_reuses: HashSet::new(),
             closure_writes_a_capture: HashSet::new(),
             escape_audit: std::env::var("RASK_ESCAPE_AUDIT").is_ok(),
             mutable_captures: Vec::new(),
@@ -368,7 +383,19 @@ impl<'a> OwnershipChecker<'a> {
     pub fn check_with_signatures(mut self, decls: &[Decl], extra: &[Decl]) -> OwnershipResult {
         self.collect_signatures(extra);
         self.collect_signatures(decls);
-        return self.run(decls);
+        let program = self.program;
+        let mut result = self.run(decls);
+        // The stdlib's bodies are lowered like the program's, and a write
+        // that builds its value from the old one is as real there:
+        // `Handles.add` does `self.list = More(h, Heap(self.list))`. So they
+        // are walked for `field_reuses`, and only that is kept. Their errors
+        // are the stdlib's own tests' to find.
+        if !extra.is_empty() {
+            let mut lib = OwnershipChecker::new(program);
+            lib.collect_signatures(extra);
+            result.field_reuses.extend(lib.run(extra).field_reuses);
+        }
+        result
     }
 
     /// Parameter modes, per function and per method. No bodies.
@@ -425,6 +452,7 @@ impl<'a> OwnershipChecker<'a> {
         OwnershipResult {
             errors: self.errors,
             escaping_closures: self.escaping_closures,
+            field_reuses: self.field_reuses,
         }
     }
 
@@ -1315,7 +1343,17 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             StmtKind::Assign { target, value, .. } => {
+                // Whether the new value takes the old one: anything below
+                // that takes ownership of the target, or of part of it, while
+                // the value is checked (`note_owning_use`). The assignment
+                // itself stores the value, so that counts too.
+                let outer_target = self.reuse_target.take();
+                if let Some(path) = Self::place_path(target) {
+                    self.reuse_target = Some((path, stmt.id));
+                }
                 self.check_expr(value);
+                self.note_owning_use(value);
+                self.reuse_target = outer_target;
                 if let ExprKind::Ident(name) = &target.kind {
                     self.record_lent_binding(name, value);
                 }
@@ -1969,6 +2007,7 @@ impl<'a> OwnershipChecker<'a> {
                 // If this is a `take self` method, mark the object as moved
                 // (skip in ensure bodies — ensure defers execution)
                 if !self.in_ensure && self.is_take_self_method(object, method) {
+                    self.note_owning_use(object);
                     match &object.kind {
                         ExprKind::Ident(name) => {
                             let name = name.clone();
@@ -5344,6 +5383,7 @@ impl<'a> OwnershipChecker<'a> {
     /// Mark an argument as consumed (moved) when it names a binding.
     /// Copy values (VS1/VS2) stay valid — passing them to `take`/`own` copies.
     fn consume_arg(&mut self, arg_expr: &Expr, sink: Option<&str>) {
+        self.note_owning_use(arg_expr);
         if let ExprKind::Ident(name) = &arg_expr.kind {
             // An `Owned` box reads as its payload, so a small payload made the
             // binding look Copy and `drop(p)` consumed nothing — the leak was
@@ -6316,7 +6356,42 @@ impl<'a> OwnershipChecker<'a> {
                     self.consume_owned_into_aggregate(&arg.expr);
                 }
             }
+            ExprKind::Field { .. } | ExprKind::Index { .. } => self.note_owning_use(expr),
             _ => {}
+        }
+    }
+
+    /// The place an expression names, as root and field names: `self.list`
+    /// is `["self", "list"]`. Every element of a collection is one `[]`, so
+    /// `v[i]` and `v[j]` count as the same place. `None` for anything else.
+    fn place_path(expr: &Expr) -> Option<Vec<String>> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(vec![name.clone()]),
+            ExprKind::Field { object, field } => {
+                let mut p = Self::place_path(object)?;
+                p.push(field.clone());
+                Some(p)
+            }
+            ExprKind::Index { object, .. } => {
+                let mut p = Self::place_path(object)?;
+                p.push("[]".to_string());
+                Some(p)
+            }
+            _ => None,
+        }
+    }
+
+    /// `e` is in a position that takes ownership of it — a `take` argument, a
+    /// literal's field, a variant's payload, the value of an assignment. When
+    /// that is the place an enclosing assignment writes, or part of it, or
+    /// something holding it, the new value is built out of the old one, and
+    /// the assignment is recorded in `field_reuses`.
+    fn note_owning_use(&mut self, e: &Expr) {
+        let Some((target, stmt)) = &self.reuse_target else { return };
+        let Some(path) = Self::place_path(e) else { return };
+        let n = path.len().min(target.len());
+        if path[..n] == target[..n] {
+            self.field_reuses.insert(*stmt);
         }
     }
 

@@ -147,6 +147,8 @@ pub struct Monomorphizer<'a> {
     /// CF12: instantiated `if x is Variant` nodes that bind the payload.
     pub instantiated_pattern_unwraps: HashMap<NodeId, rask_ast::expr::Pattern>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
+    /// Assignments in the copies whose new value takes the old one.
+    pub instantiated_field_reuses: HashSet<NodeId>,
     /// Closures in the copies that may not reach another task (#1356).
     pub instantiated_task_bound_closures: HashSet<NodeId>,
     /// Per-call-site type arguments for the copies. A generic calling another
@@ -499,6 +501,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_fallback_keeps_shape: HashSet::new(),
             instantiated_pattern_unwraps: HashMap::new(),
             instantiated_escaping_closures: HashSet::new(),
+            instantiated_field_reuses: HashSet::new(),
             instantiated_task_bound_closures: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
             interface_methods,
@@ -640,6 +643,11 @@ impl<'a> Monomorphizer<'a> {
             // it is written, which substitution doesn't move.
             if typed.escaping_closures.contains(&old_id) {
                 self.instantiated_escaping_closures.insert(new_id);
+            }
+            // Which assignment builds its value from the old one is written in
+            // the source, and substitution doesn't change it.
+            if typed.field_reuses.contains(&old_id) {
+                self.instantiated_field_reuses.insert(new_id);
             }
             // A closure that captured a link or a `Local` box of a concrete
             // type is task-bound in every copy. One whose capture has a type

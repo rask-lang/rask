@@ -461,6 +461,7 @@ fn check_loaded(
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    typed.field_reuses = ownership_result.field_reuses.clone();
 
     // --- Effects (non-blocking metadata) ---
     let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
@@ -810,6 +811,7 @@ fn check_package_scoped(
         diags.push(e.to_diagnostic());
     }
     typed.escaping_closures = ownership_result.escaping_closures.clone();
+    typed.field_reuses = ownership_result.field_reuses.clone();
 
     // --- Effects ---
     let (effects, effect_warnings) = rask_effects::infer_effects(&pkg_ctx.all_decls);
