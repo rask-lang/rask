@@ -434,6 +434,16 @@ impl Resolver {
             return SymbolKind::Struct { fields: vec![] };
         }
 
+        // A function in the module's `extend m { }` block — `time.sleep`. Bound
+        // as a variable, the name had no type: `sleep(d)` type-checked against
+        // nothing at all, and neither backend could call it (#1359).
+        if rask_stdlib::StubRegistry::load().has_method(module, symbol) {
+            return SymbolKind::ModuleFunction {
+                module: module.to_string(),
+                function: symbol.to_string(),
+            };
+        }
+
         // Fallback — treat as a variable binding
         SymbolKind::Variable { mutable: false }
     }

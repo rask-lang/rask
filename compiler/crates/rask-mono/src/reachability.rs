@@ -1510,6 +1510,19 @@ impl<'a> Monomorphizer<'a> {
             .or_else(|| self.typed?.call_targets.get(&id))
     }
 
+    /// The body a plain call reaches when the checker dispatched it as a
+    /// method — only a module function imported bare does that. `None` for an
+    /// ordinary function call.
+    fn module_function_body(&self, id: NodeId) -> Option<String> {
+        let typed = self.typed?;
+        match self.call_target(id)? {
+            rask_types::Callee::Method { recv, method, .. } => {
+                Some(format!("{}_{}", rask_types::receiver_name(recv, &typed.types)?, method))
+            }
+            rask_types::Callee::Free(_) => None,
+        }
+    }
+
     fn enqueue(&mut self, name: String, type_args: Vec<TypeBinding>) {
         let key = mangle_name(&name, &type_args, self.typed.map(|t| &t.types));
         if !self.seen.contains_key(&key) {
@@ -1599,7 +1612,20 @@ impl<'a> Monomorphizer<'a> {
 
         match &expr.kind {
             ExprKind::Call { func, args } => {
-                if let Some(name) = func.name() {
+                if let Some(body) = self.module_function_body(expr.id) {
+                    // `sleep(d)` after `import time.sleep`: the checker
+                    // dispatched it to the module's namespace, so the body is
+                    // the one `time.sleep(d)` reaches. The callee's own name
+                    // names nothing (#1359).
+                    let type_args = self.type_args_at(expr.id);
+                    let mangled = if !type_args.is_empty() && self.has_instantiable_body(&body) {
+                        mangle_name(&body, &type_args, self.typed.map(|t| &t.types))
+                    } else {
+                        body.clone()
+                    };
+                    self.call_rewrites.insert(expr.id, mangled);
+                    self.enqueue(body, type_args);
+                } else if let Some(name) = func.name() {
                     // `make<i32>(2)`: the written arguments are already in
                     // `type_args_at`, put there by the checker (#712).
                     let name = &name.to_string();

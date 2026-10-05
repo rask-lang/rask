@@ -110,6 +110,9 @@ impl Interpreter {
                 }
                 self.call_builtin(kind, args)
             }
+            Value::ModuleFunction { module, function } => {
+                self.call_module_method(&module, &function, args)
+            }
             Value::EnumConstructor {
                 enum_name,
                 variant_name,

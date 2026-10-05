@@ -1105,6 +1105,9 @@ pub enum Value {
     },
     /// Module (fs, io, cli, std, env)
     Module(ModuleKind),
+    /// A module's function imported bare (`import time.sleep`). Calling it is
+    /// calling `time.sleep(…)`.
+    ModuleFunction { module: ModuleKind, function: String },
     /// User package namespace (for cross-package qualified access)
     Package(String),
     /// Open file handle (Option allows close to invalidate)
@@ -1428,6 +1431,7 @@ impl Value {
             Value::TypeConstructor(_) => "type",
             Value::EnumConstructor { .. } => "enum constructor",
             Value::Module(_) => "module",
+            Value::ModuleFunction { .. } => "func",
             Value::Package(_) => "package",
             Value::File(_) => "File",
             Value::Closure { .. } => "closure",
@@ -1720,6 +1724,7 @@ impl fmt::Display for Value {
                 write!(f, "{}.{}", enum_name, variant_name)
             }
             Value::Module(kind) => write!(f, "<module {}>", kind.name()),
+            Value::ModuleFunction { module, function } => write!(f, "<func {}.{}>", module.name(), function),
             Value::Package(name) => write!(f, "<package {}>", name),
             Value::File(file) => {
                 if file.lock().unwrap().is_some() {

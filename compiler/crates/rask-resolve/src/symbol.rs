@@ -85,6 +85,15 @@ pub enum SymbolKind {
         /// The built-in module kind.
         module: BuiltinModuleKind,
     },
+    /// A stdlib module's function brought in bare by `import m.f` (IM4) —
+    /// `sleep` after `import time.sleep`. The same function `m.f(…)` calls:
+    /// one declared in the module's `extend m { }` block.
+    ModuleFunction {
+        /// The module the function lives in (`time`).
+        module: String,
+        /// The function's own name there, which an alias doesn't change.
+        function: String,
+    },
     /// An external package namespace (for `import pkg` where pkg is a real package).
     ExternalPackage {
         /// The PackageId this namespace refers to.

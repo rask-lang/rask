@@ -2484,6 +2484,11 @@ impl TypeChecker {
     pub(super) fn check_call(&mut self, call_id: NodeId, func: &Expr, args: &[CallArg], span: Span) -> Type {
         let written = func.name().unwrap_or("this function").to_string();
         self.note_arg_labels(call_id, written, args, span);
+        if let Some((module, function)) = self.imported_module_function(func) {
+            return self.check_imported_module_function(
+                call_id, &module, &function, func.written_type_args(), args, span,
+            );
+        }
         if let Some(name) = func.name() {
             // OPT2/ER2: reject legacy `Some(x)`, `Ok(x)`, `Err(x)` constructors.
             // The new model auto-wraps bare values at return/assignment, and
@@ -4071,6 +4076,77 @@ impl TypeChecker {
                 None => Type::RawPtr(Box::new(self.ctx.fresh_var())),
             },
         }
+    }
+
+    /// `(module, function)` when `func` names a module function a selective
+    /// import brought in bare — `sleep` after `import time.sleep`.
+    fn imported_module_function(&self, func: &Expr) -> Option<(String, String)> {
+        func.name()?;
+        let &sym = self.resolved.resolutions.get(&func.id)?;
+        match &self.resolved.symbols.get(sym)?.kind {
+            SymbolKind::ModuleFunction { module, function } => {
+                Some((module.clone(), function.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// IM4: `sleep(d)` after `import time.sleep` is the call `time.sleep(d)`,
+    /// checked the same way and recorded against the same target, so lowering
+    /// reaches the same body. The name used to be bound as a variable with no
+    /// type, so the call type-checked against nothing and neither backend
+    /// could make it (#1359).
+    fn check_imported_module_function(
+        &mut self,
+        call_id: NodeId,
+        module: &str,
+        function: &str,
+        type_args: &[TypeExpr],
+        args: &[CallArg],
+        span: Span,
+    ) -> Type {
+        // The modules with a signature table answer here, and record nothing
+        // themselves — a qualified call to one finds its body by the module's
+        // name, which a bare call doesn't have.
+        if self.types.builtin_modules.is_module(module) {
+            self.call_targets.insert(
+                call_id,
+                super::Callee::Method {
+                    recv: Type::UnresolvedNamed(module.to_string()),
+                    method: function.to_string(),
+                    package: None,
+                },
+            );
+            let type_args = (!type_args.is_empty()).then_some(type_args);
+            return self.check_module_method(module, function, args, type_args, span);
+        }
+
+        // Everything else is a static call on the module's namespace struct,
+        // which is what `time.sleep(d)` files too. The solved constraint
+        // records the target.
+        if !type_args.is_empty() {
+            let written: Vec<Type> = type_args.iter().map(|ty| self.resolve_type_name(ty)).collect();
+            self.written_method_type_args.insert(call_id, written);
+        }
+        let slots = self.stub_static_param_types(module, function);
+        let arg_types: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| match (&a.expr.kind, slots.get(i).cloned().flatten()) {
+                (ExprKind::Array(_), Some(want)) => self.infer_expr_expecting(&a.expr, &want),
+                _ => self.infer_expr(&a.expr),
+            })
+            .collect();
+        let ret_ty = self.ctx.fresh_var();
+        self.ctx.add_constraint(TypeConstraint::HasMethod {
+            ty: Type::UnresolvedNamed(module.to_string()),
+            method: function.to_string(),
+            args: arg_types,
+            ret: ret_ty.clone(),
+            span,
+            call_node: Some(call_id),
+        });
+        ret_ty
     }
 
     pub(super) fn check_module_method(

@@ -44,6 +44,14 @@ impl Interpreter {
             _ if module.exports_type(member) => {
                 self.env.define(alias.to_string(), Value::for_type_name(member));
             }
+            // A function in the module's `extend m { }` block, the same set the
+            // resolver binds for `import time.sleep` (#1359).
+            _ if rask_stdlib::StubRegistry::load().has_method(module.name(), member) => {
+                self.env.define(
+                    alias.to_string(),
+                    Value::ModuleFunction { module, function: member.to_string() },
+                );
+            }
             _ => {
                 // Unknown member - ignore
             }
