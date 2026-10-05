@@ -259,6 +259,11 @@ pub struct Interpreter {
     /// this to write each value back to its argument place. Cleared before every
     /// call so stale entries can't leak into an unrelated call's arguments.
     pub(crate) mutate_writebacks: Vec<(usize, Value)>,
+    /// `mutate_writebacks` of the last method body `call_rask_method` ran,
+    /// self included at index 0. Kept apart because a builtin method runs
+    /// user functions of its own (`sort` reaching `compare`), and what those
+    /// leave in `mutate_writebacks` isn't this call's to write back.
+    pub(crate) method_writebacks: Vec<(usize, Value)>,
     /// The `for` loops currently driving a `Sequence<T>`, innermost last
     /// (type.sequence/SEQ6). A `SequenceYield` builtin call runs the top
     /// frame's body; nesting works because each frame is pushed by its own loop.
@@ -457,6 +462,7 @@ impl Interpreter {
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
+            method_writebacks: Vec::new(),
             yield_stack: Vec::new(),
         }
     }
@@ -498,6 +504,7 @@ impl Interpreter {
             build_state: None,
             source_info: None,
             mutate_writebacks: Vec::new(),
+            method_writebacks: Vec::new(),
             yield_stack: Vec::new(),
         }
     }
@@ -541,6 +548,7 @@ impl Interpreter {
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
+            method_writebacks: Vec::new(),
             yield_stack: Vec::new(),
         };
         (interp, buffer)

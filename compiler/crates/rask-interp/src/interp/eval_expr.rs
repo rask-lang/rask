@@ -491,8 +491,46 @@ impl Interpreter {
     /// index i maps to `args[i]` for a plain call.
     fn apply_mutate_writebacks(&mut self, args: &[rask_ast::expr::CallArg]) -> Result<(), RuntimeError> {
         let writebacks = std::mem::take(&mut self.mutate_writebacks);
+        self.write_back_params(writebacks, args, 0)
+    }
+
+    /// The same for a method call, whose parameter 0 is `self`: argument i is
+    /// parameter i+1, and a `mutate self` goes back to the receiver's place.
+    /// Methods used to skip this entirely, so `c.bump(mutate n)` left `n`
+    /// alone, and `self = Light.Green` inside `mutate self` changed nothing
+    /// for an enum, a nominal or a whole struct, while native wrote both.
+    ///
+    /// A struct the body only changed field by field is still the caller's
+    /// own cell, so there is nothing to write and it is left alone.
+    fn apply_method_writebacks(
+        &mut self,
+        object: &Expr,
+        receiver: &Value,
+        args: &[rask_ast::expr::CallArg],
+    ) -> Result<(), RuntimeError> {
+        let mut writebacks = std::mem::take(&mut self.method_writebacks);
+        if let Some(at) = writebacks.iter().position(|(i, _)| *i == 0) {
+            let (_, final_self) = writebacks.remove(at);
+            let same_cell = matches!(
+                (receiver, &final_self),
+                (Value::Struct(a), Value::Struct(b)) if Arc::ptr_eq(a, b)
+            );
+            if !same_cell {
+                self.writeback_mutate_place(object, final_self)?;
+            }
+        }
+        self.write_back_params(writebacks, args, 1)
+    }
+
+    fn write_back_params(
+        &mut self,
+        writebacks: Vec<(usize, Value)>,
+        args: &[rask_ast::expr::CallArg],
+        first_arg_param: usize,
+    ) -> Result<(), RuntimeError> {
         for (param_idx, final_value) in writebacks {
-            if let Some(call_arg) = args.get(param_idx) {
+            let Some(arg_idx) = param_idx.checked_sub(first_arg_param) else { continue };
+            if let Some(call_arg) = args.get(arg_idx) {
                 self.writeback_mutate_place(&call_arg.expr, final_value)?;
             }
         }
@@ -1052,7 +1090,11 @@ impl Interpreter {
                                     .map(|a| self.eval_expr(&a.expr))
                                     .collect::<Result<_, _>>()?;
                                 let generics = self.call_generics(expr.id);
-                                return self.call_function(method_fn, arg_vals, generics);
+                                self.mutate_writebacks.clear();
+                                let result = self.call_function(method_fn, arg_vals, generics)?;
+                                self.apply_mutate_writebacks(args)
+                                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                                return Ok(result);
                             }
                         }
                     }
@@ -1257,10 +1299,15 @@ impl Interpreter {
                 // can't leave a stale span for something later (#1110).
                 let outer = self.failed_call_span.take();
                 let generics = self.method_call_generics(expr.id, object.id, &method);
-                let result = self.call_method(receiver, &method, arg_vals, generics);
+                self.method_writebacks.clear();
+                let result = self.call_method(receiver.clone(), &method, arg_vals, generics);
                 let inner = self.failed_call_span.take();
                 self.failed_call_span = outer;
-                result.map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)))
+                let result =
+                    result.map_err(|e| RuntimeDiagnostic::new(e, inner.unwrap_or(expr.span)))?;
+                self.apply_method_writebacks(object, &receiver, args)
+                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                Ok(result)
             }
 
             ExprKind::Binary { op, left, right } => match op {

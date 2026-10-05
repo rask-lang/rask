@@ -730,7 +730,20 @@ impl Interpreter {
         };
         let mut all = vec![receiver];
         all.extend(args);
-        self.call_function(&func, all, generics).map_err(|d| d.error)
+        self.call_method_body(&func, all, generics)
+    }
+
+    /// Run a Rask method body, receiver first, and keep its `mutate` finals
+    /// for the call site in `method_writebacks`.
+    pub(crate) fn call_method_body(
+        &mut self,
+        func: &rask_ast::decl::FnDecl,
+        args: Vec<Value>,
+        generics: GenericFrame,
+    ) -> Result<Value, RuntimeError> {
+        let result = self.call_function(func, args, generics).map_err(|d| d.error);
+        self.method_writebacks = std::mem::take(&mut self.mutate_writebacks);
+        result
     }
 
     /// Call a Rask `extend`-block function that takes no `self` —

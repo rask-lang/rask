@@ -470,7 +470,7 @@ impl Interpreter {
             }
             let mut all_args = vec![receiver];
             all_args.extend(args);
-            let answer = self.call_function(&method_fn, all_args, generics).map_err(|diag| diag.error);
+            let answer = self.call_method_body(&method_fn, all_args, generics);
             if let Some(id) = taken {
                 // Whatever the body did with it, the caller gave it up.
                 let _ = self.resource_tracker.mark_consumed(id);
