@@ -263,6 +263,10 @@ pub struct MethodSig {
     pub name: String,
     pub self_param: SelfParam,
     pub params: Vec<(Type, ParamMode)>,
+    /// Parameter names as declared, positionally matching `params`. What a
+    /// named argument's label is checked against. Empty for a signature the
+    /// checker supplied: it has no declaration to name its parameters.
+    pub param_names: Vec<String>,
     pub ret: Type,
     /// Type parameters the method declares for itself, as (name, bounds) —
     /// e.g. the `E` in `func tag<E>(self, e: E) -> E`, or `T: Named`. Separate

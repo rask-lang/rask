@@ -894,6 +894,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
     {
         match interface_name {
             "Add" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -904,6 +905,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Sub" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -914,6 +916,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Mul" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -924,6 +927,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Div" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -934,6 +938,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Rem" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -944,6 +949,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Neg" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -954,6 +960,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Equal" | "Eq" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -965,6 +972,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             }]),
             "Comparable" | "Ord" => Some(vec![
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -980,6 +988,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::UnresolvedNamed("Ordering".to_string()),
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -990,6 +999,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1000,6 +1010,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1010,6 +1021,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::Bool,
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1021,6 +1033,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 },
             ]),
             "Clone" | "Cloneable" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1031,6 +1044,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Default" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1042,6 +1056,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             }]),
             "Hashable" => Some(vec![
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1052,6 +1067,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     ret: Type::U64,
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1063,6 +1079,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 },
             ]),
             "Displayable" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1073,6 +1090,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 ret: Type::String,
             }]),
             "Debug" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1084,6 +1102,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             }]),
             // Iterator<Item> interface — single method `next(mutate self) -> Item?`
             "Iterator" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1116,6 +1135,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 let mut sigs = numeric_method_sigs();
                 sigs.extend(ordered_method_sigs());
                 sigs.push(MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -1129,6 +1149,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             }
             // ER4/ER32: the Error interface — `func message(self) -> string`
             "Error" => Some(vec![MethodSig {
+                param_names: Vec::new(),
                 derived: false,
                 owner_patterns: Vec::new(),
                 owner_bounds: Vec::new(),
@@ -1459,6 +1480,7 @@ fn is_abstract_arg(ty: &Type) -> bool {
 /// saturate.
 fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
+        param_names: Vec::new(),
         derived: false,
         owner_patterns: Vec::new(),
         owner_bounds: Vec::new(),
@@ -1495,6 +1517,7 @@ fn ordered_method_sigs() -> Vec<MethodSig> {
 
 fn numeric_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
+        param_names: Vec::new(),
         derived: false,
         owner_patterns: Vec::new(),
         owner_bounds: Vec::new(),
@@ -1505,6 +1528,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         ret: Type::Var(crate::types::TypeVarId(0)),
     };
     let nullary = |name: &str, self_param| MethodSig {
+        param_names: Vec::new(),
         derived: false,
         owner_patterns: Vec::new(),
         owner_bounds: Vec::new(),
@@ -1523,6 +1547,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         nullary("zero", SelfParam::None),
         nullary("one", SelfParam::None),
         MethodSig {
+            param_names: Vec::new(),
             derived: false,
             owner_patterns: Vec::new(),
             owner_bounds: Vec::new(),
@@ -1694,6 +1719,7 @@ mod tests {
 
         let mut types = TypeTable::new();
         let show = || MethodSig {
+            param_names: Vec::new(),
             derived: false,
             owner_patterns: Vec::new(),
             owner_bounds: Vec::new(),
@@ -1786,6 +1812,7 @@ pub fn substitute_signature(m: &MethodSig, map: &HashMap<String, Type>) -> Metho
         return m.clone();
     }
     MethodSig {
+        param_names: m.param_names.clone(),
         derived: m.derived,
         owner_patterns: m.owner_patterns.clone(),
         owner_bounds: m.owner_bounds.clone(),

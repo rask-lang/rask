@@ -1676,6 +1676,13 @@ impl TypeChecker {
             })
             .collect();
 
+        let param_names = m
+            .params
+            .iter()
+            .filter(|p| p.name != "self")
+            .map(|p| p.name.clone())
+            .collect();
+
         let ret = m
             .ret_ty
             .as_ref()
@@ -1683,6 +1690,7 @@ impl TypeChecker {
             .unwrap_or(Type::Unit);
 
         MethodSig {
+            param_names,
             derived: false,
             // The parser folds `<E>` into the declared name for display, so the
             // stored name is `tag<E>`. Method lookup compares against what the
@@ -1861,6 +1869,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -1878,6 +1887,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -1894,6 +1904,7 @@ impl TypeChecker {
                         && field_types.iter().all(|ty| self.type_has_method(ty, "default"))
                     {
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -1911,6 +1922,7 @@ impl TypeChecker {
                         && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
                     {
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -1929,6 +1941,7 @@ impl TypeChecker {
                     {
                         let ordering_ty = self.ordering_type();
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -1942,6 +1955,7 @@ impl TypeChecker {
                         for op in &["lt", "le", "gt", "ge"] {
                             if !methods.iter().any(|m| m.name == *op) {
                                 new_methods.push(MethodSig {
+                                    param_names: Vec::new(),
                                     derived: true,
                                     owner_patterns: Vec::new(),
                                     owner_bounds: Vec::new(),
@@ -1958,6 +1972,7 @@ impl TypeChecker {
                     // G2: auto-derive debug for all types
                     if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -2000,6 +2015,7 @@ impl TypeChecker {
                         && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -2017,6 +2033,7 @@ impl TypeChecker {
                         && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
                     {
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -2036,6 +2053,7 @@ impl TypeChecker {
                         && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
                     {
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -2053,6 +2071,7 @@ impl TypeChecker {
                     {
                         let ordering_ty = self.ordering_type();
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -2066,6 +2085,7 @@ impl TypeChecker {
                         for op in &["lt", "le", "gt", "ge"] {
                             if !methods.iter().any(|m| m.name == *op) {
                                 new_methods.push(MethodSig {
+                                    param_names: Vec::new(),
                                     derived: true,
                                     owner_patterns: Vec::new(),
                                     owner_bounds: Vec::new(),
@@ -2082,6 +2102,7 @@ impl TypeChecker {
                     // G2: auto-derive debug for all types
                     if !methods.iter().any(|m| m.name == "debug") {
                         new_methods.push(MethodSig {
+                            param_names: Vec::new(),
                             derived: true,
                             owner_patterns: Vec::new(),
                             owner_bounds: Vec::new(),
@@ -2625,6 +2646,7 @@ impl TypeChecker {
 
             let mut methods = vec![
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -2635,6 +2657,7 @@ impl TypeChecker {
                     ret: parse_result,
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),
@@ -2645,6 +2668,7 @@ impl TypeChecker {
                     ret: vec_u8,
                 },
                 MethodSig {
+                    param_names: Vec::new(),
                     derived: false,
                     owner_patterns: Vec::new(),
                     owner_bounds: Vec::new(),

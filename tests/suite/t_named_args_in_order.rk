@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Named arguments label a call in declaration order; they never reorder it.
+//
+// Nothing checked the labels. `f(b: 2, a: 1)` bound `b`'s value to `a` and
+// printed 21 on both backends (#1347). Out-of-order labels are now a compile
+// error (E0903, tests/compile_errors/named_args_out_of_order.rk). These are the
+// shapes that stay legal: labels in order on every kind of callee, mixed with
+// positional arguments, and skipping a defaulted parameter.
+
+interface Scaled {
+    func scale(self, by: i64, plus: i64) -> i64
+}
+
+struct Num {
+    n: i64
+}
+
+extend Num {
+    func pair(self, a: i64, b: i64) -> i64 {
+        return self.n * 100 + a * 10 + b
+    }
+
+    func make(a: i64, b: i64) -> i64 {
+        return a * 10 + b
+    }
+}
+
+Num implements Scaled {
+    func scale(self, by: i64, plus: i64) -> i64 {
+        return self.n * by + plus
+    }
+}
+
+enum Shape {
+    Rect { w: i64, h: i64 }
+}
+
+func digits(a: i64, b: i64) -> i64 {
+    return a * 10 + b
+}
+
+func connect(host: string, port: i64 = 80, timeout: i64 = 30) -> i64 {
+    if host != "h" {
+        return 0
+    }
+    return port * 100 + timeout
+}
+
+func through_bound<T: Scaled>(x: T) -> i64 {
+    return x.scale(by: 10, plus: 1)
+}
+
+func area(s: Shape) -> i64 {
+    match s {
+        Shape.Rect { w, h } => return w * 10 + h,
+    }
+}
+
+test "free function, labels in order" {
+    assert digits(a: 1, b: 2) == 12
+    assert digits(1, b: 2) == 12
+}
+
+test "method and static method, labels in order" {
+    let x = Num { n: 3 }
+    assert x.pair(a: 1, b: 2) == 312
+    assert Num.make(a: 1, b: 2) == 12
+}
+
+test "labels skip a defaulted parameter" {
+    assert connect("h", timeout: 7) == 8007
+    assert connect(host: "h", port: 1, timeout: 7) == 107
+}
+
+test "method reached through an interface bound" {
+    assert through_bound(Num { n: 4 }) == 41
+}
+
+test "struct variant built with call syntax" {
+    assert area(Shape.Rect(w: 1, h: 2)) == 12
+}
+
+test "stdlib method" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(value: 3)
+    v.insert(index: 0, value: 9)
+    assert v[0] == 9
+    assert v[1] == 3
+}

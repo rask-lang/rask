@@ -2482,6 +2482,8 @@ impl TypeChecker {
     }
 
     pub(super) fn check_call(&mut self, call_id: NodeId, func: &Expr, args: &[CallArg], span: Span) -> Type {
+        let written = func.name().unwrap_or("this function").to_string();
+        self.note_arg_labels(call_id, written, args, span);
         if let Some(name) = func.name() {
             // OPT2/ER2: reject legacy `Some(x)`, `Ok(x)`, `Err(x)` constructors.
             // The new model auto-wraps bare values at return/assignment, and
@@ -3358,6 +3360,12 @@ impl TypeChecker {
         type_args: Option<&[TypeExpr]>,
         span: Span,
     ) -> Type {
+        let written = match object.name() {
+            Some(o) => format!("{o}.{method}"),
+            None => method.to_string(),
+        };
+        self.note_arg_labels(call_id, written, args, span);
+
         // AN8: a `get<A>()` that reaches here wasn't field-projected — the
         // projection is handled in `check_field_access` and never recurses into
         // the receiver. So this is a bare read: a binding, an argument, a
@@ -3423,6 +3431,10 @@ impl TypeChecker {
         // `len` found for type `fs`".
         if let Some(name) = object.name() {
             if self.types.builtin_modules.is_module(name) && !self.local_shadows_namespace(name) {
+                if let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method(name, method) {
+                    let names = stub.params.iter().map(|(n, _)| n.clone()).collect();
+                    self.note_param_names(call_id, names);
+                }
                 return self.check_module_method(name, method, args, type_args, span);
             }
         }
@@ -3568,6 +3580,18 @@ impl TypeChecker {
                 }
             });
             if let Some((type_id, field_types)) = variant_fields {
+                // A variant's field names are its parameter names. The parser
+                // spells an unnamed field `_0`, `_1`, …: that variant has no
+                // names, so any label on it is reported.
+                if let Some(names) = self.types.variant_field_names.get(&(type_id, method.to_string())) {
+                    let positional = |n: &String| {
+                        n.strip_prefix('_').is_some_and(|d| d.parse::<usize>().is_ok())
+                    };
+                    if !names.iter().all(positional) {
+                        let names = names.clone();
+                        self.note_param_names(call_id, names);
+                    }
+                }
                 // A generic enum written without type arguments takes them from
                 // the payload: `GrowError.Full(item)` gives each declared
                 // parameter a fresh variable that the argument binds. Answering

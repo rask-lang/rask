@@ -1710,6 +1710,14 @@ impl TypeChecker {
             });
         };
 
+        // The bound is only in scope while this body is checked, so the
+        // labels' names are taken from it now.
+        if let Some(node) = call_node {
+            if sig.param_names.len() == sig.params.len() {
+                self.note_param_names(node, sig.param_names.clone());
+            }
+        }
+
         if sig.params.len() != args.len() {
             return Err(TypeError::ArityMismatch {
                 expected: sig.params.len(),

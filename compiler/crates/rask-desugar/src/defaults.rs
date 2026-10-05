@@ -219,7 +219,7 @@ impl FunctionLookup {
 
 /// Resolve call arguments against function parameters, filling in defaults.
 ///
-/// Returns the rewritten args list with defaults inserted and names stripped,
+/// Returns the rewritten args list with defaults inserted,
 /// or None if resolution can't be done (error or no changes needed).
 fn resolve_call_args(
     params: &[Param],
@@ -262,9 +262,11 @@ fn resolve_call_args(
 
             if let Some(ref name) = arg.name {
                 if name == &param.name {
-                    // Named arg matches this param — use it
+                    // Named arg matches this param. The label stays: the type
+                    // checker matches it against the callee it actually
+                    // resolves, which this pass can only guess at by name.
                     result.push(CallArg {
-                        name: None,
+                        name: Some(name.clone()),
                         mode: arg.mode,
                         expr: arg.expr.clone(),
                     });
@@ -808,6 +810,11 @@ mod tests {
         });
         let resolved = resolved.expect("should resolve");
         assert_eq!(resolved.len(), 3);
+        // Labels survive for the type checker to match against the callee;
+        // a filled default has none.
+        assert_eq!(resolved[0].name.as_deref(), Some("host"));
+        assert_eq!(resolved[1].name, None);
+        assert_eq!(resolved[2].name.as_deref(), Some("timeout"));
     }
 
     #[test]

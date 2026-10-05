@@ -327,7 +327,7 @@ create_user("Alice", "alice@x.com", false)
 // Named (must match declaration order)
 create_user(name: "Alice", email: "alice@x.com", admin: false)
 ```
-Named arguments improve readability but don't allow reordering. IDE shows parameter names as ghost annotations even for positional calls.
+Named arguments improve readability but don't allow reordering. A label has to be the name of the parameter in its position; anything else is a compile error (E0903), including a label on a callee with no parameter names, like a closure value or a tuple variant. IDE shows parameter names as ghost annotations even for positional calls.
 
 **Default arguments:**
 ```rask

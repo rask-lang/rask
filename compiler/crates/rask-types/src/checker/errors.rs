@@ -48,6 +48,19 @@ pub enum TypeError {
         found: usize,
         span: Span,
     },
+    /// A named argument whose label isn't the parameter in its position.
+    /// Labels never reorder a call, so this is either a reordering, a name the
+    /// callee doesn't have, or a callee with no names at all.
+    #[error("named argument `{label}` doesn't match the parameter in its position")]
+    ArgLabelMismatch {
+        callee: String,
+        label: String,
+        /// Zero-based position of the labeled argument.
+        position: usize,
+        /// The callee's parameter names in order; `None` when it has none.
+        params: Option<Vec<String>>,
+        span: Span,
+    },
     #[error("type {ty} is not callable")]
     NotCallable { ty: Type, span: Span },
     #[error("no such field '{field}' on type {ty}")]
@@ -1501,6 +1514,7 @@ impl TypeError {
             | SerializationOptedOut { .. }
             | UnresolvedType { .. }
             | ArityMismatch { .. }
+            | ArgLabelMismatch { .. }
             | UnimplementedStdlibMethod { .. }
             | NotDisplayable { .. }
             | UnboundedTypeParamMethod { .. }
