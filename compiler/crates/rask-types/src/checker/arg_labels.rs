@@ -5,7 +5,7 @@
 
 use rask_ast::expr::CallArg;
 use rask_ast::{NodeId, Span};
-use rask_resolve::SymbolKind;
+use rask_resolve::{SymbolId, SymbolKind};
 
 use super::errors::TypeError;
 use super::type_defs::{Callee, TypeDef};
@@ -87,23 +87,7 @@ impl TypeChecker {
     /// signature the checker supplied.
     fn callee_param_names(&self, call: &LabeledCall) -> (String, Option<Vec<String>>) {
         match self.call_targets.get(&call.call) {
-            Some(Callee::Free(sym_id)) => {
-                let Some(sym) = self.resolved.symbols.get(*sym_id) else {
-                    return (call.written.clone(), None);
-                };
-                let names = match &sym.kind {
-                    SymbolKind::Function { params, .. } => Some(
-                        params
-                            .iter()
-                            .filter_map(|p| self.resolved.symbols.get(*p))
-                            .map(|p| p.name.clone())
-                            .filter(|n| n != "self")
-                            .collect(),
-                    ),
-                    _ => None,
-                };
-                (call.written.clone(), names)
-            }
+            Some(Callee::Free(sym_id)) => (call.written.clone(), self.function_param_names(*sym_id)),
             Some(Callee::Method { recv, method, .. }) => {
                 let recv = self.resolve_named(&self.ctx.apply(recv));
                 let owner = super::receiver_name(&recv, &self.types)
@@ -111,6 +95,23 @@ impl TypeChecker {
                 (format!("{owner}.{method}"), self.method_param_names(&recv, method))
             }
             None => (call.written.clone(), None),
+        }
+    }
+
+    /// A declared function's parameter names, from the resolver's symbols.
+    /// `None` for anything that isn't a declared function: a closure value
+    /// bound to a name, an extern, a builtin.
+    pub(super) fn function_param_names(&self, sym_id: SymbolId) -> Option<Vec<String>> {
+        match &self.resolved.symbols.get(sym_id)?.kind {
+            SymbolKind::Function { params, .. } => Some(
+                params
+                    .iter()
+                    .filter_map(|p| self.resolved.symbols.get(*p))
+                    .map(|p| p.name.clone())
+                    .filter(|n| n != "self")
+                    .collect(),
+            ),
+            _ => None,
         }
     }
 

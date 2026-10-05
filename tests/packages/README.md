@@ -25,6 +25,8 @@ links and then prints the wrong number.
 | `method-export/` | calling a method on an exported struct | #1124 |
 | `vec-return/` | a function returning `Vec<T>` | #1125 |
 | `enum-export/` | `import libpkg.SomeEnum` | #1126 |
+| `named-args/` | named arguments in declaration order on a library function and method | green |
+| `named-args-out-of-order/` | a library function called with its labels swapped, rejected with E0903 | green (#1347) |
 
 Five of the six are the same root: `check_package` flattens a dependency's public
 declarations into the root's and renames each through `prefix_decl`, which renames

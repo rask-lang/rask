@@ -3142,6 +3142,11 @@ impl TypeChecker {
         let Type::Fn { params, ret } = self.get_symbol_type(fn_sym) else {
             return None;
         };
+        // The export carries the declaration's parameters, so its labels are
+        // checked like a local call's.
+        if let Some(names) = self.function_param_names(fn_sym) {
+            self.note_param_names(call_id, names);
+        }
 
         if args.len() != params.len() {
             for a in args {

@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Named arguments across a package boundary (#1347). The labels are checked
+// against these declarations' parameter names, the same as a local call.
+
+public struct Num {
+    public n: i64
+}
+
+extend Num {
+    public func pair(self, a: i64, b: i64) -> i64 {
+        return self.n * 100 + a * 10 + b
+    }
+}
+
+public func digits(a: i64, b: i64) -> i64 {
+    return a * 10 + b
+}
