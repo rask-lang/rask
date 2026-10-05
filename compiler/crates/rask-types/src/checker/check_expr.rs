@@ -4846,15 +4846,19 @@ impl TypeChecker {
                 &self.types,
                 &resolved,
             );
-            let required: Vec<String> = leaves.iter().map(|t| self.fmt_ty(t)).collect();
 
+            // Arms are compared with the branches as resolved types, not by
+            // spelling: the checker has already turned the result's `usize`
+            // into `u64`, and a `usize as n` arm has to count for it (#1385).
             let mut has_wildcard = false;
-            let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut variants_hit: std::collections::HashMap<String, std::collections::HashSet<String>> =
-                std::collections::HashMap::new();
+            let mut covered = vec![false; leaves.len()];
+            let mut variants_hit: std::collections::HashMap<
+                crate::types::TypeId,
+                std::collections::HashSet<String>,
+            > = std::collections::HashMap::new();
             for arm in &arms {
                 self.collect_result_covered(
-                    &arm.pattern, &required, &mut covered, &mut variants_hit, &mut has_wildcard,
+                    &arm.pattern, &leaves, &mut covered, &mut variants_hit, &mut has_wildcard,
                 );
             }
 
@@ -4865,38 +4869,20 @@ impl TypeChecker {
             // An error enum is covered by an arm per variant as well as by
             // naming it: `JoinError.Panicked(msg)` covers a `JoinError` that
             // has no other variant.
-            for (leaf, name) in leaves.iter().zip(required.iter()) {
-                let Type::Named(id) = leaf else { continue };
+            for (leaf, hit_leaf) in leaves.iter().zip(covered.iter_mut()) {
+                let (Type::Named(id) | Type::Generic { base: id, .. }) = leaf else { continue };
                 let Some(TypeDef::Enum { variants, .. }) = self.types.get(*id) else { continue };
-                let Some(hit) = variants_hit.get(self.types.type_name(*id).as_str()) else { continue };
+                let Some(hit) = variants_hit.get(id) else { continue };
                 if variants.iter().all(|(v, _)| hit.contains(v)) {
-                    covered.insert(name.clone());
+                    *hit_leaf = true;
                 }
             }
 
-            // A generic branch named without its arguments covers it —
-            // `CasFailed` for a `CasFailed<i64>` branch. Only when the base
-            // name picks out one branch; two instantiations of the same type
-            // would both answer to it and neither would be covered.
-            let bases: Vec<String> = leaves
+            let missing: Vec<String> = leaves
                 .iter()
-                .map(|t| match t {
-                    Type::Named(id) | Type::Generic { base: id, .. } => self.types.type_name(*id),
-                    Type::UnresolvedGeneric { name, .. } => name.clone(),
-                    other => self.fmt_ty(other),
-                })
-                .collect();
-            let missing: Vec<String> = required
-                .iter()
-                .zip(&bases)
-                .filter(|(r, base)| {
-                    if covered.contains(*r) {
-                        return false;
-                    }
-                    let same_base = bases.iter().filter(|b| b == base).count();
-                    !(same_base == 1 && covered.contains(*base))
-                })
-                .map(|(r, _)| r.clone())
+                .zip(&covered)
+                .filter(|(_, c)| !**c)
+                .map(|(t, _)| self.fmt_ty(t))
                 .collect();
 
             if !missing.is_empty() {
@@ -5051,38 +5037,42 @@ impl TypeChecker {
     fn collect_result_covered(
         &self,
         pattern: &Pattern,
-        required: &[String],
-        covered: &mut std::collections::HashSet<String>,
-        variants_hit: &mut std::collections::HashMap<String, std::collections::HashSet<String>>,
+        leaves: &[Type],
+        covered: &mut [bool],
+        variants_hit: &mut std::collections::HashMap<crate::types::TypeId, std::collections::HashSet<String>>,
         has_wildcard: &mut bool,
     ) {
         let mut hit = |qualified: &str| {
             if let Some((enum_name, variant)) = qualified.rsplit_once('.') {
-                variants_hit.entry(enum_name.to_string()).or_default().insert(variant.to_string());
+                if let Some(id) = self.types.get_type_id(enum_name) {
+                    variants_hit.entry(id).or_default().insert(variant.to_string());
+                }
             }
         };
         match pattern {
             Pattern::Wildcard => *has_wildcard = true,
             Pattern::Ident(name) => {
-                if required.contains(name) {
-                    covered.insert(name.clone());
-                } else if name.contains('.') {
+                if name.contains('.') {
                     // `Fault.Timeout`: a fieldless variant, not a binding. It
                     // used to read as a catch-all, so one such arm made any
                     // match look exhaustive.
                     hit(name);
+                } else if let Some(i) = self.branch_named(&TypeExpr::named(name.as_str()), leaves) {
+                    covered[i] = true;
                 } else {
                     // A bare name that isn't a branch type binds everything.
                     *has_wildcard = true;
                 }
             }
             Pattern::TypePat { ty, .. } => {
-                covered.insert(ty.to_string());
+                if let Some(i) = self.branch_named(ty, leaves) {
+                    covered[i] = true;
+                }
             }
             Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => hit(name),
             Pattern::Or(alts) => {
                 for alt in alts {
-                    self.collect_result_covered(alt, required, covered, variants_hit, has_wildcard);
+                    self.collect_result_covered(alt, leaves, covered, variants_hit, has_wildcard);
                 }
             }
             _ => {}

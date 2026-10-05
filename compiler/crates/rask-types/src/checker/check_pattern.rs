@@ -97,6 +97,31 @@ fn resolve_type_name(ty: &TypeExpr, types: &TypeTable) -> Type {
 }
 
 impl TypeChecker {
+    /// Which of `branches` a written type names, compared as resolved types:
+    /// `usize` names a `u64` branch on a 64-bit target. A generic branch
+    /// written without its arguments (`CasFailed` for `CasFailed<i64>`) counts
+    /// when exactly one branch has that head. `None` when the name isn't a
+    /// known type, or names none of them.
+    pub(super) fn branch_named(&self, ty: &TypeExpr, branches: &[Type]) -> Option<usize> {
+        let named = resolve_type_name(ty, &self.types);
+        if matches!(named, Type::UnresolvedNamed(_)) {
+            return None;
+        }
+        let named = normalize_type(&named, &self.types);
+        if let Some(i) = branches.iter().position(|b| *b == named) {
+            return Some(i);
+        }
+        let mut heads = branches
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| self.same_type_head(b, &named))
+            .map(|(i, _)| i);
+        match (heads.next(), heads.next()) {
+            (Some(i), None) => Some(i),
+            _ => None,
+        }
+    }
+
     // ------------------------------------------------------------------------
     // Pattern Checking
     // ------------------------------------------------------------------------
