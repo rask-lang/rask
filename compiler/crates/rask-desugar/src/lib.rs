@@ -16,6 +16,7 @@ mod annotation_defaults;
 mod defaults;
 mod generalize;
 mod interface_defaults;
+mod ordering_operators;
 pub use defaults::is_valid_default_expr;
 
 use rask_ast::ty::TypeExpr;
@@ -141,7 +142,8 @@ fn desugar_inner_from(
     // that doesn't write its own. Before anything else walks the tree, so the
     // copies get desugared with everything else — and so `scan_error_message_types`
     // sees a `message()` an interface supplied by default.
-    let injected = interface_defaults::inject(decls);
+    let mut injected = interface_defaults::inject(decls);
+    ordering_operators::inject(decls, &mut injected);
 
 
     // Before anything rewrites an operator: this reads the body's operators as
