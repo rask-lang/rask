@@ -89,7 +89,7 @@ impl<'a> MirLowerer<'a> {
     /// `Option<T>` place. Same two-store construction the return-path auto-wrap
     /// uses (tag 0 at offset 0, payload at offset 8). Returns the value unchanged
     /// when no wrap applies.
-    fn wrap_for_option_place(
+    pub(super) fn wrap_for_option_place(
         &mut self,
         val_op: MirOperand,
         val_ty: MirType,
@@ -251,7 +251,7 @@ impl<'a> MirLowerer<'a> {
     /// The size comes from the layout, not from the field type's nominal size.
     /// A niche-packed `Handle?` is 8 bytes where its type reports 16, and a
     /// 16-byte copy from an integer sentinel dereferences it.
-    fn field_path_offset_ty(&self, base_ty: &MirType, fields: &[&str]) -> Option<(u32, u32)> {
+    fn field_path_offset_ty(&self, base_ty: &MirType, fields: &[&str]) -> Option<(u32, u32, MirType)> {
         let mut offset = 0;
         let mut ty = base_ty.clone();
         let mut size = None;
@@ -261,22 +261,27 @@ impl<'a> MirLowerer<'a> {
             ty = fty;
             size = fsize;
         }
-        Some((offset, size?))
+        Some((offset, size?, ty))
     }
 
     /// What a field slot holds that has to be given back before it is written
     /// over, or `None` when it holds nothing the release walks.
     ///
-    /// Containers and strings. A container is the case the MIR type alone can't
-    /// answer — it calls every one of them a bare `Ptr` — so the kind comes from
-    /// the checker's type of the place, through the head name rather than
-    /// `Display`, because a resolved generic renders as `<type#7><i64>`. A
-    /// string the field's own MIR type already says.
+    /// A container is the case the MIR type alone can't answer — it calls
+    /// every one of them a bare `Ptr` — so the kind comes from the checker's
+    /// type of the place, through the head name rather than `Display`, because
+    /// a resolved generic renders as `<type#7><i64>`. A string, struct, enum or
+    /// tuple the field's own MIR type already says, and codegen walks it for
+    /// whatever it holds. Leaving the aggregates out leaked the old value of
+    /// `self.active = MemTable.new()` (tiered_store).
     ///
-    /// Struct and enum fields are deliberately out: their release walks further
-    /// and the kill rule that pairs with this one has only been measured on
-    /// these two.
-    fn replaced_slot_type(&self, target: &Expr, fty: &MirType) -> Option<MirType> {
+    /// An aggregate the new value may have been built out of — `self.list =
+    /// More(h, Heap(self.list))` — is still the slot's value, and releasing it
+    /// frees what the new one points at, so a value that names the place keeps
+    /// it. Strings are counted, so one moved into the new value took its own
+    /// reference. Containers are released whatever the value says: the common
+    /// shape, `n.kids = n.kids.filter(…).to_vec()`, only borrows the old one.
+    fn replaced_slot_type(&self, target: &Expr, value: &Expr, fty: &MirType) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(target.id) {
             if let Some(head) = self.head_name(&ty) {
                 if let Some(kind) = crate::ContainerKind::from_head(&head) {
@@ -284,7 +289,15 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
-        matches!(fty, MirType::String).then(|| fty.clone())
+        match fty {
+            MirType::String => Some(fty.clone()),
+            MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)
+                if !may_move_from_place(value, target) =>
+            {
+                Some(fty.clone())
+            }
+            _ => None,
+        }
     }
 
     /// Byte offset, MIR type and recorded byte size of `field` within an
@@ -635,10 +648,12 @@ impl<'a> MirLowerer<'a> {
                             // are `container_drop`'s to place.
                             let replaced = if !assigns_through {
                                 None
-                            } else if matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_)) {
+                            } else if matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_))
+                                && !may_move_from_place(value, target)
+                            {
                                 Some(dst_ty.clone())
                             } else if scalar_mutate.as_ref().is_some_and(is_runtime_handle) {
-                                self.replaced_slot_type(target, &dst_ty)
+                                self.replaced_slot_type(target, value, &dst_ty)
                                     .filter(|t| matches!(t, MirType::Container(_)))
                             } else {
                                 None
@@ -685,7 +700,7 @@ impl<'a> MirLowerer<'a> {
                             {
                                 // The value the slot is about to lose, exactly
                                 // as the place-chain path below gives it back.
-                                if let Some(old) = self.replaced_slot_type(target, &fty) {
+                                if let Some(old) = self.replaced_slot_type(target, value, &fty) {
                                     self.builder.push_stmt(MirStmt::dummy(
                                         MirStmtKind::ReleaseSlot { addr: guard_local, offset, ty: old },
                                     ));
@@ -745,7 +760,7 @@ impl<'a> MirLowerer<'a> {
                             // there is no "is this the first write" to get
                             // wrong here, which is why this is lowering's job
                             // rather than a pass's (#1198).
-                            if let Some(old) = self.replaced_slot_type(target, &fty) {
+                            if let Some(old) = self.replaced_slot_type(target, value, &fty) {
                                 self.builder.push_stmt(MirStmt::dummy(
                                     MirStmtKind::ReleaseSlot { addr: base, offset, ty: old },
                                 ));
@@ -786,7 +801,7 @@ impl<'a> MirLowerer<'a> {
                                     .map(|t| self.ctx.type_to_mir(t))
                                     .or_else(|| self.collection_elem_of_expr(coll));
                                 if let Some(elem_ty) = elem_ty {
-                                    if let Some((offset, fsize)) = self.field_path_offset_ty(&elem_ty, &path) {
+                                    if let Some((offset, fsize, fty)) = self.field_path_offset_ty(&elem_ty, &path) {
                                         let (coll_op, _) = self.lower_expr(coll)?;
                                         let (idx_op, _) = self.lower_expr(idx)?;
                                         let tmp = self.builder.alloc_temp(elem_ty);
@@ -795,6 +810,18 @@ impl<'a> MirLowerer<'a> {
                                             func: FunctionRef::internal("Vec_index".to_string()),
                                             args: vec![coll_op.clone(), idx_op.clone()],
                                         }));
+                                        // The copy holds the element's own
+                                        // reference to what the field had, and
+                                        // `Vec_set` copies bytes back without
+                                        // releasing anything. So give it back
+                                        // here, as a direct field write does:
+                                        // `lines[0].text = t` leaked the old
+                                        // text on every edit.
+                                        if let Some(old) = self.replaced_slot_type(target, value, &fty) {
+                                            self.builder.push_stmt(MirStmt::dummy(
+                                                MirStmtKind::ReleaseSlot { addr: tmp, offset, ty: old },
+                                            ));
+                                        }
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                                             addr: tmp,
                                             offset,
@@ -3376,4 +3403,47 @@ pub(crate) fn is_runtime_handle(ty: &MirType) -> bool {
 /// lends, and nothing reads it as a receiver.
 pub(crate) fn mutate_param_needs_own_pointer(name: &str, ty: &MirType) -> bool {
     !mutate_param_by_pointer(ty) || (name != "self" && is_runtime_handle(ty))
+}
+
+/// The place an expression names, as root and field names: `self.list` is
+/// `["self", "list"]`. Every element of a vector is one `[]`, so `v[i]` and
+/// `v[j]` count as the same place. `None` for anything that isn't a place.
+fn place_path(expr: &Expr) -> Option<Vec<&str>> {
+    match &expr.kind {
+        ExprKind::Ident(name) => Some(vec![name.as_str()]),
+        ExprKind::Field { object, field } => {
+            let mut p = place_path(object)?;
+            p.push(field.as_str());
+            Some(p)
+        }
+        ExprKind::Index { object, .. } => {
+            let mut p = place_path(object)?;
+            p.push("[]");
+            Some(p)
+        }
+        _ => None,
+    }
+}
+
+/// Whether `value` names `target`, something inside it, or something
+/// holding it — any of which may hand the slot's current value to the new
+/// one. Answers "yes" to a borrow as well (`self.bag.tag.clone()`), which
+/// keeps the old value alive past the write: a leak, never a double free.
+fn may_move_from_place(value: &Expr, target: &Expr) -> bool {
+    let Some(t) = place_path(target) else { return true };
+    let mut hit = false;
+    rask_ast::visit::walk_expr_pruned(value, &mut |e| {
+        if hit {
+            return false;
+        }
+        match place_path(e) {
+            Some(p) => {
+                let n = p.len().min(t.len());
+                hit = p[..n] == t[..n];
+                false
+            }
+            None => true,
+        }
+    });
+    hit
 }

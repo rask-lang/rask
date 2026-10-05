@@ -3745,13 +3745,18 @@ impl<'a> MirLowerer<'a> {
                 else_block: present_block,
             }));
 
-            // Present: assigning the payload into an option-typed local is
-            // the wrap, the same way `let x: T? = value` builds one.
+            // Present: the payload is wrapped into an option built here,
+            // rather than named where it sits. The place is about to hold
+            // `none`, so what it held belongs to this frame now, whoever owned
+            // the place. Named in place, it stayed part of the place's owner,
+            // and `take self.pending` in a `mutate self` method was released
+            // by nobody: the caller's struct holds `none` (tiered_store).
             self.builder.switch_to_block(present_block);
-            let payload = self.emit_option_payload(val.clone(), payload_ty, is_niche);
+            let payload = self.emit_option_payload(val.clone(), payload_ty.clone(), is_niche);
+            let (wrapped, _) = self.wrap_for_option_place(MirOperand::Local(payload), payload_ty, &ty);
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: taken,
-                rvalue: MirRValue::Use(MirOperand::Local(payload)),
+                rvalue: MirRValue::Use(wrapped),
             }));
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
                 target: merge_block,
