@@ -688,7 +688,7 @@ impl ComptimeValue {
         match self {
             ComptimeValue::Array(elems) => {
                 for elem in elems {
-                    elem.write_element(&mut out)?;
+                    elem.write_array_element(&mut out)?;
                 }
             }
             // The characters, not a `RaskStr`. Lowering turns a whole-value
@@ -761,6 +761,33 @@ impl ComptimeValue {
             }
             _ => out.bytes.extend(self.serialize_element()?),
         }
+        Some(())
+    }
+
+    /// One vector element: a string as a `RaskStr`, anything else in the
+    /// machine word the runtime's vector holds it in, signed integers
+    /// sign-extended. Packed at its own width, a folded `Vec<bool>` put eight
+    /// flags in the word the reader takes as one (18_comptime). Wider than a
+    /// word has no folded form here.
+    fn write_array_element(&self, out: &mut SerializedConst) -> Option<()> {
+        let word: i64 = match self {
+            ComptimeValue::String(_) => return self.write_element(out),
+            ComptimeValue::I8(v) => *v as i64,
+            ComptimeValue::I16(v) => *v as i64,
+            ComptimeValue::I32(v) => *v as i64,
+            ComptimeValue::I64(v) => *v,
+            _ => {
+                let raw = self.serialize_element()?;
+                if raw.len() > 8 {
+                    return None;
+                }
+                let mut w = [0u8; 8];
+                w[..raw.len()].copy_from_slice(&raw);
+                out.bytes.extend_from_slice(&w);
+                return Some(());
+            }
+        };
+        out.bytes.extend_from_slice(&word.to_le_bytes());
         Some(())
     }
 

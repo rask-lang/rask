@@ -136,10 +136,15 @@ impl MiriValue {
             MiriValue::F32(v) => Some(v.to_le_bytes().to_vec()),
             MiriValue::F64(v) => Some(v.to_le_bytes().to_vec()),
             MiriValue::Char(v) => Some((*v as u32).to_le_bytes().to_vec()),
+            // A vector holds each scalar element in a machine word, so that is
+            // how each one goes in: signed integers sign-extended, the rest
+            // zero-padded. Packed at their own width, a `Vec<bool>` folded at
+            // compile time put eight flags in the word the reader takes as one,
+            // and `FLAGS[2] == true` was false (18_comptime).
             MiriValue::Array(elems) => {
-                let mut bytes = Vec::new();
+                let mut bytes = Vec::with_capacity(elems.len() * 8);
                 for elem in elems {
-                    bytes.extend(elem.serialize()?);
+                    bytes.extend(elem.serialize_word()?);
                 }
                 Some(bytes)
             }
@@ -157,6 +162,26 @@ impl MiriValue {
             | MiriValue::Enum { .. }
             | MiriValue::FuncPtr(_) => None,
         }
+    }
+
+    /// One array element as the runtime's vector holds it: a word.
+    fn serialize_word(&self) -> Option<[u8; 8]> {
+        let word: i64 = match self {
+            MiriValue::I8(v) => *v as i64,
+            MiriValue::I16(v) => *v as i64,
+            MiriValue::I32(v) => *v as i64,
+            MiriValue::I64(v) => *v,
+            _ => {
+                let raw = self.serialize()?;
+                if raw.len() > 8 {
+                    return None;
+                }
+                let mut w = [0u8; 8];
+                w[..raw.len()].copy_from_slice(&raw);
+                return Some(w);
+            }
+        };
+        Some(word.to_le_bytes())
     }
 
     /// Element count (for arrays/tuples serialized as flat data).
