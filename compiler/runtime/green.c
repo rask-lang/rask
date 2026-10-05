@@ -1035,9 +1035,11 @@ void rask_runtime_init(int64_t worker_count) {
     }
 
     // The machine's CPU count can't be an input to a replay (determinism/D1),
-    // so under sim a default scope gets one to four workers, by seed.
+    // so under sim a default scope gets three or four workers, by seed. Fewer
+    // would hide what only shows with several workers stealing from each
+    // other, which every real machine a default scope runs on has.
 #ifdef RASK_SIM
-    if (worker_count <= 0 && under_sim()) worker_count = 1 + (int64_t)rask_sim_draw(4);
+    if (worker_count <= 0 && under_sim()) worker_count = 3 + (int64_t)rask_sim_draw(2);
 #endif
     if (worker_count <= 0) {
         worker_count = sysconf(_SC_NPROCESSORS_ONLN);

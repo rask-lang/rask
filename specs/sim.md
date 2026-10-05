@@ -177,7 +177,7 @@ FAIL: tags the build
 | Long CPU work between two channel ops | Runs uninterrupted. No other task could have seen the difference | S3 |
 | Test spawns and never joins | `Handle` drop panic (`conc.async/H1`), replayed like any panic | ctrl.panic/PD1 |
 | Detached task still running at block exit | Drain runs it to completion in virtual time | conc.async/C4 |
-| `using Multitasking` with no worker count | One to four workers, drawn from the seed. The production default is one worker per CPU, and a replay can't depend on the machine | determinism/D1 |
+| `using Multitasking` with no worker count | Three or four workers, drawn from the seed. The production default is one worker per CPU, and a replay can't depend on the machine; fewer than three would hide what several workers stealing from each other do | determinism/D1 |
 | `using Multitasking(workers: 2)` | Two workers, as in production | S1a |
 | Task spins on an `Atomic` while the task that sets it waits on the same worker | Terminates. The spinner is cut off at its seeded budget and the worker runs the other | S3a |
 | A test reads a module-level value an earlier test wrote | Sees the initializer, not the write | I7 |
