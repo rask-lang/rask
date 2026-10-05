@@ -89,6 +89,9 @@ pub fn insert_rc_ops(
         // A returned parameter is handed out, not owned — take a reference for it.
         retain_returned_params(func, &string_locals);
 
+        // So is one handed to a call that keeps it.
+        retain_params_handed_over(func, &string_locals, own);
+
         // And a write through a captured variable's address gives back what
         // that variable held.
         release_replaced_captures(func, &string_locals);
@@ -821,6 +824,42 @@ fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId]) {
     }
 }
 
+/// Take a reference before giving a borrowed string parameter to a call that
+/// keeps it.
+///
+/// A local string handed to `v.push(s)` moves its reference into the vector:
+/// nothing is retained and nothing released after. A parameter has no
+/// reference of its own to move, since the caller keeps one and releases it
+/// at its own last use. So `func add(mutate v: Vec<string>, s: string) {
+/// v.push(s) }` gave the vector a string with one count and two owners, and
+/// once the caller let go, `v[0]` read freed bytes.
+fn retain_params_handed_over(
+    func: &mut MirFunction,
+    string_locals: &[LocalId],
+    own: &HashSet<String>,
+) {
+    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+    let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
+    for block in &mut func.blocks {
+        let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
+        for (si, stmt) in block.statements.iter().enumerate() {
+            let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
+            for (i, arg) in args.iter().enumerate() {
+                let Some(id) = uses::operand_local(arg) else { continue };
+                if params.contains(&id)
+                    && strings.contains(&id)
+                    && crate::own_names::keeps_argument(&fref.name, i, own)
+                {
+                    insertions.push((si, MirStmt::new(MirStmtKind::RcInc { local: id }, stmt.span)));
+                }
+            }
+        }
+        for (idx, stmt) in insertions.into_iter().rev() {
+            block.statements.insert(idx, stmt);
+        }
+    }
+}
+
 /// Release each string where it stops being live.
 ///
 /// A string holds one reference, and the reference is given back at the
@@ -1066,7 +1105,13 @@ fn assigned_on_exit(func: &MirFunction, locals: &[LocalId]) -> HashMap<BlockId, 
                 let mut sets = preds.get(&block.id).into_iter().flatten().filter_map(|p| out.get(p));
                 match sets.next() {
                     Some(first) => sets.fold(first.clone(), |acc, s| acc.intersection(s).copied().collect()),
-                    None => HashSet::new(), // unreachable: nothing is known assigned
+                    // No path reaches it, so "on every path" holds for
+                    // anything. Lowering leaves such a block after a
+                    // `continue` that falls into the code below; counting it
+                    // as assigning nothing kept every string out of the
+                    // join, and `let t = …; x ?? { continue }` never
+                    // released `t` on the way out (markdown_renderer).
+                    None => everything.clone(),
                 }
             };
             inn.extend(writes[&block.id].iter().copied());

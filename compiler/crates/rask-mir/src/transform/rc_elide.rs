@@ -272,14 +272,19 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
     let mut keep: HashSet<LocalId> = HashSet::new();
     // Retain only, for the container-to-container case: the copy's increment is
     // the reference the destination ends up holding, and there is no release to
-    // keep because this frame never had one to give.
+    // keep because this frame never had one to give. A parameter handed to a
+    // call that keeps it is the same: the caller keeps its own reference, and
+    // the one `rc_insert` took for the callee is what the container holds.
+    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
     let mut keep_retain_only: HashSet<LocalId> = HashSet::new();
     for group in copy_groups(func, &string_locals) {
         let crosses_container = group.iter().any(|l| containers.contains(l));
         let borrowed_in = group.iter().any(|l| owned.contains(l));
         let container_to_container =
             group.iter().any(|l| views.contains(l)) && group.iter().any(|l| handed_over.contains(l));
-        if container_to_container {
+        let param_handed_over =
+            group.iter().any(|l| params.contains(l) && handed_over.contains(l));
+        if container_to_container || param_handed_over {
             keep_retain_only.extend(group);
         } else if borrowed_in && !crosses_container {
             keep.extend(group);
