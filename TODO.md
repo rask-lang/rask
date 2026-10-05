@@ -10,7 +10,6 @@ Open work, grouped by theme. Bugs are tracked as [GitHub issues](https://github.
 - [ ] **Debug info — partial DWARF** — Source locations tracked but DWARF generation is minimal.
 - [ ] **Single target — x86-64 only** — Cranelift supports ARM/WASM, compiler doesn't configure them.
 - [ ] **Linear resource commitment (L1–L3)** — Ownership checker tracks it, codegen doesn't enforce.
-- [ ] **Panic unwinding (ctrl.panic)** — Panic path runs no ensures and aborts the process; `staged()` and the ensure-cancellation definiteness analysis unimplemented. Tracking issue with all sub-issues: #299.
 - [ ] **Origin tracking opt-in (ER33/ER34)** — Compiler currently tracks origin on every error (always-on). Spec revised to opt-in via `@traced` + `any Error`. Codegen and runtime need to gate origin capture on the annotation, drop the 16-byte field from non-traced types.
 - [ ] **MIR re-derives types the checker already worked out** — 41 fallback sites re-guess types instead of MIR carrying them forward from the checker (#725).
 
