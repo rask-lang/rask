@@ -9,7 +9,7 @@ use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::{NodeId, Span};
 
 use crate::error::ResolveError;
-use crate::scope::{ScopeTree, ScopeKind};
+use crate::scope::{ScopeId, ScopeTree, ScopeKind};
 use crate::symbol::{BuiltinModuleKind, SymbolTable, SymbolId, SymbolKind};
 use crate::package::PackageId;
 use crate::ResolvedProgram;
@@ -353,6 +353,22 @@ impl Resolver {
                 false,
             );
             let _ = self.scopes.define(name.to_string(), sym_id, span);
+        }
+    }
+
+    /// The function `module.name` means when the module exports `name` as a
+    /// free function rather than as a member of its namespace — `async.spawn`.
+    ///
+    /// Looked up in the global scope, not the current one: a local `spawn`
+    /// in the caller is not what `async.spawn` names.
+    fn module_free_function(&self, module: &str, name: &str) -> Option<SymbolId> {
+        if !rask_stdlib::modules::exports(module).functions.iter().any(|f| f == name) {
+            return None;
+        }
+        let sym = *self.scopes.get(ScopeId(0))?.bindings.get(name)?;
+        match self.symbols.get(sym)?.kind {
+            SymbolKind::BuiltinFunction { .. } | SymbolKind::Function { .. } => Some(sym),
+            _ => None,
         }
     }
 
@@ -2700,6 +2716,21 @@ impl Resolver {
                                     self.resolve_expr(&arg.expr);
                                 }
                                 return;
+                            }
+                            // `async.spawn(f)` — a free function the module
+                            // exports, reached through it (IM1). It's the same
+                            // function bare `spawn(f)` names, so the call node
+                            // points at that symbol and the checker turns the
+                            // call into the bare one (#1349).
+                            if let SymbolKind::BuiltinModule { module } = &sym.kind {
+                                if let Some(fn_sym) = self.module_free_function(module.name(), method) {
+                                    self.resolutions.insert(object.id, sym_id);
+                                    self.resolutions.insert(expr.id, fn_sym);
+                                    for arg in args {
+                                        self.resolve_expr(&arg.expr);
+                                    }
+                                    return;
+                                }
                             }
                         }
                     }

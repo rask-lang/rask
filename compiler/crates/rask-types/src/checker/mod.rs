@@ -1188,6 +1188,53 @@ impl Default for TypeChecker {
 // Public API
 // ============================================================================
 
+/// `async.spawn(f)` becomes `spawn(f)`: a free function a module exports,
+/// reached through the module, is the bare call (structure.modules/IM1).
+///
+/// The resolver points such a call node at the function's symbol. Rewriting
+/// the call rather than teaching each pass the qualified spelling is what lets
+/// every rule written against the bare call apply to it: `spawn` alone has
+/// its own handling in the checker, ownership, effects and MIR. Lowered as a
+/// method on a namespace, `async.spawn` failed natively with "unresolved
+/// variable `async`" (#1349).
+///
+/// The call keeps its node id; the callee takes the module name's, resolved
+/// to the function now.
+fn call_module_functions_bare(mut resolved: ResolvedProgram, decls: &mut [Decl]) -> ResolvedProgram {
+    use rask_ast::expr::{Expr, ExprKind};
+    use rask_ast::rewrite::{self, Rewrite};
+
+    struct Bare<'a> {
+        resolved: &'a mut ResolvedProgram,
+    }
+    impl Rewrite for Bare<'_> {
+        fn expr(&mut self, e: &mut Expr) {
+            let ExprKind::MethodCall { object, method, args, type_args } = &mut e.kind else {
+                return;
+            };
+            let through_module = self
+                .resolved
+                .resolutions
+                .get(&object.id)
+                .and_then(|&s| self.resolved.symbols.get(s))
+                .is_some_and(|s| matches!(s.kind, rask_resolve::SymbolKind::BuiltinModule { .. }));
+            if !through_module {
+                return;
+            }
+            let Some(fn_sym) = self.resolved.resolutions.remove(&e.id) else { return };
+            let kind = match type_args.take() {
+                Some(type_args) => ExprKind::GenericName { name: method.clone(), type_args },
+                None => ExprKind::Ident(method.clone()),
+            };
+            let func = Expr { id: object.id, span: object.span, kind };
+            self.resolved.resolutions.insert(object.id, fn_sym);
+            e.kind = ExprKind::Call { func: Box::new(func), args: std::mem::take(args) };
+        }
+    }
+    rewrite::rewrite_decls(decls, &mut Bare { resolved: &mut resolved });
+    resolved
+}
+
 ///
 /// Takes the declarations mutably to add the ones the checker wrote
 /// (`TypedProgram::attach_derived`): every caller goes on to read every body.
@@ -1196,6 +1243,7 @@ pub fn typecheck(
     decls: &mut Vec<Decl>,
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
+    let resolved = call_module_functions_bare(resolved, decls);
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
     let mut typed = checker.check(decls)?;
@@ -1210,6 +1258,7 @@ pub fn typecheck_with_stdlib(
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
+    let resolved = call_module_functions_bare(resolved, decls);
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
     // In stdlib scope: these registrations are what stdlib code means by a
@@ -1234,6 +1283,7 @@ pub fn typecheck_with_stdlib_lenient(
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> (TypedProgram, Vec<TypeError>) {
+    let resolved = call_module_functions_bare(resolved, decls);
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
     checker.types.stdlib_mode = true;

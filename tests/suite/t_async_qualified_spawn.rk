@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #1349: `async.spawn(…)` failed natively with "unresolved variable `async`".
+// `spawn` and `cancelled` are free functions async exports, not members of a
+// namespace, so lowering the qualified call as a namespace method found
+// nothing. It's the bare call reached through the module, and now it is one.
+
+import async
+
+test "async.spawn runs the task and join returns its value" {
+    using Multitasking {
+        let a = async.spawn(|| { return 20 })
+        let x = try a.join()
+        let b = async.spawn(|| { return 22 })
+        let y = try b.join()
+        assert x + y == 42
+    }
+}
+
+test "async.cancelled is the bare cancelled" {
+    using Multitasking {
+        let h = async.spawn(|| { return async.cancelled() })
+        let was = try h.join()
+        assert !was
+    }
+}
