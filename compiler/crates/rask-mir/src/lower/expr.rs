@@ -1176,6 +1176,37 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Lower one non-closure argument into parameter `param` of `sig`: by
+    /// address when the parameter is `mutate`, wrapped into the `T?`/`T or E`
+    /// layers the parameter declares. Every call shape — plain, method,
+    /// static — goes through here, so none of them can drop one of the two.
+    fn lower_arg_for_param(
+        &mut self,
+        arg: &Expr,
+        sig: Option<&super::FuncSig>,
+        param: usize,
+    ) -> Result<TypedOperand, LoweringError> {
+        let smut = sig.and_then(|s| s.scalar_mutate_params.get(param).cloned().flatten());
+        let agg_mut = sig
+            .and_then(|s| s.aggregate_mutate_params.get(param).copied())
+            .unwrap_or(false);
+        let (op, mir_ty) = self.lower_call_arg(arg, smut.as_ref(), agg_mut)?;
+        let declared = sig
+            .and_then(|s| s.param_tys.get(param))
+            .and_then(|o| o.as_ref())
+            .map(|t| self.ctx.resolve_type_expr(t));
+        let op = match declared {
+            Some(dst_ty) => self.coerce_into_wrapper(
+                rask_ast::coercion::CoercionSite::Argument,
+                op,
+                &mir_ty,
+                &dst_ty,
+            ),
+            None => op,
+        };
+        Ok((op, mir_ty))
+    }
+
     fn lower_call_arg(
         &mut self,
         arg: &Expr,
@@ -2348,51 +2379,29 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
             }
-            // #270: peek the callee's scalar-`mutate` param classification so
-            // those args are passed by address (write-back visible).
-            let callee_smut: Vec<Option<MirType>> = match func.name() {
-                Some(name) => {
-                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
-                        .unwrap_or_else(|| name.to_string());
-                    self.func_sigs.get(&key)
-                        .map(|s| s.scalar_mutate_params.clone())
-                        .unwrap_or_default()
-                }
-                _ => Vec::new(),
-            };
+            // The callee's signature says which arguments go by address
+            // (`mutate`) and which wrapper layers each parameter declares.
+            let callee_sig: Option<super::FuncSig> = func.name().and_then(|name| {
+                let key = self.ctx.call_rewrites.get(&expr.id).cloned()
+                    .unwrap_or_else(|| name.to_string());
+                self.func_sigs.get(&key).cloned()
+            });
+            let callee_params: Vec<Option<TypeExpr>> = callee_sig
+                .as_ref()
+                .map(|s| s.param_tys.clone())
+                .unwrap_or_default();
+            let wb_mark = self.elem_writebacks.len();
             // A closure handed to `spawn` outlives the frame that built it:
             // the task runs later, on another worker, and the runtime frees
             // the environment when it finishes. A scope-limited closure puts
             // that environment on the stack, so spawning one had the task
             // reading a dead frame and freeing a stack address — glibc aborted
             // with "free(): invalid pointer" right after the task ran (#463).
-            let callee_agg_mutate: Vec<bool> = match func.name() {
-                Some(name) => {
-                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
-                        .unwrap_or_else(|| name.to_string());
-                    self.func_sigs.get(&key)
-                        .map(|s| s.aggregate_mutate_params.clone())
-                        .unwrap_or_default()
-                }
-                _ => Vec::new(),
-            };
-            let wb_mark = self.elem_writebacks.len();
             let spawns_closure = matches!(&func.kind, ExprKind::Ident(n) if n == "spawn");
-            let callee_params: Vec<Option<TypeExpr>> = match func.name() {
-                Some(name) => {
-                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
-                        .unwrap_or_else(|| name.to_string());
-                    self.func_sigs.get(&key)
-                        .map(|s| s.param_tys.clone())
-                        .unwrap_or_default()
-                }
-                _ => Vec::new(),
-            };
             let mut arg_operands = Vec::new();
             let mut arg_mir_types = Vec::new();
             let mut spawn_boxes_result = false;
             for (i, a) in args.iter().enumerate() {
-                let smut = callee_smut.get(i).and_then(|o| o.as_ref());
                 let (op, mir_ty) = if let ExprKind::Closure { params, ret_ty, body } = &a.expr.kind {
                     let expected = Self::expected_closure_param_tys(&callee_params, i);
                     let carries = self.closure_carries(Some(a.expr.id));
@@ -2411,27 +2420,7 @@ impl<'a> MirLowerer<'a> {
                     let (op, mir_ty) = lowered;
                     self.wrap_closure_arg(op, mir_ty, callee_params.get(i).and_then(|o| o.as_ref()))
                 } else {
-                    let agg_mut = callee_agg_mutate.get(i).copied().unwrap_or(false);
-                    let (op, mir_ty) = self.lower_call_arg(&a.expr, smut, agg_mut)?;
-                    // A parameter declared `T?` or `T or E` given a bare `T`
-                    // is the same coercion as an annotated binding, so it
-                    // takes the same path. Left to codegen it only ever
-                    // gained Option layers, and typed the payload one layer
-                    // too shallow — an `f32??` parameter arrived as 0 (#637).
-                    let declared = callee_params
-                        .get(i)
-                        .and_then(|o| o.as_ref())
-                        .map(|t| self.ctx.resolve_type_expr(t));
-                    match declared {
-                        Some(dst_ty) => {
-                            let op = self.coerce_into_wrapper(
-                                rask_ast::coercion::CoercionSite::Argument,
-                                op, &mir_ty, &dst_ty,
-                            );
-                            (op, mir_ty)
-                        }
-                        None => (op, mir_ty),
-                    }
+                    self.lower_arg_for_param(&a.expr, callee_sig.as_ref(), i)?
                 };
                 // TR5 boxing happens in lower_expr, at the value — doing
                 // it again here wrapped the box in another box, and the
@@ -5418,11 +5407,23 @@ impl<'a> MirLowerer<'a> {
                         if is_known_type {
                             let base_name = name;
                             let func_name = format!("{}_{}", base_name, method);
-                            let callee_params: Vec<Option<TypeExpr>> = self
-                                .func_sigs
-                                .get(&func_name)
+                            // Arguments go in the same way as a plain call's:
+                            // by address for `mutate`, wrapped into the layers a
+                            // `T?` parameter declares. Lowering them as bare
+                            // expressions handed `Canvas.maybe(v)` a Vec pointer
+                            // where the callee read an option's tag (#1348).
+                            let callee_sig: Option<super::FuncSig> = self
+                                .ctx
+                                .call_rewrites
+                                .get(&expr.id)
+                                .and_then(|k| self.func_sigs.get(k))
+                                .or_else(|| self.func_sigs.get(&func_name))
+                                .cloned();
+                            let callee_params: Vec<Option<TypeExpr>> = callee_sig
+                                .as_ref()
                                 .map(|s| s.param_tys.clone())
                                 .unwrap_or_default();
+                            let wb_mark = self.elem_writebacks.len();
                             let mut arg_operands = Vec::new();
                             // Same escape as bare `spawn` (#463): the body runs
                             // after this frame is gone, and the runtime frees the
@@ -5452,9 +5453,14 @@ impl<'a> MirLowerer<'a> {
                                     if spawns_closure {
                                         method_spawn_boxes = self.spawn_result_boxed;
                                     }
-                                    lowered
+                                    let (op, mir_ty) = lowered;
+                                    self.wrap_closure_arg(
+                                        op,
+                                        mir_ty,
+                                        callee_params.get(i).and_then(|o| o.as_ref()),
+                                    )
                                 } else {
-                                    self.lower_expr(&arg.expr)?
+                                    self.lower_arg_for_param(&arg.expr, callee_sig.as_ref(), i)?
                                 };
                                 arg_operands.push(op);
                             }
@@ -5631,6 +5637,7 @@ impl<'a> MirLowerer<'a> {
                                 func: FunctionRef::internal(func_name),
                                 args: arg_operands,
                             }));
+                            self.flush_elem_writebacks(wb_mark);
 
                             return Ok(Some((MirOperand::Local(result_local), ret_ty)));
                         }
@@ -5775,30 +5782,12 @@ impl<'a> MirLowerer<'a> {
             }
             keys.iter().find_map(|k| self.func_sigs.get(k)).cloned()
         };
-        // Three things are read off that one signature. They used to be three
-        // separate key-building lookups of the same table, in the same order,
-        // for the same entry.
-        let callee_smut: Vec<Option<MirType>> = callee_sig
-            .as_ref()
-            .map(|s| s.scalar_mutate_params.clone())
-            .unwrap_or_default();
-        let callee_agg_mutate: Vec<bool> = callee_sig
-            .as_ref()
-            .map(|s| s.aggregate_mutate_params.clone())
-            .unwrap_or_default();
-        // A method parameter declared `T?` or `T or E` given a bare `T` is the
-        // same coercion as a free function's, and takes the same path. It didn't
-        // used to: only the plain-call path wrapped, so `w.deep(7)` into an
-        // `i64??` parameter got codegen's one-layer net and arrived with the
-        // inner layer absent, printing -2 where the interpreter printed 7 (#701).
         let callee_params: Vec<Option<TypeExpr>> = callee_sig
             .as_ref()
             .map(|s| s.param_tys.clone())
             .unwrap_or_default();
         for (i, arg) in args.iter().enumerate() {
             // all_args[0] is the receiver, so callee param i+1 is this argument.
-            let smut = callee_smut.get(i + 1).and_then(|o| o.as_ref());
-            let agg_mut = callee_agg_mutate.get(i + 1).copied().unwrap_or(false);
             let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, .. } = &arg.expr.kind {
                 let mut expected = Self::expected_closure_param_tys(&tentative_params, i);
                 if expected.is_empty() {
@@ -5810,23 +5799,7 @@ impl<'a> MirLowerer<'a> {
                 )?;
                 self.wrap_closure_arg(op, mir_ty, callee_params.get(i + 1).and_then(|o| o.as_ref()))
             } else {
-                let (op, mir_ty) = self.lower_call_arg(&arg.expr, smut, agg_mut)?;
-                let declared = callee_params
-                    .get(i + 1)
-                    .and_then(|o| o.as_ref())
-                    .map(|t| self.ctx.resolve_type_expr(t));
-                match declared {
-                    Some(dst_ty) => {
-                        let op = self.coerce_into_wrapper(
-                            rask_ast::coercion::CoercionSite::Argument,
-                            op,
-                            &mir_ty,
-                            &dst_ty,
-                        );
-                        (op, mir_ty)
-                    }
-                    None => (op, mir_ty),
-                }
+                self.lower_arg_for_param(&arg.expr, callee_sig.as_ref(), i + 1)?
             };
             all_args.push(op);
             arg_types.push(ty);

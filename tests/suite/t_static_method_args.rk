@@ -1,0 +1,49 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A static method's arguments go in the way a free function's do.
+//
+// Native lowered them as bare values: a `Vec` handed to a `Vec<i64>?`
+// parameter arrived as the Vec pointer where the callee read an option tag,
+// and the program crashed (#1348). `mutate n` on a static method got a copy,
+// so the write never reached `n`.
+
+struct Canvas { }
+
+extend Canvas {
+    func maybe(xs: Vec<i64>?) -> i64 {
+        if xs? as v {
+            return v.len().to<i64>()!
+        }
+        return -1
+    }
+
+    func deep(x: i64??) -> i64 {
+        if x? as a {
+            if a? as b {
+                return b
+            }
+            return -2
+        }
+        return -1
+    }
+
+    func bump(mutate n: i64) {
+        n = n + 1
+    }
+}
+
+test "a Vec goes into a static method's optional parameter" {
+    let v: Vec<i64> = [1, 2]
+    assert Canvas.maybe(v) == 2
+    assert Canvas.maybe(none) == -1
+}
+
+test "a bare value gains both layers of a static method's T??" {
+    assert Canvas.deep(7) == 7
+}
+
+test "a static method's mutate parameter writes back" {
+    mut n: i64 = 1
+    Canvas.bump(mutate n)
+    Canvas.bump(mutate n)
+    assert n == 3
+}
