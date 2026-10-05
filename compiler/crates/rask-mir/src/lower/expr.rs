@@ -1255,6 +1255,20 @@ impl<'a> MirLowerer<'a> {
                 return self.lower_expr(arg);
             }
         };
+        self.scalar_mutate_address(arg, &sty, None)
+    }
+
+    /// The address a scalar `mutate` parameter gets for `arg`: the variable, the
+    /// field, or the element itself where there is one, a spilled copy where
+    /// there isn't. `lowered` is `arg`'s value when the caller has it already —
+    /// a method receiver is lowered before its callee is known — so a
+    /// temporary isn't evaluated twice.
+    fn scalar_mutate_address(
+        &mut self,
+        arg: &Expr,
+        sty: &MirType,
+        lowered: Option<MirOperand>,
+    ) -> Result<TypedOperand, LoweringError> {
         // Chained: the arg is itself a by-pointer scalar mutate param — pass the
         // pointer straight through rather than loading + re-spilling it.
         if let ExprKind::Ident(name) = &arg.kind {
@@ -1311,8 +1325,11 @@ impl<'a> MirLowerer<'a> {
         // Anything else is a temporary with no storage of its own to point at —
         // spill it and pass that address, so the callee still has somewhere to
         // write even though nothing reads it back.
-        let (val, _) = self.lower_expr(arg)?;
-        let tmp = self.builder.alloc_temp(sty);
+        let val = match lowered {
+            Some(v) => v,
+            None => self.lower_expr(arg)?.0,
+        };
+        let tmp = self.builder.alloc_temp(sty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: tmp,
             rvalue: MirRValue::Use(val),
@@ -5786,6 +5803,18 @@ impl<'a> MirLowerer<'a> {
             .as_ref()
             .map(|s| s.param_tys.clone())
             .unwrap_or_default();
+        // A `mutate self` on a type that lowers to one word — a nominal over
+        // `i64`, a `File`, whose value is the `FILE *` itself — is a scalar
+        // `mutate` parameter like any other: the callee reads and writes it
+        // through a pointer. The receiver went in by value, so the callee
+        // dereferenced the handle and crashed (#1350).
+        if let Some(sty) = callee_sig
+            .as_ref()
+            .and_then(|s| s.scalar_mutate_params.first().cloned().flatten())
+        {
+            let (addr, _) = self.scalar_mutate_address(object, &sty, Some(obj_op.clone()))?;
+            all_args[0] = addr;
+        }
         for (i, arg) in args.iter().enumerate() {
             // all_args[0] is the receiver, so callee param i+1 is this argument.
             let (op, ty) = if let ExprKind::Closure { params, ret_ty, body, .. } = &arg.expr.kind {

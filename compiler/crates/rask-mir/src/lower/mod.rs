@@ -112,10 +112,18 @@ pub(crate) enum IterAdapter<'a> {
 /// `None` otherwise. A real aggregate's local already is an address, so it stays
 /// `None`; a scalar and a container handle both need one, for the same reason —
 /// the local holds a value rather than a place (#270, #1197).
-fn scalar_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -> Vec<Option<MirType>> {
-    params
+///
+/// A receiver only gets a pointer from a Rask body. A `@native` method's
+/// receiver is whatever its C signature takes, which is the value:
+/// `Random.u64(mutate self)` hands `rask_rng_u64` the handle.
+fn scalar_mutate_params(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> Vec<Option<MirType>> {
+    let native = f.body_lives_elsewhere();
+    f.params
         .iter()
         .map(|p| {
+            if native && p.name == "self" {
+                return None;
+            }
             let written = p.ty.as_ref().filter(|_| p.is_mutate)?;
             let ty = ctx.resolve_type_expr(written);
             if crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty) {
@@ -3909,7 +3917,7 @@ impl<'a> MirLowerer<'a> {
                     let sig_ret = ctx.fn_ret_ty(&f.name, f.ret_ty.as_ref());
                     func_sigs.insert(f.name.clone(), FuncSig {
                         ret_ty: sig_ret,
-                        scalar_mutate_params: scalar_mutate_params(&f.params, ctx),
+                        scalar_mutate_params: scalar_mutate_params(f, ctx),
                         aggregate_mutate_params: aggregate_mutate_params(&f.params, ctx),
                         ret_vec_elem: vec_elem_of_type(f.ret_ty.as_ref(), ctx),
                         param_tys: f.params.iter().map(|p| p.ty.clone()).collect(),
@@ -3933,7 +3941,7 @@ impl<'a> MirLowerer<'a> {
                             .unwrap_or(MirType::Void);
                         func_sigs.insert(qualified, FuncSig {
                             ret_ty: sig_ret,
-                            scalar_mutate_params: scalar_mutate_params(&m.params, ctx),
+                            scalar_mutate_params: scalar_mutate_params(m, ctx),
                             aggregate_mutate_params: aggregate_mutate_params(&m.params, ctx),
                             ret_vec_elem: vec_elem_of_type(m.ret_ty.as_ref(), ctx),
                             param_tys: m.params.iter().map(|p| p.ty.clone()).collect(),

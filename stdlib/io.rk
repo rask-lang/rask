@@ -602,9 +602,9 @@ extend File {
     }
 
     /// Close the file handle. Buffered bytes reach the disk here, so this is
-    /// where a full disk usually says so. `self` rather than `mutate self`,
-    /// like the writes: a Rask body taking a handle by `mutate self` crashes
-    /// natively (#1350).
+    /// where a full disk usually says so. `self`: closing doesn't change the
+    /// handle's value. `std.fs` declares it `take self`, which needs `File` to
+    /// be a `@resource` first.
     public func close(self) -> void or IoError {
         if self.close_raw() != 0 {
             return IoError.last_os_error()
