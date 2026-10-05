@@ -313,6 +313,9 @@ pub const WRAPPED_CTORS: &[(&str, &str)] = &[
     // when every body hands back a fresh container — so leaving this out
     // made every reader's bytes nobody's, a `Buffer`'s included.
     ("TcpConnection_read_bytes_raw", "Vec_free"),
+    // A file's bytes from the current position, the same shape and for the
+    // same reason: `File.read_bytes` is another body behind `reader.read_bytes()`.
+    ("File_read_bytes_raw", "Vec_free"),
 ];
 
 /// What frees the container inside the wrapper this native call handed back.
