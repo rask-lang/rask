@@ -34,27 +34,37 @@ Re-measure these rather than trusting them — each line names the command.
 
 | Measure | Now | Command |
 |---------|-----|---------|
-| Suite programs agreeing on both backends | 577 green, 6 registered red | `tests/differential.sh` |
-| Programs that leak | 2, holding 2 allocations this milestone and 2 deferred | `tests/leak_gate.sh` |
-| Matrix cells clean on both backends | 280 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
-| Programs memcheck finds an error in | 0 of 579 | `tests/memcheck_gate.sh` |
+| Suite programs agreeing on both backends | 580 green, 6 registered red | `tests/differential.sh` |
+| Programs that leak | 2, holding 2 allocations this milestone and 2 deferred; 4 not measured (the registered-red files that don't build) | `tests/leak_gate.sh` |
+| Matrix cells clean on both backends | 282 of 282, 6 pairs skipped | `tests/matrix/run.sh` |
+| Programs memcheck finds an error in | 0 of 582, 4 not measured | `tests/memcheck_gate.sh` |
 | Concurrency files TSan reports a race in | 0 of 81 | `tests/tsan_gate.sh` |
 | Soak programs within their thread budget | 6 of 6 | `tests/soak_gate.sh` |
-| Concurrency files clean under sim, 100 seeds in CI | 81 of 81, 43 tests exempt | `tests/sim_gate.sh` |
+| Concurrency files clean under sim | 81 of 81 at 20 seeds (CI runs 100), 43 tests exempt | `tests/sim_gate.sh` |
 | Examples with a pinned golden | 37 of 37 | `tests/examples_gate.sh` |
-| Runtime builds under the other compiler | clean | `tests/clang_gate.sh` |
-| Open bugs | 64 of 106 open issues | issue search |
+| Runtime builds under the other compiler | clean, 3 warnings | `tests/clang_gate.sh` |
+| Rust unit tests | 1342 pass, 0 fail | `cargo test --release` |
+| Open bugs | 56 of 98 open issues | issue search |
 | Open design questions | 20 | issue search |
 
-Nine more gates cover prototypes, packages, projects, tutorials, the book, the
-agent benchmark, internal spellings, formatter round-trips and the HTTP server.
-All green.
+Thirteen more gates cover prototypes (9), packages (25), projects (21),
+tutorials (38), the book (28), the agent benchmark, internal spellings,
+formatter round-trips, the HTTP server, lint, the fiber switch and the
+no-green source set (27). All green.
 
 This table was a month stale when it was last checked — it claimed 31 leaking
 programs holding 86 allocations while the gate printed 0, and 500 of 505 while
 the suite had grown to 525. That is the failure the preamble above says this
 file exists to prevent, so: re-measure before quoting it, and if you quoted it,
 you have re-measured it.
+
+## What came off this list since the last pass
+
+- **#1244** (a function type on the left of `or`) is closed by #1298 and #1390.
+  The matrix has no red cells left.
+- **Per-path ownership and the type-tree rework** landed: no pass reads a type
+  back out of text, and a test keeps it that way. Nothing on this list waited on
+  it, but `==`, `hash` and tuple freeing all went through it.
 
 ## v0.3 — Memory is settled — **shipped 2026-09-18**
 
@@ -158,8 +168,8 @@ at all yet — which is v0.5's theme, not this one.
 
 ## v0.4 — A value works in every position — **shipped 2026-09-22**
 
-**Done when `tests/matrix/run.sh` is green. It is: 281 of 283 cells clean, 2
-registered red, 0 new, and 5 pairs skipped as pairs the design rules out.**
+**Done when `tests/matrix/run.sh` is green. It is: 282 of 282 cells clean, 0
+red, 6 pairs skipped as pairs the design rules out.**
 
 Read the cell count against the old one with care — it was 284 of 286 while
 `Vec<Heap<T>>` still compiled. Fixing [#1245](https://github.com/rask-lang/rask/issues/1245)
@@ -232,7 +242,7 @@ version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
   there is no parenthesised type form. `specs/types/error-types.md` and
   `specs/SYNTAX.md` don't cover it. Its two cells stay registered in
   `known_red.txt` — the gate keeps watching them — and they are not what this
-  milestone closes on.
+  milestone closes on. (Closed since; see below.)
 - **#1245** — `Vec<Heap<i64>>` compiles, where `std.collections/C4` says it
   shouldn't. A missing *rejection* is not a value failing in a position, and its
   cells could never go green: the program isn't supposed to compile at all.
@@ -243,10 +253,9 @@ version is one theme, and a question `specs/` doesn't answer isn't a bug in it:
   returns. A name collision in the ownership metadata, not a position.
 
 Three of those four are fixed anyway, off the backlog rather than off this
-milestone — #1245, #1233 and #1248 all came in with #1298. #1244 is the one
-still open, and it was briefly closed by that same batch without anything in it
-answering the question; the repro still fails and it has been reopened. Its two
-cells are the 2 red in the number above.
+milestone — #1245, #1233 and #1248 all came in with #1298. #1244 is closed
+now too ([#1390](https://github.com/rask-lang/rask/pull/1390)), and its two
+cells are green.
 
 **What this list used to say.** It named eight. Two were already closed when
 the milestone was written (#843, #886), and three were not bugs at all — they
@@ -276,7 +285,13 @@ matrix work, rather than left to stall it:
 disagreement, not a value kind failing in a position — a narrow theme is the
 only kind that closes.
 
-## v0.5 — Concurrency you can trust — **shipped 2026-09-30**
+## v0.5 — Concurrency you can trust — **done 2026-09-30, not released**
+
+The gates hit their targets and `Cargo.toml` says 0.5.0, with
+`release-notes/v0.5.0.md` written. But there is no `v0.5.0` tag and no GitHub
+release: the newest is v0.4.0. The release workflow runs from the Actions tab and
+tags last, so it hasn't been run, or it failed before tagging. Until it has, this
+version is unshipped. Running it is the first item on the list.
 
 **Done when two numbers hold in CI:**
 
@@ -395,6 +410,9 @@ Ships open:
   task itself rather than driving green.c's queues from the seed.
 - [#1379](https://github.com/rask-lang/rask/issues/1379): `cli_calculator`
   leaks its expression tree.
+- [#1386](https://github.com/rask-lang/rask/issues/1386), filed after: a closure
+  copied out of a `Vec` and spawned is freed twice on native. Priority high, and
+  it is a concurrency crash, so it belongs to this theme.
 - macOS runs tasks on threads until it has a kqueue poller.
 
 ## v0.6 — The stdlib matches its own spec
