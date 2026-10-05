@@ -461,7 +461,13 @@ fn check_loaded(
     // CM1: which closures outlive their frame is ownership's to work out, and
     // lowering and the interpreter both need the same answer.
     typed.escaping_closures = ownership_result.escaping_closures.clone();
-    typed.field_reuses = ownership_result.field_reuses.clone();
+    // Which writes build on the old value is a lowering input for every
+    // body, the stdlib's as well as the program's.
+    typed.field_reuses = rask_ownership::field_reuses(
+        &typed,
+        &[&parse_result.decls, &stdlib_decls],
+        &[&stdlib_decls, &parse_result.decls],
+    );
 
     // --- Effects (non-blocking metadata) ---
     let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
@@ -811,7 +817,13 @@ fn check_package_scoped(
         diags.push(e.to_diagnostic());
     }
     typed.escaping_closures = ownership_result.escaping_closures.clone();
-    typed.field_reuses = ownership_result.field_reuses.clone();
+    // Which writes build on the old value is a lowering input for every
+    // body, the stdlib's as well as the program's.
+    typed.field_reuses = rask_ownership::field_reuses(
+        &typed,
+        &[&pkg_ctx.all_decls, &stdlib_decls],
+        &[&stdlib_decls, &pkg_ctx.all_decls],
+    );
 
     // --- Effects ---
     let (effects, effect_warnings) = rask_effects::infer_effects(&pkg_ctx.all_decls);
