@@ -1308,6 +1308,18 @@ impl<'a> Monomorphizer<'a> {
                     elems.iter().map(|e| Self::nameable_type(e, types)).collect();
                 Some(Type::Tuple(named?))
             }
+            // A closure type is nameable when its parameters and return are.
+            // Bailing here left `Sequence<func() -> i64>.to_vec()` on the one
+            // shared unmangled body, whose vector was built for 8-byte
+            // integers and so never freed the closures it held (#1386).
+            Type::Fn { params, ret } => {
+                let params: Option<Vec<Type>> =
+                    params.iter().map(|p| Self::nameable_type(p, types)).collect();
+                Some(Type::Fn {
+                    params: params?,
+                    ret: Box::new(Self::nameable_type(ret, types)?),
+                })
+            }
             Type::None | Type::Unit => Some(ty.clone()),
             _ => None,
         }

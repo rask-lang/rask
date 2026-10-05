@@ -869,6 +869,16 @@ impl CodeGenerator {
             self.func_ids.insert("rask_closure_free".to_string(), id);
         }
 
+        // rask_closure_retain(ptr: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_closure_retain", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_closure_retain".to_string(), id);
+        }
+
         // rask_box_alloc(value_size: i64) -> ptr — an interface object's block, with
         // a reference count in the word before the value it returns.
         {

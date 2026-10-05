@@ -289,7 +289,10 @@ void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size) {
 // generated glue, so copying one means retaining whatever its captures own, and
 // there is no `env_retain` to ask. A count is: one owner logically, `env_drop`
 // runs once, and nobody needs to know what's inside. Eight bytes per closure,
-// against the alternative of refusing `.clone()` on a `Vec<func>`.
+// against the alternative of refusing `.clone()` on a `Vec<func>`. The same
+// count lets a frame hand a closure it only borrows — `spawn(fs[0])` — to
+// something that will free it: the keeper gets a reference of its own
+// (`ClosureRetain` in MIR, #1386).
 //
 // `flags` is the fourth. `RASK_CLOSURE_TASK_BOUND` marks a closure that
 // captured a link or a `Local` box, which may not reach another task. The
@@ -316,7 +319,9 @@ void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t f
 void rask_closure_retain(void *ptr) {
     if (!ptr) return;
     int64_t *base = ((int64_t *)ptr) - CLOSURE_HEADER_WORDS;
-    base[2] += 1;
+    // Atomic: a spawned task can hold a reference to a block the spawning
+    // frame still holds too, and the task's is released on its own thread.
+    __atomic_add_fetch(&base[2], 1, __ATOMIC_RELAXED);
 }
 
 int rask_closure_task_bound(const void *ptr) {
@@ -328,7 +333,7 @@ int rask_closure_task_bound(const void *ptr) {
 void rask_closure_free(void *ptr) {
     if (!ptr) return;
     int64_t *base = ((int64_t *)ptr) - CLOSURE_HEADER_WORDS;
-    if ((base[2] -= 1) > 0) return;
+    if (__atomic_sub_fetch(&base[2], 1, __ATOMIC_ACQ_REL) > 0) return;
     void (*env_drop)(void *) = (void (*)(void *))(intptr_t)base[1];
     // The environment starts one word past the closure value, which is where
     // the captures the glue names live.

@@ -68,8 +68,152 @@ pub fn insert_all_closure_drops(fns: &mut [MirFunction]) {
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     let hands_back = functions_handing_back_a_closure(fns, &targets);
 
+    let own: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
+    let bodies: HashSet<String> = fns
+        .iter()
+        .flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter()))
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::ClosureCreate { func_name, .. } => Some(func_name.clone()),
+            _ => None,
+        })
+        .collect();
     for func in fns.iter_mut() {
         insert_drops(func, &callee_escapes, &hands_back, &targets);
+        let is_body = bodies.contains(&func.name);
+        retain_borrowed_closures_handed_on(func, &callee_escapes, &own, is_body);
+    }
+}
+
+/// Give a closure this frame only borrows a reference of its own before it is
+/// handed to something that keeps it.
+///
+/// A closure value is a pointer to a shared block, and copying the value
+/// copies the pointer. That's fine while one holder frees it. `let f = fs[0]`
+/// reads the vector's closure without taking it — the vector still frees it
+/// when it dies — so `spawn(f)` handed the task a block it didn't own. The
+/// task freed it at `join`, the vector freed it again (#1386). Same for a
+/// closure read out of a struct field and pushed somewhere, or stored in
+/// another struct.
+///
+/// The block carries a count for exactly this (`rask_closure_retain`; a
+/// derived `Vec` uses it for the same reason). The keeper gets its own
+/// reference and frees that one; the owner frees its own.
+///
+/// Borrowed here means read out of something else: a field, or a call that
+/// hands back a view into its receiver (`Vec_index`), or a closure parameter of
+/// a closure body — a yield's item, which the caller frees once the yield
+/// returns. A named function's parameters are left alone: whether the caller
+/// handed one over is already the callee escape map's answer, and a retain on
+/// top would leak it.
+fn retain_borrowed_closures_handed_on(
+    func: &mut MirFunction,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+    own: &HashSet<String>,
+    is_closure_body: bool,
+) {
+    let is_closure = |id: &LocalId| matches!(func.local_ty(*id), Some(crate::MirType::FuncPtr(_)));
+    let aggregate_locals: HashSet<LocalId> = func
+        .locals
+        .iter()
+        .filter(|l| {
+            matches!(
+                l.ty,
+                crate::MirType::Struct(_)
+                    | crate::MirType::Enum(_)
+                    | crate::MirType::Tuple(_)
+                    | crate::MirType::Array { .. }
+                    | crate::MirType::Option(_)
+                    | crate::MirType::Result { .. }
+            )
+        })
+        .map(|l| l.id)
+        .collect();
+    let is_aggregate = |id: &LocalId| aggregate_locals.contains(id);
+    let mut borrowed: HashSet<LocalId> = HashSet::new();
+    // A closure handed to a closure is lent (type.sequence/SEQ34): the caller
+    // of a yield frees what it passed once the yield returns. `to_vec`'s yield
+    // pushing `x` and `find`'s keeping it were each holding a closure `map`
+    // was about to free.
+    let lent_params: HashSet<LocalId> = if is_closure_body {
+        func.params.iter().map(|p| p.id).filter(|id| is_closure(id)).collect()
+    } else {
+        HashSet::new()
+    };
+    borrowed.extend(lent_params.iter().copied());
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        match &stmt.kind {
+            MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Field { .. } } if is_closure(dst) => {
+                borrowed.insert(*dst);
+            }
+            MirStmtKind::Call { dst: Some(dst), func: callee, .. }
+                if is_closure(dst) && crate::own_names::returns_a_view(&callee.name, own) =>
+            {
+                borrowed.insert(*dst);
+            }
+            _ => {}
+        }
+    }
+    if borrowed.is_empty() {
+        return;
+    }
+    // Copies of a borrowed closure are the same borrow.
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            if let MirStmtKind::Assign { dst, rvalue: crate::MirRValue::Use(MirOperand::Local(src)) } =
+                &stmt.kind
+            {
+                if borrowed.contains(src) && borrowed.insert(*dst) {
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    for block in &mut func.blocks {
+        let mut at: Vec<(usize, LocalId)> = Vec::new();
+        for (si, stmt) in block.statements.iter().enumerate() {
+            match &stmt.kind {
+                MirStmtKind::Call { func: callee, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg).filter(|id| borrowed.contains(id)) else {
+                            continue;
+                        };
+                        // Same question `closure_facts` asks: a callee with no
+                        // body of its own keeps what it isn't known to borrow.
+                        let keeps = callee_escapes
+                            .get(&callee.name)
+                            .and_then(|e| e.get(i))
+                            .copied()
+                            .unwrap_or_else(|| {
+                                !rask_stdlib::mir_metadata::borrows_its_callback(&callee.name)
+                            });
+                        if keeps {
+                            at.push((si, id));
+                        }
+                    }
+                }
+                // Into an aggregate this frame is building — `Holder { f:
+                // fs[1] }` — which frees its fields when it dies. A store
+                // through a pointer is left alone: that is `with`'s write-back
+                // putting the closure back where it was read from.
+                MirStmtKind::Store { addr, value: MirOperand::Local(id), .. }
+                    if borrowed.contains(id) && (is_aggregate(addr) || lent_params.contains(id)) =>
+                {
+                    at.push((si, *id));
+                }
+                MirStmtKind::ArrayStore { base, value: MirOperand::Local(id), .. }
+                    if borrowed.contains(id) && is_aggregate(base) =>
+                {
+                    at.push((si, *id));
+                }
+                _ => {}
+            }
+        }
+        for (si, closure) in at.into_iter().rev() {
+            block.statements.insert(si, MirStmt::dummy(MirStmtKind::ClosureRetain { closure }));
+        }
     }
 }
 

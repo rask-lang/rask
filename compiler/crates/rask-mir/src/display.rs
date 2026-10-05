@@ -253,6 +253,7 @@ impl fmt::Display for MirStmt {
                 Some(m) if m != closure => write!(f, "closure_drop(_{}) made _{}", closure.0, m.0),
                 _ => write!(f, "closure_drop(_{})", closure.0),
             },
+            MirStmtKind::ClosureRetain { closure } => write!(f, "closure_retain(_{})", closure.0),
             MirStmtKind::ArrayStore { base, index, elem_size, value } => {
                 write!(f, "*(_{}+{}*{}) = {}", base.0, index, elem_size, value)
             }

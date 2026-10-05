@@ -442,7 +442,16 @@ fn insert_aggregate_release(
         let mut events = Vec::with_capacity(block.statements.len());
         let mut reads = Vec::with_capacity(block.statements.len());
         let mut kills = Vec::with_capacity(block.statements.len());
+        // Closures the frame just took a reference of its own to, for the
+        // statement that hands them on next
+        // (`closures::retain_borrowed_closures_handed_on`). The keeper gets
+        // that reference, so the aggregate the closure was read out of still
+        // holds its own and still has to release it.
+        let mut retained: HashSet<LocalId> = HashSet::new();
         for stmt in &block.statements {
+            if let MirStmtKind::ClosureRetain { closure } = &stmt.kind {
+                retained.insert(*closure);
+            }
             let mut ev: Vec<ownership::Event> = Vec::new();
             let is_tracked = |l: &LocalId| tracked.contains(l);
             let hand_over = |ev: &mut Vec<ownership::Event>, l: LocalId| {
@@ -491,7 +500,7 @@ fn insert_aggregate_release(
                 MirStmtKind::Call { func: fref, args, dst } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
-                        if !is_tracked(&id) {
+                        if !is_tracked(&id) || retained.contains(&id) {
                             continue;
                         }
                         // What the callee does with it: from the body when this
@@ -539,7 +548,7 @@ fn insert_aggregate_release(
                     }
                 }
                 MirStmtKind::Store { addr, offset, value, .. } => {
-                    if let Some(v) = uses::operand_local(value).filter(|v| is_tracked(v)) {
+                    if let Some(v) = uses::operand_local(value).filter(|v| is_tracked(v) && !retained.contains(v)) {
                         if !aggregates.contains(&v) && !aggregates.contains(addr) {
                             // A handle parked in a buffer so a call can point
                             // at it: whoever reads the buffer reads through the
@@ -561,7 +570,7 @@ fn insert_aggregate_release(
                     }
                 }
                 MirStmtKind::ArrayStore { value, .. } => {
-                    if let Some(v) = uses::operand_local(value) {
+                    if let Some(v) = uses::operand_local(value).filter(|v| !retained.contains(v)) {
                         hand_over(&mut ev, v);
                     }
                 }
@@ -605,6 +614,14 @@ fn insert_aggregate_release(
                         ev.push(ownership::Event::Other(d));
                     }
                 }
+            }
+
+            // A retain covers the one hand-off it was taken for.
+            if matches!(
+                stmt.kind,
+                MirStmtKind::Call { .. } | MirStmtKind::Store { .. } | MirStmtKind::ArrayStore { .. }
+            ) {
+                retained.retain(|id| !uses::stmt_reads(stmt, *id));
             }
 
             // Reads and writes, for liveness.

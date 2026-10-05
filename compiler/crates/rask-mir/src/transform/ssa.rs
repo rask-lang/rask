@@ -400,7 +400,7 @@ fn rename_stmt(
                 return Some(orig);
             }
         }
-        MirStmtKind::ClosureDrop { closure, .. } => {
+        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure } => {
             *closure = current_version(*closure, version_stack, num_orig_locals);
         }
         MirStmtKind::ResourceRegister { dst, .. } => {

@@ -747,6 +747,9 @@ fn remap_stmt(
             closure: local_map.get(closure).copied().unwrap_or(*closure),
             made: made.map(|m| local_map.get(&m).copied().unwrap_or(m)),
         },
+        MirStmtKind::ClosureRetain { closure } => MirStmtKind::ClosureRetain {
+            closure: local_map.get(closure).copied().unwrap_or(*closure),
+        },
         MirStmtKind::ArrayStore {
             base,
             index,

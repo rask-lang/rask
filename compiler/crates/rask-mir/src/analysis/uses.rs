@@ -73,7 +73,7 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
             captures.iter().for_each(|c| f(c.local_id));
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(*env_ptr),
-        MirStmtKind::ClosureDrop { closure, .. } => f(*closure),
+        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure } => f(*closure),
         MirStmtKind::ResourceConsume { resource_id } => f(*resource_id),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
             f(*base);
@@ -170,7 +170,9 @@ pub fn visit_stmt_use_locals_mut(
             }
         }
         MirStmtKind::LoadCapture { env_ptr, .. } => f(env_ptr, UseKind::Value),
-        MirStmtKind::ClosureDrop { closure, .. } => f(closure, UseKind::Value),
+        MirStmtKind::ClosureDrop { closure, .. } | MirStmtKind::ClosureRetain { closure } => {
+            f(closure, UseKind::Value)
+        }
         MirStmtKind::ResourceConsume { resource_id } => f(resource_id, UseKind::Value),
         MirStmtKind::ArrayStore { base, index, value, .. } => {
             f(base, UseKind::Value);

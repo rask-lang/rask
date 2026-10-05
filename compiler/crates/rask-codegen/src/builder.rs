@@ -1170,6 +1170,16 @@ impl<'a> FunctionBuilder<'a> {
                 crate::closures::free_closure(builder, closure_val, *free_ref);
             }
 
+            MirStmtKind::ClosureRetain { closure } => {
+                let closure_val = builder.use_var(*ctx.var_map.get(closure)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "ClosureRetain closure variable not found".to_string()
+                    ))?);
+                let retain_ref = ctx.func_refs.get("rask_closure_retain")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_closure_retain".to_string()))?;
+                builder.ins().call(*retain_ref, &[closure_val]);
+            }
+
             MirStmtKind::GlobalRef { dst, name } => {
                 let gv = ctx.comptime_globals.get(name.as_str())
                     .ok_or_else(|| CodegenError::UnsupportedFeature(

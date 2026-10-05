@@ -90,6 +90,12 @@ pub enum MirStmtKind {
         closure: LocalId,
         made: Option<LocalId>,
     },
+    /// Take one more reference to a heap closure this frame only borrows,
+    /// because it is about to hand the closure to something that keeps it
+    /// and will free it. The closure's owner still frees its own reference.
+    ClosureRetain {
+        closure: LocalId,
+    },
     /// Store into a fixed-size array element: base_ptr[index * elem_size] = value
     ArrayStore {
         base: LocalId,
