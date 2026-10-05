@@ -144,6 +144,8 @@ pub struct Monomorphizer<'a> {
     pub instantiated_error_wraps: HashMap<NodeId, rask_types::ErrorWrap>,
     /// ER14a: instantiated `??` nodes whose right side is still wrapped.
     pub instantiated_fallback_keeps_shape: HashSet<NodeId>,
+    /// CF12: instantiated `if x is Variant` nodes that bind the payload.
+    pub instantiated_pattern_unwraps: HashMap<NodeId, rask_ast::expr::Pattern>,
     pub instantiated_escaping_closures: HashSet<NodeId>,
     /// Closures in the copies that may not reach another task (#1356).
     pub instantiated_task_bound_closures: HashSet<NodeId>,
@@ -495,6 +497,7 @@ impl<'a> Monomorphizer<'a> {
             instantiated_operator_targets: HashMap::new(),
             instantiated_error_wraps: HashMap::new(),
             instantiated_fallback_keeps_shape: HashSet::new(),
+            instantiated_pattern_unwraps: HashMap::new(),
             instantiated_escaping_closures: HashSet::new(),
             instantiated_task_bound_closures: HashSet::new(),
             instantiated_call_type_args: HashMap::new(),
@@ -627,6 +630,11 @@ impl<'a> Monomorphizer<'a> {
             // operand types, which substitution preserves.
             if typed.fallback_keeps_shape.contains(&old_id) {
                 self.instantiated_fallback_keeps_shape.insert(new_id);
+            }
+            // CF12: which variant a test names doesn't depend on the type
+            // arguments, so the pattern carries over as written.
+            if let Some(p) = typed.pattern_unwraps.get(&old_id) {
+                self.instantiated_pattern_unwraps.insert(new_id, p.clone());
             }
             // CM1: whether a closure outlives its frame is a property of where
             // it is written, which substitution doesn't move.

@@ -613,6 +613,8 @@ impl Interpreter {
     }
 
     fn eval_expr_inner(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
+        // The arms that bind a field named `expr` hide this one.
+        let node_id = expr.id;
         match &expr.kind {
             ExprKind::Int(n, suffix) => {
                 use rask_ast::token::IntSuffix;
@@ -2090,6 +2092,9 @@ impl Interpreter {
                 else_binding,
             } => {
                 let value = self.eval_expr(expr)?;
+                // CF12: `if x is Variant` binds the payload to `x`.
+                let unwrap = self.pattern_unwraps.get(&node_id).cloned();
+                let pattern = unwrap.as_ref().unwrap_or(pattern);
 
                 if let Some(bindings) = self.match_pattern(pattern, &value) {
                     self.env.push_scope();

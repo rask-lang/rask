@@ -502,6 +502,9 @@ impl TypeChecker {
             StmtKind::WhileLet { pattern, expr, body, .. } => {
                 let value_ty = self.infer_expr(expr);
                 self.push_scope();
+                // No CF12 unwrap here: `while s is Next { s = step(s) }` is
+                // how such a loop is written, and with `s` rebound to the
+                // payload the body couldn't move the loop along.
                 let bindings = self.check_pattern(pattern, &value_ty, stmt.span);
                 for (name, ty) in bindings {
                     self.define_local_bound(name, ty, super::BoundFrom::Payload);

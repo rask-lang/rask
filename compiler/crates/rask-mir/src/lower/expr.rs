@@ -1370,6 +1370,8 @@ impl<'a> MirLowerer<'a> {
         // lookup from outside any expression is reported as `<outside>` rather
         // than inheriting the last one walked.
         let _kind_scope = crate::fallback::KindScope;
+        // The arms that bind a field named `expr` hide this one.
+        let node_id = expr.id;
         match &expr.kind {
             // Literals
             ExprKind::Int(val, suffix) => self.lower_int(expr, val, suffix),
@@ -1458,6 +1460,8 @@ impl<'a> MirLowerer<'a> {
 
             // If-let (if expr is Pattern { then } else { else })
             ExprKind::IfLet { expr, pattern, then_branch, else_branch, else_binding } => {
+                // CF12: `if x is Variant` binds the payload to `x`.
+                let pattern = self.ctx.pattern_unwraps.get(&node_id).unwrap_or(pattern);
                 self.lower_if_let(expr, pattern, then_branch, else_branch.as_deref(), else_binding.as_deref())
             }
 
@@ -3649,8 +3653,10 @@ impl<'a> MirLowerer<'a> {
             } else {
                 self.payload_type_of_niche(expr, &val_ty, is_niche)
             };
+            let outer = self.save_names(pattern.bound_names());
             self.bind_pattern_payload_niche(pattern, val.clone(), bind_ty, is_niche, &val_ty);
             let (then_val, then_ty) = self.lower_expr(then_branch)?;
+            self.restore_names(outer);
             let result_local = self.builder.alloc_temp(then_ty.clone());
             if self.builder.current_block_unterminated() {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

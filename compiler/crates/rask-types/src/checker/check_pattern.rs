@@ -165,11 +165,66 @@ impl TypeChecker {
         format!("{}.{}", self.types.type_name(id), name)
     }
 
+    /// `name` as a variant of the enum the scrutinee already is, qualified,
+    /// with how many payload fields it carries. `None` when the scrutinee
+    /// isn't known to be that enum: a bare name is then a binding, and a
+    /// qualified one is checked as a constructor.
+    fn variant_of_scrutinee(&mut self, name: &str, scrutinee_ty: &Type) -> Option<(String, usize)> {
+        let resolved = normalize_type(&self.ctx.apply(scrutinee_ty), &self.types);
+        let id = match resolved {
+            Type::Named(id) => id,
+            Type::Generic { base, .. } => base,
+            _ => return None,
+        };
+        let qualified = self.qualify_variant_name(name, scrutinee_ty);
+        let (enum_id, _) = self.enum_id_from_pattern_name(&qualified)?;
+        if enum_id != id {
+            return None;
+        }
+        let variant = qualified.rsplit('.').next()?;
+        let TypeDef::Enum { variants, .. } = self.types.get(id)? else { return None };
+        let arity = variants.iter().find(|(v, _)| v == variant)?.1.len();
+        Some((qualified, arity))
+    }
+
+    /// CF12: `if x is Variant` with no binding, on a variant with exactly one
+    /// payload, binds that payload to `x` inside the branch. The pattern that
+    /// does it, `Variant(x)`, or `None` when the test only tests. Multi-field variants are written
+    /// out in full; an expression that isn't a variable has no name to reuse.
+    pub(super) fn implicit_unwrap(
+        &mut self,
+        pattern: &Pattern,
+        tested: &rask_ast::expr::Expr,
+        scrutinee_ty: &Type,
+    ) -> Option<Pattern> {
+        let Pattern::Ident(name) = pattern else { return None };
+        let rask_ast::expr::ExprKind::Ident(var) = &tested.kind else { return None };
+        let (qualified, arity) = self.variant_of_scrutinee(name, scrutinee_ty)?;
+        if arity != 1 {
+            return None;
+        }
+        // Positional whether the variant's payload is named or not: a
+        // constructor pattern reads fields in declaration order either way.
+        Some(Pattern::Constructor { name: qualified, fields: vec![Pattern::Ident(var.clone())] })
+    }
+
     pub(super) fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {
         match pattern {
             Pattern::Wildcard => vec![],
 
             Pattern::Ident(name) => {
+                // A variant of the scrutinee's own enum, written bare or
+                // qualified, is a tag test whatever the variant carries:
+                // `c is Del`, `c is Cmd.Del`. The qualified form was checked
+                // as a constructor with no arguments, so a variant with a
+                // payload failed "expected 1 argument, found 0", and the bare
+                // one bound a variable named after the variant (#1401). In an
+                // `if`, a single payload is then bound to the tested name
+                // (CF12, `implicit_unwrap`).
+                if let Some((qualified, arity)) = self.variant_of_scrutinee(name, scrutinee_ty) {
+                    let fields = vec![Pattern::Wildcard; arity];
+                    return self.check_constructor_pattern(&qualified, &fields, scrutinee_ty, span);
+                }
                 // Qualified enum variant (e.g., "Status.Active") — match, don't bind
                 if name.contains('.') {
                     return self.check_constructor_pattern(name, &[], scrutinee_ty, span);

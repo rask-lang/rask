@@ -360,6 +360,12 @@ pub struct TypeChecker {
     /// expression keeps the optional shape. Both backends read this to know
     /// whether the present path yields the payload or the operand as-is.
     pub(super) fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// CF12: `if x is Variant` tests where the variant has one payload and `x`
+    /// names a variable, so inside the branch `x` is the payload. Keyed by the
+    /// `if` node; the value is the pattern to match in place of the written
+    /// one (`Variant(x)`), which is all a backend needs to bind it. Not `while`:
+    /// the loop body has to be able to move the tested name along.
+    pub(super) pattern_unwraps: HashMap<NodeId, rask_ast::expr::Pattern>,
     /// ER16b: `try` nodes that are the left half of a `try … ??` composite.
     /// Only there may a `try` take a flat `T? or E` operand (ER47).
     pub(super) flat_try_sites: std::collections::HashSet<NodeId>,
@@ -618,6 +624,7 @@ impl TypeChecker {
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
+            pattern_unwraps: HashMap::new(),
             flat_try_sites: std::collections::HashSet::new(),
             try_chain_steps: std::collections::HashSet::new(),
             try_chain_unwrapped: None,
@@ -996,6 +1003,7 @@ impl TypeChecker {
         let interface_coercions = self.interface_coercions.clone();
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
+        let pattern_unwraps = self.pattern_unwraps.clone();
         let try_chain_placement = self.try_chain_placement.clone();
 
         let unsafe_ops = self.unsafe_ops;
@@ -1035,6 +1043,7 @@ impl TypeChecker {
             conformance_disambiguation: self.conformance_disambiguation,
             error_wraps,
             fallback_keeps_shape,
+            pattern_unwraps,
             // Ownership fills this in; the checker has no say in it.
             escaping_closures: std::collections::HashSet::new(),
             task_bound_closures: std::mem::take(&mut self.task_bound_closures),

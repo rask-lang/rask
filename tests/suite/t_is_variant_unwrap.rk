@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `x is Variant`, written bare or qualified, tests the tag whatever the
+// variant carries. In an `if`, a variant with exactly one payload also binds
+// that payload to `x` inside the branch (ctrl.flow/CF12).
+//
+// Before #1401 the qualified form of a payload variant was checked as a
+// constructor call with no arguments and refused ("expected 1 argument,
+// found 0"), the bare form bound a variable named after the variant, and
+// the unwrap didn't exist: `c + 1` inside `if c is Ins` was `Cmd + i32`.
+// Natively a test on a struct-shaped variant read the wrong tag.
+
+enum Cmd {
+    Ins(i32)
+    Del { at: i32 }
+    Move(i32, i32)
+    Quit
+}
+
+enum Chain {
+    Next(i64)
+    Stop
+}
+
+func step(c: Chain) -> Chain {
+    if c is Next {
+        if c > 3 {
+            return Chain.Stop
+        }
+        return Chain.Next(c + 1)
+    }
+    return Chain.Stop
+}
+
+test "the qualified form unwraps a single payload" {
+    let c = Cmd.Ins(5)
+    mut seen = 0
+    if c is Cmd.Ins {
+        seen = c + 1
+    }
+    assert seen == 6
+}
+
+test "so does the bare form, on a named payload too" {
+    let d = Cmd.Del(at: 7)
+    mut seen = 0
+    if d is Del {
+        seen = d * 2
+    }
+    assert seen == 14
+}
+
+test "the outer name is the enum again after the branch" {
+    let d = Cmd.Del(at: 7)
+    if d is Del {
+        assert d == 7
+    }
+    mut other = false
+    if d is Cmd.Ins {
+        other = true
+    }
+    assert !other
+}
+
+test "a multi-field or empty variant only tests" {
+    let m = Cmd.Move(1, 2)
+    mut moved = false
+    if m is Cmd.Move {
+        moved = true
+    }
+    assert moved
+    let q = Cmd.Quit
+    mut quit = false
+    if q is Cmd.Quit {
+        quit = true
+    }
+    assert quit
+}
+
+test "a value that isn't a variable only tests" {
+    mut hit = false
+    if Cmd.Ins(3) is Cmd.Ins {
+        hit = true
+    }
+    assert hit
+}
+
+test "while keeps the enum, so the body can move it along" {
+    mut s = Chain.Next(0)
+    mut steps = 0
+    while s is Chain.Next {
+        steps += 1
+        s = step(s)
+    }
+    assert steps == 5
+}

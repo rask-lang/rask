@@ -83,7 +83,7 @@ if error {
 | **CF9: Not exhaustive** | Unmatched patterns skip the block (not an error) |
 | **CF10: Combined conditions** | Bindings from `is` available after `&&` in same condition |
 | **CF11: Linear resources** | Non-Copy values moved into pattern; must handle both match/no-match paths |
-| **CF12: Implicit unwrap** | `if expr is Variant` (no binding) unwraps single-payload variant, reusing outer name |
+| **CF12: Implicit unwrap** | `if x is Variant` or `if x is Enum.Variant` (no binding) unwraps a single-payload variant, reusing the name `x` inside the branch. A multi-field or empty variant, or a tested expression that isn't a variable, only tests. `while x is Variant` only tests, so the body can reassign `x` |
 
 ```rask
 // Pattern match with explicit binding
