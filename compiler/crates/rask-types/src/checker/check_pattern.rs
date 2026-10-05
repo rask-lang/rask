@@ -212,6 +212,20 @@ impl TypeChecker {
         Some((qualified, arity))
     }
 
+    /// The type a bare pattern name stands for, when it names one.
+    ///
+    /// A module's namespace struct (`struct time { }`, which `time.sleep`
+    /// hangs off) is not one: nothing has that type, and a binding a program
+    /// calls `time` would otherwise turn into a type test against it.
+    fn pattern_type_name(&self, name: &str) -> Option<Type> {
+        let ty = resolve_type_name(&TypeExpr::named(name), &self.types);
+        match &ty {
+            Type::UnresolvedNamed(_) => None,
+            Type::Named(_) if rask_stdlib::modules::is_module(name) => None,
+            _ => Some(ty),
+        }
+    }
+
     pub(super) fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {
         match pattern {
             Pattern::Wildcard => vec![],
@@ -255,8 +269,7 @@ impl TypeChecker {
                 // backends disagreed about the answer.
                 let resolved = self.ctx.apply(scrutinee_ty);
                 if let Type::Result { .. } = &resolved {
-                    let candidate = resolve_type_name(&TypeExpr::named(name.as_str()), &self.types);
-                    if !matches!(candidate, Type::UnresolvedNamed(_)) {
+                    if let Some(candidate) = self.pattern_type_name(name) {
                         let candidate = normalize_type(&candidate, &self.types);
                         let branches =
                             two_branch_leaves(&mut self.ctx, &self.types, &resolved);
@@ -279,6 +292,35 @@ impl TypeChecker {
                             found: resolved,
                             span,
                         });
+                        return vec![];
+                    }
+                }
+                // The same name against a plain value. A type test picks one
+                // of a value's branches (ER23), and a plain value has one, so
+                // `v is JsonValue` on a `JsonValue` is decided by the source —
+                // the `as` form already says so (E0398). As a binding it was
+                // true on the interpreter and false natively (#1352).
+                //
+                // A variant of the scrutinee's own enum is a variant test, even
+                // when a type shares its name.
+                if !matches!(resolved, Type::Error)
+                    && !self.qualify_variant_name(name, scrutinee_ty).contains('.')
+                {
+                    if let Some(candidate) = self.pattern_type_name(name) {
+                        if matches!(resolved, Type::Var(_)) {
+                            self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
+                                scrutinee: scrutinee_ty.clone(),
+                                narrow_ty: normalize_type(&candidate, &self.types),
+                                ty_name: name.clone(),
+                                span,
+                            });
+                        } else {
+                            self.errors.push(TypeError::TypePatternNotResult {
+                                ty_name: name.clone(),
+                                found: resolved,
+                                span,
+                            });
+                        }
                         return vec![];
                     }
                 }

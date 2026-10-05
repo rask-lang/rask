@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// #1352: `r is json.JsonError` was false on both backends for a value that
+// held a JsonError, and `is json.JsonError as e` never bound. Every reader of
+// a pattern took the dotted name for `Enum.Variant` and went looking for a
+// variant `JsonError` of an enum called `json`. The module only says where the
+// type lives; the qualified name is the bare one.
+
+import json
+import json.JsonError
+import json.JsonValue
+import json as j
+
+test "a module-qualified error type matches the error branch" {
+    let r = json.parse("[1")
+    assert r is json.JsonError
+    assert r is JsonError
+    assert !(r is json.JsonValue)
+}
+
+test "a module-qualified success type matches the success branch" {
+    let r = json.parse("[1]")
+    assert r is json.JsonValue
+    assert !(r is json.JsonError)
+}
+
+test "the qualified type pattern binds" {
+    let r = json.parse("[1")
+    mut seen = ""
+    if r is json.JsonError as e {
+        seen = e.message()
+    }
+    assert seen.len() > 0
+}
+
+test "an aliased module qualifies the same way" {
+    let r = json.parse("[1")
+    assert r is j.JsonError
+}
+
+test "a qualified type as a match arm" {
+    let r = json.parse("[2]")
+    let n = match r {
+        json.JsonValue as v => match v {
+            JsonValue.Array(items) => items.len(),
+            _ => 0,
+        },
+        json.JsonError => 99,
+    }
+    assert n == 1
+}

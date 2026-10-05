@@ -2745,8 +2745,8 @@ impl ToDiagnostic for rask_types::TypeError {
                     Diagnostic::error(format!("`is {}` needs a two-branch scrutinee", ty_name))
                         .with_code("E0398")
                         .with_primary(*span, format!("found `{}`", found))
-                        .with_fix("test a `T or E` or a `T?` — a plain value has no branch to pick")
-                        .with_why("`is Type as name` dispatches on one branch of a two-branch value [type.errors/ER23]")
+                        .with_fix("drop the test, or test a `T or E` or a `T?` — a plain value has only its own type, so the answer is already known")
+                        .with_why("`is Type` picks one branch of a two-branch value [type.errors/ER23]")
                 }
             }
             TypePatternNotInUnion { ty_name, union, span } => {

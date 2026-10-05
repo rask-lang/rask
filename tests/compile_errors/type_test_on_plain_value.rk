@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a type test on a value that only has one type
+// Rejects: `is Point` on a `Point`, bare or reached through its module
+//
+// `is Type` picks one branch of a `T or E` or a `T?` (ER23). A plain value has
+// only its own type, so the answer is in the source, and the `as` form was
+// already E0398. The bare form was read as a binding instead: true on the
+// interpreter, false natively (#1352).
+
+import json
+import json.JsonValue
+
+struct Point {
+    x: i32
+}
+
+func main() -> void or json.JsonError {
+    let p = Point { x: 1 }
+    // ERROR: `is Point` needs a two-branch scrutinee
+    let a = p is Point
+    let v = try json.parse("[1]")
+    // ERROR: `is JsonValue` needs a two-branch scrutinee
+    let b = v is JsonValue
+    // ERROR: the module-qualified spelling names the same type
+    let c = v is json.JsonValue
+    println("{a} {b} {c}")
+}

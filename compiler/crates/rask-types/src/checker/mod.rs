@@ -1188,6 +1188,15 @@ impl Default for TypeChecker {
 // Public API
 // ============================================================================
 
+/// Spellings that reach a name through its module, rewritten to the bare name
+/// they mean before anything reads the program. Both backends run these
+/// declarations, so this is one rewrite instead of one per backend.
+fn drop_module_qualifiers(resolved: ResolvedProgram, decls: &mut [Decl]) -> ResolvedProgram {
+    let resolved = call_module_functions_bare(resolved, decls);
+    strip_module_from_patterns(&resolved, decls);
+    resolved
+}
+
 /// `async.spawn(f)` becomes `spawn(f)`: a free function a module exports,
 /// reached through the module, is the bare call (structure.modules/IM1).
 ///
@@ -1235,6 +1244,62 @@ fn call_module_functions_bare(mut resolved: ResolvedProgram, decls: &mut [Decl])
     resolved
 }
 
+/// `r is json.JsonError` becomes `r is JsonError`: a pattern names a type or
+/// a variant, so a module in front of the name only says where the type
+/// lives (structure.modules/IM1), and the bare name is the same type.
+///
+/// Every reader of a pattern took a dotted name for `Enum.Variant`, so the
+/// qualified spelling looked for a variant `JsonError` of an enum called
+/// `json` — the test came back false on both backends, and `is json.JsonError
+/// as e` never bound (#1352).
+///
+/// A module is whatever the program's imports bound as one, so `import json
+/// as j` makes `j.JsonError` the qualified spelling.
+fn strip_module_from_patterns(resolved: &ResolvedProgram, decls: &mut [Decl]) {
+    use rask_ast::expr::Pattern;
+    use rask_ast::rewrite::{self, Rewrite};
+    use rask_ast::ty::TypeExpr;
+
+    let modules: std::collections::HashSet<String> = resolved
+        .symbols
+        .iter()
+        .filter(|s| matches!(s.kind, rask_resolve::SymbolKind::BuiltinModule { .. }))
+        .map(|s| s.name.clone())
+        .collect();
+    if modules.is_empty() {
+        return;
+    }
+
+    struct Strip<'a> {
+        modules: &'a std::collections::HashSet<String>,
+    }
+    impl Strip<'_> {
+        fn strip(&self, name: &mut String) {
+            if let Some((head, tail)) = name.split_once('.') {
+                if self.modules.contains(head) {
+                    *name = tail.to_string();
+                }
+            }
+        }
+    }
+    impl Rewrite for Strip<'_> {
+        fn pattern(&mut self, p: &mut Pattern) {
+            match p {
+                Pattern::Ident(name)
+                | Pattern::Constructor { name, .. }
+                | Pattern::Struct { name, .. } => self.strip(name),
+                Pattern::TypePat { ty: TypeExpr::Named { path, .. }, .. }
+                    if path.len() > 1 && self.modules.contains(&path[0]) =>
+                {
+                    path.remove(0);
+                }
+                _ => {}
+            }
+        }
+    }
+    rewrite::rewrite_decls(decls, &mut Strip { modules: &modules });
+}
+
 ///
 /// Takes the declarations mutably to add the ones the checker wrote
 /// (`TypedProgram::attach_derived`): every caller goes on to read every body.
@@ -1243,7 +1308,7 @@ pub fn typecheck(
     decls: &mut Vec<Decl>,
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
-    let resolved = call_module_functions_bare(resolved, decls);
+    let resolved = drop_module_qualifiers(resolved, decls);
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
     let mut typed = checker.check(decls)?;
@@ -1258,7 +1323,7 @@ pub fn typecheck_with_stdlib(
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> Result<TypedProgram, Vec<TypeError>> {
-    let resolved = call_module_functions_bare(resolved, decls);
+    let resolved = drop_module_qualifiers(resolved, decls);
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
     // In stdlib scope: these registrations are what stdlib code means by a
@@ -1283,7 +1348,7 @@ pub fn typecheck_with_stdlib_lenient(
     stdlib_decls: &[Decl],
     operator_calls: &std::collections::HashSet<NodeId>,
 ) -> (TypedProgram, Vec<TypeError>) {
-    let resolved = call_module_functions_bare(resolved, decls);
+    let resolved = drop_module_qualifiers(resolved, decls);
     let mut checker = TypeChecker::new(resolved);
     checker.operator_calls = operator_calls.clone();
     checker.types.stdlib_mode = true;

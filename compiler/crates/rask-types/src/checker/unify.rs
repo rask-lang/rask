@@ -9,6 +9,7 @@ use super::inference::TypeConstraint;
 use super::errors::TypeError;
 use super::check_expr::ContainerElem;
 use super::TypeChecker;
+use super::type_defs::TypeDef;
 
 use crate::types::{GenericArg, Type};
 
@@ -645,6 +646,16 @@ impl TypeChecker {
                     span,
                 });
                 Ok(false)
+            }
+            // A bare name checked before its scrutinee was known: once it's
+            // an enum declaring that variant, the name was a variant test.
+            Type::Named(id) | Type::Generic { base: id, .. }
+                if matches!(
+                    self.types.get(*id),
+                    Some(TypeDef::Enum { variants, .. }) if variants.iter().any(|(v, _)| *v == ty_name)
+                ) =>
+            {
+                Ok(true)
             }
             _ => Err(TypeError::TypePatternNotResult {
                 ty_name,
