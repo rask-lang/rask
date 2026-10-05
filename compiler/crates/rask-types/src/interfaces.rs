@@ -284,6 +284,12 @@ impl<'a> InterfaceChecker<'a> {
         if matches!(base_interface, "Equal" | "Hashable" | "Cloneable") {
             let elems: Option<Vec<Type>> = match ty {
                 Type::Tuple(elems) => Some(elems.clone()),
+                // `T?` and `T or E` have no methods (std.api/SD4), but `==`,
+                // hashing and cloning work over the whole slot when they work
+                // on its parts — the same answer the struct derive gives a
+                // field of this type. Order is not on this list.
+                Type::Result { ok, err } if **err == Type::None => Some(vec![(**ok).clone()]),
+                Type::Result { ok, err } => Some(vec![(**ok).clone(), (**err).clone()]),
                 Type::Array { elem, .. } => Some(vec![(**elem).clone()]),
                 Type::Generic { base, args }
                     if self.types.type_name(*base) == "Vec" =>
@@ -890,6 +896,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Add" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "add".to_string(),
                 self_param: SelfParam::Value,
@@ -899,6 +906,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Sub" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "sub".to_string(),
                 self_param: SelfParam::Value,
@@ -908,6 +916,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Mul" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "mul".to_string(),
                 self_param: SelfParam::Value,
@@ -917,6 +926,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Div" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "div".to_string(),
                 self_param: SelfParam::Value,
@@ -926,6 +936,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Rem" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "rem".to_string(),
                 self_param: SelfParam::Value,
@@ -935,6 +946,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Neg" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "neg".to_string(),
                 self_param: SelfParam::Value,
@@ -944,6 +956,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Equal" | "Eq" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "eq".to_string(),
                 self_param: SelfParam::Value,
@@ -954,6 +967,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "compare".to_string(),
                     self_param: SelfParam::Value,
@@ -968,6 +982,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "lt".to_string(),
                     self_param: SelfParam::Value,
@@ -977,6 +992,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "le".to_string(),
                     self_param: SelfParam::Value,
@@ -986,6 +1002,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "gt".to_string(),
                     self_param: SelfParam::Value,
@@ -995,6 +1012,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "ge".to_string(),
                     self_param: SelfParam::Value,
@@ -1005,6 +1023,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Clone" | "Cloneable" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "clone".to_string(),
                 self_param: SelfParam::Value,
@@ -1014,6 +1033,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Default" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "default".to_string(),
                 self_param: SelfParam::None, // Static method
@@ -1024,6 +1044,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "hash".to_string(),
                     self_param: SelfParam::Value,
@@ -1033,6 +1054,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "eq".to_string(),
                     self_param: SelfParam::Value,
@@ -1043,6 +1065,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Displayable" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "to_string".to_string(),
                 self_param: SelfParam::Value,
@@ -1052,6 +1075,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Debug" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "debug".to_string(),
                 self_param: SelfParam::Value,
@@ -1062,6 +1086,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Iterator" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "next".to_string(),
                 self_param: SelfParam::Mutate,
@@ -1093,6 +1118,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 sigs.push(MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "is_nan".to_string(),
                     self_param: SelfParam::Value,
@@ -1105,6 +1131,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
             "Error" => Some(vec![MethodSig {
                 derived: false,
                 owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
                 type_params: Vec::new(),
                 name: "message".to_string(),
                 self_param: SelfParam::Value,
@@ -1184,7 +1211,7 @@ impl<'a> InterfaceChecker<'a> {
                 )
             }
             // Bool: eq, hash, clone, default, compare, to_string
-            Type::Bool => matches!(method, "eq" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug"),
+            Type::Bool => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug"),
             // Char: eq, hash, clone, default, comparison, to_string
             Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug"),
             // String: eq, hash, clone, default, len, comparison, to_string
@@ -1434,6 +1461,7 @@ fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
         derived: false,
         owner_patterns: Vec::new(),
+        owner_bounds: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
         self_param: SelfParam::Value,
@@ -1469,6 +1497,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
     let binary = |name: &str| MethodSig {
         derived: false,
         owner_patterns: Vec::new(),
+        owner_bounds: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
         self_param: SelfParam::Value,
@@ -1478,6 +1507,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
     let nullary = |name: &str, self_param| MethodSig {
         derived: false,
         owner_patterns: Vec::new(),
+        owner_bounds: Vec::new(),
         type_params: Vec::new(),
         name: name.to_string(),
         self_param,
@@ -1495,6 +1525,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         MethodSig {
             derived: false,
             owner_patterns: Vec::new(),
+            owner_bounds: Vec::new(),
             type_params: Vec::new(),
             name: "from_int".to_string(),
             self_param: SelfParam::None,
@@ -1665,6 +1696,7 @@ mod tests {
         let show = || MethodSig {
             derived: false,
             owner_patterns: Vec::new(),
+            owner_bounds: Vec::new(),
             type_params: Vec::new(),
             name: "show".to_string(),
             self_param: SelfParam::Value,
@@ -1756,6 +1788,7 @@ pub fn substitute_signature(m: &MethodSig, map: &HashMap<String, Type>) -> Metho
     MethodSig {
         derived: m.derived,
         owner_patterns: m.owner_patterns.clone(),
+        owner_bounds: m.owner_bounds.clone(),
         type_params: m.type_params.clone(),
         name: m.name.clone(),
         self_param: m.self_param,

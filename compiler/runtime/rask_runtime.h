@@ -295,15 +295,17 @@ RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
-void     rask_vec_sort_f64(RaskVec *v);
-// Sort a Vec of (key, value) pairs by the key at offset 0. `key_kind` is one of
-// the RASK_DEBUG_ELEM_* codes below.
-void     rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size);
+// Sort by the scalar at offset 0 of each element — the element itself, or the
+// key of a (key, value) pair. `key_kind` is one of the RASK_DEBUG_ELEM_* codes
+// below.
+void     rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size);
 int64_t  rask_f64_compare_total(double a, double b);
-void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
+// `by_ptr`: the comparator takes elements by address (aggregates, strings)
+// rather than as the slot's word. Lowering knows which; the width doesn't say.
+void     rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t by_ptr);
 // Order `v` by a parallel Vec of keys, stably. `comparator` is a closure block
 // over two keys — same shape sort_by takes. `keys` is read, not reordered.
-void     rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator);
+void     rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_t by_ptr);
 void     rask_vec_reverse(RaskVec *v);
 void     rask_vec_swap(RaskVec *v, int64_t i, int64_t j);
 int64_t  rask_vec_contains(const RaskVec *v, const void *elem);

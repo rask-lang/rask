@@ -284,6 +284,11 @@ pub struct MethodSig {
     /// Empty for a method with no generic receiver, and for the derived and
     /// interface-supplied signatures, which have no header to read.
     pub owner_patterns: Vec<rask_ast::ty::TypeExpr>,
+    /// The block's `where` clause, as (receiver parameter, bounds). It covers
+    /// every method in the block (type.generics/CC3), so a call on a receiver
+    /// whose argument doesn't meet it is an error: `sort` lives in
+    /// `extend Vec<T> where T: Comparable`, and a `Vec<i64?>` can't call it.
+    pub owner_bounds: Vec<(String, Vec<rask_ast::ty::TypeExpr>)>,
     /// The checker supplied it (EQ1, HA1, ORD1 and the rest): a signature with
     /// no body behind it, which the backends answer structurally.
     pub derived: bool,

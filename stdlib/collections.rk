@@ -229,10 +229,6 @@ extend Vec<T> {
     @native("rask_vec_join")
     public func join(self, sep: string) -> string {}
 
-    /// Sort elements in ascending order.
-    @native("rask_vec_sort")
-    public func sort(mutate self) {}
-
     /// Sort using a custom comparator, which answers with an `Ordering`.
     /// An integer comparator isn't accepted — `|a, b| a - b` is a type error.
     @native("rask_vec_sort_by")
@@ -241,7 +237,7 @@ extend Vec<T> {
     /// Sort by a key extracted from each element. Not stable, like `sort` —
     /// only `sort_by` promises that.
     @native
-    public func sort_by_key(mutate self, f: func(T) -> K) {}
+    public func sort_by_key<K: Comparable>(mutate self, f: func(T) -> K) {}
 
     /// Remove consecutive duplicate elements. Only runs of equal neighbors
     /// collapse — sort first for full dedup.
@@ -317,14 +313,6 @@ extend Vec<T> {
     @native
     public func sum(self) -> T {}
 
-    /// Minimum element.
-    @native
-    public func min(self) -> Option<T> {}
-
-    /// Maximum element.
-    @native
-    public func max(self) -> Option<T> {}
-
     /// Clone the vector.
     @native("rask_vec_clone")
     public func clone(self) -> Vec<T> {}
@@ -393,6 +381,24 @@ extend Vec<T> where T: Equal {
         }
         return true
     }
+}
+
+// `sort`, `min` and `max` order by `T`'s own `compare` (SO3). An element with
+// no order, like `i64?`, is a type error here rather than something each
+// backend improvises: native used to compare the option's tag word and leave
+// the payloads in push order (#1313).
+extend Vec<T> where T: Comparable {
+    /// Sort elements in ascending order.
+    @native("rask_vec_sort")
+    public func sort(mutate self) {}
+
+    /// Minimum element.
+    @native
+    public func min(self) -> Option<T> {}
+
+    /// Maximum element.
+    @native
+    public func max(self) -> Option<T> {}
 }
 
 extend Vec<T> where T: Hashable {

@@ -2027,6 +2027,20 @@ impl ToDiagnostic for rask_types::TypeError {
                             interface_name, ty
                         ))
                         .with_why("a type parameter's bound is a promise the body relies on, so it's checked against the type argument at the call [type.generics/G1]"),
+                    // No block can be written for these, so the conformance
+                    // half of the advice above would send the author nowhere.
+                    Ctx::BuiltinTypeBound => {
+                        let fix = if interface_name == "Comparable" {
+                            format!(
+                                "`{}` has no order of its own. Say which one you mean with a comparator: `sort_by(|a, b| …)`, `min_by`, `max_by`",
+                                ty
+                            )
+                        } else {
+                            format!("pass a type that implements `{}`", interface_name)
+                        };
+                        d.with_fix(fix)
+                            .with_why("a primitive, an optional, a result or a tuple has the conformances the language gives it and no others — there is no block to declare one in. `T?` and `T or E` in particular have operators but no methods [std.api/SD4]")
+                    }
                     Ctx::ConformanceHeader => d
                         .with_fix(match missing {
                             Some((m, sig)) => format!(

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use rask_ast::ty::TypeExpr;
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 
-use crate::value::Value;
+use crate::value::{IntKind, Value};
 
 use super::Interpreter;
 
@@ -496,6 +496,11 @@ impl Interpreter {
     /// Returns None if the values are not comparable.
     pub(crate) fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         match (a, b) {
+            // A `u64` travels as its bit pattern in an i64, so one above
+            // `i64::MAX` reads as negative. Compared signed, `sort()` put
+            // 18000000000000000000 ahead of 3.
+            (Value::Int(a, IntKind::U64), Value::Int(b, _))
+            | (Value::Int(a, _), Value::Int(b, IntKind::U64)) => Some((*a as u64).cmp(&(*b as u64))),
             (Value::Int(a, _), Value::Int(b, _)) => Some(a.cmp(b)),
             (Value::Int128(a), Value::Int128(b)) => Some(a.cmp(b)),
             (Value::Uint128(a), Value::Uint128(b)) => Some(a.cmp(b)),

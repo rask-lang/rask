@@ -2423,7 +2423,12 @@ impl<'a> MirLowerer<'a> {
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("Vec_sort_by_keys".to_string()),
-            args: vec![MirOperand::Local(vec_local), MirOperand::Local(keys), cmp],
+            args: vec![
+                MirOperand::Local(vec_local),
+                MirOperand::Local(keys),
+                cmp,
+                MirOperand::Constant(MirConst::Int(Self::sort_passes_by_address(&key_ty) as i64)),
+            ],
         }));
 
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {

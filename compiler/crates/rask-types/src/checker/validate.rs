@@ -480,8 +480,10 @@ impl TypeChecker {
                 super::InterfaceBoundContext::NumericBound
             } else if interface_name == "Copy" {
                 super::InterfaceBoundContext::CopyBound
-            } else {
+            } else if matches!(ty, Type::Named(_) | Type::Generic { .. }) {
                 super::InterfaceBoundContext::GenericBound
+            } else {
+                super::InterfaceBoundContext::BuiltinTypeBound
             };
             return TypeError::InterfaceNotSatisfied {
                 ty: ty_name, interface_name, context, missing: None, span,

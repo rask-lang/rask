@@ -1334,6 +1334,10 @@ pub enum InterfaceBoundContext {
     InterfaceObjectCast,
     /// `f<T: Interface>(…)` at a call site — the type argument doesn't qualify.
     GenericBound,
+    /// The same, for a type argument nobody can declare a conformance on — a
+    /// primitive, an optional, a result, a tuple. Suggesting `T implements I`
+    /// there names a block that can't be written.
+    BuiltinTypeBound,
     /// `T implements Interface { … }` — the block claims a conformance it doesn't
     /// deliver.
     ConformanceHeader,

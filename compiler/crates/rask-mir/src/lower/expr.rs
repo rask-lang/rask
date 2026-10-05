@@ -423,6 +423,37 @@ impl<'a> MirLowerer<'a> {
             .map_or(false, |ty| matches!(ty, MirType::String))
     }
 
+    /// Whether the runtime's sorts hand a comparator elements of this type as
+    /// a pointer to their slot rather than as the slot's word. An aggregate or
+    /// a string is passed by address in generated code, whatever its size, so
+    /// the runtime can't tell from the slot width: guessing "wider than a word"
+    /// handed an eight-byte struct's field over as if it were its address, and
+    /// sorting a `Vec` of `struct { n: i64 }` segfaulted.
+    pub(super) fn sort_passes_by_address(ty: &MirType) -> bool {
+        matches!(
+            ty,
+            MirType::String
+                | MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Array { .. }
+                | MirType::Tuple(_)
+                | MirType::Option(_)
+                | MirType::Result { .. }
+                | MirType::Union(_)
+                | MirType::SimdVector { .. }
+                | MirType::InterfaceObject { .. }
+        )
+    }
+
+    /// `Vec_sort_by`'s last argument: 1 when the comparator takes this Vec's
+    /// elements by address.
+    fn sort_by_address_arg(&self, object: &Expr) -> MirOperand {
+        let elem = self.tracked_elem_of(object)
+            .or_else(|| self.collection_elem_of_expr(object))
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:sort_by_elem"));
+        MirOperand::Constant(MirConst::Int(Self::sort_passes_by_address(&elem) as i64))
+    }
+
     /// The `compare` function for this Vec's element type, when it has one.
     ///
     /// `sort()` is `T: Comparable` (std.collections/SO3), so an element type
@@ -440,13 +471,6 @@ impl<'a> MirLowerer<'a> {
         self.func_sigs.contains_key(&name).then_some(name)
     }
 
-    /// Does this Vec receiver hold floats? Picks the sort that uses the float
-    /// total order rather than an integer compare over the bit patterns.
-    fn vec_elem_is_float(&self, object: &Expr) -> bool {
-        self.tracked_elem_of(object)
-            .or_else(|| self.collection_elem_of_expr(object))
-            .map_or(false, |ty| matches!(ty, MirType::F64 | MirType::F32))
-    }
 
     /// Wrap a plain value for a struct field declared `T?` or `T or E`.
     /// Returns the operand unchanged when no wrapping is needed — the field
@@ -6341,10 +6365,19 @@ impl<'a> MirLowerer<'a> {
 
         // Built before the chain below: emitting the wrapper mutates the
         // builder, and the arms are an expression.
-        let sort_comparator = if qualified_name == "Vec_sort"
-            && !self.vec_elem_is_string(object)
-            && !self.vec_elem_is_float(object)
-        {
+        let sort_scalar = if qualified_name == "Vec_sort" {
+            self.tracked_elem_of(object)
+                .or_else(|| self.collection_elem_of_expr(object))
+                .and_then(|elem| {
+                    // An `f32` element lives in its slot as a promoted double
+                    // (codegen's `value_to_ptr`), so it reads eight bytes wide.
+                    let size = if elem == MirType::F32 { 8 } else { elem.size() as i64 };
+                    Some((Self::debug_elem_kind(&elem)?, size))
+                })
+        } else {
+            None
+        };
+        let sort_comparator = if qualified_name == "Vec_sort" && sort_scalar.is_none() {
             self.vec_elem_compare_fn(object)
                 .and_then(|name| self.lower_compare_as_comparator(&name))
                 .map(|(op, _)| op)
@@ -6380,15 +6413,16 @@ impl<'a> MirLowerer<'a> {
             } else {
                 ("Vec_join_i64".to_string(), all_args)
             }
-        } else if qualified_name == "Vec_sort" && self.vec_elem_is_float(object) {
-            // The default sort compares elements as integers, which puts
-            // -1.5 before -2.5 and a NaN wherever its sign bit lands.
-            ("Vec_sort_f64".to_string(), all_args)
-        } else if qualified_name == "Vec_sort" && self.vec_elem_is_string(object) {
-            // Same problem, different type: as integers a string compares by
-            // its inline bytes or its heap pointer, so `["pear", "apple"]`
-            // came back in whatever order the allocator produced.
-            ("Vec_sort_str".to_string(), all_args)
+        } else if let Some((kind, size)) = sort_scalar {
+            // A scalar or a string: the runtime compares it as what it is.
+            // The default sort reads every slot as an int64_t, which orders
+            // negative floats backwards, a u64 above i64::MAX first, an i128
+            // by its low word, and a string by its inline bytes or its heap
+            // pointer.
+            let mut args = all_args;
+            args.push(MirOperand::Constant(MirConst::Int(kind)));
+            args.push(MirOperand::Constant(MirConst::Int(size)));
+            ("Vec_sort_scalar".to_string(), args)
         } else if qualified_name == "Vec_sort" && sort_comparator.is_some() {
             // An aggregate with a `compare`: sort by it. The default runtime
             // comparator reads the first eight bytes, which for a struct is
@@ -6401,7 +6435,12 @@ impl<'a> MirLowerer<'a> {
             // stability is observable.
             let mut args = all_args;
             args.push(sort_comparator.expect("checked above"));
+            args.push(self.sort_by_address_arg(object));
             ("Vec_sort_by".to_string(), args)
+        } else if qualified_name == "Vec_sort_by" {
+            let mut args = all_args;
+            args.push(self.sort_by_address_arg(object));
+            (qualified_name.clone(), args)
         } else if qualified_name == "Vec_contains" && self.vec_elem_is_string(object) {
             // The byte-compare runtime can't match two equal heap strings —
             // they hold different pointers. Route strings to a real compare.
@@ -8965,7 +9004,7 @@ impl<'a> MirLowerer<'a> {
         if let Some(kind) = key_kind {
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
-                func: FunctionRef::internal("Vec_sort_pairs".to_string()),
+                func: FunctionRef::internal("Vec_sort_scalar".to_string()),
                 args: vec![
                     MirOperand::Local(entries),
                     MirOperand::Constant(MirConst::Int(kind)),

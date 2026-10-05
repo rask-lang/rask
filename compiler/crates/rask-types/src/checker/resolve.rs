@@ -1342,6 +1342,13 @@ impl TypeChecker {
                         subst.insert(name.as_str(), self.ctx.fresh_var());
                     }
                     self.note_method_type_args(call_node, method_sig, span, &subst);
+                    // CC3: the block's `where` clause, against what the
+                    // receiver's arguments turn out to be.
+                    for (name, bounds) in &method_sig.owner_bounds {
+                        if let Some(arg) = subst.get(name.as_str()) {
+                            self.pending_bound_checks.push((arg.clone(), bounds.clone(), span));
+                        }
+                    }
 
                     // ER3a: same obligation on the explicitly-spelled type args.
                     self.note_disjointness_obligations(&method, &method_sig.ret, &subst, span);

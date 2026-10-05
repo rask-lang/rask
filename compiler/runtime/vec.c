@@ -951,13 +951,11 @@ void rask_vec_sort_str(RaskVec *v) {
     qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_str_compare_elem);
 }
 
-// sort(vec) for Vec<f64> — the total order from type.operators/ORD3.
+// The float total order from type.operators/ORD3.
 //
-// The default sort compares elements as int64_t whatever they hold. For floats
-// that is wrong twice over: a negative float's bit pattern orders backwards
-// against another negative (-1.5 sorted before -2.5), and a NaN lands wherever
-// its sign bit puts it. Both were silent — positive floats happen to order
-// correctly as integers, so a Vec of positives sorted fine and hid it.
+// Compared as int64_t, floats are wrong twice over: a negative float's bit
+// pattern orders backwards against another negative (-1.5 sorted before -2.5),
+// and a NaN lands wherever its sign bit puts it.
 //
 // The transform is the standard IEEE totalOrder key: for a negative value flip
 // every bit, for a non-negative one set only the sign bit. Ascending unsigned
@@ -976,23 +974,18 @@ static int rask_f64_compare(const void *a, const void *b) {
     return 0;
 }
 
-void rask_vec_sort_f64(RaskVec *v) {
-    vec_check_no_borrows(v, "sort");
-    if (!v || v->len <= 1) return;
-    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_f64_compare);
-}
-
-// sort a Vec of (key, value) pairs by the key, which sits at offset 0.
+// Sort by the scalar at offset 0 of each element, read as `key_kind` (one of
+// the `RASK_DEBUG_ELEM_*` codes) of `key_size` bytes.
 //
-// `{m:debug}` needs an order, and a map has none to give: iteration order is
-// unspecified and seeded per process (std.collections, determinism/D7), so
-// printing the table's order would print something different on every run.
-// Sorting by key is the order a reader expects, and it costs nothing outside a
-// debug render.
+// Two callers. `sort()` on a Vec of scalars, where that scalar is the element:
+// the width and signedness have to come from lowering, because the header only
+// carries a slot width — read as int64_t, a u64 above i64::MAX sorted ahead of
+// 3, and an i128 compared its low word only. And `{m:debug}`, which sorts a
+// map's (key, value) pairs by key: a map has no order of its own to print
+// (std.collections, determinism/D7).
 //
-// The kind codes are the `RASK_DEBUG_ELEM_*` ones, so lowering says what a key
-// is once and both the renderer and this agree. `qsort` takes no context
-// argument portably, hence the thread-locals; a sort is not reentrant here.
+// `qsort` takes no context argument portably, hence the thread-locals; a sort
+// is not reentrant here.
 static _Thread_local int64_t tl_pair_key_kind;
 static _Thread_local int64_t tl_pair_key_size;
 
@@ -1028,17 +1021,30 @@ static int rask_pair_key_compare(const void *a, const void *b) {
         case RASK_DEBUG_ELEM_U64:
         case RASK_DEBUG_ELEM_CHAR:
         case RASK_DEBUG_ELEM_BOOL: {
+            if (tl_pair_key_size == 16) {
+                RaskU128 va, vb;
+                memcpy(&va, a, sizeof va);
+                memcpy(&vb, b, sizeof vb);
+                return va < vb ? -1 : (va > vb ? 1 : 0);
+            }
             uint64_t va = pair_key_unsigned(a), vb = pair_key_unsigned(b);
             return va < vb ? -1 : (va > vb ? 1 : 0);
         }
         default: {
+            if (tl_pair_key_size == 16) {
+                RaskI128 va, vb;
+                memcpy(&va, a, sizeof va);
+                memcpy(&vb, b, sizeof vb);
+                return va < vb ? -1 : (va > vb ? 1 : 0);
+            }
             int64_t va = pair_key_signed(a), vb = pair_key_signed(b);
             return va < vb ? -1 : (va > vb ? 1 : 0);
         }
     }
 }
 
-void rask_vec_sort_pairs(RaskVec *v, int64_t key_kind, int64_t key_size) {
+void rask_vec_sort_scalar(RaskVec *v, int64_t key_kind, int64_t key_size) {
+    vec_check_no_borrows(v, "sort");
     if (!v || v->len <= 1) return;
     tl_pair_key_kind = key_kind;
     tl_pair_key_size = key_size;
@@ -1065,11 +1071,13 @@ int64_t rask_f64_compare_total(double a, double b) {
 // env as its first argument (see closures.rs). Calling the block address
 // directly jumped into the closure's own data.
 //
-// How the two elements are handed over follows codegen's own rule for
-// aggregates: anything wider than a word is a pointer to its storage, a word or
-// less is the value itself. That matches what the closure body compiles to —
-// `|a, b| a.rank.compare(b.rank)` reads fields through a pointer, while
-// `Vec<i64>` compares plain integers. Returns <0 / 0 / >0.
+// `by_ptr` says how the two elements are handed over, and lowering decides it
+// from the element type: an aggregate or a string is a pointer to its slot,
+// anything else is the slot's word. That matches what the closure body
+// compiles to — `|a, b| a.rank.compare(b.rank)` reads fields through a
+// pointer, while `Vec<i64>` compares plain integers. It used to be guessed
+// here from the slot width, and an eight-byte struct had its field passed
+// where its address belonged. Returns <0 / 0 / >0.
 /* Ordering's tags, from rask-stdlib's ORDERING_VARIANTS: Less, Equal, Greater. */
 #define RASK_ORDERING_EQUAL 1
 
@@ -1101,11 +1109,11 @@ static int rask_sort_by_adapter(const void *a, const void *b) {
     return (int)(fn(env, va, vb) - RASK_ORDERING_EQUAL);
 }
 
-void rask_vec_sort_by(RaskVec *v, int64_t comparator) {
+void rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t by_ptr) {
     vec_check_no_borrows(v, "sort_by");
     if (!v || v->len <= 1 || !comparator) return;
     rask_sort_comparator = comparator;
-    rask_sort_by_ptr = v->elem_size > 8;
+    rask_sort_by_ptr = by_ptr != 0;
     rask_stable_sort(v->data, v->len, v->elem_size, rask_sort_by_adapter);
 }
 
@@ -1146,7 +1154,7 @@ static int rask_sort_keys_adapter(const void *pa, const void *pb) {
     return (int)(fn(env, va, vb) - RASK_ORDERING_EQUAL);
 }
 
-void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator) {
+void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_t by_ptr) {
     vec_check_no_borrows(v, "sort_by_key");
     if (!v || v->len <= 1 || !keys || !comparator) return;
     if (keys->len < v->len) {
@@ -1159,7 +1167,7 @@ void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator) {
     for (int64_t i = 0; i < n; i++) order[i] = i;
 
     rask_sort_comparator = comparator;
-    rask_sort_by_ptr = keys->elem_size > 8;
+    rask_sort_by_ptr = by_ptr != 0;
     rask_key_data = keys->data;
     rask_key_size = keys->elem_size;
     rask_stable_sort(order, n, (int64_t)sizeof(int64_t), rask_sort_keys_adapter);

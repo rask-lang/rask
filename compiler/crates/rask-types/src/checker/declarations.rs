@@ -1081,6 +1081,7 @@ impl TypeChecker {
             .iter()
             .map(|m| {
                 let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
+                sig.owner_bounds = condition.clone();
                 if let Some(filed) = rask_ast::operators::conformance_method_name(
                     &i.target_ty,
                     i.interface.as_ref(),
@@ -1730,6 +1731,7 @@ impl TypeChecker {
                     .collect()
             },
             owner_patterns: owner_patterns.to_vec(),
+            owner_bounds: Vec::new(),
         }
     }
 
@@ -1861,6 +1863,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "eq".to_string(),
                             self_param: SelfParam::Value,
@@ -1877,6 +1880,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "hash".to_string(),
                             self_param: SelfParam::Value,
@@ -1892,6 +1896,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "default".to_string(),
                             self_param: SelfParam::None,
@@ -1908,6 +1913,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "clone".to_string(),
                             self_param: SelfParam::Value,
@@ -1918,7 +1924,6 @@ impl TypeChecker {
 
                     // CO1/ORD2: auto-derive compare if all fields are Comparable
                     // Comparable is a superinterface of Equal, so eq is implied.
-                    // CO4: f32/f64 excluded (NaN breaks totality).
                     if !methods.iter().any(|m| m.name == "compare")
                         && field_types.iter().all(|ty| self.type_has_method(ty, "compare"))
                     {
@@ -1926,6 +1931,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "compare".to_string(),
                             self_param: SelfParam::Value,
@@ -1938,6 +1944,7 @@ impl TypeChecker {
                                 new_methods.push(MethodSig {
                                     derived: true,
                                     owner_patterns: Vec::new(),
+                                    owner_bounds: Vec::new(),
                                     type_params: Vec::new(),
                                     name: op.to_string(),
                                     self_param: SelfParam::Value,
@@ -1953,6 +1960,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "debug".to_string(),
                             self_param: SelfParam::Value,
@@ -1994,6 +2002,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "eq".to_string(),
                             self_param: SelfParam::Value,
@@ -2010,6 +2019,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "hash".to_string(),
                             self_param: SelfParam::Value,
@@ -2028,6 +2038,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "clone".to_string(),
                             self_param: SelfParam::Value,
@@ -2044,6 +2055,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "compare".to_string(),
                             self_param: SelfParam::Value,
@@ -2056,6 +2068,7 @@ impl TypeChecker {
                                 new_methods.push(MethodSig {
                                     derived: true,
                                     owner_patterns: Vec::new(),
+                                    owner_bounds: Vec::new(),
                                     type_params: Vec::new(),
                                     name: op.to_string(),
                                     self_param: SelfParam::Value,
@@ -2071,6 +2084,7 @@ impl TypeChecker {
                         new_methods.push(MethodSig {
                             derived: true,
                             owner_patterns: Vec::new(),
+                            owner_bounds: Vec::new(),
                             type_params: Vec::new(),
                             name: "debug".to_string(),
                             self_param: SelfParam::Value,
@@ -2116,9 +2130,10 @@ impl TypeChecker {
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
                 matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
-            // CO4: f32/f64 NOT Comparable (NaN breaks totality)
+            // CO4: floats are Comparable — `compare` is the total order — but
+            // not Hashable (HA4).
             Type::F32 | Type::F64 => {
-                matches!(method, "eq" | "clone" | "default" | "debug")
+                matches!(method, "eq" | "clone" | "default" | "compare" | "debug")
             }
             Type::Bool | Type::Char => {
                 matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
@@ -2612,6 +2627,7 @@ impl TypeChecker {
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "parse".to_string(),
                     self_param: SelfParam::None,
@@ -2621,6 +2637,7 @@ impl TypeChecker {
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "build".to_string(),
                     self_param: SelfParam::Value,
@@ -2630,6 +2647,7 @@ impl TypeChecker {
                 MethodSig {
                     derived: false,
                     owner_patterns: Vec::new(),
+                    owner_bounds: Vec::new(),
                     type_params: Vec::new(),
                     name: "build_into".to_string(),
                     self_param: SelfParam::Value,
