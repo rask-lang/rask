@@ -4147,6 +4147,13 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
+                } else if lowerer.ctx.comptime_globals.contains_key(&c.name) {
+                    // Folded at compile time: a reference reads the folded value
+                    // (`comptime_global_for`). Queueing the initializer as well
+                    // ran the `comptime` block again at runtime, at the first
+                    // reference in every function — inside a loop, once a turn —
+                    // and each run built a Vec nothing freed
+                    // (examples/17_comptime.rk, #1399).
                 } else {
                     // Non-literal init (e.g. Shared<T>.new(...)). The type
                     // metadata is recorded here regardless — it costs nothing,
