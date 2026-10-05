@@ -87,7 +87,7 @@ thread_local! {
 
 /// Record why an I/O native failed. A cancelled wait is `ECANCELED`, which is
 /// what native's waits leave in errno.
-fn set_last_os_error(e: &std::io::Error) {
+pub(crate) fn set_last_os_error(e: &std::io::Error) {
     let code = if is_cancelled(e) {
         libc::ECANCELED
     } else {

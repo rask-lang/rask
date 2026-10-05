@@ -1000,22 +1000,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── File instance methods ─────────────────────────────────
         StdlibEntry::simple("File_close_raw", "rask_file_close", &[types::I64], Some(types::I64), false),
-        // `int64_t rask_file_read_all(RaskStr *out, int64_t file)` — the string
-        // comes back through the out-param, the return value is the ok/err tag
-        // for `string or IoError`. Declared as a 1-arg call returning i64, the
-        // FILE* landed in `out` and the runtime wrote a 16-byte RaskStr over
-        // it (#654).
-        StdlibEntry {
-            mir_name: "File_read_text", c_name: "rask_file_read_all",
-            // (out, file, err_out) — the third is the failure message (#682).
-            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
-            arg_adapt: ArgAdapt::StringResultOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        // read_bytes/write_bytes return/take a Vec<u8> pointer directly — a
-        // plain heap pointer never looks negative, so the existing
-        // negative-return-means-error convention (used elsewhere for handles
-        // like TcpConnection) applies cleanly with no out-param plumbing.
-        StdlibEntry::neg_err("File_read_bytes", "rask_file_read_bytes", &[types::I64], Some(types::I64), false),
+        // `none` or -1 with errno set; stdlib/io.rk builds the IoError. The
+        // negative-means-error adapter that used to answer `read_bytes` itself
+        // left the raw -1 as the error payload (#1340).
+        StdlibEntry::neg_none("File_read_bytes_raw", "rask_file_read_bytes", &[types::I64], Some(types::I64), false),
         // The writes and close answer 0 or -1 with errno set; stdlib/io.rk
         // turns -1 into the IoError, which the runtime can't build.
         StdlibEntry::simple("File_write_raw", "rask_file_write", &[types::I64, types::I64], Some(types::I64), false),

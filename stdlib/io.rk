@@ -561,13 +561,22 @@ extend File {
     @native("rask_file_position")
     func position_raw(self) -> i64 {}
 
-    /// Read the entire file contents as bytes.
-    @native("rask_file_read_bytes")
-    public func read_bytes(self) -> Vec<u8> or IoError {}
+    /// Read from the current position to the end.
+    public func read_bytes(self) -> Vec<u8> or IoError {
+        if self.read_bytes_raw() is Vec<u8> as bytes {
+            return bytes
+        }
+        return IoError.last_os_error()
+    }
 
-    /// Read the entire file contents as text.
-    @native("rask_file_read_all")
-    public func read_text(self) -> string or IoError {}
+    /// Read from the current position to the end, as UTF-8.
+    public func read_text(self) -> string or IoError {
+        let bytes = try self.read_bytes()
+        let text = string.from_utf8(bytes) catch e => {
+            return IoError.Other("stream is not valid UTF-8: {e.message()}")
+        }
+        return text
+    }
 
     /// Write a string to the file.
     public func write(self, data: string) -> void or IoError {
@@ -625,4 +634,11 @@ extend File {
     func write_line_raw(self, data: string) -> i64 {}
     @native("rask_file_close")
     func close_raw(self) -> i64 {}
+
+    /// The read as the backends see it: `none` when it failed, with the OS
+    /// error left for `IoError.last_os_error`. It used to be `read_bytes`
+    /// itself, and natively a failure came back with the raw -1 as its error,
+    /// which trapped when matched as an `IoError` (#1340).
+    @native("rask_file_read_bytes")
+    func read_bytes_raw(self) -> Vec<u8>? {}
 }

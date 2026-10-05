@@ -447,24 +447,11 @@ impl Interpreter {
                     Err(_) => Ok(Value::int(-1)),
                 }
             }
-            "read_text" => {
-                use std::io::Read;
-                let mut file_opt = file.lock().unwrap();
-                let f = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "read from".to_string() }
-                })?;
-                let mut content = String::new();
-                match f.read_to_string(&mut content) {
-                    Ok(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(content)))],
-                        variant_index: 0, origin: None,
-                    }),
-                    Err(e) => Ok(io_error_result(&e)),
-                }
-            }
-            "read_bytes" => {
+            // `File.read_bytes` and `read_text` are Rask bodies over this one
+            // (stdlib/io.rk): the bytes, or `none` with the OS error recorded
+            // for `IoError.last_os_error`. Answering the public methods here
+            // instead handed `read_bytes` a string where an `IoError` belonged.
+            "read_bytes_raw" => {
                 use std::io::Read;
                 let mut file_opt = file.lock().unwrap();
                 let f = file_opt.as_mut().ok_or_else(|| {
@@ -475,18 +462,21 @@ impl Interpreter {
                     Ok(_) => {
                         let bytes: Vec<Value> = content.into_iter().map(|b| Value::int(b as i64)).collect();
                         Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
                             fields: vec![Value::vec(bytes)],
                             variant_index: 0, origin: None,
                         })
                     }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                        variant_index: 0, origin: None,
-                    }),
+                    Err(e) => {
+                        super::net::set_last_os_error(&e);
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "None".to_string(),
+                            fields: vec![],
+                            variant_index: 1, origin: None,
+                        })
+                    }
                 }
             }
             "write" => {

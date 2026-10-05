@@ -824,7 +824,6 @@ void rask_io_error_message(RaskStr *out, int32_t err);
 #define RASK_STROUT_ERROR 1   // *err_out holds the message → IoError.Other(msg)
 #define RASK_STROUT_EOF   2   // input ran out → IoError.UnexpectedEof
 
-int64_t     rask_file_read_all(RaskStr *out, int64_t file, RaskStr *err_out);
 int64_t     rask_file_read_bytes(int64_t file);
 int64_t     rask_file_write(int64_t file, const RaskStr *content);
 int64_t     rask_file_write_bytes(int64_t file, int64_t vec_ptr);

@@ -888,62 +888,39 @@ int64_t rask_stat_atime(const char *path) {
 // ─── File instance methods ────────────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open / rask_fs_create.
 
-// Read from the current position to EOF. Returns 0 on success, 1 on failure —
-// `File.read_text` is `string or IoError`, and the caller needs the tag.
+// Read from the current position to EOF. Returns a RaskVec<u8>* (cast to
+// int64_t), or -1 with errno set — `File.read_bytes` in stdlib/io.rk turns
+// that into the IoError, which the runtime can't build, and `read_text` is
+// that plus UTF-8 validation. A null handle is EBADF.
 //
 // Chunked rather than sized by ftell/fseek: a pipe or a terminal has no size to
-// seek to, and a stream opened write-only reports one anyway (0), so the old
-// version answered Ok("") for a file it could not read at all.
-int64_t rask_file_read_all(RaskStr *out, int64_t file, RaskStr *err_out) {
+// seek to, and a stream opened write-only reports one anyway (0). `ferror`
+// says whether the read failed; the old sized read answered an empty Vec for a
+// file it could not read at all.
+int64_t rask_file_read_bytes(int64_t file) {
     FILE *f = (FILE *)(uintptr_t)file;
-    rask_string_new(err_out);
     if (!f) {
-        rask_string_new(out);
-        rask_string_from(err_out, "file handle is closed");
-        return RASK_STROUT_ERROR;
+        errno = EBADF;
+        return -1;
     }
-
     size_t cap = 4096, len = 0;
     char *buf = (char *)rask_alloc((int64_t)cap);
     for (;;) {
         if (len == cap) {
-            size_t new_cap = cap * 2;
-            char *grown = (char *)rask_alloc((int64_t)new_cap);
-            memcpy(grown, buf, len);
-            rask_free(buf);
-            buf = grown;
-            cap = new_cap;
+            buf = (char *)rask_realloc(buf, (int64_t)cap, (int64_t)(cap * 2));
+            cap *= 2;
         }
         size_t n = fread(buf + len, 1, cap - len, f);
         len += n;
         if (n == 0) break;
     }
     if (ferror(f)) {
-        // The reason, not just the fact. Reading a write-only descriptor is
-        // EBADF, and "unexpected end of file" said nothing about that (#682).
-        rask_string_from(err_out, rask_io_error_text(errno));
+        int err = errno ? errno : EIO;
         rask_free(buf);
-        rask_string_new(out);
-        return RASK_STROUT_ERROR;
+        errno = err;
+        return -1;
     }
-    rask_string_from_bytes(out, buf, (int64_t)len);
-    rask_free(buf);
-    return RASK_STROUT_OK;
-}
-
-// Returns a RaskVec<u8>* (cast to int64_t), or -1 if the handle is null.
-int64_t rask_file_read_bytes(int64_t file) {
-    FILE *f = (FILE *)(uintptr_t)file;
-    if (!f) return -1;
-    long start = ftell(f);
-    fseek(f, 0, SEEK_END);
-    long end = ftell(f);
-    fseek(f, start, SEEK_SET);
-    long size = end - start;
-    if (size < 0) size = 0;
-    char *buf = (char *)rask_alloc((int64_t)size + 1);
-    size_t n = fread(buf, 1, (size_t)size, f);
-    RaskVec *v = rask_vec_from_bytes(buf, (int64_t)n);
+    RaskVec *v = rask_vec_from_bytes(buf, (int64_t)len);
     rask_free(buf);
     return (int64_t)(uintptr_t)v;
 }

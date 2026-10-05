@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A failed File read says so, as an `IoError`.
+//
+// Natively `read_bytes` put the runtime's raw -1 where the error belonged, so
+// matching it as an `IoError` trapped, and `read_text` never took its error
+// branch. The interpreter answered `read_bytes` with a string instead of an
+// `IoError` (#1340).
+
+import fs
+import io.SeekFrom
+
+test "reading a file opened for writing is an IoError" {
+    let p = "/tmp/rask_t_file_read_errors.txt"
+    let f = try fs.create_file(p)
+    try f.write_text("abc")
+    let bytes = f.read_bytes()
+    if bytes is IoError as e {
+        assert e.message().contains("Bad file descriptor")
+    } else {
+        assert false
+    }
+    assert f.read_text() is IoError
+    try f.close()
+    try fs.remove_file(p)
+}
+
+test "reads that work hand back the rest of the file" {
+    let p = "/tmp/rask_t_file_read_ok.txt"
+    try fs.write_text(p, "héllo")
+    let f = try fs.open(p)
+    try f.seek(SeekFrom.Start(1))
+    assert (try f.read_text()) == "éllo"
+    try f.seek(SeekFrom.Start(0))
+    let all = try f.read_bytes()
+    assert all.len() == 6
+    try f.close()
+    try fs.remove_file(p)
+}
+
+test "bytes that aren't UTF-8 make read_text an IoError" {
+    let p = "/tmp/rask_t_file_read_utf8.bin"
+    try fs.write_bytes(p, [104, 255, 105])
+    let f = try fs.open(p)
+    assert f.read_text() is IoError
+    try f.close()
+    try fs.remove_file(p)
+}
