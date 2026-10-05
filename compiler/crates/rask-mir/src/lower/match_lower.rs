@@ -20,6 +20,14 @@ fn contains_range_pattern(pattern: &rask_ast::expr::Pattern) -> bool {
     }
 }
 
+/// Switch cases with each tag kept once, for the first arm that named it.
+/// Two arms naming one variant (the first guarded) both list its tag, and
+/// arms are tried in order.
+fn first_per_tag(cases: impl Iterator<Item = (u64, BlockId)>) -> Vec<(u64, BlockId)> {
+    let mut seen = std::collections::HashSet::new();
+    cases.filter(|(t, _)| seen.insert(*t)).collect()
+}
+
 /// Flatten an Or pattern into its alternatives. Non-Or patterns return themselves.
 fn flatten_pattern_alternatives(pattern: &rask_ast::expr::Pattern) -> Vec<&rask_ast::expr::Pattern> {
     use rask_ast::expr::Pattern;
@@ -30,6 +38,26 @@ fn flatten_pattern_alternatives(pattern: &rask_ast::expr::Pattern) -> Vec<&rask_
 }
 
 impl<'a> MirLowerer<'a> {
+
+    /// Where a match goes when no arm took the value: a panic, as on the
+    /// interpreter (R0011). The checker proves most matches cover everything,
+    /// but a guarded arm can still fail with nothing after it. This used to be
+    /// the merge block, which read a result no arm had written, and an owned
+    /// result arriving there from one path and garbage from another left the
+    /// release pass unable to say who held it (text_editor's undo leaked).
+    fn no_arm_matched_block(&mut self) -> BlockId {
+        let here = self.builder.current_block();
+        let block = self.builder.create_block();
+        self.builder.switch_to_block(block);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("panic".to_string()),
+            args: vec![MirOperand::Constant(MirConst::String("no matching arm in match".to_string()))],
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+        self.builder.switch_to_block(here);
+        block
+    }
 
     /// A value that can fail *and* be absent — `T? or E` — carries an error
     /// tag around an option tag. Nothing else in MIR nests two wrappers.
@@ -109,7 +137,7 @@ impl<'a> MirLowerer<'a> {
         let merge_block = self.builder.create_block();
         let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
         let mut cases: Vec<(u64, BlockId)> = Vec::new();
-        let mut default_block = merge_block;
+        let mut default_block = self.no_arm_matched_block();
 
         // Which leaf each arm names. `none` is the absent one; anything the
         // error side answers to is the error; the rest is the payload.
@@ -123,26 +151,28 @@ impl<'a> MirLowerer<'a> {
             }
         };
 
+        let no_match = default_block;
+        let mut catch_all = vec![false; arms.len()];
         for (i, arm) in arms.iter().enumerate() {
             let name = match &arm.pattern {
-                Pattern::Wildcard => {
-                    default_block = arm_blocks[i];
-                    continue;
-                }
                 Pattern::TypePat { ty, .. } => super::type_pat_name(ty),
                 Pattern::Ident(n) => n.clone(),
                 Pattern::Constructor { name, .. } => name.clone(),
                 _ => {
-                    default_block = arm_blocks[i];
+                    catch_all[i] = true;
                     continue;
                 }
             };
             cases.push((leaf_of(self, &name), arm_blocks[i]));
         }
+        // The first catch-all takes what no case names; arms are tried in order.
+        if let Some(i) = catch_all.iter().position(|c| *c) {
+            default_block = arm_blocks[i];
+        }
 
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
             value: MirOperand::Local(leaf),
-            cases,
+            cases: first_per_tag(cases.iter().copied()),
             default: default_block,
         }));
 
@@ -182,6 +212,31 @@ impl<'a> MirLowerer<'a> {
                     self.meta_mut(binding).type_prefix = Some(p);
                 }
                 self.locals.insert(binding.clone(), (local, bind_ty));
+            }
+
+            if let Some(guard_expr) = &arm.guard {
+                // A failed guard dispatches again over the arms below.
+                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                let below: Vec<BlockId> = arm_blocks[i + 1..].to_vec();
+                let rest = first_per_tag(cases.iter().copied().filter(|(_, b)| below.contains(b)));
+                let next_catch_all = ((i + 1)..arms.len())
+                    .find(|&j| catch_all[j])
+                    .map(|j| arm_blocks[j])
+                    .unwrap_or(no_match);
+                let redispatch = self.builder.create_block();
+                let guard_pass = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: guard_val,
+                    then_block: guard_pass,
+                    else_block: redispatch,
+                }));
+                self.builder.switch_to_block(redispatch);
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+                    value: MirOperand::Local(leaf),
+                    cases: rest,
+                    default: next_catch_all,
+                }));
+                self.builder.switch_to_block(guard_pass);
             }
 
             let (body_val, arm_ty) = self.lower_expr(&arm.body)?;
@@ -371,9 +426,13 @@ impl<'a> MirLowerer<'a> {
 
         let merge_block = self.builder.create_block();
         let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let no_match = self.no_arm_matched_block();
 
         let mut cases: Vec<(u64, BlockId)> = Vec::new();
-        let mut default_block = merge_block;
+        // Arms that take any value, by index. A failed guard dispatches again
+        // over the arms below it, and these are its default.
+        let mut catch_all = vec![false; arms.len()];
+        let mut default_block = no_match;
         // Arms are tried in order, so the *first* catch-all owns the switch
         // default. Letting a later one overwrite it skipped every catch-all
         // before it — which is what happens the moment a guard is involved:
@@ -397,6 +456,7 @@ impl<'a> MirLowerer<'a> {
             }
             match &arm.pattern {
                 Pattern::Wildcard => {
+                    catch_all[i] = true;
                     if !default_claimed {
                         default_block = arm_blocks[i];
                         default_claimed = true;
@@ -417,10 +477,13 @@ impl<'a> MirLowerer<'a> {
                             .variant_tag_in_scrutinee(name, &scrutinee_ty)
                             .unwrap_or_else(|| self.variant_tag(name));
                         cases.push((tag as u64, arm_blocks[i]));
-                    } else if !default_claimed {
+                    } else {
                         // A plain binding pattern is a catch-all too.
-                        default_block = arm_blocks[i];
-                        default_claimed = true;
+                        catch_all[i] = true;
+                        if !default_claimed {
+                            default_block = arm_blocks[i];
+                            default_claimed = true;
+                        }
                     }
                 }
                 Pattern::Constructor { name, .. } => {
@@ -520,7 +583,7 @@ impl<'a> MirLowerer<'a> {
             }
             let err_dispatch = self.builder.create_block();
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
-                value: switch_val,
+                value: switch_val.clone(),
                 cases: vec![(0, ok_target.unwrap_or(default_block)), (1, err_dispatch)],
                 default: default_block,
             }));
@@ -573,8 +636,8 @@ impl<'a> MirLowerer<'a> {
             }));
         } else {
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
-                value: switch_val,
-                cases,
+                value: switch_val.clone(),
+                cases: first_per_tag(cases.iter().copied()),
                 default: default_block,
             }));
         }
@@ -862,44 +925,49 @@ impl<'a> MirLowerer<'a> {
 
             if let Some(guard_expr) = &arm.guard {
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
-                // A failed guard falls through to the next arm that would take
-                // the value whatever it is — the next catch-all below this one —
-                // not to the next arm's body. If that one is guarded too, it
-                // tests its own guard and falls through again, so a run of
-                // guarded catch-alls is tried in order.
+                // A failed guard hands the value to the arms below this one,
+                // in order: the first of them whose pattern takes it. One
+                // switch can't say that, so the failure dispatches again over
+                // what's left.
                 //
-                // The switch dispatches once. Handing the failure to
-                // `arm_blocks[i + 1]` runs that arm's body whether its pattern
-                // matches or not, which is invisible while the guarded arms sit
-                // at the end (every arm below them is a catch-all anyway) and
-                // wrong the moment one doesn't:
-                //
-                //   match n {
-                //       x if x < 0 => "neg"
-                //       0 => "zero"
-                //       _ => "big"
+                //   match s {
+                //       Circle(r) if r > 10 => "big circle"
+                //       Circle(r) => "circle"
+                //       Square(w) => "square"
                 //   }
                 //
-                // 5 took the default to the guarded arm, failed the guard, and
-                // fell into the `0` arm: "zero" (#875).
+                // Handing it to the next arm's body ran that arm whether its
+                // pattern matched or not (#875). Handing it to the next
+                // catch-all skipped `Circle(r)`, and with none below, native
+                // left the match with no result at all.
                 //
-                // With no catch-all below, the match isn't exhaustive and there
-                // is nothing to fall through to — `merge_block`, which also
-                // keeps a last guarded catch-all from branching at itself.
-                let guard_fail_block = ((i + 1)..arms.len())
-                    .find(|&j| {
-                        let unconditional = match &arms[j].pattern {
-                            Pattern::Wildcard => true,
-                            Pattern::Ident(n) => {
-                                self.resolve_pattern_tag(n).is_none()
-                                    && !(has_tag && (is_result_or_option || is_variant_name(n)))
-                            }
-                            _ => false,
-                        };
-                        unconditional
-                    })
+                // A `T or E` match switches twice (error variants inside the
+                // Err branch), which a single re-dispatch can't repeat; there
+                // the next catch-all still takes it.
+                let below = (i + 1)..arms.len();
+                let next_catch_all = below
+                    .clone()
+                    .find(|&j| catch_all[j])
                     .map(|j| arm_blocks[j])
-                    .unwrap_or(merge_block);
+                    .unwrap_or(no_match);
+                let guard_fail_block = if two_level {
+                    next_catch_all
+                } else {
+                    let below_blocks: Vec<BlockId> = below.map(|j| arm_blocks[j]).collect();
+                    let rest = first_per_tag(
+                        cases.iter().copied().filter(|(_, b)| below_blocks.contains(b)),
+                    );
+                    let here = self.builder.current_block();
+                    let redispatch = self.builder.create_block();
+                    self.builder.switch_to_block(redispatch);
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+                        value: switch_val.clone(),
+                        cases: rest,
+                        default: next_catch_all,
+                    }));
+                    self.builder.switch_to_block(here);
+                    redispatch
+                };
                 let guard_pass_block = self.builder.create_block();
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: guard_val,
@@ -946,68 +1014,46 @@ impl<'a> MirLowerer<'a> {
         use rask_ast::expr::Pattern;
 
         let merge_block = self.builder.create_block();
-        let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let no_match = self.no_arm_matched_block();
         let result_local = self.builder.alloc_temp(MirType::I64);
         let mut result_ty = MirType::Void;
 
-        let default_idx = arms.iter().position(|a| {
-            matches!(&a.pattern, Pattern::Wildcard)
-                || matches!(&a.pattern, Pattern::Ident(n) if !n.starts_with('"'))
-        });
-
-        let mut string_arms: Vec<(usize, Vec<String>)> = Vec::new();
+        // Arms are tried in order, each a test and then its guard; either
+        // failing moves on to the next arm. A guard used to be dropped here,
+        // so `x if x.len() > 3 => "long"` took every string.
         for (i, arm) in arms.iter().enumerate() {
-            match &arm.pattern {
-                Pattern::Literal(lit) => {
-                    if let ExprKind::String(s) = &lit.kind {
-                        string_arms.push((i, vec![s.clone()]));
-                    }
+            let next_arm = if i + 1 < arms.len() { self.builder.create_block() } else { no_match };
+            let catch_all = matches!(&arm.pattern, Pattern::Wildcard | Pattern::Ident(_));
+            if !catch_all {
+                let literals: Vec<String> = flatten_pattern_alternatives(&arm.pattern)
+                    .into_iter()
+                    .filter_map(|p| match p {
+                        Pattern::Literal(lit) => match &lit.kind {
+                            ExprKind::String(s) => Some(s.clone()),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .collect();
+                let body = self.builder.create_block();
+                for lit in literals {
+                    let eq_result = self.builder.alloc_temp(MirType::Bool);
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                        dst: Some(eq_result),
+                        func: FunctionRef::internal("string_eq".to_string()),
+                        args: vec![scrutinee_op.clone(), MirOperand::Constant(MirConst::String(lit))],
+                    }));
+                    let next_test = self.builder.create_block();
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                        cond: MirOperand::Local(eq_result),
+                        then_block: body,
+                        else_block: next_test,
+                    }));
+                    self.builder.switch_to_block(next_test);
                 }
-                Pattern::Or(pats) => {
-                    let strs: Vec<String> = pats.iter().filter_map(|p| {
-                        if let Pattern::Literal(lit) = p {
-                            if let ExprKind::String(s) = &lit.kind {
-                                return Some(s.clone());
-                            }
-                        }
-                        None
-                    }).collect();
-                    if !strs.is_empty() {
-                        string_arms.push((i, strs));
-                    }
-                }
-                Pattern::Wildcard | Pattern::Ident(_) => {}
-                _ => {}
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: next_arm }));
+                self.builder.switch_to_block(body);
             }
-        }
-
-        let default_block = default_idx.map(|i| arm_blocks[i]).unwrap_or(merge_block);
-
-        for (arm_idx, literals) in &string_arms {
-            for (j, lit) in literals.iter().enumerate() {
-                let eq_result = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: Some(eq_result),
-                    func: FunctionRef::internal("string_eq".to_string()),
-                    args: vec![
-                        scrutinee_op.clone(),
-                        MirOperand::Constant(MirConst::String(lit.clone())),
-                    ],
-                }));
-                let next_test = self.builder.create_block();
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                    cond: MirOperand::Local(eq_result),
-                    then_block: arm_blocks[*arm_idx],
-                    else_block: next_test,
-                }));
-                self.builder.switch_to_block(next_test);
-                let _ = j;
-            }
-        }
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: default_block }));
-
-        for (i, arm) in arms.iter().enumerate() {
-            self.builder.switch_to_block(arm_blocks[i]);
 
             if let Pattern::Ident(name) = &arm.pattern {
                 let bind_local = self.builder.alloc_local(name.clone(), MirType::String);
@@ -1016,6 +1062,17 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Use(scrutinee_op.clone()),
                 }));
                 self.locals.insert(name.clone(), (bind_local, MirType::String));
+            }
+
+            if let Some(guard_expr) = &arm.guard {
+                let (guard_val, _) = self.lower_expr(guard_expr)?;
+                let guard_pass = self.builder.create_block();
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+                    cond: guard_val,
+                    then_block: guard_pass,
+                    else_block: next_arm,
+                }));
+                self.builder.switch_to_block(guard_pass);
             }
 
             let (body_val, arm_ty) = self.lower_expr(&arm.body)?;
@@ -1028,6 +1085,9 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Use(body_val),
                 }));
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
+            }
+            if next_arm != no_match {
+                self.builder.switch_to_block(next_arm);
             }
         }
 
@@ -1087,7 +1147,7 @@ impl<'a> MirLowerer<'a> {
         let mut result_ty = MirType::Void;
 
         let arm_test_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
-        let fallthrough = merge_block;
+        let fallthrough = self.no_arm_matched_block();
 
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: arm_test_blocks[0] }));
 
@@ -1320,11 +1380,12 @@ impl<'a> MirLowerer<'a> {
         let result_local = self.builder.alloc_temp(MirType::I64);
         let mut result_ty = MirType::Void;
 
+        let no_match = self.no_arm_matched_block();
         for (i, arm) in arms.iter().enumerate() {
             let next_arm = if i + 1 < arms.len() {
                 self.builder.create_block()
             } else {
-                merge_block
+                no_match
             };
 
             // Every field the pattern names is read once, whether it's tested or
@@ -1439,7 +1500,7 @@ impl<'a> MirLowerer<'a> {
                 }));
             }
 
-            if next_arm != merge_block {
+            if next_arm != no_match {
                 self.builder.switch_to_block(next_arm);
             }
         }
@@ -1487,11 +1548,12 @@ impl<'a> MirLowerer<'a> {
         let result_local = self.builder.alloc_temp(MirType::I64);
         let mut result_ty = MirType::Void;
 
+        let no_match = self.no_arm_matched_block();
         for (i, arm) in arms.iter().enumerate() {
             let next_arm = if i + 1 < arms.len() {
                 self.builder.create_block()
             } else {
-                merge_block
+                no_match
             };
 
             // Catch-all patterns jump straight to the body.
@@ -1560,7 +1622,7 @@ impl<'a> MirLowerer<'a> {
                 }));
             }
 
-            if next_arm != merge_block {
+            if next_arm != no_match {
                 self.builder.switch_to_block(next_arm);
             }
         }
