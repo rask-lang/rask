@@ -8,20 +8,19 @@
 // they're ready instantly when the program starts. Zero startup cost.
 //
 //   const PRIMES = comptime {
-//       let v = Vec.new()
+//       mut v = Vec.new()
 //       for n in 2..100 {
 //           if is_prime(n) { v.push(n) }
 //       }
-//       v.freeze()    // lock the collection — now it's a fixed table
+//       v             // the finished table is built into the program
 //   }
 //
 // Rules:
 //   - comptime blocks run during compilation, not at runtime
 //   - No I/O, no network, no files
 //   - No concurrency (it's single-threaded compilation)
-//   - Collections must be .freeze()d — this converts them from
-//     growable collections into fixed-size tables embedded in
-//     the compiled program
+//   - A Vec or Map the block hands back is embedded in the compiled
+//     program as a fixed table; a const can't be changed afterwards
 //   - The last expression in the block is the value (like any block)
 //
 // comptime if for platform-specific code:
@@ -42,7 +41,7 @@ const SQUARES = comptime {
     for i in 0..20 {
         v.push(i * i)
     }
-    v.freeze()
+    v
 }
 
 // ============================================================
@@ -59,7 +58,7 @@ const SQUARES = comptime {
 // Stirling's approximation (n! ≈ √(2πn) · (n/e)^n) is how physicists
 // deal with factorials of large numbers without actually computing them.
 const FACTORIALS = comptime {
-    todo("build and freeze a Vec of factorials")
+    todo("build a Vec of factorials")
 }
 
 // --- Puzzle 2: Standard atmosphere ---
@@ -78,7 +77,7 @@ const FACTORIALS = comptime {
 // just above the weather. The Concorde cruised at 18,000m —
 // so high that pilots could see the curvature of the Earth.
 const STD_ATMOSPHERE = comptime {
-    todo("build and freeze a Vec of temperatures in Kelvin")
+    todo("build a Vec of temperatures in Kelvin")
 }
 
 // Look up temperature for a given altitude (rounded to nearest 1000m)
@@ -96,7 +95,7 @@ func std_temperature(altitude_m: i32) -> f64 {
 // is 0x61. This wasn't an accident — it made case conversion
 // trivial on early hardware that could only flip individual bits.
 const IS_UPPER = comptime {
-    todo("build and freeze a Vec<bool> for ASCII 0-127")
+    todo("build a Vec<bool> for ASCII 0-127")
 }
 
 func is_uppercase(c: i32) -> bool {

@@ -758,15 +758,6 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// CT19: a comptime block's value is a `Vec` or `Map` that wasn't made
-    /// with `.freeze()`. The block's collections live in the compiler's own
-    /// scratch heap; `freeze` is where one becomes data for the binary.
-    #[error("a comptime block can't hand an unfrozen `{collection}` to runtime")]
-    ComptimeUnfrozen {
-        collection: String,
-        span: Span,
-    },
-
     #[error("non-exhaustive match: missing variants {missing:?}")]
     NonExhaustiveMatch {
         missing: Vec<String>,
@@ -1575,7 +1566,6 @@ impl TypeError {
             | PublicDuckInterface { .. }
             | PublicInferredError { .. }
             | NonExhaustiveMatch { .. }
-            | ComptimeUnfrozen { .. }
             | UndefinedName { .. }
             | UnknownContext { .. }
             | SpawnOutsideBlock { .. }

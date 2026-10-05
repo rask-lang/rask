@@ -377,7 +377,7 @@ Two stages, syntactically marked (`ctrl.comptime`). Comptime code computes const
 const PRIMES = comptime {
     mut v = Vec.new()
     for n in 2..100 { if is_prime(n) { v.push(n) } }
-    v.freeze()                                    // collections must freeze to cross into runtime
+    v                                             // the table is built into the program
 }
 
 func encode<T: Encode>(value: T, mutate w: Writer) -> void or Error {

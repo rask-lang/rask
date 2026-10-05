@@ -223,7 +223,7 @@ let MAGIC_HEADER: [u8; 8] = comptime {
         magic: 0xCAFEBABE,
         version: 1,
         flags: 0
-    }.build().freeze()
+    }.build()
 }
 ```
 

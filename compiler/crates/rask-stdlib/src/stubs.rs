@@ -261,7 +261,7 @@ pub struct MethodStub {
     /// nothing could distinguish "written in Rask" from "declared only".
     pub has_body: bool,
     /// Declared `comptime func` — evaluated by the comptime engine, so the
-    /// keyword already says where the body lives. `Vec.freeze` is one.
+    /// keyword already says where the body lives.
     pub is_comptime: bool,
     /// Interface bounds on the method's own type parameters: `decode<T: Decode>`
     /// gives `[("T", "Decode")]`. Carried because nothing else does — the
@@ -979,7 +979,7 @@ mod tests {
             "new", "with_capacity", "len", "is_empty",
             "insert", "remove", "clear", "get", "get_clone", "contains",
             "read", "modify", "insert_if_missing", "modify_with_default",
-            "keys", "values", "freeze",
+            "keys", "values",
         ];
         for method in &expected {
             assert!(reg.has_method("Map", method), "Map missing method: {}", method);

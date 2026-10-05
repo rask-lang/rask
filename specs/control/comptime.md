@@ -46,7 +46,7 @@ Every expression has a stage: comptime (runs during compilation) or runtime (com
 | **CT55: Two stages** | Comptime code computes values and decides what runtime code exists. Runtime code is the residue left after all comptime evaluation |
 | **CT56: Comptime positions** | Comptime evaluation happens exactly at: `comptime` expressions, blocks, and variables; bodies of `comptime func`; `comptime` parameter arguments and array sizes; the iterable of `comptime for`; the condition of `comptime if`; the name in `value.(expr)` |
 | **CT57: Residual bodies** | The body of a `comptime for` and the branches of a `comptime if` in runtime position stay runtime code. Comptime control decides *which* runtime code exists (unrolls, selects) — it never evaluates that code. Calls inside these bodies are ordinary runtime calls; CT6 doesn't apply to them |
-| **CT58: Splicing** | A comptime value used in runtime position is embedded as constant data. It must be const-representable: primitives, strings, and `Vec`/`Map` of those. A `Map` embeds as its entries rather than as a table — a hash table seeds its layout per process, so there is nothing static to emit — and is built from them once. Unfrozen `Vec`/`Map` cannot cross (CT19) |
+| **CT58: Splicing** | A comptime value used in runtime position is embedded as constant data. It must be const-representable: primitives, strings, and `Vec`/`Map` of those. A `Map` embeds as its entries rather than as a table — a hash table seeds its layout per process, so there is nothing static to emit — and is built from them once. A `Vec`/`Map` crosses as it is; there is no freezing step (CT18) |
 | **CT59: Discarded branches** | A branch discarded by a runtime-position `comptime if` is syntax-checked only — same treatment as an uninstantiated generic body (`type.generics/G2`). This is what lets platform-specific code compile on every target |
 
 <!-- test: skip -->
@@ -113,7 +113,7 @@ let PRIMES: [u32; _] = comptime {
     for n in 2..100 {
         if is_prime(n) { v.push(n) }       // OK: is_prime is comptime-evaluable (CT6)
     }
-    v.freeze()
+    v
 }
 
 comptime func bounds<T: Numeric>() -> (T, T) {
@@ -204,15 +204,14 @@ func default_path() -> string {
 }
 ```
 
-## Collections with Freeze
+## Collections
 
-Comptime supports collections (`Vec`, `Map`, `string`) with a compiler-managed allocator. Collections must be frozen to escape comptime as const data.
+Comptime supports collections (`Vec`, `Map`, `string`) with a compiler-managed allocator. One a block hands back is embedded as constant data.
 
 | Rule | Description |
 |------|-------------|
 | **CT17: Compiler allocator** | At comptime, collections use compiler-managed scratch heap (256MB limit) |
-| **CT18: Freeze to escape** | Collections call `.freeze()` to become const: `Vec<T>` → `[T; N]`, `Map<K,V>` → static map, `string` → `str` |
-| **CT19: Cannot escape unfrozen** | Compile error if a comptime block's value is a `Vec` or `Map` not made with `.freeze()`: the block ends with a `.freeze()` call, or with a name a `let` bound to one. `freeze` returns the same type, so this is checked from where the value came from, not its type |
+| **CT18: Collections cross as data** | A `Vec` or `Map` a comptime block hands back is embedded in the program as constant data (CT58), and a `const` can't be changed afterwards. There is no freezing step |
 
 <!-- test: parse -->
 ```rask
@@ -222,7 +221,7 @@ let PRIMES: [u32; _] = comptime {
     for n in 2..100 {
         if is_prime(n) { v.push(n) }
     }
-    v.freeze()  // → [u32; 25]
+    v
 }
 
 // Map generation - lookup table
@@ -230,13 +229,7 @@ let KEYWORDS: Map<str, TokenKind> = comptime {
     let m = Map<str, TokenKind>.new()
     m.insert("if", TokenKind.If)
     m.insert("else", TokenKind.Else)
-    m.freeze()  // → perfect hash or static map
-}
-
-const BAD = comptime {
-    let v = Vec<u32>.new()
-    v.push(1)
-    v  // ERROR: cannot return unfrozen Vec from comptime
+    m
 }
 ```
 
@@ -250,7 +243,7 @@ const BAD = comptime {
 | **CT23: Structs** | Structs | ✅ Full: construction, field access, methods |
 | **CT24: Arrays** | Arrays | ✅ Full: fixed-size arrays, indexing, iteration |
 | **CT25: Enums** | Enums | ✅ Full: variant construction, pattern matching |
-| **CT26: Collections** | Vec, Map, string | ✅ With freeze: must call `.freeze()` to escape |
+| **CT26: Collections** | Vec, Map, string | ✅ Full: one handed back is embedded as data (CT18) |
 | **CT48: Comptime for** | Loop unrolling | ✅ Full: unrolls over comptime arrays, each iteration separate code |
 | **CT49: Field access** | `value.(name)` | ✅ Full: resolves to direct field access at compile time |
 
@@ -304,7 +297,7 @@ const TABLE = comptime {
     for i in 0..10000 {
         table.push(compute(i))
     }
-    table.freeze()
+    table
 }
 ```
 
@@ -406,7 +399,6 @@ const B = comptime get_value(5)  // Compile error: "Index out of bounds: 5 >= 3"
 | Comptime array out of bounds | CT46 | Compile error: "Index out of bounds" |
 | Recursive comptime (within limit) | CT35 | Works; memoized to avoid recomputation |
 | Comptime type mismatch | - | Regular type error (type checking still applies) |
-| Unfrozen collection escape | CT19 | Compile error: "cannot return unfrozen Vec from comptime" |
 | Runtime string in field access | CT53 | Compile error (E0385): "the field name in `value.(…)` isn't known at compile time" |
 | Non-existent field in field access | CT54 | Compile error: "no field X on type Y" |
 | Comptime for over runtime iterable | CT51 | Compile error: "comptime for requires comptime-known iterable" |
@@ -503,28 +495,6 @@ FIX: Break the cycle — size the buffer from the fields it holds, not from the
      struct that contains it.
 ```
 
-**Unfrozen collection escape [CT19]:**
-```
-ERROR [ctrl.comptime/CT19]: cannot return unfrozen Vec from comptime
-   |
-3  |  let BAD = comptime {
-4  |      let v = Vec<u32>.new()
-5  |      v.push(1)
-6  |      v  // cannot escape unfrozen
-   |      ^ collection must be frozen with .freeze()
-
-WHY: Comptime collections use compiler-managed memory and must be
-     materialized as let data to be embedded in the binary.
-
-FIX: Call .freeze() to convert to let data:
-
-  let GOOD = comptime {
-      let v = Vec<u32>.new()
-      v.push(1)
-      v.freeze()  // → [1u32; 1]
-  }
-```
-
 ## Examples
 
 ### Lookup Table Generation
@@ -618,7 +588,7 @@ func process(data: Vec<u8>) -> void or Error {
 
 **CT67-CT68 (cycles):** Hard errors, no fixpoint iteration. A build that converges "eventually" is a build you can't reason about. The dependency chain in the error message is the debugging tool.
 
-**CT17-CT19 (Freeze pattern):** Makes the boundary explicit. Compiler-managed scratch heap is bounded (256MB), deterministic (no allocator variance). Normal collection APIs work at comptime. `.freeze()` makes materialization into const data explicit.
+**CT17-CT18 (collections):** Compiler-managed scratch heap is bounded (256MB) and deterministic (no allocator variance). Normal collection APIs work at comptime. An earlier draft made a block end in `.freeze()` to mark the collection becoming constant data. It marked nothing: the data is embedded either way, a `const` is immutable either way, and `freeze` returned the type it was given, so the rule could only be checked by reading how the block ended. I dropped it.
 
 **CT35-CT39 (Limits):** Prevent infinite compilation. Backwards branches (Zig-style) count loop iterations + recursive calls combined. Keeps build times predictable.
 
@@ -638,31 +608,31 @@ Need to transform/process files (not just embed)?
           NO  → Just embedding file contents?
                   YES → Comptime (@embed_file)
                   NO  → Result fits in 256MB comptime limit?
-                          YES → Comptime (use collections with freeze)
+                          YES → Comptime (use collections)
                           NO  → Build script
 ```
 
 | Task | Approach | Why |
 |------|----------|-----|
 | CRC lookup table (256 entries) | Comptime | Size known, fixed array |
-| Primes up to N | Comptime (Vec + freeze) | Unknown size, use collection |
-| Keyword lookup map | Comptime (Map + freeze) | Build map, freeze to static |
+| Primes up to N | Comptime (Vec) | Unknown size, use collection |
+| Keyword lookup map | Comptime (Map) | Build the map, embedded as entries |
 | Embed version string | Comptime (`@embed_file`) | Simple file read |
 | Embed small config file | Comptime (`@embed_file`) | No transform needed |
-| Parse embedded JSON | Comptime (collections) | `@embed_file` + parse + freeze |
+| Parse embedded JSON | Comptime (collections) | `@embed_file` + parse |
 | Types from JSON schema | Build script | Needs to generate source files |
 | Protobuf codegen | Build script | Needs external tool |
 
 **Dynamic-size results:**
 
-Use collections with freeze:
+Use collections:
 ```rask
 let PRIMES: [u32; _] = comptime {
     let v = Vec<u32>.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }
     }
-    v.freeze()
+    v
 }
 ```
 
@@ -741,7 +711,7 @@ func test_factorial() {
 const F5 = comptime factorial(5)
 ```
 
-Workflow: write it unmarked → test at runtime with full debugging tools → use at comptime. Reserve `comptime func` for functions that need comptime-only machinery (`.freeze()`, reflection-heavy manipulation) or the definition-time guarantee — those can't run in tests (CT3).
+Workflow: write it unmarked → test at runtime with full debugging tools → use at comptime. Reserve `comptime func` for functions that need comptime-only machinery (reflection-heavy manipulation) or the definition-time guarantee — those can't run in tests (CT3).
 
 ### IDE Integration
 
@@ -796,8 +766,8 @@ IDEs should provide:
 
 | Capability | Zig | Rask |
 |------------|-----|------|
-| Comptime allocation | Arena-based | Compiler-managed with freeze |
-| Dynamic arrays | Implicit materialization | Explicit `.freeze()` |
+| Comptime allocation | Arena-based | Compiler-managed |
+| Dynamic arrays | Implicit materialization | Implicit materialization |
 | Comptime I/O | Full | `@embed_file` only |
 | Build scripts | Separate | Separate (for complex codegen) |
 

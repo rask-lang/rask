@@ -349,31 +349,18 @@ vec.shrink(to: n)  // the same, named
 | `vec.remaining()` | `usize?` | `none` = unbounded, value = slots available |
 | `vec.allocated()` | `usize` | How many elements the buffer has room for — the same unit as `len()`, and a different question from `capacity()`, which is the bound. May exceed `len()`; `shrink()` gives the difference back |
 
-## Comptime Collections with Freeze
+## Comptime Collections
 
-At compile time, collections use a compiler-managed allocator and must be frozen to escape comptime as const data. See `ctrl.comptime` for full details.
-
-| Collection | `freeze()` Returns | Description |
-|------------|-------------------|-------------|
-| `Vec<T>` | `[T; N]` | Fixed-size array, size inferred from length |
-| `Map<K,V>` | Static map | Perfect hash or similar compile-time representation |
-| `string` | `str` | String literal |
-
-| Rule | Description |
-|------|-------------|
-| **F1: Comptime only** | `.freeze()` is only valid in comptime context |
-| **F2: Required to escape** | Unfrozen collections cannot escape comptime |
-| **F3: Memory limits** | Subject to comptime memory limits (256MB total, 16MB per array) |
-| **F4: Immutable result** | After freeze, the data is immutable const |
+At compile time, collections use a compiler-managed allocator (256MB total, 16MB per array). A `Vec` or `Map` a comptime block hands back is embedded in the program as constant data, and a `const` can't be changed afterwards. See `ctrl.comptime` (CT17–CT18).
 
 <!-- test: parse -->
 ```rask
-let PRIMES: [u32; _] = comptime {
-    let v = Vec<u32>.new()
+const PRIMES: Vec<u32> = comptime {
+    mut v: Vec<u32> = Vec.new()
     for n in 2..100 {
         if is_prime(n) { v.push(n) }
     }
-    v.freeze()
+    v
 }
 ```
 

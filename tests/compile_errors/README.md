@@ -133,7 +133,6 @@ go down.
 | [read_lock_mutate.rk](read_lock_mutate.rk) | Mutating through a `shared.read()` with-binding (E0360, conc.sync/R1) |
 | [undefined_variable.rk](undefined_variable.rk) | Using undefined variable |
 | [comptime_loop.rk](comptime_loop.rk) | Comptime iteration limits |
-| [comptime_unfrozen.rk](comptime_unfrozen.rk) | A comptime block whose value is a `Vec` or `Map` not made with `.freeze()` (CT19, E0903) |
 | [resource_leak.rk](resource_leak.rk) | Resource type not consumed |
 | [result_match_by_variant.rk](result_match_by_variant.rk) | A `T or E` match covers `E` with an arm per variant; a fieldless variant arm is not a catch-all |
 | [optional_resource.rk](optional_resource.rk) | A `@resource` inside an optional is still linear — the binding, the `? as` payload, and a `none` that gets filled (E0805, mem.linear/L1, #827) |

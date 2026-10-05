@@ -281,13 +281,7 @@ impl Interpreter {
             // No `eq` or `hash` here: `collections.rk` writes both, element by
             // element through the element type's own, and this one compared
             // elements structurally — past a user `eq` on them (#1391).
-            // `freeze` is what a `comptime` block ends with to say the Vec it
-            // built is the constant's value. The block has already been
-            // evaluated by the time anything asks, so there is nothing left to
-            // do but hand it over — it was declared `comptime func` with an
-            // empty body and neither backend had an answer, which made every
-            // `const X = comptime { … v.freeze() }` fail (#1069).
-            "clone" | "to_vec" | "freeze" => {
+            "clone" | "to_vec" => {
                 let cloned = v.lock().unwrap().clone();
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }
@@ -973,11 +967,6 @@ impl Interpreter {
             "contains" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 Ok(Value::Bool(self.map_contains(&m, key)?))
-            }
-            // The identity, same as `Vec.freeze` — see the note there (#1069).
-            "freeze" => {
-                let cloned = m.lock().unwrap().clone();
-                Ok(Value::Map(Arc::new(Mutex::new(cloned))))
             }
             "keys" => {
                 let keys: Vec<Value> = map_entries_seeded(&m.lock().unwrap())

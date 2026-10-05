@@ -51,7 +51,7 @@ const NAMES = comptime {
     v.push("123456789012345")
     v.push("1234567890123456")
     v.push(banner(80))
-    v.freeze()
+    v
 }
 
 test "a short string folds and reads back" {

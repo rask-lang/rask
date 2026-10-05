@@ -354,9 +354,6 @@ extend Vec<T> {
     /// through it legal, not a different buffer.
     @native("rask_vec_as_ptr")
     public unsafe func as_mut_ptr(mutate self) -> *T {}
-
-    /// Freeze into a compile-time array.
-    public comptime func freeze(self) -> Vec<T> {}
 }
 
 // A copy out, for an element too wide to hand back by borrow. `get` lends the
@@ -553,9 +550,6 @@ extend Map<K, V> {
     /// Iterate over values.
     @native("rask_map_values")
     public func values(self) -> Iterator<V> {}
-
-    /// Freeze into a compile-time map.
-    public comptime func freeze(self) -> Map<K, V> {}
 }
 
 // The copying read, for the same reason `Vec.get_clone` exists: `get` lends the
