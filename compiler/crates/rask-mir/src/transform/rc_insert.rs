@@ -717,6 +717,9 @@ fn insert_aggregate_release(
 /// - A container handle or a `Heap` block out of an aggregate is the
 ///   container the aggregate owns. `*h.inner` read after the release read
 ///   freed memory (#1256).
+/// - A closure out of an aggregate is the closure the aggregate owns, the
+///   same way: the struct frees the block when it dies, so `let g = h.f`
+///   has to keep `h` alive for as long as `g` is called (#1334).
 fn part_of_field(
     dst: LocalId,
     base: LocalId,
@@ -728,7 +731,7 @@ fn part_of_field(
     }
     match ty_of.get(&dst) {
         Some(t) if aggregates.contains(&dst) && aggregate_may_hold_string(t) => true,
-        Some(MirType::Ptr) | Some(MirType::Heap(_)) => true,
+        Some(MirType::Ptr) | Some(MirType::Heap(_)) | Some(MirType::FuncPtr(_)) => true,
         _ => false,
     }
 }

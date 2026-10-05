@@ -101,10 +101,7 @@ test "a call that answers something other than a closure carries no limit" {
 // `own` was the fix. The compiler works the same thing out now, so the plain
 // spelling compiles and the capture travels.
 
-// The struct-field case belongs here too, and is held back by #1334: native
-// reads garbage once a closure carrying a non-Copy capture goes through a
-// field. The interpreter gets it right, so it is a codegen bug rather than a
-// rule question.
+// The struct-field case is in t_closure_through_field.rk (#1334).
 
 func consume(take f: func(i64) -> i64) -> i64 {
     return f(1)
