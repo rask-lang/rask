@@ -1868,7 +1868,11 @@ impl TypeChecker {
                 result
             }
 
-            ExprKind::Comptime { body } => self.check_block_body(body),
+            ExprKind::Comptime { body } => {
+                let ty = self.check_block_body(body);
+                self.check_comptime_frozen(body, &ty);
+                ty
+            }
 
 
             ExprKind::UsingBlock { name, args, body } => {
@@ -4828,6 +4832,38 @@ impl TypeChecker {
         let var = self.ctx.fresh_var();
         self.symbol_types.insert(sym_id, var.clone());
         var
+    }
+
+    /// CT19: a comptime block whose value is a `Vec` or `Map` makes it with
+    /// `.freeze()`, as its last expression or through a binding set from one.
+    /// `freeze` returns the same type it's called on, so the rule is about
+    /// where the value came from, not what type it has.
+    fn check_comptime_frozen(&mut self, body: &[rask_ast::stmt::Stmt], ty: &Type) {
+        let collection = match self.ctx.apply(ty) {
+            Type::Generic { base, .. } => self.types.type_name(base),
+            Type::UnresolvedGeneric { name, .. } => name,
+            _ => return,
+        };
+        if collection != "Vec" && collection != "Map" {
+            return;
+        }
+        let Some(rask_ast::stmt::Stmt { kind: rask_ast::stmt::StmtKind::Expr(last), .. }) = body.last() else {
+            return;
+        };
+        let is_freeze = |e: &rask_ast::expr::Expr| {
+            matches!(&e.kind, ExprKind::MethodCall { method, .. } if method == "freeze")
+        };
+        let frozen = is_freeze(last)
+            || match &last.kind {
+                ExprKind::Ident(name) => body.iter().any(|s| match &s.kind {
+                    rask_ast::stmt::StmtKind::Let { name: n, init, .. } => n == name && is_freeze(init),
+                    _ => false,
+                }),
+                _ => false,
+            };
+        if !frozen {
+            self.errors.push(TypeError::ComptimeUnfrozen { collection, span: last.span });
+        }
     }
 
     /// Check that a match on an enum or `T or E` result covers all branches.

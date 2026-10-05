@@ -2277,6 +2277,21 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_help("use the \"Make error type explicit\" quick action to fill in the inferred union")
             }
 
+            ComptimeUnfrozen { collection, span } => {
+                Diagnostic::error(format!(
+                    "a comptime block can't hand an unfrozen `{}` to runtime",
+                    collection
+                ))
+                .with_code("E0903")
+                .with_primary(*span, "collection must be frozen with `.freeze()`")
+                .with_fix(format!("end the block with `.freeze()` on the {}: `v.freeze()`", collection))
+                .with_why(
+                    "a comptime block builds its collections in the compiler's own memory; \
+                     `.freeze()` is the point where one becomes data the program is built with \
+                     [ctrl.comptime/CT19]",
+                )
+            }
+
             NonExhaustiveMatch { missing, guarded, span } => {
                 let missing_str = missing.join(", ");
                 let d = Diagnostic::error(format!("non-exhaustive match: missing {}", missing_str))

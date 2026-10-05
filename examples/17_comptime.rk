@@ -7,7 +7,7 @@ const SQUARES = comptime {
     for i in 0..20 {
         arr.push(i * i)
     }
-    arr
+    arr.freeze()
 }
 
 // Fibonacci lookup table
@@ -22,7 +22,7 @@ const FIBONACCI = comptime {
         fib.push(prev1 + prev2)
     }
 
-    fib
+    fib.freeze()
 }
 
 // Powers of two
@@ -33,7 +33,7 @@ const POWERS_OF_TWO = comptime {
         powers.push(power)
         power = power * 2
     }
-    powers
+    powers.freeze()
 }
 
 // Prime numbers up to 50.
@@ -63,7 +63,7 @@ const PRIMES: Vec<i64> = comptime {
         }
     }
 
-    primes
+    primes.freeze()
 }
 
 func main() {

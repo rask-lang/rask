@@ -212,7 +212,7 @@ Comptime supports collections (`Vec`, `Map`, `string`) with a compiler-managed a
 |------|-------------|
 | **CT17: Compiler allocator** | At comptime, collections use compiler-managed scratch heap (256MB limit) |
 | **CT18: Freeze to escape** | Collections call `.freeze()` to become const: `Vec<T>` → `[T; N]`, `Map<K,V>` → static map, `string` → `str` |
-| **CT19: Cannot escape unfrozen** | Compile error if comptime returns unfrozen collection |
+| **CT19: Cannot escape unfrozen** | Compile error if a comptime block's value is a `Vec` or `Map` not made with `.freeze()`: the block ends with a `.freeze()` call, or with a name a `let` bound to one. `freeze` returns the same type, so this is checked from where the value came from, not its type |
 
 <!-- test: parse -->
 ```rask
