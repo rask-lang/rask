@@ -197,7 +197,7 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // integers — nothing points into the source, and nothing in it owns
     // anything — so the vector is the caller's, elements and all.
     ("string_char_indices", 0, 0, "Vec_free"),
-    // The two the runtime builds from the OS: each copies what it found into
+    // The three the runtime builds from the OS: each copies what it found into
     // fresh strings and carries the element map, so the vector it hands back is
     // the caller's to free — elements and all. They were the largest single
     // leak left in the suite once the closures were fixed: 150 strings for one
@@ -207,6 +207,9 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // the caller still holds.
     ("os_env_vars", 0, 0, "Vec_free"),
     ("os_args", 0, 0, "Vec_free"),
+    // `cli.args()` is the same argv as `os.args()`, built the same way, and
+    // was left off: every program that read its arguments leaked them.
+    ("cli_args", 0, 0, "Vec_free"),
     // A `Shared` box carries no element description — its payload is opaque bytes it
     // was handed, the same as a pool slot. It is here for the same reason
     // `Rack_new` is: `rask_shared_free` has existed all along with nothing
