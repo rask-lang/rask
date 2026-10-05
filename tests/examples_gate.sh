@@ -111,8 +111,13 @@ run_backend() {
     # golden comparison either way, but when a run fails the panic message is
     # the whole diagnosis — discarding it left "example X failed" and nothing
     # else. Per-example, because the workers run in parallel.
+    # Native runs under the leak checker: a leak exits 97 and fails the
+    # example like a crash would. The examples are the programs people read
+    # first, and three of them leaked with every answer right (#1379).
+    leak=""
+    [ "$backend" = --native ] && leak="RASK_LEAK_CHECK=1"
     if [ ! -f "$argsfile" ]; then
-        (cd "$ROOT" && timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" 2>"$errlog" < "$infile")
+        (cd "$ROOT" && env $leak timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" 2>"$errlog" < "$infile")
         return $?
     fi
     rc=0
@@ -120,7 +125,7 @@ run_backend() {
         case "$argv" in ''|\#*) continue ;; esac
         # Word-split argv on purpose: the file holds a command line.
         # shellcheck disable=SC2086
-        (cd "$ROOT" && timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" -- $argv 2>"$errlog" < "$infile") || rc=$?
+        (cd "$ROOT" && env $leak timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" -- $argv 2>"$errlog" < "$infile") || rc=$?
     done < "$argsfile"
     return $rc
 }
