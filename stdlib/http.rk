@@ -122,7 +122,7 @@ extend Request {
     }
     /// Replace the whole header set, for a request being rebuilt from another
     /// one. `with_header` adds them one at a time.
-    public func with_headers(take self, headers: Headers) -> Request {
+    public func with_headers(take self, take headers: Headers) -> Request {
         mut out = self
         out.headers = headers
         return out

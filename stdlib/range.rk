@@ -276,7 +276,7 @@ extend Range<T> where T: Integer {
     }
 
     /// Fold from an initial accumulator.
-    public func fold<U>(self, init: U, f: func(U, T) -> U) -> U {
+    public func fold<U>(self, take init: U, f: func(U, T) -> U) -> U {
         let src: Sequence<T> = self.as_sequence()
         return src.fold(init, f)
     }

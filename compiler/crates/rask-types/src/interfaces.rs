@@ -1504,6 +1504,13 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
     ]
 }
 
+/// A type parameter with this bound is Copy whatever it is instantiated with:
+/// `Copy` says so, and every member of `Integer`, `Float` and `Numeric` is a
+/// primitive.
+pub fn bound_implies_copy(name: &str) -> bool {
+    name == "Copy" || numeric_interface_members(name).is_some()
+}
+
 /// Membership test for one of the numeric interfaces, or `None` if `name` isn't
 /// one of them.
 ///

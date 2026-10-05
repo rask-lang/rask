@@ -78,7 +78,7 @@ extend BinaryBuilder {
         }
         return self
     }
-    public func build(self) -> Vec<u8> {
+    public func build(take self) -> Vec<u8> {
         return self.data
     }
     public func len(self) -> usize {

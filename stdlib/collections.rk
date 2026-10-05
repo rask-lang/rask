@@ -517,7 +517,7 @@ extend Map<K, V> {
     /// `Map_insert_if_missing` reached codegen as a function nothing emits, while
     /// the interpreter's own copy ran (#886). One source, so the two can't
     /// disagree about it.
-    public func insert_if_missing(mutate self, key: K, f: func() -> V) -> void {
+    public func insert_if_missing(mutate self, take key: K, f: func() -> V) -> void {
         if self.contains(key) {
             return
         }
@@ -535,8 +535,8 @@ extend Map<K, V> {
     /// Every other sequence method on `Map` is generated from this one.
     public func as_sequence(self) -> Sequence<(K, V)> {
         return |yield| {
-            for (k, v) in self {
-                if !yield((k, v)) {
+            for entry in self {
+                if !yield(entry) {
                     return
                 }
             }
@@ -582,10 +582,9 @@ extend Vec<Vec<T>> {
         return |yield| {
             mut i = 0
             while i < self.len() {
-                let inner = self[i]
                 mut j = 0
-                while j < inner.len() {
-                    if !yield(inner[j]) {
+                while j < self[i].len() {
+                    if !yield(self[i][j]) {
                         return
                     }
                     j = j + 1

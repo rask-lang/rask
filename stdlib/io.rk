@@ -447,7 +447,7 @@ extend Buffer {
     }
 
     /// Create a buffer initialized with data, position at 0.
-    public func from(data: Vec<u8>) -> Buffer {
+    public func from(take data: Vec<u8>) -> Buffer {
         return Buffer { data, pos: Shared.local(0) }
     }
 

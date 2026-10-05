@@ -679,7 +679,7 @@ impl<'a> OwnershipChecker<'a> {
         self.copy_params = owner_params
             .iter()
             .chain(&fn_decl.type_params)
-            .filter(|p| p.bounds.iter().any(|b| b.name().as_deref() == Some("Copy")))
+            .filter(|p| p.bounds.iter().any(|b| b.name().is_some_and(|n| rask_types::bound_implies_copy(&n))))
             .map(|p| p.name.clone())
             .collect();
 

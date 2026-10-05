@@ -122,10 +122,21 @@ fn forwarder(m: &FnDecl, elem: &TypeExpr, host_params: &[String]) -> String {
         .iter()
         .map(|p| {
             let ty = p.ty.as_ref().map(&over_host).unwrap_or_default();
-            format!("{}: {}", p.name, ty)
+            let mode = if p.is_take {
+                "take "
+            } else if p.is_mutate {
+                "mutate "
+            } else {
+                ""
+            };
+            format!("{}{}: {}", mode, p.name, ty)
         })
         .collect();
-    let args: Vec<String> = rest.iter().map(|p| p.name.clone()).collect();
+    // `mutate` is written at the call too; `take` isn't.
+    let args: Vec<String> = rest
+        .iter()
+        .map(|p| if p.is_mutate { format!("mutate {}", p.name) } else { p.name.clone() })
+        .collect();
     let returns_nothing = matches!(m.ret_ty, None | Some(TypeExpr::Unit));
     let ret = match &m.ret_ty {
         Some(t) if !returns_nothing => format!(" -> {}", over_host(t)),
