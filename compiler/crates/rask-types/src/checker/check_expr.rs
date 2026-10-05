@@ -868,14 +868,7 @@ impl TypeChecker {
             } => {
                 let value_ty = self.infer_expr(value);
                 self.push_scope();
-                let unwrap = self.implicit_unwrap(pattern, value, &value_ty);
-                let bindings = match &unwrap {
-                    Some(p) => self.check_pattern(p, &value_ty, expr.span),
-                    None => self.check_pattern(pattern, &value_ty, expr.span),
-                };
-                if let Some(p) = unwrap {
-                    self.pattern_unwraps.insert(expr.id, p);
-                }
+                let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 for (name, ty) in bindings {
                     if !name.is_empty() {
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);

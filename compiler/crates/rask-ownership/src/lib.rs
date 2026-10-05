@@ -2354,8 +2354,6 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch, else_binding: _ } => {
-                // CF12: `if x is Variant` binds the payload to `x`.
-                let pattern = self.program.pattern_unwraps.get(&expr.id).unwrap_or(pattern);
                 self.check_expr(scrutinee);
                 let pre_branch = self.bindings.clone();
                 let scrutinee_ty = self.program.node_types.get(&scrutinee.id).cloned();

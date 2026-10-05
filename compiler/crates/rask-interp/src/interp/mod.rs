@@ -247,8 +247,6 @@ pub struct Interpreter {
     pub(crate) error_wraps: HashMap<rask_ast::NodeId, rask_types::ErrorWrap>,
     /// ER14a: `??` sites that keep the optional shape instead of unwrapping.
     pub(crate) fallback_keeps_shape: std::collections::HashSet<rask_ast::NodeId>,
-    /// CF12: `if x is Variant` sites that bind the payload to `x` (checker).
-    pub(crate) pattern_unwraps: HashMap<rask_ast::NodeId, rask_ast::expr::Pattern>,
     /// ER16a: `try` node → the postfix-chain step it attaches to, when that
     /// isn't the operand itself. `try read_file(p).len()` propagates at the
     /// call and hands `.len()` the payload.
@@ -458,7 +456,6 @@ impl Interpreter {
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
-            pattern_unwraps: HashMap::new(),
             mutate_writebacks: Vec::new(),
             yield_stack: Vec::new(),
         }
@@ -498,7 +495,6 @@ impl Interpreter {
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
-            pattern_unwraps: HashMap::new(),
             build_state: None,
             source_info: None,
             mutate_writebacks: Vec::new(),
@@ -544,7 +540,6 @@ impl Interpreter {
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
-            pattern_unwraps: HashMap::new(),
             mutate_writebacks: Vec::new(),
             yield_stack: Vec::new(),
         };
@@ -645,7 +640,6 @@ impl Interpreter {
         self.error_wraps = typed.error_wraps.clone();
         self.try_chain_placement = typed.try_chain_placement.clone();
         self.fallback_keeps_shape = typed.fallback_keeps_shape.clone();
-        self.pattern_unwraps = typed.pattern_unwraps.clone();
         self.operator_targets = typed.operator_targets.clone();
         self.escaping_closures = typed.escaping_closures.clone();
         self.task_bound_closures = typed.task_bound_closures.clone();
@@ -810,7 +804,6 @@ impl Interpreter {
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();
-        child.pattern_unwraps = self.pattern_unwraps.clone();
         // A task that panics reports `file:line:col`, so the child needs the
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.

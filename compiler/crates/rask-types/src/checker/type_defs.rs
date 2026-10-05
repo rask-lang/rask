@@ -465,12 +465,6 @@ pub struct TypedProgram {
     /// path hands back the left operand unchanged — unwrapping it would throw
     /// away the layer the chain is still carrying.
     pub fallback_keeps_shape: std::collections::HashSet<NodeId>,
-    /// CF12: `if x is Variant` tests where the variant has one payload and `x`
-    /// names a variable, so inside the branch `x` is the payload. Keyed by the
-    /// `if` node; the value is the pattern to match in place of the written
-    /// one (`Variant(x)`), which is all a backend needs to bind it. Not `while`:
-    /// the loop body has to be able to move the tested name along.
-    pub pattern_unwraps: HashMap<NodeId, rask_ast::expr::Pattern>,
     /// CM1: closure literals that outlive the frame that built them, so their
     /// captures travel with them instead of being pointed at. Worked out by the
     /// ownership pass and written back here, because lowering and the

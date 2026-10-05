@@ -323,7 +323,6 @@ impl<'a> MirContext<'a> {
             operator_targets: &records.operator_targets,
             error_wraps: &records.error_wraps,
             fallback_keeps_shape: &records.fallback_keeps_shape,
-            pattern_unwraps: &records.pattern_unwraps,
             escaping_closures: &records.escaping_closures,
             field_reuses: &records.field_reuses,
             task_bound_closures: &records.task_bound_closures,
@@ -474,9 +473,6 @@ pub struct MirContext<'a> {
     /// ER14a: `??` sites whose right side is still wrapped, so the present
     /// path hands back the left operand instead of its payload.
     pub fallback_keeps_shape: &'a std::collections::HashSet<NodeId>,
-    /// CF12: `if x is Variant` sites that bind the payload to `x`, with the
-    /// pattern to match instead of the written one.
-    pub pattern_unwraps: &'a HashMap<NodeId, rask_ast::expr::Pattern>,
     /// CM1: closure literals that outlive the frame that built them. Those
     /// carry their captures; the rest hold the address and write through it.
     pub escaping_closures: &'a std::collections::HashSet<NodeId>,
@@ -568,8 +564,6 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_ERROR_WRAPS: std::sync::LazyLock<HashMap<NodeId, rask_types::ErrorWrap>> =
             std::sync::LazyLock::new(HashMap::new);
-        static EMPTY_PATTERN_UNWRAPS: std::sync::LazyLock<HashMap<NodeId, rask_ast::expr::Pattern>> =
-            std::sync::LazyLock::new(HashMap::new);
         static EMPTY_COALESCE_SHAPE: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_ESCAPING: std::sync::LazyLock<std::collections::HashSet<NodeId>> =
@@ -608,7 +602,6 @@ impl<'a> MirContext<'a> {
             interface_coercions: &EMPTY_COERCIONS,
             error_wraps: &EMPTY_ERROR_WRAPS,
             fallback_keeps_shape: &EMPTY_COALESCE_SHAPE,
-            pattern_unwraps: &EMPTY_PATTERN_UNWRAPS,
             escaping_closures: &EMPTY_ESCAPING,
             field_reuses: &EMPTY_ESCAPING,
             task_bound_closures: &EMPTY_ESCAPING,
@@ -5496,7 +5489,6 @@ impl<'a> MirLowerer<'a> {
                 if let Some(e) = end { self.walk_free_vars(e, bound, seen, free); }
             }
             ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch, else_binding: _ } => {
-                let pattern = self.ctx.pattern_unwraps.get(&expr.id).unwrap_or(pattern);
                 self.walk_free_vars(inner, bound, seen, free);
                 let mut then_bound = bound.clone();
                 collect_pattern_names(pattern, &mut then_bound);
@@ -7208,7 +7200,6 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
-        let empty_pattern_unwraps = HashMap::new();
         let empty_escaping = std::collections::HashSet::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
@@ -7238,7 +7229,6 @@ mod tests {
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
-            pattern_unwraps: &empty_pattern_unwraps,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
@@ -7292,7 +7282,6 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
-        let empty_pattern_unwraps = HashMap::new();
         let empty_escaping = std::collections::HashSet::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
@@ -7322,7 +7311,6 @@ mod tests {
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
-            pattern_unwraps: &empty_pattern_unwraps,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,
@@ -7385,7 +7373,6 @@ mod tests {
         let empty_coercions = HashMap::new();
         let empty_error_wraps = HashMap::new();
         let empty_fallback_shape = std::collections::HashSet::new();
-        let empty_pattern_unwraps = HashMap::new();
         let empty_escaping = std::collections::HashSet::new();
         let empty_try_placement = HashMap::new();
         let empty_rewrites = HashMap::new();
@@ -7415,7 +7402,6 @@ mod tests {
             interface_coercions: &empty_coercions,
             error_wraps: &empty_error_wraps,
             fallback_keeps_shape: &empty_fallback_shape,
-            pattern_unwraps: &empty_pattern_unwraps,
             escaping_closures: &empty_escaping,
             field_reuses: &empty_escaping,
             task_bound_closures: &empty_escaping,

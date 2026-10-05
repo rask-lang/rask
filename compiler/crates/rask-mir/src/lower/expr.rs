@@ -1370,8 +1370,6 @@ impl<'a> MirLowerer<'a> {
         // lookup from outside any expression is reported as `<outside>` rather
         // than inheriting the last one walked.
         let _kind_scope = crate::fallback::KindScope;
-        // The arms that bind a field named `expr` hide this one.
-        let node_id = expr.id;
         match &expr.kind {
             // Literals
             ExprKind::Int(val, suffix) => self.lower_int(expr, val, suffix),
@@ -1460,8 +1458,6 @@ impl<'a> MirLowerer<'a> {
 
             // If-let (if expr is Pattern { then } else { else })
             ExprKind::IfLet { expr, pattern, then_branch, else_branch, else_binding } => {
-                // CF12: `if x is Variant` binds the payload to `x`.
-                let pattern = self.ctx.pattern_unwraps.get(&node_id).unwrap_or(pattern);
                 self.lower_if_let(expr, pattern, then_branch, else_branch.as_deref(), else_binding.as_deref())
             }
 

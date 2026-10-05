@@ -83,7 +83,7 @@ if error {
 | **CF9: Not exhaustive** | Unmatched patterns skip the block (not an error) |
 | **CF10: Combined conditions** | Bindings from `is` available after `&&` in same condition |
 | **CF11: Linear resources** | Non-Copy values moved into pattern; must handle both match/no-match paths |
-| **CF12: Implicit unwrap** | `if x is Variant` or `if x is Enum.Variant` (no binding) unwraps a single-payload variant, reusing the name `x` inside the branch. A multi-field or empty variant, or a tested expression that isn't a variable, only tests. `while x is Variant` only tests, so the body can reassign `x` |
+| **CF12: A bare variant tests** | `x is Variant` or `x is Enum.Variant` with no payload pattern tests the tag and binds nothing, whatever the variant carries. A payload is named by writing it: `x is Variant(v)` |
 
 ```rask
 // Pattern match with explicit binding
@@ -91,9 +91,9 @@ if state is Connected(sock) {
     sock.send(data)
 }
 
-// Implicit unwrap for single-payload variants
+// A bare variant only tests
 if event is Tick {
-    process(event)  // event unwrapped, same name
+    count += 1
 }
 
 // Optionals use the `?` predicate + `as` binding
@@ -452,7 +452,7 @@ The diverging `else` requirement (CF13) ensures the binding is always valid afte
 
 **Why the guard stayed enum-only.** An earlier draft dropped the `is` clause so the guard covered `T?` and `T or E` too, replacing the `x ?? return` idiom. It was cut: `const v = x else { … }` doesn't name the condition, and the two-branch builtins didn't need a construct anyway — `??` and `catch` already handle the miss inline with the exit written out and the payload bound.
 
-**CF12 (implicit unwrap):** For single-payload variants on user-defined enums, omitting the binding in `if x is Variant` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring. Optionals use dedicated operators (`?`, `? as v`, `??`); results use `catch`, `try`, and `is` with a type pattern.
+**CF12 (no implicit unwrap):** An earlier draft had `if x is Variant` rebind `x` to a single payload inside the branch. I dropped it for the same reason the error-model redesign dropped `if x is Some { use(x) }` (its P3): the name's type changes with nothing written to say so, and `while s is Next { s = step(s) }` can't be written at all. Naming the payload costs one word, `x is Variant(v)`. Optionals use dedicated operators (`?`, `? as v`, `??`); results use `catch`, `try`, and `is` with a type pattern.
 
 **CF22-25 (labels):** Labels enable breaking/continuing outer loops without extra flags or state. The `label:` syntax is clear and unambiguous.
 
