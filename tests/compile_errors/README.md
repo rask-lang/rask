@@ -109,6 +109,7 @@ go down.
 |------|--------------|
 | [match_errors.rk](match_errors.rk) | Non-exhaustive match, wildcard on linear resource, guard without diverge, or-pattern binding mismatch |
 | [nonexhaustive_match.rk](nonexhaustive_match.rk) | Non-exhaustive enum match |
+| [guarded_match_not_exhaustive.rk](guarded_match_not_exhaustive.rk) | A guarded arm covers nothing (#1402): a match whose only catch-all, or only arm for a variant, is guarded is non-exhaustive (E0864, E0340). It used to check and stop at runtime |
 
 ### Closures
 

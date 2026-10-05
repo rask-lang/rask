@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A guarded arm covers nothing (#1402). When its guard is false the value
+// goes on to the arms below, so a match whose only catch-all, or only arm for
+// a variant, is guarded isn't exhaustive. These used to check, and stop at
+// runtime with "no matching arm in match".
+
+enum Light {
+    Red
+    Green
+}
+
+func size(n: i32) -> string {
+    // ERROR: E0864, the only catch-all is guarded
+    return match n {
+        x if x > 5 => "big"
+    }
+}
+
+func go(l: Light, late: bool) -> bool {
+    // ERROR: E0340, `Red` only has a guarded arm
+    return match l {
+        Red if late => false
+        Green => true
+    }
+}
+
+// Fine: an unguarded arm takes what the guard turns away.
+func size_ok(n: i32) -> string {
+    return match n {
+        x if x > 5 => "big"
+        _ => "small"
+    }
+}
+
+func main() {
+    println(size(1))
+    println(go(Light.Red, true))
+    println(size_ok(1))
+}

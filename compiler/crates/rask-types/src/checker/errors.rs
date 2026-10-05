@@ -520,6 +520,8 @@ pub enum TypeError {
     #[error("this `match` on `{ty}` has no arm for the values the others don't name")]
     MatchNeedsWildcard {
         ty: String,
+        /// A guarded arm would have taken the rest, had it no guard.
+        guarded: bool,
         span: Span,
     },
     /// `break 42` from a `while` or a `for` (ctrl.flow/CF20, CF21).
@@ -759,6 +761,8 @@ pub enum TypeError {
     #[error("non-exhaustive match: missing variants {missing:?}")]
     NonExhaustiveMatch {
         missing: Vec<String>,
+        /// The match has guarded arms, which don't count toward coverage.
+        guarded: bool,
         span: Span,
     },
 

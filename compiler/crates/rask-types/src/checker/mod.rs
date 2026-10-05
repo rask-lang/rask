@@ -480,7 +480,7 @@ pub struct TypeChecker {
     /// `let x = 5` is an unsuffixed literal, so its type isn't `i32` until
     /// defaults land — and asking then is the whole point, since a match on an
     /// integer is exactly the shape that needs a wildcard (#1090).
-    pub(super) pending_match_wildcards: Vec<(Type, rask_ast::Span)>,
+    pub(super) pending_match_wildcards: Vec<(Type, bool, rask_ast::Span)>,
     /// `b.(comptime { … })` blocks whose value was still open when the access
     /// was walked. An unsuffixed literal is exactly that, and `comptime { 42 }`
     /// is the case worth catching (#1090).

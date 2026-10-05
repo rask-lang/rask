@@ -7,6 +7,10 @@
 use crate::{Diagnostic, ToDiagnostic};
 use rask_ast::Span;
 
+/// A match with guarded arms that still misses something: say why the guarded
+/// arm didn't count, since it looks like it covers the case.
+const GUARDED_ARMS_NOTE: &str = "an arm with an `if` guard covers nothing: when the guard is false the value goes on to the arms below, so the rest still needs an unguarded arm";
+
 /// Base name of a rendered type: `Map<_, _>` -> `Map`, `Vec<string>?` -> `Vec`.
 fn type_base(ty: &str) -> &str {
     let ty = ty.trim_end_matches(['?', '!']);
@@ -2273,18 +2277,23 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_help("use the \"Make error type explicit\" quick action to fill in the inferred union")
             }
 
-            NonExhaustiveMatch { missing, span } => {
+            NonExhaustiveMatch { missing, guarded, span } => {
                 let missing_str = missing.join(", ");
-                Diagnostic::error(format!("non-exhaustive match: missing {}", missing_str))
+                let d = Diagnostic::error(format!("non-exhaustive match: missing {}", missing_str))
                     .with_code("E0340")
                     .with_primary(*span, format!("missing variants: {}", missing_str))
                     .with_help("add the missing variants or a wildcard `_` arm")
                     .with_fix("add the missing variants or a wildcard `_` arm")
-                    .with_why("match expressions must cover all possible values")
+                    .with_why("match expressions must cover all possible values");
+                if *guarded {
+                    d.with_note(GUARDED_ARMS_NOTE)
+                } else {
+                    d
+                }
             }
 
-            MatchNeedsWildcard { ty, span } => {
-                Diagnostic::error(format!(
+            MatchNeedsWildcard { ty, guarded, span } => {
+                let d = Diagnostic::error(format!(
                     "this `match` on `{}` has no arm for the values the others don't name",
                     ty
                 ))
@@ -2296,7 +2305,12 @@ impl ToDiagnostic for rask_types::TypeError {
                      needs an arm that takes whatever is left. Without it there is no answer \
                      for the values nobody wrote down",
                     ty
-                ))
+                ));
+                if *guarded {
+                    d.with_note(GUARDED_ARMS_NOTE)
+                } else {
+                    d
+                }
             }
 
             BreakValueFromStatementLoop { form, header, span } => {

@@ -4831,8 +4831,16 @@ impl TypeChecker {
     }
 
     /// Check that a match on an enum or `T or E` result covers all branches.
+    ///
+    /// A guarded arm covers nothing: its guard can be false, and then the
+    /// value goes on to the arms below. Counting it let `match n { x if x > 5
+    /// => … }` through the checker, to stop at runtime with "no matching arm"
+    /// (#1402).
     fn check_match_exhaustiveness(&mut self, scrutinee_ty: &Type, arms: &[MatchArm], span: Span) {
         let resolved = self.ctx.apply(scrutinee_ty);
+        let guarded = arms.iter().any(|a| a.guard.is_some());
+        let unguarded: Vec<&MatchArm> = arms.iter().filter(|a| a.guard.is_none()).collect();
+        let arms = unguarded;
 
         // ER30: exhaustiveness check for `T or E` result matches.
         // Collect required coverage: ok type + all error leaf types.
@@ -4851,7 +4859,7 @@ impl TypeChecker {
             let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
             let mut variants_hit: std::collections::HashMap<String, std::collections::HashSet<String>> =
                 std::collections::HashMap::new();
-            for arm in arms {
+            for arm in &arms {
                 self.collect_result_covered(
                     &arm.pattern, &required, &mut covered, &mut variants_hit, &mut has_wildcard,
                 );
@@ -4899,7 +4907,7 @@ impl TypeChecker {
                 .collect();
 
             if !missing.is_empty() {
-                self.errors.push(TypeError::NonExhaustiveMatch { missing, span });
+                self.errors.push(TypeError::NonExhaustiveMatch { missing, guarded, span });
             }
             return;
         }
@@ -4917,7 +4925,7 @@ impl TypeChecker {
         //               interp: panic, exit 101
         if Self::match_needs_wildcard(&resolved) || matches!(resolved, Type::Var(_)) {
             let mut has_wildcard = false;
-            for arm in arms {
+            for arm in &arms {
                 Self::collect_open_pattern(&arm.pattern, &mut has_wildcard);
             }
             if has_wildcard {
@@ -4927,11 +4935,12 @@ impl TypeChecker {
             // defaults land, and that is the case this check is for. Ask again
             // after solving rather than guessing now.
             if matches!(resolved, Type::Var(_)) {
-                self.pending_match_wildcards.push((resolved, span));
+                self.pending_match_wildcards.push((resolved, guarded, span));
                 return;
             }
             self.errors.push(TypeError::MatchNeedsWildcard {
                 ty: self.fmt_ty(&resolved),
+                guarded,
                 span,
             });
             return;
@@ -4953,7 +4962,7 @@ impl TypeChecker {
         // Collect covered variant names from patterns
         let mut has_wildcard = false;
         let mut covered = std::collections::HashSet::new();
-        for arm in arms {
+        for arm in &arms {
             self.collect_covered_variants(&arm.pattern, &mut covered, &mut has_wildcard, &all_variants);
         }
 
@@ -4969,6 +4978,7 @@ impl TypeChecker {
         if !missing.is_empty() {
             self.errors.push(TypeError::NonExhaustiveMatch {
                 missing,
+                guarded,
                 span,
             });
         }
@@ -4994,11 +5004,12 @@ impl TypeChecker {
     /// The deferred half: matches whose scrutinee settled into a number, a
     /// string or a char after the body was walked.
     pub(super) fn validate_pending_match_wildcards(&mut self) {
-        for (ty, span) in std::mem::take(&mut self.pending_match_wildcards) {
+        for (ty, guarded, span) in std::mem::take(&mut self.pending_match_wildcards) {
             let ty = self.ctx.apply(&ty);
             if Self::match_needs_wildcard(&ty) {
                 self.errors.push(TypeError::MatchNeedsWildcard {
                     ty: self.fmt_ty(&ty),
+                    guarded,
                     span,
                 });
             }
