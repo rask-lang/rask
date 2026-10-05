@@ -716,7 +716,8 @@ static int thread_sleep_cancellable(int64_t ns) {
 int64_t rask_sleep_ns(int64_t ns) {
     int cancelled = 0;
 #ifdef RASK_SIM
-    if (rask_sim_active()) {
+    // A green task sleeps on green.c's timers, which run on sim's clock.
+    if (rask_sim_active() && !rask_fiber_active()) {
         RaskCancelWake w = { .wake = wake_sim_sleeper, .a = rask_sim_self() };
         cancelled = rask_cancel_wait_begin(&w);
         if (!cancelled) {

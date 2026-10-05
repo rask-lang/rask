@@ -1137,9 +1137,9 @@ void    rask_panic_set_task_id(int64_t id);
 // two are epoll and io_uring — so off Linux there is no green scheduler and
 // nothing below this line is defined. `LINUX_SOURCES` in
 // rask-cli/src/commands/link.rs and `LINUX_ONLY` in runtime/Makefile decide the
-// same thing for the build; this is how a portable source asks. Sim mode
-// (sim.c) builds on the one-thread-per-task path, so it leaves green.c out too.
-#if defined(__linux__) && !defined(RASK_NO_GREEN) && !defined(RASK_SIM)
+// same thing for the build; this is how a portable source asks. Sim keeps it:
+// green.c's workers are then threads sim.c schedules from the seed.
+#if defined(__linux__) && !defined(RASK_NO_GREEN)
 #define RASK_HAS_GREEN 1
 #else
 #define RASK_HAS_GREEN 0

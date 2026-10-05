@@ -73,7 +73,9 @@ pub struct LinkOptions {
     /// test` run it and delete it. Only the first kind is worth collecting
     /// debug symbols for — see the `dsymutil` call in `link_executable_with`.
     pub keeps_binary: bool,
-    /// Link the sim runtime (sim.md): `-DRASK_SIM`, and none of green.c.
+    /// Link the sim runtime (sim.md): `-DRASK_SIM`. green.c stays in: under
+    /// sim its workers are threads the seed schedules, so the run queues,
+    /// steals and preemption that ship are the ones a seed replays (#1381).
     pub sim: bool,
 }
 
@@ -141,8 +143,7 @@ impl TargetConfig {
                 // machine exercised that — which is how `spawn` came to fail
                 // at link on macOS for two releases (#1180). This is the seam
                 // that lets a Linux gate check it.
-                // Sim runs tasks on the one-thread-per-task path too.
-                if !no_green() && !sim {
+                if !no_green() {
                     sources.extend(LINUX_SOURCES.iter().map(|s| s.to_string()));
                 }
             }

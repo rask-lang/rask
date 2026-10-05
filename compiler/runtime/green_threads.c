@@ -88,6 +88,24 @@ void rask_fiber_rwlock_wrlock(pthread_rwlock_t *l, const char *what) {
     pthread_rwlock_wrlock(l);
 }
 int rask_fiber_sleep_ns(int64_t ns) { return rask_sleep_ns(ns) != 0; }
+// Only called on a fiber, and nothing here is one.
+void rask_fiber_park(const void *key, const char *what) {
+    (void)key;
+    (void)what;
+    abort();
+}
+
+// No scheduler, so no per-thread state of its own for sim to carry.
+size_t rask_green_thread_tls_size(void) { return 0; }
+void rask_green_thread_tls_swap(void *blob) { (void)blob; }
+
+#ifdef RASK_SIM
+size_t rask_green_describe_waits(char *buf, size_t cap) {
+    (void)buf;
+    (void)cap;
+    return 0;
+}
+#endif
 
 // No fibers to park, so waiting on a socket blocks the thread.
 int rask_io_wait(int64_t fd, int64_t want_write) {
