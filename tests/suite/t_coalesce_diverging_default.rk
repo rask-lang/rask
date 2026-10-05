@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `x ?? { continue }` has the type of x's payload: the default never produces
+// a value. The checker left the result's type open, so a `match` on it with
+// bare variant names couldn't resolve the payload bindings, and native
+// lowering stopped on "method `len` on receiver of unresolved type".
+
+enum Cmd {
+    Insert(i64, string)
+    Delete(i64)
+}
+
+func parse(i: i64) -> Cmd? {
+    if i == 1 {
+        return none
+    }
+    if i % 2 == 0 {
+        return Cmd.Insert(i, "text {i}")
+    }
+    return Cmd.Delete(i)
+}
+
+test "a match on a diverging ?? reads the payload's type" {
+    mut lengths = 0
+    mut deletes = 0
+    for i in 0..6 {
+        let cmd = parse(i) ?? {
+            continue
+        }
+        match cmd {
+            Insert(at, text) => lengths += text.len()
+            Delete(at) => deletes += 1
+        }
+    }
+    assert lengths == 18
+    assert deletes == 2
+}

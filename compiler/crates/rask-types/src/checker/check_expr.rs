@@ -2151,6 +2151,17 @@ impl TypeChecker {
                 // side's shape, and a method-call return type often isn't
                 // known yet. Hand the whole decision to the solver.
                 let result = self.ctx.fresh_var();
+                // A default that never finishes — `?? { continue }`,
+                // `?? return e` — can only leave the payload, and the operand's
+                // type already says what that is. Settled now rather than by the
+                // solver, because what comes next may need it: a `match` on the
+                // result with bare `Insert(a, b)` arms types `b` from it, and
+                // with a variable there `b` stayed one and native couldn't call
+                // a method on it.
+                if let (Some(inner), Type::Never) = (resolved_val.as_option(), self.ctx.apply(&def_ty)) {
+                    let inner = inner.clone();
+                    let _ = self.unify(&result, &inner, expr.span);
+                }
                 self.ctx.add_constraint(TypeConstraint::Coalesce {
                     node: expr.id,
                     value: val_ty,
