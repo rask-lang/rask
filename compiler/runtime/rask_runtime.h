@@ -352,6 +352,9 @@ extern int  rask_string_debug_enabled;
 // `rask_alloc`, not just strings — a clean program ends at exactly zero.
 extern int  rask_leak_check_enabled;
 void        rask_leak_check(void);
+// A test that ended by unwinding (a skip, or a panic) left `n` allocations
+// behind in the frames it abandoned. Not counted as leaked — see test.c.
+void        rask_leak_forgive_unwound(int64_t n);
 
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);

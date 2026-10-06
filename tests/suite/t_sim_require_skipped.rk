@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Outside sim, `sim.require(faults: [...])` skips the rest of the test. The
+// skip unwinds past the frees at the end of the test's frame, so the fault
+// list was left behind, and RASK_LEAK_CHECK failed the whole file with exit
+// 97 (#1409). Skipped first on purpose: the order is what showed it.
+
+import sim
+import sim.Fault
+
+test "skipped outside sim" {
+    sim.require(faults: [Fault.IoError])
+    let v: Vec<i64> = [1, 2]
+    assert v.len() == 2
+}
+
+test "runs either way" {
+    let v: Vec<i64> = [1, 2, 3]
+    assert v.len() == 3
+}
