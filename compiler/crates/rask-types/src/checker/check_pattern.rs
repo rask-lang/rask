@@ -16,6 +16,10 @@ use super::TypeChecker;
 
 use crate::types::{GenericArg, Type};
 
+/// The name `guard_type_test_as_binding` binds. Never in scope: only the
+/// type it gets is read.
+const GUARD_BINDING: &str = "<guard>";
+
 /// Recursively resolve `UnresolvedNamed` and `UnresolvedGeneric` to `Named`
 /// and `Generic` where the type table knows the name. Matches `resolve_named`
 /// but walks into `Option`, `Result`, `Generic`, `Tuple`, `Array`,
@@ -229,6 +233,36 @@ impl TypeChecker {
             Type::Named(_) if rask_stdlib::modules::is_module(name) => None,
             _ => Some(ty),
         }
+    }
+
+    /// A bare type test in a guard, `let p = x is Point else { … }`, as the
+    /// `as` form it means: `x is Point as <guard>`. `None` when the pattern
+    /// isn't a type test against a two-branch value, or already binds.
+    ///
+    /// The guard's value is the narrowed one either way. With nothing bound
+    /// it used to be the success payload whatever the pattern named, which on
+    /// a flat `T? or E` is the `T?` around the `Point`, and on an err-side
+    /// test is the wrong branch entirely (#1455).
+    pub(super) fn guard_type_test_as_binding(&mut self, pattern: &Pattern, scrutinee_ty: &Type) -> Option<Pattern> {
+        if matches!(self.ctx.apply(scrutinee_ty), Type::Var(_)) {
+            self.solve_constraints();
+        }
+        if !matches!(self.ctx.apply(scrutinee_ty), Type::Result { .. }) {
+            return None;
+        }
+        let ty = match pattern {
+            Pattern::TypePat { ty: TypeExpr::NoneType, .. } => return None,
+            Pattern::TypePat { ty, binding: None } => ty.clone(),
+            Pattern::Ident(name) if !name.contains('.') => {
+                if self.variant_of_scrutinee(name, scrutinee_ty).is_some() {
+                    return None;
+                }
+                self.pattern_type_name(name)?;
+                TypeExpr::named(name.as_str())
+            }
+            _ => return None,
+        };
+        Some(Pattern::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) })
     }
 
     pub(super) fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {

@@ -1865,13 +1865,32 @@ impl<'a> MirLowerer<'a> {
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:try_else_payload"));
             self.bind_tested_pattern(
                 &test, pattern, expr, val.clone(), Some(payload_ty.clone()), is_niche, &val_ty);
-            // The guard's own value is what the pattern binds, or with nothing
-            // bound, the outer payload — the checker's rule. On a flat
-            // `T? or E` those are different layers: `is string as s` yields
-            // the string, a bare `is string` the `string?` around it.
-            let bound_leaf = test.flat_payload.as_ref().filter(|_| !pattern.bound_names().is_empty());
-            let (src, payload_ty, src_niche) = match bound_leaf {
+            // The guard's own value is the narrowed one, whether or not the
+            // pattern binds it — the checker reads a bare type test as its
+            // `as` form. On a flat `T? or E` that's the leaf inside the inner
+            // option: a bare `is Point` used to yield the `Point?` around it
+            // (#1455). `none` names a leaf with nothing in it, so it keeps the
+            // outer payload.
+            let names_none = matches!(pattern, Pattern::TypePat { ty: TypeExpr::NoneType, .. });
+            let leaf = test.flat_payload.as_ref().filter(|_| !names_none);
+            // A type test on the err side reads the err payload, the branch
+            // the test just checked. It used to read the success payload's
+            // type out of the same slot.
+            // A variant of the error enum or a member of an error union
+            // narrows further than the err side, so those stay as they were.
+            let err_side = leaf.is_none()
+                && matches!(pattern, Pattern::Ident(_) | Pattern::TypePat { .. })
+                && !names_none
+                && matches!(val_ty, MirType::Result { .. })
+                && self.err_variant_of_result(pattern, &val_ty).is_none()
+                && self.union_member_of_result(pattern, &val_ty).is_none()
+                && self.pattern_tag_in_type_context(pattern, &val_ty) == 1;
+            let (src, payload_ty, src_niche) = match leaf {
                 Some((inner, inner_payload)) => (MirOperand::Local(*inner), inner_payload.clone(), false),
+                None if err_side => {
+                    let err_ty = self.err_type_of(expr, &val_ty).unwrap_or(payload_ty);
+                    (val, err_ty, is_niche)
+                }
                 None => (val, payload_ty, is_niche),
             };
             let payload = self.emit_option_payload(src, payload_ty.clone(), src_niche);

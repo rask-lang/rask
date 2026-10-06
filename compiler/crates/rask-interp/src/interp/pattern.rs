@@ -27,6 +27,26 @@ impl Interpreter {
             || matches!(base, "Vec" | "Map")
     }
 
+    /// The value a bare type test in a guard narrows to — `let p = x is
+    /// Point else …` — read off its `as` form. `None` when the pattern isn't
+    /// a type test against a two-branch value, or already binds.
+    pub(super) fn guard_type_test_value(&self, pattern: &Pattern, value: &Value) -> Option<Value> {
+        const GUARD: &str = "<guard>";
+        if !matches!(value, Value::Enum { name, .. } if name == "Result") {
+            return None;
+        }
+        let ty = match pattern {
+            Pattern::TypePat { ty: TypeExpr::NoneType, .. } => return None,
+            Pattern::TypePat { ty, binding: None } => ty.clone(),
+            Pattern::Ident(name) if !name.contains('.') && self.is_known_type_name(name) => {
+                TypeExpr::named(name.as_str())
+            }
+            _ => return None,
+        };
+        let as_form = Pattern::TypePat { ty, binding: Some(GUARD.to_string()) };
+        self.match_pattern(&as_form, value)?.remove(GUARD)
+    }
+
     pub(super) fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Option<HashMap<String, Value>> {
         match pattern {
             Pattern::Wildcard => Some(HashMap::new()),

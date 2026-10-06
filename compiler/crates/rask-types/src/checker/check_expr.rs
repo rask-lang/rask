@@ -970,7 +970,12 @@ impl TypeChecker {
                 // Check pattern and extract bindings
                 // Note: Bindings are NOT added to scope here - they're added by the stmt handler
                 // We just return them via the expression type mechanism
-                let bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                //
+                // A bare type test is checked as the `as` form it means, so
+                // its binding carries the narrowed type.
+                let as_bound = self.guard_type_test_as_binding(pattern, &value_ty);
+                let bindings =
+                    self.check_pattern(as_bound.as_ref().unwrap_or(pattern), &value_ty, expr.span);
 
                 // For a guard pattern like `const v = opt is Some else { return }`,
                 // the expression itself evaluates to the inner type

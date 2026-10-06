@@ -2202,6 +2202,12 @@ impl Interpreter {
                     for (name, val) in &bindings {
                         self.env.define(name.clone(), val.clone());
                     }
+                    // A bare type test yields what its `as` form would bind,
+                    // as the checker types it: on a flat `T? or E` the `T`,
+                    // not the `T?` around it (#1455).
+                    if let Some(narrowed) = self.guard_type_test_value(pattern, &value) {
+                        return Ok(narrowed);
+                    }
                     // The guard's value is what the pattern binds, as the
                     // checker types it. On a flat `T? or E` the outer payload
                     // is the `T?`, so `is string as s` handed back an option
