@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.clone()` on a generic struct or enum holding a vector.
+//
+// Natively this read freed memory: `Slot<i64>.clone()` printed a length of 0,
+// or aborted with "allocation size overflow". A generic type had no derived
+// `clone` body, so MIR copied it in place, and the source's drop landed
+// between the word copy and the vector's deep copy (#1434). The checker now
+// writes `clone` for a generic type too, once over its parameters.
+
+enum Slot<T> {
+    Empty
+    Many(Vec<T>)
+    Named(string)
+}
+
+struct Bag<T> {
+    label: string
+    items: Vec<T>
+}
+
+struct Extras<T> {
+    first: T?
+    pair: (T, string)
+    count: i64
+}
+
+enum List<T> {
+    Nil
+    Cons(T, Vec<List<T>>)
+}
+
+struct Point {
+    x: i64
+    tag: string
+}
+
+func list_len(l: List<string>) -> i64 {
+    match l {
+        List.Nil => { return 0 }
+        List.Cons(_, rest) => {
+            mut n = 1
+            for r in rest {
+                n += list_len(r)
+            }
+            return n
+        }
+    }
+}
+
+test "generic enum holding a vector" {
+    let xs: Vec<i64> = [1, 2, 3]
+    let s: Slot<i64> = Slot.Many(xs)
+    let c = s.clone()
+    if c is Many(v) {
+        assert v.len() == 3
+        assert v[2] == 3
+    } else {
+        assert false
+    }
+    if s is Many(v) {
+        assert v.len() == 3
+    }
+    let n: Slot<i64> = Slot.Named("n")
+    if n.clone() is Named(name) {
+        assert name == "n"
+    } else {
+        assert false
+    }
+}
+
+test "generic enum of strings" {
+    let xs: Vec<string> = ["a", "bb"]
+    let s: Slot<string> = Slot.Many(xs)
+    let c = s.clone()
+    if c is Many(v) {
+        assert v[1] == "bb"
+    } else {
+        assert false
+    }
+}
+
+test "generic struct whose last field is a vector" {
+    let items: Vec<Point> = [Point { x: 1, tag: "p" }]
+    let b: Bag<Point> = Bag { label: "pts", items: items }
+    let c = b.clone()
+    assert c.label == "pts"
+    assert c.items.len() == 1
+    assert c.items[0].tag == "p"
+    assert b.items[0].x == 1
+}
+
+test "optional and tuple fields over the parameter" {
+    let e: Extras<string> = Extras { first: "f", pair: ("p", "q"), count: 2 }
+    let c = e.clone()
+    assert c.first! == "f"
+    assert c.pair.0 == "p"
+    assert c.pair.1 == "q"
+    assert c.count == 2
+    let none_first: Extras<string> = Extras { first: none, pair: ("x", "y"), count: 0 }
+    assert none_first.clone().first is none
+}
+
+test "recursive generic enum" {
+    let leaf: List<string> = List.Cons("b", [])
+    let l: List<string> = List.Cons("a", [leaf, List.Nil])
+    let c = l.clone()
+    assert list_len(c) == 2
+    assert list_len(l) == 2
+}

@@ -1216,6 +1216,7 @@ mod tests {
             derived_decls: Vec::new(),
             wrapper_eq_calls: std::collections::HashMap::new(),
             wrapper_fns: Vec::new(),
+            derived_generic_methods: std::collections::HashSet::new(),
         }
     }
 

@@ -1933,8 +1933,22 @@ impl<'a> Monomorphizer<'a> {
                                         qualified_names.len(),
                                     );
                                 }
+                                // Not a generic type's derived method. With no
+                                // receiver to bind its parameters from, the copy
+                                // is the template itself, and its `x.clone()` on
+                                // a bare `T` payload can't be lowered. A derived
+                                // method is only ever reached through a call the
+                                // checker pinned to its type, which binds `T`
+                                // (#1434). Hand-written generic methods still
+                                // widen: a `v.take_while(p)` whose receiver the
+                                // checker couldn't name depends on it.
+                                let derived = self
+                                    .typed
+                                    .map(|t| &t.derived_generic_methods);
                                 for qname in qualified_names.clone() {
-                                    self.enqueue(qname, type_args.clone());
+                                    if !derived.is_some_and(|d| d.contains(&qname)) {
+                                        self.enqueue(qname, type_args.clone());
+                                    }
                                 }
                             }
                         }

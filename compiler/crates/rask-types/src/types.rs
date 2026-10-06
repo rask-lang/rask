@@ -166,21 +166,24 @@ impl Type {
     /// layout — and they each had their own copy of the match. They agreed, but
     /// only until someone added a `Type` variant and updated one of them.
     pub fn has_unsolved_var(&self) -> bool {
+        self.contains(&|t| matches!(t, Type::Var(_)))
+    }
+
+    /// Whether this type, or any type inside it, satisfies `pred`.
+    pub fn contains(&self, pred: &impl Fn(&Type) -> bool) -> bool {
+        if pred(self) {
+            return true;
+        }
         match self {
-            Type::Var(_) => true,
-            Type::Result { ok, err } => ok.has_unsolved_var() || err.has_unsolved_var(),
-            Type::RawPtr(inner) => inner.has_unsolved_var(),
-            Type::Array { elem, .. } => elem.has_unsolved_var(),
-            Type::Tuple(elems) | Type::Union(elems) => {
-                elems.iter().any(Type::has_unsolved_var)
-            }
-            Type::Fn { params, ret } => {
-                params.iter().any(Type::has_unsolved_var) || ret.has_unsolved_var()
-            }
-            Type::SimdVector { elem, .. } => elem.has_unsolved_var(),
+            Type::Result { ok, err } => ok.contains(pred) || err.contains(pred),
+            Type::RawPtr(inner) => inner.contains(pred),
+            Type::Array { elem, .. } => elem.contains(pred),
+            Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(|t| t.contains(pred)),
+            Type::Fn { params, ret } => params.iter().any(|t| t.contains(pred)) || ret.contains(pred),
+            Type::SimdVector { elem, .. } => elem.contains(pred),
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
                 .iter()
-                .any(|a| matches!(a, GenericArg::Type(t) if t.has_unsolved_var())),
+                .any(|a| matches!(a, GenericArg::Type(t) if t.contains(pred))),
             _ => false,
         }
     }

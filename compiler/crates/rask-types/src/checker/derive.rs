@@ -82,9 +82,40 @@ impl TypeChecker {
                 methods.iter().any(|m| m.name == name && m.derived)
             };
             let mut written = Vec::new();
+            let mut params: &[String] = &[];
             match &def {
-                TypeDef::Struct { name, type_params, fields, methods, .. } => {
-                    if !type_params.is_empty() || annotations.contains(name) {
+                // A generic type gets its `clone`, written once over its
+                // parameters and instantiated like a hand-written method.
+                // Without one, native copied it in place, and freed the source
+                // before reading the vector it was deep-copying (#1434). `eq`,
+                // `hash` and `compare` say nothing about a bare `T`, so a
+                // generic type has none of them to write.
+                TypeDef::Struct { name, type_params, fields, methods, .. }
+                    if !type_params.is_empty() =>
+                {
+                    params = type_params;
+                    let parts: Vec<Type> = fields.iter().map(|(_, t)| t.clone()).collect();
+                    if program_type
+                        && !annotations.contains(name)
+                        && derived(methods, "clone")
+                        && self.clone_writable(&parts, params)
+                    {
+                        let body = self.struct_clone(name, fields, params);
+                        written.push(self.method("clone", false, "Self", body));
+                    }
+                }
+                TypeDef::Enum { name, type_params, variants, methods, .. }
+                    if !type_params.is_empty() =>
+                {
+                    params = type_params;
+                    let parts: Vec<Type> = variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect();
+                    if !variants.is_empty() && derived(methods, "clone") && self.clone_writable(&parts, params) {
+                        let body = self.enum_clone(name, variants, params);
+                        written.push(self.method("clone", false, "Self", body));
+                    }
+                }
+                TypeDef::Struct { name, fields, methods, .. } => {
+                    if annotations.contains(name) {
                         continue;
                     }
                     let has_body = program_type || !fields.is_empty();
@@ -101,12 +132,12 @@ impl TypeChecker {
                         written.push(self.method("compare", true, "Ordering", body));
                     }
                     if program_type && derived(methods, "clone") {
-                        let body = self.struct_clone(name, fields);
+                        let body = self.struct_clone(name, fields, &[]);
                         written.push(self.method("clone", false, "Self", body));
                     }
                 }
-                TypeDef::Enum { name, type_params, variants, methods, .. } => {
-                    if !type_params.is_empty() || variants.is_empty() {
+                TypeDef::Enum { name, variants, methods, .. } => {
+                    if variants.is_empty() {
                         continue;
                     }
                     if derived(methods, "eq") {
@@ -118,7 +149,7 @@ impl TypeChecker {
                         written.push(self.method("hash", false, "u64", body));
                     }
                     if derived(methods, "clone") {
-                        let body = self.enum_clone(name, variants);
+                        let body = self.enum_clone(name, variants, &[]);
                         written.push(self.method("clone", false, "Self", body));
                     }
                 }
@@ -140,12 +171,23 @@ impl TypeChecker {
                     }
                 }
             }
-            let target = self.types.type_name(id);
+            if !params.is_empty() {
+                let ty_name = self.types.type_name(id);
+                for n in &names {
+                    self.derived_generic_methods.insert(format!("{ty_name}_{n}"));
+                }
+            }
+            // `Slot<T>` for a generic type: its methods are checked, and later
+            // instantiated, over the type's own parameters.
+            let target = TypeExpr::generic(
+                self.types.type_name(id),
+                params.iter().map(|p| TypeExpr::named(p.as_str())).collect(),
+            );
             let decl = Decl {
                 id: self.derived_id(),
                 kind: DeclKind::Impl(ImplDecl {
                     interface: None,
-                    target_ty: TypeExpr::named(target.as_str()),
+                    target_ty: target,
                     methods: written,
                     is_unsafe: false,
                     is_pub: true,
@@ -311,12 +353,13 @@ impl TypeChecker {
     }
 
     /// `return S { a: self.a.clone(), n: self.n }`
-    fn struct_clone(&mut self, name: &str, fields: &[(String, Type)]) -> Vec<Stmt> {
+    fn struct_clone(&mut self, name: &str, fields: &[(String, Type)], params: &[String]) -> Vec<Stmt> {
+        let mut body = Vec::new();
         let inits = fields
             .iter()
             .map(|(f, ty)| {
                 let v = self.path("self", f);
-                rask_ast::expr::FieldInit { name: f.clone(), value: self.clone_of(v, ty) }
+                rask_ast::expr::FieldInit { name: f.clone(), value: self.clone_of(v, ty, params, &mut body) }
             })
             .collect();
         let lit = self.expr(ExprKind::StructLit {
@@ -325,7 +368,8 @@ impl TypeChecker {
             fields: inits,
             spread: None,
         });
-        vec![self.ret(lit)]
+        body.push(self.ret(lit));
+        body
     }
 
     /// ```text
@@ -339,11 +383,12 @@ impl TypeChecker {
     /// shares a buffer with it. A recursive enum recurses through its own
     /// `clone`: `Node(Vec<Tree>)` clones the vector, and the vector clones
     /// each `Tree` (#1428).
-    fn enum_clone(&mut self, name: &str, variants: &[(String, Vec<Type>)]) -> Vec<Stmt> {
+    fn enum_clone(&mut self, name: &str, variants: &[(String, Vec<Type>)], params: &[String]) -> Vec<Stmt> {
         let mut arms = Vec::new();
         for (variant, tys) in variants {
             let path = format!("{name}.{variant}");
             let ty_name = self.ident(name);
+            let mut body = Vec::new();
             let built = if tys.is_empty() {
                 self.field(ty_name, variant)
             } else {
@@ -352,12 +397,14 @@ impl TypeChecker {
                     .enumerate()
                     .map(|(i, ty)| {
                         let v = self.ident(&format!("__a{i}"));
-                        self.clone_of(v, ty)
+                        self.clone_of(v, ty, params, &mut body)
                     })
                     .collect();
                 self.method_call(ty_name, variant, parts)
             };
-            arms.push(arm(variant_pattern(&path, tys.len(), "__a"), self.ret_block(built)));
+            body.push(self.ret(built));
+            let block = self.block(body);
+            arms.push(arm(variant_pattern(&path, tys.len(), "__a"), block));
         }
         let scrutinee = self.ident("self");
         vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(scrutinee), arms })]
@@ -402,22 +449,31 @@ impl TypeChecker {
                                 continue;
                             }
                         }
+                        let named = imp.target_ty.clone();
+                        let name_self = |imp: &mut ImplDecl| {
+                            for m in &mut imp.methods {
+                                for p in &mut m.params {
+                                    if p.ty.as_ref().is_some_and(|t| t.is_name("Self")) {
+                                        p.ty = Some(named.clone());
+                                    }
+                                }
+                                if m.ret_ty.as_ref().is_some_and(|t| t.is_name("Self")) {
+                                    m.ret_ty = Some(named.clone());
+                                }
+                            }
+                        };
+                        // A generic type's `Self` is the type over its own
+                        // parameters, `Slot<T>`, which only the written name
+                        // carries. The parameters come into scope from there.
+                        if !named.args().is_empty() {
+                            name_self(&mut imp);
+                        }
                         let outer = self.current_self_type.replace(Type::Named(id));
                         for m in &imp.methods {
                             self.check_fn(m);
                         }
                         self.current_self_type = outer;
-                        let named = imp.target_ty.clone();
-                        for m in &mut imp.methods {
-                            for p in &mut m.params {
-                                if p.ty.as_ref().is_some_and(|t| t.is_name("Self")) {
-                                    p.ty = Some(named.clone());
-                                }
-                            }
-                            if m.ret_ty.as_ref().is_some_and(|t| t.is_name("Self")) {
-                                m.ret_ty = Some(named.clone());
-                            }
-                        }
+                        name_self(&mut imp);
                         Decl { id: decl.id, kind: DeclKind::Impl(imp), span: decl.span }
                     }
                     (_, kind) => {
@@ -641,7 +697,7 @@ impl TypeChecker {
             Type::Result { ok, err } if **err == Type::None => {
                 let x = self.fresh_name();
                 let xe = self.ident(&x);
-                let copy = self.clone_of(xe, ok);
+                let copy = self.clone_of(xe, ok, &[], &mut Vec::new());
                 let then = self.ret_block(copy);
                 let a = self.ident("a");
                 let cond = self.expr(ExprKind::IsPresent { expr: Box::new(a), binding: Some(x) });
@@ -664,7 +720,7 @@ impl TypeChecker {
                     let x = self.fresh_name();
                     let written = self.written(side);
                     let xe = self.ident(&x);
-                    let copy = self.clone_of(xe, side);
+                    let copy = self.clone_of(xe, side, &[], &mut Vec::new());
                     let body = self.ret_block(copy);
                     arms.push(arm(Pattern::TypePat { ty: written, binding: Some(x) }, body));
                 }
@@ -683,7 +739,7 @@ impl TypeChecker {
                     .map(|(i, t)| {
                         let a = self.ident("a");
                         let x = self.field(a, &i.to_string());
-                        self.clone_of(x, t)
+                        self.clone_of(x, t, &[], &mut Vec::new())
                     })
                     .collect();
                 let tuple = self.expr(ExprKind::Tuple(parts));
@@ -696,9 +752,64 @@ impl TypeChecker {
     /// A copy of a value of `ty`, as the derived code spells it. A value whose
     /// bytes are all of it is just read; a wrapper has no `.clone()` and goes
     /// through its function; everything else calls its own `clone`.
-    fn clone_of(&mut self, v: Expr, ty: &Type) -> Expr {
+    ///
+    /// `params` are the generic type's own, whose body this is. A wrapper
+    /// naming one has no function (a function would have to be generic
+    /// itself), so it is copied in line: `(v.0.clone(), v.1)` for a tuple, and
+    /// for an optional, statements pushed onto `prelude` ahead of the use:
+    ///
+    /// ```text
+    /// mut r: T? = none
+    /// if v? as x { r = x.clone() }
+    /// ```
+    ///
+    /// Not `if v? as x { x.clone() } else { none }`: an `if` doesn't widen its
+    /// branches to `T?`. `clone_writable` keeps a `T or E` out.
+    fn clone_of(&mut self, v: Expr, ty: &Type, params: &[String], prelude: &mut Vec<Stmt>) -> Expr {
         if Self::clones_by_copy(ty) {
             return v;
+        }
+        if Self::is_wrapper(ty) && Self::names_param(ty, params) {
+            match ty {
+                Type::Tuple(elems) => {
+                    let parts = elems
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| {
+                            let x = self.field(v.clone(), &i.to_string());
+                            self.clone_of(x, t, params, prelude)
+                        })
+                        .collect();
+                    return self.expr(ExprKind::Tuple(parts));
+                }
+                t if t.is_option() => {
+                    let ok = t.as_option().expect("checked by is_option").clone();
+                    let (r, x) = (self.fresh_name(), self.fresh_name());
+                    let none = self.expr(ExprKind::None);
+                    prelude.push(self.stmt(StmtKind::Mut {
+                        name: r.clone(),
+                        name_span: SP,
+                        ty: Some(self.written(ty)),
+                        init: none,
+                    }));
+                    // The payload's own prelude runs where `x` is bound.
+                    let mut inner = Vec::new();
+                    let xe = self.ident(&x);
+                    let copy = self.clone_of(xe, &ok, params, &mut inner);
+                    let target = self.ident(&r);
+                    inner.push(self.stmt(StmtKind::Assign { target, value: copy, op: None }));
+                    let then = self.block(inner);
+                    let cond = self.expr(ExprKind::IsPresent { expr: Box::new(v), binding: Some(x) });
+                    prelude.push(self.expr_stmt(ExprKind::If {
+                        cond: Box::new(cond),
+                        then_branch: Box::new(then),
+                        else_branch: None,
+                        else_binding: None,
+                    }));
+                    return self.ident(&r);
+                }
+                _ => {}
+            }
         }
         if Self::is_wrapper(ty) {
             if let Some(clone) = self.wrapper_fns(ty).clone {
@@ -706,6 +817,26 @@ impl TypeChecker {
             }
         }
         self.method_call(v, "clone", vec![])
+    }
+
+    /// Whether `ty` mentions one of a generic type's own parameters.
+    fn names_param(ty: &Type, params: &[String]) -> bool {
+        !params.is_empty() && ty.contains(&|t| matches!(t, Type::UnresolvedNamed(n) if params.contains(n)))
+    }
+
+    /// Whether a generic type's `clone` can be written over these fields.
+    ///
+    /// Not over a `T or E` that names a parameter: its copy is a match on the
+    /// side it holds, and a match whose arms are type parameters isn't
+    /// exhaustive to the checker. Such a type keeps the in-place copy, which
+    /// still has #1434's bug (#1439).
+    fn clone_writable(&self, parts: &[Type], params: &[String]) -> bool {
+        !parts.iter().any(|p| {
+            p.contains(&|t| {
+                matches!(t, Type::Result { err, .. } if **err != Type::None)
+                    && Self::names_param(t, params)
+            })
+        })
     }
 
     /// Whether copying the bytes is the whole of a clone: scalars, and the

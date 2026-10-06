@@ -13,6 +13,14 @@ use super::TypeChecker;
 use crate::types::Type;
 use rask_ast::Span;
 
+/// A struct or enum as deriving sees it (`TypeChecker::derive_shape`).
+#[derive(Clone)]
+struct DeriveShape {
+    parts: Vec<Type>,
+    type_params: Vec<String>,
+    methods: Vec<MethodSig>,
+}
+
 impl TypeChecker {
     // ------------------------------------------------------------------------
     // Pass 1: Declaration Collection
@@ -1911,23 +1919,15 @@ impl TypeChecker {
     fn derivable_methods(&mut self) -> std::collections::HashSet<(crate::types::TypeId, &'static str)> {
         use crate::types::TypeId;
         const DERIVABLE: [&str; 4] = ["eq", "hash", "clone", "compare"];
-        let mut candidates: Vec<(TypeId, &'static str, Vec<Type>)> = Vec::new();
+        let mut candidates: Vec<(TypeId, &'static str, DeriveShape)> = Vec::new();
         for idx in 0..self.types.types.len() {
             let id = TypeId(idx as u32);
-            let (parts, methods) = match self.types.get(id) {
-                Some(TypeDef::Struct { fields, methods, is_resource, .. }) if !*is_resource => {
-                    (fields.iter().map(|(_, ty)| ty.clone()).collect::<Vec<_>>(), methods)
-                }
-                Some(TypeDef::Enum { variants, methods, .. }) => {
-                    (variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect(), methods)
-                }
-                _ => continue,
-            };
+            let Some(shape) = self.derive_shape(id) else { continue };
             for m in DERIVABLE {
-                if methods.iter().any(|s| s.name == m) {
+                if shape.methods.iter().any(|s| s.name == m) {
                     continue;
                 }
-                candidates.push((id, m, parts.clone()));
+                candidates.push((id, m, shape.clone()));
             }
         }
         let mut set: std::collections::HashSet<(TypeId, &'static str)> =
@@ -1936,7 +1936,7 @@ impl TypeChecker {
             self.derive_assumed = set.clone();
             let keep: std::collections::HashSet<(TypeId, &'static str)> = candidates
                 .iter()
-                .filter(|(id, m, parts)| set.contains(&(*id, *m)) && self.parts_derive(parts, m))
+                .filter(|(id, m, shape)| set.contains(&(*id, *m)) && self.parts_derive(shape, m))
                 .map(|(id, m, _)| (*id, *m))
                 .collect();
             if keep.len() == set.len() {
@@ -1946,12 +1946,29 @@ impl TypeChecker {
         }
     }
 
-    /// Whether fields of these types let a type derive `method`: each has it,
+    /// What deriving reads off a struct or enum: its fields' (or payloads')
+    /// types, its type parameters and the methods it already has. `None` for
+    /// anything that derives nothing, a `@resource` struct among them.
+    fn derive_shape(&self, id: crate::types::TypeId) -> Option<DeriveShape> {
+        let (parts, methods, type_params) = match self.types.get(id)? {
+            TypeDef::Struct { fields, methods, is_resource: false, type_params, .. } => {
+                (fields.iter().map(|(_, ty)| ty.clone()).collect(), methods, type_params)
+            }
+            TypeDef::Enum { variants, methods, type_params, .. } => {
+                (variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect(), methods, type_params)
+            }
+            _ => return None,
+        };
+        Some(DeriveShape { parts, type_params: type_params.clone(), methods: methods.clone() })
+    }
+
+    /// Whether a type of this shape derives `method`: each field has it,
     /// `hash` also needs `eq` (HA1), and `clone` refuses a raw pointer (CL2).
-    fn parts_derive(&self, parts: &[Type], method: &str) -> bool {
-        parts.iter().all(|ty| self.type_has_method(ty, method))
-            && (method != "hash" || parts.iter().all(|ty| self.type_has_method(ty, "eq")))
-            && (method != "clone" || !parts.iter().any(|ty| matches!(ty, Type::RawPtr(_))))
+    fn parts_derive(&self, shape: &DeriveShape, method: &str) -> bool {
+        let all = |m: &str| shape.parts.iter().all(|ty| self.type_has_method_in(ty, m, &shape.type_params));
+        all(method)
+            && (method != "hash" || all("eq"))
+            && (method != "clone" || !shape.parts.iter().any(|ty| matches!(ty, Type::RawPtr(_))))
     }
 
     fn auto_derive_interfaces(&mut self) {
@@ -1960,21 +1977,9 @@ impl TypeChecker {
         self.derive_assumed = self.derivable_methods();
         for idx in 0..self.types.types.len() {
             let id = TypeId(idx as u32);
-            let (parts, methods, type_params) = match self.types.get(id) {
-                Some(TypeDef::Struct { is_resource: true, .. }) => continue,
-                Some(TypeDef::Struct { fields, methods, type_params, .. }) => (
-                    fields.iter().map(|(_, ty)| ty.clone()).collect::<Vec<_>>(),
-                    methods.clone(),
-                    type_params.clone(),
-                ),
-                Some(TypeDef::Enum { variants, methods, type_params, .. }) => (
-                    variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect(),
-                    methods.clone(),
-                    type_params.clone(),
-                ),
-                _ => continue,
-            };
-            let self_ty = Self::self_type_with_params(id, &type_params);
+            let Some(shape) = self.derive_shape(id) else { continue };
+            let (methods, type_params) = (&shape.methods, &shape.type_params);
+            let self_ty = Self::self_type_with_params(id, type_params);
             let declared = |name: &str| methods.iter().any(|m| m.name == name);
             let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
                 param_names: Vec::new(),
@@ -1992,10 +1997,10 @@ impl TypeChecker {
             // EQ1/EQ3, HA1, CL1/CL2, CO1/ORD2: each when every field or
             // payload has it (`parts_derive`). No `default`: there is no
             // Default interface (type.generics, "No Default Interface").
-            let eq_ok = self.parts_derive(&parts, "eq");
-            let hash_ok = self.parts_derive(&parts, "hash");
-            let clone_ok = self.parts_derive(&parts, "clone");
-            let cmp_ok = self.parts_derive(&parts, "compare");
+            let eq_ok = self.parts_derive(&shape, "eq");
+            let hash_ok = self.parts_derive(&shape, "hash");
+            let clone_ok = self.parts_derive(&shape, "clone");
+            let cmp_ok = self.parts_derive(&shape, "compare");
 
             let mut new_methods = Vec::new();
             if eq_ok && !declared("eq") {
@@ -2044,6 +2049,16 @@ impl TypeChecker {
 
     /// Check if a type has a given method (for auto-derive field checking).
     pub(super) fn type_has_method(&self, ty: &Type, method: &str) -> bool {
+        self.type_has_method_in(ty, method, &[])
+    }
+
+    /// `type_has_method` inside a generic type's declaration, whose own
+    /// parameters are `params`.
+    ///
+    /// A parameter clones: `.clone()` on a `T` is written once and means the
+    /// instantiation's own clone, a copy for a scalar (#1210). Nothing else
+    /// is known about it — `==` on a bare `T` is a type error.
+    fn type_has_method_in(&self, ty: &Type, method: &str, params: &[String]) -> bool {
         match ty {
             // Primitives
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
@@ -2067,8 +2082,9 @@ impl TypeChecker {
             // A type that names itself in its own fields — `Node(Vec<Tree>)` —
             // is registered with that use still a name, because the type
             // didn't exist yet when its fields were read.
+            Type::UnresolvedNamed(name) if params.contains(name) => method == "clone",
             Type::UnresolvedNamed(name) => match self.types.get_type_id(name) {
-                Some(id) => self.type_has_method(&Type::Named(id), method),
+                Some(id) => self.type_has_method_in(&Type::Named(id), method, params),
                 None => false,
             },
             // Named types: check registered methods
@@ -2107,18 +2123,18 @@ impl TypeChecker {
             t if t.is_option() => {
                 !Self::is_ordering_method(method)
                     && t.as_option()
-                        .map(|inner| self.type_has_method(inner, method))
+                        .map(|inner| self.type_has_method_in(inner, method, params))
                         .unwrap_or(false)
             }
             Type::Result { ok, err } => {
                 !Self::is_ordering_method(method)
-                    && self.type_has_method(ok, method)
-                    && self.type_has_method(err, method)
+                    && self.type_has_method_in(ok, method, params)
+                    && self.type_has_method_in(err, method, params)
             }
             // Tuples: all elements must have the method
-            Type::Tuple(elems) => elems.iter().all(|e| self.type_has_method(e, method)),
+            Type::Tuple(elems) => elems.iter().all(|e| self.type_has_method_in(e, method, params)),
             // Arrays: element must have the method
-            Type::Array { elem, .. } => self.type_has_method(elem, method),
+            Type::Array { elem, .. } => self.type_has_method_in(elem, method, params),
             // `Vec<T>` is Equal and Hashable when `T` is (EQ1/HA1), compared
             // and hashed element by element. Not Comparable: no order is
             // defined on it.
@@ -2129,7 +2145,7 @@ impl TypeChecker {
                     && matches!(method, "eq" | "hash" | "clone" | "debug")
                     && match args.first() {
                         Some(crate::types::GenericArg::Type(elem)) => {
-                            self.type_has_method(elem, method)
+                            self.type_has_method_in(elem, method, params)
                         }
                         _ => false,
                     }
@@ -2140,9 +2156,31 @@ impl TypeChecker {
                 if self.types.type_name(*base) == "Map" && method == "clone" =>
             {
                 args.iter().all(|a| match a {
-                    crate::types::GenericArg::Type(t) => self.type_has_method(t, method),
+                    crate::types::GenericArg::Type(t) => self.type_has_method_in(t, method, params),
                     _ => false,
                 })
+            }
+            // A program's generic type clones when its own declaration does
+            // and each argument does: `Vec<List<T>>` inside `List<T>`.
+            Type::Generic { base, args }
+                if method == "clone"
+                    && !matches!(self.types.declared_by(*base), super::type_table::TypeOwner::Stdlib) =>
+            {
+                self.type_has_method_in(&Type::Named(*base), method, params)
+                    && args.iter().all(|a| match a {
+                        crate::types::GenericArg::Type(t) => self.type_has_method_in(t, method, params),
+                        _ => true,
+                    })
+            }
+            Type::UnresolvedGeneric { name, args } if method == "clone" => {
+                match self.types.get_type_id(name) {
+                    Some(base) => self.type_has_method_in(
+                        &Type::Generic { base, args: args.clone() },
+                        method,
+                        params,
+                    ),
+                    None => false,
+                }
             }
             _ => false,
         }

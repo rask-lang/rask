@@ -230,6 +230,8 @@ pub struct TypeChecker {
     /// The `eq`/`hash` pairs written for wrapper types, and their symbols.
     pub(super) wrapper_fns: Vec<derive::WrapperFns>,
     pub(super) wrapper_symbols: HashMap<String, rask_resolve::SymbolId>,
+    /// `TypedProgram::derived_generic_methods`.
+    pub(super) derived_generic_methods: std::collections::HashSet<String>,
     pub(super) next_derived_id: u32,
     pub(super) derived_names: usize,
     /// Operator `eq` calls, as (call, receiver, argument) nodes. Decided once
@@ -596,6 +598,7 @@ impl TypeChecker {
             derive_assumed: std::collections::HashSet::new(),
             wrapper_fns: Vec::new(),
             wrapper_symbols: HashMap::new(),
+            derived_generic_methods: std::collections::HashSet::new(),
             next_derived_id: derive::DERIVED_ID_BASE,
             derived_names: 0,
             pending_wrapper_eq: Vec::new(),
@@ -1067,6 +1070,7 @@ impl TypeChecker {
             derived_decls: self.derived_decls,
             wrapper_eq_calls: self.wrapper_eq_calls,
             wrapper_fns: self.wrapper_fns,
+            derived_generic_methods: self.derived_generic_methods,
         };
 
         (program, errors)

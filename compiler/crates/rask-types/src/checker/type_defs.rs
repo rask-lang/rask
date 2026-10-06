@@ -592,4 +592,8 @@ pub struct TypedProgram {
     pub wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
     /// The `eq`/`hash` written for each wrapper type, for a map keyed by one.
     pub wrapper_fns: Vec<super::derive::WrapperFns>,
+    /// The methods the checker wrote for generic types, as `Type_method`
+    /// (`Slot_clone`). Reached only through a call pinned to the type, so
+    /// mono never widens a call it couldn't pin onto one (#1434).
+    pub derived_generic_methods: std::collections::HashSet<String>,
 }
