@@ -1027,7 +1027,7 @@ fn finalize_compile_inner(
     let mono = match mono {
         Ok(m) => m,
         Err(e) => {
-            diags.push(mono_diagnostic(e));
+            diags.push(Diagnostic::error(e.to_string()));
             return PipelineOutput::fail_with_sources(diags, pkg_source_files);
         }
     };
@@ -1217,17 +1217,6 @@ fn declared_name(decl: &Decl) -> Option<String> {
         DeclKind::Annotation(a) => Some(a.name.clone()),
         DeclKind::Union(u) => Some(u.name.clone()),
         _ => None,
-    }
-}
-
-fn mono_diagnostic(e: rask_mono::MonomorphizeError) -> Diagnostic {
-    use rask_mono::MonomorphizeError as ME;
-    match &e {
-        ME::AmbiguousMethod { type_name, method, span, .. } => Diagnostic::error(e.to_string())
-            .with_code("E0823")
-            .with_primary(*span, format!("no `{}.{}` to call here", type_name, method))
-            .with_help(format!("rename one of the two `{}` types", type_name)),
-        _ => Diagnostic::error(e.to_string()),
     }
 }
 

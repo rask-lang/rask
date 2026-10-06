@@ -15,7 +15,7 @@ use rask_ast::{
     expr::{Expr, ExprKind},
     stmt::{Stmt, StmtKind},
 };
-use rask_ast::{NodeId, Span};
+use rask_ast::NodeId;
 use rask_ast::ty::TypeExpr;
 use rask_types::{Callee, Type, TypeBinding, TypeDef, TypeId, TypedProgram};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -26,18 +26,6 @@ struct WorkItem {
     /// Every type parameter this copy fixes, named. Owner's first, then the
     /// method's own — the order the symbol name is built from.
     type_args: Vec<TypeBinding>,
-}
-
-/// A call whose method body can't be reached through its mangled name.
-///
-/// Functions are keyed by `Type_method` from here through codegen, so two types
-/// with the same name produce one symbol for two bodies. The type that owns the
-/// name gets it; a call on the other one has nowhere to go.
-#[derive(Debug, Clone)]
-pub struct AmbiguousMethod {
-    pub type_name: String,
-    pub method: String,
-    pub span: Span,
 }
 
 /// Generate a mangled name for a generic function instantiation.
@@ -100,12 +88,6 @@ pub struct Monomorphizer<'a> {
     /// reachability tests build a Monomorphizer without it and keep the
     /// conservative bare-name behaviour.
     typed: Option<&'a TypedProgram>,
-    /// Mangled symbol → every type declaring it. Two entries mean the name
-    /// alone no longer identifies a body.
-    symbol_owners: HashMap<String, Vec<TypeId>>,
-    /// Calls that need a body the mangled name can't address (see
-    /// `AmbiguousMethod`). Collected here and reported by `monomorphize`.
-    pub ambiguous_methods: Vec<AmbiguousMethod>,
     /// External package module names — `pkg.func()` enqueues `func`, not `pkg_func`
     package_modules: std::collections::HashSet<String>,
     /// Already processed (name, type_args) pairs
@@ -482,8 +464,6 @@ impl<'a> Monomorphizer<'a> {
             method_by_bare_name,
             call_type_args,
             typed: None,
-            symbol_owners: HashMap::new(),
-            ambiguous_methods: Vec::new(),
             package_modules: std::collections::HashSet::new(),
             seen: HashMap::new(),
             queue: VecDeque::new(),
@@ -858,10 +838,6 @@ impl<'a> Monomorphizer<'a> {
                         Some(pkg) => rask_types::conformance_symbol(&plain, pkg),
                         None => plain,
                     };
-                    let owners = self.symbol_owners.entry(qualified.clone()).or_default();
-                    if !owners.contains(&type_id) {
-                        owners.push(type_id);
-                    }
                     let body = Decl {
                         id: decl.id,
                         kind: DeclKind::Fn(with_self_type(method, &self_owner)),
@@ -880,20 +856,6 @@ impl<'a> Monomorphizer<'a> {
                 }
             }
         }
-    }
-
-    /// The type whose body `symbol` resolves to, when more than one declares it.
-    ///
-    /// Every owner of a contested symbol shares the same type name — that's what
-    /// made them collide — so any of them gives the name to look up.
-    fn contested_owner(&self, symbol: &str) -> Option<TypeId> {
-        let typed = self.typed?;
-        let owners = self.symbol_owners.get(symbol)?;
-        if owners.len() < 2 {
-            return None;
-        }
-        let name = typed.types.type_name(*owners.first()?);
-        typed.types.get_type_id(&name)
     }
 
     /// Record implicit interface-coercion sites (TR5) from the type checker.
@@ -1784,7 +1746,7 @@ impl<'a> Monomorphizer<'a> {
                                 _ => None,
                             })
                             .map(|id| {
-                                (id, typed.types.type_name(id), method.clone(), package.clone())
+                                (typed.types.type_name(id), method.clone(), package.clone())
                             }),
                         _ => None,
                     }
@@ -1801,7 +1763,7 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
 
-                if let Some((type_id, type_name, method_name, conformance_pkg)) = dispatched {
+                if let Some((type_name, method_name, conformance_pkg)) = dispatched {
                     // XC5: ask for the calling package's own version of this
                     // method, and take the plain one when there isn't a
                     // separate body under that package. A block on someone
@@ -1834,44 +1796,33 @@ impl<'a> Monomorphizer<'a> {
                             self.call_rewrites.insert(expr.id, name);
                         }
                     }
-                    match self.contested_owner(&qualified) {
-                        Some(owner) if owner != type_id => {
-                            self.ambiguous_methods.push(AmbiguousMethod {
-                                type_name,
-                                method: method_name,
-                                span: expr.span,
-                            });
-                        }
-                        _ => {
-                            // A method on a generic type gets one body per receiver
-                            // instantiation, so `One<Big>.get()` and `One<i64>.get()`
-                            // don't share a `self` layout. Receiver arguments come
-                            // first, then the method's own — `instantiation_params`
-                            // reads the two lists back in that order (#814).
-                            let recv_args = if self.has_instantiable_body(&qualified) {
-                                self.receiver_bindings(expr.id, &qualified)
-                            } else {
-                                Vec::new()
-                            };
-                            let own_args = self.own_type_args(&qualified, type_args.clone());
-                            let type_args: Vec<TypeBinding> =
-                                recv_args.into_iter().chain(own_args).collect();
-                            // A method with type parameters gets one body per set
-                            // of arguments, same as a generic function — so the
-                            // call has to name the copy. Only where there's a body
-                            // to instantiate: a stdlib stub like `Map<K, V>.len()`
-                            // is generic in its signature and resolves to one C
-                            // entry point, so mangling it produced a call to
-                            // `Map_len$string_string` that nothing emits.
-                            if !type_args.is_empty() && self.has_instantiable_body(&qualified) {
-                                self.call_rewrites.insert(
-                                    expr.id,
-                                    mangle_name(&qualified, &type_args, self.typed.map(|t| &t.types)),
-                                );
-                            }
-                            self.enqueue(qualified, type_args);
-                        }
+                    // A method on a generic type gets one body per receiver
+                    // instantiation, so `One<Big>.get()` and `One<i64>.get()`
+                    // don't share a `self` layout. Receiver arguments come
+                    // first, then the method's own — `instantiation_params`
+                    // reads the two lists back in that order (#814).
+                    let recv_args = if self.has_instantiable_body(&qualified) {
+                        self.receiver_bindings(expr.id, &qualified)
+                    } else {
+                        Vec::new()
+                    };
+                    let own_args = self.own_type_args(&qualified, type_args.clone());
+                    let type_args: Vec<TypeBinding> =
+                        recv_args.into_iter().chain(own_args).collect();
+                    // A method with type parameters gets one body per set
+                    // of arguments, same as a generic function — so the
+                    // call has to name the copy. Only where there's a body
+                    // to instantiate: a stdlib stub like `Map<K, V>.len()`
+                    // is generic in its signature and resolves to one C
+                    // entry point, so mangling it produced a call to
+                    // `Map_len$string_string` that nothing emits.
+                    if !type_args.is_empty() && self.has_instantiable_body(&qualified) {
+                        self.call_rewrites.insert(
+                            expr.id,
+                            mangle_name(&qualified, &type_args, self.typed.map(|t| &t.types)),
+                        );
                     }
+                    self.enqueue(qualified, type_args);
                 } else {
                     // Static method call: Type.method() → enqueue "Type_method"
                     // Cross-package call: pkg.func() → enqueue "func" (the function

@@ -1021,14 +1021,6 @@ fn monomorphize_inner(
 
     mono.run();
 
-    if let Some(ambiguous) = mono.ambiguous_methods.first() {
-        return Err(MonomorphizeError::AmbiguousMethod {
-            type_name: ambiguous.type_name.clone(),
-            method: ambiguous.method.clone(),
-            span: ambiguous.span,
-        });
-    }
-
     let type_names: HashMap<rask_types::TypeId, String> = program
         .types
         .iter()
@@ -1123,14 +1115,6 @@ pub enum MonomorphizeError {
         type_name: String,
         reason: String,
     },
-    /// Two types share a name, both need `Type_method`, and only one can have
-    /// it. Compiled functions are keyed by that string all the way through
-    /// codegen, so the call has no body to reach.
-    AmbiguousMethod {
-        type_name: String,
-        method: String,
-        span: rask_ast::Span,
-    },
 }
 
 impl std::fmt::Display for MonomorphizeError {
@@ -1145,14 +1129,6 @@ impl std::fmt::Display for MonomorphizeError {
             Self::LayoutError { type_name, reason } => {
                 write!(f, "cannot lay out `{}` in memory: {}", type_name, reason)
             }
-            Self::AmbiguousMethod { type_name, method, .. } => write!(
-                f,
-                "two different types named `{0}` both define `{1}`, and this call needs \
-                 the one that isn't in scope here. Rename one of them — the compiled \
-                 program identifies the method as `{0}_{1}`, which can only mean one of \
-                 the two",
-                type_name, method,
-            ),
         }
     }
 }
