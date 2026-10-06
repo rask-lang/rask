@@ -29,6 +29,13 @@ func clear_it() {
     a.clear()
 }
 
+func dedup_it() {
+    mut a: [i32; 3] = [1, 1, 3]
+    // ERROR: dropping the repeat leaves two elements. This one and `take_all`
+    // used to slip past the check (#1405).
+    a.remove_adjacent_duplicates()
+}
+
 // THE FIX: say the slot can grow. The same literal builds a Vec.
 func growable() {
     mut a: Vec<i32> = [1, 2, 3]

@@ -2103,6 +2103,8 @@ impl TypeChecker {
             "push" | "pop" | "push_all" | "insert" | "insert_at" | "remove" | "remove_at"
             | "remove_where" | "take_where" | "clear" | "truncate" | "resize"
             | "reserve" | "shrink" | "with_capacity" | "try_insert" | "try_push"
+            | "try_push_all" | "try_reserve" | "remove_unordered" | "take_all"
+            | "remove_adjacent_duplicates"
         )
     }
 

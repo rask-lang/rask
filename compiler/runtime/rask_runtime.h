@@ -254,6 +254,11 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap,
                                 const int32_t *str_offs, int64_t n_str_offs);
 RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size,
                               const int32_t *str_offs, int64_t n_str_offs);
+// A fixed array seen as a Vec: a copy of its elements that doesn't own them.
+RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
+                       const int32_t *str_offs, int64_t n_str_offs);
+void     rask_vec_free_view(RaskVec *v);
+void     rask_vec_copy_back(const RaskVec *v, char *dst, int64_t stride);
 // A `Vec<u8>` of raw bytes, one 8-byte slot per byte like compiled code's.
 RaskVec *rask_vec_from_bytes(const void *data, int64_t n);
 // Releases every string the elements hold, then the vector itself.

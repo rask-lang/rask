@@ -323,6 +323,46 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count, int64_t elem_size
     return v;
 }
 
+// A Vec over a copy of a fixed array's elements, for the methods an array
+// borrows from `Vec`. The array keeps ownership: the copy carries the element
+// map, so `clone` retains what it should, but `rask_vec_free_view` gives back
+// only the copy. Built with `rask_vec_from_static`, which takes the elements
+// over, two calls on one `[string; 3]` released every string twice (#1405).
+RaskVec *rask_vec_view(const char *data, int64_t count, int64_t elem_size,
+                       const int32_t *str_offs, int64_t n_str_offs) {
+    if (elem_size <= 0) elem_size = 8;
+    RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
+    *v = (RaskVec){
+        .len = count,
+        .cap = count,
+        .elem_size = elem_size,
+        .bound = -1,
+        .strs = { .offsets = str_offs, .count = n_str_offs },
+    };
+    int64_t total = rask_safe_mul(elem_size, count);
+    v->data = (char *)rask_alloc(total);
+    memcpy(v->data, data, total);
+    return v;
+}
+
+void rask_vec_free_view(RaskVec *v) {
+    if (!v) return;
+    vec_check_no_borrows(v, "free");
+    if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
+    rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
+}
+
+// Copy a view's elements back into the array it was made from, after a
+// `mutate self` method reordered or replaced them. `stride` is the array's:
+// a narrow scalar sits in the low bytes of the view's 8-byte slot. The methods
+// an array may call never change the length.
+void rask_vec_copy_back(const RaskVec *v, char *dst, int64_t stride) {
+    if (!v || !dst) return;
+    for (int64_t i = 0; i < v->len; i++) {
+        memcpy(dst + i * stride, v->data + i * v->elem_size, (size_t)stride);
+    }
+}
+
 // Releases every string the elements hold, then the vector itself.
 //
 // The map came from the constructor: `Vec<string>` is the one-entry case at

@@ -459,6 +459,9 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // user writes — so this is the only place its name appears beside the
     // `CTORS` line that emits it (#949).
     ("cstring_free", Internal::ConsumesReceiver),
+    // The free for an array receiver's view (`rask_vec_view`), emitted by the
+    // drop pass from its `CTORS` line.
+    ("Vec_free_view", Internal::ConsumesReceiver),
 
     // ── No receiver at all ──────────────────────────────────────
 ];
@@ -792,6 +795,9 @@ const RUNTIME_FUNCTIONS: &[(&str, &[usize])] = &[
     // `[a, b]` builds a vector from a stack array, and the array's elements
     // move into it.
     ("rask_vec_from_static", &[0]),
+    // An array receiver's view and the copy back into it: both only read.
+    ("rask_vec_view", &[]),
+    ("rask_vec_copy_back", &[]),
     ("rask_free", &[0]),
     // A failed `assert a == b` prints both sides and stops; it keeps nothing.
     ("assert_fail_cmp_i64", &[]),

@@ -124,6 +124,9 @@ pub const CTORS: &[(&str, u8, u8, &str)] = &[
     // `mut v: Vec<T> = []` and `Vec.from([...])`: the elements come from a
     // static blob, but anything pushed later does not.
     ("rask_vec_from_static", 3, 1, "Vec_free"),
+    // An array receiver seen as a Vec. The array keeps its elements, so the
+    // free gives back the copy and nothing in it (#1405).
+    ("rask_vec_view", 3, 1, "Vec_free_view"),
     ("Vec_with_capacity", 2, 1, "Vec_free"),
     ("Vec_fixed", 2, 1, "Vec_free"),
     // `skip`/`take` outside a fused chain call the runtime, which hands back a

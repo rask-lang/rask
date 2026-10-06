@@ -1071,6 +1071,10 @@ impl<'a> MirLowerer<'a> {
     /// `self`? Uses the receiver's recorded type to build the qualified name, the
     /// same way dispatch does below.
     fn receiver_method_mutates(&self, object: &Expr, method: &str) -> bool {
+        // An array has no methods of its own; it borrows `Vec`'s.
+        if matches!(self.ctx.lookup_raw_type(object.id), Some(rask_types::Type::Array { .. })) {
+            return Self::vec_method_mutates(method);
+        }
         let Some(prefix) = self
             .ctx
             .lookup_raw_type(object.id)
@@ -4988,12 +4992,43 @@ impl<'a> MirLowerer<'a> {
 
         // Anything left on an array goes to the shared `Vec` lowering, which
         // reads a `RaskVec` header the array doesn't have. Give it a real one.
+        // A method that writes through `self` changes the view, so its
+        // elements are copied back into the array afterwards.
+        let write_back = match &obj_ty {
+            MirType::Array { elem, .. } if Self::vec_method_mutates(method) => {
+                Some((obj_op.clone(), elem.size()))
+            }
+            _ => None,
+        };
         let (obj_op, obj_ty) = match self.array_receiver_as_vec(&obj_op, &obj_ty) {
             Some(v) => v,
             None => (obj_op, obj_ty),
         };
+        let view = obj_op.clone();
 
-        self.lower_regular_method_call(expr, object, method, args, type_args, obj_op, obj_ty, wb_mark)
+        let result = self.lower_regular_method_call(
+            expr, object, method, args, type_args, obj_op, obj_ty, wb_mark,
+        )?;
+        if let Some((array, stride)) = write_back {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("rask_vec_copy_back".to_string()),
+                args: vec![view, array, MirOperand::Constant(MirConst::Int(stride as i64))],
+            }));
+        }
+        Ok(result)
+    }
+
+    /// Does the stdlib's `Vec.<method>` take `mutate self`?
+    ///
+    /// Asked for an array receiver, which borrows `Vec`'s methods: the stdlib's
+    /// declarations aren't decls of this program, so `mutate_self_methods`
+    /// doesn't list them.
+    fn vec_method_mutates(method: &str) -> bool {
+        rask_stdlib::stubs::StubRegistry::load()
+            .methods("Vec")
+            .iter()
+            .any(|m| m.name == method && m.mutate_self)
     }
 
     /// A `Vec` view over a `[T; N]` receiver, for the methods an array borrows
@@ -5002,9 +5037,14 @@ impl<'a> MirLowerer<'a> {
     /// An array local *is* its buffer — no header, no length word — so handing
     /// it to `Vec_join` or `Vec_contains` made those read the first element as
     /// a `RaskVec` and walk off whatever it spelled (#1021, and #946 before it
-    /// for `as_ptr`). Copy the elements into a real vector instead; the
-    /// container-drop pass frees it, since `rask_vec_from_static` is one of the
-    /// constructors it tracks.
+    /// for `as_ptr`). Copy the elements into a real vector instead.
+    ///
+    /// The copy is a view: the array still owns its elements. It used to be
+    /// built with `rask_vec_from_static`, which takes the elements over, so two
+    /// calls on one `[string; 3]` made two vectors that each released all three
+    /// strings at scope end. `rask_vec_view` keeps the element description —
+    /// `set` still has to release the value it overwrites — and its free gives
+    /// back only the copy (#1405).
     fn array_receiver_as_vec(
         &mut self,
         obj_op: &MirOperand,
@@ -5024,7 +5064,7 @@ impl<'a> MirLowerer<'a> {
         let vec_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
-            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+            func: FunctionRef::internal("rask_vec_view".to_string()),
             args: vec![
                 buffer,
                 MirOperand::Constant(MirConst::Int(*len as i64)),
