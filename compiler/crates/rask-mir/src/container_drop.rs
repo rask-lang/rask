@@ -735,6 +735,19 @@ fn param_is_kept_by(
     // Follow the value through renames: lowering copies a parameter into a
     // local before doing anything with it often enough that reading only the
     // parameter's own id saw nothing.
+    //
+    // Not into a copy that took references of its own: that one is a new
+    // value, and handing it on hands on its references, not the parameter.
+    // `return p` on a Copy aggregate parameter returns such a copy (#1447).
+    let owns_copy: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::RcIncContents { local } => Some(*local),
+            _ => None,
+        })
+        .collect();
     let mut names: HashSet<LocalId> = HashSet::from([param]);
     loop {
         let before = names.len();
@@ -742,7 +755,7 @@ fn param_is_kept_by(
             for stmt in &block.statements {
                 match &stmt.kind {
                     MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                        if names.contains(src) =>
+                        if names.contains(src) && !owns_copy.contains(dst) =>
                     {
                         names.insert(*dst);
                     }

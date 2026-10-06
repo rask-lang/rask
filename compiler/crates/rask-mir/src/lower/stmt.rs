@@ -530,6 +530,10 @@ impl<'a> MirLowerer<'a> {
                     self.emit_write_backs_above(writeback_depth);
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
                 } else {
+                    let value = match (value, opt_expr) {
+                        (Some(v), Some(e)) => Some(self.retain_returned_copy_param(v, e)),
+                        (v, _) => v,
+                    };
                     self.terminate_return(value);
                 }
                 Ok(())
@@ -1635,6 +1639,53 @@ impl<'a> MirLowerer<'a> {
             }
             _ => false,
         }
+    }
+
+    /// `return p` on a Copy aggregate parameter, or on a part of one
+    /// (`return w.line`), hands the caller a copy with references of its own.
+    ///
+    /// The caller still owns `p`'s strings and releases them itself; a Copy
+    /// argument can be passed again after the call. Returned as is, the
+    /// result was a second owner of the same strings, and the container pass
+    /// read the return as the callee keeping `p`, so the caller handed `p`
+    /// over at every call: two calls, two releases of one string (#1447).
+    /// The copy is a name of its own, so the parameter is only read, which
+    /// is what a borrowed parameter is. A non-Copy parameter can only be
+    /// returned when it was taken (`mem.parameters/PM6`), and moves out.
+    fn retain_returned_copy_param(&mut self, value: MirOperand, expr: &Expr) -> MirOperand {
+        let mut root = expr;
+        while let ExprKind::Field { object, .. } = &root.kind {
+            root = object;
+        }
+        let ExprKind::Ident(name) = &root.kind else { return value };
+        let Some(&(root_local, _)) = self.locals.get(name) else { return value };
+        if !self.builder.is_param(root_local) {
+            return value;
+        }
+        let MirOperand::Local(returned) = value else { return value };
+        let Some(ty) = self.ctx.lookup_raw_type(expr.id).cloned() else { return value };
+        if !self.ctx.type_defs.is_copy(&ty) {
+            return value;
+        }
+        let Some(mir_ty) = self.builder.local_type(returned) else { return value };
+        if !matches!(
+            mir_ty,
+            MirType::Struct(_)
+                | MirType::Enum(_)
+                | MirType::Tuple(_)
+                | MirType::Array { .. }
+                | MirType::Option(_)
+                | MirType::Result { .. }
+        ) {
+            return value;
+        }
+        let copy = self.builder.alloc_temp(mir_ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: copy,
+            rvalue: MirRValue::Use(MirOperand::Local(returned)),
+        }));
+        self.retain_bound_copy(copy, &ty);
+        MirOperand::Local(copy)
     }
 
     /// Retain what `local` holds when the checker says `ty` is Copy: `local`

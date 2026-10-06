@@ -145,6 +145,11 @@ impl BlockBuilder {
         id
     }
 
+    /// Is this local one of the function's parameters?
+    pub fn is_param(&self, id: LocalId) -> bool {
+        self.function.params.iter().any(|p| p.id == id)
+    }
+
     /// Look up the MIR type of a local by its ID.
     pub fn local_type(&self, id: LocalId) -> Option<MirType> {
         self.function.locals.iter()
