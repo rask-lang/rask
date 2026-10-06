@@ -283,8 +283,16 @@ impl Interpreter {
             // No `eq` or `hash` here: `collections.rk` writes both, element by
             // element through the element type's own, and this one compared
             // elements structurally — past a user `eq` on them (#1391).
+            // A clone is a deep duplicate (mem.value-semantics), so each
+            // element gets its own copy of what it holds. Copying the item list
+            // shared a nested `Vec` between the two, and a push through the
+            // clone showed up in the source; native gives it a vector of its own.
             "clone" | "to_vec" => {
-                let cloned = v.lock().unwrap().clone();
+                let guard = v.lock().unwrap();
+                let cloned = crate::value::VecData {
+                    items: guard.items.iter().map(Value::clone_as_element).collect(),
+                    bound: guard.bound,
+                };
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }
             // SEQ29: a Vec of pairs becomes a Map, later keys overwriting
@@ -948,10 +956,8 @@ impl Interpreter {
                     .collect();
                 Ok(Value::vec(pairs))
             }
-            "clone" => {
-                let cloned: MapData = m.lock().unwrap().clone();
-                Ok(Value::Map(Arc::new(Mutex::new(cloned))))
-            }
+            // Deep, for the same reason as `Vec.clone`.
+            "clone" => Ok(Value::Map(Arc::clone(m)).clone_as_element()),
             "insert_if_missing" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
                 let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {

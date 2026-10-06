@@ -1,0 +1,73 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `.clone()` on a fixed array (#1453).
+//
+// Natively an array's `clone` went to the `Vec` lowering, which builds a
+// borrowed view over the array for read-only methods, and handed that view
+// back as the clone. Released as if it owned the strings, it took the
+// source's with it: `let b = a.clone()` on a `[string; 2]` read back empty.
+// It copies the elements now and takes a reference to what they hold.
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+struct Named {
+    name: string
+    tags: Vec<string>
+}
+
+test "a cloned [string; N] reads the same as its source" {
+    let a: [string; 2] = [heap("a"), heap("b")]
+    let b = a.clone()
+    assert b[0] == heap("a")
+    assert b[1] == heap("b")
+    assert a[1] == heap("b")
+}
+
+test "the clone outlives the source" {
+    mut b: [string; 2] = ["", ""]
+    if true {
+        let a: [string; 2] = [heap("x"), heap("y")]
+        b = a.clone()
+    }
+    assert b[1] == heap("y")
+}
+
+test "an array element of a Vec clones the same way" {
+    let names: Vec<[string; 2]> = [[heap("c"), heap("d")]]
+    let n = names[0].clone()
+    assert n[0] == heap("c")
+    assert names[0][1] == heap("d")
+}
+
+test "a nested Vec gets one of its own" {
+    let a: [Vec<i64>; 2] = [[1, 2], [3]]
+    mut b = a.clone()
+    b[0].push(9)
+    assert b[0].len() == 3
+    assert a[0].len() == 2
+}
+
+test "a struct element holding a string and a Vec" {
+    let a: [Named; 2] = [
+        Named { name: heap("p"), tags: [heap("t")] },
+        Named { name: heap("q"), tags: [] },
+    ]
+    mut b = a.clone()
+    b[0].tags.push("more")
+    assert b[0].name == heap("p")
+    assert b[0].tags.len() == 2
+    assert a[0].tags.len() == 1
+    assert a[1].name == heap("q")
+}
+
+test "narrow scalars copy at their own width" {
+    let a: [u8; 3] = [1, 2, 3]
+    mut b = a.clone()
+    b[1] = 7
+    assert b[0] == 1
+    assert b[1] == 7
+    assert b[2] == 3
+    assert a[1] == 2
+}

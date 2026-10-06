@@ -1505,19 +1505,35 @@ impl Value {
 
     /// Deep clone a value — creates independent copies of reference-counted internals.
     pub fn deep_clone(&self) -> Value {
+        self.deep_clone_impl(false)
+    }
+
+    /// What a container's `clone` gives each element: a deep copy, except
+    /// that a closure is shared rather than detached, the way native's
+    /// cloned `Vec<func>` shares its closures.
+    ///
+    /// Not only a match for native. A closure's environment can hold the
+    /// container being cloned, so detaching it would lock that container
+    /// again from inside its own clone and hang.
+    pub fn clone_as_element(&self) -> Value {
+        self.deep_clone_impl(true)
+    }
+
+    fn deep_clone_impl(&self, share_closures: bool) -> Value {
         match self {
+            Value::Closure { .. } if share_closures => self.clone(),
             Value::String(s) => Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))),
             Value::Vec(v) => {
-                let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone()).collect();
+                let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone_impl(share_closures)).collect();
                 Value::vec(deep)
             }
             Value::Tuple(items) => {
-                Value::tuple(items.iter().map(|v| v.deep_clone()).collect())
+                Value::tuple(items.iter().map(|v| v.deep_clone_impl(share_closures)).collect())
             }
             Value::Struct(s) => {
                 let guard = s.lock().unwrap();
                 let deep_fields: IndexMap<String, Value> = guard.fields.iter()
-                    .map(|(k, v)| (k.clone(), v.deep_clone()))
+                    .map(|(k, v)| (k.clone(), v.deep_clone_impl(share_closures)))
                     .collect();
                 Value::new_struct(guard.name.clone(), deep_fields, guard.resource_id)
             }
@@ -1525,20 +1541,20 @@ impl Value {
                 Value::Enum {
                     name: name.clone(),
                     variant: variant.clone(),
-                    fields: fields.iter().map(|f| f.deep_clone()).collect(),
+                    fields: fields.iter().map(|f| f.deep_clone_impl(share_closures)).collect(),
                     variant_index: *variant_index,
                     origin: origin.clone(),
                 }
             }
             Value::Cell(c) => {
-                let inner = c.lock().unwrap().deep_clone();
+                let inner = c.lock().unwrap().deep_clone_impl(share_closures);
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
             Value::Closure { params, body, captured_env, task_bound, generics } => {
                 // Deep-cloning a closure detaches it from what it borrowed, so
                 // each capture gets storage of its own.
                 let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
-                    .map(|(k, v)| (k.clone(), crate::env::slot(v.lock().unwrap().deep_clone())))
+                    .map(|(k, v)| (k.clone(), crate::env::slot(v.lock().unwrap().deep_clone_impl(share_closures))))
                     .collect();
                 Value::Closure {
                     params: params.clone(),
@@ -1551,13 +1567,13 @@ impl Value {
             Value::Map(m) => {
                 let map = m.lock().unwrap();
                 let deep: MapData = map.iter()
-                    .map(|(k, v)| (MapKey { value: k.value.deep_clone(), hash: k.hash }, v.deep_clone()))
+                    .map(|(k, v)| (MapKey { value: k.value.deep_clone_impl(share_closures), hash: k.hash }, v.deep_clone_impl(share_closures)))
                     .collect();
                 Value::Map(Arc::new(Mutex::new(deep)))
             }
             Value::RaskMutex(m) => {
                 let inner = m.lock().unwrap();
-                Value::RaskMutex(Arc::new(std::sync::Mutex::new(inner.deep_clone())))
+                Value::RaskMutex(Arc::new(std::sync::Mutex::new(inner.deep_clone_impl(share_closures))))
             }
             // Value types — regular clone is sufficient
             other => other.clone(),

@@ -5048,7 +5048,7 @@ impl<'a> MirLowerer<'a> {
             return Ok(r);
         }
 
-        if let Some(r) = self.try_lower_array_intrinsic(method, args, &obj_op, &obj_ty)? {
+        if let Some(r) = self.try_lower_array_intrinsic(object, method, args, &obj_op, &obj_ty)? {
             return Ok(r);
         }
 
@@ -9921,6 +9921,7 @@ impl<'a> MirLowerer<'a> {
     /// spelled and dereferencing it segfaulted (#946).
     fn try_lower_array_intrinsic(
         &mut self,
+        object: &Expr,
         method: &String,
         args: &[CallArg],
         obj_op: &MirOperand,
@@ -9947,8 +9948,83 @@ impl<'a> MirLowerer<'a> {
                 obj_op.clone(),
                 MirType::Ptr,
             ))),
+            "clone" => Ok(Some(self.lower_array_clone(object, obj_op, obj_ty))),
             _ => Ok(None),
         }
+    }
+
+    /// `[T; N].clone()`: a fresh array with the elements copied in, then a
+    /// reference taken to everything they hold — a string retained, a nested
+    /// `Vec` or `Map` cloned — the same walk a cloned vector does per element.
+    ///
+    /// It used to fall through to the `Vec` lowering, which handed back the
+    /// borrowed view it builds over the source for read-only methods. The
+    /// "clone" was then released as if it owned the strings, so the source's
+    /// went with it and read back empty (#1453).
+    fn lower_array_clone(&mut self, object: &Expr, obj_op: &MirOperand, obj_ty: &MirType) -> TypedOperand {
+        let MirType::Array { elem, len } = obj_ty else {
+            unreachable!("try_lower_array_intrinsic matched an array");
+        };
+        let elem_ty = elem.without_container_kinds();
+        let elem_size = elem_ty.size();
+        // The copy's type keeps a container element's kind, from the checker
+        // as `lower_array` does: the receiver's local may have lost it, and
+        // without it the retain reads a nested `Vec` as a plain word and the
+        // two arrays share it.
+        let kept_ty = match self.ctx.node_types.get(&object.id).cloned() {
+            Some(rask_types::Type::Array { elem: checked, .. }) => MirType::Array {
+                elem: Box::new(self.ctx.payload_to_mir(&checked)),
+                len: *len,
+            },
+            _ => obj_ty.clone(),
+        };
+        let result = self.builder.alloc_temp(kept_ty.clone());
+        // Copied as raw words wherever the element is word-sized, which is
+        // every element that can hold anything: a word local isn't a string
+        // to `rc_insert`, so the retain below is the only one taken. Copied
+        // through string-typed locals, each element was retained twice.
+        if elem_size % 8 == 0 {
+            for word in 0..(*len * elem_size / 8) {
+                let offset = word * 8;
+                let w = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: w,
+                    rvalue: MirRValue::Field {
+                        base: obj_op.clone(),
+                        field_index: offset,
+                        byte_offset: Some(offset),
+                        access: FieldAccess::Word,
+                    },
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: result,
+                    offset,
+                    value: MirOperand::Local(w),
+                    store_size: None,
+                }));
+            }
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local: result }));
+            return (MirOperand::Local(result), kept_ty);
+        }
+        // A narrower element is a scalar and owns nothing.
+        for i in 0..*len {
+            let slot = self.builder.alloc_temp(elem_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: slot,
+                rvalue: MirRValue::ArrayIndex {
+                    base: obj_op.clone(),
+                    index: MirOperand::Constant(MirConst::Int(i as i64)),
+                    elem_size,
+                },
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: result,
+                offset: i * elem_size,
+                value: MirOperand::Local(slot),
+                store_size: Some(elem_size),
+            }));
+        }
+        (MirOperand::Local(result), kept_ty)
     }
 
     /// Method call on `any Interface` -> vtable dispatch.
