@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `json.decode<json.JsonValue>` with the type written through its module.
+//
+// The interpreter said "`json.JsonValue` isn't a type json.decode knows how to
+// build", and native panicked with "no matching arm in match". Both picked the
+// untyped path by comparing the written spelling to `JsonValue`; the qualified
+// one didn't match. Native's lowering read the checker's type and called
+// `json.parse`, but reachability had compared the spelling and never compiled
+// it, so the call fell to a leftover C function of the same name (#1435).
+
+import json
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+func decode_as<T>(text: string) -> T or json.JsonError {
+    return json.decode<T>(text)
+}
+
+test "qualified JsonValue decodes the untyped tree" {
+    let v = json.decode<json.JsonValue>("[1,2]") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(v) == "[1,2]"
+}
+
+test "qualified JsonValue through a type parameter" {
+    let v = decode_as<json.JsonValue>("{{\"a\": true}}") catch e => {
+        assert false
+        return
+    }
+    assert json.encode(v) == "{{\"a\":true}}"
+}
+
+test "a struct still decodes by its fields" {
+    let p = json.decode<Point>("{{\"x\": 1, \"y\": 2}}") catch e => {
+        assert false
+        return
+    }
+    assert p.x == 1
+    assert p.y == 2
+}

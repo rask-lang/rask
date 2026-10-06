@@ -935,16 +935,6 @@ void         rask_json_buf_array_add_f64(RaskJsonBuf *buf, double val);
 void         rask_json_buf_array_add_bool(RaskJsonBuf *buf, int64_t val);
 void         rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf);
 
-// Decode helpers — minimal JSON object parser.
-typedef struct RaskJsonObj RaskJsonObj;
-
-RaskJsonObj *rask_json_parse(const RaskStr *s);
-void         rask_json_get_string(RaskStr *out, RaskJsonObj *obj, const char *key);
-int64_t      rask_json_get_i64(RaskJsonObj *obj, const char *key);
-double       rask_json_get_f64(RaskJsonObj *obj, const char *key);
-int8_t       rask_json_get_bool(RaskJsonObj *obj, const char *key);
-int64_t      rask_json_decode(const RaskStr *s);
-
 // ─── JSON value tree + typed decode (json.c) ────────────────
 //
 // `json.decode<T>(s)` lowers to: build a shape describing T, hand it and the

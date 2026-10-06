@@ -1493,6 +1493,19 @@ impl<'a> Monomorphizer<'a> {
         Some(crate::MapKeyFns { hash, eq })
     }
 
+    /// Whether the `json.decode` call `id` builds a `JsonValue`: the ok side of
+    /// its type, which is what lowering reads to choose `json.parse`.
+    fn decodes_json_value(&self, id: NodeId) -> bool {
+        let Some(typed) = self.typed else { return false };
+        let ty = self.instantiated_node_types.get(&id).or_else(|| typed.node_types.get(&id));
+        match ty {
+            Some(rask_types::Type::Result { ok, .. }) => {
+                rask_types::receiver_name(ok, &typed.types).as_deref() == Some("JsonValue")
+            }
+            _ => false,
+        }
+    }
+
     fn arg_type_name(&self, id: NodeId) -> Option<String> {
         let typed = self.typed?;
         let ty = self
@@ -1812,15 +1825,12 @@ impl<'a> Monomorphizer<'a> {
                         // `json.decode<JsonValue>` lowers to a call to
                         // `json.parse` — same job, already written in Rask — so
                         // that body has to be reachable even though the source
-                        // never names it.
-                        if name == "json"
-                            && method == "decode"
-                            && written_type_args
-                                .as_ref()
-                                .and_then(|t| t.first())
-                                .map(|t| t.is_name("JsonValue"))
-                                .unwrap_or(false)
-                        {
+                        // never names it. Asked of the checker's type for the
+                        // call, as lowering asks it: the written argument is a
+                        // spelling, and `json.JsonValue` didn't match one, so
+                        // the call reached a `json_parse` nobody compiled
+                        // (#1435).
+                        if name == "json" && method == "decode" && self.decodes_json_value(expr.id) {
                             self.enqueue("json_parse".to_string(), Vec::new());
                         }
                     }

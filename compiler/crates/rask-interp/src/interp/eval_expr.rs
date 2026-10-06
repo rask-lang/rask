@@ -418,6 +418,23 @@ impl Interpreter {
     /// The numeric type a `parse` call was inferred to produce, spelled the way
     /// a turbofish would have spelled it. `None` when the slot isn't a number
     /// the parse surface has a width for.
+    /// What `json.decode<T>` builds, as the checker resolved `T`: the ok side
+    /// of the call's type, named the way struct declarations name types.
+    ///
+    /// The written argument is only a spelling. `json.JsonValue` and an
+    /// imported `JsonValue` are the same type, and comparing the spelling
+    /// sent the qualified one down the struct-decoding path (#1435).
+    fn json_decode_target(&self, node_id: rask_ast::NodeId) -> Option<TypeExpr> {
+        let rask_types::Type::Result { ok, .. } = self.node_types.get(&node_id)? else {
+            return None;
+        };
+        if ok.has_unsolved_var() {
+            return None;
+        }
+        let named = rask_mono::Monomorphizer::nameable_type(ok, &self.types)?;
+        Some(self.resolve_type_param(&named.to_type_expr()))
+    }
+
     fn parse_target_from_node(&self, node_id: rask_ast::NodeId) -> Option<&'static str> {
         use rask_types::Type as T;
         let T::Result { ok, .. } = self.node_types.get(&node_id)? else {
@@ -1172,8 +1189,9 @@ impl Interpreter {
                 {
                     match &receiver {
                         Value::Module(ModuleKind::Json) if method == "decode" => {
+                            let target = self.json_decode_target(expr.id).unwrap_or(first_type);
                             return self
-                                .json_decode(&first_type, arg_vals)
+                                .json_decode(&target, arg_vals)
                                 .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                         }
                         Value::Module(ModuleKind::Reflect) => {

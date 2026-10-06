@@ -1305,16 +1305,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
-        StdlibEntry::simple("json_parse", "rask_json_parse", &[types::I64], Some(types::I64), false),
-        StdlibEntry {
-            mir_name: "json_get_string", c_name: "rask_json_get_string",
-            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
-            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
-        },
-        StdlibEntry::simple("json_get_i64", "rask_json_get_i64", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("json_get_f64", "rask_json_get_f64", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("json_get_bool", "rask_json_get_bool", &[types::I64, types::I64], Some(types::I8), false),
-        StdlibEntry::simple("json_decode", "rask_json_decode", &[types::I64], Some(types::I64), false),
 
         // Typed decode: the call site builds a shape describing the target
         // type, then hands it to the decoder (json.c).
@@ -1969,6 +1959,7 @@ mod tests {
     ("Wide.min",                  Gap("#1287")),
     ("Wide.reduce",               Gap("#1287")),
     ("Wide.zip_with",             Gap("#1287")),
+    ("json.decode",               Ok_("t_json_decode_qualified_value")),
     ("json.encode_pretty",        Ok_("t_native_reach_map_math_json")),
     ("math.acos",                 Ok_("t_native_reach_map_math_json")),
     ("math.asin",                 Ok_("t_native_reach_map_math_json")),
