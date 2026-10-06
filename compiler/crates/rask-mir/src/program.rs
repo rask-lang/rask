@@ -114,7 +114,6 @@ mod tests {
             size: 16,
             align: 8,
             fields: vec![],
-            is_stdlib: false,
             is_resource: false,
         });
         let layout = prog.struct_layout(crate::StructLayoutId::new(0, 16, 8));

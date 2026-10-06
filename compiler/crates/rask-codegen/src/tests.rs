@@ -2019,7 +2019,6 @@ mod tests {
                         is_type_param: false,
                         },
                     ],
-                    is_stdlib: false,
                     is_resource: false,
                 },
             ],

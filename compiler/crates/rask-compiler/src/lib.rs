@@ -268,11 +268,8 @@ pub use rask_mono::is_stdlib_span;
 /// rest of the Path family segfaulted. Handing the same source to both backends
 /// is what makes "written in Rask" mean one implementation.
 ///
-/// The stdlib goes first and the program second, because registration is
-/// last-writer-wins and the program has to be the last writer. A program may
-/// reuse a stdlib type's name (rask#258) — `struct JsonError` over stdlib's
-/// `enum JsonError` — and with the program first, the stdlib's `message` body
-/// overwrote the user's and ran `match self` against a struct.
+/// The order doesn't matter: a program type or function that shares a stdlib
+/// name has its own symbol by now (#1333, #1307), so nothing here collides.
 pub fn program_decls(decls: &[Decl]) -> Vec<Decl> {
     let mut all = rask_stdlib::StubRegistry::compilable_decls();
     all.extend(decls.to_vec());

@@ -842,9 +842,6 @@ impl<'a> Monomorphizer<'a> {
 
         for (type_id, decl_ids) in owned {
             let type_name = typed.types.type_name(type_id);
-            // The type the bare name resolves to. Only that one can claim the
-            // plain `Type_method` symbol; a shadowed type has no other spelling.
-            let owns_name = typed.types.get_type_id(&type_name) == Some(type_id);
             let self_owner = TypeExpr::named(type_name.as_str());
 
             for decl_id in decl_ids {
@@ -865,23 +862,21 @@ impl<'a> Monomorphizer<'a> {
                     if !owners.contains(&type_id) {
                         owners.push(type_id);
                     }
-                    if owns_name {
-                        let body = Decl {
-                            id: decl.id,
-                            kind: DeclKind::Fn(with_self_type(method, &self_owner)),
-                            span: decl.span,
-                        };
-                        if suffix.is_some() {
-                            // Boxing as `any Interface` enqueues by bare method
-                            // name, and the disambiguated symbol is the only
-                            // one either body now answers to.
-                            self.method_by_bare_name
-                                .entry(method.name.clone())
-                                .or_default()
-                                .push(qualified.clone());
-                        }
-                        self.method_table.insert(qualified, body);
+                    let body = Decl {
+                        id: decl.id,
+                        kind: DeclKind::Fn(with_self_type(method, &self_owner)),
+                        span: decl.span,
+                    };
+                    if suffix.is_some() {
+                        // Boxing as `any Interface` enqueues by bare method
+                        // name, and the disambiguated symbol is the only
+                        // one either body now answers to.
+                        self.method_by_bare_name
+                            .entry(method.name.clone())
+                            .or_default()
+                            .push(qualified.clone());
                     }
+                    self.method_table.insert(qualified, body);
                 }
             }
         }

@@ -18,16 +18,6 @@ pub struct StructLayout {
     pub size: u32,
     pub align: u32,
     pub fields: Vec<FieldLayout>,
-    /// Declared in the stdlib rather than in the program.
-    ///
-    /// Layouts live in one flat `Vec` looked up by bare name, so a program's
-    /// `struct Timer` and `stdlib/time.rk`'s both answer to `Timer` and the
-    /// first one wins. The stdlib's is `public struct Timer { }` — no fields —
-    /// so every field of the user's landed at offset 0 and the literal
-    /// segfaulted (#975). `find_struct` prefers the program's when both exist,
-    /// which is the same rule the checker's `type_names` /
-    /// `stdlib_type_names` split already applies to types (#515).
-    pub is_stdlib: bool,
     /// Declared `@resource`, so its values must be consumed exactly once
     /// (mem.linear/L1).
     ///
@@ -743,7 +733,6 @@ fn struct_layout(
         size: total_size,
         align: max_align,
         fields: field_layouts,
-        is_stdlib: is_stdlib_span(struct_def.span),
         is_resource: struct_decl.attrs.iter().any(|a| a == "resource"),
     }
 }
@@ -791,7 +780,6 @@ pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayo
         size: total_size,
         align: max_align,
         fields: field_layouts,
-        is_stdlib: is_stdlib_span(union_def.span),
         is_resource: false,
     }
 }

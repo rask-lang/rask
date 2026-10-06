@@ -654,37 +654,14 @@ impl<'a> MirContext<'a> {
         MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
     }
 
-    /// The layout for `name`, preferring the program's own over the stdlib's.
-    ///
-    /// Layouts are one flat `Vec` keyed by bare name, so a program's
-    /// `struct Timer` and `stdlib/time.rk`'s both answer to `Timer`. This used to
-    /// take whichever came first, which is the stdlib's — `public struct Timer
-    /// { }`, no fields. Every field of the user's type then landed at offset 0
-    /// (MIR showed three writes to `*(_0+0)` and three reads of `.0`), the struct
-    /// got a zero-byte slot, and the literal segfaulted while the interpreter
-    /// printed the right answer. Renaming the type to anything the stdlib doesn't
-    /// use was the whole difference (#975).
-    ///
-    /// The program winning in its own package is the rule the checker already
-    /// applies to type names (#515). Once IM1 and IM8 are enforced this is a
-    /// narrower case than it was — an unimported stdlib name isn't in scope, and
-    /// an imported one that's shadowed is a named error — but it stays reachable
-    /// through a name that resolves to a stdlib type without being one of its
-    /// declared exports.
+    /// The layout for `name`. A program type sharing a stdlib type's name has
+    /// a symbol of its own by now (#1333), so a name names one layout.
     pub fn find_struct(&self, name: &str) -> Option<(u32, &StructLayout)> {
-        let mut stdlib_match = None;
-        for (i, s) in self.struct_layouts.iter().enumerate() {
-            if s.name != name {
-                continue;
-            }
-            if !s.is_stdlib {
-                return Some((i as u32, s));
-            }
-            if stdlib_match.is_none() {
-                stdlib_match = Some((i as u32, s));
-            }
-        }
-        stdlib_match
+        self.struct_layouts
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.name == name)
+            .map(|(i, s)| (i as u32, s))
     }
 
     /// AN1: the declared type of one field of a user annotation.
