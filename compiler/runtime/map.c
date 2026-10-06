@@ -425,9 +425,11 @@ int64_t rask_map_len(const RaskMap *m) {
 // overwrite and to NULL on a fresh key. The slot is about to be written over,
 // so the old bytes are copied into the map's scratch buffer first — returning
 // the slot pointer the way `rask_map_take` does would hand back the *new*
-// value. Without it nobody gets the old value, so the map releases it.
+// value. Without it nobody gets the old value, so the map releases it —
+// unless `keep_old`, for a value whose copies hold no references of their own
+// (`replacing_setter` in the compiler).
 static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
-                               void **displaced_out) {
+                               void **displaced_out, int keep_old) {
     if (displaced_out) *displaced_out = NULL;
     if (!m) return -1;
 
@@ -451,7 +453,7 @@ static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
         }
         memcpy(m->displaced, m->vals + slot * m->val_size, (size_t)m->val_size);
         *displaced_out = m->displaced;
-    } else if (prev_state == MAP_OCCUPIED) {
+    } else if (prev_state == MAP_OCCUPIED && !keep_old) {
         rask_owned_release_all(m->vals + slot * m->val_size,
                                m->val_strs.offsets, m->val_strs.count);
     }
@@ -475,7 +477,13 @@ static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
 // Returns 0 if inserted new, 1 if updated existing. Used where the caller
 // discards the answer — `m[k] = v`, rehashing, cloning, the runtime's own maps.
 int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
-    return map_insert_impl(m, key, val, NULL);
+    return map_insert_impl(m, key, val, NULL, 0);
+}
+
+// `m[k] = v` where releasing the value it replaces could free what a copy of
+// it still reads. Leaks the old value instead.
+int64_t rask_map_insert_keeping_old(RaskMap *m, const void *key, const void *val) {
+    return map_insert_impl(m, key, val, NULL, 1);
 }
 
 // `Map.insert` is declared `-> V?`, so this is what it calls: a pointer to the
@@ -483,7 +491,7 @@ int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
 // `rask_map_take`, so codegen adapts it with `RetAdapt::DerefOption`.
 void *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val) {
     void *old = NULL;
-    map_insert_impl(m, key, val, &old);
+    map_insert_impl(m, key, val, &old, 0);
     return old;
 }
 

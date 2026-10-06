@@ -6159,6 +6159,13 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // `v.set(i, x)` is `v[i] = x`, and replaces the same way.
+        let qualified_name = if qualified_name == "Vec_set" {
+            self.replacing_setter(object.id, false).to_string()
+        } else {
+            qualified_name
+        };
+
         // Both receives take the value through an out-param buffer of the
         // element's real size and hand back the channel's status, which codegen
         // turns into the `T or E` the signature promises. Pass the size.

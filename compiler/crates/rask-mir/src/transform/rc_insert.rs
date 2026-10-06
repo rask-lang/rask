@@ -105,6 +105,9 @@ pub fn insert_rc_ops(
     // keeper, takes references of its own to what it holds.
     retain_views_handed_over(func, kept, own);
 
+    // And an aggregate written back to its slot that the frame still uses.
+    retain_written_back_while_live(func);
+
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
     insert_aggregate_release(func, kept, own);
@@ -241,6 +244,69 @@ fn retain_views_handed_over(
         }
         for (idx, local) in insertions.into_iter().rev() {
             let span = block.statements.get(idx).map(|s| s.span).unwrap_or(block.terminator.span);
+            block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
+        }
+    }
+}
+
+/// Take a reference to what an element binding holds before writing it back,
+/// when the frame still reads the binding afterwards.
+///
+/// ```text
+/// with v[0] as line { return line }
+/// ```
+///
+/// The binding holds the slot's references, and the write-back gives them
+/// back to the slot. Returning it hands the same strings to the caller, so
+/// the caller needs references of its own, or `v[0] = …` frees what it got
+/// back. A string binding gets that from `retain_locals_handed_over_while_live`
+/// like any string handed to a keeper; this is the aggregate case. A
+/// write-back is the one keeper that can see its argument used afterwards:
+/// anywhere else the checker rejects a use after the move.
+fn retain_written_back_while_live(func: &mut MirFunction) {
+    let ty_of: HashMap<LocalId, MirType> = func
+        .locals
+        .iter()
+        .chain(func.params.iter())
+        .map(|l| (l.id, l.ty.clone()))
+        .collect();
+    let is_aggregate = |l: &LocalId| {
+        ty_of.get(l).is_some_and(|t| {
+            aggregate_may_hold_string(t) || matches!(t, MirType::InterfaceObject { .. })
+        })
+    };
+    let live = liveness::analyze_phis_on_edges(func);
+    let aliases = AddrAliases::build(func);
+    for block in &mut func.blocks {
+        let mut insertions: Vec<(usize, LocalId)> = Vec::new();
+        for (si, stmt) in block.statements.iter().enumerate() {
+            let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
+            let Some(at) = rask_stdlib::mir_metadata::written_back_at(&fref.name) else { continue };
+            let Some(local) = args.get(at).and_then(uses::operand_local).filter(|l| is_aggregate(l))
+            else {
+                continue;
+            };
+            let mut used_after = None;
+            for later in &block.statements[si + 1..] {
+                if aliases.stmt_reads(later, local) {
+                    used_after = Some(true);
+                    break;
+                }
+                if uses::stmt_def(later) == Some(local) {
+                    used_after = Some(false);
+                    break;
+                }
+            }
+            let used_after = used_after.unwrap_or_else(|| {
+                aliases.terminator_reads(&block.terminator, local)
+                    || live.live_at_exit(block.id, local)
+            });
+            if used_after {
+                insertions.push((si, local));
+            }
+        }
+        for (idx, local) in insertions.into_iter().rev() {
+            let span = block.statements[idx].span;
             block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
         }
     }
@@ -595,9 +661,15 @@ fn insert_aggregate_release(
         // that reference, so the aggregate the closure was read out of still
         // holds its own and still has to release it.
         let mut retained: HashSet<LocalId> = HashSet::new();
+        // The local the statement before this one took references for.
+        let mut just_retained: Option<LocalId> = None;
         for stmt in &block.statements {
             if let MirStmtKind::ClosureRetain { closure, .. } = &stmt.kind {
                 retained.insert(*closure);
+            }
+            let retained_for_this = just_retained.take();
+            if let MirStmtKind::RcIncContents { local } = &stmt.kind {
+                just_retained = Some(*local);
             }
             let mut ev: Vec<ownership::Event> = Vec::new();
             let is_tracked = |l: &LocalId| tracked.contains(l);
@@ -648,6 +720,15 @@ fn insert_aggregate_release(
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
                         if !is_tracked(&id) || retained.contains(&id) {
+                            continue;
+                        }
+                        // A write-back of a binding the frame still uses was
+                        // given references of its own for the slot
+                        // (`retain_written_back_while_live`), so the binding
+                        // stays the frame's.
+                        if retained_for_this == Some(id)
+                            && rask_stdlib::mir_metadata::written_back_at(&fref.name) == Some(i)
+                        {
                             continue;
                         }
                         // What the callee does with it: from the body when this

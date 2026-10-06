@@ -985,6 +985,46 @@ impl<'a> MirLowerer<'a> {
         size.unwrap_or(8)
     }
 
+    /// What `v[i] = x` (or `m[k] = x`) calls for this container: the setter
+    /// that releases what the slot held, or for a small aggregate element, the
+    /// one that leaves it.
+    ///
+    /// WORKAROUND, not the fix. An aggregate of sixteen bytes or less is Copy,
+    /// so `let p = words[0]` on a `Vec<Word>` copies it out, and that copy
+    /// takes no references: it points at the slot's own string. Releasing the
+    /// slot on replacement freed what the copy still reads, and `let tmp =
+    /// v[0]; v[0] = v[1]; v[1] = tmp` swapped in freed strings. The cause is
+    /// that an aggregate copy of a view owns nothing, the same cause behind
+    /// `let p = words[0]; words[0].text = t` reading freed bytes. Until such a
+    /// copy owns what it holds, those slots keep leaking what they replace. A
+    /// larger aggregate can't be copied out at all (mem.borrowing/E4), and a
+    /// bare string copy takes its own reference, so those slots release.
+    pub(super) fn replacing_setter(&self, container: rask_ast::NodeId, map: bool) -> &'static str {
+        let elem = self.container_elem_mir_type(container, if map { 1 } else { 0 });
+        let keeps_old = match &elem {
+            None => true,
+            Some(t) => {
+                matches!(
+                    t,
+                    MirType::Struct(_)
+                        | MirType::Enum(_)
+                        | MirType::Tuple(_)
+                        | MirType::Array { .. }
+                        | MirType::Option(_)
+                        | MirType::Result { .. }
+                        | MirType::FuncPtr(_)
+                        | MirType::InterfaceObject { .. }
+                ) && t.size() <= 16
+            }
+        };
+        match (map, keeps_old) {
+            (false, false) => "Vec_set",
+            (false, true) => "Vec_set_keeping_old",
+            (true, false) => "Map_set",
+            (true, true) => "Map_set_keeping_old",
+        }
+    }
+
     /// The MIR type of a container's Nth type argument — `Vec<i32?>` at index 0
     /// is `i32?`.
     ///

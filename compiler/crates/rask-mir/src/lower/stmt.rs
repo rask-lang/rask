@@ -913,7 +913,7 @@ impl<'a> MirLowerer<'a> {
                             // length is 8`. The interpreter accepts a map
                             // receiver for `Vec_set`, which is why only native
                             // failed.
-                            let setter = if self.is_map_expr(object) { "Map_set" } else { "Vec_set" };
+                            let setter = self.replacing_setter(object.id, self.is_map_expr(object));
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: None,
                                 func: FunctionRef::internal(setter.to_string()),

@@ -242,6 +242,16 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
         })
         .collect();
 
+    let phi_dsts: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Phi { dst, .. } => Some(*dst),
+            _ => None,
+        })
+        .collect();
+
     let mut keep: HashSet<LocalId> = HashSet::new();
     // Retain only, for the container-to-container case: the copy's increment is
     // the reference the destination ends up holding, and there is no release to
@@ -273,6 +283,22 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
                     keep.insert(l);
                 } else {
                     keep_retain_only.insert(l);
+                }
+            }
+        } else if crosses_container && !group.iter().any(|l| phi_dsts.contains(l)) {
+            // A copy of a view holds a reference of its own, taken at the copy
+            // and given back at its last use. The slot it was read from can be
+            // written over in between — `let w = words[0]` then `words[0] =
+            // "z"` releases what the slot held — and a copy with no reference
+            // was left pointing at the freed buffer.
+            //
+            // Only where the group is the view and its copies. Through a join,
+            // a copy's reference moves into the phi, whose release this pass
+            // doesn't keep for a group that touches a container, so the retain
+            // would be the only op left and leak.
+            for l in group {
+                if plain_copies.contains(&l) {
+                    keep.insert(l);
                 }
             }
         } else if borrowed_in && !crosses_container {

@@ -286,6 +286,7 @@ void    *rask_vec_get_unchecked(const RaskVec *v, int64_t index);
 void    *rask_vec_get_opt(const RaskVec *v, int64_t index);
 void     rask_vec_set(RaskVec *v, int64_t index, const void *elem);
 void     rask_vec_write_back(RaskVec *v, int64_t index, const void *elem);
+void     rask_vec_set_keeping_old(RaskVec *v, int64_t index, const void *elem);
 void    *rask_vec_pop(RaskVec *v);
 int64_t  rask_vec_remove(RaskVec *v, int64_t index);
 void     rask_vec_clear(RaskVec *v);
@@ -668,6 +669,7 @@ int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 // NULL if the key was fresh. Good until the next insert on this map.
 void    *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val);
 void     rask_map_write_back(RaskMap *m, const void *key, const void *val);
+int64_t  rask_map_insert_keeping_old(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
 void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);

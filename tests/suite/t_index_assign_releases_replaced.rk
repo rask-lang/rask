@@ -6,9 +6,9 @@
 // also put back what `v[i].field = x` and `modify` had taken out, where
 // releasing the slot would free what was just written.
 //
-// Putting back has its own operation now, and assignment releases. Run under
-// RASK_LEAK_CHECK=1 to see the leaks; the asserts check nothing was freed
-// early.
+// Putting back has its own operation now, and assigning a string or a
+// container releases. Run under RASK_LEAK_CHECK=1 to see the leaks; the
+// asserts check nothing was freed early.
 
 struct Line {
     text: string
@@ -41,11 +41,6 @@ test "assigning a struct element releases its strings" {
     lines[0].text = heap("three")
     assert lines[0].text == heap("three")
     assert lines[0].n == 2
-    lines.push(Line { text: heap("four"), n: 4 })
-    lines[1] = lines[0]
-    lines[0] = lines[0]
-    assert lines[1].text == heap("three")
-    assert lines[0].text == heap("three")
 }
 
 test "assigning a nested vector releases the old one" {

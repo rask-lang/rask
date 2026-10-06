@@ -280,6 +280,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,
             arg_adapt: ArgAdapt::WrapArg2, ret_adapt: RetAdapt::None,
         },
+        // `v[i] = x` for an element whose copies don't own what they hold:
+        // see `replacing_setter`.
+        StdlibEntry {
+            mir_name: "Vec_set_keeping_old", c_name: "rask_vec_set_keeping_old",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: true,
+            arg_adapt: ArgAdapt::WrapArg2, ret_adapt: RetAdapt::None,
+        },
         // An element taken out for `with`, `for mutate` or a field write, and
         // put back afterwards. The read is `v[i]`'s; only who owns the copy
         // differs (see `Internal::LendsElement`).
@@ -911,6 +918,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // `m[k] = v`: insert or replace, releasing the value it replaces.
         StdlibEntry {
             mir_name: "Map_set", c_name: "rask_map_insert",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
+        },
+        StdlibEntry {
+            mir_name: "Map_set_keeping_old", c_name: "rask_map_insert_keeping_old",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::None,
         },

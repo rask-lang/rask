@@ -357,6 +357,9 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_write_back", Internal::WritesBack),
     ("Map_write_back", Internal::WritesBack),
     ("Pool_set", Internal::SameAs("Vec_set")),
+    // `m[k] = v` without releasing the old value, see `replacing_setter`.
+    // (`Vec_set_keeping_old` needs no line: it trims back to `Vec.set`.)
+    ("Map_set_keeping_old", Internal::SameAs("Map_insert")),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
     ("Map_entries", Internal::FreshFromReceiver),
@@ -815,7 +818,7 @@ fn internal_spelling(base: &str) -> Option<Internal> {
 
 /// For a write-back, the position of the value it hands to the slot:
 /// `(collection, index or key, value)`.
-fn written_back_at(qualified_name: &str) -> Option<usize> {
+pub fn written_back_at(qualified_name: &str) -> Option<usize> {
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
     matches!(internal_spelling(base), Some(Internal::WritesBack)).then_some(2)
