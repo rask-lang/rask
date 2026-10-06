@@ -512,7 +512,7 @@ fn resolve_field_type(
 /// the shared one. The recorded type keeps its `T` — reflection substitutes
 /// the real argument itself, and the shared layout's stand-in `i64` would
 /// read as the answer.
-fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Type>) -> Type {
+pub(crate) fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Type>) -> Type {
     use rask_types::GenericArg;
     let go = |t: &Type| substitute_inside(t, subst);
     match ty {

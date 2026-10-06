@@ -145,37 +145,67 @@ pub struct MonoFunction {
 /// `struct Wrapped { items: Vec<Expr> }` a cycle, the cycle fell back to
 /// source order, and `Expr` was laid out before `Wrapped` had a size: an
 /// 8-byte guess for a 32-byte payload (#1436).
+///
+/// A program's generic with its arguments also names its instance layout
+/// (`One$Big`), which has to exist before a type holding a `One<Big>` is sized
+/// against it (#1444).
 fn collect_type_deps(
     ty: &Type,
     inline_params: &HashMap<String, Vec<bool>>,
+    type_names: &HashMap<rask_types::TypeId, String>,
     out: &mut HashSet<String>,
 ) {
+    let go = |t: &Type, out: &mut HashSet<String>| collect_type_deps(t, inline_params, type_names, out);
+    let generic = |name: &str, args: &[rask_types::GenericArg], out: &mut HashSet<String>| {
+        if layout::generic_is_one_word(name) {
+            return;
+        }
+        out.insert(name.to_string());
+        let arg_tys: Vec<Type> = args
+            .iter()
+            .filter_map(|a| match a {
+                rask_types::GenericArg::Type(t) => Some((**t).clone()),
+                _ => None,
+            })
+            .collect();
+        if arg_tys.len() == args.len() {
+            if let Some(instance) = generic_instance_name(name, &arg_tys, type_names) {
+                out.insert(instance);
+            }
+        }
+        let inline = inline_params.get(name);
+        for (i, arg) in args.iter().enumerate() {
+            let held = inline.map_or(true, |flags| flags.get(i).copied().unwrap_or(true));
+            if let (true, rask_types::GenericArg::Type(inner)) = (held, arg) {
+                go(inner, out);
+            }
+        }
+    };
     match ty {
         Type::UnresolvedNamed(name) => {
             out.insert(name.clone());
         }
-        Type::UnresolvedGeneric { name, .. } if layout::generic_is_one_word(name) => {}
-        Type::UnresolvedGeneric { name, args } => {
-            out.insert(name.clone());
-            let inline = inline_params.get(name);
-            for (i, arg) in args.iter().enumerate() {
-                let held = inline.map_or(true, |flags| flags.get(i).copied().unwrap_or(true));
-                if let (true, rask_types::GenericArg::Type(inner)) = (held, arg) {
-                    collect_type_deps(inner, inline_params, out);
-                }
+        Type::Named(id) => {
+            if let Some(name) = type_names.get(id) {
+                out.insert(name.clone());
+            }
+        }
+        Type::UnresolvedGeneric { name, args } => generic(name, args, out),
+        Type::Generic { base, args } => {
+            if let Some(name) = type_names.get(base) {
+                generic(name, args, out);
             }
         }
         Type::Result { ok, err } => {
-            collect_type_deps(ok, inline_params, out);
-            collect_type_deps(err, inline_params, out);
+            go(ok, out);
+            go(err, out);
         }
-        ty if ty.is_option() => collect_type_deps(ty.as_option().unwrap(), inline_params, out),
         Type::Tuple(elems) => {
             for e in elems {
-                collect_type_deps(e, inline_params, out);
+                go(e, out);
             }
         }
-        Type::Array { elem, .. } => collect_type_deps(elem, inline_params, out),
+        Type::Array { elem, .. } => go(elem, out),
         _ => {}
     }
 }
@@ -206,16 +236,13 @@ fn inline_type_params(decls: &[Decl]) -> HashMap<String, Vec<bool>> {
         }
         let mut held = HashSet::new();
         for ty in fields {
-            collect_type_deps(&layout::field_type(ty), &HashMap::new(), &mut held);
+            collect_type_deps(&layout::field_type(ty), &HashMap::new(), &HashMap::new(), &mut held);
         }
         out.insert(name.to_string(), params.iter().map(|p| held.contains(p)).collect());
     }
     out
 }
 
-/// Topological sort of type declarations by field dependencies (Kahn's algorithm).
-/// Returns indices into `decls` for struct/enum/union declarations only,
-/// ordered so that dependencies come before dependents.
 /// Every layout a declaration list defines on its own, plus the size/align
 /// cache they were computed against.
 ///
@@ -232,18 +259,63 @@ fn inline_type_params(decls: &[Decl]) -> HashMap<String, Vec<bool>> {
 ///
 /// What it leaves out is the per-*instantiation* layout, which needs the
 /// checker's type table to know which instantiations a program reaches.
-/// `compute_struct_layout` with the arguments in hand answers that directly.
+/// `monomorphize` hands those to `compute_layouts`.
 pub fn compute_declared_layouts(
     decls: &[Decl],
 ) -> (Vec<StructLayout>, Vec<EnumLayout>, LayoutCache) {
-    // Compute layouts for concrete (non-generic) struct/enum types.
+    compute_layouts(decls, None)
+}
+
+/// What laying out a program's generic instantiations needs from the checker.
+struct Instantiations<'a> {
+    /// Each instantiation the program mentions, as base name and arguments.
+    reached: Vec<(String, Vec<Type>)>,
+    type_names: &'a HashMap<rask_types::TypeId, String>,
+    types: &'a rask_types::TypeTable,
+}
+
+/// One layout to compute.
+enum LayoutStep {
+    Decl(usize),
+    /// An instantiation of the generic declaration `decl`, laid out as `name`.
+    Instance { decl: usize, args: Vec<Type>, name: String },
+}
+
+/// The declarations' layouts and, given `inst`, one per instantiation that
+/// needs its own, all in one dependency order. A declaration and an
+/// instantiation can each hold the other: `Holder { o: One<Big> }` is sized
+/// against `One$Big`, which is sized against `Big`. Laying out instantiations
+/// in a second pass after every declaration left `Holder` with the shared
+/// one-word `One` for a 24-byte field (#1444).
+fn compute_layouts(
+    decls: &[Decl],
+    inst: Option<&Instantiations>,
+) -> (Vec<StructLayout>, Vec<EnumLayout>, LayoutCache) {
     let mut layout_cache = LayoutCache::new();
     let mut struct_layouts = Vec::new();
     let mut enum_layouts = Vec::new();
 
-    let sorted = topo_sort_type_decls(decls);
+    let no_names = HashMap::new();
+    let type_names = inst.map_or(&no_names, |i| i.type_names);
+    let instances = inst.map_or_else(Vec::new, |i| instance_steps(decls, &i.reached, type_names));
     let concrete = concrete_type_names(decls);
-    for idx in sorted {
+    for step in layout_order(decls, instances, type_names) {
+        let idx = match step {
+            LayoutStep::Decl(idx) => idx,
+            LayoutStep::Instance { decl, args, name } => {
+                let inst = inst.expect("instantiations come with their inputs");
+                lay_out_instance(
+                    &decls[decl],
+                    &args,
+                    name,
+                    inst,
+                    &mut layout_cache,
+                    &mut struct_layouts,
+                    &mut enum_layouts,
+                );
+                continue;
+            }
+        };
         let decl = &decls[idx];
         match &decl.kind {
             DeclKind::Struct(s) if s.type_params.is_empty() => {
@@ -301,6 +373,114 @@ pub fn compute_declared_layouts(
     (struct_layouts, enum_layouts, layout_cache)
 }
 
+/// One layout per *instantiation*, but only where the shared one is too small.
+/// The placeholder gives every type parameter a word, which is right for a
+/// scalar and right for anything boxed (a `Vec`, a `Map`, a `Shared`) since
+/// those are pointers. It is wrong for anything that *is* its bytes — a struct,
+/// enum, union, tuple, array, or a `string`: `One<Big>` stored 24 bytes into an
+/// 8-byte slot and segfaulted on the read back (#781).
+///
+/// Emitted only when the instantiated layout is bigger than the shared one, so
+/// `One<i32>` keeps using the shared layout and nothing that worked changes
+/// shape.
+fn lay_out_instance(
+    decl: &Decl,
+    args: &[Type],
+    instance_name: String,
+    inst: &Instantiations,
+    layout_cache: &mut LayoutCache,
+    struct_layouts: &mut Vec<StructLayout>,
+    enum_layouts: &mut Vec<EnumLayout>,
+) {
+    // Only when an argument can actually overflow the shared slot...
+    let overflows = args.iter().any(|a| {
+        inline_arg_size(a, inst.type_names, inst.types, layout_cache).is_some_and(|size| size > 8)
+    });
+    // ...or when it owns storage. A container argument fits the shared word
+    // fine, and that is the problem: the shared layout says `i64`, the release
+    // walk reads the layout, and `Pair<i64, Vec<i64>>`'s vector was freed by
+    // nobody. The instance layout names the real type, and this one is kept
+    // whatever its size.
+    //
+    // User declarations only. The stdlib's own generics are runtime objects
+    // behind an empty struct — there is no field to describe — and giving
+    // `Map<string, Vec<i32>>` an instance layout renamed the type out from
+    // under method dispatch: `Map$string$Vec$i32_index`, a function nobody
+    // emitted.
+    let owns = !is_stdlib_span(decl.span) && args.iter().any(|a| arg_owns_heap(a, inst.type_names));
+    if !overflows && !owns {
+        return;
+    }
+    // The type arguments have to be nameable to the layout code too —
+    // `type_size_align` reads the cache by name, and a `Named(id)` isn't one. A
+    // nested instantiation is named by its own instance layout.
+    let named_args: Vec<Type> = args
+        .iter()
+        .map(|a| arg_as_cache_name(a, inst.type_names, layout_cache))
+        .collect();
+    match &decl.kind {
+        DeclKind::Struct(s) => {
+            let shared = layout_cache.get(s.name.as_str()).map(|(size, _)| *size).unwrap_or(0);
+            let mut layout = compute_struct_layout(decl, &named_args, layout_cache);
+            if !owns && layout.size <= shared {
+                return;
+            }
+            layout.name = instance_name.clone();
+            layout_cache.insert(instance_name, (layout.size, layout.align));
+            struct_layouts.push(layout);
+        }
+        DeclKind::Enum(e) => {
+            let shared = layout_cache.get(e.name.as_str()).map(|(size, _)| *size).unwrap_or(0);
+            let mut layout = compute_enum_layout(decl, &named_args, layout_cache);
+            if !owns && layout.size <= shared {
+                return;
+            }
+            layout.name = instance_name.clone();
+            layout_cache.insert(instance_name, (layout.size, layout.align));
+            enum_layouts.push(layout);
+        }
+        _ => {}
+    }
+}
+
+/// The reached instantiations of the program's generic declarations, one per
+/// layout name.
+fn instance_steps(
+    decls: &[Decl],
+    reached: &[(String, Vec<Type>)],
+    type_names: &HashMap<rask_types::TypeId, String>,
+) -> Vec<LayoutStep> {
+    // PC1 counts: a single letter in a field or payload type makes the type
+    // generic whether or not `<T>` was written. Gating on the explicit list
+    // meant an implicit-param struct never got an instance layout at all, so a
+    // `Pair<i32, string>` kept the shared one — where every parameter is a
+    // single word — and its 16-byte string field was written into an 8-byte
+    // slot (#913).
+    let generic_decls: HashMap<&str, usize> = decls
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| match &d.kind {
+            DeclKind::Struct(s) if !rask_types::struct_type_param_names(s).is_empty() => {
+                Some((s.name.as_str(), i))
+            }
+            DeclKind::Enum(e) if !rask_types::enum_type_param_names(e).is_empty() => {
+                Some((e.name.as_str(), i))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for (base, args) in reached {
+        let Some(&decl) = generic_decls.get(base.as_str()) else { continue };
+        let Some(name) = generic_instance_name(base, args, type_names) else { continue };
+        if seen.insert(name.clone()) {
+            out.push(LayoutStep::Instance { decl, args: args.clone(), name });
+        }
+    }
+    out
+}
+
 fn concrete_type_names(decls: &[Decl]) -> HashSet<String> {
     decls
         .iter()
@@ -312,113 +492,113 @@ fn concrete_type_names(decls: &[Decl]) -> HashSet<String> {
         .collect()
 }
 
-fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
-    // Map type name → decl index for struct/enum/union declarations
-    let mut name_to_idx: HashMap<String, usize> = HashMap::new();
-    let mut type_indices: Vec<usize> = Vec::new();
+/// The field types a declaration's layout is computed from.
+fn layout_field_types(decl: &Decl) -> Vec<&TypeExpr> {
+    match &decl.kind {
+        DeclKind::Struct(s) => s.fields.iter().map(|f| &f.ty).collect(),
+        DeclKind::Enum(e) => e.variants.iter().flat_map(|v| v.fields.iter().map(|f| &f.ty)).collect(),
+        DeclKind::Union(u) => u.fields.iter().map(|f| &f.ty).collect(),
+        DeclKind::TypeAlias(a) => vec![&a.target],
+        _ => vec![],
+    }
+}
+
+/// Every struct/enum/union/newtype declaration and every instantiation in
+/// `instances`, ordered so each comes after what its fields hold by value
+/// (Kahn's algorithm). An instantiation waits on its generic declaration,
+/// whose shared size it is compared against, and on its fields with the
+/// arguments written in: `One<Big>` waits on `Big`, `Group<string>` on
+/// `Tasks$string`. A cycle falls back to source order, instantiations last.
+fn layout_order(
+    decls: &[Decl],
+    instances: Vec<LayoutStep>,
+    type_names: &HashMap<rask_types::TypeId, String>,
+) -> Vec<LayoutStep> {
+    let mut nodes: Vec<LayoutStep> = Vec::new();
+    let mut by_key: HashMap<String, usize> = HashMap::new();
 
     // A concrete declaration owns its name over a generic one spelled the same:
     // a program's own `struct Wide` beside the stdlib's `Wide<T>`.
     let concrete = concrete_type_names(decls);
     for (i, decl) in decls.iter().enumerate() {
-        match &decl.kind {
-            DeclKind::Struct(s) => {
-                let name = s.name.to_string();
-                if s.type_params.is_empty() || !concrete.contains(&name) {
-                    name_to_idx.insert(name, i);
-                }
-                type_indices.push(i);
-            }
-            DeclKind::Enum(e) => {
-                let name = e.name.to_string();
-                if e.type_params.is_empty() || !concrete.contains(&name) {
-                    name_to_idx.insert(name, i);
-                }
-                type_indices.push(i);
-            }
-            DeclKind::Union(u) => {
-                name_to_idx.insert(u.name.clone(), i);
-                type_indices.push(i);
-            }
+        let (name, generic) = match &decl.kind {
+            DeclKind::Struct(s) => (s.name.as_str(), !s.type_params.is_empty()),
+            DeclKind::Enum(e) => (e.name.as_str(), !e.type_params.is_empty()),
+            DeclKind::Union(u) => (u.name.as_str(), false),
             // Nominal newtypes take part in the ordering: a struct with a field
             // typed by one needs the alias's size known first (#445).
             DeclKind::TypeAlias(a) if !a.is_transparent && a.type_params.is_empty() => {
-                name_to_idx.insert(a.name.clone(), i);
-                type_indices.push(i);
+                (a.name.as_str(), false)
             }
-            _ => {}
+            _ => continue,
+        };
+        if !generic || !concrete.contains(name) {
+            by_key.insert(name.to_string(), nodes.len());
         }
+        nodes.push(LayoutStep::Decl(i));
+    }
+    for step in instances {
+        if let LayoutStep::Instance { name, .. } = &step {
+            by_key.insert(name.clone(), nodes.len());
+        }
+        nodes.push(step);
     }
 
     let inline_params = inline_type_params(decls);
 
-    // Build dependency edges: decl_idx → set of decl indices it depends on
-    let mut deps: HashMap<usize, HashSet<usize>> = HashMap::new();
-    let mut rdeps: HashMap<usize, Vec<usize>> = HashMap::new();
-
-    for &idx in &type_indices {
-        let mut field_deps = HashSet::new();
-        let fields: Vec<&TypeExpr> = match &decls[idx].kind {
-            DeclKind::Struct(s) => s.fields.iter().map(|f| &f.ty).collect(),
-            DeclKind::Enum(e) => e.variants.iter()
-                .flat_map(|v| v.fields.iter().map(|f| &f.ty))
-                .collect(),
-            DeclKind::Union(u) => u.fields.iter().map(|f| &f.ty).collect(),
-            DeclKind::TypeAlias(a) => vec![&a.target],
-            _ => vec![],
-        };
-
-        let mut type_names = HashSet::new();
-        for ty in fields {
-            let parsed = layout::field_type(ty);
-            collect_type_deps(&parsed, &inline_params, &mut type_names);
-        }
-
-        for name in type_names {
-            if let Some(&dep_idx) = name_to_idx.get(&name) {
-                if dep_idx != idx {
-                    field_deps.insert(dep_idx);
-                    rdeps.entry(dep_idx).or_default().push(idx);
+    let mut deps: Vec<HashSet<usize>> = Vec::with_capacity(nodes.len());
+    let mut rdeps: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    for (n, node) in nodes.iter().enumerate() {
+        let mut keys = HashSet::new();
+        match node {
+            LayoutStep::Decl(idx) => {
+                for ty in layout_field_types(&decls[*idx]) {
+                    collect_type_deps(&layout::field_type(ty), &inline_params, type_names, &mut keys);
+                }
+            }
+            LayoutStep::Instance { decl, args, .. } => {
+                let (base, params) = match &decls[*decl].kind {
+                    DeclKind::Struct(s) => (s.name.as_str(), rask_types::struct_type_param_names(s)),
+                    DeclKind::Enum(e) => (e.name.as_str(), rask_types::enum_type_param_names(e)),
+                    _ => ("", Vec::new()),
+                };
+                keys.insert(base.to_string());
+                let subst: HashMap<&str, &Type> =
+                    params.iter().map(String::as_str).zip(args.iter()).collect();
+                for ty in layout_field_types(&decls[*decl]) {
+                    let ty = layout::substitute_inside(&layout::field_type(ty), &subst);
+                    collect_type_deps(&ty, &inline_params, type_names, &mut keys);
                 }
             }
         }
-        deps.insert(idx, field_deps);
-    }
-
-    // Kahn's algorithm
-    let mut queue: VecDeque<usize> = VecDeque::new();
-    for &idx in &type_indices {
-        if deps.get(&idx).map_or(true, |d| d.is_empty()) {
-            queue.push_back(idx);
-        }
-    }
-
-    let mut sorted = Vec::with_capacity(type_indices.len());
-    while let Some(idx) = queue.pop_front() {
-        sorted.push(idx);
-        if let Some(dependents) = rdeps.get(&idx) {
-            for &dep in dependents {
-                if let Some(dep_set) = deps.get_mut(&dep) {
-                    dep_set.remove(&idx);
-                    if dep_set.is_empty() {
-                        queue.push_back(dep);
-                    }
+        let mut node_deps = HashSet::new();
+        for key in keys {
+            if let Some(&dep) = by_key.get(&key) {
+                if dep != n && node_deps.insert(dep) {
+                    rdeps[dep].push(n);
                 }
             }
         }
+        deps.push(node_deps);
     }
 
-    // Any remaining (cycles) — append in source order
-    if sorted.len() < type_indices.len() {
-        let in_sorted: HashSet<usize> = sorted.iter().copied().collect();
-        for &idx in &type_indices {
-            if !in_sorted.contains(&idx) {
-                sorted.push(idx);
+    let mut queue: VecDeque<usize> = (0..nodes.len()).filter(|&n| deps[n].is_empty()).collect();
+    let mut order = Vec::with_capacity(nodes.len());
+    while let Some(n) = queue.pop_front() {
+        order.push(n);
+        for &dependent in &rdeps[n] {
+            if deps[dependent].remove(&n) && deps[dependent].is_empty() {
+                queue.push_back(dependent);
             }
         }
     }
+    if order.len() < nodes.len() {
+        let placed: HashSet<usize> = order.iter().copied().collect();
+        order.extend((0..nodes.len()).filter(|n| !placed.contains(n)));
+    }
 
-    sorted
+    let mut slots: Vec<Option<LayoutStep>> = nodes.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|n| slots[n].take()).collect()
 }
 
 /// The layout name of one instantiation of a generic type — `One$Big`,
@@ -651,31 +831,6 @@ fn inline_arg_size(
     }
 }
 
-/// How deeply a type argument nests other types. Used only to order layout
-/// construction, so the exact numbers don't matter beyond inner < outer.
-fn type_depth(ty: &Type) -> u32 {
-    use rask_types::GenericArg;
-    match ty {
-        Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
-            1 + args
-                .iter()
-                .filter_map(|a| match a {
-                    GenericArg::Type(t) => Some(type_depth(t)),
-                    _ => None,
-                })
-                .max()
-                .unwrap_or(0)
-        }
-        Type::Tuple(elems) | Type::Union(elems) => {
-            1 + elems.iter().map(type_depth).max().unwrap_or(0)
-        }
-        Type::RawPtr(inner) => 1 + type_depth(inner),
-        Type::Array { elem, .. } => 1 + type_depth(elem),
-        Type::Result { ok, err } => 1 + type_depth(ok).max(type_depth(err)),
-        _ => 0,
-    }
-}
-
 /// A type argument respelled so `type_size_align` can find it: a name the layout
 /// cache holds. A nested instantiation resolves to its own instance layout when
 /// there is one, and to the shared layout otherwise.
@@ -872,158 +1027,61 @@ fn monomorphize_inner(
         });
     }
 
-    // Concrete and generic-base layouts, shared with the interpreter so both
-    // backends read one set of offsets (#1104).
-    let (mut struct_layouts, mut enum_layouts, mut layout_cache) =
-        compute_declared_layouts(decls);
-
-    // One layout per *instantiation*, but only where the shared one is too small.
-    // The placeholder above gives every type parameter a word, which is right for
-    // a scalar and right for anything boxed (a `Vec`, a `Map`, a `Shared`) since
-    // those are pointers. It is wrong for anything that *is* its bytes — a struct,
-    // enum, union, tuple, array, or a `string`: `One<Big>` stored 24 bytes into an
-    // 8-byte slot and segfaulted on the read back (#781).
-    //
-    // Emitted only when the instantiated layout is bigger than the shared one, so
-    // `One<i32>` keeps using the shared layout and nothing that worked changes
-    // shape.
-    {
-        let type_names: HashMap<rask_types::TypeId, String> = program
-            .types
-            .iter()
-            .enumerate()
-            .map(|(i, def)| {
-                let name = match def {
-                    rask_types::TypeDef::Struct { name, .. }
-                    | rask_types::TypeDef::Enum { name, .. }
-                    | rask_types::TypeDef::Interface { name, .. }
-                    | rask_types::TypeDef::Union { name, .. }
-                    | rask_types::TypeDef::NominalAlias { name, .. }
-                    | rask_types::TypeDef::Primitive { name, .. } => name.clone(),
-                };
-                (rask_types::TypeId(i as u32), name)
-            })
-            .collect();
-
-        let generic_decls: HashMap<String, &Decl> = decls
-            .iter()
-            .filter_map(|d| match &d.kind {
-                // PC1 counts: a single letter in a field or payload type makes
-                // the type generic whether or not `<T>` was written. Gating on
-                // the explicit list meant an implicit-param struct never got an
-                // instance layout at all, so a `Pair<i32, string>` kept the
-                // shared one — where every parameter is a single word — and its
-                // 16-byte string field was written into an 8-byte slot (#913).
-                DeclKind::Struct(s) if !rask_types::struct_type_param_names(s).is_empty() => {
-                    Some((s.name.as_str().to_string(), d))
-                }
-                DeclKind::Enum(e) if !rask_types::enum_type_param_names(e).is_empty() => {
-                    Some((e.name.as_str().to_string(), d))
-                }
-                _ => None,
-            })
-            .collect();
-
-        let mut instances: Vec<(String, Vec<Type>)> = Vec::new();
-        if !generic_decls.is_empty() {
-            for ty in program
-                .node_types
-                .values()
-                .chain(mono.instantiated_node_types.values())
-                // A type argument is an instantiation even when nothing builds
-                // one. `reflect.fields<Box2<string>>()` names the type and never
-                // constructs it, so it appeared in no expression's type — and
-                // the layout that would have said `value` is sixteen bytes was
-                // never emitted. Reflection then read the shared layout and
-                // reported a `string` field as an eight-byte `i64` (#968).
-                .chain(mono.results.iter().flat_map(|f| f.type_args.iter().map(|b| &b.ty)))
-            {
-                collect_generic_instances(ty, &type_names, &mut instances);
-            }
-        }
-
-        // Shallowest first. `One<One<Big>>` can only be sized once `One$Big` is in
-        // the cache — a type argument is always shallower than the instantiation
-        // that holds it. At equal depth, declaration order: `Group<string>` holding
-        // a `Tasks<string>` field needs `Tasks$string` first, and both have the
-        // same arguments.
-        let rank: HashMap<String, usize> = topo_sort_type_decls(decls)
-            .into_iter()
-            .enumerate()
-            .filter_map(|(pos, idx)| match &decls[idx].kind {
-                DeclKind::Struct(s) => Some((s.name.to_string(), pos)),
-                DeclKind::Enum(e) => Some((e.name.to_string(), pos)),
-                _ => None,
-            })
-            .collect();
-        instances.sort_by_key(|(base, args)| {
-            (
-                args.iter().map(type_depth).max().unwrap_or(0),
-                rank.get(base).copied().unwrap_or(usize::MAX),
-            )
-        });
-
-        let mut emitted: HashSet<String> = HashSet::new();
-        for (base, args) in instances {
-            let Some(decl) = generic_decls.get(&base) else { continue };
-            let Some(instance_name) = generic_instance_name(&base, &args, &type_names) else {
-                continue;
+    let type_names: HashMap<rask_types::TypeId, String> = program
+        .types
+        .iter()
+        .enumerate()
+        .map(|(i, def)| {
+            let name = match def {
+                rask_types::TypeDef::Struct { name, .. }
+                | rask_types::TypeDef::Enum { name, .. }
+                | rask_types::TypeDef::Interface { name, .. }
+                | rask_types::TypeDef::Union { name, .. }
+                | rask_types::TypeDef::NominalAlias { name, .. }
+                | rask_types::TypeDef::Primitive { name, .. } => name.clone(),
             };
-            if !emitted.insert(instance_name.clone()) {
-                continue;
-            }
-            // Only when an argument can actually overflow the shared slot...
-            let overflows = args.iter().any(|a| {
-                inline_arg_size(a, &type_names, &program.types, &layout_cache)
-                    .is_some_and(|size| size > 8)
-            });
-            // ...or when it owns storage. A container argument fits the shared
-            // word fine, and that is the problem: the shared layout says `i64`,
-            // the release walk reads the layout, and `Pair<i64, Vec<i64>>`'s
-            // vector was freed by nobody. The instance layout names the real
-            // type, and this one is kept whatever its size.
-            //
-            // User declarations only. The stdlib's own generics are runtime
-            // objects behind an empty struct — there is no field to describe —
-            // and giving `Map<string, Vec<i32>>` an instance layout renamed the
-            // type out from under method dispatch: `Map$string$Vec$i32_index`,
-            // a function nobody emitted.
-            let owns = !is_stdlib_span(decl.span)
-                && args.iter().any(|a| arg_owns_heap(a, &type_names));
-            if !overflows && !owns {
-                continue;
-            }
-            // The type arguments have to be nameable to the layout code too —
-            // `type_size_align` reads the cache by name, and a `Named(id)` isn't
-            // one. A nested instantiation is named by its own instance layout.
-            let named_args: Vec<Type> = args
-                .iter()
-                .map(|a| arg_as_cache_name(a, &type_names, &layout_cache))
-                .collect();
-            let shared = layout_cache.get(&base).map(|(size, _)| *size).unwrap_or(0);
-            match &decl.kind {
-                DeclKind::Struct(_) => {
-                    let mut layout = compute_struct_layout(decl, &named_args, &layout_cache);
-                    if !owns && layout.size <= shared {
-                        continue;
-                    }
-                    layout.name = instance_name.clone();
-                    layout_cache.insert(instance_name, (layout.size, layout.align));
-                    struct_layouts.push(layout);
-                }
-                DeclKind::Enum(_) => {
-                    let mut layout = compute_enum_layout(decl, &named_args, &layout_cache);
-                    if !owns && layout.size <= shared {
-                        continue;
-                    }
-                    layout.name = instance_name.clone();
-                    layout_cache.insert(instance_name, (layout.size, layout.align));
-                    enum_layouts.push(layout);
-                }
-                _ => {}
+            (rask_types::TypeId(i as u32), name)
+        })
+        .collect();
+
+    // Every instantiation the program mentions: in an expression's type, as a
+    // call's type argument, or as a field of a concrete type.
+    let mut reached: Vec<(String, Vec<Type>)> = Vec::new();
+    for ty in program
+        .node_types
+        .values()
+        .chain(mono.instantiated_node_types.values())
+        // A type argument is an instantiation even when nothing builds one.
+        // `reflect.fields<Box2<string>>()` names the type and never constructs
+        // it, so it appeared in no expression's type — and the layout that
+        // would have said `value` is sixteen bytes was never emitted.
+        // Reflection then read the shared layout and reported a `string` field
+        // as an eight-byte `i64` (#968).
+        .chain(mono.results.iter().flat_map(|f| f.type_args.iter().map(|b| &b.ty)))
+    {
+        collect_generic_instances(ty, &type_names, &mut reached);
+    }
+    for decl in decls {
+        let concrete = match &decl.kind {
+            DeclKind::Struct(s) => s.type_params.is_empty(),
+            DeclKind::Enum(e) => e.type_params.is_empty(),
+            DeclKind::Union(_) => true,
+            _ => false,
+        };
+        if concrete {
+            for ty in layout_field_types(decl) {
+                collect_generic_instances(&layout::field_type(ty), &type_names, &mut reached);
             }
         }
     }
+
+    // Declared and instance layouts in one dependency order, the declared ones
+    // shared with the interpreter so both backends read one set of offsets
+    // (#1104).
+    let (struct_layouts, mut enum_layouts, _) = compute_layouts(
+        decls,
+        Some(&Instantiations { reached, type_names: &type_names, types: &program.types }),
+    );
 
     // `Ordering` has no decl to compute a layout from — the compiler registers
     // it instead. Give it one anyway so it behaves like every other fieldless
