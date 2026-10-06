@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// An operator reached through a bare `T: Mul` bound, on a user type (#1472).
+//
+// A bare bound files the method under the parameter's own name, `mul$T`, and
+// monomorphization has to say which type that is in each copy. It did for the
+// operator's dispatch record and not for the call target on the same node, so
+// reachability went looking for `Meters_mul$T` and codegen called a
+// `Meters_mul$Meters` nothing had generated:
+//
+//     error: codegen 'squared$Meters': Function not found: Meters_mul$Meters
+//
+// The interpreter ran it all along.
+
+struct Meters {
+    v: f64
+}
+
+Meters implements Mul {
+    func mul(self, o: Meters) -> Meters {
+        return Meters { v: self.v * o.v }
+    }
+}
+
+func squared<T: Mul>(x: T) -> T {
+    return x * x
+}
+
+func squared_by_name<T: Mul>(x: T) -> T {
+    return x.mul(x)
+}
+
+test "the operator spelling" {
+    assert squared(Meters { v: 3.0 }).v == 9.0
+}
+
+test "the method spelling" {
+    assert squared_by_name(Meters { v: 4.0 }).v == 16.0
+}
+
+test "a primitive through the same bound" {
+    assert squared(5) == 25
+    assert squared_by_name(1.5) == 2.25
+}
+
+func main() {
+    println("{squared(Meters { v: 3.0 }).v}")
+}

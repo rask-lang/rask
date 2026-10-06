@@ -612,17 +612,42 @@ impl<'a> Monomorphizer<'a> {
                         Some(name) => format!("{}${}", target.operator, name),
                         None => target.method.clone(),
                     };
-                    self.instantiated_operator_targets.insert(
-                        new_id,
-                        rask_types::OperatorTarget {
-                            recv,
-                            method,
-                            operator: target.operator.clone(),
-                            rhs: rhs.or_else(|| target.rhs.clone()),
-                            applied: target.applied.clone(),
-                            builtin: target.builtin,
+                    // Two primitives are the language's own pair, the same
+                    // answer the checker gives `5 * 5` outside a generic body:
+                    // no conformance, so no operator target, and the call is the
+                    // plain operator method.
+                    let rhs_is_primitive = match target.rhs.as_deref() {
+                        None => true,
+                        Some(r) => match bindings.get(r) {
+                            Some(t) => rask_types::primitive_spelling(t).is_some(),
+                            None => rask_ast::primitives::is_builtin_scalar_or_string(r),
                         },
-                    );
+                    };
+                    let language_pair =
+                        rask_types::primitive_spelling(&recv).is_some() && rhs_is_primitive;
+                    // The call target the checker recorded for the same node
+                    // names the method the same way, `mul$T`, and that is what
+                    // reachability enqueues. Left as it was, the operator's
+                    // dispatch said `Meters_mul$Meters` while nothing generated
+                    // it, and `i32_mul$i32` for a pair that has no body (#1472).
+                    if let Some(rask_types::Callee::Method { method: m, .. }) =
+                        self.instantiated_call_targets.get_mut(&new_id)
+                    {
+                        *m = if language_pair { target.operator.clone() } else { method.clone() };
+                    }
+                    if !language_pair {
+                        self.instantiated_operator_targets.insert(
+                            new_id,
+                            rask_types::OperatorTarget {
+                                recv,
+                                method,
+                                operator: target.operator.clone(),
+                                rhs: rhs.or_else(|| target.rhs.clone()),
+                                applied: target.applied.clone(),
+                                builtin: target.builtin,
+                            },
+                        );
+                    }
                 }
             }
             // ER31a: the wrapping variant names a concrete enum, so it carries
