@@ -25,13 +25,11 @@ test "string keys hash by their text" {
     assert (m.get(k) ?? -1) == 20
 }
 
-// Integer keys: a repeated string key leaks the key it replaces, in any
-// `insert`, not just this one (#1432).
 test "a later key overwrites an earlier one" {
     let plain: Vec<i64> = [1, 2, 1]
-    let m = plain.enumerate().map(|p| (p.1, p.0)).to_map()
+    let m = plain.enumerate().map(|p| (heap_key(p.1), "{heap_key(p.1)} at {p.0}")).to_map()
     assert m.len() == 2
-    assert m.get(1)! == 2
+    assert m.get(heap_key(1))! == "{heap_key(1)} at 2"
 }
 
 test "vector values are the map's to free" {

@@ -8984,9 +8984,10 @@ impl<'a> MirLowerer<'a> {
                 access: FieldAccess::for_field(&val_slot, val_slot.size()),
             },
         }));
+        // `Map_set`: nothing takes a displaced value, so the map releases it.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Map_insert".to_string()),
+            func: FunctionRef::internal("Map_set".to_string()),
             args: vec![
                 MirOperand::Local(map),
                 MirOperand::Local(key_local),

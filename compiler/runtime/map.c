@@ -455,7 +455,16 @@ static int64_t map_insert_impl(RaskMap *m, const void *key, const void *val,
         rask_owned_release_all(m->vals + slot * m->val_size,
                                m->val_strs.offsets, m->val_strs.count);
     }
-    memcpy(m->keys + slot * m->key_size, key, (size_t)m->key_size);
+    if (prev_state == MAP_OCCUPIED) {
+        // The key is already here, equal to the one handed in. Keep the stored
+        // one and release the newcomer, which the caller gave to the map: two
+        // equal strings are still two buffers, and copying over the stored key
+        // left it to nobody (#1432). The caller's buffer is a spill slot it is
+        // done with, so the release may write to it.
+        rask_owned_release_all((char *)key, m->key_strs.offsets, m->key_strs.count);
+    } else {
+        memcpy(m->keys + slot * m->key_size, key, (size_t)m->key_size);
+    }
     memcpy(m->vals + slot * m->val_size, val, (size_t)m->val_size);
     m->states[slot] = MAP_OCCUPIED;
     if (prev_state == MAP_TOMBSTONE) m->tombstones--;

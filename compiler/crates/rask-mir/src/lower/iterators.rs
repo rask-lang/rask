@@ -1405,9 +1405,11 @@ impl<'a> MirLowerer<'a> {
                 access: FieldAccess::Word,
             },
         }));
+        // SEQ29: a later key overwrites an earlier one. `Map_set`, because
+        // nothing takes the value it displaces, so the map releases it.
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
-            func: FunctionRef::internal("Map_insert".to_string()),
+            func: FunctionRef::internal("Map_set".to_string()),
             args: vec![
                 MirOperand::Local(result_map),
                 MirOperand::Local(key),
