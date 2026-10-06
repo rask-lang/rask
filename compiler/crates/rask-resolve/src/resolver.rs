@@ -390,6 +390,7 @@ impl Resolver {
         let stub_fns: Vec<&str> = rask_stdlib::StubRegistry::load()
             .methods(module)
             .iter()
+            .filter(|m| m.is_pub && m.name != symbol)
             .map(|m| m.name.as_str())
             .collect();
         let exports = Self::stdlib_module_exports(module);
@@ -1500,8 +1501,13 @@ impl Resolver {
                 // from a hand-maintained list — `io.stdin` is declared in
                 // stdlib/io.rk but missing from the registry's IO_METHODS, and
                 // a check stricter than the actual API is worse than no check.
+                // A namespace member without `public` is the module's own, so
+                // `import json.parse` names nothing a program can have (#1410).
+                let private_member = rask_stdlib::StubRegistry::load()
+                    .lookup_method(pkg_name, symbol_name)
+                    .is_some_and(|m| !m.is_pub);
                 let known = Self::stdlib_module_exports(pkg_name).contains(&symbol_name.as_str())
-                    || rask_stdlib::mir_metadata::type_has_method(pkg_name, symbol_name)
+                    || (rask_stdlib::mir_metadata::type_has_method(pkg_name, symbol_name) && !private_member)
                     || Self::stdlib_enum_variants(pkg_name, symbol_name).is_some()
                     // `import std.reflect` names a submodule, not a symbol.
                     || rask_stdlib::mir_metadata::stdlib_module_names()

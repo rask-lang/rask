@@ -19,7 +19,7 @@
 
 func main() {
     // ERROR: `json` is used but never imported
-    let v = json.parse("{}")
+    let v = json.encode(1)
 
     // ERROR: `net` is used but never imported
     let l = net.tcp_listen("127.0.0.1:0")

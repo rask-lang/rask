@@ -1967,6 +1967,22 @@ fn error_stdlib_renames() {
     assert!(out.contains("fix: os.pid(…)"), "the renamed one is named: {}", out);
 }
 
+// `json.parse` is declared without `public` — it's the body behind
+// `json.decode<JsonValue>` — and programs could call it anyway (#1410). A
+// selective import of it is refused the same way.
+#[test]
+fn error_private_stdlib_function() {
+    let (failed, out) = compile_error_output("private_stdlib_function.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0412]").count(), 2, "two private calls, the public one fine: {}", out);
+    assert!(out.contains("`json.parse` is not public"), "{}", out);
+    assert!(out.contains("use what `json` makes public: encode, decode"), "{}", out);
+    assert!(!out.contains("to_value"), "an unimplemented function is no suggestion: {}", out);
+
+    let import = check_output("import json.parse\nfunc main() {}\n");
+    assert!(import.contains("`json` has no `parse` to import"), "{}", import);
+}
+
 // `async` has no namespace struct, so `async.join_all(5)` was a method lookup
 // on the module's placeholder type, dropped unreported: the only error was
 // "couldn't work out the type of `y`", and with the result used, a crash in

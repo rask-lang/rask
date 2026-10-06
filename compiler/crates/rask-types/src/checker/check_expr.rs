@@ -3134,8 +3134,8 @@ impl TypeChecker {
     }
 
     /// `async.join_all(…)` — a call through a stdlib module to a function the
-    /// module doesn't have. `Some(Type::Error)` once reported, `None` when the
-    /// receiver isn't a module or the module does have it.
+    /// module doesn't have, or doesn't make public. `Some(Type::Error)` once
+    /// reported, `None` when the receiver isn't a module or the call is fine.
     ///
     /// A free function the module exports never gets here: the resolver points
     /// the call at it and `call_module_functions_bare` makes it a plain call. So
@@ -3166,18 +3166,48 @@ impl TypeChecker {
             return None;
         }
         let reg = rask_stdlib::StubRegistry::load();
-        if reg.has_method(module, method) {
-            return None;
+        // The stdlib's own bodies see the whole module. A program sees what it
+        // declares `public`: the stdlib is a package of its own, and a member
+        // without the word is the module's (struct.modules/V1, V2). `json.parse`
+        // is the body behind `json.decode<JsonValue>` and was callable anyway,
+        // so the suite came to depend on it (#1410).
+        let in_stdlib = self.types.stdlib_mode;
+        match reg.lookup_method(module, method) {
+            Some(m) if m.is_pub || in_stdlib => return None,
+            Some(_) => {
+                let public: Vec<String> = reg
+                    .methods(module)
+                    .iter()
+                    .filter(|m| m.is_pub && !m.unimplemented)
+                    .map(|m| m.name.clone())
+                    .collect();
+                for a in args {
+                    self.infer_expr(&a.expr);
+                }
+                self.errors.push(TypeError::PrivateModuleFunction {
+                    module: module.to_string(),
+                    function: method.to_string(),
+                    public,
+                    span,
+                });
+                return Some(Type::Error);
+            }
+            None => {}
         }
         let exports = rask_stdlib::modules::exports(module);
         let owner = exports
             .types
             .iter()
             .chain(exports.enums.iter().map(|(n, _)| n))
-            .find_map(|ty| reg.lookup_method(ty, method).map(|m| (ty.clone(), m.takes_self)));
+            .find_map(|ty| {
+                reg.lookup_method(ty, method)
+                    .filter(|m| m.is_pub)
+                    .map(|m| (ty.clone(), m.takes_self))
+            });
         let mut available: Vec<String> = reg
             .methods(module)
             .iter()
+            .filter(|m| (m.is_pub || in_stdlib) && !m.unimplemented)
             .map(|m| m.name.clone())
             .chain(exports.functions.iter().cloned())
             .collect();

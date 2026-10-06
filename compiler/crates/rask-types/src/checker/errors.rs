@@ -108,6 +108,16 @@ pub enum TypeError {
         available: Vec<String>,
         span: Span,
     },
+    /// `module.f(…)` where the module declares `f` without `public`. The
+    /// stdlib is its own package, so that member is the module's (#1410).
+    #[error("`{module}.{function}` is not public")]
+    PrivateModuleFunction {
+        module: String,
+        function: String,
+        /// The module's public functions.
+        public: Vec<String>,
+        span: Span,
+    },
     /// std.fmt/D4: `{}` (and a bare `to_string()`) needs `Displayable`, and
     /// structs opt in (D3). Optionals and results never render on their own.
     #[error("`{ty}` does not implement `Displayable`")]
@@ -1525,6 +1535,7 @@ impl TypeError {
             | ArgLabelMismatch { .. }
             | UnimplementedStdlibMethod { .. }
             | NoSuchModuleFunction { .. }
+            | PrivateModuleFunction { .. }
             | NotDisplayable { .. }
             | UnboundedTypeParamMethod { .. }
             | CannotInfer { .. }

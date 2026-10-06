@@ -209,6 +209,10 @@ pub struct CompilableStdlib {
 #[derive(Debug, Clone)]
 pub struct MethodStub {
     pub name: String,
+    /// Declared `public`. A stdlib module is its own package, so a member
+    /// without it is the module's own and a program can't name it
+    /// (struct.modules/V1, V2).
+    pub is_pub: bool,
     pub takes_self: bool,
     /// True if declared `mutate self` — method mutates the receiver.
     pub mutate_self: bool,
@@ -726,6 +730,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
 
     MethodStub {
         name: bare_name,
+        is_pub: f.is_pub,
         takes_self,
         mutate_self,
         take_self,

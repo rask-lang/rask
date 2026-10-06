@@ -18,7 +18,7 @@ func main() -> void or json.JsonError {
     let p = Point { x: 1 }
     // ERROR: `is Point` needs a two-branch scrutinee
     let a = p is Point
-    let v = try json.parse("[1]")
+    let v = try json.decode<JsonValue>("[1]")
     // ERROR: `is JsonValue` needs a two-branch scrutinee
     let b = v is JsonValue
     // ERROR: the module-qualified spelling names the same type

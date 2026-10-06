@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a call to a stdlib module function declared without `public`
+// (E0412, #1410).
+//
+// The stdlib is a package of its own, so a member it doesn't make public is its
+// own (struct.modules/V1, V2). `json.parse` is the body `json.decode<JsonValue>`
+// lowers to; std.json's API is one verb pair, and `parse` isn't in it. Nothing
+// checked the marker, so programs called it and the suite came to depend on it.
+
+import json
+import json.JsonValue
+import time
+
+func untyped(text: string) -> JsonValue or json.JsonError {
+    // ERROR: `json.parse` is not public [E0412]
+    return try json.parse(text)
+}
+
+func clock() -> i64 {
+    // ERROR: nor is `time.wall_clock_nanos`, the body behind `SystemTime.now` [E0412]
+    return time.wall_clock_nanos()
+}
+
+// The public verb does the same job.
+func fine(text: string) -> JsonValue or json.JsonError {
+    return try json.decode<JsonValue>(text)
+}
+
+func main() {}

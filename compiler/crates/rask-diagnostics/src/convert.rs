@@ -941,6 +941,18 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
             }
 
+            PrivateModuleFunction { module, function, public, span } => {
+                Diagnostic::error(format!("`{}.{}` is not public", module, function))
+                    .with_code("E0412")
+                    .with_primary(*span, format!("internal to the stdlib's `{}` module", module))
+                    .with_fix(format!("use what `{}` makes public: {}", module, public.join(", ")))
+                    .with_why(
+                        "the stdlib is a package of its own, and a function it declares without \
+                         `public` belongs to that package. It can change or go away without \
+                         notice, which is the point of not making it public [struct.modules/V1, V2]",
+                    )
+            }
+
             NoSuchModuleFunction { module, function, owner, available, span } => {
                 let diag = Diagnostic::error(format!(
                     "`{}` has no function `{}`",
