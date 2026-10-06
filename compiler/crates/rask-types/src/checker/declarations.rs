@@ -2,7 +2,6 @@
 //! Pass 1: declaration collection and checking.
 
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, InterfaceDecl, UnionDecl, TypeAliasDecl};
-use super::type_table::TypeTable;
 use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, BinaryFieldSpec, BinaryStructInfo, Endian};
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
@@ -486,7 +485,7 @@ impl TypeChecker {
             return true;
         }
         self.errors.push(TypeError::TypeArgCount {
-            name: TypeTable::conformance_key(interface_ref),
+            name: interface_ref.name().unwrap_or_default(),
             expected: if found > type_params.len() { type_params.len() } else { required },
             params,
             found,
@@ -522,7 +521,7 @@ impl TypeChecker {
     /// An unknown interface is reported elsewhere, so nothing is said here.
     fn check_block_is_the_contract(&mut self, i: &ImplDecl) {
         let Some(interface) = &i.interface else { return };
-        let interface_name = TypeTable::conformance_key(interface);
+        let interface_name = interface.name().unwrap_or_default();
         let allowed = {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
             checker.declared_method_names(interface)
@@ -551,7 +550,7 @@ impl TypeChecker {
             None => return,
         };
         let Some(interface) = &i.interface else { return };
-        let base = TypeTable::conformance_key(interface);
+        let base = self.types.interface_name(interface);
         let interface_ref = interface;
         if rask_ast::operators::operator_interface_method(&base).is_some() {
             return;
@@ -620,7 +619,7 @@ impl TypeChecker {
             // (or the block itself when it declares no conformance at all).
             let (interface_name, known) = match i.interface.as_ref() {
                 Some(t) => {
-                    let base = TypeTable::conformance_key(t);
+                    let base = t.name().unwrap_or_default();
                     let known = match self.types.interface_decl(t).and_then(|id| self.types.get(id)) {
                         Some(TypeDef::Interface { assoc_types, .. }) => {
                             assoc_types.iter().map(|a| a.name.clone()).collect()
@@ -761,7 +760,7 @@ impl TypeChecker {
         }
         self.errors.push(TypeError::AmbiguousConformance {
             ty: self.types.type_name(type_id),
-            interface_name: TypeTable::conformance_key(&interface_key.applied),
+            interface_name: interface_key.applied.name().unwrap_or_default(),
             sites: visible,
             span,
         });
@@ -869,11 +868,11 @@ impl TypeChecker {
         }
         let Some(interface) = &i.interface else { return };
         let interface_name = interface;
-        let Some(encoding) = Self::core_interface(&TypeTable::conformance_key(interface_name)) else { return };
+        let Some(encoding) = Self::core_interface(&self.types.interface_name(interface_name)) else { return };
         self.errors.push(TypeError::ForeignCoreConformance {
             ty: i.target_ty.to_string(),
             type_name: i.target_ty.last_segment().unwrap_or_default().to_string(),
-            interface_name: TypeTable::conformance_key(interface_name),
+            interface_name: interface_name.name().unwrap_or_default(),
             owner: None,
             here: match &here {
                 TypeOwner::Package(p) => Some(p.clone()),
@@ -993,7 +992,7 @@ impl TypeChecker {
             // XC1: six interfaces belong to the package that declares the type.
             // Checked before the duplicate rule below, because a foreign block
             // claiming one of them is wrong whether or not the owner wrote one.
-            if let Some(encoding) = Self::core_interface(&TypeTable::conformance_key(interface_name)) {
+            if let Some(encoding) = Self::core_interface(&self.types.interface_name(interface_name)) {
                 use super::type_table::TypeOwner;
                 let here = self.type_owner(span);
                 let owner = self.types.declared_by(type_id);
@@ -1008,7 +1007,7 @@ impl TypeChecker {
                         // rejected header did.
                         ty: i.target_ty.to_string(),
                         type_name: i.target_ty.last_segment().unwrap_or_default().to_string(),
-                        interface_name: TypeTable::conformance_key(interface_name),
+                        interface_name: interface_name.name().unwrap_or_default(),
                         owner: name_of(&owner),
                         here: name_of(&here),
                         encoding,
@@ -1035,7 +1034,7 @@ impl TypeChecker {
                 dup_pair = true;
                 self.errors.push(TypeError::DuplicateConformance {
                     ty: base_name.to_string(),
-                    interface_name: TypeTable::conformance_key(interface_name),
+                    interface_name: interface_name.name().unwrap_or_default(),
                     first,
                     span,
                 });
@@ -1133,17 +1132,19 @@ impl TypeChecker {
         // blocks call their method `mul`. The applied argument goes into the
         // name it's filed under so the two don't overwrite each other here —
         // and so they don't emit one symbol between them downstream.
+        let interface = i.interface.as_ref().map(|t| (t, self.types.interface_name(t)));
+        if let Some((_, name)) = &interface {
+            self.conformance_interfaces.insert(decl_id, name.clone());
+        }
         let new_methods: Vec<_> = i
             .methods
             .iter()
             .map(|m| {
                 let mut sig = self.method_signature(m, &decl_params, &owner_patterns);
                 sig.owner_bounds = condition.clone();
-                if let Some(filed) = rask_ast::operators::conformance_method_name(
-                    &i.target_ty,
-                    i.interface.as_ref(),
-                    &m.name,
-                ) {
+                if let Some(filed) = interface.as_ref().and_then(|(t, name)| {
+                    rask_ast::operators::conformance_method_name(&i.target_ty, t, name, &m.name)
+                }) {
                     sig.name = filed;
                 }
                 sig

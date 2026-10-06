@@ -1721,12 +1721,12 @@ impl TypeChecker {
             if let Some(applied) = bounds
                 .iter()
                 .find(|b| {
-                    rask_ast::operators::operator_interface_method(&super::TypeTable::conformance_key(b))
+                    rask_ast::operators::operator_interface_method(&self.types.interface_name(b))
                         == Some(method.as_str())
                 })
                 .cloned()
             {
-                let applied_base = super::TypeTable::conformance_key(&applied);
+                let applied_base = self.types.interface_name(&applied);
                 let written_rhs = applied.args().first().and_then(TypeExpr::name);
                 let rhs = rask_ast::operators::filed_rhs(&param, &applied_base, written_rhs.as_deref());
                 if let Some(filed) =

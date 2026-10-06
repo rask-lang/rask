@@ -228,6 +228,8 @@ pub struct Interpreter {
     /// package is currently executing. Both empty outside a package build.
     pub(crate) file_packages: HashMap<u16, String>,
     pub(crate) conformance_disambiguation: HashMap<rask_ast::NodeId, String>,
+    /// OR4: each `implements` block's interface by its own name (the checker's).
+    pub(crate) conformance_interfaces: HashMap<rask_ast::NodeId, String>,
     /// The package whose function is running, innermost last.
     pub(crate) package_stack: Vec<Option<String>>,
     /// OR1: operator calls the checker resolved to a conformance, so `2.0 * m`
@@ -454,6 +456,7 @@ impl Interpreter {
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
+            conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
             call_depth: 0,
@@ -494,6 +497,7 @@ impl Interpreter {
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
+            conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
             call_depth: 0,
@@ -540,6 +544,7 @@ impl Interpreter {
             extend_header_patterns: HashMap::new(),
             file_packages: HashMap::new(),
             conformance_disambiguation: HashMap::new(),
+            conformance_interfaces: HashMap::new(),
             package_stack: Vec::new(),
             operator_targets: HashMap::new(),
             call_depth: 0,
@@ -658,6 +663,7 @@ impl Interpreter {
         // carry their package in the method name.
         self.file_packages = typed.file_packages.clone();
         self.conformance_disambiguation = typed.conformance_disambiguation.clone();
+        self.conformance_interfaces = typed.conformance_interfaces.clone();
     }
 
     /// The package whose code is running. `None` outside a package build, and

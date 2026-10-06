@@ -361,7 +361,7 @@ impl TypeChecker {
     ) -> PairOutcome {
         // OR4: the conformance's method is filed under the applied argument.
         let self_name = self.types.type_name(self_id);
-        let applied_base = super::TypeTable::conformance_key(applied);
+        let applied_base = self.types.interface_name(applied);
         let written_rhs = applied.args().first().and_then(TypeExpr::name);
         let rhs = rask_ast::operators::filed_rhs(&self_name, &applied_base, written_rhs.as_deref());
         let filed = rhs

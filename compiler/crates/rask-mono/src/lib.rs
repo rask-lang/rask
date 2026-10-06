@@ -1287,6 +1287,7 @@ mod tests {
             interface_coercions: std::collections::HashMap::new(),
             file_packages: std::collections::HashMap::new(),
             conformance_disambiguation: std::collections::HashMap::new(),
+            conformance_interfaces: std::collections::HashMap::new(),
             error_wraps: std::collections::HashMap::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
             escaping_closures: std::collections::HashSet::new(),
@@ -1648,7 +1649,7 @@ mod tests {
         ];
 
         let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
         assert!(mono.add_entry("main"));
         mono.run();
 
@@ -1687,7 +1688,7 @@ mod tests {
         ];
 
         let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
         mono.add_entry("main");
         mono.run();
 
@@ -1775,7 +1776,7 @@ mod tests {
         ];
 
         let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
         mono.add_entry("main");
         mono.run();
 
@@ -1816,7 +1817,7 @@ mod tests {
         ];
 
         let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
         mono.add_entry("main");
         mono.run();
 
@@ -1858,7 +1859,7 @@ mod tests {
         ];
 
         let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
         mono.add_entry("main");
         mono.run();
 
@@ -1889,7 +1890,7 @@ mod tests {
         ];
 
         let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
         mono.add_entry("main");
         mono.run();
 
@@ -1933,7 +1934,7 @@ mod tests {
         ];
 
         let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
         mono.add_entry("main");
         mono.run();
 
@@ -1979,7 +1980,7 @@ mod tests {
         ];
 
         let empty_type_args = std::collections::HashMap::new();
-        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args, &HashMap::new());
         mono.add_entry("main");
         mono.run();
 

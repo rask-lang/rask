@@ -128,7 +128,7 @@ impl<'a> InterfaceChecker<'a> {
     /// eligibility and keep structural matching; only user-declared interfaces
     /// require an explicit `T implements Interface` conformance.
     fn is_nominal_user_interface(&self, interface: &TypeExpr) -> bool {
-        let base = TypeTable::conformance_key(interface);
+        let base = self.types.interface_name(interface);
         let base = base.as_str();
         // A compiler-provided interface is satisfied by shape, whether or not
         // `stdlib/` also writes the declaration down. `Displayable` means "has
@@ -191,7 +191,7 @@ impl<'a> InterfaceChecker<'a> {
         // encode qualifies. These aren't registered as interfaces, so short-circuit
         // before the method-based logic (which would fail with UnknownInterface).
         let interface_name = interface.to_string();
-        let base = TypeTable::conformance_key(interface);
+        let base = self.types.interface_name(interface);
         let base_interface = base.as_str();
 
         // NT1–NT3: every primitive of the right kind satisfies `Numeric`,
@@ -313,7 +313,7 @@ impl<'a> InterfaceChecker<'a> {
             self.named_type_id(ty).and_then(|id| self.types.get(id))
         {
             if with_interfaces.iter().any(|t| {
-                TypeTable::conformance_key(t) == base_interface
+                self.types.interface_name(t) == base_interface
             }) {
                 return Ok(());
             }
@@ -789,9 +789,9 @@ impl<'a> InterfaceChecker<'a> {
         match self.types.interface_decl(interface) {
             Some(id) => Ok(self.declared_interface_methods(id, &mut Vec::new())),
             None => {
-                let name = TypeTable::conformance_key(interface);
+                let name = self.types.interface_name(interface);
                 self.get_builtin_interface_methods(&name)
-                    .ok_or(InterfaceError::UnknownInterface(name))
+                    .ok_or_else(|| InterfaceError::UnknownInterface(interface.name().unwrap_or_default()))
             }
         }
     }
@@ -1694,7 +1694,7 @@ fn object_compatible_methods_seen(
             // construction whatever the order is.
             if let TypeDef::Interface { super_interfaces, .. } = def {
                 for parent in super_interfaces {
-                    for m in object_compatible_methods_seen(types, &TypeTable::conformance_key(parent), seen) {
+                    for m in object_compatible_methods_seen(types, &types.interface_name(parent), seen) {
                         if !names.contains(&m) {
                             names.push(m);
                         }

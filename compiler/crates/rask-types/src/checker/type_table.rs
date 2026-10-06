@@ -682,11 +682,29 @@ impl TypeTable {
         self.types.get_mut(id.0 as usize)
     }
 
-    /// The interface an interface reference names: `Mul<f64>` → `Mul`, and
-    /// `io.Writer` → `Writer`, the name the module's interface is held under.
-    /// The same unwrapping `io.Buffer` gets as a type (#1310).
-    pub fn conformance_key(interface: &TypeExpr) -> String {
-        Self::stdlib_module_member(interface).unwrap_or_else(|| interface.name().unwrap_or_default())
+    /// The name of the interface a reference means, for keys and messages:
+    /// the declaration's own name, however the reference spelled it. `Mul<f64>`
+    /// is `Mul`, and `io.Writer` and `i.Writer` under `import io as i` are both
+    /// `Writer` (#1482). An interface the compiler provides by name only, or
+    /// one nothing declares, is its written name without the module.
+    pub fn interface_name(&self, written: &TypeExpr) -> String {
+        match self.interface_decl(written) {
+            Some(id) => self.type_name(id),
+            None => self.written_member_name(written),
+        }
+    }
+
+    /// `Writer` for `io.Writer` and for `i.Writer` under `import io as i`: the
+    /// reference without the module it was written through.
+    fn written_member_name(&self, written: &TypeExpr) -> String {
+        if let TypeExpr::Named { path, .. } = written {
+            if let [module, rest @ ..] = path.as_slice() {
+                if !rest.is_empty() && self.module_named(module).is_some() {
+                    return rest.join(".");
+                }
+            }
+        }
+        written.name().unwrap_or_default()
     }
 
     /// The interface declaration a written reference names. A module-qualified
@@ -700,7 +718,7 @@ impl TypeTable {
         if let Some(id) = self.module_interface(written) {
             return Some(id);
         }
-        self.get_type_id(&Self::conformance_key(written)).filter(is_interface)
+        self.get_type_id(&self.written_member_name(written)).filter(is_interface)
     }
 
     /// `io.Writer`: the interface a stdlib module declares, when the reference
@@ -724,13 +742,13 @@ impl TypeTable {
     /// reads it: a stdlib interface's parents are the stdlib's.
     pub fn parent_interface(&self, interface: TypeId, parent: &TypeExpr) -> Option<TypeId> {
         self.module_interface(parent)
-            .or_else(|| self.resolve_name_as_declared_by(interface, &Self::conformance_key(parent)))
+            .or_else(|| self.resolve_name_as_declared_by(interface, &self.written_member_name(parent)))
     }
 
     /// `interface_decl`, or the compiler-provided interface of that name.
     pub fn written_interface_ident(&self, written: &TypeExpr) -> InterfaceIdent {
         self.interface_decl(written)
-            .map_or_else(|| InterfaceIdent::Builtin(Self::conformance_key(written)), InterfaceIdent::Declared)
+            .map_or_else(|| InterfaceIdent::Builtin(self.written_member_name(written)), InterfaceIdent::Declared)
     }
 
     /// GT2/GT3: the key a conformance is filed under — the interface *with its
@@ -754,7 +772,10 @@ impl TypeTable {
         interface: &TypeExpr,
         self_name: &str,
     ) -> ConformanceKey {
-        let base = Self::conformance_key(interface);
+        let base = match &iface {
+            InterfaceIdent::Declared(id) => self.type_name(*id),
+            InterfaceIdent::Builtin(name) => name.clone(),
+        };
         let bare = |iface| ConformanceKey { iface, applied: TypeExpr::named(base.clone()) };
         let type_params = match &iface {
             InterfaceIdent::Declared(id) => match self.get(*id) {
@@ -803,20 +824,6 @@ impl TypeTable {
             return Type::InterfaceObject { interface_name: self.type_name(id), decl: Some(id) };
         }
         self.interface_object(&self.interface_name_written(written))
-    }
-
-    /// `Writer` for `io.Writer`: the name a stdlib module's member is held
-    /// under. `None` for anything not written through a stdlib module.
-    fn stdlib_module_member(written: &TypeExpr) -> Option<String> {
-        match written {
-            TypeExpr::Named { path, .. } => match path.as_slice() {
-                [module, rest @ ..] if !rest.is_empty() && rask_stdlib::modules::is_module(module) => {
-                    Some(rest.join("."))
-                }
-                _ => None,
-            },
-            _ => None,
-        }
     }
 
     fn interface_name_written(&self, written: &TypeExpr) -> String {
@@ -1280,7 +1287,7 @@ impl TypeTable {
         let meant = self.interface_ident(name);
         self.conformances.get(&type_id).is_some_and(|set| {
             set.iter()
-                .any(|k| k.iface != meant && Self::conformance_key(&k.applied) == name)
+                .any(|k| k.iface != meant && k.applied.name().as_deref() == Some(name))
         })
     }
 

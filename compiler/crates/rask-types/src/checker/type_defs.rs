@@ -626,6 +626,12 @@ pub struct TypedProgram {
     /// Without it both blocks' `label` mangle to one `Doc_label` and whichever
     /// the pass read last wins, so `liba`'s own call ran `libb`'s body.
     pub conformance_disambiguation: HashMap<NodeId, String>,
+    /// OR4: the interface each `implements` block conforms to, by its own
+    /// name. Impl decl id → `Mul` for `Meters implements ops.Mul<f64>`.
+    /// An operator conformance's methods are filed under the applied argument,
+    /// and whether the block is one depends on which interface it names, not
+    /// on how the header spelled it.
+    pub conformance_interfaces: HashMap<NodeId, String>,
     /// ER31a: `try` sites whose error is wrapped in a variant of the enclosing
     /// function's error enum. NodeId of the `try` expression → the variant.
     pub error_wraps: HashMap<NodeId, ErrorWrap>,

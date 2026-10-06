@@ -310,7 +310,14 @@ fn register_method(
 }
 
 impl<'a> Monomorphizer<'a> {
-    pub fn new(decls: &'a [Decl], call_type_args: &'a HashMap<NodeId, Vec<TypeBinding>>) -> Self {
+    /// `conformance_interfaces` is the checker's: each `implements` block's
+    /// interface by its own name, which decides how an operator conformance's
+    /// methods are filed (OR4).
+    pub fn new(
+        decls: &'a [Decl],
+        call_type_args: &'a HashMap<NodeId, Vec<TypeBinding>>,
+        conformance_interfaces: &HashMap<NodeId, String>,
+    ) -> Self {
         let mut fn_table = HashMap::new();
         let mut method_table = HashMap::new();
         let mut method_by_bare_name: HashMap<String, Vec<String>> = HashMap::new();
@@ -412,9 +419,16 @@ impl<'a> Monomorphizer<'a> {
                         // first. The applied argument goes into the name, the
                         // same rule the checker files them under.
                         let filed;
-                        let method = match rask_ast::operators::conformance_method_name(
-                            &i.target_ty, i.interface.as_ref(), &method.name,
-                        ) {
+                        let filed_name = i
+                            .interface
+                            .as_ref()
+                            .zip(conformance_interfaces.get(&decl.id))
+                            .and_then(|(t, iface)| {
+                                rask_ast::operators::conformance_method_name(
+                                    &i.target_ty, t, iface, &method.name,
+                                )
+                            });
+                        let method = match filed_name {
                             Some(name) => {
                                 filed = FnDecl { name, ..method.clone() };
                                 &filed
@@ -496,7 +510,7 @@ impl<'a> Monomorphizer<'a> {
     /// entry, and calls on the other type reach the wrong body. The checker
     /// already bound every method to a TypeId; this rebinds the table to match.
     pub fn with_typed_program(decls: &'a [Decl], typed: &'a TypedProgram) -> Self {
-        let mut mono = Self::new(decls, &typed.call_type_args);
+        let mut mono = Self::new(decls, &typed.call_type_args, &typed.conformance_interfaces);
         mono.typed = Some(typed);
         // One method list per interface declaration, keyed the way MIR and the
         // vtables name it. Read off the declarations by name, a program's

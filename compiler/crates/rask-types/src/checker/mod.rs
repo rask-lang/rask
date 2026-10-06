@@ -178,6 +178,7 @@ pub struct TypeChecker {
     /// because the block is on a type that package doesn't own. Filled as each
     /// block registers — the answer is a property of that block alone.
     pub(super) conformance_disambiguation: HashMap<NodeId, String>,
+    pub(super) conformance_interfaces: HashMap<NodeId, String>,
     /// MN2: where each method name on a type was first defined by a block in
     /// this program, so a second block defining it is reported as a duplicate.
     pub(super) declared_methods: HashMap<(crate::types::TypeId, String), (rask_ast::Span, Option<String>)>,
@@ -597,6 +598,7 @@ impl TypeChecker {
         Self {
             resolved,
             conformance_disambiguation: HashMap::new(),
+            conformance_interfaces: HashMap::new(),
             declared_methods: HashMap::new(),
             reported_ambiguous_conformances: std::collections::HashSet::new(),
             types: TypeTable::new(),
@@ -1101,6 +1103,7 @@ impl TypeChecker {
             interface_coercions,
             file_packages: self.resolved.file_packages.clone(),
             conformance_disambiguation: self.conformance_disambiguation,
+            conformance_interfaces: self.conformance_interfaces,
             error_wraps,
             fallback_keeps_shape,
             // Ownership fills this in; the checker has no say in it.

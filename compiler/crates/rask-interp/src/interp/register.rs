@@ -170,12 +170,16 @@ impl Interpreter {
                         // call their method `mul`, so file each under the
                         // applied argument — one entry between them would keep
                         // whichever block was registered last.
-                        let name = rask_ast::operators::conformance_method_name(
-                            &impl_decl.target_ty,
-                            impl_decl.interface.as_ref(),
-                            &method.name,
-                        )
-                        .unwrap_or_else(|| method.name.clone());
+                        let name = impl_decl
+                            .interface
+                            .as_ref()
+                            .zip(self.conformance_interfaces.get(&decl.id))
+                            .and_then(|(t, iface)| {
+                                rask_ast::operators::conformance_method_name(
+                                    &impl_decl.target_ty, t, iface, &method.name,
+                                )
+                            })
+                            .unwrap_or_else(|| method.name.clone());
                         // XC5 on top of that: two packages can put the same
                         // method on one type, and the applied argument doesn't
                         // tell those apart either.
