@@ -794,8 +794,9 @@ fn remap_stmt(
             vtable_offset: *vtable_offset,
             args: args.iter().map(|a| remap_operand(a, local_map)).collect(),
         },
-        MirStmtKind::InterfaceDrop { interface_object } => MirStmtKind::InterfaceDrop {
+        MirStmtKind::InterfaceDrop { interface_object, owns } => MirStmtKind::InterfaceDrop {
             interface_object: local_map.get(interface_object).copied().unwrap_or(*interface_object),
+            owns: *owns,
         },
         MirStmtKind::Phi { dst, args } => MirStmtKind::Phi {
             dst: local_map.get(dst).copied().unwrap_or(*dst),

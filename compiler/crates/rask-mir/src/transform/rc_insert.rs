@@ -327,12 +327,17 @@ fn insert_aggregate_release(
     // *shallowly*, so the box and the frame's own local hold the same
     // container handle, and two boxes of one value hold it twice: a free has
     // to happen exactly once, and the frame is where that can be arranged.
+    //
+    // Unless the drop says the box owns its contents: `interface_drop` only
+    // says so when the value was built for the box and nothing else reads it,
+    // and then the box's release is the one free and the value is handed to
+    // it like any other store (#1424).
     let boxes_dropped: HashSet<LocalId> = func
         .blocks
         .iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|stmt| match &stmt.kind {
-            MirStmtKind::InterfaceDrop { interface_object } => Some(*interface_object),
+            MirStmtKind::InterfaceDrop { interface_object, owns: false } => Some(*interface_object),
             _ => None,
         })
         .collect();

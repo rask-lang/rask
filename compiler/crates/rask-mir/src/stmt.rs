@@ -131,9 +131,12 @@ pub enum MirStmtKind {
         vtable_offset: u32,
         args: Vec<MirOperand>,
     },
-    /// Drop an interface object: call vtable drop_fn, then free heap allocation.
+    /// Drop an interface object's box. With `owns`, the value inside is the
+    /// box's and is released through the vtable's `owned_release` first;
+    /// without, the box only borrowed it and the block alone is freed.
     InterfaceDrop {
         interface_object: LocalId,
+        owns: bool,
     },
     /// SSA phi node — selects a value based on which predecessor block was executed.
     /// Always appears at the start of a block; removed by de-SSA before codegen.

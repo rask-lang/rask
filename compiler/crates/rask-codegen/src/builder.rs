@@ -1199,26 +1199,32 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmtKind::InterfaceCall { dst, interface_object, method_name, vtable_offset, args } => Self::lower_interface_call(builder, dst, interface_object, method_name, vtable_offset, args, ctx)?,
 
-            // This is only ever the *borrowed* box — the one built for a
-            // call, which `interface_drop` emits a drop for because the frame
-            // outlives it. So the block goes and nothing inside it does: the
-            // value's strings and containers are the frame's, and the box holds
-            // the same buffer and the same handle (mem.shared-rack-heap, #1144).
+            // A *borrowed* box — one built for a call while the frame keeps
+            // the value — frees the block and nothing inside it: the value's
+            // strings and containers are the frame's, and the box holds the
+            // same buffer and the same handle (mem.shared-rack-heap, #1144).
             // `rc_insert` puts the frame's own release after this statement.
+            // Hence the null hook.
             //
-            // Hence the null hook. A box the value was *moved* into owns its
-            // contents and passes the vtable's `owned_release` here instead,
-            // which is what a container element's release does.
-            MirStmtKind::InterfaceDrop { interface_object } => {
+            // A box the value was *moved* into owns its contents (`owns`), and
+            // its release goes through the vtable's `owned_release`, which is
+            // what a container element's release does.
+            MirStmtKind::InterfaceDrop { interface_object, owns } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(interface_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "InterfaceDrop: interface object variable not found".to_string()
                     ))?);
-                let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
-                let none = builder.ins().iconst(types::I64, 0);
-                let release_ref = ctx.func_refs.get("rask_box_release")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_release".to_string()))?;
-                builder.ins().call(*release_ref, &[data_ptr, none]);
+                if *owns {
+                    // The variable holds the fat pointer's address, which is
+                    // the slot shape a boxed field's release takes.
+                    Self::emit_boxed_field_release(builder, obj_val, 0, ctx)?;
+                } else {
+                    let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, crate::layouts::FAT_PTR_DATA_OFFSET);
+                    let none = builder.ins().iconst(types::I64, 0);
+                    let release_ref = ctx.func_refs.get("rask_box_release")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("rask_box_release".to_string()))?;
+                    builder.ins().call(*release_ref, &[data_ptr, none]);
+                }
             }
 
             MirStmtKind::Phi { .. } => {

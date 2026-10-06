@@ -85,7 +85,7 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
             f(*interface_object);
             args.iter().for_each(|a| visit_operand_uses(a, f));
         }
-        MirStmtKind::InterfaceDrop { interface_object } => f(*interface_object),
+        MirStmtKind::InterfaceDrop { interface_object, .. } => f(*interface_object),
         MirStmtKind::Phi { args, .. } => {
             args.iter().for_each(|(_, o)| visit_operand_uses(o, f))
         }
@@ -184,7 +184,7 @@ pub fn visit_stmt_use_locals_mut(
             f(interface_object, UseKind::Value);
             args.iter_mut().for_each(|a| visit_operand_local_mut(a, f));
         }
-        MirStmtKind::InterfaceDrop { interface_object } => f(interface_object, UseKind::Value),
+        MirStmtKind::InterfaceDrop { interface_object, .. } => f(interface_object, UseKind::Value),
         MirStmtKind::Phi { args, .. } => {
             args.iter_mut().for_each(|(_, o)| visit_operand_local_mut(o, f))
         }

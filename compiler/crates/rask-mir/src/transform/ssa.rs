@@ -459,7 +459,7 @@ fn rename_stmt(
                 }
             }
         }
-        MirStmtKind::InterfaceDrop { interface_object } => {
+        MirStmtKind::InterfaceDrop { interface_object, .. } => {
             *interface_object = current_version(*interface_object, version_stack, num_orig_locals);
         }
         MirStmtKind::RcInc { local }

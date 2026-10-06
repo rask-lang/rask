@@ -273,8 +273,11 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
-            MirStmtKind::InterfaceDrop { interface_object } => {
+            MirStmtKind::InterfaceDrop { interface_object, owns: false } => {
                 write!(f, "interface_drop(_{})", interface_object.0)
+            }
+            MirStmtKind::InterfaceDrop { interface_object, owns: true } => {
+                write!(f, "interface_drop_owned(_{})", interface_object.0)
             }
             MirStmtKind::Phi { dst, args } => {
                 write!(f, "_{} = phi [", dst.0)?;

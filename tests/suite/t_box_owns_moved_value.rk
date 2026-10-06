@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A struct moved into an `any` box is the box's to release (#1424).
+//
+// `return HttpRegistry { url: path }` from a `-> any Registry` function moves
+// the struct into the box. Natively the box only ever freed its block and left
+// the struct's string to the frame. With the box picked in a branch, the frame
+// had a different struct on each path and no name holding either after the
+// join, so the string leaked. A box a call handed back leaked the same way
+// when the call wasn't inlined. The box's drop now releases what was moved in.
+
+interface Registry {
+    func root_of(self) -> string
+}
+
+struct LocalRegistry {
+    root: string
+    hits: Vec<i64>
+}
+
+LocalRegistry implements Registry {
+    func root_of(self) -> string {
+        return self.root
+    }
+}
+
+struct HttpRegistry {
+    url: string
+}
+
+HttpRegistry implements Registry {
+    func root_of(self) -> string {
+        return "http://{self.url}"
+    }
+}
+
+func make(k: i64, path: string) -> any Registry {
+    if k == 0 {
+        return HttpRegistry { url: path }
+    }
+    return LocalRegistry { root: path, hits: [1, 2, 3] }
+}
+
+// Recursive, so it stays a call and the box comes back through the return.
+func make_far(depth: i64, k: i64, path: string) -> any Registry {
+    if depth > 0 {
+        return make_far(depth - 1, k, path)
+    }
+    return make(k, path)
+}
+
+func length_of(r: any Registry) -> i64 {
+    return r.root_of().len().to<i64>()!
+}
+
+test "a box picked in a branch releases the struct it holds" {
+    let p = "x".repeat(30)
+    let local = make(1, p)
+    let http = make(0, p)
+    assert length_of(local) == 30
+    assert length_of(http) == 37
+}
+
+test "a box handed back by a call releases what is in it" {
+    let p = "y".repeat(30)
+    let a = make_far(3, 1, p)
+    let b = make_far(2, 0, p)
+    assert length_of(a) + length_of(b) == 67
+}
+
+test "a box picked each turn of a loop" {
+    let p = "z".repeat(30)
+    mut total = 0
+    for k in 0..4 {
+        let r = make(k % 2, p)
+        total += length_of(r)
+    }
+    assert total == 37 + 30 + 37 + 30
+}
+
+test "a borrowed box leaves the value to its owner" {
+    let reg = LocalRegistry { root: "w".repeat(30), hits: [4] }
+    assert length_of(reg) == 30
+    assert reg.root.len() == 30
+    assert reg.hits[0] == 4
+}
+
+func main() {
+    let p = "x".repeat(30)
+    let r = make(1, p)
+    println("{r.root_of().len()}")
+}
