@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a variant names its enum with one type argument per parameter.
+//
+// The written arguments were only used when the count matched, and silently
+// dropped when it didn't, so `Slot<i64, i64>.Full(1)` type-checked and ran
+// (#1480).
+
+enum Slot<T> {
+    Empty
+    Full(T)
+    Pair { a: T, b: T }
+}
+
+enum Two<A, B> {
+    Both(A, B)
+}
+
+enum Shape {
+    Circle(f64)
+    Square { side: f64 }
+}
+
+func main() {
+    // ERROR: `Slot` takes 1 type argument, found 2
+    let s = Slot<i64, i64>.Full(1)
+
+    // ERROR: `Slot` takes 1 type argument, found 2
+    let p = Slot<i64, i64>.Pair { a: 1, b: 2 }
+
+    // ERROR: `Two` takes 2 type arguments, found 1
+    let t = Two<i64>.Both(1, 2)
+
+    // ERROR: `Shape` takes no type arguments, found 1
+    let c = Shape<i64>.Circle(1.0)
+
+    // ERROR: `Shape` takes no type arguments, found 1
+    let q = Shape<i64>.Square { side: 1.0 }
+}

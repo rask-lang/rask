@@ -301,13 +301,28 @@ impl TypeChecker {
     /// A generic *enum* named with its type arguments written out —
     /// `Holder<i64>` — as the instantiated type. `None` for anything else, so a
     /// struct or container keeps whatever path it already took.
-    fn spelled_out_enum(&self, name: &str, type_args: &[TypeExpr]) -> Option<Type> {
+    ///
+    /// The written count has to match the declared one; a mismatch is reported
+    /// at `span` and answers `None`, so checking carries on as if none were
+    /// written rather than cascading (#1480).
+    fn spelled_out_enum(&mut self, name: &str, type_args: &[TypeExpr], span: Span) -> Option<Type> {
         if type_args.is_empty() {
             return None;
         }
         let base = rask_stdlib::modules::strip_module_qualifier(name);
         let type_id = self.types.get_type_id(base)?;
-        if !matches!(self.types.get(type_id), Some(TypeDef::Enum { .. })) {
+        let Some(TypeDef::Enum { type_params, .. }) = self.types.get(type_id) else {
+            return None;
+        };
+        if type_params.len() != type_args.len() {
+            self.errors.push(TypeError::TypeArgCount {
+                name: base.to_string(),
+                params: type_params.clone(),
+                expected: type_params.len(),
+                found: type_args.len(),
+                of_interface: false,
+                span,
+            });
             return None;
         }
         match resolve_type_expr(&TypeExpr::generic(base, type_args.to_vec()), &self.types) {
@@ -554,7 +569,7 @@ impl TypeChecker {
                 // binding was "type is still open". A fieldless variant has no
                 // payload to infer from, so the written arguments are the only
                 // place `T` can come from (#782).
-                if let Some(ty) = self.spelled_out_enum(name, expr.written_type_args()) {
+                if let Some(ty) = self.spelled_out_enum(name, expr.written_type_args(), expr.span) {
                     return ty;
                 }
                 if let Some(ty) = self.lookup_local(name) {
@@ -1269,21 +1284,23 @@ impl TypeChecker {
                             // them. Answering bare `Named` let `Slot.Pair { left:
                             // "a", right: 5 }` bind `T` to two types (#1473).
                             let params = self.enum_type_params(type_id);
+                            // `Slot<i64>.Pair { … }` writes them (E4a). A wrong
+                            // count is reported here, and the fields are still
+                            // checked against fresh variables.
+                            let written: Option<Vec<Type>> = match self.spelled_out_enum(enum_name, type_args, expr.span) {
+                                Some(Type::Generic { args, .. }) => Some(
+                                    args.into_iter()
+                                        .filter_map(|a| match a {
+                                            GenericArg::Type(t) => Some(*t),
+                                            GenericArg::ConstUsize(_) => None,
+                                        })
+                                        .collect(),
+                                ),
+                                _ => None,
+                            };
                             let (declared, result_ty) = if params.is_empty() {
                                 (self.instantiate_type_vars(&field_types), Type::Named(type_id))
                             } else {
-                                // `Slot<i64>.Pair { … }` writes them (E4a).
-                                let written: Option<Vec<Type>> = match self.spelled_out_enum(enum_name, type_args) {
-                                    Some(Type::Generic { args, .. }) if args.len() == params.len() => Some(
-                                        args.into_iter()
-                                            .filter_map(|a| match a {
-                                                GenericArg::Type(t) => Some(*t),
-                                                GenericArg::ConstUsize(_) => None,
-                                            })
-                                            .collect(),
-                                    ),
-                                    _ => None,
-                                };
                                 let fresh: Vec<Type> = match written {
                                     Some(w) if w.len() == params.len() => w,
                                     _ => params.iter().map(|_| self.ctx.fresh_var()).collect(),

@@ -688,15 +688,20 @@ pub enum TypeError {
         span: Span,
     },
 
-    /// GT2: a bound or conformance header giving a generic interface the wrong
-    /// number of arguments, or leaving an undefaulted one out.
-    #[error("`{interface_name}` takes {expected} type argument(s), found {found}")]
-    InterfaceArity {
-        interface_name: String,
-        /// Parameters as declared, for the message: `["Rhs"]`.
+    /// A generic name written with the wrong number of type arguments: a bound
+    /// or conformance header on an interface (GT2), or an enum named at a
+    /// variant, `Slot<i64, i64>.Full(1)` (#1480).
+    #[error("`{name}` takes {expected} type argument(s), found {found}")]
+    TypeArgCount {
+        name: String,
+        /// Parameters as declared, for the message: `["Rhs"]`. Empty for a
+        /// type that isn't generic.
         params: Vec<String>,
         expected: usize,
         found: usize,
+        /// An interface's parameters are substituted through its signatures;
+        /// a type's are its own. The fix and the reason differ.
+        of_interface: bool,
         span: Span,
     },
 
@@ -1628,7 +1633,7 @@ impl TypeError {
             | MethodOutsideInterface { .. }
             | StaticCallOnInterface { .. }
             | DuplicateMethod { .. }
-            | InterfaceArity { .. }
+            | TypeArgCount { .. }
             | MissingAssocType { .. }
             | UnknownAssocType { .. }
             | InherentMethodOnPrimitive { .. }

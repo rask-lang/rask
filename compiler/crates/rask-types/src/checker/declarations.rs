@@ -485,11 +485,12 @@ impl TypeChecker {
         if found >= required && found <= type_params.len() {
             return true;
         }
-        self.errors.push(TypeError::InterfaceArity {
-            interface_name: TypeTable::conformance_key(interface_ref),
+        self.errors.push(TypeError::TypeArgCount {
+            name: TypeTable::conformance_key(interface_ref),
             expected: if found > type_params.len() { type_params.len() } else { required },
             params,
             found,
+            of_interface: true,
             span,
         });
         false

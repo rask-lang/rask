@@ -2292,18 +2292,26 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(format!("an `implements` block is the contract: a reader sees exactly what `{}` asks of `{}` and nothing else, so a plain method lives in `extend {} {{ }}` [type.generics/CD2]", base, ty, ty))
             }
 
-            InterfaceArity { interface_name, params, expected, found, span } => {
-                let base = interface_name;
-                let written = if *expected == 1 { "argument" } else { "arguments" };
-                let d = Diagnostic::error(format!(
-                    "`{}` takes {} type {}, found {}",
-                    base, expected, written, found
-                ))
-                .with_code("E0885")
-                .with_primary(*span, if found < expected { "not enough here" } else { "too many here" });
-                let shown = format!("{}<{}>", base, params.join(", "));
-                d.with_fix(format!("write it out: `{}` — the conformance decides what each one is", shown))
-                    .with_why("an interface's type parameter is substituted through every signature it requires, so the conformance has to say what it is before anything can be checked against it [type.generics/GT2]")
+            TypeArgCount { name, params, expected, found, of_interface, span } => {
+                let headline = match expected {
+                    0 => format!("`{}` takes no type arguments, found {}", name, found),
+                    1 => format!("`{}` takes 1 type argument, found {}", name, found),
+                    n => format!("`{}` takes {} type arguments, found {}", name, n, found),
+                };
+                let d = Diagnostic::error(headline)
+                    .with_code("E0885")
+                    .with_primary(*span, if found < expected { "not enough here" } else { "too many here" });
+                let shown = format!("{}<{}>", name, params.join(", "));
+                if *of_interface {
+                    d.with_fix(format!("write it out: `{}` — the conformance decides what each one is", shown))
+                        .with_why("an interface's type parameter is substituted through every signature it requires, so the conformance has to say what it is before anything can be checked against it [type.generics/GT2]")
+                } else if params.is_empty() {
+                    d.with_fix(format!("drop them: `{}.…`", name))
+                        .with_why(format!("`{}` declares no type parameters, so there is nothing for an argument to stand for", name))
+                } else {
+                    d.with_fix(format!("one per parameter, `{}`, or none at all and the payload decides: `{}.…`", shown, name))
+                        .with_why("each written argument stands for one declared parameter, in order; an extra one has no parameter to bind and a missing one would leave a parameter unbound")
+                }
             }
 
             MissingAssocType { ty, interface_name, assoc, span } => {
