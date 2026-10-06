@@ -5885,16 +5885,18 @@ fn method_dispatch_never_falls_back_to_guessing() {
     let rask = rask_binary();
     let mut seen: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     for name in files {
+        let bin = std::env::temp_dir()
+            .join(format!("rask_disp_{}_{}", std::process::id(), next_tmp_id()));
         let out = Command::new(&rask)
             .arg("compile")
             .arg(fixture(name))
             .arg("-o")
-            .arg(std::env::temp_dir()
-                .join(format!("rask_disp_{}_{}", std::process::id(), next_tmp_id())))
+            .arg(&bin)
             .env("RASK_RUNTIME_DIR", runtime_dir())
             .env("RASK_TRACE_DISPATCH", "1")
             .output()
             .expect("failed to run rask compile");
+        let _ = std::fs::remove_file(&bin);
         let stderr = String::from_utf8_lossy(&out.stderr);
         for line in stderr.lines() {
             let Some(rest) = line.strip_prefix("[dispatch]   ") else { continue };
