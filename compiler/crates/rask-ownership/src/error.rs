@@ -429,6 +429,20 @@ pub enum OwnershipErrorKind {
         closure_at: Span,
     },
 
+    /// A closure that stays in its frame returns a non-Copy capture, or a
+    /// part of one. It only points at the variable (`mem.closures/CM1`), so
+    /// the result would be a second name for what the frame still owns.
+    #[error("`{path}` belongs to the frame the closure points into — returning it hands out a second name for it")]
+    BorrowedCaptureEscapes {
+        /// `b`, `b.items`.
+        path: String,
+        /// The captured variable the path starts at.
+        root: String,
+        ty: String,
+        /// Where the closure is.
+        closure_at: Span,
+    },
+
     /// C4: an ensured resource is consumed on some paths but not all, and the
     /// paths merge before scope exit. Which cleanup runs would depend on hidden
     /// runtime state, so it's a compile error (ctrl.ensure/C3–C4).

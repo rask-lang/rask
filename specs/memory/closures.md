@@ -337,6 +337,7 @@ FIX: Use Shared<T> for shared mutable state:
 | Carrying closure captures move-only type | Type moved in, source invalid |
 | Carrying closure captures resource type | Resource consumed by the closure; must be used within or returned |
 | Pointing closure captures resource type | Resource borrowed; consuming it in the body is an error (E0891) |
+| Pointing closure gives away a non-Copy capture | Borrowed, so returning it or a non-Copy field of it (E0907), or handing it to a `take` (E0891), is an error. `\|\| b.clone()` returns a copy |
 | Nested closures | Each level borrows or carries from its immediate outer scope |
 | Pure closure (no captures) | Self-contained either way; nothing to decide |
 | Mutable capture of a Copy type | Borrows mutably (not copied), mutations visible to caller |

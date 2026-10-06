@@ -201,9 +201,10 @@ fn retain_views_handed_over(
                 // A capture stays where it was captured: in the frame that
                 // built the closure, or in the environment that carries it.
                 // A closure hands back what it returns (#1441), so `|| held`
-                // gives the caller references of its own. (A non-Copy
-                // capture returned this way is deep-cloned; the checker
-                // should reject it instead, #1449.)
+                // gives the caller references of its own. A closure that
+                // borrows a non-Copy capture can't return it (E0907,
+                // #1449); one that carries it still can, and then each call
+                // deep-clones it.
                 MirStmtKind::LoadCapture { dst, .. } => Some(*dst),
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
                     views.contains(src).then_some(*dst)

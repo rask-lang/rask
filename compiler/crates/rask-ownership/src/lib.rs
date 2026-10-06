@@ -1505,6 +1505,7 @@ impl<'a> OwnershipChecker<'a> {
                 // non-Copy types are moved (source invalidated)
                 self.handle_assignment(init, stmt.span, true);
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                self.borrowed_captures.remove(name);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 self.record_lent_binding(name, init);
                 if let Some(t) = self.node_ty(&init.id).cloned() {
@@ -1561,6 +1562,7 @@ impl<'a> OwnershipChecker<'a> {
                 // non-Copy types are moved (O3); field/index projections create borrows.
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                self.borrowed_captures.remove(name);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 self.record_lent_binding(name, init);
                 if let Some(t) = self.node_ty(&init.id).cloned() {
@@ -1811,6 +1813,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(expr);
                     self.consume_returned_resources(expr);
                     self.check_borrowed_field_escape(expr);
+                    self.check_borrowed_capture_escape(expr);
                     self.check_lent_return(expr);
                     self.check_link_escape(expr, LinkEscape::Return, stmt.span);
                     // Control leaves here, so this is an exit like any other. The
@@ -2603,14 +2606,25 @@ impl<'a> OwnershipChecker<'a> {
                         self.borrowed_captures.insert(name.clone(), expr.span);
                     }
                 }
-                // Register non-resource captures as owned
+                // Register non-resource captures as owned.
+                //
+                // A closure that stays borrows the non-Copy ones too, so they
+                // can't be given away either: not to a `take`, and not as the
+                // closure's result (`|| b`), which gave the caller the frame's
+                // own `Bag` on every call (#1449).
                 for name in &captures {
                     if !resource_captures.contains(name) {
+                        if !carries && self.bindings.contains_key(name) && !self.capture_is_copy(name) {
+                            self.borrowed_captures.insert(name.clone(), expr.span);
+                        }
                         self.bindings.insert(name.clone(), BindingState::Owned);
                     }
                 }
 
                 self.check_expr(body);
+                if !matches!(body.kind, ExprKind::Block(_)) {
+                    self.check_borrowed_capture_escape(body);
+                }
 
                 // Check resource consumption at closure exit
                 self.check_resource_consumption_in_closure(expr.span, "closure");
@@ -4009,6 +4023,38 @@ impl<'a> OwnershipChecker<'a> {
                 field_ty: self.resource_type_display(&ty),
                 declared_at,
                 is_mutate,
+            },
+            span: expr.span,
+        });
+    }
+
+    /// A non-Copy capture of a closure that stays in its frame, or a part of
+    /// one, handed back as the closure's result. The closure points at the
+    /// variable (`mem.closures/CM1`), so this is S3 one door along: the
+    /// frame still owns what the caller would get (#1449).
+    fn check_borrowed_capture_escape(&mut self, expr: &Expr) {
+        let (Some(root), fields) = Self::extract_root_and_fields(expr) else {
+            return;
+        };
+        let Some(&closure_at) = self.borrowed_captures.get(&root) else {
+            return;
+        };
+        let Some(ty) = self.node_ty(&expr.id).cloned() else {
+            return;
+        };
+        if self.copy_verdict(&ty) != CopyVerdict::Move {
+            return;
+        }
+        let path = match fields {
+            Some(f) if !f.is_empty() => format!("{}.{}", root, f.join(".")),
+            _ => root.clone(),
+        };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::BorrowedCaptureEscapes {
+                path,
+                root,
+                ty: self.resource_type_display(&ty),
+                closure_at,
             },
             span: expr.span,
         });

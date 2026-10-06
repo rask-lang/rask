@@ -6836,6 +6836,18 @@ fn error_closure_consumes_borrowed_capture() {
     assert!(out.contains("hand the closure to a `take` parameter"), "{}", out);
 }
 
+// A closure that stays borrows its non-Copy captures, so it can't hand one
+// back or give one to a `take` (#1449). Three returns and one consume, and the
+// legal shapes below them stay clean.
+#[test]
+fn error_closure_returns_borrowed_capture() {
+    let (failed, out) = compile_error_output("closure_returns_borrowed_capture.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0907]").count(), 3, "{}", out);
+    assert_eq!(out.matches("error[E0891]").count(), 1, "{}", out);
+    assert!(out.contains("`b.clone()`"), "the fix should be a copy: {}", out);
+}
+
 #[test]
 fn error_consume_borrowed_param() {
     let (failed, out) = compile_error_output("consume_borrowed_param.rk");

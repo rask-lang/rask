@@ -4164,8 +4164,9 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_fix(format!(
                     "hand the closure to a `take` parameter so it carries `{}` with it, \
                      as in `func run_once(take f: func()) {{ f() }}`, or consume `{}` \
-                     outside the closure",
-                    name, name
+                     outside the closure. A value that isn't a resource can give away \
+                     a copy instead: `{}.clone()`",
+                    name, name, name
                 ))
                 .with_why(
                     "a closure that stays in its frame borrows what it captures, and a \
@@ -4173,6 +4174,20 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                      closure runs either, so one `close()` in the body can be any number \
                      of closes at runtime. A closure handed to `take` outlives the frame, \
                      so it carries the value instead [mem.closures/CM1, mem.linear/L2, L3]",
+                )
+            }
+
+            BorrowedCaptureEscapes { path, root, ty, closure_at } => {
+                Diagnostic::error(format!(
+                    "`{}` belongs to the enclosing scope — the closure only borrowed it, so it can't return it",
+                    path
+                ))
+                .with_code("E0907")
+                .with_primary(self.span, format!("`{}` isn't Copy, so this hands out `{}` itself", ty, path))
+                .with_secondary(*closure_at, format!("this closure stays here, so it points at `{}`", root))
+                .with_fix(format!("return a copy: `{}.clone()`", path))
+                .with_why(
+                    "a closure that stays in its frame borrows what it captures.                      Returning a borrowed value gives the caller a second name for                      storage the enclosing scope still owns, the same as returning a                      borrowed parameter's field (E0872), and nothing says how many                      times the closure runs, so every call would hand out the same                      value again [mem.closures/CM1, mem.borrowing/S3]",
                 )
             }
 

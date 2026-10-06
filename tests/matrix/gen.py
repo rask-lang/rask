@@ -481,6 +481,12 @@ def skips():
         # frame and carries the box in, which is the `escaping_closure` row.
         ("closure", "heap"):
             "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed",
+        # Same rule for any non-Copy capture, enforced as E0907 (#1449): the
+        # cell used to pass because each call quietly deep-cloned the Vec.
+        ("closure", "vec"):
+            "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed (E0907)",
+        ("closure", "map"):
+            "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed (E0907)",
     }
 
 
