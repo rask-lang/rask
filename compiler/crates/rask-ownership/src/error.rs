@@ -384,6 +384,15 @@ pub enum OwnershipErrorKind {
         acquired_at: Span,
     },
 
+    /// mem.linear/L4: an `ensure` in the commit window whose body doesn't
+    /// consume the resource — `ensure c.peek()` reads it and commits nothing.
+    #[error("nothing in this `ensure` consumes `{name}`")]
+    EnsureConsumesNothing {
+        name: String,
+        /// Where the resource was acquired.
+        acquired_at: Span,
+    },
+
     /// Resource captured by closure/spawn not consumed on all code paths.
     #[error("resource `{name}` captured by {context} is not consumed on all code paths")]
     ResourceNotConsumedInClosure {

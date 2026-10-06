@@ -4070,6 +4070,23 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     )
             }
 
+            EnsureConsumesNothing { name, acquired_at } => {
+                Diagnostic::error(format!("nothing in this `ensure` consumes `{}`", name))
+                    .with_code("E0908")
+                    .with_primary(
+                        self.span,
+                        format!("this doesn't consume `{}`, so nothing closes it at scope exit", name),
+                    )
+                    .with_secondary(*acquired_at, format!("`{}` was acquired here", name))
+                    .with_fix(format!(
+                        "call a method that takes `{0}`: `ensure {0}.<consume>()` (e.g. `.close()`, `.rollback()`)",
+                        name
+                    ))
+                    .with_why(
+                        "`ensure` commits the cleanup its body runs, and a call that only borrows the resource is no cleanup",
+                    )
+            }
+
             ResourceDiscardedAsStatement { type_name } => {
                 Diagnostic::error(format!(
                     "value of resource type `{}` is dropped without being consumed",

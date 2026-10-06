@@ -147,8 +147,9 @@ pub struct OwnershipChecker<'a> {
     ensure_registered: HashSet<String>,
     /// Span of the `ensure` statement that registered each resource (C4 diagnostics).
     ensure_spans: HashMap<String, Span>,
-    /// True when inside an `ensure` body (defer moves).
-    in_ensure: bool,
+    /// The `ensure` statement whose body is being walked. A consume in there
+    /// runs at scope exit, so it commits the value instead of moving it.
+    ensure_at: Option<Span>,
     /// Active `with` block bindings for W2 checking.
     active_with_bindings: Vec<WithBindingInfo>,
     /// LP14/LP16: Active `for mutate` loops for structural mutation checking.
@@ -351,7 +352,7 @@ impl<'a> OwnershipChecker<'a> {
             mutate_params: HashMap::new(),
             ensure_registered: HashSet::new(),
             ensure_spans: HashMap::new(),
-            in_ensure: false,
+            ensure_at: None,
             active_with_bindings: Vec::new(),
             active_for_mutates: Vec::new(),
             coarse_resources: HashMap::new(),
@@ -997,7 +998,7 @@ impl<'a> OwnershipChecker<'a> {
         self.owned_bindings.clear();
         self.ensure_registered.clear();
         self.ensure_spans.clear();
-        self.in_ensure = false;
+        self.ensure_at = None;
         self.active_with_bindings.clear();
         self.active_for_mutates.clear();
         self.scope_limited_closures.clear();
@@ -1951,14 +1952,13 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_loop_exit_obligations(stmt.span);
             }
             StmtKind::Ensure { body, else_handler } => {
-                // Mark resources referenced in ensure body as consumption-committed
-                for s in body {
-                    self.mark_ensure_resources(s, stmt.span);
-                }
-                let prev = self.in_ensure;
-                self.in_ensure = true;
+                // What the body consumes is committed, found by the same walk
+                // that finds consumes anywhere else. Matching the shape of the
+                // body instead saw `ensure latch.release()` but not
+                // `ensure log.set(latch.release())` (#1301).
+                let prev = self.ensure_at.replace(stmt.span);
                 self.check_block(body);
-                self.in_ensure = prev;
+                self.ensure_at = prev;
                 if let Some((_name, handler)) = else_handler {
                     self.check_block(handler);
                 }
@@ -2151,9 +2151,7 @@ impl<'a> OwnershipChecker<'a> {
                         // of `p` was a use-after-move. That is the form
                         // `mem.heap` documents for exactly this, and the only
                         // reason to write it is to go on using the box (#882).
-                        if !self.in_ensure {
-                            self.consume_arg(&arg.expr, callee_name.as_deref());
-                        }
+                        self.consume_arg_or_commit(&arg.expr, callee_name.as_deref());
                     }
                 }
                 for rack_arg in &deleting_args {
@@ -2228,7 +2226,7 @@ impl<'a> OwnershipChecker<'a> {
                         if method != "delete" {
                             self.require_deleting_for_derived_consume(&arg.expr, &rack_args, expr.span);
                         }
-                        self.consume_arg(&arg.expr, Some(method.as_str()));
+                        self.consume_arg_or_commit(&arg.expr, Some(method.as_str()));
                     }
                 }
                 // `List.Cons(1, rest)` — a variant constructor takes its payload by
@@ -2324,9 +2322,11 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
-                // If this is a `take self` method, mark the object as moved
-                // (skip in ensure bodies — ensure defers execution)
-                if !self.in_ensure && self.is_take_self_method(object, method) {
+                // A `take self` method consumes its receiver.
+                let takes_self = self.is_take_self_method(object, method);
+                if let (true, Some(ensure_at)) = (takes_self, self.ensure_at) {
+                    self.commit_in_ensure(object, ensure_at);
+                } else if takes_self {
                     match &object.kind {
                         ExprKind::Ident(name) => {
                             let name = name.clone();
@@ -6066,7 +6066,7 @@ impl<'a> OwnershipChecker<'a> {
         // An `ensure` body is the cleanup, not a statement racing it. It runs at
         // scope exit, so a sibling resource still owed while it is being walked
         // is the ordinary state of a block with two `ensure`s in it.
-        if self.in_ensure {
+        if self.ensure_at.is_some() {
             return;
         }
         // Leaving the scope is not standing in the window. L1 and the `try`
@@ -6109,13 +6109,14 @@ impl<'a> OwnershipChecker<'a> {
                 .get(name)
                 .copied()
                 .unwrap_or(stmt.span);
-            self.errors.push(OwnershipError {
-                kind: OwnershipErrorKind::ResourceCommitDeferred {
-                    name: name.clone(),
-                    acquired_at,
-                },
-                span: stmt.span,
-            });
+            // An `ensure` here was meant to be the commit. Saying "move the
+            // ensure up" would point at the line already in the right place.
+            let kind = if matches!(stmt.kind, StmtKind::Ensure { .. }) {
+                OwnershipErrorKind::EnsureConsumesNothing { name: name.clone(), acquired_at }
+            } else {
+                OwnershipErrorKind::ResourceCommitDeferred { name: name.clone(), acquired_at }
+            };
+            self.errors.push(OwnershipError { kind, span: stmt.span });
         }
     }
 
@@ -6668,16 +6669,6 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Scan ensure body for resource references and mark them.
-    fn mark_ensure_resources(&mut self, stmt: &Stmt, ensure_span: Span) {
-        match &stmt.kind {
-            StmtKind::Expr(expr) => {
-                self.mark_ensure_expr(expr, ensure_span);
-            }
-            _ => {}
-        }
-    }
-
     /// Register a resource as ensure-committed, recording where.
     fn register_ensure(&mut self, name: &str, ensure_span: Span) {
         self.ensure_registered.insert(name.to_string());
@@ -6758,41 +6749,33 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Extract resource names from ensure expressions (e.g., `file.close()`).
-    fn mark_ensure_expr(&mut self, expr: &Expr, ensure_span: Span) {
-        match &expr.kind {
-            ExprKind::MethodCall { object, .. } => {
-                match &object.kind {
-                    ExprKind::Ident(name) => {
-                        if self.resource_bindings.contains(name) {
-                            self.register_ensure(name, ensure_span);
-                        }
-                    }
-                    // `ensure w.conn.close()` — the receiver is a field, so
-                    // what it commits is that field's debt, exactly as the
-                    // direct call pays it. Left out, a holder's field could be
-                    // consumed but never *ensured*, which L7 needs (#828's
-                    // per-field debts are what this walks).
-                    ExprKind::Field { .. } => {
-                        let (root, path) = Self::extract_root_and_fields(object);
-                        if let (Some(root), Some(path)) = (root, path) {
-                            self.pay_field_debt(&root, &path);
-                        }
-                    }
-                    _ => {}
+    /// A consume inside an `ensure` body. The call runs at scope exit, so the
+    /// value stays the frame's until then and is committed now (mem.linear/L4).
+    fn commit_in_ensure(&mut self, consumed: &Expr, ensure_at: Span) {
+        match &consumed.kind {
+            ExprKind::Ident(name) => {
+                if self.resource_bindings.contains(name) {
+                    self.register_ensure(name, ensure_at);
                 }
             }
-            ExprKind::Call { func, args } => {
-                // Check args for resource identifiers
-                for arg in args {
-                    if let ExprKind::Ident(name) = &arg.expr.kind {
-                        if self.resource_bindings.contains(name) {
-                            self.register_ensure(name, ensure_span);
-                        }
-                    }
+            // `ensure w.conn.close()` commits that field's debt, exactly as the
+            // direct call pays it (#828's per-field debts).
+            ExprKind::Field { .. } => {
+                if let (Some(root), Some(path)) = Self::extract_root_and_fields(consumed) {
+                    self.pay_field_debt(&root, &path);
                 }
-                self.mark_ensure_expr(func, ensure_span);
             }
+            ExprKind::Take { place } => self.commit_in_ensure(place, ensure_at),
             _ => {}
+        }
+    }
+
+    /// An argument handed to a `take` parameter: consumed, or committed when
+    /// the call sits in an `ensure` body.
+    fn consume_arg_or_commit(&mut self, arg_expr: &Expr, sink: Option<&str>) {
+        match self.ensure_at {
+            Some(ensure_at) => self.commit_in_ensure(arg_expr, ensure_at),
+            None => self.consume_arg(arg_expr, sink),
         }
     }
 

@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An `ensure` commits whatever its body consumes, wherever the consume sits.
+// The checker only looked at the receiver of the outer call, so
+// `ensure log.record(latch.release())` left `latch` uncommitted and was
+// rejected on the line that was committing it (#1301).
+
+@resource
+struct Latch {
+    public id: i64
+}
+
+extend Latch {
+    public func release(take self) -> i64 {
+        return self.id
+    }
+}
+
+struct Log {
+    public seen: Vec<i64>
+}
+
+extend Log {
+    func record(mutate self, id: i64) {
+        self.seen.push(id)
+    }
+
+    func record_latch(mutate self, take latch: Latch) {
+        self.seen.push(latch.release())
+    }
+}
+
+func finish(take latch: Latch) -> i64 {
+    return latch.release()
+}
+
+// The consume is an argument to the call the `ensure` runs.
+func nested(mutate log: Log) {
+    let latch = Latch { id: 5 }
+    ensure log.record(latch.release())
+    log.record(1)
+}
+
+// The resource handed to a method's `take` parameter.
+func into_method(mutate log: Log) {
+    let latch = Latch { id: 6 }
+    ensure log.record_latch(latch)
+    log.record(2)
+}
+
+// A free function's `take` parameter, one call down.
+func into_function(mutate log: Log) {
+    let latch = Latch { id: 7 }
+    ensure log.record(finish(latch))
+    log.record(3)
+}
+
+test "a consume in an argument is committed and runs at scope exit" {
+    mut log = Log { seen: Vec.new() }
+    nested(mutate log)
+    assert log.seen.len() == 2
+    assert log.seen[0] == 1
+    assert log.seen[1] == 5
+}
+
+test "a resource given to a method's take parameter" {
+    mut log = Log { seen: Vec.new() }
+    into_method(mutate log)
+    assert log.seen.len() == 2
+    assert log.seen[0] == 2
+    assert log.seen[1] == 6
+}
+
+test "a resource given to a function's take parameter" {
+    mut log = Log { seen: Vec.new() }
+    into_function(mutate log)
+    assert log.seen.len() == 2
+    assert log.seen[0] == 3
+    assert log.seen[1] == 7
+}
+
+func main() {}
