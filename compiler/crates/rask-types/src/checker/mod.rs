@@ -824,6 +824,11 @@ impl TypeChecker {
         self.settle_operator_literals();
         self.resolve_carried_coalesce();
 
+        // A `[...]` method argument whose call never gave it a slot is the
+        // fixed array of its elements. Before literal defaults, so the elements
+        // default inside it.
+        self.settle_collection_literals();
+
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
 

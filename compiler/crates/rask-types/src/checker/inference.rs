@@ -172,6 +172,29 @@ pub enum TypeConstraint {
         elem: Type,
         span: Span,
     },
+    /// A `[...]` literal whose slot wasn't known when it was walked.
+    ///
+    /// The slot picks the literal's shape (std.collections/C9), and a method
+    /// argument's slot is the parameter, which isn't known until the receiver
+    /// is: `Bytes.new().add([7, 8])`. `literal` is the literal's type, a
+    /// variable until the call resolves; then the elements are put into
+    /// whatever collection it turned out to be. A literal nothing ever pins
+    /// becomes a fixed array of its elements, as it would have on its own.
+    CollectionLiteral {
+        literal: Type,
+        elems: Vec<LiteralElem>,
+        span: Span,
+    },
+}
+
+/// One member of a deferred collection literal.
+#[derive(Debug, Clone)]
+pub struct LiteralElem {
+    pub ty: Type,
+    pub span: Span,
+    /// The member is a `[...]` literal deferred the same way, so it takes the
+    /// element slot's shape rather than coercing into it.
+    pub nested: bool,
 }
 
 /// Kind of unsuffixed literal (for deferred defaulting).

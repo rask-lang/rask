@@ -5,7 +5,7 @@ use rask_ast::Span;
 
 use rask_ast::coercion::CoercionSite;
 
-use super::inference::TypeConstraint;
+use super::inference::{LiteralElem, TypeConstraint};
 use super::errors::TypeError;
 use super::check_expr::ContainerElem;
 use super::TypeChecker;
@@ -110,8 +110,13 @@ impl TypeChecker {
         // These are real errors — silently dropping them lets bad code
         // reach MIR/codegen where it panics or produces wrong results.
         let leftovers = std::mem::take(&mut self.ctx.constraints);
+        let mut still_open = Vec::new();
         for constraint in leftovers {
             match constraint {
+                // Waiting on a call that hasn't resolved yet, possibly one in a
+                // later statement. Kept for the next round; anything nothing
+                // ever pins becomes an array in `settle_collection_literals`.
+                c @ TypeConstraint::CollectionLiteral { .. } => still_open.push(c),
                 TypeConstraint::HasField { ty, field, expected, span, self_type } => {
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
                     // A receiver that's still a variable has something left to
@@ -228,6 +233,7 @@ impl TypeChecker {
                 _ => {}
             }
         }
+        self.ctx.constraints.extend(still_open);
     }
 
     /// A primitive on one side and a stdlib container on the other.
@@ -555,6 +561,113 @@ impl TypeChecker {
                 self.resolve_element_of(container, elem, span)
             }
 
+            TypeConstraint::CollectionLiteral { literal, elems, span } => {
+                self.resolve_collection_literal(literal, elems, span)
+            }
+        }
+    }
+
+    /// Put a deferred literal's elements into the collection its slot turned
+    /// out to be. Waits while the slot is still a variable.
+    fn resolve_collection_literal(
+        &mut self,
+        literal: Type,
+        elems: Vec<LiteralElem>,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let shape = self.resolve_named(&self.ctx.apply(&literal));
+        let slot = match &shape {
+            Type::Var(_) => {
+                self.ctx.add_constraint(TypeConstraint::CollectionLiteral { literal, elems, span });
+                return Ok(false);
+            }
+            Type::Error => return Ok(false),
+            Type::Array { elem, len } if *len == elems.len() => (**elem).clone(),
+            Type::Generic { base, args } if self.types.type_name(*base) == "Vec" => {
+                match args.first() {
+                    Some(GenericArg::Type(t)) => (**t).clone(),
+                    _ => return Err(self.literal_mismatch(shape.clone(), &elems, span)),
+                }
+            }
+            Type::UnresolvedGeneric { name, args } if name == "Vec" => match args.first() {
+                Some(GenericArg::Type(t)) => (**t).clone(),
+                _ => return Err(self.literal_mismatch(shape.clone(), &elems, span)),
+            },
+            _ => return Err(self.literal_mismatch(shape.clone(), &elems, span)),
+        };
+        for elem in elems {
+            if elem.nested {
+                // A nested literal fills the present side of an optional slot,
+                // the same as `infer_expr_expecting` peels one.
+                let want = match self.ctx.apply(&slot).as_option() {
+                    Some(inner) => inner.clone(),
+                    None => slot.clone(),
+                };
+                self.unify(&elem.ty, &want, elem.span)?;
+            } else {
+                self.resolve_coercion(
+                    elem.ty,
+                    slot.clone(),
+                    CoercionSite::CollectionElement,
+                    None,
+                    elem.span,
+                )?;
+            }
+        }
+        Ok(true)
+    }
+
+    /// The fixed array a deferred literal is on its own, for a mismatch.
+    fn literal_mismatch(&mut self, expected: Type, elems: &[LiteralElem], span: Span) -> TypeError {
+        let elem = match elems.first() {
+            Some(e) => self.ctx.apply(&e.ty),
+            None => self.ctx.fresh_var(),
+        };
+        TypeError::Mismatch {
+            expected,
+            found: Type::Array { elem: Box::new(elem), len: elems.len() },
+            span,
+        }
+    }
+
+    /// The deferred literals nothing ever gave a slot to. Each becomes the fixed
+    /// array its elements make, which is what it would have been without a
+    /// slot to wait for. Runs once, after solving and before literal defaults,
+    /// so the elements' own literals still default inside the array.
+    pub(super) fn settle_collection_literals(&mut self) {
+        let constraints = std::mem::take(&mut self.ctx.constraints);
+        let mut rest = Vec::new();
+        let mut settled_any = false;
+        for constraint in constraints {
+            let TypeConstraint::CollectionLiteral { literal, elems, span } = constraint else {
+                rest.push(constraint);
+                continue;
+            };
+            settled_any = true;
+            if !matches!(self.ctx.apply(&literal), Type::Var(_)) {
+                if let Err(e) = self.resolve_collection_literal(literal, elems, span) {
+                    self.errors.push(e);
+                }
+                continue;
+            }
+            let types: Vec<Type> = elems.iter().map(|e| e.ty.clone()).collect();
+            let elem = match types.first() {
+                None => self.ctx.fresh_var(),
+                Some(first) => self.widest_integer(&types).unwrap_or_else(|| first.clone()),
+            };
+            for e in &elems {
+                if let Err(err) = self.unify(&elem, &e.ty, e.span) {
+                    self.errors.push(err);
+                }
+            }
+            let own = Type::Array { elem: Box::new(elem), len: elems.len() };
+            if let Err(err) = self.unify(&literal, &own, span) {
+                self.errors.push(err);
+            }
+        }
+        self.ctx.constraints.extend(rest);
+        if settled_any {
+            self.solve_constraints();
         }
     }
 

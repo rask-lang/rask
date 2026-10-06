@@ -274,6 +274,30 @@ impl TypeChecker {
         }
     }
 
+    /// Type a collection literal's elements now and its shape once its slot is
+    /// known: a method argument whose method isn't known yet, because the
+    /// receiver isn't. See `TypeConstraint::CollectionLiteral`.
+    fn defer_collection_literal(&mut self, expr: &Expr, elements: &[Expr]) -> Type {
+        let elems = elements
+            .iter()
+            .map(|e| {
+                let (ty, nested) = match &e.kind {
+                    ExprKind::Array(inner) => (self.defer_collection_literal(e, inner), true),
+                    _ => (self.infer_expr(e), false),
+                };
+                super::inference::LiteralElem { ty, span: e.span, nested }
+            })
+            .collect();
+        let literal = self.ctx.fresh_var();
+        self.node_types.insert(expr.id, literal.clone());
+        self.ctx.add_constraint(TypeConstraint::CollectionLiteral {
+            literal: literal.clone(),
+            elems,
+            span: expr.span,
+        });
+        literal
+    }
+
     /// A generic *enum* named with its type arguments written out —
     /// `Holder<i64>` — as the instantiated type. `None` for anything else, so a
     /// struct or container keeps whatever path it already took.
@@ -3967,6 +3991,13 @@ impl TypeChecker {
                     .filter(|t| !t.has_unsolved_var());
                 match (&a.expr.kind, slot) {
                     (ExprKind::Array(_), Some(want)) => self.infer_expr_expecting(&a.expr, &want),
+                    // No declaration to read yet: the receiver is still a
+                    // variable, as on `Bytes.new().add([7, 8])`. The literal
+                    // waits for the call to resolve instead of typing itself
+                    // as `[i32; 2]` and failing against `Vec<u8>` (#1457).
+                    (ExprKind::Array(elements), None) if declared_params.is_none() => {
+                        self.defer_collection_literal(&a.expr, elements)
+                    }
                     _ => self.infer_expr(&a.expr),
                 }
             })
