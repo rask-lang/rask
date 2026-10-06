@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An interface method's default, called through a bound or an `any` (#1471).
+//
+// `x.scaled()` with `x: T` and `T: Scaler`, or with `x: any Scaler`, was
+// "expected 1 argument, found 0". Defaults for method calls are filled where
+// the checker resolves the call against the method it means, and the two
+// arms that resolve through an interface checked the argument count without
+// filling first.
+
+interface Scaler {
+    func scaled(self, by: i64 = 10) -> i64
+}
+
+struct Meters {
+    public n: i64
+}
+
+Meters implements Scaler {
+    public func scaled(self, by: i64 = 10) -> i64 {
+        return self.n * by
+    }
+}
+
+func through_bound<T: Scaler>(x: T) -> i64 {
+    return x.scaled()
+}
+
+func through_bound_written<T: Scaler>(x: T) -> i64 {
+    return x.scaled(2)
+}
+
+func through_any(x: any Scaler) -> i64 {
+    return x.scaled()
+}
+
+test "the default fills through a generic bound" {
+    assert through_bound(Meters { n: 3 }) == 30
+}
+
+test "a written argument still wins through a bound" {
+    assert through_bound_written(Meters { n: 3 }) == 6
+}
+
+test "the default fills through `any`" {
+    assert through_any(Meters { n: 4 }) == 40
+}
+
+test "the concrete receiver is unchanged" {
+    let m = Meters { n: 5 }
+    assert m.scaled() == 50
+    assert m.scaled(by: 3) == 15
+}

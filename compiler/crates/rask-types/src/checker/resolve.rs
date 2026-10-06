@@ -1523,6 +1523,9 @@ impl TypeChecker {
                         });
                     }
 
+                    // The interface's own default: the call dispatches through
+                    // the vtable, so the declaration is all there is to go by.
+                    let args = self.fill_default_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1778,6 +1781,10 @@ impl TypeChecker {
             }
         }
 
+        // The bound's default: which type `T` turns out to be isn't known in
+        // this body, and the bound's declaration is what the call was written
+        // against.
+        let args = self.fill_default_args(call_node, &sig, args);
         if sig.params.len() != args.len() {
             return Err(TypeError::ArityMismatch {
                 expected: sig.params.len(),
