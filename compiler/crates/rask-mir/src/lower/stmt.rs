@@ -807,16 +807,16 @@ impl<'a> MirLowerer<'a> {
                                         let tmp = self.builder.alloc_temp(elem_ty);
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                             dst: Some(tmp),
-                                            func: FunctionRef::internal("Vec_index".to_string()),
+                                            func: FunctionRef::internal("Vec_lend".to_string()),
                                             args: vec![coll_op.clone(), idx_op.clone()],
                                         }));
                                         // The copy holds the element's own
                                         // reference to what the field had, and
-                                        // `Vec_set` copies bytes back without
-                                        // releasing anything. So give it back
-                                        // here, as a direct field write does:
-                                        // `lines[0].text = t` leaked the old
-                                        // text on every edit.
+                                        // the write-back copies bytes back
+                                        // without releasing anything. So give
+                                        // it back here, as a direct field write
+                                        // does: `lines[0].text = t` leaked the
+                                        // old text on every edit.
                                         if let Some(old) = self.replaced_slot_type(target, reuses_old, &fty) {
                                             self.builder.push_stmt(MirStmt::dummy(
                                                 MirStmtKind::ReleaseSlot { addr: tmp, offset, ty: old },
@@ -830,7 +830,7 @@ impl<'a> MirLowerer<'a> {
                                         }));
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                             dst: None,
-                                            func: FunctionRef::internal("Vec_set".to_string()),
+                                            func: FunctionRef::internal("Vec_write_back".to_string()),
                                             args: vec![coll_op, idx_op, MirOperand::Local(tmp)],
                                         }));
                                         return Ok(());

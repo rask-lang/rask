@@ -908,7 +908,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::WrapArg1And2, ret_adapt: RetAdapt::DerefOption,
         },
-        // `m[k] = v`: insert or replace.
+        // `m[k] = v`: insert or replace, releasing the value it replaces.
         StdlibEntry {
             mir_name: "Map_set", c_name: "rask_map_insert",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,

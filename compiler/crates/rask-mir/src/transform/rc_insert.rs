@@ -110,15 +110,6 @@ pub fn insert_rc_ops(
     insert_aggregate_release(func, kept, own);
 }
 
-/// The same local, or the same integer constant.
-fn same_operand(a: &MirOperand, b: &MirOperand) -> bool {
-    match (a, b) {
-        (MirOperand::Local(x), MirOperand::Local(y)) => x == y,
-        (MirOperand::Constant(crate::MirConst::Int(x)), MirOperand::Constant(crate::MirConst::Int(y))) => x == y,
-        _ => false,
-    }
-}
-
 /// Does the call keep its argument at `i`, rather than only read it?
 ///
 /// From the body when this pass can read one (`kept`), from the declaration
@@ -215,8 +206,6 @@ fn retain_views_handed_over(
     }
     let hands_out_views = crate::own_names::returns_a_view(&func.name, own);
 
-    let write_backs = WriteBacks::new(func, own);
-
     for block in &mut func.blocks {
         let mut insertions: Vec<(usize, LocalId)> = Vec::new();
         for (si, stmt) in block.statements.iter().enumerate() {
@@ -224,10 +213,7 @@ fn retain_views_handed_over(
                 MirStmtKind::Call { func: fref, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
-                        if views.contains(&id)
-                            && call_keeps_arg(&fref.name, i, kept)
-                            && !write_backs.writes_back(&fref.name, args, id)
-                        {
+                        if views.contains(&id) && call_keeps_arg(&fref.name, i, kept) {
                             insertions.push((si, id));
                         }
                     }
@@ -256,102 +242,6 @@ fn retain_views_handed_over(
         for (idx, local) in insertions.into_iter().rev() {
             let span = block.statements.get(idx).map(|s| s.span).unwrap_or(block.terminator.span);
             block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
-        }
-    }
-}
-
-/// Recognises a value written back over the slot it was read from.
-///
-/// `v[i].field = x` lowers to: read the element, store into the copy, and
-/// `Vec_set` it back at the same index. So do `with v[i] as e` and
-/// `for mutate e in v`; `for mutate (k, e) in m` hands both halves of one
-/// entry back to `Map_set`. Those move nothing anywhere: the slot gets back
-/// what it held, with the fields the body replaced already released. Taking
-/// a reference for one of them leaks it.
-struct WriteBacks {
-    /// Where a view was read from, as (receiver, index), when it came straight
-    /// out of an indexed read, or is a copy of one that did.
-    read_from: HashMap<LocalId, (MirOperand, MirOperand)>,
-    /// `dst = src` and `dst = src.field`, to walk a read back to where it
-    /// started. The receiver is often read twice — `self.items` once for the
-    /// read and once for the write — so places are compared, not locals.
-    defs: HashMap<LocalId, (LocalId, Option<u32>)>,
-    /// Results of calls that hand out a view.
-    views: HashSet<LocalId>,
-}
-
-impl WriteBacks {
-    fn new(func: &MirFunction, own: &HashSet<String>) -> Self {
-        let mut read_from = HashMap::new();
-        let mut defs = HashMap::new();
-        let mut views = HashSet::new();
-        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            match &stmt.kind {
-                MirStmtKind::Call { func: fref, dst: Some(dst), args }
-                    if !args.is_empty() && crate::own_names::returns_a_view(&fref.name, own) =>
-                {
-                    views.insert(*dst);
-                    if args.len() == 2 {
-                        read_from.insert(*dst, (args[0].clone(), args[1].clone()));
-                    }
-                }
-                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
-                    defs.insert(*dst, (*src, None));
-                    if let Some(at) = read_from.get(src).cloned() {
-                        read_from.insert(*dst, at);
-                    }
-                }
-                MirStmtKind::Assign {
-                    dst,
-                    rvalue: MirRValue::Field { base: MirOperand::Local(b), field_index, .. },
-                } => {
-                    defs.insert(*dst, (*b, Some(*field_index)));
-                }
-                _ => {}
-            }
-        }
-        WriteBacks { read_from, defs, views }
-    }
-
-    /// Where a read starts, and the fields it goes through.
-    fn place(&self, op: &MirOperand) -> Option<(LocalId, Vec<u32>)> {
-        let MirOperand::Local(mut at) = op else { return None };
-        let mut path = Vec::new();
-        let mut steps = 0;
-        while let Some(&(from, field)) = self.defs.get(&at) {
-            if let Some(f) = field {
-                path.push(f);
-            }
-            at = from;
-            steps += 1;
-            if steps > 32 {
-                break;
-            }
-        }
-        path.reverse();
-        Some((at, path))
-    }
-
-    fn same_place(&self, a: &MirOperand, b: &MirOperand) -> bool {
-        same_operand(a, b) || matches!((self.place(a), self.place(b)), (Some(x), Some(y)) if x == y)
-    }
-
-    /// Does this call put `value` back where it was read from?
-    fn writes_back(&self, fname: &str, args: &[MirOperand], value: LocalId) -> bool {
-        if args.len() != 3 || !matches!(args[2], MirOperand::Local(v) if v == value) {
-            return false;
-        }
-        match fname {
-            "Vec_set" => self.read_from.get(&value).is_some_and(|(recv, idx)| {
-                self.same_place(recv, &args[0]) && self.same_place(idx, &args[1])
-            }),
-            "Map_set" => match (self.place(&args[1]), self.place(&args[2])) {
-                (Some((kr, kp)), Some((vr, vp))) => {
-                    kr == vr && self.views.contains(&kr) && kp == [0] && vp == [1]
-                }
-                _ => false,
-            },
-            _ => false,
         }
     }
 }
@@ -1199,7 +1089,6 @@ fn retain_locals_handed_over_while_live(
     // for it: `out.push(names[0])` gave `out` the vector's own reference, and
     // both vectors released it.
     let views = string_views(func, &strings, own);
-    let write_backs = WriteBacks::new(func, own);
     let live = liveness::analyze_phis_on_edges(func);
     let aliases = AddrAliases::build(func);
     for block in &mut func.blocks {
@@ -1210,8 +1099,7 @@ fn retain_locals_handed_over_while_live(
                 if !handed_to_a_keeper(stmt, local, own) {
                     continue;
                 }
-                let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
-                if views.contains(&local) && !write_backs.writes_back(&fref.name, args, local) {
+                if views.contains(&local) {
                     insertions.push((si, MirStmt::new(MirStmtKind::RcInc { local }, stmt.span)));
                     continue;
                 }

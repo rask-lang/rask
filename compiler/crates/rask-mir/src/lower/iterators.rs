@@ -535,11 +535,13 @@ impl<'a> MirLowerer<'a> {
             target: have_block,
         }));
 
+        // The value is taken out for the closure and put back after it, like
+        // a `with m[k]` binding.
         self.builder.switch_to_block(have_block);
         let value = self.builder.alloc_temp(value_ty.clone());
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(value),
-            func: FunctionRef::internal("Map_get_unwrap".to_string()),
+            func: FunctionRef::internal("Map_lend".to_string()),
             args: vec![MirOperand::Local(map), MirOperand::Local(key)],
         }));
         let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
@@ -547,17 +549,15 @@ impl<'a> MirLowerer<'a> {
             MirOperand::Local(value),
             value_ty,
         )?;
-        if let Some(param) = param_local {
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: None,
-                func: FunctionRef::internal("Map_insert".to_string()),
-                args: vec![
-                    MirOperand::Local(map),
-                    MirOperand::Local(key),
-                    MirOperand::Local(param),
-                ],
-            }));
-        }
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("Map_write_back".to_string()),
+            args: vec![
+                MirOperand::Local(map),
+                MirOperand::Local(key),
+                MirOperand::Local(param_local.unwrap_or(value)),
+            ],
+        }));
         Ok(Some((body_op, body_ty)))
     }
 
@@ -645,9 +645,11 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(present_block);
         let value = self.builder.alloc_temp(value_ty.clone());
+        // `modify` takes the value out and writes it back; `read` only looks.
+        let read = if method == "modify" { "Map_lend" } else { "Map_get_unwrap" };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(value),
-            func: FunctionRef::internal("Map_get_unwrap".to_string()),
+            func: FunctionRef::internal(read.to_string()),
             args: vec![MirOperand::Local(map), MirOperand::Local(key)],
         }));
         let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
@@ -656,17 +658,15 @@ impl<'a> MirLowerer<'a> {
             value_ty,
         )?;
         if method == "modify" {
-            if let Some(param) = param_local {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Map_insert".to_string()),
-                    args: vec![
-                        MirOperand::Local(map),
-                        MirOperand::Local(key),
-                        MirOperand::Local(param),
-                    ],
-                }));
-            }
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Map_write_back".to_string()),
+                args: vec![
+                    MirOperand::Local(map),
+                    MirOperand::Local(key),
+                    MirOperand::Local(param_local.unwrap_or(value)),
+                ],
+            }));
         }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,
@@ -788,9 +788,11 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(present_block);
         let elem = self.builder.alloc_temp(elem_ty.clone());
+        // `modify` takes the element out and writes it back; `read` only looks.
+        let read = if method == "modify" { "Vec_lend" } else { "Vec_get" };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
-            func: FunctionRef::internal("Vec_get".to_string()),
+            func: FunctionRef::internal(read.to_string()),
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         }));
         let ((body_op, body_ty), param_local) = self.inline_closure_keeping_param(
@@ -799,17 +801,18 @@ impl<'a> MirLowerer<'a> {
             elem_ty,
         )?;
         if method == "modify" {
-            if let Some(param) = param_local {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal("Vec_set".to_string()),
-                    args: vec![
-                        MirOperand::Local(collection),
-                        MirOperand::Local(idx),
-                        MirOperand::Local(param),
-                    ],
-                }));
-            }
+            // Always put the element back, even through a closure that takes
+            // no parameter: the frame owns the lent copy until it does.
+            let value = param_local.unwrap_or(elem);
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: None,
+                func: FunctionRef::internal("Vec_write_back".to_string()),
+                args: vec![
+                    MirOperand::Local(collection),
+                    MirOperand::Local(idx),
+                    MirOperand::Local(value),
+                ],
+            }));
         }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
             addr: result,

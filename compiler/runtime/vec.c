@@ -521,8 +521,13 @@ static char *vec_slot(RaskVec *v, int64_t index) {
     return v->data + index * v->elem_size;
 }
 
+// `v[i] = x` and `v.set(i, x)`: the slot takes `elem` and gives up what it
+// held. The old element is released before the copy, so a slot set to a copy
+// of itself is retained by the caller first and comes out even.
 void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
-    memcpy(vec_slot(v, index), elem, (size_t)v->elem_size);
+    char *slot = vec_slot(v, index);
+    rask_owned_release_all(slot, v->strs.offsets, v->strs.count);
+    memcpy(slot, elem, (size_t)v->elem_size);
 }
 
 // Put back an element `with`, `for mutate` or a field write took out of this
