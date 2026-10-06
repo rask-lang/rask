@@ -420,10 +420,27 @@ impl TypeChecker {
                 // (#1026). The scrutinee says which enum it is; ask it.
                 let name = &self.qualify_variant_name(name, scrutinee_ty);
                 if let Some(variant_fields) = self.types.struct_variant_fields(name) {
+                    // A generic enum's fields are written in its parameters;
+                    // `Slot.Pair { left, right }` on a `Slot<i64>` binds `i64`s,
+                    // not `T`s (#1473).
+                    let subst_args = self.enum_id_from_pattern_name(name).map(|(id, params)| {
+                        let args = self.pattern_enum_args(id, params.len(), scrutinee_ty);
+                        (params, args)
+                    });
                     let mut bindings = vec![];
                     for (field_name, field_pattern) in fields {
                         let field_ty = match variant_fields.iter().find(|(n, _)| n == field_name) {
-                            Some((_, ty)) => ty.clone(),
+                            Some((_, ty)) => match &subst_args {
+                                Some((params, args)) if !params.is_empty() => {
+                                    let subst: HashMap<&str, Type> = params
+                                        .iter()
+                                        .map(|p| p.as_str())
+                                        .zip(args.iter().cloned())
+                                        .collect();
+                                    Self::substitute_type_params(ty, &subst)
+                                }
+                                _ => ty.clone(),
+                            },
                             None => {
                                 self.errors.push(TypeError::NoSuchField {
                                     ty: scrutinee_ty.clone(),
@@ -689,6 +706,35 @@ impl TypeChecker {
             return None;
         }
         Some((id, type_params.clone()))
+    }
+
+    /// What enum `id`'s parameters are bound to in `scrutinee_ty`: its own
+    /// arguments, or those of the branch that is this enum when the scrutinee
+    /// is a `T or E`. A fresh variable per parameter when it says nothing.
+    fn pattern_enum_args(&mut self, id: crate::types::TypeId, arity: usize, scrutinee_ty: &Type) -> Vec<Type> {
+        let type_args = |args: &[GenericArg]| -> Vec<Type> {
+            args.iter()
+                .filter_map(|a| match a {
+                    GenericArg::Type(t) => Some((**t).clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let resolved = normalize_type(&self.ctx.apply(scrutinee_ty), &self.types);
+        let found = match &resolved {
+            Type::Generic { base, args } if *base == id => Some(type_args(args)),
+            Type::Result { .. } => two_branch_leaves(&mut self.ctx, &self.types, &resolved)
+                .iter()
+                .find_map(|leaf| match leaf {
+                    Type::Generic { base, args } if *base == id => Some(type_args(args)),
+                    _ => None,
+                }),
+            _ => None,
+        };
+        match found {
+            Some(args) if args.len() == arity => args,
+            _ => (0..arity).map(|_| self.ctx.fresh_var()).collect(),
+        }
     }
 
     pub(super) fn check_constructor_pattern(

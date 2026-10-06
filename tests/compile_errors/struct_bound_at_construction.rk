@@ -54,4 +54,7 @@ func main() {
 
     // ERROR: a written type names an instantiation too
     let e: Slot<Plain> = Slot.Empty
+
+    // ERROR: and so does a variant with named fields (#1473)
+    let p = Slot.Pair { left: Plain { x: 4 }, right: Plain { x: 5 } }
 }

@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a struct-like variant's field values have the declared types.
+//
+// `Slot.Pair { left: "a", right: 5 }` was typed as a bare `Slot` with no type
+// arguments, and its values were never checked against the fields: `T` was
+// both `string` and `i32`, and native printed a pointer as an integer (#1473).
+// The tuple form `Slot.Full(x)` already checked its payload.
+
+enum Slot<T> {
+    Empty
+    Full(T)
+    Pair { left: T, right: T }
+}
+
+enum Shape {
+    Circle { radius: f64 }
+    Rect { w: i64, h: i64 }
+}
+
+func main() {
+    // Fine: both fields are `T = i32`, in either order.
+    let ok = Slot.Pair { right: 1, left: 2 }
+
+    // ERROR: `T` can't be both `string` and `i32`
+    let p = Slot.Pair { left: "a", right: 5 }
+
+    // ERROR: a written type argument fixes `T`
+    let q: Slot<string> = Slot.Pair { left: 1, right: 2 }
+
+    // ERROR: a non-generic variant's fields are checked by name too
+    let c = Shape.Circle { radius: "wide" }
+
+    // ERROR: matched by name, not by position
+    let r = Shape.Rect { h: 2, w: "five" }
+}

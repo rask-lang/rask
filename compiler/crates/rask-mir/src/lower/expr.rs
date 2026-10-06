@@ -3492,9 +3492,17 @@ impl<'a> MirLowerer<'a> {
             // lives (#1461).
             let (result_ty, layout, enum_variant_info) = if let Some((enum_path, variant_name)) = name.rsplit_once('.') {
                 let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
-                if let Some((idx, el)) = self.ctx.find_enum(enum_name) {
+                // A generic enum's instance has its own layout: `Slot<string>`'s
+                // `Pair` holds two 16-byte strings where the bare `Slot` has
+                // word-sized placeholders. The checker's type for this node
+                // names the instance, as it does for `Slot.Full(x)` (#1473).
+                let found = self
+                    .ctx
+                    .generic_instance_enum(self.ctx.lookup_raw_type(expr.id))
+                    .or_else(|| self.ctx.find_enum(enum_name));
+                if let Some((idx, el)) = found {
                     let variant_info = el.variants.iter().find(|v| v.name == variant_name)
-                        .map(|v| (v.tag, v.payload_offset, v.fields.clone()));
+                        .map(|v| (el.tag_offset, v.tag, v.payload_offset, v.fields.clone()));
                     (MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)), None, variant_info)
                 } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
                     (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
@@ -3536,11 +3544,10 @@ impl<'a> MirLowerer<'a> {
             let result_local = self.builder.alloc_temp(result_ty.clone());
 
             // For enum variants, store the tag first
-            if let Some((tag, payload_offset, ref variant_fields)) = enum_variant_info {
-                // Store discriminant tag at offset 0
+            if let Some((tag_offset, tag, payload_offset, ref variant_fields)) = enum_variant_info {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: result_local,
-                    offset: 0,
+                    offset: tag_offset,
                     value: MirOperand::Constant(MirConst::Int(tag as i64)),
                     store_size: None,
                 }));

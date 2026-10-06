@@ -1239,32 +1239,75 @@ impl TypeChecker {
                     // or through a module, `b.BinaryParseError.UnexpectedEnd { … }`
                     // — the enum is the segment before the variant (#1461).
                     let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
-                    // The value's type is the enum, not the variant — so methods
-                    // declared via `extend Enum` resolve. Variant field names aren't
-                    // stored in the type table (variants carry positional types), so
-                    // constrain each field value by declaration order.
+                    // The value's type is the enum, not the variant, so methods
+                    // declared via `extend Enum` resolve.
                     if let Some(type_id) = self.types.get_type_id(enum_name) {
-                        let variant_arity = match self.types.get(type_id) {
+                        let variant_types = match self.types.get(type_id) {
                             Some(TypeDef::Enum { variants, .. }) => variants.iter()
                                 .find(|(v, _)| v == variant_name)
-                                .map(|(_, tys)| tys.len()),
+                                .map(|(_, tys)| tys.clone()),
                             _ => None,
                         };
-                        if let Some(arity) = variant_arity {
-                            // Variant field names aren't stored, so field values can't
-                            // be matched to declared types by name. Infer them (catches
-                            // errors inside each value) and check arity only.
+                        if let Some(field_types) = variant_types {
+                            // Same as `Slot.Full(x)`: a generic enum gets a fresh
+                            // variable per parameter, and the field values bind
+                            // them. Answering bare `Named` let `Slot.Pair { left:
+                            // "a", right: 5 }` bind `T` to two types (#1473).
+                            let params = self.enum_type_params(type_id);
+                            let (declared, result_ty) = if params.is_empty() {
+                                (self.instantiate_type_vars(&field_types), Type::Named(type_id))
+                            } else {
+                                let fresh: Vec<Type> = params.iter().map(|_| self.ctx.fresh_var()).collect();
+                                let subst: std::collections::HashMap<&str, Type> = params
+                                    .iter()
+                                    .map(|p| p.as_str())
+                                    .zip(fresh.iter().cloned())
+                                    .collect();
+                                let declared: Vec<Type> = field_types
+                                    .iter()
+                                    .map(|t| Self::substitute_type_params(t, &subst))
+                                    .collect();
+                                let ty = Type::Generic {
+                                    base: type_id,
+                                    args: fresh
+                                        .into_iter()
+                                        .map(|t| GenericArg::Type(Box::new(t)))
+                                        .collect(),
+                                };
+                                self.note_type_bounds(&ty, expr.span);
+                                (declared, ty)
+                            };
+                            let names = self.types.variant_field_names
+                                .get(&(type_id, variant_name.to_string()))
+                                .cloned()
+                                .unwrap_or_default();
                             for field_init in fields.iter() {
-                                self.infer_expr(&field_init.value);
+                                let want = names.iter()
+                                    .position(|n| n == &field_init.name)
+                                    .and_then(|i| declared.get(i).cloned());
+                                match want {
+                                    Some(want) => {
+                                        let got = self.infer_expr_expecting(&field_init.value, &want);
+                                        self.coerce_into(
+                                            CoercionSite::StructField,
+                                            got,
+                                            want,
+                                            field_init.value.span,
+                                        );
+                                    }
+                                    None => {
+                                        self.infer_expr(&field_init.value);
+                                    }
+                                }
                             }
-                            if fields.len() != arity {
+                            if fields.len() != declared.len() {
                                 self.errors.push(TypeError::ArityMismatch {
-                                    expected: arity,
+                                    expected: declared.len(),
                                     found: fields.len(),
                                     span: expr.span,
                                 });
                             }
-                            Type::Named(type_id)
+                            result_ty
                         } else {
                             Type::UnresolvedNamed(name.clone())
                         }
