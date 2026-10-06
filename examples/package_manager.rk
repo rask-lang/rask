@@ -673,9 +673,10 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
         return FetchError.Registry(e)
     }
 
-    // Filter to satisfying versions, pick newest via sort_by
+    // Filter to satisfying versions, pick newest via sort_by. `versions` still
+    // owns its metadata, so the candidates are clones of it.
     let want = constraint.clone()
-    mut candidates = versions.filter(|m| want.satisfies(m.version.clone())).to_vec()
+    mut candidates = versions.filter(|m| want.satisfies(m.version.clone())).map(|m| m.clone()).to_vec()
     candidates.sort_by(|a, b| b.version.compare(a.version))
 
     let meta = candidates.first() ?? {

@@ -383,6 +383,99 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// type.sequence/SEQ47: `to_vec` moves what the chain owns and copies a
+    /// Copy item, and never deep-clones. A chain of only lending adapters —
+    /// `filter`, `take`, `skip` and the like — hands on items its source still
+    /// owns, so for a type that isn't Copy there is nothing to put in the Vec.
+    ///
+    /// Unchecked, `vs.filter(p).to_vec()` over `Vec<Vec<i64>>` compiled, the
+    /// interpreter copied values and never noticed, and natively both vectors
+    /// held the same inner vectors and freed them twice (#1415).
+    fn check_to_vec_has_owned_items(&mut self, expr: &Expr, object: &Expr) {
+        let Some(adapter) = Self::lending_adapter(object) else { return };
+        let Some(mut elem) = self.node_ty(&expr.id).and_then(Self::vec_elem) else { return };
+        // `enumerate` builds its pair, so the pair is the chain's own; only
+        // the half it was lent has to copy. `v.enumerate().to_vec()` over
+        // strings is a `(u64, string)` — 24 bytes, not Copy, and nothing in
+        // it that isn't.
+        if Self::chain_has(object, "enumerate") {
+            if let Type::Tuple(parts) = &elem {
+                if let [_, lent] = parts.as_slice() {
+                    elem = lent.clone();
+                }
+            }
+        }
+        // Not settled: nothing to judge, and the checker reports it.
+        if matches!(elem, Type::Var(_)) || self.is_copy(&elem) {
+            return;
+        }
+        // A box is shared by count, the way a derived container shares its
+        // boxes (`boxes.clone()`): a second reference, not a deep clone.
+        if Self::is_boxed_interface(&elem) {
+            return;
+        }
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::ToVecOfLentItems {
+                elem: format!("{}", self.program.types.resolve_type_names(&elem)),
+                adapter: adapter.to_string(),
+            },
+            span: expr.span,
+        });
+    }
+
+    /// The adapter that makes `expr` a chain of lent items: one that hands on
+    /// what it was given, with no `map` between it and the source. `None` for
+    /// anything that isn't a chain, or one a `map` makes values for.
+    fn lending_adapter(expr: &Expr) -> Option<&str> {
+        const LENDS: &[&str] = &["filter", "take", "skip", "take_while", "skip_while", "enumerate"];
+        let mut cur = expr;
+        let mut last: Option<&str> = None;
+        while let ExprKind::MethodCall { object, method, .. } = &cur.kind {
+            if !LENDS.contains(&method.as_str()) {
+                break;
+            }
+            last = Some(method.as_str());
+            cur = object;
+        }
+        // Stopped on a `map` (or anything else that isn't the source): the
+        // items may be the chain's own, which is not this rule's to judge.
+        if let ExprKind::MethodCall { method, .. } = &cur.kind {
+            if matches!(method.as_str(), "map" | "flat_map" | "filter_map" | "chain" | "flatten") {
+                return None;
+            }
+        }
+        last
+    }
+
+    /// Whether a lending chain passes through `adapter`.
+    fn chain_has(expr: &Expr, adapter: &str) -> bool {
+        let mut cur = expr;
+        while let ExprKind::MethodCall { object, method, .. } = &cur.kind {
+            if method == adapter {
+                return true;
+            }
+            cur = object;
+        }
+        false
+    }
+
+    /// `any Interface`.
+    fn is_boxed_interface(ty: &Type) -> bool {
+        matches!(ty, Type::InterfaceObject { .. })
+    }
+
+    /// `T` out of a `Vec<T>`.
+    fn vec_elem(ty: &Type) -> Option<Type> {
+        let args = match ty {
+            Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args,
+            _ => return None,
+        };
+        match args.first()? {
+            rask_types::GenericArg::Type(t) => Some((**t).clone()),
+            _ => None,
+        }
+    }
+
     /// The checked type of an expression, read through the instance being
     /// re-checked when there is one.
     fn node_ty(&self, id: &rask_ast::NodeId) -> Option<&'a Type> {
@@ -2082,6 +2175,9 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
+                if method == "to_vec" && args.is_empty() {
+                    self.check_to_vec_has_owned_items(expr, object);
+                }
                 self.note_link_into_container(object, method, args);
                 // #296/PM3: consume arguments bound to `take` parameters of user
                 // methods. T1: a channel `send` transfers ownership of its value.

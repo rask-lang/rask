@@ -3575,6 +3575,17 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     )
             }
 
+            ToVecOfLentItems { elem, adapter } => {
+                Diagnostic::error(format!("`to_vec` has nothing it may move — `{}` is lent, not owned", elem))
+                    .with_code("E0905")
+                    .with_primary(self.span, "needs an owned element")
+                    .with_fix("clone where you mean it — a `map` makes values the chain owns: `.map(|x| x.clone()).to_vec()`")
+                    .with_why(format!(
+                        "`{}` hands on what its source lent it, so every item still belongs to the source. A Vec owns what it holds, and `to_vec` won't deep-clone a `{}` on your behalf — the allocation would be invisible [type.sequence/SEQ47]",
+                        adapter, elem
+                    ))
+            }
+
             ConsumeBorrowedParam { name, declared_at, is_mutate, sink } => {
                 let how = if *is_mutate { "`mutate` parameter" } else { "borrowed parameter" };
                 let label = match sink {

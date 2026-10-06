@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `to_vec` over a chain that only lends items that aren't Copy
+//
+// `filter`, `take` and `skip` hand on what their source lent them, so every
+// item still belongs to the source. `to_vec` copies a Copy item and moves one
+// the chain owns; it never deep-clones (type.sequence/SEQ47). This used to
+// compile, and natively the two vectors then shared their inner vectors and
+// freed them twice (#1415).
+
+struct User {
+    name: string
+    active: bool
+    tags: Vec<string>
+}
+
+func mk(x: i64) -> Vec<i64> {
+    mut v: Vec<i64> = Vec.new()
+    v.push(x)
+    return v
+}
+
+func main() {
+    let plain: Vec<i64> = [1, 2, 3]
+    let vs = plain.map(|x| mk(x)).to_vec()
+    // ERROR: `Vec<i64>` is lent by `filter`, not owned
+    let some = vs.filter(|v| v[0] > 1).to_vec()
+
+    let users: Vec<User> = []
+    // ERROR: `User` is lent by `take`
+    let first = users.take(1).to_vec()
+    // ERROR: the pair holds a lent `User`
+    let numbered = users.enumerate().skip(1).to_vec()
+
+    // Fine: a `map` makes values the chain owns, so the clone is written.
+    let active = users.filter(|u| u.active).map(|u| u.clone()).to_vec()
+    // Fine: a Copy item is copied.
+    let small = plain.filter(|x| x > 1).to_vec()
+    println("{some.len()} {first.len()} {numbered.len()} {active.len()} {small.len()}")
+}

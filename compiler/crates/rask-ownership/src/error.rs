@@ -142,6 +142,17 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
+    /// type.sequence/SEQ47: `to_vec` over a chain that only lends its items,
+    /// of a type that isn't Copy. The chain owns nothing it could move into
+    /// the Vec, and `to_vec` doesn't deep-clone on its own.
+    #[error("`to_vec` has nothing it may move — `{elem}` is lent, not owned")]
+    ToVecOfLentItems {
+        /// The item type, as written for the reader.
+        elem: String,
+        /// The adapter nearest the source, which is what lends.
+        adapter: String,
+    },
+
     /// mem.linear/L1–L6 with mem.parameters/PM1: a parameter the caller only
     /// lent out can't be given away.
     ///
