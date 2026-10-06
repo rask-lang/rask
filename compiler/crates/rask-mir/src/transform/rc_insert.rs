@@ -716,6 +716,13 @@ fn insert_aggregate_release(
                 {
                     if is_tracked(src) {
                         ev.push(ownership::Event::Alias { dst: *dst, src: *src });
+                    } else if matches!(ty_of.get(src), Some(MirType::Link(_))) {
+                        // The node a link points at (`mem.racks/RK2`): the rack
+                        // owns it, and a name reaching it through the link
+                        // borrows. Inlining `a.sum()` on a `Link<Task>` binds
+                        // `self` this way, and taken over it released the node's
+                        // fields while the rack still held them (#1285).
+                        ev.push(ownership::Event::Other(*dst));
                     } else if aggregates.contains(dst) {
                         // Copied in from a local this pass can't see into: a
                         // wrapper lowering didn't mark as holding a container

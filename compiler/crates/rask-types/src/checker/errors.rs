@@ -317,6 +317,14 @@ pub enum TypeError {
         recv: String,
         span: Span,
     },
+    /// mem.racks/RK1: a `take self` method called through a link would move
+    /// the node out of the rack that owns it.
+    #[error("`{method}` takes its `{node}`, and a link only reaches one")]
+    TakeSelfThroughLink {
+        method: String,
+        node: String,
+        span: Span,
+    },
     #[error("`{method}` on a `Shared` doesn't take a closure")]
     SharedAccessClosure {
         method: String,
@@ -1581,6 +1589,7 @@ impl TypeError {
             | NonOptionalLink { .. }
             | RecursiveTypeHasNoSize { .. }
             | LinkNotOrderable { .. }
+            | TakeSelfThroughLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }
             | StringIsImmutable { .. }

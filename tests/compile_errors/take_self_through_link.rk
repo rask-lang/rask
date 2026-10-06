@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a `take self` method called through a link (E0908).
+//
+// A link reads like its node, so `l.method()` is the node's method
+// (mem.racks/RK2). The rack owns the node for its whole life (RK1), and a
+// method that consumes its receiver would move the node out from under it.
+// Once link method calls type-checked (#1285), this was the one shape left
+// that couldn't be allowed.
+
+import memory.Rack
+
+struct Task {
+    id: i64
+    name: string
+}
+
+extend Task {
+    func finish(take self) -> string {
+        return self.name
+    }
+}
+
+func main() {
+    mut r: Rack<Task> = Rack.new()
+    let a = r.insert(Task { id: 1, name: "a" })
+    // ERROR: `finish` takes its `Task`, and a link only reaches one
+    let done = a.finish()
+    println(done)
+}

@@ -1524,6 +1524,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a link is the address of its node [mem.racks/RK2], so `<` answers from wherever the allocator put the chunk. Padding the heap before the rack is built changes the result, which makes a sorted walk over links unreproducible [determinism/D11]. Two nodes have no order to define — only identity, which is what `==` compares [mem.racks/RK11]")
             }
 
+            TakeSelfThroughLink { method, node, span } => {
+                Diagnostic::error(format!("`{}` takes its `{}`, and a link only reaches one", method, node))
+                    .with_code("E0908")
+                    .with_primary(*span, format!("`{}` would move the node out of its rack", method))
+                    .with_help(format!("call it on a `{}` you own; a node's life ends with `rack.delete(link)`", node))
+                    .with_fix(format!("if `{}` doesn't need to consume the node, declare it `func {}(self, …)` or `mutate self`", method, method))
+                    .with_why("the rack owns its nodes for their whole life [mem.racks/RK1], and a link is a reference to one [RK2]. `take self` consumes the receiver, which would leave the rack holding a node that is gone — every other link to it would read freed memory")
+            }
+
             LocalSharedSent { name, span } => {
                 Diagnostic::error("this `Shared` is task-local and cannot be sent")
                     .with_code("E0346")

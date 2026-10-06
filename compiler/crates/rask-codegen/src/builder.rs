@@ -2744,6 +2744,11 @@ impl<'a> FunctionBuilder<'a> {
                         // `sum(rest)` on a `Cons(i64, Heap<List>)` trapped on
                         // the second node.
                         | MirType::Heap(_)
+                        // A link is the node's address (mem.racks/RK2), so it
+                        // already is the pointer a `self: Task` takes. Spilled,
+                        // `a.has_tag(t)` on a `Link<Task>` handed the method the
+                        // address of the slot holding the link (#1285).
+                        | MirType::Link(_)
                 )
             });
             if arg_is_aggregate {

@@ -572,6 +572,21 @@ impl TypeChecker {
         }
     }
 
+    /// Does `ty`'s own method `method` consume its receiver?
+    fn takes_self(&self, ty: &Type, method: &str) -> bool {
+        let id = match ty {
+            Type::Named(id) | Type::Generic { base: id, .. } => *id,
+            _ => return false,
+        };
+        let methods = match self.types.get(id) {
+            Some(TypeDef::Struct { methods, .. }) | Some(TypeDef::Enum { methods, .. }) => methods,
+            _ => return false,
+        };
+        methods
+            .iter()
+            .any(|m| m.name == method && m.self_param == super::type_defs::SelfParam::Take)
+    }
+
     pub(super) fn resolve_method(
         &mut self,
         ty: Type,
@@ -655,6 +670,32 @@ impl TypeChecker {
         // and resolves through the registered method table instead.
         if let Some(err) = self.reject_link_ordering(&ty, &method, &args, &ret, span) {
             return Err(err);
+        }
+
+        // A link reads like its node (`mem.racks/RK2`): `a.has_tag(t)` on a
+        // `Link<Task>` is `Task`'s method, the same way `a.tags` is `Task`'s
+        // field. Only identity — `eq`, `ne`, `hash` — is the link's own. Both
+        // spellings of `Link<T>` land here; the arm further down only ever saw
+        // the unresolved one, and a link from `Rack.insert` is resolved (#1285).
+        //
+        // `clone` stays the link's too: a link is a word that copies (RK2), and
+        // `l.clone()` has always been another link to the same node.
+        if let Some(node) = self.link_node_type(&ty) {
+            let own = matches!(method.as_str(), "eq" | "ne") && args.len() == 1
+                || matches!(method.as_str(), "hash" | "clone") && args.is_empty();
+            if !own {
+                if self.takes_self(&node, &method) {
+                    // Typed anyway, so the call's result doesn't add an error
+                    // of its own downstream.
+                    let _ = self.resolve_method(node.clone(), method.clone(), args, ret, span, None);
+                    return Err(TypeError::TakeSelfThroughLink {
+                        method,
+                        node: self.types.resolve_type_names(&node).to_string(),
+                        span,
+                    });
+                }
+                return self.resolve_method(node, method, args, ret, span, call_node);
+            }
         }
 
         if method == "clone" && args.is_empty() {
@@ -1197,9 +1238,8 @@ impl TypeChecker {
                 self.resolve_rack_method(type_args, &method, &args, &ret, span)
             }
             // Link<T> — a reference. `eq`/`ne` compare node identity; anything
-            // else falls through to the node's own methods, the same way field
-            // access does.
-            Type::UnresolvedGeneric { name, args: type_args } if name == "Link" => {
+            // else went to the node's own methods above.
+            Type::UnresolvedGeneric { name, .. } if name == "Link" => {
                 match method.as_str() {
                     "eq" | "ne" if args.len() == 1 => self.unify(&ret, &Type::Bool, span),
                     // `hash` is the link's, not the node's. Falling through
@@ -1209,14 +1249,7 @@ impl TypeChecker {
                     // different. Equal keys have to hash equal, and here equal
                     // means the same node (#1268).
                     "hash" if args.is_empty() => self.unify(&ret, &Type::U64, span),
-                    _ => {
-                        let node_ty = if let Some(GenericArg::Type(t)) = type_args.first() {
-                            *t.clone()
-                        } else {
-                            self.ctx.fresh_var()
-                        };
-                        self.resolve_method(node_ty, method, args, ret, span, None)
-                    }
+                    _ => Err(TypeError::NoSuchMethod { ty, method, span }),
                 }
             }
             // Rack (bare, for Rack.new())
