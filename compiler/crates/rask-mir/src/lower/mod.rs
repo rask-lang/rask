@@ -7024,6 +7024,7 @@ mod tests {
                 kind: ExprKind::Unwrap {
                     expr: Box::new(ident_expr("x")),
                     message: None,
+                    bang: sp(),
                 },
                 span: sp(),
             })),

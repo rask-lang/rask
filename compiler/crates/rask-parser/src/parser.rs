@@ -4818,8 +4818,8 @@ impl Parser {
 
             // Unwrap operator (!) - panics if None/Err
             TokenKind::Bang => {
-                self.advance();
-                let mut end = self.tokens[self.pos - 1].span.end;
+                let bang = self.advance().span;
+                let mut end = bang.end;
 
                 // Check for optional custom message: x! "message"
                 let message = if matches!(self.peek(0), TokenKind::String(_)) {
@@ -4834,7 +4834,7 @@ impl Parser {
                     None
                 };
 
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unwrap { expr: Box::new(lhs), message }, span: self.span(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unwrap { expr: Box::new(lhs), message, bang }, span: self.span(start, end) })
             }
 
             // Detect :: path separator (Rust syntax)
@@ -5651,7 +5651,11 @@ impl Parser {
                 Self::offset_spans(value, offset);
                 Self::offset_spans(&mut clause.body, offset);
             }
-            ExprKind::Unwrap { expr, .. } => Self::offset_spans(expr, offset),
+            ExprKind::Unwrap { expr, bang, .. } => {
+                bang.start += offset;
+                bang.end += offset;
+                Self::offset_spans(expr, offset);
+            }
             ExprKind::Cast { expr, .. } => Self::offset_spans(expr, offset),
             ExprKind::Convert { expr, .. } => Self::offset_spans(expr, offset),
             ExprKind::NullCoalesce { value, default } => {

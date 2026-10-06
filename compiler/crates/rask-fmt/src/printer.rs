@@ -2222,7 +2222,7 @@ impl<'a> Printer<'a> {
                     self.emit(name);
                 }
             }
-            ExprKind::Unwrap { expr: inner, message } => {
+            ExprKind::Unwrap { expr: inner, message, .. } => {
                 self.format_postfix_receiver(inner);
                 self.emit("!");
                 if let Some(msg) = message {

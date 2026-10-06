@@ -676,7 +676,7 @@ impl Desugarer {
                 self.desugar_expr(&mut clause.body);
             }
             ExprKind::IsPresent { expr: e, .. } => self.desugar_expr(e),
-            ExprKind::Unwrap { expr: e, message: _ } => self.desugar_expr(e),
+            ExprKind::Unwrap { expr: e, .. } => self.desugar_expr(e),
             ExprKind::GuardPattern {
                 expr,
                 else_branch,

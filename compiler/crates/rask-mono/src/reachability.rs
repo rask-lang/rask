@@ -2048,7 +2048,7 @@ impl<'a> Monomorphizer<'a> {
                 self.visit_expr(&clause.body);
             }
             ExprKind::IsPresent { expr: e, .. } => self.visit_expr(e),
-            ExprKind::Unwrap { expr: e, message } => {
+            ExprKind::Unwrap { expr: e, message, .. } => {
                 // ER15: `r!` panics *using* the error's `message()`. Lowering
                 // can't name that method itself — the same lesson as
                 // `json.encode` above, which came out of codegen as "Function

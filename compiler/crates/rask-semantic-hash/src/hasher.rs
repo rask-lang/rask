@@ -791,7 +791,7 @@ impl Hasher {
                     self.feed_bool(false);
                 }
             }
-            ExprKind::Unwrap { expr, message } => {
+            ExprKind::Unwrap { expr, message, .. } => {
                 self.feed_tag(61);
                 self.hash_expr(expr);
                 if let Some(m) = message {

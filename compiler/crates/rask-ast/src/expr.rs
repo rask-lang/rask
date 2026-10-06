@@ -167,6 +167,10 @@ pub enum ExprKind {
     Unwrap {
         expr: Box<Expr>,
         message: Option<String>,
+        /// The `!` itself: where a panic from it is reported (ctrl.panic/S6).
+        /// The node's span starts at the operand, which on a multi-line call
+        /// is several lines up, and on `a()!.b()!` is the same for both.
+        bang: Span,
     },
     /// Null coalescing (a ?? b)
     NullCoalesce {

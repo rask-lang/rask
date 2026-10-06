@@ -2355,7 +2355,9 @@ impl Interpreter {
                 }
             }
 
-            ExprKind::Unwrap { expr: inner, message } => {
+            ExprKind::Unwrap { expr: inner, message, bang } => {
+                // Reported at the `!`, not where the operand starts (ctrl.panic/S6, #1372).
+                let bang = *bang;
                 let val = self.eval_expr(inner)?;
                 match &val {
                     Value::Enum {
@@ -2366,10 +2368,10 @@ impl Interpreter {
                             if let Some(msg) = message {
                                 Err(RuntimeDiagnostic::new(
                                     RuntimeError::Panic(msg.clone()),
-                                    expr.span
+                                    bang
                                 ))
                             } else {
-                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, expr.span))
+                                Err(RuntimeDiagnostic::new(RuntimeError::ForcedAbsent, bang))
                             }
                         }
                         "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
@@ -2377,7 +2379,7 @@ impl Interpreter {
                             if let Some(msg) = message {
                                 Err(RuntimeDiagnostic::new(
                                     RuntimeError::Panic(msg.clone()),
-                                    expr.span
+                                    bang
                                 ))
                             } else {
                                 // ER15: `!` panics *using* the error's message.
@@ -2389,7 +2391,7 @@ impl Interpreter {
                                 let text = self.describe_error_value(&payload);
                                 Err(RuntimeDiagnostic::new(
                                     RuntimeError::ForcedError(text),
-                                    expr.span,
+                                    bang,
                                 ))
                             }
                         }
@@ -2398,7 +2400,7 @@ impl Interpreter {
                                 "! operator requires Option or Result, got {}",
                                 variant
                             )),
-                            expr.span
+                            bang
                         )),
                     },
                     _ => Err(RuntimeDiagnostic::new(
@@ -2406,7 +2408,7 @@ impl Interpreter {
                             "! operator requires Option or Result, got {}",
                             val.type_name()
                         )),
-                        expr.span
+                        bang
                     )),
                 }
             }

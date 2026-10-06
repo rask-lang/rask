@@ -2748,7 +2748,7 @@ impl Resolver {
             ExprKind::IsPresent { expr: inner, .. } => {
                 self.resolve_expr(inner);
             }
-            ExprKind::Unwrap { expr: inner, message: _ } => {
+            ExprKind::Unwrap { expr: inner, .. } => {
                 self.resolve_expr(inner);
             }
             ExprKind::GuardPattern { expr, pattern, else_branch } => {

@@ -1688,7 +1688,7 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Unwrap { expr: inner, message: _ } => {
+            ExprKind::Unwrap { expr: inner, .. } => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {

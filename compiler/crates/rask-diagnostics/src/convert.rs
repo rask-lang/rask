@@ -4516,7 +4516,7 @@ impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
             RuntimeError::ForcedError(msg) => {
                 Diagnostic::error(format!("! on a value that was an error: {}", msg))
                     .with_code("R0019")
-                    .with_primary(self.span, format!("this call returned `{}`", msg))
+                    .with_primary(self.span, format!("`!` found the error `{}` here", msg))
                     .with_help("`try` propagates the error, `catch e =>` handles it here")
                     .with_fix("replace `r!` with `try r`")
                     .with_why("`!` takes the ok payload of a `T or E` and panics on the error branch [type.errors/ER15]")

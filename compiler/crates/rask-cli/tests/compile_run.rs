@@ -5245,6 +5245,54 @@ fn panic_reports_the_line_it_happened_on() {
     }
 }
 
+const BANG_ON_A_MULTI_LINE_CALL_SRC: &str = r#"import builtins.ConvertError
+
+func fails(a: i64, b: i64) -> i64 or ConvertError {
+    return ConvertError.OutOfRange
+}
+
+func main() {
+    let x = fails(
+        1,
+        2,
+    )!
+    println("{x}")
+}
+"#;
+
+const BANG_ON_A_MULTI_LINE_SELECT_SRC: &str = r#"import async.Channel
+
+func main() {
+    let (tx, rx) = Channel<i64>.buffered(1)
+    tx.close()!
+    let got = select {
+        rx -> v: v,
+    }!
+    println("{got}")
+}
+"#;
+
+/// A `!` on an expression spanning several lines panics at the `!`'s line
+/// (ctrl.panic/S6: the failing operation is the `!`). The interpreter named
+/// the line the operand started on; native named the last line it lowered
+/// before the panic — the last argument, or the arm above `}!` (#1372).
+#[test]
+fn bang_panic_names_the_line_of_the_bang() {
+    for (src, want) in [
+        (BANG_ON_A_MULTI_LINE_CALL_SRC, 11),
+        (BANG_ON_A_MULTI_LINE_SELECT_SRC, 8),
+    ] {
+        for interp in [false, true] {
+            let backend = if interp { "interp" } else { "native" };
+            let out = run_rask_run_source(src, interp);
+            assert!(
+                out.contains(&format!(":{want}:")),
+                "{backend}: expected the panic at line {want}, the `!`:\n{out}"
+            );
+        }
+    }
+}
+
 /// Editing a file in a sub-package rebuilds the binary.
 ///
 /// The compilation cache keyed on the *root* package's files alone, and a

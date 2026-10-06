@@ -17,6 +17,7 @@ use rask_ast::{
     expr::{BinOp, CallArg, ConvertKind, Expr, ExprKind, FieldInit, Pattern, UnaryOp, WithBinding},
     stmt::{Stmt, StmtKind},
     token::{FloatSuffix, IntSuffix},
+    Span,
 };
 
 /// What `emit_is_test` found out: whether the value matched, and for a
@@ -1430,7 +1431,14 @@ impl<'a> MirLowerer<'a> {
                 return self.emit_try_branch(try_id, expr, op, ty);
             }
         }
-        let (op, ty) = self.lower_expr_inner(expr)?;
+        // Each expression stamps its span on what it emits. Put the caller's
+        // back afterwards: left alone, whatever the parent emitted next
+        // carried the span of its last operand, which is how a panic on a
+        // multi-line call reported the line of its last argument (#1372).
+        let parent_span = self.builder.current_span();
+        let lowered = self.lower_expr_inner(expr);
+        self.builder.set_span(parent_span);
+        let (op, ty) = lowered?;
         self.mark_consumed_by(expr);
         // Lowering works each expression's type out as it goes, and lands on
         // `Ptr` — "some address, contents unknown" — whenever it can't. The
@@ -1598,8 +1606,8 @@ impl<'a> MirLowerer<'a> {
             ExprKind::IsPresent { expr: inner, .. } => self.lower_is_present(inner),
 
             // Unwrap (postfix !) - panic on None/Err
-            ExprKind::Unwrap { expr: inner, message: override_text } => {
-                self.lower_unwrap(expr, inner, override_text.as_deref())
+            ExprKind::Unwrap { expr: inner, message: override_text, bang } => {
+                self.lower_unwrap(expr, inner, override_text.as_deref(), *bang)
             }
 
             // Null coalescing (a ?? b)
@@ -1923,7 +1931,7 @@ impl<'a> MirLowerer<'a> {
             Ok((MirOperand::Local(result), MirType::Bool))
         }
 
-    fn lower_unwrap(&mut self, expr: &Expr, inner: &Expr, override_text: Option<&str>) -> Result<TypedOperand, LoweringError> {
+    fn lower_unwrap(&mut self, expr: &Expr, inner: &Expr, override_text: Option<&str>, bang: Span) -> Result<TypedOperand, LoweringError> {
             let (val, _inner_ty) = self.lower_expr(inner)?;
             let niche = self.option_niche(inner, &_inner_ty);
             let is_niche = niche.is_some();
@@ -1938,6 +1946,10 @@ impl<'a> MirLowerer<'a> {
             }));
 
             self.builder.switch_to_block(panic_block);
+            // The panic is the `!`'s, so it reports the `!`'s line, whatever
+            // line the operand started or ended on (ctrl.panic/S6, #1372).
+            let operand_span = self.builder.current_span();
+            self.builder.set_span(bang);
 
             // ER15: `!` panics *using* the error's `message()`, and
             // ctrl.panic/F3 wants the message to be a function of the
@@ -1974,6 +1986,7 @@ impl<'a> MirLowerer<'a> {
                 }));
             }
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+            self.builder.set_span(operand_span);
 
             self.builder.switch_to_block(ok_block);
             let payload_ty = self.extract_payload_type(inner)

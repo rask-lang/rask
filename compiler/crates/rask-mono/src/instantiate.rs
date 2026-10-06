@@ -428,9 +428,10 @@ impl TypeSubstitutor {
                     expr: Box::new(self.clone_expr(inner)),
                     binding: binding.clone(),
                 },
-                ExprKind::Unwrap { expr: inner, message } => ExprKind::Unwrap {
+                ExprKind::Unwrap { expr: inner, message, bang } => ExprKind::Unwrap {
                     expr: Box::new(self.clone_expr(inner)),
                     message: message.clone(),
+                    bang: *bang,
                 },
                 ExprKind::NullCoalesce { value, default } => ExprKind::NullCoalesce {
                     value: Box::new(self.clone_expr(value)),
