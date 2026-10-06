@@ -285,7 +285,7 @@ impl TypeChecker {
                             // type arg satisfies the declared interface bounds.
                             let bounds: std::collections::HashMap<String, Vec<TypeExpr>> = f.type_params.iter()
                                 .filter(|tp| !tp.bounds.is_empty())
-                                .map(|tp| (tp.name.clone(), tp.bounds.clone()))
+                                .map(|tp| (tp.name.clone(), tp.bound_types()))
                                 .collect();
                             if !bounds.is_empty() {
                                 self.fn_type_param_bounds.insert(sym_id, bounds);
@@ -447,6 +447,70 @@ impl TypeChecker {
                 }
             }
         }
+    }
+
+    /// G1: every bound and `implements` header names an interface that exists,
+    /// checked once at the declaration. A typo in `func show<T: Printabel>`
+    /// used to surface at each call, and with no caller, nowhere (#1483). The
+    /// call-site check leaves these names alone.
+    pub(super) fn check_bound_names(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            match &decl.kind {
+                DeclKind::Fn(f) => self.check_fn_bound_names(f),
+                DeclKind::Struct(s) => {
+                    self.check_param_bound_names(&s.type_params);
+                    s.methods.iter().for_each(|m| self.check_fn_bound_names(m));
+                }
+                DeclKind::Enum(e) => {
+                    self.check_param_bound_names(&e.type_params);
+                    e.methods.iter().for_each(|m| self.check_fn_bound_names(m));
+                }
+                DeclKind::Impl(i) => {
+                    if let Some(interface) = &i.interface {
+                        self.check_interface_named(interface, decl.span);
+                    }
+                    self.check_param_bound_names(&i.where_bounds);
+                    i.methods.iter().for_each(|m| self.check_fn_bound_names(m));
+                }
+                DeclKind::Interface(d) => {
+                    self.check_param_bound_names(&d.type_params);
+                    for parent in &d.super_interfaces {
+                        self.check_interface_named(parent, decl.span);
+                    }
+                    for a in &d.assoc_types {
+                        for b in &a.bounds {
+                            self.check_interface_named(&b.ty, b.span);
+                        }
+                    }
+                    d.methods.iter().for_each(|m| self.check_fn_bound_names(m));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn check_fn_bound_names(&mut self, f: &FnDecl) {
+        self.check_param_bound_names(&f.type_params);
+    }
+
+    fn check_param_bound_names(&mut self, params: &[rask_ast::decl::TypeParam]) {
+        for b in params.iter().flat_map(|p| &p.bounds) {
+            self.check_interface_named(&b.ty, b.span);
+        }
+    }
+
+    fn check_interface_named(&mut self, interface: &TypeExpr, span: Span) {
+        if !matches!(interface, TypeExpr::Named { .. }) {
+            return;
+        }
+        if crate::interfaces::InterfaceChecker::new(&self.types).names_an_interface(interface) {
+            return;
+        }
+        self.errors.push(TypeError::NoSuchInterface {
+            interface_name: interface.name().unwrap_or_default(),
+            known: self.declared_interface_names(),
+            span,
+        });
     }
 
     fn check_declared_type_name(&mut self, name: &str, kind: &str, span: Span) {
@@ -985,7 +1049,7 @@ impl TypeChecker {
         // CC1/CC2: a `where` clause makes every listed conformance conditional
         // (CD3: one condition per block).
         let condition: Vec<(String, Vec<TypeExpr>)> = i.where_bounds.iter()
-            .map(|tp| (tp.name.clone(), tp.bounds.clone()))
+            .map(|tp| (tp.name.clone(), tp.bound_types()))
             .collect();
         if let Some(interface_name) = &interface_name {
             self.types.record_conformance(type_id, interface_name);
@@ -1613,14 +1677,14 @@ impl TypeChecker {
             .filter(|p| !p.is_comptime)
             .map(|p| super::InterfaceTypeParam {
                 name: p.name.clone(),
-                bounds: p.bounds.clone(),
+                bounds: p.bound_types(),
                 default: p.default.clone(),
             })
             .collect();
         let assoc_types = t.assoc_types.iter()
             .map(|a| super::InterfaceAssocType {
                 name: a.name.clone(),
-                bounds: a.bounds.clone(),
+                bounds: a.bounds.iter().map(|b| b.ty.clone()).collect(),
                 default: a.default.clone(),
             })
             .collect();
@@ -1802,10 +1866,10 @@ impl TypeChecker {
             // argument had nothing to bind to, and the handle's payload stayed
             // unresolved all the way to MIR (#963).
             type_params: {
-                let declared: std::collections::HashMap<&str, &Vec<TypeExpr>> = m
+                let declared: std::collections::HashMap<&str, &rask_ast::decl::TypeParam> = m
                     .type_params
                     .iter()
-                    .map(|tp| (tp.name.as_str(), &tp.bounds))
+                    .map(|tp| (tp.name.as_str(), tp))
                     .collect();
                 // A name the header introduced belongs to the receiver too,
                 // even though the declaration never mentions it: `K` and `V` in
@@ -1825,7 +1889,7 @@ impl TypeChecker {
                     .map(|name| {
                         let bounds = declared
                             .get(name.as_str())
-                            .map(|b| (*b).clone())
+                            .map(|tp| tp.bound_types())
                             .unwrap_or_default();
                         (name, bounds)
                     })
@@ -2461,7 +2525,14 @@ impl TypeChecker {
                             // A header naming an interface that doesn't exist is a
                             // name problem, not a missing method — the block
                             // may well define everything the author meant.
+                            // `check_bound_names` reported a name that isn't
+                            // an interface already.
                             if matches!(e, crate::interfaces::InterfaceError::UnknownInterface(_)) {
+                                if !crate::interfaces::InterfaceChecker::new(&self.types)
+                                    .names_an_interface(&interface_name)
+                                {
+                                    continue;
+                                }
                                 self.errors.push(TypeError::NoSuchInterface {
                                     interface_name: interface_name.to_string(),
                                     known: self.declared_interface_names(),
@@ -2518,7 +2589,7 @@ impl TypeChecker {
                     self.current_impl_type_param_bounds
                         .entry(tp.name.clone())
                         .or_default()
-                        .extend(tp.bounds.iter().cloned());
+                        .extend(tp.bound_types());
                 }
                 // `extend Vec<T>` binds `T` for every method in the block,
                 // whether or not a `where` clause says anything about it.

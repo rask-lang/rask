@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{AnnotationDecl, AssocTypeBinding, AssocTypeDecl, BenchmarkDecl, Bound, CImportDecl, ConstDecl, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, InterfaceDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, StringSegment, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{IntSuffix, Token, TokenKind};
@@ -1497,8 +1497,8 @@ impl Parser {
                     name: param_name.clone(),
                     is_comptime: false,
                     comptime_type: None,
-                    bounds: bounds.clone(),
-                    default: default.clone(),
+                    bounds,
+                    default,
                 });
             }
 
@@ -1516,11 +1516,18 @@ impl Parser {
         Ok(type_params)
     }
 
-    /// Parse `+`-separated interface bounds: `A + B<X> + io.Writer`.
-    fn parse_interface_bounds(&mut self) -> Result<Vec<TypeExpr>, ParseError> {
-        let mut bounds = vec![self.parse_type_body()?];
-        while self.match_token(&TokenKind::Plus) {
-            bounds.push(self.parse_type_body()?);
+    /// Parse `+`-separated interface bounds: `A + B<X> + io.Writer`, each
+    /// with where it was written.
+    fn parse_interface_bounds(&mut self) -> Result<Vec<Bound>, ParseError> {
+        let mut bounds = Vec::new();
+        loop {
+            let start = self.current().span.start;
+            let ty = self.parse_type_body()?;
+            let end = self.tokens[self.pos.saturating_sub(1)].span.end;
+            bounds.push(Bound { ty, span: self.span(start, end.max(start)) });
+            if !self.match_token(&TokenKind::Plus) {
+                break;
+            }
         }
         Ok(bounds)
     }

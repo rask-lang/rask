@@ -39,6 +39,8 @@ func needs_greeter<T: Greeter>(g: T) -> i64 {
     return 1
 }
 
+// ERROR: a bound naming an interface nobody declared — did-you-mean, not `_`.
+// Reported here at the bound, not at the call below (#1483).
 func typo<T: Intger>(x: i64) -> T {
     return unreachable("stub")
 }
@@ -54,7 +56,6 @@ func main() {
     // ERROR: `as any Interface` on a type without the methods
     let boxed = s as any Greeter
 
-    // ERROR: a bound naming an interface nobody declared — did-you-mean, not `_`
     let t: i32 = typo(1)
 
     // THE FIX for the numeric one: a type the bound actually covers.

@@ -130,6 +130,12 @@ impl TypeChecker {
             for t in &interfaces {
                 self.check_bound_conformance_ambiguity(&ty, t, span);
             }
+            // A bound naming no interface was reported at its declaration
+            // (`check_bound_names`), once; nothing can satisfy it here.
+            let interfaces: Vec<_> = {
+                let checker = crate::interfaces::InterfaceChecker::new(&self.types);
+                interfaces.into_iter().filter(|t| checker.names_an_interface(t)).collect()
+            };
             let bound = crate::interfaces::InterfaceBound::new("_", interfaces);
             if let Err(errs) = crate::interfaces::verify_instantiation(&self.types, &ty, std::slice::from_ref(&bound), span) {
                 for e in errs {

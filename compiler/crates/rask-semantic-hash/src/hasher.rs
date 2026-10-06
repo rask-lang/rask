@@ -413,7 +413,7 @@ impl Hasher {
             self.feed_type(ct);
         }
         for b in &tp.bounds {
-            self.feed_type(b);
+            self.feed_type(&b.ty);
         }
     }
 

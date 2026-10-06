@@ -41,7 +41,7 @@
 use rask_ast::ty::TypeExpr;
 use std::collections::{HashMap, HashSet};
 
-use rask_ast::decl::{Decl, DeclKind, FnDecl, TypeParam};
+use rask_ast::decl::{Bound, Decl, DeclKind, FnDecl, TypeParam};
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::NodeId;
@@ -138,7 +138,12 @@ fn generalize_fn(f: &mut FnDecl) {
             name: letter,
             is_comptime: false,
             comptime_type: None,
-            bounds: bounds.into_iter().map(TypeExpr::named).collect(),
+            // Inferred from the body, so written nowhere: the parameter they
+            // were inferred for stands in.
+            bounds: bounds
+                .into_iter()
+                .map(|b| Bound { ty: TypeExpr::named(b), span: param.name_span })
+                .collect(),
             default: None,
         });
     }

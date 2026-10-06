@@ -178,6 +178,19 @@ impl<'a> InterfaceChecker<'a> {
         }
     }
 
+    /// Does a bound or header name an interface at all: a declared one, or one
+    /// the compiler answers by name in `check_satisfies` (`Copy`, `Encode`,
+    /// the numeric sets, the builtin method lists)?
+    pub fn names_an_interface(&self, interface: &TypeExpr) -> bool {
+        if self.types.interface_decl(interface).is_some() {
+            return true;
+        }
+        let name = self.types.interface_name(interface);
+        matches!(name.as_str(), "Copy" | "Encode" | "Decode")
+            || numeric_interface_members(&name).is_some()
+            || builtin_interface_methods(&name).is_some()
+    }
+
     /// Check if a type satisfies an interface bound.
     pub fn check_satisfies(
         &mut self,

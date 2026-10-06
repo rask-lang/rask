@@ -203,6 +203,16 @@ pub struct Param {
     pub default: Option<Expr>,
 }
 
+/// One interface a type parameter or associated type is bound by: `Printable`
+/// in `T: Printable + Debug`.
+#[derive(Debug, Clone)]
+pub struct Bound {
+    pub ty: crate::ty::TypeExpr,
+    /// Where it's written. A bound the compiler inferred points at the
+    /// declaration it was added to.
+    pub span: Span,
+}
+
 /// A type parameter (for generics).
 #[derive(Debug, Clone)]
 pub struct TypeParam {
@@ -212,10 +222,17 @@ pub struct TypeParam {
     /// Type for comptime parameters (e.g., "usize" for `comptime N: usize`)
     pub comptime_type: Option<crate::ty::TypeExpr>,
     /// Interface bounds (for regular type parameters)
-    pub bounds: Vec<crate::ty::TypeExpr>,
+    pub bounds: Vec<Bound>,
     /// GT4: `interface Mul<Rhs = Self>` — what the parameter means when a bound or
     /// conformance header writes the interface bare. Only interfaces declare these.
     pub default: Option<crate::ty::TypeExpr>,
+}
+
+impl TypeParam {
+    /// The bounds' types, without where they were written.
+    pub fn bound_types(&self) -> Vec<crate::ty::TypeExpr> {
+        self.bounds.iter().map(|b| b.ty.clone()).collect()
+    }
 }
 
 /// GT1/AT1: an interface member the conformance supplies, not a method.
@@ -225,7 +242,7 @@ pub struct TypeParam {
 pub struct AssocTypeDecl {
     pub name: String,
     /// AT5: every conformance's binding must satisfy these.
-    pub bounds: Vec<crate::ty::TypeExpr>,
+    pub bounds: Vec<Bound>,
     /// AT4: what a conformance that omits the binding gets.
     pub default: Option<crate::ty::TypeExpr>,
     pub span: Span,

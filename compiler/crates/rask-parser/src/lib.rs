@@ -35,6 +35,10 @@ mod tests {
         ts.iter().map(|t| t.to_string()).collect()
     }
 
+    fn bts(bs: &[rask_ast::decl::Bound]) -> Vec<String> {
+        bs.iter().map(|b| b.ty.to_string()).collect()
+    }
+
     use rask_ast::decl::DeclKind;
     use rask_ast::expr::{BinOp, ExprKind, UnaryOp};
     use rask_ast::stmt::StmtKind;
@@ -1430,7 +1434,7 @@ mod tests {
     fn where_clause_implicit_generic() {
         let f = parse_fn("func pick(a: T, b: T) -> T where T: Comparable { return a }");
         let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
-        assert_eq!(vts(&t.bounds), vec!["Comparable".to_string()]);
+        assert_eq!(bts(&t.bounds), vec!["Comparable".to_string()]);
     }
 
     // Multiple `+`-separated bounds in a where clause.
@@ -1438,7 +1442,17 @@ mod tests {
     fn where_clause_multiple_bounds() {
         let f = parse_fn("func s(x: T) where T: Comparable + Debug { }");
         let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
-        assert_eq!(vts(&t.bounds), vec!["Comparable".to_string(), "Debug".to_string()]);
+        assert_eq!(bts(&t.bounds), vec!["Comparable".to_string(), "Debug".to_string()]);
+    }
+
+    // Each bound knows where it was written, so a bad one is reported there (#1483).
+    #[test]
+    fn each_bound_carries_its_span() {
+        let src = "func s<T: Comparable + io.Writer>(x: T) where T: Debug { }";
+        let f = parse_fn(src);
+        let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
+        let written: Vec<&str> = t.bounds.iter().map(|b| &src[b.span.start..b.span.end]).collect();
+        assert_eq!(written, ["Comparable", "io.Writer", "Debug"]);
     }
 
     // A where bound merges into an explicitly-declared type param, not a duplicate.
@@ -1447,7 +1461,7 @@ mod tests {
         let f = parse_fn("func echo<T>(x: T) -> T where T: Comparable { return x }");
         assert_eq!(f.type_params.len(), 1);
         assert_eq!(f.type_params[0].name, "T");
-        assert_eq!(vts(&f.type_params[0].bounds), vec!["Comparable".to_string()]);
+        assert_eq!(bts(&f.type_params[0].bounds), vec!["Comparable".to_string()]);
     }
 
     // Full order: generics → params → return → where, across lines.
@@ -1458,8 +1472,8 @@ mod tests {
         );
         let k = f.type_params.iter().find(|p| p.name == "K").expect("K param");
         let v = f.type_params.iter().find(|p| p.name == "V").expect("V param");
-        assert_eq!(vts(&k.bounds), vec!["HashKey".to_string()]);
-        assert_eq!(vts(&v.bounds), vec!["Clone".to_string()]);
+        assert_eq!(bts(&k.bounds), vec!["HashKey".to_string()]);
+        assert_eq!(bts(&v.bounds), vec!["Clone".to_string()]);
     }
 
     // Generic interface bound inside a where clause: `where T: Iterator<Item>`.
@@ -1467,7 +1481,7 @@ mod tests {
     fn where_clause_generic_bound() {
         let f = parse_fn("func run(x: T) where T: Iterator<Item> { }");
         let t = f.type_params.iter().find(|p| p.name == "T").expect("T param");
-        assert_eq!(vts(&t.bounds), vec!["Iterator<Item>".to_string()]);
+        assert_eq!(bts(&t.bounds), vec!["Iterator<Item>".to_string()]);
     }
 
     // CD1: one interface per block. A second name after `implements` is a
@@ -1550,7 +1564,7 @@ mod tests {
             DeclKind::Interface(ref t) => {
                 let names: Vec<&str> = t.assoc_types.iter().map(|a| a.name.as_str()).collect();
                 assert_eq!(names, ["Out", "Key", "Same"]);
-                assert_eq!(vts(&t.assoc_types[1].bounds), ["Comparable"]);
+                assert_eq!(bts(&t.assoc_types[1].bounds), ["Comparable"]);
                 assert_eq!(ots(&t.assoc_types[2].default).as_deref(), Some("Self"));
                 assert_eq!(t.methods.len(), 1);
                 assert_eq!(ots(&t.methods[0].ret_ty).as_deref(), Some("Self.Out"));
@@ -1573,7 +1587,7 @@ mod tests {
                 let names: Vec<&str> = t.type_params.iter().map(|p| p.name.as_str()).collect();
                 assert_eq!(names, ["Rhs", "K"]);
                 assert_eq!(ots(&t.type_params[0].default).as_deref(), Some("Self"));
-                assert_eq!(vts(&t.type_params[1].bounds), ["Comparable"]);
+                assert_eq!(bts(&t.type_params[1].bounds), ["Comparable"]);
                 assert_eq!(t.methods.len(), 1);
             }
             _ => panic!("expected interface"),
@@ -1680,7 +1694,7 @@ mod tests {
             DeclKind::Impl(ref i) => {
                 assert_eq!(ots(&i.interface).as_deref(), Some("Show"));
                 let t = i.where_bounds.iter().find(|tp| tp.name == "T").expect("T bound");
-                assert_eq!(vts(&t.bounds), vec!["Show".to_string()]);
+                assert_eq!(bts(&t.bounds), vec!["Show".to_string()]);
             }
             _ => panic!("expected impl"),
         }

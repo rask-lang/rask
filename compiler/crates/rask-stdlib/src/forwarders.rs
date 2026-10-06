@@ -108,7 +108,7 @@ fn forwarder(m: &FnDecl, elem: &TypeExpr, host_params: &[String]) -> String {
                 if p.bounds.is_empty() {
                     name_of(&p.name)
                 } else {
-                    let bounds: Vec<String> = p.bounds.iter().map(|b| b.source()).collect();
+                    let bounds: Vec<String> = p.bounds.iter().map(|b| b.ty.source()).collect();
                     format!("{}: {}", name_of(&p.name), bounds.join(" + "))
                 }
             })

@@ -615,7 +615,7 @@ impl<'a> Printer<'a> {
             } else {
                 self.emit(" + ");
             }
-            self.emit(&bound.source());
+            self.emit(&bound.ty.source());
         }
     }
 
@@ -1121,8 +1121,8 @@ impl<'a> Printer<'a> {
     }
 
     /// `A + B<X>`
-    fn bounds_text(bounds: &[rask_ast::ty::TypeExpr]) -> String {
-        bounds.iter().map(|b| b.source()).collect::<Vec<_>>().join(" + ")
+    fn bounds_text(bounds: &[rask_ast::decl::Bound]) -> String {
+        bounds.iter().map(|b| b.ty.source()).collect::<Vec<_>>().join(" + ")
     }
 
     /// `T`, `T: A + B`, `Rhs = Self`, `comptime N: usize`.

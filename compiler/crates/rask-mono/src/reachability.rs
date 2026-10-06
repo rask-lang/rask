@@ -1182,7 +1182,8 @@ impl<'a> Monomorphizer<'a> {
         let arg_of = |name: &str| bindings.iter().find(|b| b.param == name).map(|b| spelled(&b.ty).to_type_expr());
         for tp in &f.type_params {
             let Some(binding) = bindings.iter().find(|b| b.param == tp.name) else { continue };
-            for bound in &tp.bounds {
+            let bounds = tp.bound_types();
+            for bound in &bounds {
                 let Some(TypeDef::Interface { assoc_types, .. }) =
                     types.interface_decl(bound).and_then(|id| types.get(id))
                 else {
@@ -1191,7 +1192,7 @@ impl<'a> Monomorphizer<'a> {
                 // `T: Mul<U>` asks about the conformance to `Mul<` U's argument `>`.
                 let applied = bound.substitute(&arg_of);
                 for a in assoc_types {
-                    if types.projection_bound(&tp.bounds, &a.name) != Some(bound) {
+                    if types.projection_bound(&bounds, &a.name) != Some(bound) {
                         continue;
                     }
                     if let Some(ty) = types.project(&binding.ty, &applied, &a.name) {

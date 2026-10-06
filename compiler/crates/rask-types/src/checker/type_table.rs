@@ -1193,7 +1193,7 @@ impl TypeTable {
     /// Remember the bounds a type's declaration puts on its parameters.
     pub(super) fn record_param_bounds(&mut self, type_id: TypeId, params: &[rask_ast::decl::TypeParam]) {
         if params.iter().any(|p| !p.bounds.is_empty()) {
-            let bounds = params.iter().map(|p| (p.name.clone(), p.bounds.clone())).collect();
+            let bounds = params.iter().map(|p| (p.name.clone(), p.bound_types())).collect();
             self.declared_param_bounds.insert(type_id, bounds);
         }
     }

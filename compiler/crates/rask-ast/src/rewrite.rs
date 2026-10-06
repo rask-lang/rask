@@ -95,7 +95,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
             r.ty(&mut i.target_ty);
             for b in &mut i.where_bounds {
                 for bound in &mut b.bounds {
-                    r.ty(bound);
+                    r.ty(&mut bound.ty);
                 }
             }
             for m in &mut i.methods {
@@ -144,7 +144,7 @@ pub fn rewrite_decl(decl: &mut Decl, r: &mut impl Rewrite) {
 fn rewrite_fn(f: &mut FnDecl, r: &mut impl Rewrite) {
     for tp in &mut f.type_params {
         for bound in &mut tp.bounds {
-            r.ty(bound);
+            r.ty(&mut bound.ty);
         }
         if let Some(t) = &mut tp.comptime_type {
             r.ty(t);

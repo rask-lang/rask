@@ -781,7 +781,7 @@ fn fn_to_method_stub(
                 .map(|sym| sym.to_string())
         }),
         type_param_bounds: f.type_params.iter()
-            .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.clone())))
+            .flat_map(|tp| tp.bounds.iter().map(move |b| (tp.name.clone(), b.ty.clone())))
             .collect(),
     }
 }
