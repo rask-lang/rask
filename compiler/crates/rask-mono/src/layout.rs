@@ -255,15 +255,10 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             );
             (8, 8)
         }
-        // A field written `any Interface` reaches here as a name, not a parsed
-        // InterfaceObject. It's still a fat pointer, and sizing it at 8 gave a
-        // struct field half the room for one — the vtable half landed in
-        // whatever followed (#474).
         // AT6: projections resolve during type checking. One that got here
         // named a conformance that doesn't exist, and the error for that is
         // already reported — lay it out as a word rather than panicking on top.
         Type::Assoc { .. } => (8, 8),
-        Type::UnresolvedNamed(name) if name.starts_with("any ") => (16, 8),
         // A raw pointer field written `*u8` arrives as a name too. It's a
         // pointer, so the fallback size was right — but it went through the
         // unknown-type branch and warned about a program with nothing wrong
@@ -430,6 +425,10 @@ pub fn field_type(ty: &TypeExpr) -> Type {
             ret: Box::new(field_type(ret)),
         },
         TypeExpr::RawPtr(inner) => Type::RawPtr(Box::new(field_type(inner))),
+        // A fat pointer. Left as the name "any Shape" it sized right only by a
+        // spelling check, and `any Shape?` became an option of a one-word
+        // name: eight bytes short of the fat pointer stored in it (#1308).
+        TypeExpr::Any(interface) => Type::InterfaceObject { interface_name: interface.to_string() },
         // Whatever a field's type is reached *through* says nothing about its
         // size, so the last segment is the whole question: `time.Duration` and
         // an aliased import's `h.Response` both size as the type they name.

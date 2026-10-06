@@ -1385,35 +1385,10 @@ impl Parser {
         // position took a qualified name, so the only way to write an interface
         // object of another module's interface was to import the interface under a name
         // of its own first.
-        //
-        // The optional suffix is deliberately *not* shared. `any Interface?`
-        // type-checks and the interpreter runs it, but native never boxes the
-        // value into the option's payload and reads an uninitialised slot —
-        // SIGSEGV in every position (#1308). Letting it parse here would turn a
-        // bad parse error into a crash, so it stays rejected until the backend
-        // has it, with a message that says which of the two it is.
         if name == "any" {
             if let TokenKind::Ident(_) = self.current_kind() {
                 let interface = self.parse_type_body()?;
-                if self.check(&TokenKind::Question) || self.check(&TokenKind::QuestionQuestion) {
-                    return Err(ParseError {
-                        span: self.current().span,
-                        message: "an optional interface object isn't built yet".to_string(),
-                        hint: Some(format!(
-                            "take `any {}` and use a sentinel, or wrap it in a struct field \
-                             you can leave unset",
-                            interface
-                        )),
-                        why: Some(
-                            "`any Interface?` checks, and the interpreter runs it — native never \
-                             boxes the value into the option's payload, so it reads an \
-                             uninitialised slot and crashes. Rejected here rather than \
-                             at run time [#1308]"
-                                .to_string(),
-                        ),
-                    });
-                }
-                return Ok(TypeExpr::Any(Box::new(interface)));
+                return Ok(self.parse_optional_suffix(TypeExpr::Any(Box::new(interface))));
             }
         }
 

@@ -318,7 +318,20 @@ impl TypeChecker {
         expected: &Type,
         found: &Type,
     ) {
-        let Type::InterfaceObject { interface_name } = expected else { return };
+        // `let b: (any Shape)? = Sq { … }` boxes the value, then wraps the box.
+        // Only the box is a coercion; the wrap is the ordinary one any `T?`
+        // slot does. Without looking through the optional layer nothing was
+        // recorded, and native stored the bare struct where the fat pointer
+        // goes (#1308). A value that already is an optional fills the slot as
+        // it is.
+        let expected = self.ctx.apply(expected);
+        if let Some(inner) = expected.as_option() {
+            if self.ctx.apply(found).as_option().is_none() {
+                self.note_interface_coercion_node(node, is_any_cast, inner, found);
+            }
+            return;
+        }
+        let Type::InterfaceObject { interface_name } = &expected else { return };
         if is_any_cast {
             return;
         }

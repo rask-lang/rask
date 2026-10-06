@@ -85,16 +85,8 @@ pub fn owned_fields(
     out
 }
 
-/// Is this an interface object, however the type happens to be spelled?
-///
-/// A field written `any Interface` reaches the layout as a *name* rather than a
-/// parsed `InterfaceObject` (#474), so asking for the parsed form alone answers no
-/// for every field — which is exactly where the question matters.
+/// Is this an interface object?
 pub fn is_interface_object(ty: &RaskType) -> bool {
-    match ty {
-        RaskType::InterfaceObject { .. } => true,
-        RaskType::UnresolvedNamed(name) => name.starts_with("any "),
-        _ => false,
-    }
+    matches!(ty, RaskType::InterfaceObject { .. })
 }
 

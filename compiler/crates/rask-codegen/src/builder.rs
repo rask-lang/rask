@@ -7230,9 +7230,7 @@ impl<'a> FunctionBuilder<'a> {
             return true;
         }
         // A box a field holds is the aggregate's: it was moved in, so the block
-        // and the value's own contents go when the aggregate does. Asked before
-        // the name lookup below, which would read `any Handler` as a struct
-        // nobody declared and answer no.
+        // and the value's own contents go when the aggregate does.
         if crate::drop_fields::is_interface_object(ty) {
             return true;
         }
@@ -7413,8 +7411,7 @@ impl<'a> FunctionBuilder<'a> {
         }
         // Same shape as the MIR-typed arm: the slot *is* the fat pointer, and
         // the runtime's own entry walker reads both words and the vtable's
-        // release hook. Before the match for the reason `holds_string_ty` asks
-        // it early — a field's `any Interface` is a name, not a parsed form.
+        // release hook.
         if crate::drop_fields::is_interface_object(ty) {
             return Self::emit_boxed_field_release(builder, base, offset, ctx);
         }

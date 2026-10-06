@@ -1101,26 +1101,6 @@ fn a_type_that_contains_itself_is_rejected() {
 }
 
 #[test]
-fn an_optional_interface_object_is_rejected_with_its_own_reason() {
-    // #1159 made the parse after `any` share the real type-name parse, so
-    // `any io.Reader` works. Sharing it whole would also have admitted
-    // `any Shape?`, which type-checks and then segfaults natively — the value
-    // is never boxed into the option's payload (#1308). The suffix stays
-    // refused, but with a message about the feature rather than the old
-    // "Expected ')', found '?'".
-    let (failed, out) = compile_error_output("optional_interface_object.rk");
-    assert!(failed, "`any Interface?` must be rejected: {}", out);
-    assert!(
-        out.contains("an optional interface object isn't built yet"),
-        "should name the feature, not the punctuation: {}", out,
-    );
-    assert!(
-        out.contains("1308"),
-        "should point at the issue that lifts it: {}", out,
-    );
-}
-
-#[test]
 fn a_failing_benchmark_body_is_reported_not_timed() {
     // #1182: every pass discarded its result, so a body that panicked still
     // produced min/max/mean/median — timings for how long it took to fail,

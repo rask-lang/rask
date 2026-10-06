@@ -354,13 +354,19 @@ mod tests {
 
     #[test]
     fn parse_optional_interface_object_in_parens() {
-        // `(any Shape)?` — the parenthesized form must parse (#606); the ambiguous
-        // bare `any Shape?` stays rejected on purpose.
+        // `(any Shape)?` — the parenthesized form must parse (#606). The bare
+        // `any Shape?` means the same: `Shape?` isn't an interface, so the `?`
+        // can only wrap the object (#1308).
         let result = parse("interface Shape { func area(self) -> f64 }\nfunc f() -> (any Shape)? { return none }");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
 
         let result = parse("interface Shape { func area(self) -> f64 }\nfunc f() -> any Shape? { return none }");
-        assert!(!result.errors.is_empty(), "Expected bare `any Shape?` to stay ambiguous");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        let rask_ast::decl::DeclKind::Fn(f) = &result.decls[1].kind else { panic!("expected a function") };
+        assert!(
+            matches!(&f.ret_ty, Some(rask_ast::ty::TypeExpr::Optional(inner)) if matches!(**inner, rask_ast::ty::TypeExpr::Any(_))),
+            "`any Shape?` should be an optional interface object: {:?}", f.ret_ty,
+        );
     }
 
     #[test]

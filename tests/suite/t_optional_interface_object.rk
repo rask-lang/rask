@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A concrete value handed to an `any Shape?` slot was never boxed: native
+// stored the bare struct where the option's fat pointer goes, and the first
+// method call through it segfaulted (#1308). The interpreter was right.
+
+interface Shape {
+    func area(self) -> i64
+}
+
+struct Sq {
+    s: i64
+}
+
+Sq implements Shape {
+    func area(self) -> i64 {
+        return self.s * self.s
+    }
+}
+
+struct Rect {
+    w: i64
+    h: i64
+}
+
+Rect implements Shape {
+    func area(self) -> i64 {
+        return self.w * self.h
+    }
+}
+
+// Owns a string, so the box has contents to release.
+struct Label {
+    text: string
+}
+
+Label implements Shape {
+    func area(self) -> i64 {
+        return self.text.len().to<i64>()!
+    }
+}
+
+struct Slot {
+    shape: any Shape?
+}
+
+enum Oops { Bad }
+
+extend Oops {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+func area_or_zero(x: any Shape?) -> i64 {
+    if x? as s {
+        return s.area()
+    }
+    return 0
+}
+
+func pick(n: i64) -> any Shape? {
+    if n == 0 {
+        return Sq { s: 2 }
+    }
+    if n == 1 {
+        return Rect { w: 2, h: 5 }
+    }
+    return none
+}
+
+func checked(n: i64) -> (any Shape)? or Oops {
+    if n < 0 {
+        return Oops.Bad
+    }
+    return Sq { s: n }
+}
+
+test "a local binding" {
+    let b: any Shape? = Sq { s: 3 }
+    assert area_or_zero(b) == 9
+    let n: any Shape? = none
+    assert area_or_zero(n) == 0
+}
+
+test "the parenthesised spelling is the same type" {
+    let b: (any Shape)? = Rect { w: 3, h: 4 }
+    assert area_or_zero(b) == 12
+}
+
+test "a parameter" {
+    assert area_or_zero(Sq { s: 4 }) == 16
+    assert area_or_zero(none) == 0
+}
+
+test "a return" {
+    assert area_or_zero(pick(0)) == 4
+    assert area_or_zero(pick(1)) == 10
+    assert area_or_zero(pick(2)) == 0
+}
+
+test "a struct field" {
+    let full = Slot { shape: Rect { w: 1, h: 7 } }
+    assert area_or_zero(full.shape) == 7
+    let empty = Slot { shape: none }
+    assert area_or_zero(empty.shape) == 0
+    let owned = Slot { shape: Label { text: "four" } }
+    assert area_or_zero(owned.shape) == 4
+}
+
+test "an assignment" {
+    mut b: any Shape? = none
+    assert area_or_zero(b) == 0
+    b = Sq { s: 5 }
+    assert area_or_zero(b) == 25
+}
+
+test "under a result" {
+    assert area_or_zero(checked(3)!) == 9
+    assert checked(-1) is Oops
+}
