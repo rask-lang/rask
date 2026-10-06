@@ -1139,6 +1139,21 @@ impl TypeChecker {
                             }
                             _ => (vec![], vec![], vec![]),
                         };
+                        let is_struct = matches!(self.types.get(*type_id), Some(TypeDef::Struct { .. }));
+
+                        // A name the struct doesn't declare was inferred and
+                        // dropped, so `Pt { x: 1, xx: 2 }` compiled (#1476).
+                        if is_struct {
+                            for field_init in fields.iter() {
+                                if !struct_fields.iter().any(|(n, _)| n == &field_init.name) {
+                                    self.errors.push(TypeError::NoSuchField {
+                                        ty: ty.clone(),
+                                        field: field_init.name.clone(),
+                                        span: field_init.value.span,
+                                    });
+                                }
+                            }
+                        }
 
                         // V5: check private fields in struct literal construction
                         let is_self_type = self.current_self_type.as_ref()
