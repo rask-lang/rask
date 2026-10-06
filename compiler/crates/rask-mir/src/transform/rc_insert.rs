@@ -91,7 +91,7 @@ pub fn insert_rc_ops(
         insert_rc_dec(func, &string_locals, own);
 
         // A returned parameter is handed out, not owned — take a reference for it.
-        retain_returned_params(func, &string_locals);
+        retain_returned_params(func, &string_locals, own);
 
         // So is one handed to a call that keeps it.
         retain_params_handed_over(func, &string_locals, own);
@@ -101,9 +101,251 @@ pub fn insert_rc_ops(
         release_replaced_captures(func, &string_locals);
     }
 
+    // A copy of an aggregate read out of somebody else's storage, given to a
+    // keeper, takes references of its own to what it holds.
+    retain_views_handed_over(func, kept, own);
+
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
     insert_aggregate_release(func, kept, own);
+}
+
+/// The same local, or the same integer constant.
+fn same_operand(a: &MirOperand, b: &MirOperand) -> bool {
+    match (a, b) {
+        (MirOperand::Local(x), MirOperand::Local(y)) => x == y,
+        (MirOperand::Constant(crate::MirConst::Int(x)), MirOperand::Constant(crate::MirConst::Int(y))) => x == y,
+        _ => false,
+    }
+}
+
+/// Does the call keep its argument at `i`, rather than only read it?
+///
+/// From the body when this pass can read one (`kept`), from the declaration
+/// when it can't. Unknown is "keeps": the caller then releases nothing it
+/// passed, which leaks rather than double-frees.
+fn call_keeps_arg(fname: &str, i: usize, kept: &HashMap<String, Vec<bool>>) -> bool {
+    match kept.get(fname) {
+        Some(v) => v.get(i).copied().unwrap_or(true),
+        None => rask_stdlib::mir_metadata::argument_mode(fname, i)
+            != Some(rask_stdlib::mir_metadata::ArgMode::Lent),
+    }
+}
+
+/// Take a reference to what an aggregate holds, before a copy of one read out
+/// of storage this frame doesn't own is handed to something that keeps it.
+///
+/// ```text
+/// for t in tags { out.push(t) }
+/// ```
+///
+/// `t` is a copy of an element of `tags`: same bytes, so the same string
+/// buffer. `Vec_push` keeps what it's given and `out` releases its elements
+/// when it goes, as `tags` does, so both released `name` (#1414). A bare
+/// string element has always had this covered: copying a string local takes
+/// a reference (`insert_rc_inc`). An aggregate copy took none.
+///
+/// A keeper is a call that keeps the argument, a store into memory, or the
+/// caller, when the view is returned.
+///
+/// Only a copy of a *view* — something read out of storage a receiver keeps
+/// owning (`returns_a_view`), a part of one, or a copy of either. A value the
+/// frame owns is handed over instead, and `insert_aggregate_release` stops
+/// releasing it. The checker only lets a Copy value be given away from a
+/// borrow (`mem.parameters/PM6`, `type.sequence/SEQ47`), and a Copy aggregate
+/// holds no container, so what this retains is strings.
+fn retain_views_handed_over(
+    func: &mut MirFunction,
+    kept: &HashMap<String, Vec<bool>>,
+    own: &HashSet<String>,
+) {
+    let ty_of: HashMap<LocalId, MirType> = func
+        .locals
+        .iter()
+        .chain(func.params.iter())
+        .map(|l| (l.id, l.ty.clone()))
+        .collect();
+    let is_aggregate = |l: &LocalId| ty_of.get(l).is_some_and(aggregate_may_hold_string);
+
+    // Names that hold a view, grown to a fixed point through copies, parts
+    // and joins. A join counts only when every way in is a view: retaining
+    // one that might be the frame's own is a leak, and that is the side to
+    // err on.
+    let mut views: HashSet<LocalId> = HashSet::new();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            let found = match &stmt.kind {
+                MirStmtKind::Call { func: fref, dst: Some(dst), args } => {
+                    (crate::own_names::returns_a_view(&fref.name, own) && !args.is_empty())
+                        .then_some(*dst)
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                    views.contains(src).then_some(*dst)
+                }
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { base, .. } | MirRValue::ArrayIndex { base, .. },
+                } => uses::operand_local(base).filter(|b| views.contains(b)).map(|_| *dst),
+                MirStmtKind::Phi { dst, args } => (!args.is_empty()
+                    && args.iter().all(|(_, op)| {
+                        uses::operand_local(op).is_some_and(|l| views.contains(&l))
+                    }))
+                .then_some(*dst),
+                _ => None,
+            };
+            if let Some(d) = found.filter(|d| is_aggregate(d)) {
+                if views.insert(d) {
+                    changed = true;
+                }
+            }
+        }
+    }
+    if views.is_empty() {
+        return;
+    }
+    let hands_out_views = crate::own_names::returns_a_view(&func.name, own);
+
+    let write_backs = WriteBacks::new(func, own);
+
+    for block in &mut func.blocks {
+        let mut insertions: Vec<(usize, LocalId)> = Vec::new();
+        for (si, stmt) in block.statements.iter().enumerate() {
+            match &stmt.kind {
+                MirStmtKind::Call { func: fref, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        if views.contains(&id)
+                            && call_keeps_arg(&fref.name, i, kept)
+                            && !write_backs.writes_back(&fref.name, args, id)
+                        {
+                            insertions.push((si, id));
+                        }
+                    }
+                }
+                // Copied whole into memory that outlives the statement: a
+                // struct literal's field, an array slot.
+                MirStmtKind::Store { value: MirOperand::Local(v), .. }
+                | MirStmtKind::ArrayStore { value: MirOperand::Local(v), .. }
+                    if views.contains(v) && !store_is_narrow(stmt) =>
+                {
+                    insertions.push((si, *v));
+                }
+                _ => {}
+            }
+        }
+        // Returned: the caller is the keeper. Unless this function is itself
+        // one that hands out a view, whose callers release nothing.
+        if let MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+        | MirTerminatorKind::CleanupReturn { value: Some(MirOperand::Local(id)), .. } =
+            &block.terminator.kind
+        {
+            if views.contains(id) && !hands_out_views {
+                insertions.push((block.statements.len(), *id));
+            }
+        }
+        for (idx, local) in insertions.into_iter().rev() {
+            let span = block.statements.get(idx).map(|s| s.span).unwrap_or(block.terminator.span);
+            block.statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
+        }
+    }
+}
+
+/// Recognises a value written back over the slot it was read from.
+///
+/// `v[i].field = x` lowers to: read the element, store into the copy, and
+/// `Vec_set` it back at the same index. So do `with v[i] as e` and
+/// `for mutate e in v`; `for mutate (k, e) in m` hands both halves of one
+/// entry back to `Map_set`. Those move nothing anywhere: the slot gets back
+/// what it held, with the fields the body replaced already released. Taking
+/// a reference for one of them leaks it.
+struct WriteBacks {
+    /// Where a view was read from, as (receiver, index), when it came straight
+    /// out of an indexed read, or is a copy of one that did.
+    read_from: HashMap<LocalId, (MirOperand, MirOperand)>,
+    /// `dst = src` and `dst = src.field`, to walk a read back to where it
+    /// started. The receiver is often read twice — `self.items` once for the
+    /// read and once for the write — so places are compared, not locals.
+    defs: HashMap<LocalId, (LocalId, Option<u32>)>,
+    /// Results of calls that hand out a view.
+    views: HashSet<LocalId>,
+}
+
+impl WriteBacks {
+    fn new(func: &MirFunction, own: &HashSet<String>) -> Self {
+        let mut read_from = HashMap::new();
+        let mut defs = HashMap::new();
+        let mut views = HashSet::new();
+        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+            match &stmt.kind {
+                MirStmtKind::Call { func: fref, dst: Some(dst), args }
+                    if !args.is_empty() && crate::own_names::returns_a_view(&fref.name, own) =>
+                {
+                    views.insert(*dst);
+                    if args.len() == 2 {
+                        read_from.insert(*dst, (args[0].clone(), args[1].clone()));
+                    }
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
+                    defs.insert(*dst, (*src, None));
+                    if let Some(at) = read_from.get(src).cloned() {
+                        read_from.insert(*dst, at);
+                    }
+                }
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { base: MirOperand::Local(b), field_index, .. },
+                } => {
+                    defs.insert(*dst, (*b, Some(*field_index)));
+                }
+                _ => {}
+            }
+        }
+        WriteBacks { read_from, defs, views }
+    }
+
+    /// Where a read starts, and the fields it goes through.
+    fn place(&self, op: &MirOperand) -> Option<(LocalId, Vec<u32>)> {
+        let MirOperand::Local(mut at) = op else { return None };
+        let mut path = Vec::new();
+        let mut steps = 0;
+        while let Some(&(from, field)) = self.defs.get(&at) {
+            if let Some(f) = field {
+                path.push(f);
+            }
+            at = from;
+            steps += 1;
+            if steps > 32 {
+                break;
+            }
+        }
+        path.reverse();
+        Some((at, path))
+    }
+
+    fn same_place(&self, a: &MirOperand, b: &MirOperand) -> bool {
+        same_operand(a, b) || matches!((self.place(a), self.place(b)), (Some(x), Some(y)) if x == y)
+    }
+
+    /// Does this call put `value` back where it was read from?
+    fn writes_back(&self, fname: &str, args: &[MirOperand], value: LocalId) -> bool {
+        if args.len() != 3 || !matches!(args[2], MirOperand::Local(v) if v == value) {
+            return false;
+        }
+        match fname {
+            "Vec_set" => self.read_from.get(&value).is_some_and(|(recv, idx)| {
+                self.same_place(recv, &args[0]) && self.same_place(idx, &args[1])
+            }),
+            "Map_set" => match (self.place(&args[1]), self.place(&args[2])) {
+                (Some((kr, kp)), Some((vr, vp))) => {
+                    kr == vr && self.views.contains(&kr) && kp == [0] && vp == [1]
+                }
+                _ => false,
+            },
+            _ => false,
+        }
+    }
 }
 
 /// Release what a captured string variable held, where a closure writes a new
@@ -516,12 +758,7 @@ fn insert_aggregate_release(
                         // struct's `Vec` came to be freed by nobody
                         // (`os.Command.spawn`), and a struct handed to `m.get`
                         // left its strings to nobody (#1394).
-                        let lent = match kept.get(&fref.name) {
-                            Some(v) => !v.get(i).copied().unwrap_or(true),
-                            None => rask_stdlib::mir_metadata::argument_mode(&fref.name, i)
-                                == Some(rask_stdlib::mir_metadata::ArgMode::Lent),
-                        };
-                        if lent {
+                        if !call_keeps_arg(&fref.name, i, kept) {
                             // It may still write into it: a `mutate`
                             // parameter is the caller's slot, by address.
                             if aggregates.contains(&id) {
@@ -842,9 +1079,16 @@ fn slot_is_releasable(ty: &MirType) -> bool {
 /// with one reference — `let b = id(a)` then frees it twice. Anything else
 /// returned is a value this function owns, and returning it moves that
 /// ownership out, which is why `insert_rc_dec` skips the release there.
-fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId]) {
-    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+///
+/// A string read out of a container is the same: `return names[0]` hands
+/// the caller the vector's own reference, and the caller releases it as its
+/// own. Unless this function is one whose callers expect a view.
+fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSet<String>) {
     let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
+    let mut params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+    if !crate::own_names::returns_a_view(&func.name, own) {
+        params.extend(string_views(func, &strings, own));
+    }
 
     for block in &mut func.blocks {
         let returned = match &block.terminator.kind {
@@ -858,6 +1102,29 @@ fn retain_returned_params(func: &mut MirFunction, string_locals: &[LocalId]) {
         let span = block.terminator.span;
         block.statements.push(MirStmt::new(MirStmtKind::RcInc { local: returned }, span));
     }
+}
+
+/// String locals that point into storage a receiver keeps: the result of a
+/// call that hands out a view.
+///
+/// Not copies of one. `insert_rc_inc` gives every copy a reference of its own,
+/// so a copy is the frame's to hand on; the call result is the only name that
+/// holds none.
+fn string_views(func: &MirFunction, strings: &HashSet<LocalId>, own: &HashSet<String>) -> HashSet<LocalId> {
+    func.blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::Call { func: fref, dst: Some(dst), args }
+                if strings.contains(dst)
+                    && !args.is_empty()
+                    && crate::own_names::returns_a_view(&fref.name, own) =>
+            {
+                Some(*dst)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Take a reference before giving a borrowed string parameter to a call that

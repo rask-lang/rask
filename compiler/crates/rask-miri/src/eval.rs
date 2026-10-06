@@ -307,6 +307,7 @@ impl MiriEngine {
             MirStmtKind::RcInc { .. }
             | MirStmtKind::RcDec { .. }
             | MirStmtKind::RcDecContents { .. }
+            | MirStmtKind::RcIncContents { .. }
             | MirStmtKind::ReleaseSlot { .. } => {}
         }
         Ok(())

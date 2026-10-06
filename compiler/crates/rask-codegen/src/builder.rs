@@ -1269,6 +1269,26 @@ impl<'a> FunctionBuilder<'a> {
                 Self::release_strings_mir(builder, base, 0, &ty, ctx, 0)?;
             }
 
+            // A copy of an aggregate handed to a keeper takes a reference to
+            // what it holds. The element map is the one a container of this
+            // type would carry, so this retains exactly what a cloned vector
+            // would retain per element; `collect_element_offsets` registered it.
+            MirStmtKind::RcIncContents { local } => {
+                let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
+                    return Ok(());
+                };
+                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                let Some(offs) = Self::element_owned_offsets(Some(&ty), ctx).filter(|o| !o.is_empty()) else {
+                    return Ok(());
+                };
+                let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
+                let entries = Self::element_offsets_global(builder, &offs, ctx);
+                let count = builder.ins().iconst(types::I64, offs.len() as i64);
+                let retain_ref = ctx.func_refs.get("rask_owned_retain_all")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_owned_retain_all".to_string()))?;
+                builder.ins().call(*retain_ref, &[base, entries, count]);
+            }
+
             // One slot of an aggregate, about to be written over. The same walk
             // `RcDecContents` does, told where to start and what it will find
             // there instead of reading it off a local's type.

@@ -819,6 +819,9 @@ fn remap_stmt(
         MirStmtKind::RcDecContents { local } => MirStmtKind::RcDecContents {
             local: local_map.get(local).copied().unwrap_or(*local),
         },
+        MirStmtKind::RcIncContents { local } => MirStmtKind::RcIncContents {
+            local: local_map.get(local).copied().unwrap_or(*local),
+        },
         MirStmtKind::ReleaseSlot { addr, offset, ty } => MirStmtKind::ReleaseSlot {
             addr: local_map.get(addr).copied().unwrap_or(*addr),
             offset: *offset,

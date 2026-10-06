@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A struct holding one string is Copy. Copying one out of a vector and handing
+// the copy to something that keeps it (`out.push(t)`, a struct literal, a
+// `return`) shared the element's string without taking a reference, so both
+// owners released it: a double free under valgrind (#1414). Writing an element
+// back over its own slot (`v[0].n = 1`, `for mutate`) moves nothing and must
+// not take one either, or the string leaks.
+
+struct Tag {
+    name: string
+}
+
+struct Holder {
+    tag: Tag
+}
+
+struct Counted {
+    name: string
+    n: i64
+}
+
+func heap(label: string, i: i64) -> string {
+    return "{label} {i}, long enough to live on the heap"
+}
+
+func first(tags: Vec<Tag>) -> Tag {
+    return tags[0]
+}
+
+func first_name(names: Vec<string>) -> string {
+    return names[0]
+}
+
+test "an element pushed into a second vector" {
+    let tags: Vec<Tag> = [Tag { name: heap("first", 1) }, Tag { name: heap("second", 2) }]
+    mut out: Vec<Tag> = Vec.new()
+    for t in tags {
+        out.push(t)
+    }
+    out.push(tags[1])
+    assert out.len() == 3
+    assert out[2].name == tags[1].name
+}
+
+test "an identity map collects copies of its own" {
+    let tags: Vec<Tag> = [Tag { name: heap("first", 1) }, Tag { name: heap("second", 2) }]
+    let copied = tags.map(|t| t).to_vec()
+    assert copied.len() == 2
+    assert copied[0].name == heap("first", 1)
+}
+
+test "an element stored into a struct literal" {
+    let tags: Vec<Tag> = [Tag { name: heap("first", 1) }]
+    mut hs: Vec<Holder> = Vec.new()
+    for t in tags {
+        hs.push(Holder { tag: t })
+    }
+    assert hs[0].tag.name == tags[0].name
+}
+
+test "an element returned out of a borrowed vector" {
+    let tags: Vec<Tag> = [Tag { name: heap("first", 1) }]
+    let t = first(tags)
+    assert t.name == tags[0].name
+    let names: Vec<string> = [heap("name", 1)]
+    let n = first_name(names)
+    assert n == names[0]
+}
+
+test "writing an element back over its own slot" {
+    mut items: Vec<Counted> = [Counted { name: heap("item", 1), n: 1 }]
+    items[0].n = 2
+    for mutate c in items {
+        c.n += 1
+    }
+    with items[0] as c {
+        c.n += 1
+    }
+    mut m: Map<string, Counted> = Map.new()
+    m.insert("a", Counted { name: heap("entry", 1), n: 5 })
+    for mutate (k, c) in m {
+        c.n += 10
+    }
+    assert items[0].n == 4
+    assert m.get("a")!.n == 15
+}

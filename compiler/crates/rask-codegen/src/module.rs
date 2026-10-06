@@ -944,6 +944,19 @@ impl CodeGenerator {
             self.func_ids.insert("rask_owned_release_all".to_string(), id);
         }
 
+        // rask_owned_retain_all(slot: i64, entries: i64, count: i64) -> void —
+        // the retain walk over the same list, for `RcIncContents`.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_owned_retain_all", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_owned_retain_all".to_string(), id);
+        }
+
         // rask_heap_field_release(slot: i64, entries: i64, count: i64) -> void
         // — a `Heap<T>` field: release what the block holds, then free it. The
         // entries describe a `T`, so a `SELF` inside them restarts against the
@@ -2371,6 +2384,22 @@ fn collect_element_offsets(
     let mut lists = Vec::new();
     for block in &mir_fn.blocks {
         for stmt in &block.statements {
+            // A retained aggregate walks the list its type would describe a
+            // container element by.
+            if let rask_mir::MirStmtKind::RcIncContents { local } = &stmt.kind {
+                let ty = mir_fn
+                    .locals
+                    .iter()
+                    .chain(mir_fn.params.iter())
+                    .find(|l| l.id == *local)
+                    .map(|l| l.unerased.clone().unwrap_or_else(|| l.ty.clone()));
+                if let Some(offs) = ty.and_then(|t| {
+                    crate::elem_offsets::owned_offsets(&t, struct_layouts, enum_layouts, names)
+                }) {
+                    lists.push(offs);
+                }
+                continue;
+            }
             let rask_mir::MirStmtKind::Call { func, args, .. } = &stmt.kind else { continue };
             let Some((leading, tags)) = rask_mir::elem_strs::ctor_shape(&func.name) else {
                 continue;

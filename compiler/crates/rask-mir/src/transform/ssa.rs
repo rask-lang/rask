@@ -464,7 +464,8 @@ fn rename_stmt(
         }
         MirStmtKind::RcInc { local }
         | MirStmtKind::RcDec { local }
-        | MirStmtKind::RcDecContents { local } => {
+        | MirStmtKind::RcDecContents { local }
+        | MirStmtKind::RcIncContents { local } => {
             *local = current_version(*local, version_stack, num_orig_locals);
         }
         MirStmtKind::ReleaseSlot { addr, .. } => {

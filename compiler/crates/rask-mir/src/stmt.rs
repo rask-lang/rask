@@ -168,6 +168,22 @@ pub enum MirStmtKind {
     RcDecContents {
         local: LocalId,
     },
+    /// Take a reference to everything an aggregate holds, for a copy of it
+    /// that is about to be handed to a keeper.
+    ///
+    /// The counterpart of `RcDecContents`. A copy of a struct read out of
+    /// storage somebody else owns — an element of a vector, say — shares that
+    /// storage's strings. Handing the copy to `out.push(t)` gives `out` a second
+    /// owner of each, and both release them (#1414). `RcInc` can't do it for
+    /// the same reason `RcDec` can't release one: it takes a value, and where
+    /// the strings sit is the layout's business.
+    ///
+    /// Codegen walks the same element map a container's own retain uses, so
+    /// a copy of an aggregate is retained exactly the way a cloned vector
+    /// retains its elements.
+    RcIncContents {
+        local: LocalId,
+    },
     /// Release what a slot holds, just before something else is written over it.
     ///
     /// `h.list = fresh` replaces a container the struct owned, and the struct's
