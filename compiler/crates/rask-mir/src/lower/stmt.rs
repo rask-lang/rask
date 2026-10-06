@@ -385,6 +385,15 @@ impl<'a> MirLowerer<'a> {
 
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
         self.builder.set_span(stmt.span);
+        // The block already ended — a `{ … }`, `unsafe` or `with` body before
+        // this statement finished with `return`. Unreachable code goes in a
+        // block of its own: appended to the ended one, its own terminator
+        // replaced the `return`, and `with v[0] as s { return s }` returned
+        // whatever the code after it did.
+        if !self.builder.current_block_unterminated() {
+            let dead = self.builder.create_block();
+            self.builder.switch_to_block(dead);
+        }
         match &stmt.kind {
             StmtKind::Expr(e) => {
                 self.lower_expr(e)?;

@@ -1,0 +1,42 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A `return` as the last statement of a `{ … }`, `unsafe` or `with` body was
+// lost natively. The code after the block went into the block the `return`
+// had already ended and replaced it, so the function returned whatever came
+// next: `bare()` answered -1 where the interpreter answered 5.
+
+func bare() -> i64 {
+    {
+        return 5
+    }
+    return -1
+}
+
+func in_unsafe() -> i64 {
+    unsafe {
+        return 6
+    }
+    return -1
+}
+
+func from_with(mutate v: Vec<i64>) -> i64 {
+    with v[0] as n {
+        n = n + 1
+        return n
+    }
+    return -1
+}
+
+test "return at the end of a bare block" {
+    assert bare() == 5
+}
+
+test "return at the end of an unsafe block" {
+    assert in_unsafe() == 6
+}
+
+test "return at the end of a with block writes back first" {
+    mut v: Vec<i64> = [10]
+    assert from_with(mutate v) == 11
+    assert v[0] == 11
+}
