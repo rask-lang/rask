@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Compile Error: a `take self` method called through a link (E0908).
+// Compile Error: a `take self` method called through a link (E0910).
 //
 // A link reads like its node, so `l.method()` is the node's method
 // (mem.racks/RK2). The rack owns the node for its whole life (RK1), and a

@@ -1526,7 +1526,7 @@ impl ToDiagnostic for rask_types::TypeError {
 
             TakeSelfThroughLink { method, node, span } => {
                 Diagnostic::error(format!("`{}` takes its `{}`, and a link only reaches one", method, node))
-                    .with_code("E0908")
+                    .with_code("E0910")
                     .with_primary(*span, format!("`{}` would move the node out of its rack", method))
                     .with_help(format!("call it on a `{}` you own; a node's life ends with `rack.delete(link)`", node))
                     .with_fix(format!("if `{}` doesn't need to consume the node, declare it `func {}(self, …)` or `mutate self`", method, method))
