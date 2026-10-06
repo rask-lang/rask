@@ -206,6 +206,23 @@ impl TypeChecker {
                     self.node_types.insert(expr.id, ty.clone());
                     return ty;
                 }
+                // A `Vec` slot whose element type is still open — a generic
+                // struct's `Vec<T>` field before anything has said what `T`
+                // is. The slot still says which collection; only the element
+                // type has to come from the elements. Without this the literal
+                // stayed a fixed array and `Bag { items: ["a", "b"] }` failed
+                // with "expected `Vec<_>`, found `[string; 2]`" (#1437).
+                if let Some(open_elem) = self.open_vec_elem(expected) {
+                    let own = self.infer_expr(expr);
+                    if let Type::Array { elem, .. } = self.ctx.apply(&own) {
+                        if let Err(e) = self.unify(&open_elem, &elem, expr.span) {
+                            self.errors.push(e);
+                        }
+                    }
+                    let ty = expected.clone();
+                    self.node_types.insert(expr.id, ty.clone());
+                    return ty;
+                }
             }
             _ => {}
         }
@@ -241,6 +258,20 @@ impl TypeChecker {
             return None;
         }
         Some(elem)
+    }
+
+    /// The element variable of a `Vec` destination whose element type hasn't
+    /// been decided yet. `collection_elem_type` covers the decided case.
+    fn open_vec_elem(&self, expected: &Type) -> Option<Type> {
+        let args = match expected {
+            Type::Generic { base, args } if self.types.type_name(*base) == "Vec" => args,
+            Type::UnresolvedGeneric { name, args } if name == "Vec" => args,
+            _ => return None,
+        };
+        match args.first()? {
+            GenericArg::Type(t) if matches!(self.ctx.apply(t), Type::Var(_)) => Some((**t).clone()),
+            _ => None,
+        }
     }
 
     /// A generic *enum* named with its type arguments written out —
