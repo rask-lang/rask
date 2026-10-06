@@ -139,6 +139,10 @@ pub struct OwnershipChecker<'a> {
     /// the body is the #804 error one door along. Only live while the body is
     /// being walked.
     borrowed_captures: HashMap<String, Span>,
+    /// Which of the borrowed and `mutate` parameters belong to the closure
+    /// being walked. They follow the function rules, but the fix differs: a
+    /// closure parameter can't be `take` (mem.closures/CP4).
+    closure_params: HashSet<String>,
     /// `mutate` parameters: name → declaration span. Consuming one is allowed —
     /// that's what exclusive access is for — but the value has to be back before
     /// the function returns (#815).
@@ -349,6 +353,7 @@ impl<'a> OwnershipChecker<'a> {
             loop_exits: Vec::new(),
             refills: HashMap::new(),
             borrowed_captures: HashMap::new(),
+            closure_params: HashSet::new(),
             mutate_params: HashMap::new(),
             ensure_registered: HashSet::new(),
             ensure_spans: HashMap::new(),
@@ -2601,9 +2606,25 @@ impl<'a> OwnershipChecker<'a> {
                 self.resource_bindings.clear();
                 self.ensure_registered.clear();
 
-                // Register closure params as owned
+                // A closure parameter is a parameter: borrowed unless `mutate`
+                // (mem.closures/CP1, CP2), and there is no `take` (CP4). So the
+                // function rules apply — it can't be given away or returned
+                // whole. Registered as owned, `|p: Vec<i64>| { return p }`
+                // handed the caller its own vector back under a second name
+                // (#1458).
+                let saved_borrowed_params = self.borrowed_params.clone();
+                let saved_mutate_params = self.mutate_params.clone();
+                let saved_closure_params = self.closure_params.clone();
                 for p in params {
                     self.bindings.insert(p.name.clone(), BindingState::Owned);
+                    self.closure_params.insert(p.name.clone());
+                    self.borrowed_params.remove(&p.name);
+                    self.mutate_params.remove(&p.name);
+                    if p.is_mutate {
+                        self.mutate_params.insert(p.name.clone(), p.name_span);
+                    } else {
+                        self.borrowed_params.insert(p.name.clone(), (p.name_span, false));
+                    }
                 }
 
                 // And what each one's type is. `|x|` writes no annotation, so
@@ -2659,6 +2680,23 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(body);
                 if !matches!(body.kind, ExprKind::Block(_)) {
                     self.check_borrowed_capture_escape(body);
+                    // The implicit return of an expression body, held to the
+                    // same rule as `return`, for the closure's own parameters.
+                    // An enclosing function's parameter reached here is a
+                    // capture, which the line above answers for.
+                    let in_scope_borrowed = std::mem::take(&mut self.borrowed_params);
+                    let in_scope_mutate = std::mem::take(&mut self.mutate_params);
+                    for p in params {
+                        if let Some(entry) = in_scope_borrowed.get(&p.name) {
+                            self.borrowed_params.insert(p.name.clone(), *entry);
+                        }
+                        if let Some(entry) = in_scope_mutate.get(&p.name) {
+                            self.mutate_params.insert(p.name.clone(), *entry);
+                        }
+                    }
+                    self.check_borrowed_field_escape(body);
+                    self.borrowed_params = in_scope_borrowed;
+                    self.mutate_params = in_scope_mutate;
                 }
 
                 // Check resource consumption at closure exit
@@ -2670,6 +2708,9 @@ impl<'a> OwnershipChecker<'a> {
                 self.resource_bindings = saved_resources;
                 self.ensure_registered = saved_ensure;
                 self.borrowed_captures = saved_borrowed_captures;
+                self.borrowed_params = saved_borrowed_params;
+                self.mutate_params = saved_mutate_params;
+                self.closure_params = saved_closure_params;
 
                 // A carrying closure took the resource, so the outer scope
                 // stops owing it. A borrowing one still owes what it lent.
@@ -4110,10 +4151,11 @@ impl<'a> OwnershipChecker<'a> {
         self.errors.push(OwnershipError {
             kind: OwnershipErrorKind::BorrowedFieldEscapes {
                 path,
-                root,
                 field_ty: self.resource_type_display(&ty),
                 declared_at,
                 is_mutate,
+                of_closure: self.closure_params.contains(&root),
+                root,
             },
             span: expr.span,
         });
@@ -6409,6 +6451,7 @@ impl<'a> OwnershipChecker<'a> {
                     declared_at,
                     is_mutate,
                     sink: sink.map(str::to_string),
+                    of_closure: self.closure_params.contains(name),
                 },
                 span,
             });

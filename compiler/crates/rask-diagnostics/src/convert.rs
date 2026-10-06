@@ -3416,8 +3416,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
-            BorrowedFieldEscapes { path, root, field_ty, declared_at, is_mutate } => {
+            BorrowedFieldEscapes { path, root, field_ty, declared_at, is_mutate, of_closure } => {
                 let mode = if *is_mutate { "`mutate` borrow" } else { "borrow" };
+                // A closure has no `take` parameter (mem.closures/CP4), so the
+                // ownership fix is a function instead.
+                let fix = if *of_closure {
+                    format!(
+                        "return a copy — `{}.clone()` — or, to hand the value over, \
+                         make this a function with `take {}: …`",
+                        path, root
+                    )
+                } else {
+                    format!(
+                        "return a copy — `{}.clone()` — or take the {}: `{}`, \
+                         so the call site shows the value going",
+                        path,
+                        if root == "self" { "receiver" } else { "parameter" },
+                        if root == "self" { "take self".to_string() } else { format!("take {}: …", root) }
+                    )
+                };
                 Diagnostic::error(format!(
                     "`{}` belongs to the caller — returning it hands out a second name for it",
                     path
@@ -3425,13 +3442,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_code("E0872")
                 .with_primary(self.span, format!("`{}` isn't Copy, so this is a view, not a copy", field_ty))
                 .with_secondary(*declared_at, format!("`{}` is a {} — the caller keeps it", root, mode))
-                .with_fix(format!(
-                    "return a copy — `{}.clone()` — or take the {}: `{}`, \
-                     so the call site shows the value going",
-                    path,
-                    if root == "self" { "receiver" } else { "parameter" },
-                    if root == "self" { "take self".to_string() } else { format!("take {}: …", root) }
-                ))
+                .with_fix(fix)
                 .with_why(
                     "a parameter without `take` is the caller's value on loan. It, \
                      a field of it, or a payload matched out of it is a view that \
@@ -3689,7 +3700,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     ))
             }
 
-            ConsumeBorrowedParam { name, declared_at, is_mutate, sink } => {
+            ConsumeBorrowedParam { name, declared_at, is_mutate, sink, of_closure } => {
                 let how = if *is_mutate { "`mutate` parameter" } else { "borrowed parameter" };
                 let label = match sink {
                     Some(s) => format!("`{}` takes ownership, and `{}` isn't yours to give", s, name),
@@ -3704,7 +3715,15 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     .with_code("E0835")
                     .with_primary(self.span, label)
                     .with_secondary(*declared_at, format!("`{}` is declared as a {}", name, how))
-                    .with_fix(format!("take it: `take {}: …` in the signature — then the caller can see it goes", name))
+                    .with_fix(if *of_closure {
+                        // mem.closures/CP4: no `take` between the pipes.
+                        format!(
+                            "hand over a copy — `{}.clone()` — or make this a function with `take {}: …`; a closure parameter can't be `take`",
+                            name, name
+                        )
+                    } else {
+                        format!("take it: `take {}: …` in the signature — then the caller can see it goes", name)
+                    })
                     .with_why(format!(
                         "the caller keeps a parameter it didn't mark `take` and goes on using it, so consuming it here would leave them holding something that's gone. For a `@resource` that's a second close of a real handle.{} [mem.parameters/PM1, mem.linear/L1]",
                         mutate_note

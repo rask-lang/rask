@@ -489,6 +489,14 @@ def skips():
             "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed (E0907)",
         ("closure", "map"):
             "mem.closures/CM1 — a borrowing closure can't hand out what it borrowed (E0907)",
+        # A closure parameter is a borrow (CP1) and can't be `take` (CP4), so
+        # the cell's `return p` hands the caller its own value back under a
+        # second name. Rejected as E0872 since #1458; the cells were green
+        # only because the parameter had been treated as owned.
+        ("closure_param", "vec"):
+            "mem.closures/CP1, CP4 — a closure can't return the parameter it borrowed (E0872)",
+        ("closure_param", "map"):
+            "mem.closures/CP1, CP4 — a closure can't return the parameter it borrowed (E0872)",
     }
 
 

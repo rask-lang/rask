@@ -443,3 +443,4 @@ t_returned_closure_captures.rk  # 2 allocations — a carried Vec in a closure e
 # body only borrows it, so nobody frees it (#1468). Both files pass a Vec to a
 # closure that returns a clone of it.
 t_clone_of_borrowed_value.rk  # 2 allocations — the Vec handed to a closure call, #1468
+t_closure_param_copy_out.rk  # 2 allocations — the Vec handed to a closure call, #1468

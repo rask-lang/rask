@@ -88,6 +88,8 @@ pub enum OwnershipErrorKind {
         /// Where the parameter is declared, to point at and suggest `take` on.
         declared_at: Span,
         is_mutate: bool,
+        /// A closure's parameter, which can't be `take` (mem.closures/CP4).
+        of_closure: bool,
     },
 
     /// mem.heap/HP3 with mem.linear/L5: `drop(x.field)` on an aggregate's field.
@@ -199,6 +201,8 @@ pub enum OwnershipErrorKind {
         is_mutate: bool,
         /// What the value was being handed to, when it has a name.
         sink: Option<String>,
+        /// A closure's parameter, which can't be `take` (mem.closures/CP4).
+        of_closure: bool,
     },
 
     /// mem.parameters/PM2 with PM6: a `mutate` parameter consumed and not

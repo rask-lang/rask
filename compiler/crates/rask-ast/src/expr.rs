@@ -339,6 +339,8 @@ pub struct WithBinding {
 #[derive(Debug, Clone)]
 pub struct ClosureParam {
     pub name: String,
+    /// Where the name is written, for diagnostics that point at the declaration.
+    pub name_span: Span,
     pub ty: Option<crate::ty::TypeExpr>,
     pub is_mutate: bool,
     pub is_take: bool,

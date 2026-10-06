@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure handing back a copy of the parameter it borrowed.
+//
+// `|p: Vec<i64>| { return p }` used to be accepted and gave the caller its
+// own vector back under a second name, so a push through the result grew the
+// caller's `let` (#1458). It's rejected now (closure parameters are borrows,
+// mem.closures/CP1); `p.clone()` is the way to hand one out, and the copy has
+// to be independent of what was lent.
+
+struct Bag {
+    items: Vec<string>
+}
+
+test "a cloned vector is its own" {
+    let v: Vec<i64> = [1, 2]
+    let f = |p: Vec<i64>| {
+        return p.clone()
+    }
+    mut w = f(v)
+    w.push(3)
+    assert v.len() == 2
+    assert w.len() == 3
+}
+
+test "expression body" {
+    let b = Bag { items: ["x"] }
+    let f = |p: Bag| p.clone()
+    mut c = f(b)
+    c.items.push("y")
+    assert b.items.len() == 1
+    assert c.items.len() == 2
+    assert c.items[0] == "x"
+}
+
+test "a Copy parameter copies" {
+    let f = |n: i64| n
+    assert f(41) + 1 == 42
+}

@@ -499,6 +499,7 @@ impl TypeSubstitutor {
                         .iter()
                         .map(|p| ClosureParam {
                             name: p.name.clone(),
+                            name_span: p.name_span,
                             ty: p.ty.as_ref().map(|t| self.substitute_type(t)),
                             is_mutate: false,
                             is_take: false,

@@ -4557,6 +4557,7 @@ impl Parser {
             // (CP3), not a parameter — and is not handled by this loop.
             let mutate_span = self.current().span;
             let is_mutate = self.match_token(&TokenKind::MutateKw);
+            let name_span = self.current().span;
             let name = self.expect_ident()?;
             let ty = if self.match_token(&TokenKind::Colon) {
                 Some(self.parse_type_name()?)
@@ -4593,7 +4594,7 @@ impl Parser {
             } else {
                 None
             };
-            params.push(ClosureParam { name, ty, is_mutate, is_take: false });
+            params.push(ClosureParam { name, name_span, ty, is_mutate, is_take: false });
             if !self.match_token(&TokenKind::Comma) { break; }
         }
 
