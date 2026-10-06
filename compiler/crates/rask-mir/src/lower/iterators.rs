@@ -240,7 +240,8 @@ impl<'a> MirLowerer<'a> {
         match method {
             "to_vec" if args.is_empty() => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let result = self.lower_iter_collect(&chain)?;
+                    let elem = self.container_elem_type(_full_expr.id, 0);
+                    let result = self.lower_iter_collect(&chain, elem)?;
                     return Ok(Some(result));
                 }
             }
@@ -263,7 +264,9 @@ impl<'a> MirLowerer<'a> {
                 if let Some(chain) = self.try_parse_iter_chain(object)
                     .filter(|c| !c.adapters.is_empty() || self.source_is_a_sequence(c.source))
                 {
-                    let (vec_op, _) = self.lower_iter_collect(&chain)?;
+                    // `join` is over strings, and the collected ones are the
+                    // temporary vector's to release.
+                    let (vec_op, _) = self.lower_iter_collect(&chain, Some(MirType::String))?;
                     let (sep_op, _) = self.lower_expr(&args[0].expr)?;
                     let dst = self.builder.alloc_temp(MirType::String);
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
@@ -1336,9 +1339,22 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// .collect() — fused loop that pushes each result into a new Vec.
+    ///
+    /// `elem` is the checker's element type, with its containers named, for
+    /// the vector to describe its elements by when they're its own. Without it
+    /// `Vec_free` thought they owned nothing: `v.map(|x| mk(x)).to_vec()` over
+    /// a `mk` returning a `Vec` leaked every inner vector (#1412).
+    ///
+    /// They're its own when a `map` made them (SEQ47: `map` is the ownership
+    /// boundary). Workaround: a chain of only `filter`/`take`/`skip` still
+    /// builds a vector that owns nothing, because nothing on that path takes a
+    /// reference per element — `filter` retains through its closure's
+    /// parameter, `take` doesn't retain at all — so describing those elements
+    /// releases what the source still holds (#1419).
     pub(super) fn lower_iter_collect(
         &mut self,
         chain: &super::IterChain<'_>,
+        elem: Option<MirType>,
     ) -> Result<TypedOperand, LoweringError> {
         let result_vec = self.builder.alloc_temp(MirType::I64);
         // The element size isn't known until the adapters have been lowered —
@@ -1359,12 +1375,15 @@ impl<'a> MirLowerer<'a> {
         )?;
         let elem_size = Self::mir_slot_size(&final_ty);
         if elem_size > 0 {
-            self.builder.set_call_args(
-                vec_new_pos.0,
-                vec_new_pos.1,
-                "Vec_new",
-                vec![MirOperand::Constant(MirConst::Int(elem_size))],
-            );
+            let mut args = vec![MirOperand::Constant(MirConst::Int(elem_size))];
+            let owns_items = chain
+                .adapters
+                .iter()
+                .any(|a| matches!(a, super::IterAdapter::Map { .. }));
+            if owns_items {
+                args.push(crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())));
+            }
+            self.builder.set_call_args(vec_new_pos.0, vec_new_pos.1, "Vec_new", args);
             self.collected_elem_types.insert(result_vec, final_ty);
         }
 
