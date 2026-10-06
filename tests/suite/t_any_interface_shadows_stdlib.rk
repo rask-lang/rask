@@ -46,3 +46,17 @@ test "the program's any Writer takes the program's type" {
     let all: Vec<any Writer> = [Note { text: "c" }]
     assert all[0].tag() == "note:c"
 }
+
+// `any io.Writer` names the stdlib module's Writer outright, so it takes a
+// Buffer here even though the program's Writer has the bare name. A call
+// through it lowers against the stdlib's vtable (#1309).
+func into(w: any io.Writer, data: string) -> bool {
+    w.write_text(data) catch _ => { return false }
+    return true
+}
+
+test "the qualified any io.Writer is the stdlib's" {
+    mut dst = Buffer.new()
+    assert into(dst, "hey")
+    assert dst.to_bytes().len() == 3
+}

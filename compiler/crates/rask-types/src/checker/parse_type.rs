@@ -49,10 +49,7 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
         // holds it by — the same unwrapping `resolve_named` does for
         // `io.Buffer`. Without it, `any io.Writer` named an interface nothing
         // could satisfy.
-        TypeExpr::Any(inner) => {
-            let written = inner.name().unwrap_or_else(|| inner.to_string());
-            Ok(types.interface_object(&unqualify_interface(&written, types)))
-        }
+        TypeExpr::Any(inner) => Ok(types.interface_object_written(inner)),
         TypeExpr::Int(n) => Err(TypeError::GenericError(
             format!("`{}` is a value, not a type", n),
             Span::new(0, 0),
@@ -175,28 +172,6 @@ fn generic_named(name: &str, args: Vec<GenericArg>, types: &TypeTable) -> Type {
         None => Type::UnresolvedGeneric { name: name.to_string(), args },
     }
 }
-
-/// The name an interface is registered under, for a possibly module-qualified
-/// spelling. `io.Writer` is `Writer` when that is what the table holds, or
-/// `io$Writer` when the module prefix was folded into the key. Anything the
-/// table doesn't know keeps the spelling it was written with, so the
-/// "no interface named `io.Writer`" message still names what the author typed.
-fn unqualify_interface(name: &str, types: &TypeTable) -> String {
-    if types.get_type_id(name).is_some() {
-        return name.to_string();
-    }
-    let Some(dot) = name.find('.') else { return name.to_string() };
-    let tail = &name[dot + 1..];
-    if types.get_type_id(tail).is_some() {
-        return tail.to_string();
-    }
-    let prefixed = format!("{}${}", &name[..dot], tail);
-    if types.get_type_id(&prefixed).is_some() {
-        return prefixed;
-    }
-    name.to_string()
-}
-
 
 /// AT3: does `head.tail` name an associated type rather than a module or C type?
 ///

@@ -41,11 +41,12 @@ func hail(g: any Greeter) -> string {
     return g.greet()
 }
 
-// A qualified interface in a parameter, which is what the issue is about. It parses
-// and it checks — `io.Buffer` conforms — and it stops there for now: the rest of
-// the spelling isn't built. Calling it fails to lower natively (#1309). So this
-// is a signature that has to compile, not a call.
+// A qualified interface in a parameter, which is what the issue is about, and a
+// call through it. Lowering named the parameter's interface from its written
+// text, "io.Writer", which no vtable is filed under, so the call couldn't be
+// lowered natively (#1309). It now asks the type table, as the checker does.
 func sink(w: any io.Writer, data: string) -> bool {
+    w.write_text(data) catch _ => { return false }
     return true
 }
 
@@ -78,6 +79,9 @@ func send<W: Writer>(w: W, data: string) -> bool {
 // And inside a generic argument, which is the other place the old copy of the
 // parse would have stopped.
 func any_writers(ws: Vec<any io.Writer>) -> bool {
+    for w in ws {
+        w.write_text("x") catch _ => { return false }
+    }
     return ws.len() > 0
 }
 
@@ -102,4 +106,14 @@ test "a qualified conformance header satisfies the module's interface" {
     assert !send(t, "")
     let n = t.write([1u8, 2u8, 3u8]) catch _ => -1
     assert n == 5
+}
+
+test "a call through `any io.Writer`" {
+    mut buf = io.Buffer.new()
+    assert sink(buf, "hello")
+    assert sink(Tally { seen: 0 }, "hi")
+    assert !sink(Tally { seen: 0 }, "")
+    mut ws: Vec<any io.Writer> = Vec.new()
+    ws.push(Tally { seen: 0 })
+    assert any_writers(ws)
 }

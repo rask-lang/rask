@@ -634,15 +634,7 @@ impl TypeTable {
     /// `io.Writer` → `Writer`, the name the module's interface is held under.
     /// The same unwrapping `io.Buffer` gets as a type (#1310).
     pub fn conformance_key(interface: &TypeExpr) -> String {
-        match interface {
-            TypeExpr::Named { path, .. } => match path.as_slice() {
-                [module, rest @ ..] if !rest.is_empty() && rask_stdlib::modules::is_module(module) => {
-                    rest.join(".")
-                }
-                _ => path.join("."),
-            },
-            _ => String::new(),
-        }
+        Self::stdlib_module_member(interface).unwrap_or_else(|| interface.name().unwrap_or_default())
     }
 
     /// GT2/GT3: the key a conformance is filed under — the interface *with its
@@ -700,6 +692,65 @@ impl TypeTable {
             .get_type_id(name)
             .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })));
         Type::InterfaceObject { interface_name: name.to_string(), decl }
+    }
+
+    /// `any I` for the interface reference as written. A module-qualified
+    /// spelling names the module's interface: `io.Writer` is the stdlib's
+    /// `Writer` even where the program declares one of its own, the same way
+    /// a stdlib signature's `any Writer` is (#1426). Otherwise the name is
+    /// looked up as the table holds it — `io$Writer` when a package folded the
+    /// module prefix into the key. Anything the table doesn't know keeps the
+    /// spelling it was written with, so "no interface named `io.Writer`" still
+    /// names what the author typed.
+    pub fn interface_object_written(&self, written: &TypeExpr) -> Type {
+        if let Some(name) = Self::stdlib_module_member(written) {
+            let stdlib = self
+                .stdlib_type_names
+                .get(&name)
+                .copied()
+                .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })));
+            if let Some(id) = stdlib {
+                return Type::InterfaceObject { interface_name: name, decl: Some(id) };
+            }
+        }
+        self.interface_object(&self.interface_name_written(written))
+    }
+
+    /// `Writer` for `io.Writer`: the name a stdlib module's member is held
+    /// under. `None` for anything not written through a stdlib module.
+    pub fn stdlib_module_member(written: &TypeExpr) -> Option<String> {
+        match written {
+            TypeExpr::Named { path, .. } => match path.as_slice() {
+                [module, rest @ ..] if !rest.is_empty() && rask_stdlib::modules::is_module(module) => {
+                    Some(rest.join("."))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn interface_name_written(&self, written: &TypeExpr) -> String {
+        let path: Vec<String> = match written {
+            TypeExpr::Named { path, .. } => path.clone(),
+            other => vec![other.to_string()],
+        };
+        let joined = path.join(".");
+        match path.as_slice() {
+            _ if self.get_type_id(&joined).is_some() => joined,
+            [head, rest @ ..] if !rest.is_empty() => {
+                let tail = rest.join(".");
+                let prefixed = format!("{head}${tail}");
+                if self.get_type_id(&tail).is_some() {
+                    tail
+                } else if self.get_type_id(&prefixed).is_some() {
+                    prefixed
+                } else {
+                    joined
+                }
+            }
+            _ => joined,
+        }
     }
 
     /// A stdlib signature's types as the stdlib reads them. Stub signatures are

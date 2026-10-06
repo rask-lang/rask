@@ -899,9 +899,14 @@ impl<'a> MirContext<'a> {
             // A closure is a pointer to its block, and saying so in the type is
             // what lets a carrier holding one give it back (#1253).
             TypeExpr::Func { .. } => MirType::FuncPtr(crate::types::SignatureId(0)),
-            TypeExpr::Any(interface) => {
-                MirType::InterfaceObject { interface_name: interface.to_string() }
-            }
+            // `any io.Writer` is the stdlib's `Writer`, whose symbol is its bare
+            // name. Spelled from the written text it was an interface called
+            // "io.Writer" that no vtable is filed under, and a call through it
+            // couldn't be lowered (#1309).
+            TypeExpr::Any(interface) => MirType::InterfaceObject {
+                interface_name: rask_types::TypeTable::stdlib_module_member(interface)
+                    .unwrap_or_else(|| interface.to_string()),
+            },
             TypeExpr::RawPtr(_) | TypeExpr::FixedCount { .. } | TypeExpr::Int(_) => MirType::Ptr,
             TypeExpr::Named { path, args } if args.is_empty() => self.resolve_type_name(&path.join(".")),
             TypeExpr::Named { path, args } => self.resolve_generic_expr(&path.join("."), args),
