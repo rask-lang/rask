@@ -249,7 +249,9 @@ impl<'a> MirLowerer<'a> {
             // The checker has already rejected a non-pair element type.
             "to_map" if args.is_empty() => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let result = self.lower_iter_to_map(&chain)?;
+                    let key = self.container_elem_type(_full_expr.id, 0);
+                    let value = self.container_elem_type(_full_expr.id, 1);
+                    let result = self.lower_iter_to_map(&chain, key, value)?;
                     return Ok(Some(result));
                 }
             }
@@ -1402,9 +1404,16 @@ impl<'a> MirLowerer<'a> {
     /// Later keys overwrite earlier ones, which is what repeated `insert` does
     /// anyway (SEQ29). The element is a 2-tuple, so the key and value come out
     /// of its two slots.
+    ///
+    /// `key` and `value` are the checker's types, with their containers named,
+    /// for the map to describe what it holds by. Built the way `Map.new()` is:
+    /// a bare `Map_new` freed none of its strings or vectors and hashed a
+    /// string key by its header word, so `m.get(k)` found nothing (#1416).
     pub(super) fn lower_iter_to_map(
         &mut self,
         chain: &super::IterChain<'_>,
+        key: Option<MirType>,
+        value: Option<MirType>,
     ) -> Result<TypedOperand, LoweringError> {
         let result_map = self.builder.alloc_temp(MirType::I64);
         let map_new_pos = self.builder.next_stmt_pos();
@@ -1431,14 +1440,18 @@ impl<'a> MirLowerer<'a> {
         };
         // `Map_new` sizes its key and value slots the way `Vec_new` sizes its
         // element — from the type the loop actually produces, filled in here
-        // because the adapters decide it.
-        self.builder.set_call_args(
+        // because the adapters decide it. So does the constructor: a string
+        // key hashes by its contents.
+        self.builder.set_call(
             map_new_pos.0,
             map_new_pos.1,
             "Map_new",
+            crate::elem_strs::map_ctor_for(&key_ty),
             vec![
                 MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&key_ty))),
                 MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&val_ty))),
+                crate::elem_strs::elem(key.unwrap_or_else(|| key_ty.clone())),
+                crate::elem_strs::elem(value.unwrap_or_else(|| val_ty.clone())),
             ],
         );
 

@@ -227,6 +227,31 @@ impl BlockBuilder {
         }
     }
 
+    /// `set_call_args`, and call `callee` instead: a constructor whose
+    /// spelling depends on a type the adapters only settle later.
+    pub fn set_call(
+        &mut self,
+        block: BlockId,
+        index: usize,
+        name: &str,
+        callee: &str,
+        args: Vec<crate::MirOperand>,
+    ) -> bool {
+        if !self.set_call_args(block, index, name, args) {
+            return false;
+        }
+        if let Some(MirStmtKind::Call { func, .. }) = self
+            .function
+            .blocks
+            .get_mut(block.0 as usize)
+            .and_then(|b| b.statements.get_mut(index))
+            .map(|s| &mut s.kind)
+        {
+            func.name = callee.to_string();
+        }
+        true
+    }
+
     /// Block and index the next pushed statement will land at.
     pub fn next_stmt_pos(&self) -> (BlockId, usize) {
         (
