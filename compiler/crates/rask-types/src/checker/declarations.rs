@@ -53,6 +53,22 @@ impl TypeChecker {
                 self.types.register_alias(name, target);
             }
         }
+        // `import time as tm`, so `tm.Duration` in a signature finds the
+        // module the way `time.Duration` does.
+        let modules: Vec<(String, String)> = self
+            .resolved
+            .symbols
+            .iter()
+            .filter_map(|sym| match &sym.kind {
+                rask_resolve::SymbolKind::BuiltinModule { module } if sym.name != module.name() => {
+                    Some((sym.name.clone(), module.name().to_string()))
+                }
+                _ => None,
+            })
+            .collect();
+        for (alias, module) in modules {
+            self.types.register_module_alias(alias, module);
+        }
     }
 
     /// Synthesize a real struct declaration for every struct an `import c`

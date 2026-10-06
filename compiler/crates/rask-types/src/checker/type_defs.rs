@@ -508,6 +508,26 @@ impl TypedProgram {
         let renamed = self.types.release_written_names();
         rename_types(decls, &renamed, &self.type_test_patterns);
 
+        // `is json.JsonError as e` kept its module through checking, which is
+        // what said the stdlib's type was meant (#1470). The bare name means
+        // that type from here, and the backends read a dotted pattern name as
+        // `Enum.Variant`.
+        struct ModuleTypePatterns<'a>(&'a super::type_table::TypeTable);
+        impl rask_ast::rewrite::Rewrite for ModuleTypePatterns<'_> {
+            fn pattern(&mut self, p: &mut rask_ast::expr::Pattern) {
+                let rask_ast::expr::Pattern::TypePat {
+                    ty: rask_ast::ty::TypeExpr::Named { path, .. }, ..
+                } = p
+                else {
+                    return;
+                };
+                if path.len() > 1 && self.0.module_named(&path[0]).is_some() {
+                    path.remove(0);
+                }
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut ModuleTypePatterns(&self.types));
+
         // A program function the same way, when its name is a symbol the
         // backends already use for a method: `func Vec_len(v)` and `v.len()`
         // were one `Vec_len` to native, and the method call ran the program's

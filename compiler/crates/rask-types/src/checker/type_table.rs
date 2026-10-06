@@ -136,6 +136,8 @@ pub struct TypeTable {
     pub(super) result_type_id: Option<TypeId>,
     /// Builtin modules registry.
     pub(super) builtin_modules: BuiltinModules,
+    /// `import time as tm`: `tm` → `time`.
+    module_aliases: HashMap<String, String>,
     /// B1–G4: binary struct metadata indexed by TypeId
     pub binary_structs: HashMap<TypeId, BinaryStructInfo>,
     /// Field names of a struct-shaped enum variant, keyed by
@@ -230,6 +232,7 @@ impl TypeTable {
             option_type_id: None,
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
+            module_aliases: HashMap::new(),
             binary_structs: HashMap::new(),
             variant_field_names: HashMap::new(),
             type_method_decls: HashMap::new(),
@@ -438,6 +441,35 @@ impl TypeTable {
             renamed.insert(written.clone(), symbol.clone());
         }
         renamed
+    }
+
+    /// `time.Duration`: the type a stdlib module exports under `name`.
+    /// `module` is the spelling the program used, so `tm.Duration` under
+    /// `import time as tm` is the same type.
+    ///
+    /// The module says whose declaration is meant, so this never answers with
+    /// the program's type. Dropping the module and looking the bare name up
+    /// did, whenever the program declared a `Duration` of its own (#1470).
+    pub fn module_type_id(&self, module: &str, name: &str) -> Option<TypeId> {
+        let module = self.module_named(module)?;
+        if !rask_stdlib::modules::exports_type(module, name) {
+            return None;
+        }
+        self.stdlib_type_names.get(name).copied()
+    }
+
+    /// The stdlib module a spelling names: the module's own name, or what an
+    /// `import m as alias` bound.
+    pub fn module_named<'a>(&'a self, spelled: &'a str) -> Option<&'a str> {
+        if rask_stdlib::modules::is_module(spelled) {
+            return Some(spelled);
+        }
+        self.module_aliases.get(spelled).map(String::as_str)
+    }
+
+    /// Record `import m as alias`.
+    pub(super) fn register_module_alias(&mut self, alias: String, module: String) {
+        self.module_aliases.insert(alias, module);
     }
 
     /// The stdlib's type of this name, when the program declares its own.

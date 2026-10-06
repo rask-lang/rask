@@ -1126,7 +1126,12 @@ impl TypeChecker {
                         _ => None,
                     }
                 };
-                if let Some(ty) = self.types.lookup(base_name) {
+                // The module's own type, even where the program declares one
+                // of the same name (#1470).
+                let module_type = name
+                    .split_once('.')
+                    .and_then(|(module, member)| self.types.module_type_id(module, member));
+                if let Some(ty) = module_type.map(Type::Named).or_else(|| self.types.lookup(base_name)) {
                     if let Type::Named(type_id) = &ty {
                         let (struct_fields, type_params, private_fields) = match self.types.get(*type_id) {
                             Some(TypeDef::Struct { fields: sf, type_params: tp, private_fields: pf, .. }) => {
@@ -3764,10 +3769,9 @@ impl TypeChecker {
         // The name might be shadowed in scope by a same-named variant from
         // another enum (e.g. CompileError { LexError(LexError) }). Check the
         // type table directly — it's authoritative for type names.
-        if let Some(name) = self.path_type_name(object) {
-            let name = &name;
+        if let Some(path_id) = self.path_type_id(object) {
             // Look up the type table (not scope) to avoid variant-name shadowing.
-            let variant_fields = self.types.get_type_id(name).and_then(|type_id| {
+            let variant_fields = Some(path_id).and_then(|type_id| {
                 if let Some(TypeDef::Enum { variants, .. }) = self.types.get(type_id) {
                     variants.iter()
                         .find(|(v, _)| v == method)
@@ -4813,6 +4817,9 @@ impl TypeChecker {
             // local, or a type that already answers to this field:
             // `Method.Patch` is a variant of `Method`, and there is a `Patch`
             // type in scope for it to be mistaken for.
+            if let Some(type_id) = self.module_member_type(object, field) {
+                return Type::Named(type_id);
+            }
             if self.lookup_local(name).is_none() && !self.type_owns_member(name, field) {
                 if let Some(type_id) = self.types.get_type_id(field) {
                     if self.types.get(type_id).is_some() {
@@ -4886,16 +4893,36 @@ impl TypeChecker {
     /// `import http as h` gives a name no list knows. It must name no local,
     /// and no type that already answers to this member, so `Method.Patch` stays
     /// a variant of `Method` rather than becoming the `Patch` type.
-    fn path_type_name(&self, e: &Expr) -> Option<String> {
+    fn path_type_id(&self, e: &Expr) -> Option<crate::types::TypeId> {
         match &e.kind {
-            ExprKind::Ident(n) => Some(n.clone()),
+            ExprKind::Ident(n) => self.types.get_type_id(n),
             ExprKind::Field { object, field } => {
-                let Some(head) = object.name() else { return None };
-                (self.lookup_local(head).is_none() && !self.type_owns_member(head, field))
-                    .then(|| field.clone())
+                if let Some(id) = self.module_member_type(object, field) {
+                    return Some(id);
+                }
+                let head = object.name()?;
+                if self.lookup_local(head).is_some() || self.type_owns_member(head, field) {
+                    return None;
+                }
+                self.types.get_type_id(field)
             }
             _ => None,
         }
+    }
+
+    /// `time.Duration`: the type a stdlib module exports, when `head` is a
+    /// module the resolver bound (an alias counts). The module's declaration,
+    /// never the program's type of the same name (#1470).
+    fn module_member_type(&self, head: &Expr, member: &str) -> Option<crate::types::TypeId> {
+        let name = head.name()?;
+        if self.local_shadows_namespace(name) {
+            return None;
+        }
+        let &sym = self.resolved.resolutions.get(&head.id)?;
+        let SymbolKind::BuiltinModule { module } = &self.resolved.symbols.get(sym)?.kind else {
+            return None;
+        };
+        self.types.module_type_id(module.name(), member)
     }
 
     /// Does a declared type named `name` have a variant or field called

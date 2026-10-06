@@ -1323,44 +1323,61 @@ fn call_module_functions_bare(mut resolved: ResolvedProgram, decls: &mut [Decl])
 ///
 /// A module is whatever the program's imports bound as one, so `import json
 /// as j` makes `j.JsonError` the qualified spelling.
+///
+/// Except a type test. A type pattern keeps its module until checking is
+/// done, because while the program is checked a bare `JsonError` means the
+/// program's own type when it declares one, and the module is what says it
+/// doesn't (#1470). A bare `is json.JsonError` is made the same type pattern,
+/// rather than a name the checker would split into enum and variant.
+/// `TypedProgram::attach_derived` drops the module once the bare name means
+/// the stdlib's type again.
 fn strip_module_from_patterns(resolved: &ResolvedProgram, decls: &mut [Decl]) {
     use rask_ast::expr::Pattern;
     use rask_ast::rewrite::{self, Rewrite};
     use rask_ast::ty::TypeExpr;
 
-    let modules: std::collections::HashSet<String> = resolved
+    let modules: HashMap<String, &'static str> = resolved
         .symbols
         .iter()
-        .filter(|s| matches!(s.kind, rask_resolve::SymbolKind::BuiltinModule { .. }))
-        .map(|s| s.name.clone())
+        .filter_map(|s| match &s.kind {
+            rask_resolve::SymbolKind::BuiltinModule { module } => Some((s.name.clone(), module.name())),
+            _ => None,
+        })
         .collect();
     if modules.is_empty() {
         return;
     }
 
     struct Strip<'a> {
-        modules: &'a std::collections::HashSet<String>,
+        modules: &'a HashMap<String, &'static str>,
     }
     impl Strip<'_> {
         fn strip(&self, name: &mut String) {
             if let Some((head, tail)) = name.split_once('.') {
-                if self.modules.contains(head) {
+                if self.modules.contains_key(head) {
                     *name = tail.to_string();
                 }
             }
+        }
+
+        /// `json.JsonError`, as the type the module exports.
+        fn module_type(&self, name: &str) -> Option<TypeExpr> {
+            let (head, tail) = name.split_once('.')?;
+            let module = self.modules.get(head)?;
+            rask_stdlib::modules::exports_type(module, tail).then(|| TypeExpr::Named {
+                path: vec![head.to_string(), tail.to_string()],
+                args: Vec::new(),
+            })
         }
     }
     impl Rewrite for Strip<'_> {
         fn pattern(&mut self, p: &mut Pattern) {
             match p {
-                Pattern::Ident(name)
-                | Pattern::Constructor { name, .. }
-                | Pattern::Struct { name, .. } => self.strip(name),
-                Pattern::TypePat { ty: TypeExpr::Named { path, .. }, .. }
-                    if path.len() > 1 && self.modules.contains(&path[0]) =>
-                {
-                    path.remove(0);
-                }
+                Pattern::Ident(name) => match self.module_type(name) {
+                    Some(ty) => *p = Pattern::TypePat { ty, binding: None },
+                    None => self.strip(name),
+                },
+                Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => self.strip(name),
                 _ => {}
             }
         }

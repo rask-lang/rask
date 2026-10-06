@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A module-qualified type name means the module's type (#1470).
+//
+// With a `struct Duration` of the program's own in scope, `time.Duration`
+// in a signature and `time.Duration.millis(…)` in an expression both meant
+// the program's struct: "no method `millis` found for type `Duration`". The
+// checker dropped the module and looked the bare name up, and a bare name
+// means the program's type while the program is checked. A type test
+// (`r is io.IoError as e`) had the same problem one pass earlier: the module
+// was dropped from the pattern before checking began.
+
+import fs
+import io
+import time
+import time as tm
+
+struct Duration {
+    public ticks: i64
+}
+
+enum IoError {
+    Mine
+}
+
+func read_missing() -> string or io.IoError {
+    return fs.read_text("/nonexistent/rask-module-qualified-type")
+}
+
+func mine_or(n: i64) -> i64 or IoError {
+    if n < 0 {
+        return IoError.Mine
+    }
+    return n
+}
+
+func wait_for(d: time.Duration) -> u64 {
+    return d.as_millis()
+}
+
+func mine(d: Duration) -> i64 {
+    return d.ticks
+}
+
+test "the qualified name is the stdlib's type" {
+    let t = time.Duration.millis(250)
+    assert wait_for(t) == 250
+}
+
+test "the bare name is still the program's" {
+    let d = Duration { ticks: 7 }
+    assert mine(d) == 7
+}
+
+test "both in one expression" {
+    let t: time.Duration = time.Duration.seconds(2)
+    let d = Duration { ticks: 3 }
+    assert t.as_millis() == 2000
+    assert d.ticks == 3
+}
+
+func wait_aliased(d: tm.Duration) -> u64 {
+    return d.as_millis()
+}
+
+test "an aliased module names the module's type too" {
+    assert wait_aliased(tm.Duration.millis(5)) == 5
+}
+
+test "a qualified type test means the module's type" {
+    let r = read_missing()
+    assert r is io.IoError
+    mut found = false
+    if r is io.IoError as e {
+        match e {
+            NotFound(_) => found = true
+            _ => found = false
+        }
+    }
+    assert found
+}
+
+test "a bare type test still means the program's type" {
+    let r = mine_or(-1)
+    assert r is IoError
+    if r is IoError as e {
+        assert e == IoError.Mine
+    }
+    assert mine_or(4) is i64
+}

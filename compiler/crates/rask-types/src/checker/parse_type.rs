@@ -7,7 +7,7 @@ use rask_ast::ty::TypeExpr;
 use super::type_table::TypeTable;
 use super::errors::TypeError;
 
-use crate::types::{GenericArg, Type};
+use crate::types::{GenericArg, Type, TypeId};
 
 /// The checker's type for a written one.
 pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeError> {
@@ -63,11 +63,23 @@ fn resolve_named_expr(
     args: &[TypeExpr],
     types: &TypeTable,
 ) -> Result<Type, TypeError> {
-    // `io.Buffer` is the module's `Buffer`.
-    let path = match path {
-        [module, rest @ ..] if !rest.is_empty() && rask_stdlib::modules::is_module(module) => rest,
-        _ => path,
+    // `io.Buffer` is the module's `Buffer`, whatever the program calls its
+    // own types (#1470).
+    let (path, module) = match path {
+        [module, rest @ ..] if !rest.is_empty() && types.module_named(module).is_some() => {
+            (rest, Some(module.as_str()))
+        }
+        _ => (path, None),
     };
+    if let (Some(module), [name]) = (module, path) {
+        if let Some(id) = types.module_type_id(module, name) {
+            if args.is_empty() {
+                return Ok(Type::Named(id));
+            }
+            let args = resolve_type_args(args, types)?;
+            return resolve_generic(name, Some(id), args, types);
+        }
+    }
 
     // AT3: a projection — `Self.Out`, `T.Out`. A dot that isn't one of these
     // belongs to a C namespace, registered under its dotted spelling.
@@ -83,20 +95,8 @@ fn resolve_named_expr(
     let name = path.join(".");
 
     if !args.is_empty() {
-        let args: Vec<GenericArg> = args
-            .iter()
-            .map(|a| match a {
-                TypeExpr::Int(n) => n
-                    .parse::<usize>()
-                    .map(GenericArg::ConstUsize)
-                    .map_err(|_| TypeError::GenericError(
-                        format!("`{}` is not a size", n),
-                        Span::new(0, 0),
-                    )),
-                t => Ok(GenericArg::Type(Box::new(resolve_type_expr(t, types)?))),
-            })
-            .collect::<Result<_, _>>()?;
-        return resolve_generic(&name, args, types);
+        let args = resolve_type_args(args, types)?;
+        return resolve_generic(&name, None, args, types);
     }
 
     // A declared type parameter wins over a type of the same name. Without
@@ -118,8 +118,30 @@ fn resolve_named_expr(
     Ok(Type::UnresolvedNamed(name))
 }
 
-/// `Name<args>` once the arguments are resolved.
-fn resolve_generic(name: &str, args: Vec<GenericArg>, types: &TypeTable) -> Result<Type, TypeError> {
+/// Written type arguments, resolved.
+fn resolve_type_args(args: &[TypeExpr], types: &TypeTable) -> Result<Vec<GenericArg>, TypeError> {
+    args.iter()
+        .map(|a| match a {
+            TypeExpr::Int(n) => n
+                .parse::<usize>()
+                .map(GenericArg::ConstUsize)
+                .map_err(|_| TypeError::GenericError(
+                    format!("`{}` is not a size", n),
+                    Span::new(0, 0),
+                )),
+            t => Ok(GenericArg::Type(Box::new(resolve_type_expr(t, types)?))),
+        })
+        .collect()
+}
+
+/// `Name<args>` once the arguments are resolved. `pinned` is the declaration
+/// a module-qualified spelling already named; `None` looks the name up.
+fn resolve_generic(
+    name: &str,
+    pinned: Option<TypeId>,
+    args: Vec<GenericArg>,
+    types: &TypeTable,
+) -> Result<Type, TypeError> {
     match name {
         // `Heap<T>` keeps its wrapper. HP5 says it behaves as `T`, and this
         // used to implement that by unwrapping — which is transparency and
@@ -143,7 +165,7 @@ fn resolve_generic(name: &str, args: Vec<GenericArg>, types: &TypeTable) -> Resu
         "Shared" if args.len() == 1 => {
             let mut args = args;
             args.push(GenericArg::Type(Box::new(Type::UnresolvedNamed("Readers".to_string()))));
-            Ok(generic_named(name, args, types))
+            Ok(generic_named(name, pinned, args, types))
         }
         "Option" if args.len() == 1 => match args.into_iter().next() {
             Some(GenericArg::Type(ty)) => Ok(Type::option(*ty)),
@@ -162,12 +184,12 @@ fn resolve_generic(name: &str, args: Vec<GenericArg>, types: &TypeTable) -> Resu
                 )),
             }
         }
-        _ => Ok(generic_named(name, args, types)),
+        _ => Ok(generic_named(name, pinned, args, types)),
     }
 }
 
-fn generic_named(name: &str, args: Vec<GenericArg>, types: &TypeTable) -> Type {
-    match types.get_type_id(name) {
+fn generic_named(name: &str, pinned: Option<TypeId>, args: Vec<GenericArg>, types: &TypeTable) -> Type {
+    match pinned.or_else(|| types.get_type_id(name)) {
         Some(base) => Type::Generic { base, args },
         None => Type::UnresolvedGeneric { name: name.to_string(), args },
     }
