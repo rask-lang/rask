@@ -125,6 +125,7 @@ The publish-time warning (DT2) is in [build.md](../structure/build.md#publishing
 | **GF3: Caller constraints** | Calling a constrained function requires same or stronger constraints (explicit or inferred) |
 | **GF4: Disjointness travels with the signature** | A signature writing `T or E` with a type parameter on either side carries an implicit "these must stay distinct" obligation, checked at the call site once `T` is known. Not spelled as a bound — the `or` already says it. See [error-types.md](error-types.md) ER3a |
 | **GF5: Methods too** | A method declares type parameters the same way a function does, and they're independent of the receiver's. `Holder<T>` can have `func other<U>(self, u: U) -> U` — `T` is fixed by the receiver, `U` is chosen per call |
+| **GF6: A type's bounds hold in its methods** | `struct Holder<T: Named>` means every method in `extend Holder<T>` may call `Named`'s methods on a `T`. The bound is declared on the type and only there; the `extend` header names the parameters by position and may rename them |
 
 ```rask
 // Public: bounds MUST be explicit

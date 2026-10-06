@@ -192,6 +192,10 @@ pub struct TypeTable {
     /// wrote it, which is how a conformance block knows whether it owns the
     /// type it's extending.
     pub(super) declared_at: HashMap<TypeId, Span>,
+    /// The bounds a generic struct or enum declares on its parameters, in
+    /// declaration order: `struct Holder<T: Named>` → `[("T", [Named])]`.
+    /// Every method of the type may assume them (#1364).
+    pub(super) declared_param_bounds: HashMap<TypeId, Vec<(String, Vec<rask_ast::ty::TypeExpr>)>>,
     /// OR1: the conformances, read the other way round — applied interface
     /// (`Mul<Duration>`) → the types that answer it.
     ///
@@ -235,6 +239,7 @@ impl TypeTable {
             conformance_spans: HashMap::new(),
             conformance_conditions: HashMap::new(),
             declared_at: HashMap::new(),
+            declared_param_bounds: HashMap::new(),
             declared_by: HashMap::new(),
             ambiguous_conformances: std::collections::HashSet::new(),
             impl_method_packages: HashMap::new(),
@@ -981,6 +986,19 @@ impl TypeTable {
     pub(super) fn record_declared_at(&mut self, type_id: TypeId, span: Span, owner: TypeOwner) {
         self.declared_at.entry(type_id).or_insert(span);
         self.declared_by.entry(type_id).or_insert(owner);
+    }
+
+    /// Remember the bounds a type's declaration puts on its parameters.
+    pub(super) fn record_param_bounds(&mut self, type_id: TypeId, params: &[rask_ast::decl::TypeParam]) {
+        if params.iter().any(|p| !p.bounds.is_empty()) {
+            let bounds = params.iter().map(|p| (p.name.clone(), p.bounds.clone())).collect();
+            self.declared_param_bounds.insert(type_id, bounds);
+        }
+    }
+
+    /// The bounds a type's declaration puts on its parameters, in order.
+    pub(super) fn param_bounds(&self, type_id: TypeId) -> &[(String, Vec<rask_ast::ty::TypeExpr>)] {
+        self.declared_param_bounds.get(&type_id).map(Vec::as_slice).unwrap_or(&[])
     }
 
     /// XC1: who declares this type. A type with no recorded declaration is a

@@ -2119,7 +2119,26 @@ impl Parser {
     /// `extend T { … }`: the type's own methods.
     fn parse_extend_decl(&mut self, is_pub: bool, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Extend)?;
-        let target_ty = self.parse_type_name()?;
+        let header_pos = self.pos;
+        let target_ty = match self.parse_type_name() {
+            Ok(t) => t,
+            // `extend Holder<T: Named>`: the bound already lives on the type.
+            Err(_) if self.check(&TokenKind::Colon) => {
+                let name = match &self.tokens[header_pos].kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    _ => "T".to_string(),
+                };
+                return Err(ParseError {
+                    message: format!("a bound can't go in an `extend {}<…>` header", name),
+                    span: self.current().span,
+                    hint: Some(format!(
+                        "write `extend {name}<T>`: the bounds on `struct {name}<…>` hold in every method, and `extend {name}<T> where T: Bound` adds one"
+                    )),
+                    why: Some("a type's bounds are declared once, on the type, so its methods can't disagree about them".to_string()),
+                });
+            }
+            Err(e) => return Err(e),
+        };
         self.parse_impl_body(target_ty, None, is_pub, is_unsafe, doc)
     }
 

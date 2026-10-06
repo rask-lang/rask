@@ -196,12 +196,14 @@ impl TypeChecker {
                 DeclKind::Struct(s) => {
                     self.check_declared_type_name(&s.name, "struct", decl.span);
                     let id = self.register_struct(s);
+                    self.types.record_param_bounds(id, &s.type_params);
                     self.types.record_method_decl(id, decl.id);
                     self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
                 }
                 DeclKind::Enum(e) => {
                     self.check_declared_type_name(&e.name, "enum", decl.span);
                     let id = self.register_enum(e, decl.span);
+                    self.types.record_param_bounds(id, &e.type_params);
                     self.types.record_method_decl(id, decl.id);
                     self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
                 }
@@ -2481,9 +2483,13 @@ impl TypeChecker {
                 // method in the block, so a call like `t.wrapping_add(u)`
                 // inside one of these methods needs to see them the same way
                 // a method's own `where` clause would (#838).
-                self.current_impl_type_param_bounds = i.where_bounds.iter()
-                    .map(|tp| (tp.name.clone(), tp.bounds.clone()))
-                    .collect();
+                self.current_impl_type_param_bounds = self.declared_bounds_for_header(&i.target_ty);
+                for tp in &i.where_bounds {
+                    self.current_impl_type_param_bounds
+                        .entry(tp.name.clone())
+                        .or_default()
+                        .extend(tp.bounds.iter().cloned());
+                }
                 // `extend Vec<T>` binds `T` for every method in the block,
                 // whether or not a `where` clause says anything about it.
                 self.type_params_in_scope = header_type_params(&i.target_ty, &self.types);
@@ -2947,6 +2953,43 @@ pub(super) fn allowed_from(attrs: &[String]) -> Vec<String> {
 ///
 /// `extend Sequence<(K, V)>` binds `K` and `V`, so the scan goes through the
 /// punctuation rather than splitting on commas.
+impl TypeChecker {
+    /// The bounds the type's own declaration puts on the parameters an `extend`
+    /// header names. A `Holder<T>` can't exist unless `T: Named`, so every
+    /// method in `extend Holder<U>` may assume `U: Named` (#1364). Matched by
+    /// position, so the header may rename the parameter.
+    fn declared_bounds_for_header(
+        &self,
+        target_ty: &TypeExpr,
+    ) -> std::collections::HashMap<String, Vec<TypeExpr>> {
+        let mut out: std::collections::HashMap<String, Vec<TypeExpr>> = std::collections::HashMap::new();
+        let Some(type_id) = target_ty.name().and_then(|n| self.types.get_type_id(&n)) else {
+            return out;
+        };
+        let declared = self.types.param_bounds(type_id);
+        let header = target_ty.args();
+        if declared.len() != header.len() {
+            return out;
+        }
+        let rename = |name: &str| {
+            declared
+                .iter()
+                .position(|(p, _)| p == name)
+                .map(|i| header[i].clone())
+        };
+        for ((_, bounds), arg) in declared.iter().zip(header) {
+            let Some(name) = arg.bare_name() else { continue };
+            if bounds.is_empty() || !is_type_param_name(name) {
+                continue;
+            }
+            out.entry(name.to_string())
+                .or_default()
+                .extend(bounds.iter().map(|b| b.substitute(&rename)));
+        }
+        out
+    }
+}
+
 pub(super) fn header_type_params(
     target_ty: &TypeExpr,
     types: &crate::TypeTable,

@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a bound written in an `extend` header (type.generics/GF6).
+//
+// The bound lives on the type, and every method may assume it, so the header
+// doesn't restate it. This used to be "Expected '>', found ':'" with no word
+// on where the bound goes (#1364).
+
+interface Named {
+    func name(self) -> string
+}
+
+struct Holder<T: Named> {
+    item: T
+}
+
+// ERROR: a bound can't go in an `extend Holder<…>` header
+extend Holder<T: Named> {
+    func label(self) -> string {
+        return self.item.name()
+    }
+}
+
+func main() {}
