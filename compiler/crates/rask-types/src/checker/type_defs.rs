@@ -387,6 +387,22 @@ impl TypeBinding {
 }
 
 impl TypedProgram {
+    /// Each method call the checker resolved, named `Type.method` after the
+    /// receiver's declared type — `Handle.join` for `t.join()` on a
+    /// `Handle<i64>`. What the effects pass classifies a call by.
+    pub fn method_call_names(&self) -> HashMap<NodeId, String> {
+        self.call_targets
+            .iter()
+            .filter_map(|(node, callee)| match callee {
+                Callee::Method { recv, method, .. } => {
+                    let ty = receiver_name(recv, &self.types)?;
+                    Some((*node, format!("{ty}.{method}")))
+                }
+                Callee::Free(_) => None,
+            })
+            .collect()
+    }
+
     /// Hand the checker's own declarations to the program: the derived
     /// `eq`/`hash`/`compare` bodies and wrapper functions it wrote and
     /// checked, and every `==` on two wrappers turned into a call to the

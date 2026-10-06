@@ -9,9 +9,12 @@ use crate::Effects;
 
 /// Classify a call target by its known effects.
 ///
-/// Returns non-empty effects only for known source functions (stdlib IO,
-/// async primitives, pool structural mutations). Unknown functions return
-/// `Effects::default()` — their effects come from transitive propagation.
+/// `callee` is a free function's name, a module function as `module.name`,
+/// or a method as `Type.method` with the receiver's declared type — the form
+/// the checker resolves a method call to. Returns non-empty effects only for
+/// known source functions (stdlib IO, async primitives, container structural
+/// mutations). Unknown functions return `Effects::default()` — their effects
+/// come from transitive propagation.
 pub fn classify_call(callee: &str) -> Effects {
     // IO sources (conc.io-context table). The async ones among them are the
     // calls that wait — sleep, a channel op, a join (AS3).
@@ -37,30 +40,56 @@ pub fn classify_call(callee: &str) -> Effects {
     Effects::default()
 }
 
+/// Classify a method call: IO and Async by the resolved `Type.method`, and
+/// the structural effects by the method's own name, which is what EF1 keys
+/// them on (`insert`, `remove`, … on whatever container).
+pub fn classify_method(callee: &str, method: &str) -> Effects {
+    let mut e = classify_call(callee);
+    if is_grow_source(method) {
+        e.grow = true;
+    }
+    if is_shrink_source(method) {
+        e.shrink = true;
+    }
+    e
+}
+
+/// The stdlib's I/O, spelled the way the checker resolves a call to it.
 fn is_io_source(callee: &str) -> bool {
     matches!(callee,
         // fs module
-        "File.open" | "File.read" | "File.write" | "File.close"
+        "fs.open" | "fs.create_file" | "fs.read_text" | "fs.read_bytes" | "fs.read_lines"
+        | "fs.write_text" | "fs.write_bytes" | "fs.append_text" | "fs.exists"
+        | "fs.copy" | "fs.rename" | "fs.remove_file" | "fs.create_dir" | "fs.create_dir_all"
+        | "fs.list_dir" | "fs.metadata" | "fs.absolute_path"
+        // A free function imported by name (`import fs.read_text`).
         | "open" | "read_text" | "write_text" | "exists"
-        | "fs.read_text" | "fs.write_text" | "fs.exists"
+        // An open file
+        | "File.read_text" | "File.read_bytes" | "File.write" | "File.write_bytes"
+        | "File.write_text" | "File.write_line" | "File.close"
         // net module
-        | "TcpListener.bind" | "TcpListener.accept"
-        | "TcpConnection.read" | "TcpConnection.write"
-        | "UdpSocket.send" | "UdpSocket.recv"
+        | "net.tcp_listen" | "net.tcp_connect"
+        | "TcpListener.accept" | "TcpListener.close"
+        | "TcpConnection.read_text" | "TcpConnection.read_bytes"
+        | "TcpConnection.write_text" | "TcpConnection.write_bytes" | "TcpConnection.close"
         // io module (stdio)
-        | "Stdin.read" | "Stdout.write" | "Stderr.write"
+        | "io.read_line"
+        | "Stdin.read" | "Stdin.read_bytes" | "Stdin.read_text" | "Stdin.read_line"
+        | "Stdout.write" | "Stdout.write_bytes" | "Stdout.write_text" | "Stdout.flush"
+        | "Stderr.write" | "Stderr.write_bytes" | "Stderr.write_text" | "Stderr.flush"
         | "print" | "println" | "eprint" | "eprintln"
         // async sources that wait (AS3)
-        | "sleep" | "timeout"
-        | "Channel.send" | "Channel.receive" | "Handle.join"
+        | "sleep" | "time.sleep"
+        | "Sender.send" | "Receiver.receive" | "Handle.join" | "Handles.join_all"
     )
 }
 
 fn is_async_source(callee: &str) -> bool {
     matches!(callee,
-        "spawn" | "sleep" | "timeout"
-        | "Channel.send" | "Channel.receive"
-        | "Handle.join"
+        "spawn" | "Thread.spawn" | "ThreadPool.spawn"
+        | "sleep" | "time.sleep"
+        | "Sender.send" | "Receiver.receive"
+        | "Handle.join" | "Handles.join_all"
     )
 }
 
@@ -80,10 +109,11 @@ mod tests {
 
     #[test]
     fn io_sources_classified() {
-        let e = classify_call("File.open");
+        let e = classify_call("fs.open");
         assert!(e.io);
         assert!(!e.async_);
         assert!(!e.mutation());
+        assert!(classify_call("TcpConnection.read_text").io);
 
         assert!(classify_call("println").io);
         assert!(classify_call("fs.read_text").io);
@@ -96,7 +126,7 @@ mod tests {
         assert!(e.io, "AS3: an async source that waits is IO");
         assert!(e.async_);
 
-        let e = classify_call("Channel.send");
+        let e = classify_call("Sender.send");
         assert!(e.io);
         assert!(e.async_);
     }
@@ -108,6 +138,16 @@ mod tests {
         let e = classify_call("spawn");
         assert!(e.async_);
         assert!(!e.io);
+    }
+
+    /// A container's structural effects come from the method's name, whatever
+    /// the receiver; its I/O comes from the receiver's type.
+    #[test]
+    fn method_classification() {
+        assert!(classify_method("Vec.remove", "remove").shrink);
+        assert!(!classify_method("Vec.remove", "remove").io);
+        assert!(classify_method("Handle.join", "join").io);
+        assert!(!classify_method("Vec.join", "join").io);
     }
 
     #[test]

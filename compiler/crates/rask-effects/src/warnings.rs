@@ -11,7 +11,7 @@ use rask_ast::stmt::{Stmt, StmtKind};
 
 use std::collections::HashSet;
 
-use crate::{EffectMap, EffectWarning};
+use crate::{EffectMap, EffectWarning, MethodTargets};
 
 /// Detect CW1 and CW2 warnings from declarations.
 ///
@@ -23,11 +23,13 @@ pub fn detect(
     decls: &[Decl],
     effects: &EffectMap,
     runtime_only: &HashSet<String>,
+    targets: &MethodTargets,
 ) -> Vec<EffectWarning> {
     let mut warnings = Vec::new();
     let program_is_concurrent = effects.values().any(|e| e.async_);
     let mut ctx = WarnContext {
         effects,
+        targets,
         runtime_only,
         program_is_concurrent,
         in_thread_pool: false,
@@ -47,7 +49,7 @@ pub fn detect(
                 for m in &e.methods { ctx.check_fn(&format!("{}.{}", e.name, m.name), m, false, &mut warnings); }
             }
             DeclKind::Impl(i) => {
-                for m in &i.methods { ctx.check_fn(&format!("{}.{}", i.target_ty, m.name), m, false, &mut warnings); }
+                for m in &i.methods { ctx.check_fn(&crate::method_key(&i.target_ty, &m.name), m, false, &mut warnings); }
             }
             DeclKind::Interface(t) => {
                 for m in &t.methods { ctx.check_fn(&format!("{}.{}", t.name, m.name), m, false, &mut warnings); }
@@ -90,6 +92,8 @@ fn is_root_fn(f: &FnDecl) -> bool {
 
 struct WarnContext<'a> {
     effects: &'a EffectMap,
+    /// The checker's name for each method call it resolved.
+    targets: &'a MethodTargets,
     /// Functions every path to which installs a runtime first — see
     /// `infer::infer_with_reach`. CW2 stays quiet inside one.
     runtime_only: &'a HashSet<String>,
@@ -209,7 +213,7 @@ impl<'a> WarnContext<'a> {
             ExprKind::Call { func, args } => {
                 let callee_name = extract_callee_name(func);
                 if let Some(ref name) = callee_name {
-                    self.maybe_warn_io_call(name, expr.span, warnings);
+                    self.maybe_warn_io_call(name, name, expr.span, warnings);
                     // CC1: a `spawn` in a function nothing calls. Everywhere else
                     // the error belongs at the call site instead (CC2), which is
                     // what lets `http.serve` spawn per connection and leave the
@@ -278,15 +282,12 @@ impl<'a> WarnContext<'a> {
             }
 
             ExprKind::MethodCall { object, method, args, .. } => {
-                // Check qualified form
-                let is_pool_spawn = if let Some(type_name) = object.name() {
-                    let qname = format!("{}.{}", type_name, method);
-                    self.maybe_warn_io_call(&qname, expr.span, warnings);
-                    is_thread_pool(type_name) && method == "spawn"
-                } else {
-                    false
-                };
-                self.maybe_warn_io_call(method, expr.span, warnings);
+                let names = crate::method_callees(expr.id, object, method, self.targets);
+                for name in &names {
+                    self.maybe_warn_io_call(name, method, expr.span, warnings);
+                }
+                let is_pool_spawn = method == "spawn"
+                    && names.iter().any(|n| n.strip_suffix(".spawn").is_some_and(is_thread_pool));
                 self.check_expr(object, warnings);
                 // CW1 only covers code that actually runs on a pool worker: the
                 // body of the closure handed to `ThreadPool.spawn(...)`, not
@@ -442,15 +443,17 @@ impl<'a> WarnContext<'a> {
     }
 
     /// Check if a callee has IO effects and we're in a warning context.
+    /// `method` is the bare name the call was written with.
     fn maybe_warn_io_call(
         &self,
         callee: &str,
+        method: &str,
         span: rask_ast::Span,
         warnings: &mut Vec<EffectWarning>,
     ) {
         let has_io = self.effects.get(callee)
             .map_or(false, |e| e.io)
-            || crate::sources::classify_call(callee).io;
+            || crate::sources::classify_method(callee, method).io;
 
         if !has_io {
             return;
@@ -648,7 +651,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
         assert!(warnings[0].message.contains("println"));
@@ -669,7 +672,7 @@ mod tests {
         })];
         let decls = vec![make_fn("worker", body)];
         let effects = effects_with_io("println");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert!(warnings.is_empty(), "CW1 should not fire for IO outside a spawn closure");
     }
 
@@ -689,7 +692,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW2");
     }
@@ -710,7 +713,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io("println"); // no async_ effect anywhere
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert!(warnings.is_empty(), "CW2 should not fire in single-threaded programs");
     }
 
@@ -739,7 +742,7 @@ mod tests {
         })];
         let decls = vec![make_fn("process", body)];
         let effects = effects_with_io_concurrent("println");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert!(warnings.is_empty(), "No CW2 inside Multitasking context");
     }
 
@@ -758,7 +761,7 @@ mod tests {
         }];
         let decls = vec![make_fn("process", body)];
         let effects = HashMap::new(); // add has no effects
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert!(warnings.is_empty());
     }
 
@@ -769,13 +772,13 @@ mod tests {
             kind: ExprKind::UsingBlock {
                 name: "ThreadPool".into(),
                 args: vec![],
-                body: vec![expr_stmt(pool_spawn(vec![expr_stmt(field_call("File", "read"))]))],
+                body: vec![expr_stmt(pool_spawn(vec![expr_stmt(field_call("fs", "read_text"))]))],
             },
             span: sp(),
         })];
         let decls = vec![make_fn("bad", body)];
         let effects = effects_with_io("File.read");
-        let warnings = detect(&decls, &effects, &HashSet::new());
+        let warnings = detect(&decls, &effects, &HashSet::new(), &Default::default());
         assert_eq!(warnings.len(), 1);
         assert_eq!(warnings[0].code, "comp.effects/CW1");
     }
@@ -790,7 +793,7 @@ mod tests {
         // func main() { using Multitasking { spawn(|| serve_client()) } }
         let handler = make_fn("serve_client", vec![Stmt {
             id: NodeId(0),
-            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("File", "read"))] },
+            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("fs", "read_text"))] },
             span: sp(),
         }]);
         let main = make_fn("main", vec![expr_stmt(Expr {
@@ -814,7 +817,7 @@ mod tests {
             span: sp(),
         })]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main]);
+        let (_, warnings) = crate::infer_effects(&[handler, main], &Default::default());
         assert!(
             warnings.iter().all(|w| w.code != "comp.effects/CW2"),
             "CW2 fired inside a spawn-only function: {:?}",
@@ -828,7 +831,7 @@ mod tests {
     fn cw2_still_fires_when_a_plain_call_reaches_the_loop() {
         let handler = make_fn("serve_client", vec![Stmt {
             id: NodeId(0),
-            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("File", "read"))] },
+            kind: StmtKind::Loop { label: None, body: vec![expr_stmt(field_call("fs", "read_text"))] },
             span: sp(),
         }]);
         let main = make_fn("main", vec![
@@ -836,7 +839,7 @@ mod tests {
             expr_stmt(call("spawn")),
         ]);
 
-        let (_, warnings) = crate::infer_effects(&[handler, main]);
+        let (_, warnings) = crate::infer_effects(&[handler, main], &Default::default());
         assert!(
             warnings.iter().any(|w| w.code == "comp.effects/CW2"),
             "CW2 should still fire when the loop is reachable without a runtime",
@@ -882,7 +885,7 @@ mod tests {
             },
             span: sp(),
         })]);
-        let (_, warnings) = crate::infer_effects(&[tree, main]);
+        let (_, warnings) = crate::infer_effects(&[tree, main], &Default::default());
         assert!(
             warnings.iter().all(|w| w.code != "E0353"),
             "E0353 fired inside a spawned closure: {:?}",
@@ -896,7 +899,7 @@ mod tests {
     fn cc2_still_fires_for_the_call_that_starts_the_tree() {
         let tree = make_fn("tree", vec![expr_stmt(task_spawn(vec![expr_stmt(call("tree"))]))]);
         let main = make_fn("main", vec![expr_stmt(call("tree"))]);
-        let (_, warnings) = crate::infer_effects(&[tree, main]);
+        let (_, warnings) = crate::infer_effects(&[tree, main], &Default::default());
         assert_eq!(warnings.iter().filter(|w| w.code == "E0353").count(), 1);
     }
 }

@@ -47,23 +47,25 @@ From `conc.io-context`:
 
 | Module | Functions | IO? |
 |--------|-----------|-----|
-| `fs` | `File.open`, `File.read`, `File.write`, `File.close`, `fs.read_text`, `fs.write_text`, `fs.exists` | Yes |
-| `net` | `TcpListener.accept`, `TcpConnection.read/write`, `UdpSocket.send/receive` | Yes |
-| `io` | `Stdin.read`, `Stdout.write`, `Stderr.write` | Yes |
-| `async` | `sleep`, `timeout` | Yes (also Async) |
+| `fs` | every `fs` function (`fs.open`, `fs.read_text`, `fs.exists`, …); `File.read_text/read_bytes`, `File.write/write_text/write_bytes/write_line`, `File.close` | Yes |
+| `net` | `net.tcp_listen`, `net.tcp_connect`, `TcpListener.accept`, `TcpConnection.read_text/read_bytes/write_text/write_bytes` | Yes |
+| `io` | `Stdin.read/read_text/read_line`, `Stdout.write`, `Stderr.write`, `println` and the other print functions | Yes |
+| `time` | `time.sleep` | Yes (also Async) |
 | `io` | `Buffer.read`, `Buffer.write` | No |
 | collections | `Vec`, `Map`, `Rack` | No |
 | `json` | `json.encode`, `json.decode` | No |
 | `fmt` | `format` | No |
 | `math` | All functions | No |
 
+A source is matched on the callee the type checker resolved, not on how the call is spelled. `t.join()` on a `Handle<i64>` is `Handle.join` whatever the variable is called, and `parts.join(",")` on a `Vec<string>` is `Vec.join`, which is no source at all.
+
 ## Async Effect
 
 | Rule | Description |
 |------|-------------|
-| **AS1: Source functions** | `spawn()`, `sleep()`, `timeout()`, `Channel.send()`, `Channel.receive()`, `Handle.join()` |
+| **AS1: Source functions** | `spawn()`, `Thread.spawn()`, `time.sleep()`, `Sender.send()`, `Receiver.receive()`, `Handle.join()` |
 | **AS2: Transitive** | Any function that transitively calls an Async source has the Async effect |
-| **AS3: Waiting is IO** | An Async source that waits — `sleep()`, `timeout()`, the channel ops, `Handle.join()` — is also an IO source. `spawn()` hands a task to the scheduler and returns, so it is Async without IO. A loop of spawns blocks nothing; the `join` is where the wait is |
+| **AS3: Waiting is IO** | An Async source that waits — `time.sleep()`, the channel ops, `Handle.join()` — is also an IO source. `spawn()` hands a task to the scheduler and returns, so it is Async without IO. A loop of spawns blocks nothing; the `join` is where the wait is |
 
 ## Mutation Effect
 

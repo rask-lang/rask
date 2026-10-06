@@ -78,13 +78,13 @@ pub fn rask_file_read(file: &File, buf: &mut [u8]) -> Result<usize, IoError> {
 
 | Module | Functions | Context needed? |
 |--------|-----------|----------------|
-| `fs` | `File.open`, `File.read`, `File.write`, `File.close` | Yes — file I/O blocks |
-| `fs` | `fs.read_text`, `fs.write_text`, `fs.exists` | Yes — convenience functions do I/O |
-| `net` | `TcpListener.accept`, `TcpConnection.read/write` | Yes — network I/O blocks |
-| `io` | `Stdin.read`, `Stdout.write`, `Stderr.write` | Yes — stream I/O blocks |
+| `fs` | `fs.open`, `File.read_text/read_bytes`, `File.write/write_text/write_bytes/write_line`, `File.close` | Yes — file I/O blocks |
+| `fs` | `fs.read_text`, `fs.write_text`, `fs.exists`, and the rest of `fs` | Yes — convenience functions do I/O |
+| `net` | `net.tcp_listen`, `net.tcp_connect`, `TcpListener.accept`, `TcpConnection.read_text/read_bytes/write_text/write_bytes` | Yes — network I/O blocks |
+| `io` | `Stdin.read/read_text/read_line`, `Stdout.write`, `Stderr.write` | Yes — stream I/O blocks |
 | `io` | `Buffer.read`, `Buffer.write` | No — in-memory, never blocks |
-| `async` | `sleep`, `timeout` | Yes — needs timer/scheduler |
-| `async` | `spawn`, `Channel.send/receive` | Yes — needs scheduler/reactor |
+| `time` | `time.sleep` | Yes — needs timer/scheduler |
+| `async` | `spawn`, `Sender.send`, `Receiver.receive`, `Handle.join` | Yes — needs scheduler/reactor |
 | collections | `Vec`, `Map`, `Rack` | No — pure memory operations |
 | `json` | `json.encode`, `json.decode` | No — pure computation |
 | `fmt` | `format` | No — pure computation |

@@ -3028,6 +3028,30 @@ fn spawn_in_a_loop_is_not_blocking_io() {
     assert!(output.contains("`println` in loop"), "real I/O still warns: {}", output);
 }
 
+// A method call is classed by the receiver's type, not by how the variable is
+// spelled. `t.join()` only matched the `Handle.join` source when the variable
+// itself was named `Handle`, so a join in a loop carried no I/O and CW2 never
+// fired (#1418). A `join` on a `Vec<string>` is still no I/O at all.
+#[test]
+fn join_through_a_variable_is_io() {
+    let output = check_output(
+        "import thread.Thread\n\
+         func main() {\n\
+         \x20   mut j = 0\n\
+         \x20   while j < 3 {\n\
+         \x20       let t = Thread.spawn(|| { return 1 })\n\
+         \x20       let _ = t.join()\n\
+         \x20       let parts: Vec<string> = [\"a\", \"b\"]\n\
+         \x20       let _ = parts.join(\",\")\n\
+         \x20       j += 1\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(output.contains("Typecheck OK"), "{}", output);
+    assert!(output.contains("`Handle.join` in loop"), "a join waits: {}", output);
+    assert_eq!(output.matches("in loop without").count(), 1, "only the handle's join: {}", output);
+}
+
 #[test]
 fn error_message_includes_line_number() {
     let output = check_output("func main() {\n    let x: i32 = \"hello\"\n}");
