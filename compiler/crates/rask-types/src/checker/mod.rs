@@ -523,6 +523,9 @@ pub struct TypeChecker {
     /// even when inference leaves the receiver as a bare type variable in
     /// `node_types` (deferred `Sender.send` resolution).
     pub(super) channel_send_sites: std::collections::HashSet<rask_ast::Span>,
+    /// Bare names in patterns read as a type test (`r is ParseError`), by the
+    /// span `check_pattern` was handed. See `TypedProgram::type_test_patterns`.
+    pub(super) type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
     /// ER3/ER4: `T or E` sites in type declarations (struct/enum/union/alias),
     /// validated after `register_impl_methods` so an error type whose `message()`
     /// comes from an `extend` block is recognized regardless of declaration order.
@@ -690,6 +693,7 @@ impl TypeChecker {
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),
+            type_test_patterns: std::collections::HashSet::new(),
             pending_result_validations: Vec::new(),
             pending_catch_void_checks: Vec::new(),
         }
@@ -1098,6 +1102,7 @@ impl TypeChecker {
             span_types,
             mutate_self_fns: self.mutate_self_fns,
             channel_send_sites: self.channel_send_sites,
+            type_test_patterns: self.type_test_patterns,
             inferred_fn_ret,
             inferred_fn_params,
             derived_decls: self.derived_decls,

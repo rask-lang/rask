@@ -214,14 +214,17 @@ impl Interpreter {
                 let guard = s.lock().unwrap();
                 // A fieldless struct is `Empty {}`, not `Empty {  }` — the
                 // braces-with-a-space template gave two spaces around nothing.
+                // A program type sharing a stdlib type's name carries a symbol
+                // of its own; it prints as written.
+                let name = self.types.written_name(&guard.name);
                 if guard.fields.is_empty() {
-                    return format!("{} {{}}", guard.name);
+                    return format!("{} {{}}", name);
                 }
                 let field_strs: Vec<String> = guard.fields
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k, self.debug_format(v)))
                     .collect();
-                format!("{} {{ {} }}", guard.name, field_strs.join(", "))
+                format!("{} {{ {} }}", name, field_strs.join(", "))
             }
             // A map's iteration order is unspecified and seeded per process
             // (std.collections, determinism/D7) — this interpreter seeds it
@@ -252,6 +255,7 @@ impl Interpreter {
                 format!("Map {{ {} }}", parts.join(", "))
             }
             Value::Enum { name, variant, fields, .. } => {
+                let name = self.types.written_name(name);
                 if fields.is_empty() {
                     format!("{}.{}", name, variant)
                 } else {

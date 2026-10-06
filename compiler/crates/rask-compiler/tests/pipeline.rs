@@ -308,16 +308,18 @@ fn shadowing_a_stdlib_type_name_keeps_the_program_body() {
     let output = compile_file(path.to_str().unwrap(), &default_config());
     let result = output.result.expect("expected success");
 
+    // The program's type goes by a symbol of its own (`JsonError#N`), so its
+    // method can't be confused with the stdlib's `JsonError_message` (#1333).
     let body = result.mono.functions.iter()
-        .find(|f| f.name == "JsonError_message")
-        .expect("`JsonError_message` should be reachable");
+        .find(|f| f.name.starts_with("JsonError#") && f.name.ends_with("_message"))
+        .expect("the program's `JsonError.message` should be reachable");
 
     // The program's body returns an interpolated field; the stdlib enum's
     // matches on self. Checking the shape catches a swap either way.
     let src = format!("{:?}", body.body);
     assert!(
         !src.contains("Match"),
-        "`JsonError_message` lowered the stdlib enum's body, not the program's",
+        "the program's `message` lowered the stdlib enum's body",
     );
     let _ = std::fs::remove_file(&path);
 }

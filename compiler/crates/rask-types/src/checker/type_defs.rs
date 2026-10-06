@@ -435,6 +435,17 @@ impl TypedProgram {
             }
         }
         rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.wrapper_eq_calls));
+
+        // A program type sharing a stdlib type's name has gone by its symbol
+        // in the table since it was registered (`TypeTable::written_names`).
+        // Its declaration and every use the program wrote say that symbol from
+        // here, and the written name means the stdlib's type to every pass
+        // after this one — so neither backend can mistake one for the other
+        // (#1333). What the checker wrote itself is named from the table
+        // already, which is why this runs before those are added.
+        let renamed = self.types.release_written_names();
+        rename_types(decls, &renamed, &self.type_test_patterns);
+
         let mut derived = std::mem::take(&mut self.derived_decls);
         rask_ast::rewrite::rewrite_decls(&mut derived, &mut Calls(&self.wrapper_eq_calls));
         decls.extend(derived);
@@ -571,6 +582,14 @@ pub struct TypedProgram {
     /// the ownership checker to transfer ownership of the sent value even when
     /// inference leaves the receiver as a type variable in `node_types`.
     pub channel_send_sites: std::collections::HashSet<rask_ast::Span>,
+    /// Bare names in a pattern that the checker read as a type test rather
+    /// than as a variant or a binding — `r is ParseError` — keyed by the span
+    /// of the statement or expression the pattern sits in.
+    ///
+    /// A bare `ParseError` can be any of the three, and only the scrutinee's
+    /// type says which. Renaming a type has to rename the first kind and leave
+    /// `AppError`'s `ParseError` variant alone (`attach_derived`).
+    pub type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
     /// Function name → inferred return type, for functions that don't declare one
     /// (`func f() { return 41 }`). An absent annotation is not the same as
     /// returning nothing, and the declaration string is the only thing lowering
@@ -596,4 +615,131 @@ pub struct TypedProgram {
     /// (`Slot_clone`). Reached only through a call pinned to the type, so
     /// mono never widens a call it couldn't pin onto one (#1434).
     pub derived_generic_methods: std::collections::HashSet<String>,
+}
+
+/// Give each type in `map` its new name, in its declaration and everywhere the
+/// program names it.
+///
+/// `rask_ast::qualify` renames every bare name in a pattern, which is right
+/// for a package's declarations and wrong here: a bare `ParseError` in a
+/// pattern is just as often `AppError`'s variant of that name. Only the ones
+/// the checker read as a type test are the type (`type_test_patterns`); a bare
+/// constructor pattern is always a variant.
+fn rename_types(
+    decls: &mut [rask_ast::decl::Decl],
+    map: &HashMap<String, String>,
+    type_tests: &std::collections::HashSet<(rask_ast::Span, String)>,
+) {
+    use rask_ast::expr::{Expr, ExprKind, Pattern};
+    use rask_ast::stmt::{Stmt, StmtKind};
+
+    if map.is_empty() {
+        return;
+    }
+
+    struct Types<'a> {
+        map: &'a HashMap<String, String>,
+        type_tests: &'a std::collections::HashSet<(rask_ast::Span, String)>,
+        locals: std::collections::HashSet<String>,
+    }
+
+    impl Types<'_> {
+        /// The bare type tests in one pattern, checked under `span`.
+        fn type_tests_in(&self, p: &mut Pattern, span: rask_ast::Span) {
+            match p {
+                Pattern::Ident(name) => {
+                    if self.type_tests.contains(&(span, name.clone())) {
+                        if let Some(to) = self.map.get(name.as_str()) {
+                            *name = to.clone();
+                        }
+                    }
+                }
+                Pattern::Constructor { fields, .. } => {
+                    fields.iter_mut().for_each(|f| self.type_tests_in(f, span))
+                }
+                Pattern::Struct { fields, .. } => {
+                    fields.iter_mut().for_each(|(_, f)| self.type_tests_in(f, span))
+                }
+                Pattern::Tuple(parts) | Pattern::Or(parts) => {
+                    parts.iter_mut().for_each(|f| self.type_tests_in(f, span))
+                }
+                Pattern::Wildcard
+                | Pattern::Literal(_)
+                | Pattern::Range { .. }
+                | Pattern::TypePat { .. } => {}
+            }
+        }
+    }
+
+    impl rask_ast::rewrite::Rewrite for Types<'_> {
+        fn ty(&mut self, t: &mut rask_ast::ty::TypeExpr) {
+            t.rename(&|name| self.map.get(name).cloned());
+        }
+
+        fn expr(&mut self, e: &mut Expr) {
+            let span = e.span;
+            match &mut e.kind {
+                ExprKind::Ident(name) | ExprKind::GenericName { name, .. } => {
+                    if !self.locals.contains(name.as_str()) {
+                        if let Some(to) = self.map.get(name.as_str()) {
+                            *name = to.clone();
+                        }
+                    }
+                }
+                ExprKind::StructLit { name, .. } => {
+                    if let Some(to) = self.map.get(name.as_str()) {
+                        *name = to.clone();
+                    }
+                }
+                ExprKind::Match { arms, .. } => {
+                    for arm in arms {
+                        self.type_tests_in(&mut arm.pattern, span);
+                    }
+                }
+                ExprKind::IfLet { pattern, .. }
+                | ExprKind::GuardPattern { pattern, .. }
+                | ExprKind::IsPattern { pattern, .. } => self.type_tests_in(pattern, span),
+                _ => {}
+            }
+        }
+
+        fn body(&mut self, b: &mut Vec<Stmt>) {
+            for stmt in b {
+                if let StmtKind::LetStruct { pattern, .. } = &mut stmt.kind {
+                    let span = stmt.span;
+                    self.type_tests_in(pattern, span);
+                }
+            }
+        }
+
+        fn pattern(&mut self, p: &mut Pattern) {
+            // `ParseError.Plain` and `ParseError { .. }` name the type; a bare
+            // name is handled with its span above.
+            let name = match p {
+                Pattern::Ident(name) | Pattern::Constructor { name, .. } if name.contains('.') => name,
+                Pattern::Struct { name, .. } => name,
+                _ => return,
+            };
+            match name.split_once('.') {
+                Some((head, tail)) => {
+                    if let Some(to) = self.map.get(head) {
+                        *name = format!("{to}.{tail}");
+                    }
+                }
+                None => {
+                    if let Some(to) = self.map.get(name.as_str()) {
+                        *name = to.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    for decl in decls.iter_mut() {
+        // A bare type test reads as a binding to a syntactic walk; it isn't one.
+        let mut locals = rask_ast::qualify::names_bound_in(decl);
+        locals.retain(|n| !type_tests.iter().any(|(_, t)| t == n));
+        rask_ast::rewrite::rewrite_decl(decl, &mut Types { map, type_tests, locals });
+        rask_ast::qualify::rename_declaration(decl, map);
+    }
 }

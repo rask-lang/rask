@@ -8633,11 +8633,14 @@ impl<'a> MirLowerer<'a> {
                 let Some(layout) = self.ctx.struct_layouts.get(id.id as usize).cloned() else {
                     return Ok(None);
                 };
+                // A program type sharing a stdlib type's name is laid out under
+                // a symbol of its own; it prints as written.
+                let name = self.ctx.type_defs.written_name(&layout.name).to_string();
                 let mut parts: Vec<MirOperand> = Vec::new();
                 if layout.fields.is_empty() {
-                    parts.push(lit(self, &format!("{} {{}}", layout.name)));
+                    parts.push(lit(self, &format!("{} {{}}", name)));
                 } else {
-                    parts.push(lit(self, &format!("{} {{ ", layout.name)));
+                    parts.push(lit(self, &format!("{} {{ ", name)));
                     for (i, f) in layout.fields.iter().enumerate() {
                         if i > 0 {
                             parts.push(lit(self, ", "));
@@ -8696,15 +8699,16 @@ impl<'a> MirLowerer<'a> {
                     default,
                 }));
 
+                let name = self.ctx.type_defs.written_name(&layout.name).to_string();
                 for (vi, variant) in layout.variants.iter().enumerate() {
                     self.builder.switch_to_block(arms[vi]);
                     let mut parts: Vec<MirOperand> = Vec::new();
                     if variant.fields.is_empty() {
-                        parts.push(lit(self, &format!("{}.{}", layout.name, variant.name)));
+                        parts.push(lit(self, &format!("{}.{}", name, variant.name)));
                     } else {
                         parts.push(lit(
                             self,
-                            &format!("{}.{}(", layout.name, variant.name),
+                            &format!("{}.{}(", name, variant.name),
                         ));
                         for (fi, f) in variant.fields.iter().enumerate() {
                             if fi > 0 {

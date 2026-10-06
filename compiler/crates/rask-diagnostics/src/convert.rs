@@ -484,6 +484,16 @@ impl ToDiagnostic for rask_types::TypeError {
                     )
                     .with_why("Rask is statically typed — every expression must match its expected type");
 
+                // Two types that print alike: the program declares a type with
+                // a stdlib type's name, and the value is the stdlib's (#1333).
+                if expected.to_string() == found.to_string() {
+                    return diag.with_fix(format!(
+                        "two types are called `{}` here, the program's own and the standard \
+                         library's; rename the program's so they stop sharing a name",
+                        found
+                    ));
+                }
+
                 // An optional is `Result { ok: T, err: None }` underneath, so the
                 // Result branch below catches it too unless it's split off
                 // first. It used to say "wrap with `try` to propagate the

@@ -95,6 +95,16 @@ pub struct TypeTable {
     /// where. `type_method_decls` already binds methods by TypeId for the same
     /// reason.
     pub(super) stdlib_type_names: HashMap<String, TypeId>,
+    /// A program type sharing a stdlib type's name, by its symbol: the name as
+    /// the program wrote it.
+    ///
+    /// The checker tells the two apart by `TypeId`, but everything after it
+    /// keys types, methods and layouts by name, so two types called
+    /// `ParseError` were one type there and one `ParseError_message` served
+    /// both (#1333). The program's gets a name of its own from the moment it is
+    /// registered (`ParseError#57` — `#` is in no identifier), and this is how
+    /// a message or a printed value still says what the program wrote.
+    pub(super) written_names: HashMap<String, String>,
     /// Whether registrations and lookups are on behalf of stdlib code.
     /// Mirrors the resolver's flag of the same name.
     pub(super) stdlib_mode: bool,
@@ -207,6 +217,7 @@ impl TypeTable {
             types: Vec::new(),
             type_names: HashMap::new(),
             stdlib_type_names: HashMap::new(),
+            written_names: HashMap::new(),
             stdlib_mode: false,
             builtins: HashMap::new(),
             type_aliases: HashMap::new(),
@@ -375,21 +386,76 @@ impl TypeTable {
         }
 
         let id = TypeId(self.types.len() as u32);
-        self.types.push(def);
-
-        for n in [name.clone()] {
-            if self.stdlib_mode {
-                // Stdlib code always means this one.
-                self.stdlib_type_names.insert(n.clone(), id);
-                // Program code means it too, unless the program declares its
-                // own. Registering stdlib first and not overwriting later is
-                // what makes a program type shadow rather than collide.
-                self.type_names.entry(n).or_insert(id);
-            } else {
-                self.type_names.insert(n, id);
+        let mut def = def;
+        if self.stdlib_mode {
+            // Stdlib code always means this one.
+            self.stdlib_type_names.insert(name.clone(), id);
+            // Program code means it too, unless the program declares its
+            // own. Registering stdlib first and not overwriting later is
+            // what makes a program type shadow rather than collide.
+            self.type_names.entry(name).or_insert(id);
+        } else {
+            // Program code reaches it by what it wrote; anything minted from
+            // the table names it by its symbol.
+            self.type_names.insert(name.clone(), id);
+            if self.shadows_stdlib_type(&name, &def) {
+                let symbol = format!("{name}#{}", id.0);
+                *Self::def_name_mut(&mut def) = symbol.clone();
+                self.type_names.insert(symbol.clone(), id);
+                self.written_names.insert(symbol, name);
             }
         }
+        self.types.push(def);
         id
+    }
+
+    /// Does a program declaration of `name` share it with a stdlib type?
+    ///
+    /// An interface is left out: `interface_symbol` names those, and only
+    /// where a type is written as `any I`.
+    fn shadows_stdlib_type(&self, name: &str, def: &TypeDef) -> bool {
+        !matches!(def, TypeDef::Interface { .. } | TypeDef::Primitive { .. })
+            && self.stdlib_type_names.contains_key(name)
+    }
+
+    /// Hand each written name back to the stdlib once the program's own uses
+    /// say the symbol (`TypedProgram::attach_derived`), and return written →
+    /// symbol for that rewrite.
+    ///
+    /// From there on `ParseError` is the stdlib's to every pass, the same as
+    /// inside the stdlib's bodies, and the program's type is `ParseError#57`.
+    pub(super) fn release_written_names(&mut self) -> HashMap<String, String> {
+        let mut renamed = HashMap::new();
+        for (symbol, written) in &self.written_names {
+            if let Some(std) = self.stdlib_type_names.get(written) {
+                self.type_names.insert(written.clone(), *std);
+            }
+            renamed.insert(written.clone(), symbol.clone());
+        }
+        renamed
+    }
+
+    /// The stdlib's type of this name, when the program declares its own.
+    fn shadowed_stdlib_type(&self, name: &str) -> Option<TypeId> {
+        let std = *self.stdlib_type_names.get(name)?;
+        (self.type_names.get(name) != Some(&std)).then_some(std)
+    }
+
+    /// A type name as the program wrote it, for a message or a printed value.
+    /// The name itself for every type that has no symbol of its own.
+    pub fn written_name<'a>(&'a self, name: &'a str) -> &'a str {
+        self.written_names.get(name).map_or(name, String::as_str)
+    }
+
+    fn def_name_mut(def: &mut TypeDef) -> &mut String {
+        match def {
+            TypeDef::Struct { name, .. }
+            | TypeDef::Enum { name, .. }
+            | TypeDef::Interface { name, .. }
+            | TypeDef::Union { name, .. }
+            | TypeDef::NominalAlias { name, .. }
+            | TypeDef::Primitive { name, .. } => name,
+        }
     }
 
     /// The name map to consult first, given who's asking.
@@ -647,10 +713,17 @@ impl TypeTable {
                 ok: Box::new(self.as_stdlib_reads(ok)),
                 err: Box::new(self.as_stdlib_reads(err)),
             },
-            Type::Generic { base, args } => Type::Generic { base: *base, args: each(args) },
-            Type::UnresolvedGeneric { name, args } => {
-                Type::UnresolvedGeneric { name: name.clone(), args: each(args) }
+            // A name the program has taken for a type of its own still means
+            // the stdlib's here: `parse` fails with the stdlib's `ParseError`
+            // whatever the program calls its enum (#1333).
+            Type::UnresolvedNamed(name) if self.shadowed_stdlib_type(name).is_some() => {
+                Type::Named(self.shadowed_stdlib_type(name).unwrap())
             }
+            Type::Generic { base, args } => Type::Generic { base: *base, args: each(args) },
+            Type::UnresolvedGeneric { name, args } => match self.shadowed_stdlib_type(name) {
+                Some(base) => Type::Generic { base, args: each(args) },
+                None => Type::UnresolvedGeneric { name: name.clone(), args: each(args) },
+            },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.as_stdlib_reads(e)).collect()),
             Type::Fn { params, ret } => Type::Fn {
                 params: params.iter().map(|p| self.as_stdlib_reads(p)).collect(),
@@ -1805,56 +1878,71 @@ impl TypeTable {
     }
 
     pub fn resolve_type_names(&self, ty: &Type) -> Type {
+        self.named(ty, false)
+    }
+
+    /// `resolve_type_names` with each type named as the program wrote it
+    /// (`written_name`): for a message, never for a name anything looks up.
+    pub fn display_type_names(&self, ty: &Type) -> Type {
+        self.named(ty, true)
+    }
+
+    fn name_of(&self, id: TypeId, written: bool) -> String {
+        let name = self.type_name(id);
+        if written { self.written_name(&name).to_string() } else { name }
+    }
+
+    fn named(&self, ty: &Type, written: bool) -> Type {
         match ty {
-            Type::Named(id) => Type::UnresolvedNamed(self.type_name(*id)),
+            Type::Named(id) => Type::UnresolvedNamed(self.name_of(*id, written)),
             Type::Result { ok, err } if **err == Type::None => {
-                Type::option(self.resolve_type_names(ok))
+                Type::option(self.named(ok, written))
             }
             Type::Result { ok, err } => Type::Result {
-                ok: Box::new(self.resolve_type_names(ok)),
-                err: Box::new(self.resolve_type_names(err)),
+                ok: Box::new(self.named(ok, written)),
+                err: Box::new(self.named(err, written)),
             },
             Type::Generic { base, args } => {
                 // Canonicalize Result<T, E> and Option<T> to their first-class variants
                 if Some(*base) == self.result_type_id && args.len() == 2 {
                     if let (GenericArg::Type(ok), GenericArg::Type(err)) = (&args[0], &args[1]) {
                         return Type::Result {
-                            ok: Box::new(self.resolve_type_names(ok)),
-                            err: Box::new(self.resolve_type_names(err)),
+                            ok: Box::new(self.named(ok, written)),
+                            err: Box::new(self.named(err, written)),
                         };
                     }
                 }
                 if Some(*base) == self.option_type_id && args.len() == 1 {
                     if let GenericArg::Type(inner) = &args[0] {
-                        return Type::option(self.resolve_type_names(inner));
+                        return Type::option(self.named(inner, written));
                     }
                 }
                 Type::UnresolvedGeneric {
-                    name: self.type_name(*base),
-                    args: args.iter().map(|a| self.resolve_generic_arg(a)).collect(),
+                    name: self.name_of(*base, written),
+                    args: args.iter().map(|a| self.named_arg(a, written)).collect(),
                 }
             }
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| self.resolve_type_names(p)).collect(),
-                ret: Box::new(self.resolve_type_names(ret)),
+                params: params.iter().map(|p| self.named(p, written)).collect(),
+                ret: Box::new(self.named(ret, written)),
             },
-            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.resolve_type_names(e)).collect()),
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.named(e, written)).collect()),
             Type::Array { elem, len } => Type::Array {
-                elem: Box::new(self.resolve_type_names(elem)),
+                elem: Box::new(self.named(elem, written)),
                 len: *len,
             },
             Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
                 name: name.clone(),
-                args: args.iter().map(|a| self.resolve_generic_arg(a)).collect(),
+                args: args.iter().map(|a| self.named_arg(a, written)).collect(),
             },
-            Type::Union(types) => Type::Union(types.iter().map(|t| self.resolve_type_names(t)).collect()),
+            Type::Union(types) => Type::Union(types.iter().map(|t| self.named(t, written)).collect()),
             other => other.clone(),
         }
     }
 
-    fn resolve_generic_arg(&self, arg: &GenericArg) -> GenericArg {
+    fn named_arg(&self, arg: &GenericArg, written: bool) -> GenericArg {
         match arg {
-            GenericArg::Type(ty) => GenericArg::Type(Box::new(self.resolve_type_names(ty))),
+            GenericArg::Type(ty) => GenericArg::Type(Box::new(self.named(ty, written))),
             GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
@@ -1869,7 +1957,7 @@ impl TypeTable {
     /// `TryOnFlatShape` and others while `Mismatch` got it right in the same run
     /// (#646).
     pub fn resolve_error_types(&self, mut error: TypeError) -> TypeError {
-        error.map_types(&|ty| self.resolve_type_names(ty));
+        error.map_types(&|ty| self.display_type_names(ty));
         error
     }
 }

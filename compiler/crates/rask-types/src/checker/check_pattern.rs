@@ -321,6 +321,7 @@ impl TypeChecker {
                 let resolved = self.ctx.apply(scrutinee_ty);
                 if let Type::Result { .. } = &resolved {
                     if let Some(candidate) = self.pattern_type_name(name) {
+                        self.type_test_patterns.insert((span, name.clone()));
                         let candidate = normalize_type(&candidate, &self.types);
                         let branches =
                             two_branch_leaves(&mut self.ctx, &self.types, &resolved);
@@ -358,6 +359,7 @@ impl TypeChecker {
                     && !self.qualify_variant_name(name, scrutinee_ty).contains('.')
                 {
                     if let Some(candidate) = self.pattern_type_name(name) {
+                        self.type_test_patterns.insert((span, name.clone()));
                         if matches!(resolved, Type::Var(_)) {
                             self.ctx.add_constraint(TypeConstraint::TypePatternMatches {
                                 scrutinee: scrutinee_ty.clone(),
