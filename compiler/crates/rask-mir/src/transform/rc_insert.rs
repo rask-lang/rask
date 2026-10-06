@@ -198,6 +198,13 @@ fn retain_views_handed_over(
                     (crate::own_names::returns_a_view(&fref.name, own) && !args.is_empty())
                         .then_some(*dst)
                 }
+                // A capture stays where it was captured: in the frame that
+                // built the closure, or in the environment that carries it.
+                // A closure hands back what it returns (#1441), so `|| held`
+                // gives the caller references of its own. (A non-Copy
+                // capture returned this way is deep-cloned; the checker
+                // should reject it instead, #1449.)
+                MirStmtKind::LoadCapture { dst, .. } => Some(*dst),
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } => {
                     views.contains(src).then_some(*dst)
                 }
@@ -845,6 +852,13 @@ fn insert_aggregate_release(
                         }
                         ev.push(ownership::Event::Other(*dst));
                     }
+                }
+                // A closure gives up what it returns, the same as a function
+                // does. Counted as nobody's, `match mk()` on a closure that
+                // builds a `Slot.Full(line)` left the line's string to no one
+                // (#1441).
+                MirStmtKind::ClosureCall { dst: Some(dst), .. } if aggregates.contains(dst) => {
+                    ev.push(ownership::Event::Make(*dst));
                 }
                 // Released already, by whoever lowered it: `drop(p)` on a
                 // `Heap<T>` releases the payload's contents before giving the

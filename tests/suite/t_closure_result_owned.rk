@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a closure call returns belongs to the caller, as a function call's does.
+//
+// Natively the caller treated a closure's result as nobody's, so
+// `match mk() { Slot.Full(l) => … }` never released the line's string, and
+// neither did a plain `let l = mk()` (#1441). A closure returning one of its
+// captures now hands the caller references of its own, so calling it twice
+// doesn't free the capture under the closure.
+
+struct Line { text: string }
+
+enum Slot {
+    Full(Line)
+    Empty
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+func keeper(l: Line) -> func() -> Line {
+    return || l
+}
+
+test "a match on a closure's result releases the payload" {
+    let mk = || Slot.Full(Line { text: heap("fresh") })
+    mut seen = ""
+    match mk() {
+        Slot.Full(l) => seen = l.text
+        _ => seen = "empty"
+    }
+    assert seen == "fresh, long enough to live on the heap"
+}
+
+test "a struct a closure builds is the caller's" {
+    let mk = || Line { text: heap("line") }
+    let a = mk()
+    let b = mk()
+    assert a.text == b.text
+}
+
+test "an array a closure builds is the caller's" {
+    let mk = || [heap("first"), heap("second")]
+    let pair = mk()
+    assert pair[1] == "second, long enough to live on the heap"
+}
+
+test "a closure returning its capture can be called twice" {
+    let f = keeper(Line { text: heap("kept") })
+    let a = f()
+    let b = f()
+    assert a.text == "kept, long enough to live on the heap"
+    assert b.text == a.text
+    assert f().text == a.text
+}
