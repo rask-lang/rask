@@ -121,6 +121,8 @@ struct MetadataCache {
     method_metas: Vec<StdlibMethodMeta>,
     /// qualified_name → index into method_metas
     by_name: HashMap<std::string::String, usize>,
+    /// `Type_method` for every method a stdlib type declares.
+    method_symbols: HashSet<std::string::String>,
 }
 
 static CACHE: OnceLock<MetadataCache> = OnceLock::new();
@@ -131,6 +133,7 @@ fn build_cache() -> MetadataCache {
     let mut type_names = HashSet::new();
     let mut module_names = HashSet::new();
     let mut method_metas = Vec::new();
+    let mut method_symbols = HashSet::new();
 
     for type_name in reg.type_names() {
         // `fs`, `io`, `cli` are namespaces of free functions; `string`,
@@ -154,6 +157,7 @@ fn build_cache() -> MetadataCache {
 
         for method in reg.methods(type_name) {
             let qualified = format!("{}_{}", type_name, method.name);
+            method_symbols.insert(qualified.clone());
             let ret_cat = ret_category(&method.ret_ty);
             let ret_prefix = ret_type_prefix(&ret_cat);
             method_metas.push(StdlibMethodMeta {
@@ -194,6 +198,7 @@ fn build_cache() -> MetadataCache {
         module_names,
         method_metas,
         by_name,
+        method_symbols,
     }
 }
 
@@ -236,6 +241,15 @@ pub fn is_unimplemented(prefix: &str, method: &str) -> bool {
         .get_type(prefix)
         .and_then(|t| t.methods.iter().find(|m| m.name == method))
         .is_some_and(|m| m.unimplemented)
+}
+
+/// Is `name` the symbol of a stdlib method — its `Type_method`, or a spelling
+/// MIR mints for one?
+///
+/// A program function of that name has to be given another, or the two are
+/// one symbol to every backend (#1307).
+pub fn is_method_symbol(name: &str) -> bool {
+    cache().method_symbols.contains(name) || internal_spelling(name).is_some()
 }
 
 pub fn type_has_method(prefix: &str, method: &str) -> bool {

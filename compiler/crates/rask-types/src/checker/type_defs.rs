@@ -403,6 +403,48 @@ impl TypedProgram {
             .collect()
     }
 
+    /// Program functions whose name is already some method's symbol, each
+    /// against a symbol of its own: `Vec_len` → `Vec_len#fn`.
+    ///
+    /// A method `m` on `T` is `T_m` to every backend, and a function is its
+    /// name, so `func Vec_len` and `Vec.len` were one symbol. `#` is in no
+    /// identifier, so the new name can't be one either. The method keeps its
+    /// symbol because the stdlib's tables, and MIR's own spellings for it, are
+    /// keyed on that. `main` and a function with a foreign ABI keep theirs:
+    /// something outside the program calls them by it.
+    fn functions_needing_symbols(&self, decls: &[rask_ast::decl::Decl]) -> HashMap<String, String> {
+        use rask_ast::decl::DeclKind;
+        let method_symbols: std::collections::HashSet<String> = self
+            .types
+            .types
+            .iter()
+            .flat_map(|def| {
+                let methods: &[MethodSig] = match def {
+                    TypeDef::Struct { methods, .. }
+                    | TypeDef::Enum { methods, .. }
+                    | TypeDef::NominalAlias { methods, .. } => methods,
+                    _ => &[],
+                };
+                let ty = super::type_table::TypeTable::def_name(def);
+                methods.iter().map(move |m| format!("{ty}_{}", m.name))
+            })
+            .collect();
+        decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::Fn(f)
+                    if f.name != "main"
+                        && f.abi.is_none()
+                        && (method_symbols.contains(&f.name)
+                            || rask_stdlib::mir_metadata::is_method_symbol(&f.name)) =>
+                {
+                    Some((f.name.clone(), format!("{}#fn", f.name)))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Hand the checker's own declarations to the program: the derived
     /// `eq`/`hash`/`compare` bodies and wrapper functions it wrote and
     /// checked, and every `==` on two wrappers turned into a call to the
@@ -445,6 +487,21 @@ impl TypedProgram {
         // already, which is why this runs before those are added.
         let renamed = self.types.release_written_names();
         rename_types(decls, &renamed, &self.type_test_patterns);
+
+        // A program function the same way, when its name is a symbol the
+        // backends already use for a method: `func Vec_len(v)` and `v.len()`
+        // were one `Vec_len` to native, and the method call ran the program's
+        // body (#1307).
+        let renamed = self.functions_needing_symbols(decls);
+        rask_ast::qualify::qualify_in_place(decls, &renamed);
+        for (written, symbol) in &renamed {
+            if let Some(ret) = self.inferred_fn_ret.remove(written) {
+                self.inferred_fn_ret.insert(symbol.clone(), ret);
+            }
+            if let Some(params) = self.inferred_fn_params.remove(written) {
+                self.inferred_fn_params.insert(symbol.clone(), params);
+            }
+        }
 
         let mut derived = std::mem::take(&mut self.derived_decls);
         rask_ast::rewrite::rewrite_decls(&mut derived, &mut Calls(&self.wrapper_eq_calls));
