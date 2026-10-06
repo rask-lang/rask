@@ -1851,8 +1851,11 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             StmtKind::While { label, cond, body } => {
+                // `while it? as v` binds `v` for the body, as `if` does.
+                let saved_parts = self.borrowed_parts.clone();
                 self.check_expr(cond);
                 self.check_loop_body(body, &[], label.as_ref(), false);
+                self.borrowed_parts = saved_parts;
             }
             StmtKind::WhileLet { label, pattern, expr, body } => {
                 self.check_expr(expr);
@@ -2645,6 +2648,8 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::If { cond, then_branch, else_branch, .. } => {
+                // A payload `cond` binds lives in the then-branch only.
+                let saved_parts = self.borrowed_parts.clone();
                 self.check_expr(cond);
                 // OPT19: `if x? as c` reads the payload out of `x`. For a linear
                 // payload "read out" can only mean moved — a resource can't be
@@ -2655,6 +2660,7 @@ impl<'a> OwnershipChecker<'a> {
                 let present_resource = self.optional_payload_resource(cond);
                 let pre_branch = self.bindings.clone();
                 self.check_expr(then_branch);
+                self.borrowed_parts = saved_parts;
                 if let Some(ref binding) = present_resource {
                     self.check_present_binding_consumed(binding, then_branch.span);
                 }
@@ -2809,6 +2815,17 @@ impl<'a> OwnershipChecker<'a> {
                 // registered — but the *type* was missing, so anything reasoning
                 // about what `v` is saw nothing.
                 if let Some(name) = binding {
+                    // Out of a borrowed optional, `v` is a view of the same
+                    // loan: handing it back gave the caller its own vector
+                    // under a second name, as `is Arr(a)` did (#1425, #1452).
+                    match self.borrowed_source(inner) {
+                        Some(from) => {
+                            self.borrowed_parts.insert(name.clone(), (inner.span, from));
+                        }
+                        None => {
+                            self.borrowed_parts.remove(name);
+                        }
+                    }
                     if let Some(ty) = self.node_ty(&inner.id).cloned() {
                         let narrowed = ty.as_option().cloned().unwrap_or(ty);
                         self.bindings.insert(name.clone(), BindingState::Owned);
@@ -3994,20 +4011,62 @@ impl<'a> OwnershipChecker<'a> {
     /// A payload matched out of one is the same view under its own name:
     /// `if self is Array(a) { return a }` handed the caller the vector the
     /// borrowed `JsonValue` still held, and the caller freed it (#1425).
+    ///
+    /// So is the parameter itself: `func back(b: Bag) -> Bag { return b }`
+    /// gave the caller its own `Bag` back under a second name (#1452).
     fn check_borrowed_field_escape(&mut self, expr: &Expr) {
+        // The value a branch produces is the value returned.
+        match &expr.kind {
+            ExprKind::If { then_branch, else_branch, .. } => {
+                self.check_borrowed_field_escape(then_branch);
+                if let Some(e) = else_branch {
+                    self.check_borrowed_field_escape(e);
+                }
+                return;
+            }
+            ExprKind::Match { arms, .. } => {
+                for arm in arms {
+                    self.check_borrowed_field_escape(&arm.body);
+                }
+                return;
+            }
+            ExprKind::Block(stmts) => {
+                if let Some(StmtKind::Expr(tail)) = stmts.last().map(|s| &s.kind) {
+                    self.check_borrowed_field_escape(tail);
+                }
+                return;
+            }
+            _ => {}
+        }
         let (Some(root), fields) = Self::extract_root_and_fields(expr) else {
             return;
         };
         let fields = fields.unwrap_or_default();
+        // The whole parameter. A return never reaches `consume_binding`, so
+        // this is the only place that sees it, and the container pass in MIR
+        // reads a returned parameter as given away (#1452). A `mutate` one is
+        // the same alias: nothing can be put back after the return, so the
+        // caller is left holding what it handed out.
+        let whole_param = if fields.is_empty() && !self.borrowed_parts.contains_key(&root) {
+            match (self.borrowed_params.get(&root), self.mutate_params.get(&root)) {
+                (Some(&found), _) => Some(found),
+                (None, Some(&declared_at)) => Some((declared_at, true)),
+                (None, None) => return,
+            }
+        } else {
+            None
+        };
         let (path, root) = if fields.is_empty() {
             match self.borrowed_parts.get(&root) {
                 Some((_, from)) => (root.clone(), from.clone()),
-                None => return, // whole-value return is `consume_binding`'s rule
+                None => (root.clone(), root),
             }
         } else {
             (format!("{}.{}", root, fields.join(".")), root)
         };
-        let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(&root) else {
+        let Some((declared_at, is_mutate)) =
+            whole_param.or_else(|| self.borrowed_params.get(&root).copied())
+        else {
             return;
         };
         let Some(ty) = self.node_ty(&expr.id).cloned() else {

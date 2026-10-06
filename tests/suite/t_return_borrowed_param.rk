@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// Returning a parameter the function only borrowed (#1452).
+//
+// `func back(b: Bag) -> Bag { return b }` was accepted, and on both backends
+// the result was the caller's own `Bag` under a second name: a push through
+// the returned value showed up in the `let` it came from. It's rejected now
+// (tests/compile_errors/return_borrowed_param.rk). These are the two ways to
+// say what was meant.
+
+struct Bag {
+    items: Vec<string>
+}
+
+func give_back(take b: Bag) -> Bag {
+    return b
+}
+
+func copy_of(b: Bag) -> Bag {
+    return b.clone()
+}
+
+// A Copy parameter is copied on the way out, so returning it was always fine.
+func same(n: i64) -> i64 {
+    return n
+}
+
+test "a `take` parameter hands the value on" {
+    let b = Bag { items: ["x"] }
+    mut c = give_back(b)
+    c.items.push("y")
+    assert c.items.len() == 2
+}
+
+test "a clone leaves the caller's value alone" {
+    let b = Bag { items: ["x"] }
+    mut c = copy_of(b)
+    c.items.push("y")
+    assert c.items.len() == 2
+    assert b.items.len() == 1
+}
+
+test "a Copy parameter still returns" {
+    assert same(4) == 4
+}

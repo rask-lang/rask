@@ -44,39 +44,45 @@ extend BinaryBuilder {
     public func with_capacity(n: usize) -> BinaryBuilder {
         return BinaryBuilder { data: Vec.with_capacity(n) }
     }
-    public func write_u8(mutate self, value: u8) -> BinaryBuilder {
-        self.data.push(value)
-        return self
+    public func write_u8(take self, value: u8) -> BinaryBuilder {
+        mut b = self
+        b.data.push(value)
+        return b
     }
-    public func write_u16be(mutate self, value: u16) -> BinaryBuilder {
-        self.data.push((value >> 8).wrap<u8>())
-        self.data.push(value.wrap<u8>())
-        return self
+    public func write_u16be(take self, value: u16) -> BinaryBuilder {
+        mut b = self
+        b.data.push((value >> 8).wrap<u8>())
+        b.data.push(value.wrap<u8>())
+        return b
     }
-    public func write_u16le(mutate self, value: u16) -> BinaryBuilder {
-        self.data.push(value.wrap<u8>())
-        self.data.push((value >> 8).wrap<u8>())
-        return self
+    public func write_u16le(take self, value: u16) -> BinaryBuilder {
+        mut b = self
+        b.data.push(value.wrap<u8>())
+        b.data.push((value >> 8).wrap<u8>())
+        return b
     }
-    public func write_u32be(mutate self, value: u32) -> BinaryBuilder {
-        self.data.push((value >> 24).wrap<u8>())
-        self.data.push((value >> 16).wrap<u8>())
-        self.data.push((value >> 8).wrap<u8>())
-        self.data.push(value.wrap<u8>())
-        return self
+    public func write_u32be(take self, value: u32) -> BinaryBuilder {
+        mut b = self
+        b.data.push((value >> 24).wrap<u8>())
+        b.data.push((value >> 16).wrap<u8>())
+        b.data.push((value >> 8).wrap<u8>())
+        b.data.push(value.wrap<u8>())
+        return b
     }
-    public func write_u32le(mutate self, value: u32) -> BinaryBuilder {
-        self.data.push(value.wrap<u8>())
-        self.data.push((value >> 8).wrap<u8>())
-        self.data.push((value >> 16).wrap<u8>())
-        self.data.push((value >> 24).wrap<u8>())
-        return self
+    public func write_u32le(take self, value: u32) -> BinaryBuilder {
+        mut b = self
+        b.data.push(value.wrap<u8>())
+        b.data.push((value >> 8).wrap<u8>())
+        b.data.push((value >> 16).wrap<u8>())
+        b.data.push((value >> 24).wrap<u8>())
+        return b
     }
-    public func write_bytes(mutate self, bytes: Vec<u8>) -> BinaryBuilder {
-        for b in bytes {
-            self.data.push(b)
+    public func write_bytes(take self, bytes: Vec<u8>) -> BinaryBuilder {
+        mut b = self
+        for byte in bytes {
+            b.data.push(byte)
         }
-        return self
+        return b
     }
     public func build(take self) -> Vec<u8> {
         return self.data

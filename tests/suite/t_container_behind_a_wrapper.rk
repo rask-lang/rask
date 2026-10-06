@@ -93,7 +93,7 @@ test "mem.ownership — read through the tag at the use site" {
 
 // `or` doesn't auto-wrap at an assignment, only at a `return` (type.errors/ER11),
 // so the field is filled by a small function whose signature says which branch.
-func wrapped(v: Vec<i64>) -> Vec<i64> or Refused {
+func wrapped(take v: Vec<i64>) -> Vec<i64> or Refused {
     return v
 }
 

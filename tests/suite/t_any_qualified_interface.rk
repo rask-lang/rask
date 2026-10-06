@@ -58,7 +58,7 @@ func any_writers(ws: Vec<any io.Writer>) -> bool {
 }
 
 // And in a return position.
-func pick(g: any Greeter) -> any Greeter {
+func pick(take g: any Greeter) -> any Greeter {
     return g
 }
 

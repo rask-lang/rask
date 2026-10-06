@@ -3378,14 +3378,15 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_primary(self.span, format!("`{}` isn't Copy, so this is a view, not a copy", field_ty))
                 .with_secondary(*declared_at, format!("`{}` is a {} — the caller keeps it", root, mode))
                 .with_fix(format!(
-                    "return a copy — `{}.clone()` — or take the receiver: `{}`, \
+                    "return a copy — `{}.clone()` — or take the {}: `{}`, \
                      so the call site shows the value going",
                     path,
+                    if root == "self" { "receiver" } else { "parameter" },
                     if root == "self" { "take self".to_string() } else { format!("take {}: …", root) }
                 ))
                 .with_why(
-                    "a parameter without `take` is the caller's value on loan, and a \
-                     field of it, or a payload matched out of it, is a view that \
+                    "a parameter without `take` is the caller's value on loan. It, \
+                     a field of it, or a payload matched out of it is a view that \
                      lives until the block ends. Handing \
                      that view back leaves the caller and the callee's caller both \
                      holding the same storage: a write through one is a write \

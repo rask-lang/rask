@@ -70,14 +70,14 @@ TYPES = {
     # their own carriers.
     "vec": dict(
         decl="Vec<i64>", val="Vec.from([7, 42])", val2="Vec.from([1, 2])",
-        show="42", read="{{{e}[1]}}"),
+        show="42", read="{{{e}[1]}}", owned=True),
 
     # A Map, built from pairs so it fits an expression slot like every other
     # payload (std.collections `Map.from`).
     "map": dict(
         decl="Map<string, i64>",
         val="Map.from([(\"k\", 42)])", val2="Map.from([(\"k\", 7)])",
-        show="42", read="{{{e}[\"k\"]}}"),
+        show="42", read="{{{e}[\"k\"]}}", owned=True),
 
     # A tuple — an aggregate with positional fields rather than named ones.
     "tuple": dict(
@@ -184,12 +184,14 @@ def commit(t, name):
 
 
 def take(t):
-    """`take ` for a linear payload's parameter, nothing for the rest.
+    """`take ` for the parameter of a payload that comes back out, when it's
+    linear or owns its storage; nothing for the rest.
 
-    A borrow hands the value back at the end of the call, so the caller still
-    owes the consume and the callee can't return it (mem.parameters/PM1). A
-    linear payload crossing a call boundary has to be taken."""
-    return "take " if TYPES[t].get("linear") else ""
+    A borrow hands the value back at the end of the call, so the callee can't
+    return it (mem.parameters/PM1, mem.borrowing/S3): for a linear payload the
+    caller still owes the consume, and for a container the caller still holds
+    the same storage (#1452). A Copy payload is copied on the way out."""
+    return "take " if TYPES[t].get("linear") or TYPES[t].get("owned") else ""
 
 
 # ── Carriers ─────────────────────────────────────────────────────
@@ -339,12 +341,12 @@ def c_closure_param(t, ty):
     from a capture, and a different lowering (mem.closures/CP1)."""
     return "", """\
     let x: {decl} = {val}
-    let f = |{take}p: {decl}| {{
+    let f = |p: {decl}| {{
         return p
     }}
     let y = f(x)
 {commit}    println("got={show}")
-""".format(decl=ty["decl"], val=ty["val"], take=take(t), commit=commit(t, "y"),
+""".format(decl=ty["decl"], val=ty["val"], commit=commit(t, "y"),
            show=read_expr(t, "y"))
 
 

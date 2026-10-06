@@ -67,10 +67,10 @@ pub enum OwnershipErrorKind {
         field_ty: String,
     },
 
-    /// mem.borrowing/S3: a view into a borrowed parameter's field, returned.
+    /// mem.borrowing/S3: a borrowed parameter, or a view into one, returned.
     #[error("`{path}` belongs to the caller — returning it hands out a second name for it")]
     BorrowedFieldEscapes {
-        /// `self.value`, `p.items`.
+        /// `self.value`, `p.items`, or just `b` for the whole parameter.
         path: String,
         /// The parameter the path starts at.
         root: String,
