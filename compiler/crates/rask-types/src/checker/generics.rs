@@ -8,6 +8,7 @@ use super::TypeChecker;
 use rask_ast::ty::TypeExpr;
 
 use crate::types::{GenericArg, Type, TypeVarId};
+use super::inference::TypeConstraint;
 
 impl TypeChecker {
     /// Resolve the self type for an extend block, handling generic params.
@@ -258,6 +259,78 @@ impl TypeChecker {
             }
             _ => ty.clone(),
         }
+    }
+
+    /// Rebuild `ty` with every projection `f` answers for replaced.
+    pub(super) fn map_projections(ty: &Type, f: &mut dyn FnMut(&Type, &str) -> Option<Type>) -> Type {
+        let mut arg = |a: &GenericArg, f: &mut dyn FnMut(&Type, &str) -> Option<Type>| match a {
+            GenericArg::Type(t) => GenericArg::Type(Box::new(Self::map_projections(t, f))),
+            other => other.clone(),
+        };
+        match ty {
+            Type::Assoc { base, name } => match f(base, name) {
+                Some(t) => t,
+                None => Type::Assoc { base: Box::new(Self::map_projections(base, f)), name: name.clone() },
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(Self::map_projections(ok, f)),
+                err: Box::new(Self::map_projections(err, f)),
+            },
+            Type::RawPtr(inner) => Type::RawPtr(Box::new(Self::map_projections(inner, f))),
+            Type::Array { elem, len } => Type::Array { elem: Box::new(Self::map_projections(elem, f)), len: *len },
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
+            Type::Union(elems) => Type::Union(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
+            Type::Fn { params, ret } => Type::Fn {
+                params: params.iter().map(|p| Self::map_projections(p, f)).collect(),
+                ret: Box::new(Self::map_projections(ret, f)),
+            },
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(|a| arg(a, f)).collect(),
+            },
+            Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
+                name: name.clone(),
+                args: args.iter().map(|a| arg(a, f)).collect(),
+            },
+            _ => ty.clone(),
+        }
+    }
+
+    /// AT8: a generic callee's `T.Out` means `Out` of the conformance `T`'s
+    /// bound names. Read once `T` is known, through that bound: a `Meters`
+    /// carrying both `Mul<f64>` and `Mul<Meters>` has two `Out`s, and only the
+    /// bound says which one `doubled<T: Mul<f64>>` returns (#1330).
+    ///
+    /// Each projection on a bounded parameter becomes a fresh variable here,
+    /// while the parameter is still spelled by name, and a `Projection`
+    /// constraint fills it in.
+    pub(super) fn project_through_bounds(
+        &mut self,
+        ty: &Type,
+        bounds: &HashMap<String, Vec<TypeExpr>>,
+        pairs: &[(String, Type)],
+        span: rask_ast::Span,
+    ) -> Type {
+        let mut pending = Vec::new();
+        let out = Self::map_projections(ty, &mut |base, assoc| {
+            let Type::UnresolvedNamed(param) = base else { return None };
+            let (_, fresh_base) = pairs.iter().find(|(p, _)| p == param)?;
+            let bound = self.types.projection_bound(bounds.get(param)?, assoc)?.clone();
+            let result = self.ctx.fresh_var();
+            pending.push(TypeConstraint::Projection {
+                base: fresh_base.clone(),
+                bound,
+                args: pairs.to_vec(),
+                assoc: assoc.to_string(),
+                result: result.clone(),
+                span,
+            });
+            Some(result)
+        });
+        for c in pending {
+            self.ctx.add_constraint(c);
+        }
+        out
     }
 
     /// A generic function named as a value rather than called: `v.map(keep)`,

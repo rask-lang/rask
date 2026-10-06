@@ -1072,8 +1072,11 @@ impl TypeTable {
     /// AT6: the associated type `assoc` on this type, when exactly one of its
     /// conformances declares one by that name.
     ///
-    /// Used where the bound that named the projection isn't at hand — resolving
-    /// `T.Out` at a call, once `T` is concrete. Two conformances answering to
+    /// Used only where no bound named the projection. A call to a generic
+    /// function or method reads `T.Out` through `T`'s bound instead
+    /// (`TypeTable::project`), which is what decides between two conformances
+    /// of one interface (#1330). What's left here is a projection on a type's
+    /// own parameter, reached through the receiver. Two conformances answering to
     /// one name have no single answer, and this gives none rather than picking:
     /// disambiguating is the caller's, and `type.operator-resolution/OR1` is
     /// what does it for the operator interfaces.

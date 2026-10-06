@@ -21,6 +21,18 @@ pub enum TypeConstraint {
         /// V5: Self type at constraint creation site (for private field checks)
         self_type: Option<Type>,
     },
+    /// AT6/AT8: `result` is `base.assoc` read through the applied interface
+    /// `bound` — the bound a generic callee put on the parameter `base` stands
+    /// for. Deferred until `base` is concrete. `args` fills the callee's other
+    /// parameters if the bound names them (`T: Mul<U>`).
+    Projection {
+        base: Type,
+        bound: rask_ast::ty::TypeExpr,
+        args: Vec<(String, Type)>,
+        assoc: String,
+        result: Type,
+        span: Span,
+    },
     /// Type must have a method with given signature.
     HasMethod {
         ty: Type,

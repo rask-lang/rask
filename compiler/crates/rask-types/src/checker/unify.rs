@@ -87,6 +87,7 @@ impl TypeChecker {
             if matches!(
                 constraint,
                 TypeConstraint::Coalesce { .. }
+                    | TypeConstraint::Projection { .. }
                     | TypeConstraint::Unwrap { .. }
                     | TypeConstraint::Index { .. }
                     | TypeConstraint::OptionalChain { .. }
@@ -459,6 +460,38 @@ impl TypeChecker {
     pub(super) fn solve_constraint(&mut self, constraint: TypeConstraint) -> Result<bool, TypeError> {
         match constraint {
             TypeConstraint::Equal(t1, t2, span) => self.unify(&t1, &t2, span),
+            TypeConstraint::Projection { base, bound, args, assoc, result, span } => {
+                let base_ty = self.resolve_named(&self.ctx.apply(&base));
+                let arg_tys: Vec<(String, Type)> = args
+                    .iter()
+                    .map(|(p, t)| (p.clone(), self.resolve_named(&self.ctx.apply(t))))
+                    .collect();
+                let open = matches!(base_ty, Type::Var(_))
+                    || arg_tys.iter().any(|(p, t)| t.has_unsolved_var() && bound.mentions(&|n| n == p));
+                if open {
+                    self.ctx.add_constraint(TypeConstraint::Projection { base, bound, args, assoc, result, span });
+                    return Ok(false);
+                }
+                let applied = bound.substitute(&|n| {
+                    arg_tys
+                        .iter()
+                        .find(|(p, _)| p == n)
+                        .map(|(_, t)| self.types.resolve_type_names(t).to_type_expr())
+                });
+                match self.types.project(&base_ty, &applied, &assoc) {
+                    Some(t) => {
+                        let t = self.resolve_named(&t);
+                        self.unify(&result, &t, span)
+                    }
+                    // No such conformance: the bound check reports that. Leave
+                    // the projection as written so anything else names it.
+                    None => self.unify(
+                        &result,
+                        &Type::Assoc { base: Box::new(base_ty), name: assoc },
+                        span,
+                    ),
+                }
+            }
             TypeConstraint::HasField {
                 ty,
                 field,

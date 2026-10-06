@@ -421,6 +421,24 @@ impl TypeChecker {
     /// Only the method's parameters — the receiver's are already fixed by the
     /// receiver's type, and mangling on them too would mint a separate copy per
     /// receiver instantiation for no reason.
+    /// AT8: a method's own `T.Out`, read through `T`'s bound — the same as a
+    /// generic function's (`project_through_bounds`).
+    fn project_method_type(
+        &mut self,
+        method_sig: &MethodSig,
+        ty: &Type,
+        subst: &std::collections::HashMap<&str, Type>,
+        span: Span,
+    ) -> Type {
+        if method_sig.type_params.iter().all(|(_, b)| b.is_empty()) {
+            return ty.clone();
+        }
+        let bounds: std::collections::HashMap<String, Vec<rask_ast::ty::TypeExpr>> =
+            method_sig.type_params.iter().cloned().collect();
+        let pairs: Vec<(String, Type)> = subst.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        self.project_through_bounds(ty, &bounds, &pairs, span)
+    }
+
     fn note_method_type_args(
         &mut self,
         call_node: Option<NodeId>,
@@ -1012,7 +1030,8 @@ impl TypeChecker {
                             self.check_integer_arg(&ty, arg, span);
                             continue;
                         }
-                        let substituted = Self::substitute_type_params(param_ty, &subst);
+                        let param_ty = self.project_method_type(method_sig, param_ty, &subst, span);
+                        let substituted = Self::substitute_type_params(&param_ty, &subst);
                         // CV1a/CV2 (#649) and the wrapper coercion (#701) are
                         // the same question — which side is the slot — so one
                         // call answers both: `coerce_arg` runs `check_fits`
@@ -1022,7 +1041,8 @@ impl TypeChecker {
                         }
                     }
 
-                    let substituted_ret = Self::substitute_type_params(&method_sig.ret, &subst);
+                    let ret_ty = self.project_method_type(method_sig, &method_sig.ret, &subst, span);
+                    let substituted_ret = Self::substitute_type_params(&ret_ty, &subst);
                     if self.unify(&substituted_ret, &ret, span)? {
                         progress = true;
                     }
@@ -1376,7 +1396,8 @@ impl TypeChecker {
                             self.check_integer_arg(&ty, arg, span);
                             continue;
                         }
-                        let substituted = Self::substitute_type_params(param_ty, &subst);
+                        let param_ty = self.project_method_type(method_sig, param_ty, &subst, span);
+                        let substituted = Self::substitute_type_params(&param_ty, &subst);
                         let substituted =
                             self.freshen_free_type_params(&substituted, &mut method_params);
                         // Same direction as above, same one call (#649, #701).
@@ -1385,7 +1406,8 @@ impl TypeChecker {
                         }
                     }
 
-                    let ret_substituted = Self::substitute_type_params(&method_sig.ret, &subst);
+                    let ret_ty = self.project_method_type(method_sig, &method_sig.ret, &subst, span);
+                    let ret_substituted = Self::substitute_type_params(&ret_ty, &subst);
                     let ret_substituted =
                         self.freshen_free_type_params(&ret_substituted, &mut method_params);
                     if self.unify(&ret_substituted, &ret, span)? {

@@ -2772,6 +2772,13 @@ impl TypeChecker {
                 _ => String::from("this function"),
             };
             self.note_disjointness_obligations(&callee_name, &func_ty, &subst, span);
+            let bounds = self.resolved.resolutions.get(&func.id)
+                .and_then(|sym| self.fn_type_param_bounds.get(sym))
+                .cloned();
+            let func_ty = match bounds {
+                Some(b) => self.project_through_bounds(&func_ty, &b, pairs, span),
+                None => func_ty,
+            };
             Self::substitute_type_params(&func_ty, &subst)
         } else {
             func_ty
