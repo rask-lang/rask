@@ -214,6 +214,11 @@ void rask_leak_check(void) {
     if (live_allocs <= 0) return;
     int64_t live_bytes = st.bytes_allocated - st.bytes_freed;
 
+    // `_exit` below skips stdio's flush, and to a pipe stdout is fully
+    // buffered: a leaking program's whole output vanished, leaving only the
+    // report to debug from.
+    fflush(stdout);
+
     int64_t live_strings = atomic_load_explicit(&rask_string_live_buffers, memory_order_acquire);
     fprintf(stderr,
             "rask: %lld allocation%s never released (%lld bytes, undercounted)\n",
