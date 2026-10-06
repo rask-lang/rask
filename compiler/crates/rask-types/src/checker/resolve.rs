@@ -963,6 +963,7 @@ impl TypeChecker {
                 };
 
                 if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
+                    let args = self.fill_default_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),
@@ -1327,6 +1328,7 @@ impl TypeChecker {
                 }
 
                 if let Some(method_sig) = found {
+                    let args = self.fill_default_args(call_node, method_sig, args.clone());
                     if method_sig.params.len() != args.len() {
                         return Err(TypeError::ArityMismatch {
                             expected: method_sig.params.len(),

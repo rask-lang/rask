@@ -1739,6 +1739,13 @@ impl TypeChecker {
             .map(|p| p.name.clone())
             .collect();
 
+        let defaults = m
+            .params
+            .iter()
+            .filter(|p| p.name != "self")
+            .map(|p| p.default.clone())
+            .collect();
+
         let ret = m
             .ret_ty
             .as_ref()
@@ -1796,6 +1803,7 @@ impl TypeChecker {
             },
             owner_patterns: owner_patterns.to_vec(),
             owner_bounds: Vec::new(),
+            defaults,
         }
     }
 
@@ -1991,6 +1999,7 @@ impl TypeChecker {
                 self_param,
                 params,
                 ret,
+                defaults: Vec::new(),
             };
             let other = vec![(self_ty.clone(), ParamMode::Default)];
 
@@ -2618,6 +2627,7 @@ impl TypeChecker {
                     self_param: SelfParam::None,
                     params: vec![(bytes.clone(), ParamMode::Default)],
                     ret: parse_result,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
                     param_names: Vec::new(),
@@ -2629,6 +2639,7 @@ impl TypeChecker {
                     self_param: SelfParam::Value,
                     params: vec![],
                     ret: vec_u8,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
                     param_names: Vec::new(),
@@ -2640,6 +2651,7 @@ impl TypeChecker {
                     self_param: SelfParam::Value,
                     params: vec![(bytes.clone(), ParamMode::Mutate)],
                     ret: build_into_result,
+                    defaults: Vec::new(),
                 },
             ];
 

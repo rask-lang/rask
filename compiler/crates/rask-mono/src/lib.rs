@@ -1322,6 +1322,7 @@ mod tests {
             span_types: std::collections::HashMap::new(),
             channel_send_sites: std::collections::HashSet::new(),
             type_test_patterns: std::collections::HashSet::new(),
+            default_fills: std::collections::HashMap::new(),
             inferred_fn_ret: std::collections::HashMap::new(),
             inferred_fn_params: std::collections::HashMap::new(),
             derived_decls: Vec::new(),

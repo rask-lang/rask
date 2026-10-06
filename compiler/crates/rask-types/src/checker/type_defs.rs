@@ -296,6 +296,9 @@ pub struct MethodSig {
     /// The checker supplied it (EQ1, HA1, ORD1 and the rest): a signature with
     /// no body behind it, which the backends answer structurally.
     pub derived: bool,
+    /// Each parameter's declared default, positionally matching `params`.
+    /// Empty for a signature with no declaration behind it.
+    pub defaults: Vec<Option<rask_ast::expr::Expr>>,
 }
 
 /// How self is passed to a method.
@@ -478,6 +481,23 @@ impl TypedProgram {
         }
         rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.wrapper_eq_calls));
 
+        // Defaults the checker filled into method calls.
+        struct Defaults<'a>(&'a HashMap<NodeId, Vec<(usize, rask_ast::expr::Expr)>>);
+        impl rask_ast::rewrite::Rewrite for Defaults<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                use rask_ast::expr::{ArgMode, CallArg, ExprKind};
+                let Some(fills) = self.0.get(&e.id) else { return };
+                let ExprKind::MethodCall { args, .. } = &mut e.kind else { return };
+                for (at, expr) in fills {
+                    let arg = CallArg { name: None, mode: ArgMode::Default, expr: expr.clone() };
+                    args.insert((*at).min(args.len()), arg);
+                }
+            }
+        }
+        if !self.default_fills.is_empty() {
+            rask_ast::rewrite::rewrite_decls(decls, &mut Defaults(&self.default_fills));
+        }
+
         // A program type sharing a stdlib type's name has gone by its symbol
         // in the table since it was registered (`TypeTable::written_names`).
         // Its declaration and every use the program wrote say that symbol from
@@ -647,6 +667,10 @@ pub struct TypedProgram {
     /// type says which. Renaming a type has to rename the first kind and leave
     /// `AppError`'s `ParseError` variant alone (`attach_derived`).
     pub type_test_patterns: std::collections::HashSet<(rask_ast::Span, String)>,
+    /// Method calls that left parameters to their defaults: call → (position,
+    /// the default's copy). The checker filled them where it knew which
+    /// method the call reaches; `attach_derived` puts them in the call.
+    pub default_fills: HashMap<NodeId, Vec<(usize, rask_ast::expr::Expr)>>,
     /// Function name → inferred return type, for functions that don't declare one
     /// (`func f() { return 41 }`). An absent annotation is not the same as
     /// returning nothing, and the declaration string is the only thing lowering

@@ -904,6 +904,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)], // Self type
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Sub" => Some(vec![MethodSig {
                 param_names: Vec::new(),
@@ -915,6 +916,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Mul" => Some(vec![MethodSig {
                 param_names: Vec::new(),
@@ -926,6 +928,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Div" => Some(vec![MethodSig {
                 param_names: Vec::new(),
@@ -937,6 +940,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Rem" => Some(vec![MethodSig {
                 param_names: Vec::new(),
@@ -948,6 +952,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Neg" => Some(vec![MethodSig {
                 param_names: Vec::new(),
@@ -959,6 +964,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Equal" | "Eq" => Some(vec![MethodSig {
                 param_names: Vec::new(),
@@ -970,6 +976,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Bool,
+                defaults: Vec::new(),
             }]),
             "Comparable" | "Ord" => Some(vec![
                 MethodSig {
@@ -987,6 +994,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     // newtype inheriting Comparable got a `compare` that
                     // claimed to answer with itself (#551).
                     ret: Type::UnresolvedNamed("Ordering".to_string()),
+                    defaults: Vec::new(),
                 },
                 MethodSig {
                     param_names: Vec::new(),
@@ -998,6 +1006,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
                     param_names: Vec::new(),
@@ -1009,6 +1018,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
                     param_names: Vec::new(),
@@ -1020,6 +1030,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
                     param_names: Vec::new(),
@@ -1031,6 +1042,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
             ]),
             "Clone" | "Cloneable" => Some(vec![MethodSig {
@@ -1043,6 +1055,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::Var(crate::types::TypeVarId(0)),
+                defaults: Vec::new(),
             }]),
             "Hashable" => Some(vec![
                 MethodSig {
@@ -1055,6 +1068,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     self_param: SelfParam::Value,
                     params: vec![],
                     ret: Type::U64,
+                    defaults: Vec::new(),
                 },
                 MethodSig {
                     param_names: Vec::new(),
@@ -1066,6 +1080,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 },
             ]),
             "Displayable" => Some(vec![MethodSig {
@@ -1078,6 +1093,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
+                defaults: Vec::new(),
             }]),
             "Debug" => Some(vec![MethodSig {
                 param_names: Vec::new(),
@@ -1089,6 +1105,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
+                defaults: Vec::new(),
             }]),
             // Iterator<Item> interface — single method `next(mutate self) -> Item?`
             "Iterator" => Some(vec![MethodSig {
@@ -1101,6 +1118,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Mutate,
                 params: vec![],
                 ret: Type::option(Type::Var(crate::types::TypeVarId(0))),
+                defaults: Vec::new(),
             }]),
             // NT1–NT3 / the standard-interface roster. `Numeric` is a nominal
             // interface with these eight; `Integer` and `Float` extend it with
@@ -1134,6 +1152,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                     self_param: SelfParam::Value,
                     params: vec![],
                     ret: Type::Bool,
+                    defaults: Vec::new(),
                 });
                 Some(sigs)
             }
@@ -1148,6 +1167,7 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 self_param: SelfParam::Value,
                 params: vec![],
                 ret: Type::String,
+                defaults: Vec::new(),
             }]),
             _ => None,
         }
@@ -1479,6 +1499,7 @@ fn integer_overflow_hatch_method_sigs() -> Vec<MethodSig> {
         self_param: SelfParam::Value,
         params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
         ret: Type::Var(crate::types::TypeVarId(0)),
+        defaults: Vec::new(),
     };
     vec![
         binary("wrapping_add"),
@@ -1516,6 +1537,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         self_param: SelfParam::Value,
         params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
         ret: Type::Var(crate::types::TypeVarId(0)),
+        defaults: Vec::new(),
     };
     let nullary = |name: &str, self_param| MethodSig {
         param_names: Vec::new(),
@@ -1527,6 +1549,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
         self_param,
         params: vec![],
         ret: Type::Var(crate::types::TypeVarId(0)),
+        defaults: Vec::new(),
     };
     vec![
         binary("add"),
@@ -1546,6 +1569,7 @@ fn numeric_method_sigs() -> Vec<MethodSig> {
             self_param: SelfParam::None,
             params: vec![(Type::I64, ParamMode::Default)],
             ret: Type::Var(crate::types::TypeVarId(0)),
+            defaults: Vec::new(),
         },
     ]
 }
@@ -1792,6 +1816,7 @@ mod tests {
             self_param: SelfParam::Value,
             params: vec![],
             ret: Type::String,
+            defaults: Vec::new(),
         };
 
         types.register_type(TypeDef::Interface {
@@ -1889,6 +1914,7 @@ pub fn substitute_signature(m: &MethodSig, map: &HashMap<String, Type>) -> Metho
             .map(|(t, mode)| (substitute_type(t, map), *mode))
             .collect(),
         ret: substitute_type(&m.ret, map),
+        defaults: m.defaults.clone(),
     }
 }
 

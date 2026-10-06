@@ -8,7 +8,7 @@ use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
 use super::errors::TypeError;
-use super::type_defs::{Callee, TypeDef};
+use super::type_defs::{Callee, MethodSig, TypeDef};
 use super::TypeChecker;
 
 use crate::types::Type;
@@ -134,5 +134,116 @@ impl TypeChecker {
         let prefix = super::receiver_name(recv, &self.types)?;
         rask_stdlib::lookup_method(&prefix, method)
             .map(|stub| stub.params.iter().map(|(n, _)| n.clone()).collect())
+    }
+}
+
+/// One parameter of a call, as the call fills it.
+enum Slot {
+    /// The argument written at this position.
+    Written(usize),
+    /// The parameter's declared default.
+    Default(usize),
+}
+
+impl TypeChecker {
+    /// The argument types of a method call that leaves parameters to their
+    /// defaults, with the defaults in place.
+    ///
+    /// Done here, where `sig` is the method the receiver's type actually
+    /// declares. Desugaring used to fill them before there were types, so it
+    /// matched a call to its method by name: a program declaring any `shrink`
+    /// took the default away from `Vec.shrink()`, because filling it could
+    /// have meant the wrong one (#1312).
+    ///
+    /// A label skips parameters that have defaults (`f(a, c: 3)`), and only
+    /// those. Anything that doesn't line up is left for the arity and label
+    /// checks to report. The filled arguments go into the call in
+    /// `TypedProgram::attach_derived`.
+    pub(super) fn fill_default_args(
+        &mut self,
+        call_node: Option<NodeId>,
+        sig: &MethodSig,
+        args: Vec<crate::types::Type>,
+    ) -> Vec<crate::types::Type> {
+        let Some(call) = call_node else { return args };
+        if args.len() >= sig.params.len() || sig.defaults.iter().all(Option::is_none) {
+            return args;
+        }
+        // A call can be resolved more than once; the first fill stands.
+        if let Some(filled) = self.default_fills.get(&call) {
+            let mut out = args;
+            for (at, _, ty) in filled {
+                if *at <= out.len() {
+                    out.insert(*at, ty.clone());
+                }
+            }
+            return out;
+        }
+        let label_at = |i: usize| -> Option<String> {
+            self.labeled_calls
+                .iter()
+                .find(|c| c.call == call)
+                .and_then(|c| c.labels.iter().find(|(p, _, _)| *p == i).map(|(_, l, _)| l.clone()))
+        };
+        let default_at = |i: usize| sig.defaults.get(i).and_then(|d| d.as_ref());
+        let mut slots = Vec::with_capacity(sig.params.len());
+        let mut next = 0;
+        for i in 0..sig.params.len() {
+            let written_here = next < args.len()
+                && label_at(next).is_none_or(|l| sig.param_names.get(i) == Some(&l));
+            if written_here {
+                slots.push(Slot::Written(next));
+                next += 1;
+            } else if default_at(i).is_some() {
+                slots.push(Slot::Default(i));
+            } else {
+                return args;
+            }
+        }
+        if next < args.len() {
+            return args;
+        }
+
+        let mut out = Vec::with_capacity(slots.len());
+        let mut filled = Vec::new();
+        let mut moved: Vec<(usize, usize)> = Vec::new();
+        for (at, slot) in slots.iter().enumerate() {
+            match slot {
+                Slot::Written(a) => {
+                    moved.push((*a, at));
+                    out.push(args[*a].clone());
+                }
+                Slot::Default(i) => {
+                    let mut expr = default_at(*i).cloned().expect("slot has a default");
+                    self.renumber(&mut expr);
+                    let ty = self.infer_expr(&expr);
+                    out.push(ty.clone());
+                    filled.push((at, expr, ty));
+                }
+            }
+        }
+        // A label now sits where its argument went.
+        if let Some(c) = self.labeled_calls.iter_mut().find(|c| c.call == call) {
+            for (p, _, _) in c.labels.iter_mut() {
+                if let Some((_, to)) = moved.iter().find(|(from, _)| from == p) {
+                    *p = *to;
+                }
+            }
+        }
+        self.default_fills.insert(call, filled);
+        out
+    }
+
+    /// Give a copy of a default its own node ids: it is a new expression at
+    /// every call that takes it.
+    fn renumber(&mut self, expr: &mut rask_ast::expr::Expr) {
+        struct Fresh<'a>(&'a mut u32);
+        impl rask_ast::rewrite::Rewrite for Fresh<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                e.id = NodeId(*self.0);
+                *self.0 += 1;
+            }
+        }
+        rask_ast::rewrite::rewrite_expr(expr, &mut Fresh(&mut self.next_derived_id));
     }
 }
