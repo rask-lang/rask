@@ -26,8 +26,10 @@ const T0: Instant = Instant.now()
 test "a constant map finds its keys" {
     mut hits = 0
     for i in 0..50 {
-        if TABLE.get(i) is Some(v) {
-            hits += 1
+        if TABLE.get(i)? as v {
+            if v == i * 2 {
+                hits += 1
+            }
         }
     }
     assert hits == 50

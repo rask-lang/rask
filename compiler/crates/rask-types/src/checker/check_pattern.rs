@@ -227,6 +227,18 @@ impl TypeChecker {
     }
 
     pub(super) fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {
+        // A pattern that may name a variant is read against the scrutinee's
+        // enum, and the scrutinee may only be open because a call's result
+        // hasn't been settled yet: `m.get(k)? as v` gives `v` the payload of a
+        // `get` that resolves with the statement's other constraints. Read
+        // against the open type, a bare `Arr(entries)` names no enum, so
+        // `entries` got a fresh variable nothing ever tied back, and native
+        // couldn't lower a `for` over it (#1427). Settle what's pending first.
+        if matches!(pattern, Pattern::Ident(_) | Pattern::Constructor { .. } | Pattern::Struct { .. })
+            && matches!(self.ctx.apply(scrutinee_ty), Type::Var(_))
+        {
+            self.solve_constraints();
+        }
         match pattern {
             Pattern::Wildcard => vec![],
 

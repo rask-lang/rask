@@ -496,23 +496,6 @@ func parse_dep(entry: JsonValue) -> Dependency? {
     return none
 }
 
-// The `deps` array. Entries that aren't a well-formed dependency are skipped.
-//
-// WORKAROUND (#1427): a function of its own, with a typed parameter, because
-// a `for` over a payload matched under `m.get(k)? as v` doesn't lower natively
-// yet. Inline it into `parse_meta_fields` once that's fixed.
-func parse_deps(deps_val: JsonValue) -> Vec<Dependency> {
-    mut deps = Vec.new()
-    if deps_val is Array(entries) {
-        for entry in entries {
-            if parse_dep(entry)? as dep {
-                deps.push(dep)
-            }
-        }
-    }
-    return deps
-}
-
 // Shared JSON→PackageMeta extraction — used by both local and HTTP registries.
 // Reads the parsed value in place, so it stays the caller's.
 func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or RegistryError {
@@ -534,9 +517,16 @@ func parse_meta_fields(m: Map<string, JsonValue>, source: string) -> PackageMeta
         return RegistryError.IoError("bad version in {source}: {ver_str}")
     }
 
+    // The `deps` array. Entries that aren't a well-formed dependency are skipped.
     mut deps = Vec.new()
     if m.get("deps")? as deps_val {
-        deps = parse_deps(deps_val)
+        if deps_val is Array(entries) {
+            for entry in entries {
+                if parse_dep(entry)? as dep {
+                    deps.push(dep)
+                }
+            }
+        }
     }
 
     return PackageMeta {

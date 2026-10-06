@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A payload matched out of a value bound by `m.get(k)? as v`.
+//
+// The checker read `v`'s type before the `get` call had been resolved, so
+// `v is Arr(entries)` found no enum to look `Arr` up in and gave `entries` a
+// type variable nothing ever solved. The interpreter didn't care; native
+// couldn't lower the `for` over it: "couldn't work out a type here" (#1427).
+
+enum Val {
+    Num(f64)
+    Arr(Vec<Val>)
+    Named(string)
+}
+
+func count(m: Map<string, Val>) -> i64 {
+    mut n = 0
+    if m.get("deps")? as v {
+        if v is Arr(entries) {
+            for entry in entries {
+                n += 1
+            }
+        }
+    }
+    return n
+}
+
+func total(m: Map<string, Val>) -> f64 {
+    mut sum = 0.0
+    if m.get("deps")? as v {
+        match v {
+            Arr(entries) => {
+                for entry in entries {
+                    if entry is Num(x) {
+                        sum += x
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    return sum
+}
+
+func label(m: Map<string, Val>) -> string {
+    if m.get("name")? as v {
+        if v is Named(s) {
+            return "{s}!"
+        }
+    }
+    return "none"
+}
+
+func sample() -> Map<string, Val> {
+    mut m: Map<string, Val> = Map.new()
+    m.insert("deps", Val.Arr([Val.Num(1.5), Val.Num(2.0)]))
+    m.insert("name", Val.Named("rask"))
+    return m
+}
+
+test "a for over the payload" {
+    assert count(sample()) == 2
+}
+
+test "a match arm over the payload" {
+    assert total(sample()) == 3.5
+}
+
+test "a string payload" {
+    assert label(sample()) == "rask!"
+}
