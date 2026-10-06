@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `bits.BinaryBuilder` reached through its module.
+//
+// The interpreter bound `import bits` as a package and looked its members up
+// under package-prefixed names, so `bits.BinaryBuilder` was "undefined
+// variable" there while native ran it (#1456). The builder chain from #1452
+// had no suite test because of it.
+
+import bits
+
+test "builder chain" {
+    let out = bits.BinaryBuilder.new().write_u32be(0xCAFEBABE).write_u8(1).build()
+    assert out.len() == 5
+    assert out[0] == 0xCA
+    assert out[3] == 0xBE
+    assert out[4] == 1
+}
+
+test "little endian and length" {
+    let b = bits.BinaryBuilder.with_capacity(8).write_u16le(0x0102).write_u32le(0x03040506)
+    assert b.len() == 6
+    let out = b.build()
+    assert out[0] == 0x02
+    assert out[1] == 0x01
+    assert out[2] == 0x06
+    assert out[5] == 0x03
+}

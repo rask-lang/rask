@@ -1842,6 +1842,15 @@ impl Interpreter {
                         if let Some(func) = self.functions.get(&prefixed) {
                             return Ok(Value::Function { name: func.name.clone(), generics: None });
                         }
+                        // A stdlib module with no Rust side of its own (`bits`)
+                        // is bound as a package, but its types are registered
+                        // under their bare names, like every stdlib type. The
+                        // prefixed lookup above never found `bits$BinaryBuilder`
+                        // and the type was unreachable through its module
+                        // (#1456). Same answer `Value::Module` gives.
+                        if rask_stdlib::modules::exports_type(&pkg_name, field) {
+                            return Ok(Value::Type(field.clone()));
+                        }
                         Err(RuntimeDiagnostic::new(
                             RuntimeError::UndefinedVariable(field.clone()),
                             expr.span,
