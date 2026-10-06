@@ -426,12 +426,6 @@ pub enum TypeError {
         found: Type,
         span: Span,
     },
-    #[error("parameter `{param_name}` requires `own` annotation at call site")]
-    MissingOwnAnnotation {
-        param_name: String,
-        param_index: usize,
-        span: Span,
-    },
     #[error("unexpected `{annotation}` annotation for parameter `{param_name}`")]
     UnexpectedAnnotation {
         annotation: String,
@@ -1551,7 +1545,6 @@ impl TypeError {
             | TornLockUpdate { .. }
             | MutateBorrowedSource { .. }
             | NoAllocViolation { .. }
-            | MissingOwnAnnotation { .. }
             | UnexpectedAnnotation { .. }
             | MissingDeletingMarker { .. }
             | MissingMutateMarker { .. }

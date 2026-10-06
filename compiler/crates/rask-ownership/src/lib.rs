@@ -33,7 +33,7 @@ pub struct OwnershipResult {
     pub errors: Vec<OwnershipError>,
     /// CM1: closure literals that outlive the frame that built them. Lowering
     /// and the interpreter read this to decide whether a capture is the value
-    /// or a pointer to it — it is the whole of what `own` used to say.
+    /// or a pointer to it.
     pub escaping_closures: HashSet<rask_ast::NodeId>,
 }
 
@@ -129,8 +129,8 @@ pub struct OwnershipChecker<'a> {
     /// commit window reads it: `rest = *next` means the old `rest` was
     /// consumed, which is the commitment, and the new one starts its own.
     refills: HashMap<String, u32>,
-    /// Linear values a non-`own` closure captured: name → where the closure is.
-    /// `mem.closures`' edge-case table says a non-`own` closure *borrows* a
+    /// Linear values a closure that stays in its frame captured: name → where
+    /// the closure is. `mem.closures/CM1` says such a closure *borrows* a
     /// resource, and L3 says a borrow isn't a consumption — so a `close()` in
     /// the body is the #804 error one door along. Only live while the body is
     /// being walked.
@@ -216,7 +216,7 @@ pub struct OwnershipChecker<'a> {
     /// O11: module-level const names. A const is never given away, so a
     /// consumption of one is an error rather than a move.
     module_consts: std::collections::HashSet<String>,
-    /// SL1: each non-`own` closure expression's scope limit, keyed by the
+    /// SL1: each non-carrying closure expression's scope limit, keyed by the
     /// closure's own node.
     ///
     /// This was one `Option<u32>`, published before the body was walked with
@@ -240,12 +240,9 @@ pub struct OwnershipChecker<'a> {
     /// deliver, so these are never swept up by the call-result rule in
     /// `closure_ids_of`.
     closure_writes_a_capture: HashSet<rask_ast::NodeId>,
-    /// `RASK_ESCAPE_AUDIT=1` reports where the inferred answer and the written
-    /// `own` disagree. Read once — this sits on the walk of every closure.
-    escape_audit: bool,
     /// Free-function parameter modes by name → per-position `take` flags.
     ///
-    /// Lets a call consume arguments to `take` params without call-site `own`
+    /// Lets a call consume arguments to `take` params with no call-site marker
     /// (#296). Every function is in here, including those with no `take` at
     /// all: SL4 needs to know a parameter positively *is* a borrow, and an
     /// absent entry means "no signature in reach", which stays conservative.
@@ -345,7 +342,6 @@ impl<'a> OwnershipChecker<'a> {
             closure_literals: HashMap::new(),
             escaping_closures: HashSet::new(),
             closure_writes_a_capture: HashSet::new(),
-            escape_audit: std::env::var("RASK_ESCAPE_AUDIT").is_ok(),
             mutable_captures: Vec::new(),
             fn_take_params: HashMap::new(),
             fn_deleting_params: HashMap::new(),
@@ -377,7 +373,7 @@ impl<'a> OwnershipChecker<'a> {
     /// Parameter modes, per function and per method. No bodies.
     fn collect_signatures(&mut self, decls: &[Decl]) {
         // Collect `take`-parameter positions for every free function so calls
-        // can consume the matching argument (PM3) without call-site `own` (#296).
+        // can consume the matching argument (PM3) with no call-site marker (#296).
         for decl in decls {
             // Methods too: `sc.purge()` has to revoke the caller's links when
             // `purge` is declared `deleting self`, and the receiver is where that
@@ -1483,7 +1479,7 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     } else if self.closure_scope_limits.contains_key(&expr.id) {
                         // A returned expression carrying a scope limit: a
-                        // non-`own` closure literal over a local, or (SL3) a
+                        // non-carrying closure literal over a local, or (SL3) a
                         // call that built one over an argument this frame owns.
                         // `return make(v)` hands back a closure over `v`, and
                         // `v` dies here.
@@ -1718,8 +1714,8 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Call { func, args } => {
                 self.check_expr(func);
-                // #296/PM3: a `take` parameter consumes its argument regardless of
-                // call-site `own`. Look up the callee's take-parameter positions.
+                // #296/PM3: a `take` parameter consumes its argument with no
+                // call-site marker. Look up the callee's take-parameter positions.
                 let callee_takes: Option<Vec<bool>> = if let Some(name) = func.name() {
                     // `drop` is a compiler builtin, so it has no declaration in
                     // `decls` for the take-parameter scan to find — and without
@@ -2135,7 +2131,7 @@ impl<'a> OwnershipChecker<'a> {
                     // returning or storing it past that scope would dangle the borrow.
                     // A Copy capture is copied into the closure env (MIR captures
                     // by value), so it can't dangle — only a non-Copy borrow can
-                    // outlive its scope. This mirrors the `own`-closure path above,
+                    // outlive its scope. This mirrors the carrying-closure path above,
                     // which already leaves Copy captures in place. Without this a
                     // closure capturing an f64/i64 local was wrongly scope-limited,
                     // so `v.iter().filter(|x| x >= budget).count()` failed SL2 even
@@ -3765,7 +3761,7 @@ impl<'a> OwnershipChecker<'a> {
         // `Handle<Item>` has to reach `is_copy`, which answers by base name for
         // `Link` and stays conservative for every other container.
         // Returning None here made a captured `n: Handle<Item>` parameter look
-        // non-Copy, so an `own` closure marked it moved (#768). The arguments
+        // non-Copy, so a carrying closure marked it moved (#768). The arguments
         // aren't needed — nothing downstream inspects them.
         if !ty.args().is_empty() {
             return Some(Type::UnresolvedGeneric { name: ty.name()?, args: Vec::new() });
@@ -5343,7 +5339,7 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     /// Mark an argument as consumed (moved) when it names a binding.
-    /// Copy values (VS1/VS2) stay valid — passing them to `take`/`own` copies.
+    /// Copy values (VS1/VS2) stay valid — passing them to `take` copies.
     fn consume_arg(&mut self, arg_expr: &Expr, sink: Option<&str>) {
         if let ExprKind::Ident(name) = &arg_expr.kind {
             // An `Owned` box reads as its payload, so a small payload made the
@@ -5729,7 +5725,8 @@ impl<'a> OwnershipChecker<'a> {
     ///
     /// A local does not, and a `take` parameter does not either — the frame
     /// owns it and the frame is going away. Those still scope-limit the
-    /// closure, and `own` is still the fix for them.
+    /// closure, and handing it to a `take` parameter (so it carries them) is
+    /// the fix.
     fn outlives_this_call(&self, name: &str) -> bool {
         self.borrowed_params.contains_key(name) || self.mutate_params.contains_key(name)
     }

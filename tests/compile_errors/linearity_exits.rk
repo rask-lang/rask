@@ -171,11 +171,17 @@ func bad_closure_consumes_borrow() {
     })
 }
 
-// `own` moves the resource into the closure, so the closure owes it and the
-// outer binding does not. Still compiles.
-func good_own_closure() {
+// Handed to a `take` parameter, the closure outlives the frame and carries `c`
+// with it (mem.closures/CM1), so the closure owes it and the outer binding does
+// not. Still compiles. This used to be spelled `own || …`, which no longer parses
+// and was what E0891's fix line suggested (#1361).
+func run_once(take f: func()) {
+    f()
+}
+
+func good_carrying_closure() {
     let c = Conn { id: 1 }
-    twice(|| {
+    run_once(|| {
         c.close()
     })
 }

@@ -6733,11 +6733,23 @@ fn error_mutate_param_left_empty() {
 //
 // A `mutate` parameter is deliberately still allowed to be consumed: exclusive
 // access means taking the value out and writing a replacement back is the point.
+// E0891's fix line said `own ||`, which no longer parses (#1361). The fix is to
+// hand the closure to a `take` parameter, and the fixture's legal case does
+// exactly that — so it must stay clean, and the advice must name `take`.
+#[test]
+fn error_closure_consumes_borrowed_capture() {
+    let (failed, out) = compile_error_output("linearity_exits.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0891]").count(), 1, "the carrying closure must compile: {}", out);
+    assert!(!out.contains("own ||") && !out.contains("`own`"), "still suggests `own`: {}", out);
+    assert!(out.contains("hand the closure to a `take` parameter"), "{}", out);
+}
+
 #[test]
 fn error_consume_borrowed_param() {
     let (failed, out) = compile_error_output("consume_borrowed_param.rk");
     assert!(failed, "giving away a borrowed parameter must be rejected: {}", out);
-    assert_eq!(out.matches("E0835").count(), 4, "four sites, no more: {}", out);
+    assert_eq!(out.matches("E0835").count(), 3, "three sites, no more: {}", out);
     assert!(
         out.contains("borrowed, not owned"),
         "should say the parameter isn't owned: {}", out,

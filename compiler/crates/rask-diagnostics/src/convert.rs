@@ -1770,15 +1770,6 @@ impl ToDiagnostic for rask_types::TypeError {
             }
 
 
-            MissingOwnAnnotation { param_name, param_index: _, span } => {
-                Diagnostic::error(format!("parameter `{}` requires `own` annotation at call site", param_name))
-                    .with_code("E0305")
-                    .with_primary(*span, format!("add `own` before this argument"))
-                    .with_help(format!("call with `own {}`", param_name))
-                    .with_fix(format!("add `own` annotation"))
-                    .with_why("ownership transfer requires explicit annotation at call site for clarity")
-            }
-
             UnexpectedAnnotation { annotation, param_name, param_index: _, span } => {
                 Diagnostic::error(format!("unexpected `{}` annotation for parameter `{}`", annotation, param_name))
                     .with_code("E0306")
@@ -3612,7 +3603,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
             } => {
                 let fix_msg = match (requested.participle(), existing.participle()) {
                     ("written to", "read") => {
-                        "wait until the read borrow ends, or pass ownership with `own`"
+                        "finish reading before you write, or read from a `.clone()` so the write has the original to itself"
                     }
                     _ => "restructure the code to avoid conflicting access",
                 };
@@ -4001,17 +3992,18 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_code("E0891")
                 .with_primary(self.span, format!("this consumes `{}`", name))
                 .with_secondary(*closure_at, format!("this closure captured `{}` by borrow", name))
-                .with_help(format!(
-                    "write `own || …` so the closure takes `{}`, or consume `{}` \
+                .with_fix(format!(
+                    "hand the closure to a `take` parameter so it carries `{}` with it, \
+                     as in `func run_once(take f: func()) {{ f() }}`, or consume `{}` \
                      outside the closure",
                     name, name
                 ))
-                .with_fix("own ||".to_string())
                 .with_why(
-                    "a plain closure borrows what it captures, and a borrow is not \
-                     yours to give away. Nothing says how many times a closure runs \
-                     either, so one `close()` in the body can be any number of \
-                     closes at runtime [mem.closures, mem.linear/L2, L3]",
+                    "a closure that stays in its frame borrows what it captures, and a \
+                     borrow is not yours to give away. Nothing says how many times a \
+                     closure runs either, so one `close()` in the body can be any number \
+                     of closes at runtime. A closure handed to `take` outlives the frame, \
+                     so it carries the value instead [mem.closures/CM1, mem.linear/L2, L3]",
                 )
             }
 

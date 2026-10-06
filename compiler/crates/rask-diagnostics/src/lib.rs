@@ -43,7 +43,7 @@ pub struct Diagnostic {
     /// Concrete fix instruction (e.g., "clone before transfer").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
-    /// One-sentence rule explanation (e.g., "`own` transfers ownership").
+    /// One-sentence rule explanation (e.g., "`take` transfers ownership").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
 }

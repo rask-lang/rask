@@ -277,7 +277,7 @@ impl Default for ErrorCodeRegistry {
                 // Ownership errors (E08xx)
                 "E0800" => ("use after move", Ownership,
                     "A value was used after being moved. Once ownership transfers, the original binding is invalid. Clone if you need both.",
-                    "let v = Vec.new()\ntake_ownership(own v)\nv.len()  // error: v was moved"),
+                    "let v = Vec.new()\ntake_ownership(v)\nv.len()  // error: v was moved"),
                 "E0801" => ("borrow conflict", Ownership,
                     "Multiple borrows conflict — typically a mutable borrow while an immutable borrow exists.",
                     "let v = Vec.new()\nlet first = v[0]  // immutable borrow\nv.push(4)  // error: mutable borrow conflicts"),
@@ -304,7 +304,7 @@ impl Default for ErrorCodeRegistry {
                     "@resource\nstruct File { fd: i32 }\nlet f = File { fd: 1 }\ndiscard f  // error: use f.close() instead"),
                 "E0813" => ("use after maybe-move", Ownership,
                     "A value moved on some paths but not all (e.g. one `if` branch) was used after the paths merged. The spec treats maybe-moved as moved (O3) — move on every path, or keep the use inside the branch that still owns the value.",
-                    "let v = Vec.new()\nif c { take(own v) }\nv.len()  // error: v may have been moved"),
+                    "let v = Vec.new()\nif c { consume(v) }\nv.len()  // error: v may have been moved"),
                 "E0817" => ("invalid `as` cast", Type,
                     "`as` permits only lossless widening (CV1). Narrowing, sign reinterpretation, float↔int, int→char, and int↔bool are compile errors — name a policy with one of the six conversion methods (`to`, `wrap`, `clamp`, `round`, `floor`, `ceil`) or with `char.from_u32`.",
                     "let x: i8 = big as i8  // error: use `big.to<i8>()!`, `big.wrap<i8>()` or `big.clamp<i8>()`"),
@@ -352,7 +352,7 @@ impl Default for ErrorCodeRegistry {
                     "`mutate` is exclusive access, not ownership (mem.parameters/PM2): the caller keeps the value and goes on reading it after the call. That makes taking the value out and writing a replacement back legitimate — `out.push(b.build()); b = StringBuilder.new()` is exactly what the mode is for. Consuming it and putting nothing back is not: the caller reads a hole. A replacement has to be assigned on every path that reaches the return. If the function really does take the value for good, declare the parameter `take` instead — then the call site shows it going.",
                     "func drain(mutate b: StringBuilder) -> string {\n    return b.build()      // error: consumed, nothing put back\n}\n// fix: `func drain(take b: StringBuilder) -> string`"),
                 "E0835" => ("cannot give away a borrowed parameter", Ownership,
-                    "A parameter declared without `take` is the caller's value on loan (mem.parameters/PM1): they keep it and go on using it after the call. Handing it to a `take` parameter, an `own` argument, or a `take self` method would consume something the callee doesn't own — the caller is never told, and for a `@resource` that is a second close of a live handle. `mutate` is the same answer for a different reason: exclusive access lets you write through the parameter, not give it away. Put `take` on the declaration if the function really does consume its argument; then the call site shows the value going.",
+                    "A parameter declared without `take` is the caller's value on loan (mem.parameters/PM1): they keep it and go on using it after the call. Handing it to a `take` parameter or a `take self` method would consume something the callee doesn't own — the caller is never told, and for a `@resource` that is a second close of a live handle. `mutate` is the same answer for a different reason: exclusive access lets you write through the parameter, not give it away. Put `take` on the declaration if the function really does consume its argument; then the call site shows the value going.",
                     "func handle(c: Conn) { c.close() }   // error: `close` takes ownership\n// fix: `func handle(take c: Conn) { c.close() }`"),
                 "E0834" => ("type can't be a Map key", Type,
                     "A Map key has to be Hashable: equal keys must hash equal, or a key can be inserted and then never found again (type.generics/HA1). Auto-derive covers the primitives, a struct or enum whose every field or payload is itself Hashable, and a tuple or array of Hashable elements (type.tuples/TU11). Three things are left out — `f32`/`f64`, because `NaN != NaN` breaks the contract outright (HA4); an aggregate that reaches a float through one of its fields; and a nominal newtype, which inherits only the interfaces its `implements …` clause names (type.aliases/T11).",
@@ -550,11 +550,8 @@ impl Default for ErrorCodeRegistry {
                 "E0304" => ("a guard's `else` block has to leave", Type,
                     "`if x? as v else { … }` binds `v` for everything after the `if`, not just inside it. That is only sound when the `else` path never reaches the code that uses the binding, so the block has to end in `return`, `break`, `continue`, or a panic. A block that falls through would leave `v` naming nothing.",
                     "if parse(s)? as n else { log(\"bad\") }   // error: `else` falls through\nprintln(\"{n}\")\n// fix: leave\nif parse(s)? as n else { return }\nprintln(\"{n}\")"),
-                "E0305" => ("an argument being given away is marked `own` at the call", Type,
-                    "A parameter declared `own` takes the value: the caller can't use it afterwards. That's visible in the signature but not at the call site, so Rask makes the call site say it too. The same reasoning as `mutate` (mem.parameters/PM4): a misread move is caught by the compiler later, but the reader shouldn't have to look up the signature to see that a value is being handed over.",
-                    "consume(buffer)              // error: `buffer` needs `own`\n// fix: say it\nconsume(own buffer)"),
                 "E0306" => ("a parameter marked with something it doesn't declare", Type,
-                    "`mutate`, `own` and `deleting` at a call site each match a parameter that declares them. Writing one the signature doesn't ask for is a lie in the other direction — it reads as though the callee does something it doesn't — so it's rejected rather than ignored.",
+                    "`mutate` and `deleting` at a call site each match a parameter that declares them. Writing one the signature doesn't ask for is a lie in the other direction — it reads as though the callee does something it doesn't — so it's rejected rather than ignored.",
                     "func log(msg: string) { … }\nlog(mutate msg)              // error: `msg` isn't a `mutate` parameter\n// fix: drop the marker\nlog(msg)"),
                 "E0329" => ("a function that deletes nodes has to declare `deleting`", Ownership,
                     "Deleting from a rack revokes every link into it, including links the caller is holding and never passed in. A signature that doesn't say so leaves the caller with names that quietly stop being valid, which is precisely the thing links are supposed to make impossible.\n\n`deleting r: Rack<…>` is the declaration. The alternative, when the function only ever deletes what it was handed, is to take those links as `take` parameters instead — then nothing outside the call is affected.",
@@ -774,10 +771,10 @@ let old = a.load(Ordering.SeqCst)"),
                     "func twice(f: func()) { f()  f() }\nfunc store(take f: func()) { … }\n\nlet c = Conn.open(1)\ntwice(|| { c.close() })       // error: `twice` borrows, so the closure does\n// fix: hand it somewhere that takes it\nstore(|| { c.close() })"),
                 "E0896" => ("a task writes a capture nothing reads back", Ownership,
                     "A closure handed to `spawn` gets a copy of everything it captured, and that copy lives in the task's environment, which dies when the task does. So a write to a capture only reaches the task's own copy — the counter in the task is not the counter the parent prints, and `join()` hands back the closure's return value, not its captures.\n\nThe write is provably thrown away, which is why this is an error rather than a warning: there is no program that wants it.\n\nA read only saves a write if the read itself reaches a use. `for i in 0..10 { total += i }` reads every write — on the next iteration — and still throws the whole accumulation away, so it is rejected too.\n\nTwo fixes, depending on what the value is for. If the parent needs to see it, share it: `Shared` reached through a clone is one value both sides hold. If the task is computing an answer, return it and read it off `join()`.",
-                    "mut count = 0\nspawn(|| { count += 1 })     // error: lands on the task's copy\n// fix: one value, two holders\nlet total = Shared.new(0)\nlet t = total.clone()\nspawn(own || { with t.write() as c { c += 1 } })"),
+                    "mut count = 0\nspawn(|| { count += 1 })     // error: lands on the task's copy\n// fix: one value, two holders\nlet total = Shared.new(0)\nlet t = total.clone()\nspawn(|| { with t.write() as c { c += 1 } })"),
                 "E0810" => ("a captured resource isn't consumed on every path", Ownership,
                     "A resource captured by a closure or a task is that body's to finish with, and \"exactly once\" has to hold on every path through it — including the ones that return early or raise.\n\n`ensure` at the top of the body is the usual answer: it runs at every exit, including a panic.",
-                    "spawn(own || {\n    if bad { return }        // error: `conn` not consumed here\n    conn.close()\n})\n// fix: one exit for all paths\nspawn(own || { ensure conn.close(); … })"),
+                    "spawn(|| {\n    if bad { return }        // error: `conn` not consumed here\n    conn.close()\n})\n// fix: one exit for all paths\nspawn(|| { ensure conn.close(); … })"),
                 "R0001" => ("division by zero", Runtime,
                     "Integer division and remainder by zero have no answer, so the program stops rather than continuing with a number nobody chose. Check the divisor first, or use a form that hands back an absence.\n\nThe same check at compile time reports this code too: a `comptime` block that divides by zero fails the fold with it.",
                     "let avg = total / count      // panics when `count` is 0\n// fix: decide what zero means here\nlet avg = if count == 0 { 0 } else { total / count }"),
@@ -1069,5 +1066,25 @@ mod registry_audit {
              its own code: {:#?}",
             new
         );
+    }
+
+    /// `own` is gone: capture is inferred (mem.closures) and a `take` argument
+    /// carries no marker (mem.parameters/PM4). E0891's fix line still said
+    /// `own ||`, and following it was a parse error (#1361).
+    #[test]
+    fn no_message_suggests_the_removed_own_keyword() {
+        let says_own = |t: &str| t.contains("own ||") || t.contains("`own`") || t.contains("(own ");
+        let mut found: Vec<String> = Vec::new();
+        for info in ErrorCodeRegistry::default().all() {
+            if [info.title, info.description, info.example].iter().any(|t| says_own(t)) {
+                found.push(info.code.to_string());
+            }
+        }
+        for (i, line) in include_str!("convert.rs").lines().enumerate() {
+            if says_own(line) {
+                found.push(format!("convert.rs:{}", i + 1));
+            }
+        }
+        assert!(found.is_empty(), "these still tell users to write `own`: {:?}", found);
     }
 }

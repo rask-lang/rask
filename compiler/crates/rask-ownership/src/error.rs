@@ -387,7 +387,7 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
-    /// A non-`own` closure consumed a linear value it only borrowed.
+    /// A closure that stays in its frame consumed a linear value it only borrowed.
     ///
     /// The parameter version of this is `ConsumeBorrowedParam` (#804). Same
     /// rule, different door: a borrow can't be given away. What makes the

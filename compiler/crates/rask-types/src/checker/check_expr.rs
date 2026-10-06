@@ -2984,7 +2984,7 @@ impl TypeChecker {
                 // a misread *mutation*: both readings are legal code, so the
                 // one the compiler can't catch is the one that gets marked.
                 //
-                // `own` on a `take` argument stays optional (PM4), because a
+                // A `take` argument carries no marker (PM4), because a
                 // wrong reading there does get caught.
                 (ArgMode::Default, false, true) => {
                     let arg_text = Self::argument_text(&arg.expr)
