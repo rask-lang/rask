@@ -136,33 +136,81 @@ pub struct MonoFunction {
     pub body: Decl,
 }
 
-/// Collect user-defined type names referenced in a parsed Type.
-fn collect_type_deps(ty: &Type, out: &mut HashSet<String>) {
+/// The type names a field's layout waits on.
+///
+/// Only what the field holds by value. A builtin box or collection is a
+/// pointer, so its size is known before what it points at; a program's generic
+/// waits only on the arguments it holds inline (`inline_params`). Following
+/// every argument made `enum Expr { Neg(Wrapped) }` and
+/// `struct Wrapped { items: Vec<Expr> }` a cycle, the cycle fell back to
+/// source order, and `Expr` was laid out before `Wrapped` had a size: an
+/// 8-byte guess for a 32-byte payload (#1436).
+fn collect_type_deps(
+    ty: &Type,
+    inline_params: &HashMap<String, Vec<bool>>,
+    out: &mut HashSet<String>,
+) {
     match ty {
         Type::UnresolvedNamed(name) => {
             out.insert(name.clone());
         }
+        Type::UnresolvedGeneric { name, .. } if layout::generic_is_one_word(name) => {}
         Type::UnresolvedGeneric { name, args } => {
             out.insert(name.clone());
-            for arg in args {
-                if let rask_types::GenericArg::Type(inner) = arg {
-                    collect_type_deps(inner, out);
+            let inline = inline_params.get(name);
+            for (i, arg) in args.iter().enumerate() {
+                let held = inline.map_or(true, |flags| flags.get(i).copied().unwrap_or(true));
+                if let (true, rask_types::GenericArg::Type(inner)) = (held, arg) {
+                    collect_type_deps(inner, inline_params, out);
                 }
             }
         }
         Type::Result { ok, err } => {
-            collect_type_deps(ok, out);
-            collect_type_deps(err, out);
+            collect_type_deps(ok, inline_params, out);
+            collect_type_deps(err, inline_params, out);
         }
-        ty if ty.is_option() => collect_type_deps(ty.as_option().unwrap(), out),
+        ty if ty.is_option() => collect_type_deps(ty.as_option().unwrap(), inline_params, out),
         Type::Tuple(elems) => {
             for e in elems {
-                collect_type_deps(e, out);
+                collect_type_deps(e, inline_params, out);
             }
         }
-        Type::Array { elem, .. } => collect_type_deps(elem, out),
+        Type::Array { elem, .. } => collect_type_deps(elem, inline_params, out),
         _ => {}
     }
+}
+
+/// For each generic declaration, which of its parameters it holds by value
+/// somewhere in its fields — not only behind a pointer. `List<T> { items:
+/// Vec<T> }` holds none; `One<T> { v: T }` holds its one. A parameter passed
+/// on to another of the program's generics counts as held, since that one
+/// may hold it.
+fn inline_type_params(decls: &[Decl]) -> HashMap<String, Vec<bool>> {
+    let mut out = HashMap::new();
+    for decl in decls {
+        let (name, params, fields): (&str, Vec<String>, Vec<&TypeExpr>) = match &decl.kind {
+            DeclKind::Struct(s) => (
+                s.name.as_str(),
+                rask_types::struct_type_param_names(s),
+                s.fields.iter().map(|f| &f.ty).collect(),
+            ),
+            DeclKind::Enum(e) => (
+                e.name.as_str(),
+                rask_types::enum_type_param_names(e),
+                e.variants.iter().flat_map(|v| v.fields.iter().map(|f| &f.ty)).collect(),
+            ),
+            _ => continue,
+        };
+        if params.is_empty() {
+            continue;
+        }
+        let mut held = HashSet::new();
+        for ty in fields {
+            collect_type_deps(&layout::field_type(ty), &HashMap::new(), &mut held);
+        }
+        out.insert(name.to_string(), params.iter().map(|p| held.contains(p)).collect());
+    }
+    out
 }
 
 /// Topological sort of type declarations by field dependencies (Kahn's algorithm).
@@ -302,6 +350,8 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
         }
     }
 
+    let inline_params = inline_type_params(decls);
+
     // Build dependency edges: decl_idx → set of decl indices it depends on
     let mut deps: HashMap<usize, HashSet<usize>> = HashMap::new();
     let mut rdeps: HashMap<usize, Vec<usize>> = HashMap::new();
@@ -321,7 +371,7 @@ fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
         let mut type_names = HashSet::new();
         for ty in fields {
             let parsed = layout::field_type(ty);
-            collect_type_deps(&parsed, &mut type_names);
+            collect_type_deps(&parsed, &inline_params, &mut type_names);
         }
 
         for name in type_names {

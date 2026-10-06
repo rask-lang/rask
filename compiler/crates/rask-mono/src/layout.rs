@@ -221,22 +221,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             // Assume pointer-sized; struct/enum layouts are computed separately.
             (8, 8)
         }
-        // Generic builtins with known sizes
-        // A link is the node's address; a rack is a pointer to its slab.
-        Type::UnresolvedGeneric { name, .. } if name == "Link" => (8, 8),
-        Type::UnresolvedGeneric { name, .. } if name == "Rack" => (8, 8),
-        Type::UnresolvedGeneric { name, .. } if name == "Vec" => (8, 8), // Opaque pointer (runtime uses RaskVec*)
-        Type::UnresolvedGeneric { name, .. } if name == "Wide" => (8, 8), // Opaque pointer (runtime uses RaskVec* — conc.data-parallel)
-        Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
-        Type::UnresolvedGeneric { name, .. } if name == "Random" => (8, 8),  // Pointer to rng state
-        Type::UnresolvedGeneric { name, .. } if name == "Channel" => (8, 8),
-        // Box family — all opaque runtime pointers, same as the collections
-        // above. Without these a `Mutex<T>` field warned about an unresolved
-        // generic on every build even though (8, 8) is the right answer.
-        Type::UnresolvedGeneric { name, .. }
-            if matches!(name.as_str(),
-                "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
-                | "Sender" | "Receiver" | "Handle") => (8, 8),
+        Type::UnresolvedGeneric { name, .. } if generic_is_one_word(name) => (8, 8),
         Type::UnresolvedGeneric { name, args } => {
             if let Some(found) = cached_generic_layout(name, args, cache) {
                 return found;
@@ -551,6 +536,21 @@ fn substitute_inside(ty: &Type, subst: &std::collections::HashMap<&str, &Type>) 
         Type::Array { elem, len } => Type::Array { elem: Box::new(go(elem)), len: *len },
         _ => ty.clone(),
     }
+}
+
+/// A builtin generic that is one pointer whatever its arguments are: a
+/// collection or box is a handle to runtime storage, a link is the node's
+/// address, a rack a pointer to its slab.
+///
+/// Laying out a type that holds one never needs its arguments' layouts, so
+/// `Vec<Expr>` inside `Wrapped` doesn't make `Wrapped` wait for `Expr`.
+pub(crate) fn generic_is_one_word(name: &str) -> bool {
+    matches!(
+        name,
+        "Link" | "Rack" | "Vec" | "Wide" | "Map" | "Random" | "Channel"
+            | "Mutex" | "Shared" | "Cell" | "Heap" | "Atomic"
+            | "Sender" | "Receiver" | "Handle"
+    )
 }
 
 /// A builtin container or box, written without its type arguments.

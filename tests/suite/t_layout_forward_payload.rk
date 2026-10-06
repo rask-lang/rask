@@ -1,0 +1,86 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// An enum whose payload is a struct declared further down the file.
+//
+// Natively this segfaulted: `Expr` was laid out before `Wrapped` had a size,
+// so its payload got an 8-byte guess for a 32-byte struct. Layouts go in
+// dependency order, but `Wrapped`'s `Vec<Expr>` counted as a dependency on
+// `Expr`, the false cycle fell back to source order (#1436). A vector, or a
+// generic that only holds its argument behind one, doesn't wait on it.
+
+import memory.Heap
+
+enum Expr {
+    Num(i64)
+    Neg(Wrapped)
+    Boxed(Holder)
+}
+
+struct Wrapped {
+    a: i64
+    b: i64
+    c: i64
+    items: Vec<Expr>
+}
+
+struct Holder {
+    tag: string
+    n: i64
+    kids: Stack<Expr>
+}
+
+struct Stack<T> {
+    items: Vec<T>
+}
+
+enum Chain {
+    End(Pair)
+    Link(Pair, Heap<Chain>)
+}
+
+struct Pair {
+    x: i64
+    y: i64
+    label: string
+}
+
+test "payload declared below the enum keeps its fields" {
+    let e = Expr.Neg(Wrapped { a: 1, b: 2, c: 3, items: [Expr.Num(9)] })
+    if e is Neg(w) {
+        assert w.a == 1
+        assert w.b == 2
+        assert w.c == 3
+        assert w.items.len() == 1
+    } else {
+        assert false
+    }
+}
+
+test "a generic holding the enum only through a vector" {
+    let items: Vec<Expr> = [Expr.Num(1), Expr.Num(2)]
+    let e = Expr.Boxed(Holder { tag: "kids", n: 7, kids: Stack { items: items } })
+    if e is Boxed(h) {
+        assert h.tag == "kids"
+        assert h.n == 7
+        assert h.kids.items.len() == 2
+    } else {
+        assert false
+    }
+}
+
+test "recursion through Heap with a forward payload" {
+    let c = Chain.Link(Pair { x: 1, y: 2, label: "a" }, Heap(Chain.End(Pair { x: 3, y: 4, label: "b" })))
+    match c {
+        Chain.Link(p, rest) => {
+            assert p.x + p.y == 3
+            assert p.label == "a"
+            match rest {
+                Chain.End(q) => {
+                    assert q.x + q.y == 7
+                    assert q.label == "b"
+                }
+                Chain.Link(_, _) => assert false
+            }
+        }
+        Chain.End(_) => assert false
+    }
+}
