@@ -802,48 +802,64 @@ impl TypeChecker {
         !params.is_empty() && ty.contains(&|t| matches!(t, Type::UnresolvedNamed(n) if params.contains(n)))
     }
 
-    /// `match a { T as x => { return x.clone() }, E as e => … }`, one arm per
-    /// branch the value can be in. A flat `T? or E` has three, `none` among
-    /// them (OPT30), and a `void` side is the trailing `_` with a bare
-    /// `return`. Each arm returns, since a `return` is where a branch widens
-    /// back into the result.
+    /// `match a { T as x => { return x.clone() }, none => { return none }, E as e => … }`,
+    /// a `void` side being the trailing `_` with a bare `return`. Each arm
+    /// returns, since a `return` is where a branch widens back into the result.
     fn result_clone_body(&mut self, ty: &Type, params: &[String]) -> Vec<Stmt> {
-        let Type::Result { ok, err } = ty else { return Vec::new() };
-        let mut arms = Vec::new();
-        let mut has_void = false;
-        for side in [&**ok, &**err] {
-            self.clone_branch_arms(side, params, &mut arms, &mut has_void);
-        }
-        if has_void {
-            let r = self.stmt(StmtKind::Return(None));
-            let body = self.block(vec![r]);
-            arms.push(arm(Pattern::Wildcard, body));
-        }
         let a = self.ident("a");
-        vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(a), arms })]
+        let m = self.branch_match(a, ty, |s, _, branch, x| match branch {
+            Branch::Value(side) => {
+                let mut body = Vec::new();
+                let copy = s.clone_of(x.expect("a value branch binds"), side, params, &mut body);
+                body.push(s.ret(copy));
+                s.block(body)
+            }
+            Branch::None => {
+                let none = s.expr(ExprKind::None);
+                s.ret_block(none)
+            }
+            Branch::Void => {
+                let r = s.stmt(StmtKind::Return(None));
+                s.block(vec![r])
+            }
+        });
+        vec![self.stmt(StmtKind::Expr(m))]
     }
 
-    fn clone_branch_arms(&mut self, side: &Type, params: &[String], arms: &mut Vec<MatchArm>, has_void: &mut bool) {
-        if *side == Type::Unit {
-            *has_void = true;
-            return;
+    /// `match scrutinee { … }` over a `T or E`, one arm per branch, each body
+    /// written by `body` from the branch's position, the branch, and its bound
+    /// payload. Derived clone, `==` and hash all build their matches here, so
+    /// they agree on what the branches are.
+    fn branch_match(
+        &mut self,
+        scrutinee: Expr,
+        ty: &Type,
+        mut body: impl FnMut(&mut Self, usize, &Branch, Option<Expr>) -> Expr,
+    ) -> Expr {
+        let mut arms = Vec::new();
+        for (i, branch) in result_branches(ty).iter().enumerate() {
+            let (pattern, bound) = self.branch_pattern(branch, true);
+            let e = body(self, i, branch, bound);
+            arms.push(arm(pattern, e));
         }
-        if let Some(inner) = side.as_option() {
-            let inner = inner.clone();
-            self.clone_branch_arms(&inner, params, arms, has_void);
-            let none = self.expr(ExprKind::None);
-            let body = self.ret_block(none);
-            arms.push(arm(Pattern::TypePat { ty: TypeExpr::NoneType, binding: None }, body));
-            return;
+        self.expr(ExprKind::Match { scrutinee: Box::new(scrutinee), arms })
+    }
+
+    /// The pattern naming `branch`, and the payload it binds when `bind` asks.
+    fn branch_pattern(&mut self, branch: &Branch, bind: bool) -> (Pattern, Option<Expr>) {
+        match branch {
+            Branch::Value(side) => {
+                let written = self.written(side);
+                if !bind {
+                    return (Pattern::TypePat { ty: written, binding: None }, None);
+                }
+                let x = self.fresh_name();
+                let xe = self.ident(&x);
+                (Pattern::TypePat { ty: written, binding: Some(x) }, Some(xe))
+            }
+            Branch::None => (Pattern::TypePat { ty: TypeExpr::NoneType, binding: None }, None),
+            Branch::Void => (Pattern::Wildcard, None),
         }
-        let x = self.fresh_name();
-        let written = self.written(side);
-        let xe = self.ident(&x);
-        let mut body = Vec::new();
-        let copy = self.clone_of(xe, side, params, &mut body);
-        body.push(self.ret(copy));
-        let block = self.block(body);
-        arms.push(arm(Pattern::TypePat { ty: written, binding: Some(x) }, block));
     }
 
     /// The copy of a `T or E` naming a generic type's own parameters: a
@@ -953,45 +969,36 @@ impl TypeChecker {
                 });
                 self.present(a, Some(x), both, b_absent)
             }
-            // `match a { T as x => match b { T as y => x == y, _ => false }, E as x => … }`
+            // `match a { T as x => match b { T as y => x == y, _ => false },
+            // none => match b { none => true, _ => false }, E as x => … }`
             //
-            // A `void` side has nothing to bind and no pattern of its own: it
-            // is the trailing `_`, and two of them are equal.
-            Type::Result { ok, err } => {
-                let mut arms = Vec::new();
-                let mut valued = Vec::new();
-                for side in [&**ok, &**err] {
-                    if *side == Type::Unit {
-                        continue;
+            // The trailing `_` of a `void` side matches when `b` is in none of
+            // the other branches.
+            Type::Result { .. } => {
+                let others: Vec<Branch> =
+                    result_branches(ty).into_iter().filter(|br| !matches!(br, Branch::Void)).collect();
+                self.branch_match(a, ty, |s, _, branch, x| {
+                    let mut arms = Vec::new();
+                    if let Branch::Void = branch {
+                        for other in &others {
+                            let (pattern, _) = s.branch_pattern(other, false);
+                            let no = s.bool_lit(false);
+                            arms.push(arm(pattern, no));
+                        }
+                        let yes = s.bool_lit(true);
+                        arms.push(arm(Pattern::Wildcard, yes));
+                    } else {
+                        let (pattern, y) = s.branch_pattern(branch, true);
+                        let same = match (branch, x, y) {
+                            (Branch::Value(side), Some(x), Some(y)) => s.eq_of(x, y, side),
+                            _ => s.bool_lit(true),
+                        };
+                        let no = s.bool_lit(false);
+                        arms.push(arm(pattern, same));
+                        arms.push(arm(Pattern::Wildcard, no));
                     }
-                    valued.push(side.clone());
-                    let (x, y) = (self.fresh_name(), self.fresh_name());
-                    let written = self.written(side);
-                    let (xe, ye) = (self.ident(&x), self.ident(&y));
-                    let same = self.eq_of(xe, ye, side);
-                    let no = self.bool_lit(false);
-                    let inner = self.expr(ExprKind::Match {
-                        scrutinee: Box::new(b.clone()),
-                        arms: vec![
-                            arm(Pattern::TypePat { ty: written.clone(), binding: Some(y) }, same),
-                            arm(Pattern::Wildcard, no),
-                        ],
-                    });
-                    arms.push(arm(Pattern::TypePat { ty: written, binding: Some(x) }, inner));
-                }
-                if valued.len() == 1 {
-                    let other = self.written(&valued[0]);
-                    let (no, yes) = (self.bool_lit(false), self.bool_lit(true));
-                    let inner = self.expr(ExprKind::Match {
-                        scrutinee: Box::new(b.clone()),
-                        arms: vec![
-                            arm(Pattern::TypePat { ty: other, binding: None }, no),
-                            arm(Pattern::Wildcard, yes),
-                        ],
-                    });
-                    arms.push(arm(Pattern::Wildcard, inner));
-                }
-                self.expr(ExprKind::Match { scrutinee: Box::new(a), arms })
+                    s.expr(ExprKind::Match { scrutinee: Box::new(b.clone()), arms })
+                })
             }
             // `a.0 == b.0 && a.1 == b.1`
             Type::Tuple(elems) => {
@@ -1021,30 +1028,19 @@ impl TypeChecker {
                 let none = self.u64_lit(0);
                 self.present(v, Some(x), some, none)
             }
-            // `match v { T as o => mix(1, o), E as e => mix(2, e) }`, a `void`
-            // side being the trailing `_` and hashing to its tag.
-            Type::Result { ok, err } => {
-                let mut arms = Vec::new();
-                let mut unit_tag = None;
-                for (tag, side) in [(1, &**ok), (2, &**err)] {
-                    if *side == Type::Unit {
-                        unit_tag = Some(tag);
-                        continue;
+            // `match v { T as o => mix(1, o), none => 2, E as e => mix(3, e) }`,
+            // each branch seeded by its position and one with no payload
+            // hashing to that alone.
+            Type::Result { .. } => self.branch_match(v, ty, |s, i, branch, x| {
+                let tag = s.u64_lit(i as i128 + 1);
+                match (branch, x) {
+                    (Branch::Value(side), Some(x)) => {
+                        let inner = s.hash_of(x, side);
+                        s.mix(tag, vec![inner])
                     }
-                    let x = self.fresh_name();
-                    let written = self.written(side);
-                    let xe = self.ident(&x);
-                    let inner = self.hash_of(xe, side);
-                    let seed = self.u64_lit(tag);
-                    let mixed = self.mix(seed, vec![inner]);
-                    arms.push(arm(Pattern::TypePat { ty: written, binding: Some(x) }, mixed));
+                    _ => tag,
                 }
-                if let Some(tag) = unit_tag {
-                    let lit = self.u64_lit(tag);
-                    arms.push(arm(Pattern::Wildcard, lit));
-                }
-                self.expr(ExprKind::Match { scrutinee: Box::new(v), arms })
-            }
+            }),
             Type::Tuple(elems) => {
                 let parts: Vec<Expr> = elems
                     .iter()
@@ -1266,6 +1262,36 @@ fn fn_decl(name: &str, params: Vec<Param>, ret: &str, body: Vec<Stmt>) -> FnDecl
 
 fn arm(pattern: Pattern, body: Expr) -> MatchArm {
     MatchArm { pattern, guard: None, body: Box::new(body) }
+}
+
+/// One branch a `T or E` value can be in, as a match arm names it. A flat
+/// `T? or E` has three, `none` among them (OPT30). A `void` side has no
+/// pattern of its own and is the trailing `_`.
+enum Branch {
+    Value(Type),
+    None,
+    Void,
+}
+
+fn result_branches(ty: &Type) -> Vec<Branch> {
+    fn push(side: &Type, out: &mut Vec<Branch>, void: &mut bool) {
+        if *side == Type::Unit {
+            *void = true;
+        } else if let Some(inner) = side.as_option() {
+            push(inner, out, void);
+            out.push(Branch::None);
+        } else {
+            out.push(Branch::Value(side.clone()));
+        }
+    }
+    let Type::Result { ok, err } = ty else { return Vec::new() };
+    let (mut out, mut void) = (Vec::new(), false);
+    push(ok, &mut out, &mut void);
+    push(err, &mut out, &mut void);
+    if void {
+        out.push(Branch::Void);
+    }
+    out
 }
 
 fn variant_pattern(path: &str, n: usize, prefix: &str) -> Pattern {
