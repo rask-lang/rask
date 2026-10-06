@@ -278,7 +278,13 @@ impl<'a> MirLowerer<'a> {
             // They were the only iterator terminals without a lowering, so
             // `v.iter().min()` reached codegen as a call to `Vec_iter`, which
             // doesn't exist: "Function not found: Vec_iter".
-            "min" | "max" if args.is_empty() => {
+            //
+            // Only for an element a one-word `<` orders the way its `compare`
+            // does. Anything else goes to the Rask body (`Vec.min`,
+            // `Sequence.min`), which asks the element: the loop here compared
+            // a struct's address and stored it as the payload, and segfaulted
+            // (#1406).
+            "min" | "max" if args.is_empty() && self.extreme_fuses(_full_expr) => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
                     let result = self.lower_iter_extreme(&chain, method == "max")?;
                     return Ok(Some(result));
@@ -1693,6 +1699,24 @@ impl<'a> MirLowerer<'a> {
     /// The comparison is on the element as the loop produces it, so an adapter
     /// ahead of the terminal is already applied — `.map(f).max()` is the max of
     /// the mapped values, not of the sources.
+    /// Can `lower_iter_extreme` answer this `min()`/`max()` call? Its loop
+    /// keeps one signed word and compares with `<`, which is the element's own
+    /// order only for an integer that fits a signed word, a char or a bool. A
+    /// u64 above i64::MAX would come out smallest; a float's `compare` is the
+    /// total order, not IEEE `<`; a string, a 128-bit integer or an aggregate
+    /// isn't one comparable word at all.
+    fn extreme_fuses(&self, call: &Expr) -> bool {
+        let Some(elem) = self.ctx.lookup_raw_type(call.id).and_then(|t| t.as_option()) else {
+            return false;
+        };
+        matches!(
+            self.ctx.type_to_mir(elem),
+            MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
+                | MirType::U8 | MirType::U16 | MirType::U32
+                | MirType::Char | MirType::Bool
+        )
+    }
+
     pub(super) fn lower_iter_extreme(
         &mut self,
         chain: &super::IterChain<'_>,

@@ -8255,6 +8255,7 @@ impl<'a> MirLowerer<'a> {
             obj_ty,
             MirType::I8 | MirType::I16 | MirType::I32 | MirType::I64
                 | MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64
+                | MirType::I128 | MirType::U128
                 | MirType::F32 | MirType::F64
                 | MirType::Char | MirType::Bool
         );

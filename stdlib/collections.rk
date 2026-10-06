@@ -392,13 +392,47 @@ extend Vec<T> where T: Comparable {
     @native("rask_vec_sort")
     public func sort(mutate self) {}
 
-    /// Minimum element.
-    @native
-    public func min(self) -> Option<T> {}
+    /// Minimum element. The first of several equal ones.
+    ///
+    /// Through `compare`, like `sort`. Both used to be native: the interpreter
+    /// ordered field by field whatever `compare` said, and native compared a
+    /// struct element's address and segfaulted (#1406).
+    ///
+    /// The loop keeps an index rather than the element: the elements are
+    /// `self`'s, and the answer is handed out the way `get` hands one out.
+    public func min(self) -> T? {
+        let i = self.extreme_index(Ordering.Less)
+        if i < 0 {
+            return none
+        }
+        return self.get(i)
+    }
 
-    /// Maximum element.
-    @native
-    public func max(self) -> Option<T> {}
+    /// Maximum element. The first of several equal ones.
+    public func max(self) -> T? {
+        let i = self.extreme_index(Ordering.Greater)
+        if i < 0 {
+            return none
+        }
+        return self.get(i)
+    }
+
+    /// Index of the first element no other beats in direction `wins`, or -1
+    /// when there are none.
+    func extreme_index(self, wins: Ordering) -> i64 {
+        if self.len() == 0 {
+            return -1
+        }
+        mut best: usize = 0
+        mut i: usize = 1
+        while i < self.len() {
+            if self[i].compare(self[best]) == wins {
+                best = i
+            }
+            i = i + 1
+        }
+        return best.to<i64>()!
+    }
 }
 
 extend Vec<T> where T: Hashable {

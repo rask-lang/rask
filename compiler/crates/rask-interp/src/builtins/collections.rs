@@ -632,52 +632,6 @@ impl Interpreter {
                     Ok(Value::int(sum))
                 }
             }
-            "min" => {
-                let vec = v.lock().unwrap();
-                if vec.is_empty() {
-                    return Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    });
-                }
-                let mut min = vec[0].clone();
-                for item in vec.iter().skip(1) {
-                    if let Some(std::cmp::Ordering::Less) = Self::value_cmp(item, &min) {
-                        min = item.clone();
-                    }
-                }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "Some".to_string(),
-                    fields: vec![min],
-                    variant_index: 0, origin: None,
-                })
-            }
-            "max" => {
-                let vec = v.lock().unwrap();
-                if vec.is_empty() {
-                    return Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0, origin: None,
-                    });
-                }
-                let mut max = vec[0].clone();
-                for item in vec.iter().skip(1) {
-                    if let Some(std::cmp::Ordering::Greater) = Self::value_cmp(item, &max) {
-                        max = item.clone();
-                    }
-                }
-                Ok(Value::Enum {
-                    name: "Option".to_string(),
-                    variant: "Some".to_string(),
-                    fields: vec![max],
-                    variant_index: 0, origin: None,
-                })
-            }
             "take_all" => {
                 // Draining leaves the vector empty but keeps its bound — a
                 // fixed vector is still fixed after you empty it.

@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `min` and `max` order by the element's own `compare`, like `sort`.
+//
+// Both were native. `Vec<struct>.min()` segfaulted natively: the fused loop
+// compared each struct's address and stored it as the payload. The
+// interpreter ordered field by field, so a hand-written descending `compare`
+// still got the field-order minimum. A u64 above i64::MAX came out smallest
+// natively, since the loop compared signed words (#1406).
+
+struct Pair {
+    a: i64
+    b: i64
+}
+
+struct Desc {
+    raw: i64
+}
+
+Desc implements Comparable {
+    func compare(self, other: Desc) -> Ordering {
+        return other.raw.compare(self.raw)
+    }
+}
+
+test "a struct's min and max" {
+    mut p: Vec<Pair> = Vec.new()
+    p.push(Pair { a: 2, b: 0 })
+    p.push(Pair { a: 1, b: 5 })
+    assert (p.min() ?? Pair { a: 0, b: 0 }).a == 1
+    assert (p.max() ?? Pair { a: 0, b: 0 }).a == 2
+}
+
+test "a hand-written compare decides" {
+    let d: Vec<Desc> = [Desc { raw: 1 }, Desc { raw: 2 }]
+    assert (d.min() ?? Desc { raw: 0 }).raw == 2
+    assert (d.max() ?? Desc { raw: 0 }).raw == 1
+    assert (d.map(|x| x).min() ?? Desc { raw: 0 }).raw == 2
+    assert (d.filter(|x| x.raw > 0).max() ?? Desc { raw: 0 }).raw == 1
+}
+
+test "strings, wide and unsigned elements" {
+    let s: Vec<string> = ["pear", "apple, and long enough to live on the heap", "zebra"]
+    assert (s.min() ?? "-") == "apple, and long enough to live on the heap"
+    assert (s.max() ?? "-") == "zebra"
+
+    let w: Vec<i128> = [5, -170141183460469231731687303715884105727, 3]
+    assert (w.min() ?? 0) == -170141183460469231731687303715884105727
+    assert (w.max() ?? 0) == 5
+
+    let u: Vec<u64> = [18000000000000000000, 3]
+    assert (u.min() ?? 0) == 3
+    assert (u.max() ?? 0) == 18000000000000000000
+    assert (u.map(|x| x + 1).max() ?? 0) == 18000000000000000001
+}
+
+test "an empty vector, and floats by their total order" {
+    let e: Vec<Pair> = Vec.new()
+    assert e.min() is none
+    let f: Vec<f64> = [2.5, -0.5, 1.0]
+    assert (f.min() ?? 0.0) == -0.5
+    assert (f.max() ?? 0.0) == 2.5
+}

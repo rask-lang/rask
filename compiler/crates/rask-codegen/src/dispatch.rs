@@ -1933,8 +1933,6 @@ mod tests {
     ("Vec.any",                   Ok_("t_native_reach_vec")),
     ("Vec.find",                  Ok_("t_native_reach_vec")),
     ("Vec.fold",                  Ok_("t_native_reach_vec")),
-    ("Vec.max",                   Ok_("t_native_reach_vec")),
-    ("Vec.min",                   Ok_("t_native_reach_vec")),
     ("Vec.modify",                Ok_("t_native_reach_vec")),
     ("Vec.position",              Ok_("t_native_reach_vec")),
     ("Vec.read",                  Ok_("t_native_reach_vec")),
