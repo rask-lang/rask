@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: a stdlib type passed where the program's same-named interface is wanted
+//
+// A program's `interface Writer` is a different interface from the stdlib's,
+// even with the same methods. `Buffer` implements the stdlib's, so it doesn't
+// satisfy this one. Interfaces used to be told apart by name, which made it
+// pass here and broke the stdlib's own `Buffer implements Writer` (#1329).
+
+import io.Buffer
+import io.IoError
+
+interface Writer {
+    func write_text(self, data: string) -> void or IoError
+}
+
+func emit<T: Writer>(w: T) -> void or IoError {
+    try w.write_text("x")
+}
+
+func main() {
+    let b = Buffer.new()
+    // ERROR: `Buffer` implements the stdlib's `Writer`, not this one
+    emit(b) catch _ => {}
+}

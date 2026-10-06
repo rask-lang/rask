@@ -533,7 +533,7 @@ impl TypeChecker {
         }
         let siblings: Vec<TypeExpr> = self
             .types
-            .applied_conformances(type_id, &base)
+            .applied_conformances(type_id, &self.types.interface_ident(&base))
             .into_iter()
             .filter(|k| !self.same_applied_interface(k, interface_ref, &i.target_ty))
             .collect();
@@ -672,6 +672,7 @@ impl TypeChecker {
                             interface_name: want.to_string(),
                             context: super::InterfaceBoundContext::ConformanceHeader,
                             missing: None,
+                            namesake: false,
                             span: bound_span,
                         });
                     }
@@ -706,7 +707,7 @@ impl TypeChecker {
     pub(super) fn check_conformance_ambiguity(
         &mut self,
         type_id: crate::types::TypeId,
-        interface_key: &TypeExpr,
+        interface_key: &super::type_table::ConformanceKey,
         span: rask_ast::Span,
     ) {
         let here = self.package_of(span).map(str::to_string);
@@ -730,13 +731,13 @@ impl TypeChecker {
         if visible.len() < 2 {
             return;
         }
-        let once = (type_id, interface_key.to_string(), here.unwrap_or_default());
+        let once = (type_id, interface_key.applied.to_string(), here.unwrap_or_default());
         if !self.reported_ambiguous_conformances.insert(once) {
             return;
         }
         self.errors.push(TypeError::AmbiguousConformance {
             ty: self.types.type_name(type_id),
-            interface_name: TypeTable::conformance_key(interface_key),
+            interface_name: TypeTable::conformance_key(&interface_key.applied),
             sites: visible,
             span,
         });
@@ -756,7 +757,7 @@ impl TypeChecker {
         }
         let Some(type_id) = self.named_type_id(ty) else { return };
         for key in self.types.ambiguous_conformance_keys(type_id) {
-            if TypeTable::conformance_key(bound) == TypeTable::conformance_key(&key) {
+            if self.types.interface_ident(&TypeTable::conformance_key(bound)) == key.iface {
                 self.check_conformance_ambiguity(type_id, &key, span);
             }
         }
@@ -778,9 +779,12 @@ impl TypeChecker {
             return;
         }
         for key in self.types.ambiguous_conformance_keys(type_id) {
-            let base = TypeTable::conformance_key(&key);
+            let declared = match key.iface {
+                super::type_table::InterfaceIdent::Declared(id) => self.types.get(id),
+                super::type_table::InterfaceIdent::Builtin(_) => None,
+            };
             let declares = matches!(
-                self.types.get_type_id(&base).and_then(|id| self.types.get(id)),
+                declared,
                 Some(TypeDef::Interface { methods, .. })
                     if methods.iter().any(|m| super::type_defs::method_base(&m.name) == method)
             );
@@ -1141,7 +1145,7 @@ impl TypeChecker {
         let same_base_sibling = i.interface.as_ref().map_or(false, |iface| {
             let base = iface.name().unwrap_or_default();
             self.types
-                .applied_conformances(type_id, &base)
+                .applied_conformances(type_id, &self.types.interface_ident(&base))
                 .iter()
                 .any(|k| !self.same_applied_interface(k, iface, &i.target_ty))
         });
@@ -2015,11 +2019,11 @@ impl TypeChecker {
                     let clone_ok = field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
                         && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
                     let cmp_ok = field_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_conformance(id, &TypeExpr::named("Equal")); }
-                    if hash_ok { self.types.record_conformance(id, &TypeExpr::named("Hashable")); }
-                    if clone_ok { self.types.record_conformance(id, &TypeExpr::named("Cloneable")); }
-                    if cmp_ok { self.types.record_conformance(id, &TypeExpr::named("Comparable")); }
-                    self.types.record_conformance(id, &TypeExpr::named("Debug"));
+                    if eq_ok { self.types.record_derived_conformance(id, "Equal"); }
+                    if hash_ok { self.types.record_derived_conformance(id, "Hashable"); }
+                    if clone_ok { self.types.record_derived_conformance(id, "Cloneable"); }
+                    if cmp_ok { self.types.record_derived_conformance(id, "Comparable"); }
+                    self.types.record_derived_conformance(id, "Debug");
                 }
                 TypeDef::Enum { variants, methods, type_params, .. } => {
                     let payload_types: Vec<Type> = variants.iter()
@@ -2144,11 +2148,11 @@ impl TypeChecker {
                     let clone_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
                         && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
                     let cmp_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_conformance(id, &TypeExpr::named("Equal")); }
-                    if hash_ok { self.types.record_conformance(id, &TypeExpr::named("Hashable")); }
-                    if clone_ok { self.types.record_conformance(id, &TypeExpr::named("Cloneable")); }
-                    if cmp_ok { self.types.record_conformance(id, &TypeExpr::named("Comparable")); }
-                    self.types.record_conformance(id, &TypeExpr::named("Debug"));
+                    if eq_ok { self.types.record_derived_conformance(id, "Equal"); }
+                    if hash_ok { self.types.record_derived_conformance(id, "Hashable"); }
+                    if clone_ok { self.types.record_derived_conformance(id, "Cloneable"); }
+                    if cmp_ok { self.types.record_derived_conformance(id, "Comparable"); }
+                    self.types.record_derived_conformance(id, "Debug");
                 }
                 _ => {}
             }
@@ -2518,6 +2522,7 @@ impl TypeChecker {
                                 interface_name: interface_name.to_string(),
                                 context: super::InterfaceBoundContext::ConformanceHeader,
                                 missing,
+                                namesake: false,
                                 span: decl.span,
                             });
                         }

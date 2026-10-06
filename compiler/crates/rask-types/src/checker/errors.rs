@@ -597,6 +597,10 @@ pub enum TypeError {
         /// `Hashable` needs `eq` as well as `hash`, and nothing said so. The
         /// second half is the signature to write.
         missing: Option<(String, String)>,
+        /// The type implements another interface of this name — the stdlib's,
+        /// shadowed by the program's own (#1329). "Missing methods" would be
+        /// wrong: it may well have every one of them.
+        namesake: bool,
         span: Span,
     },
     /// A bound, conformance header or cast naming an interface that doesn't exist.

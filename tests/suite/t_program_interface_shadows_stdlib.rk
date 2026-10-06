@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A program's interface named like a stdlib one is a different interface (#1329).
+//
+// Declaring `interface Writer` used to break the stdlib: its own
+// `Buffer implements Writer` was checked against the program's methods, and
+// failed inside `stdlib/io.rk` with "`Buffer` has no `tag`". The checker
+// looked interfaces up by bare name, so the last declaration won everywhere.
+// `Sub` is the same trap with the subtraction operator's interface.
+
+import io.Buffer
+import time.Duration
+
+interface Writer {
+    func tag(self) -> string
+}
+
+interface Base {
+    func id(self) -> i64
+}
+
+interface Sub: Base {
+    func label(self) -> string {
+        return "sub{self.id()}"
+    }
+}
+
+struct Mine {
+    n: i64
+}
+
+Mine implements Writer {
+    func tag(self) -> string {
+        return "m{self.n}"
+    }
+}
+
+Mine implements Sub {
+    func id(self) -> i64 {
+        return self.n
+    }
+}
+
+func tag_of(w: any Writer) -> string {
+    return w.tag()
+}
+
+func label_of<T: Sub>(x: T) -> string {
+    return x.label()
+}
+
+test "the program's Writer is its own" {
+    assert Mine { n: 1 }.tag() == "m1"
+    assert tag_of(Mine { n: 2 } as any Writer) == "m2"
+}
+
+test "the stdlib's Writer still works on its own types" {
+    mut b = Buffer.new()
+    try b.write_text("hi")
+    assert b.len() == 2
+}
+
+test "a program Sub leaves subtraction alone" {
+    assert label_of(Mine { n: 3 }) == "sub3"
+    let a = 10
+    assert a - 4 == 6
+    let f = 2.5
+    assert f - 1.0 == 1.5
+    let d = Duration.seconds(5) - Duration.seconds(2)
+    assert d.as_millis() == 3000
+}

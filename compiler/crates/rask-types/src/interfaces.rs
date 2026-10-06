@@ -87,56 +87,43 @@ pub struct InterfaceChecker<'a> {
     types: &'a TypeTable,
     /// Collected errors.
     errors: Vec<InterfaceError>,
-    /// Cache for interface method requirements (expanded with composed interfaces).
-    interface_methods: HashMap<String, Vec<MethodSig>>,
 }
 
 impl<'a> InterfaceChecker<'a> {
     pub fn new(types: &'a TypeTable) -> Self {
-        let mut checker = Self {
-            types,
-            errors: Vec::new(),
-            interface_methods: HashMap::new(),
-        };
-        checker.collect_interface_methods();
-        checker
+        Self { types, errors: Vec::new() }
     }
 
-    /// Collect all methods from interfaces (including composed interfaces).
-    fn collect_interface_methods(&mut self) {
-        // First pass: collect direct methods
-        let mut super_map: Vec<(String, Vec<String>)> = Vec::new();
-        for def in self.types.iter() {
-            if let TypeDef::Interface { name, super_interfaces, methods, .. } = def {
-                self.interface_methods.insert(name.clone(), methods.clone());
-                if !super_interfaces.is_empty() {
-                    super_map.push((
-                        name.clone(),
-                        super_interfaces.iter().map(TypeTable::conformance_key).collect(),
-                    ));
+    /// Every method a declared interface requires: its own, then its
+    /// declared parents' (TD3), the first declaration of a name winning.
+    ///
+    /// Walked by `TypeId`, each parent named as the interface's own side reads
+    /// it. Keyed by name, a program's `interface Writer` replaced the stdlib's
+    /// and every stdlib `Buffer implements Writer` was checked against the
+    /// program's methods (#1329). `seen` stops a cycle.
+    fn declared_interface_methods(&self, id: TypeId, seen: &mut Vec<TypeId>) -> Vec<MethodSig> {
+        if seen.contains(&id) {
+            return Vec::new();
+        }
+        seen.push(id);
+        let Some(TypeDef::Interface { super_interfaces, methods, .. }) = self.types.get(id) else {
+            return Vec::new();
+        };
+        let mut all = methods.clone();
+        for parent in super_interfaces {
+            let Some(pid) = self
+                .types
+                .resolve_name_as_declared_by(id, &TypeTable::conformance_key(parent))
+            else {
+                continue;
+            };
+            for m in self.declared_interface_methods(pid, seen) {
+                if !all.iter().any(|existing| existing.name == m.name) {
+                    all.push(m);
                 }
             }
         }
-        // Second pass: add inherited methods from super-interfaces
-        for (interface_name, supers) in &super_map {
-            let mut inherited = Vec::new();
-            for parent in supers {
-                if let Some(parent_methods) = self.interface_methods.get(parent) {
-                    for m in parent_methods {
-                        // Don't duplicate methods already defined directly
-                        if !self.interface_methods.get(interface_name)
-                            .map_or(false, |ms| ms.iter().any(|existing| existing.name == m.name))
-                            && !inherited.iter().any(|im: &MethodSig| im.name == m.name)
-                        {
-                            inherited.push(m.clone());
-                        }
-                    }
-                }
-            }
-            if let Some(methods) = self.interface_methods.get_mut(interface_name) {
-                methods.extend(inherited);
-            }
-        }
+        all
     }
 
     /// G1: is this a nominal user-declared interface (registered, not `duck`)?
@@ -869,14 +856,19 @@ impl<'a> InterfaceChecker<'a> {
         self.signatures_match(a, b)
     }
 
-    /// Get methods required by an interface, by its name.
+    /// Get methods required by an interface, by its name as the code being
+    /// checked reads it.
     fn get_interface_methods(&self, interface_name: &str) -> Result<Vec<MethodSig>, InterfaceError> {
-        let base_name = interface_name;
-        self.interface_methods
-            .get(interface_name)
-            .cloned()
-            .or_else(|| self.get_builtin_interface_methods(base_name))
-            .ok_or_else(|| InterfaceError::UnknownInterface(interface_name.to_string()))
+        let declared = self
+            .types
+            .get_type_id(interface_name)
+            .filter(|id| matches!(self.types.get(*id), Some(TypeDef::Interface { .. })));
+        match declared {
+            Some(id) => Ok(self.declared_interface_methods(id, &mut Vec::new())),
+            None => self
+                .get_builtin_interface_methods(interface_name)
+                .ok_or_else(|| InterfaceError::UnknownInterface(interface_name.to_string())),
+        }
     }
 
     /// Get builtin interface methods for standard interfaces.

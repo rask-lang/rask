@@ -1775,11 +1775,14 @@ impl TypeChecker {
                                 Type::Named(id) => self.types.type_name(*id),
                                 other => format!("{}", other),
                             };
+                            let namesake = self.types.conformance_target(&inner_ty)
+                                .is_some_and(|id| self.types.conforms_to_namesake(id, interface_name));
                             self.errors.push(TypeError::InterfaceNotSatisfied {
                                 ty: ty_desc,
                                 interface_name: interface_name.clone(),
                                 context: super::InterfaceBoundContext::InterfaceObjectCast,
                                 missing: None,
+                                namesake,
                                 span: expr.span,
                             });
                         }

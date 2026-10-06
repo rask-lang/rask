@@ -91,10 +91,9 @@ interface Base {
 
 // A default declared one level up is part of what the sub-interface promises.
 //
-// Not called `Tagged`: that's the subtraction operator's interface now, and a program
-// declaring a name the stdlib already uses breaks the stdlib's own conformances
-// to it (#1329).
-interface Tagged: Base {
+// Called `Sub` on purpose: the stdlib's subtraction interface has that name
+// too, and declaring it here used to break the stdlib's own conformances (#1329).
+interface Sub: Base {
     func tag(self) -> string {
         return "sub{self.id()}"
     }
@@ -104,7 +103,7 @@ struct Alpha {
     n: i64
 }
 
-Alpha implements Tagged {
+Alpha implements Sub {
     func id(self) -> i64 {
         return self.n
     }

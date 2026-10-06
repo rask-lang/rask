@@ -37,6 +37,27 @@ pub(super) struct ConformanceSite {
     pub package: Option<String>,
 }
 
+/// Which interface a conformance is to.
+///
+/// A name isn't enough: a program's `interface Writer` and the stdlib's are two
+/// interfaces, and `Buffer implements Writer` is a claim about the stdlib's
+/// only (#1329). An interface the compiler provides without a declaration has
+/// nothing but its name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum InterfaceIdent {
+    Declared(TypeId),
+    Builtin(String),
+}
+
+/// GT2/GT3: what a conformance is filed under — the interface, and how its
+/// parameters were applied (`Mul<f64>` and `Mul<Meters>` are two).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ConformanceKey {
+    pub iface: InterfaceIdent,
+    /// Defaults filled in and `Self` replaced by the conforming type's name.
+    pub applied: TypeExpr,
+}
+
 /// XC1: who a type belongs to.
 ///
 /// The rule is "only the package that declares `T` may declare these six
@@ -124,18 +145,18 @@ pub struct TypeTable {
     /// loser's methods too, and a mangled `Type_method` string can't tell them
     /// apart. Binding happens here, where the TypeId is still known.
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
-    /// G1: declared/derived interface conformances (nominal). TypeId → interface base
-    /// names the type conforms to, from `T implements Interface` and auto-derive.
-    pub(super) conformances: HashMap<TypeId, std::collections::HashSet<TypeExpr>>,
+    /// G1: declared/derived interface conformances (nominal). TypeId → the interfaces
+    /// the type conforms to, from `T implements Interface` and auto-derive.
+    pub(super) conformances: HashMap<TypeId, std::collections::HashSet<ConformanceKey>>,
     /// AT2/AT8: `(type, applied interface) → associated type → what it answers with`.
-    pub(super) assoc_bindings: HashMap<(TypeId, TypeExpr), HashMap<String, Type>>,
+    pub(super) assoc_bindings: HashMap<(TypeId, ConformanceKey), HashMap<String, Type>>,
     /// MN3/XC3: where each conformance was written, so a collision between two
     /// of them is reported once, on the later one.
-    pub(super) conformance_spans: HashMap<(TypeId, TypeExpr), Vec<ConformanceSite>>,
-    /// CC1/CC2: conditional-conformance conditions. (TypeId, interface base) → the
+    pub(super) conformance_spans: HashMap<(TypeId, ConformanceKey), Vec<ConformanceSite>>,
+    /// CC1/CC2: conditional-conformance conditions. (TypeId, interface) → the
     /// `where` bounds (type-param name → required interface names) that must hold
     /// for the conformance, checked per instantiation.
-    pub(super) conformance_conditions: HashMap<(TypeId, String), Vec<(String, Vec<TypeExpr>)>>,
+    pub(super) conformance_conditions: HashMap<(TypeId, InterfaceIdent), Vec<(String, Vec<TypeExpr>)>>,
     /// XC4/XC5: which package's `extend` block each method on a type came from,
     /// and which block that was. `(TypeId, method name) → [(package, impl decl)]`.
     ///
@@ -149,7 +170,7 @@ pub struct TypeTable {
     /// declaration. Empty in every program that doesn't have a collision, which
     /// is nearly all of them — the use-site check reads this first and does
     /// nothing when it's empty.
-    pub(super) ambiguous_conformances: std::collections::HashSet<(TypeId, TypeExpr)>,
+    pub(super) ambiguous_conformances: std::collections::HashSet<(TypeId, ConformanceKey)>,
     /// XC1: who declares each type. Anything unrecorded is a builtin, and
     /// builtins are the stdlib's.
     pub(super) declared_by: HashMap<TypeId, TypeOwner>,
@@ -163,7 +184,7 @@ pub struct TypeTable {
     /// `3 * duration` asks "which type forms this pair with `Duration`", which
     /// the by-`Self` table can only answer by walking every entry. One insert
     /// here on the way in makes it a lookup.
-    pub(super) conformers_by_pair: HashMap<TypeExpr, Vec<TypeId>>,
+    pub(super) conformers_by_pair: HashMap<ConformanceKey, Vec<TypeId>>,
     /// OR12: conformance methods declared `@builtin` — the pair's types are
     /// written in the stdlib and the arithmetic is the compiler's, so there is
     /// no body to call. Keyed `(type, filed method name)`.
@@ -376,6 +397,27 @@ impl TypeTable {
         if self.stdlib_mode { &self.type_names } else { &self.stdlib_type_names }
     }
 
+    /// Was this type declared by the stdlib? A program type of the same name
+    /// shadows it in `type_names`, never in `stdlib_type_names`.
+    fn declared_in_stdlib(&self, id: TypeId) -> bool {
+        self.get(id)
+            .is_some_and(|def| self.stdlib_type_names.get(Self::def_name(def)) == Some(&id))
+    }
+
+    /// A name as the code that declared `owner` reads it.
+    ///
+    /// A stdlib interface's `: Writer` means the stdlib's `Writer` even while
+    /// a program one shadows it, and the program's checks reach stdlib
+    /// interfaces through their parents too (#1329).
+    pub fn resolve_name_as_declared_by(&self, owner: TypeId, name: &str) -> Option<TypeId> {
+        let (primary, fallback) = if self.declared_in_stdlib(owner) {
+            (&self.stdlib_type_names, &self.type_names)
+        } else {
+            (&self.type_names, &self.stdlib_type_names)
+        };
+        primary.get(name).or_else(|| fallback.get(name)).copied()
+    }
+
     /// Resolve a type name from the current scope.
     fn resolve_name(&self, name: &str) -> Option<TypeId> {
         self.primary_names()
@@ -505,15 +547,31 @@ impl TypeTable {
     /// type's name, so `Meters implements Mul` and `Meters implements
     /// Mul<Meters>` land on the same key when `Rhs` defaults to `Self`.
     /// An interface with no parameters keys on its bare name.
-    pub fn applied_conformance_key(&self, interface: &TypeExpr, self_name: &str) -> TypeExpr {
+    ///
+    /// The interface is the one the code being checked means by the name.
+    pub fn applied_conformance_key(&self, interface: &TypeExpr, self_name: &str) -> ConformanceKey {
+        let iface = self.interface_ident(&Self::conformance_key(interface));
+        self.applied_key_for(iface, interface, self_name)
+    }
+
+    /// `applied_conformance_key` for an interface already identified.
+    pub fn applied_key_for(
+        &self,
+        iface: InterfaceIdent,
+        interface: &TypeExpr,
+        self_name: &str,
+    ) -> ConformanceKey {
         let base = Self::conformance_key(interface);
-        let Some(TypeDef::Interface { type_params, .. }) =
-            self.get_type_id(&base).and_then(|id| self.get(id))
-        else {
-            return TypeExpr::named(base);
+        let bare = |iface| ConformanceKey { iface, applied: TypeExpr::named(base.clone()) };
+        let type_params = match &iface {
+            InterfaceIdent::Declared(id) => match self.get(*id) {
+                Some(TypeDef::Interface { type_params, .. }) => type_params,
+                _ => return bare(iface),
+            },
+            InterfaceIdent::Builtin(_) => return bare(iface),
         };
         if type_params.is_empty() {
-            return TypeExpr::named(base);
+            return bare(iface);
         }
         let written = interface.args();
         let mut args = Vec::new();
@@ -523,16 +581,50 @@ impl TypeTable {
                 // GT4: no argument and no default. The arity error is
                 // reported at the header; key on what was written so the
                 // conformance still exists for everything else.
-                None => return TypeExpr::named(base),
+                None => return bare(iface),
             };
             args.push(if arg.is_name("Self") { TypeExpr::named(self_name) } else { arg.clone() });
         }
-        TypeExpr::generic(base, args)
+        ConformanceKey { iface, applied: TypeExpr::generic(base, args) }
+    }
+
+    /// The interface a name means to the code being checked.
+    pub fn interface_ident(&self, name: &str) -> InterfaceIdent {
+        self.get_type_id(name)
+            .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })))
+            .map_or_else(|| InterfaceIdent::Builtin(name.to_string()), InterfaceIdent::Declared)
+    }
+
+    /// The stdlib's interface of this name, whatever the program declares.
+    ///
+    /// Operators resolve against `stdlib/ops.rk` (`type.operator-resolution`)
+    /// and auto-derive provides the stdlib's `Equal` and `Debug`; a program's
+    /// own `interface Sub` is neither (#1329).
+    ///
+    /// A check run without the stdlib loaded falls back to the program's.
+    pub fn stdlib_interface_ident(&self, name: &str) -> InterfaceIdent {
+        self.stdlib_type_names
+            .get(name)
+            .or_else(|| self.type_names.get(name))
+            .copied()
+            .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })))
+            .map_or_else(|| InterfaceIdent::Builtin(name.to_string()), InterfaceIdent::Declared)
     }
 
     /// G1: record that a type conforms to an interface (declared or auto-derived).
     pub fn record_conformance(&mut self, type_id: TypeId, interface: &TypeExpr) {
         let key = self.applied_conformance_key(interface, &self.type_name(type_id));
+        self.record_conformance_key(type_id, key);
+    }
+
+    /// G1: record an auto-derived conformance — always to the stdlib's interface.
+    pub fn record_derived_conformance(&mut self, type_id: TypeId, interface: &str) {
+        let iface = self.stdlib_interface_ident(interface);
+        let key = self.applied_key_for(iface, &TypeExpr::named(interface), &self.type_name(type_id));
+        self.record_conformance_key(type_id, key);
+    }
+
+    fn record_conformance_key(&mut self, type_id: TypeId, key: ConformanceKey) {
         let conformers = self.conformers_by_pair.entry(key.clone()).or_default();
         if !conformers.contains(&type_id) {
             conformers.push(type_id);
@@ -542,7 +634,7 @@ impl TypeTable {
 
     /// OR1: every type that conforms to this applied interface, in declaration
     /// order. `Mul<Duration>` answers with the `i64` the stdlib wrote.
-    pub fn conformers_of(&self, applied: &TypeExpr) -> &[TypeId] {
+    pub fn conformers_of(&self, applied: &ConformanceKey) -> &[TypeId] {
         self.conformers_by_pair.get(applied).map_or(&[], |v| v.as_slice())
     }
 
@@ -563,20 +655,31 @@ impl TypeTable {
 
     /// AT6: read an associated type off a conformance. A lookup, never a search.
     pub fn assoc_binding(&self, type_id: TypeId, interface: &TypeExpr, assoc: &str) -> Option<&Type> {
-        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
+        let iface = self.interface_ident(&Self::conformance_key(interface));
+        self.assoc_binding_to(type_id, iface, interface, assoc)
+    }
+
+    /// `assoc_binding` for an interface already identified.
+    pub fn assoc_binding_to(
+        &self,
+        type_id: TypeId,
+        iface: InterfaceIdent,
+        interface: &TypeExpr,
+        assoc: &str,
+    ) -> Option<&Type> {
+        let key = self.applied_key_for(iface.clone(), interface, &self.type_name(type_id));
         if let Some(t) = self.assoc_bindings.get(&(type_id, key)).and_then(|m| m.get(assoc)) {
             return Some(t);
         }
         // A bare `Mul` asking about a type with exactly one `Mul<...>`
         // conformance still has one answer. Two of them is the caller's
         // problem to disambiguate, and it gets nothing here.
-        let base = Self::conformance_key(interface);
         if !interface.args().is_empty() {
             return None;
         }
         let mut found = None;
         for ((id, key), m) in &self.assoc_bindings {
-            if *id != type_id || Self::conformance_key(key) != base {
+            if *id != type_id || key.iface != iface {
                 continue;
             }
             if let Some(t) = m.get(assoc) {
@@ -677,7 +780,7 @@ impl TypeTable {
     }
 
     /// XC3: the applied interface keys this type has more than one declaration of.
-    pub(super) fn ambiguous_conformance_keys(&self, type_id: TypeId) -> Vec<TypeExpr> {
+    pub(super) fn ambiguous_conformance_keys(&self, type_id: TypeId) -> Vec<ConformanceKey> {
         self.ambiguous_conformances
             .iter()
             .filter(|(id, _)| *id == type_id)
@@ -690,11 +793,10 @@ impl TypeTable {
     pub(super) fn conformance_sites(
         &self,
         type_id: TypeId,
-        interface: &TypeExpr,
+        key: &ConformanceKey,
     ) -> &[ConformanceSite] {
-        let key = self.applied_conformance_key(interface, &self.type_name(type_id));
         self.conformance_spans
-            .get(&(type_id, key))
+            .get(&(type_id, key.clone()))
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
@@ -752,15 +854,15 @@ impl TypeTable {
         found
     }
 
-    /// GT3: every applied form of `base` this type conforms to.
-    pub fn applied_conformances(&self, type_id: TypeId, base: &str) -> Vec<TypeExpr> {
+    /// GT3: every applied form of `iface` this type conforms to.
+    pub fn applied_conformances(&self, type_id: TypeId, iface: &InterfaceIdent) -> Vec<TypeExpr> {
         self.conformances
             .get(&type_id)
             .map(|set| {
                 let mut v: Vec<TypeExpr> = set
                     .iter()
-                    .filter(|k| Self::conformance_key(k) == base)
-                    .cloned()
+                    .filter(|k| k.iface == *iface)
+                    .map(|k| k.applied.clone())
                     .collect();
                 v.sort_by_key(|k| k.to_string());
                 v
@@ -776,7 +878,28 @@ impl TypeTable {
     /// `horn as any Speak` refused for an interface the type demonstrably implements,
     /// and pushing one into a `Vec<any Speak>` was a type error (#873).
     pub fn declares_conformance(&self, type_id: TypeId, interface: &TypeExpr) -> bool {
-        let base = Self::conformance_key(interface);
+        let iface = self.interface_ident(&Self::conformance_key(interface));
+        self.declares_conformance_to(type_id, iface, interface)
+    }
+
+    /// Does the type conform to a *different* interface spelled `name`? A stdlib
+    /// `Buffer` implements the stdlib's `Writer`, and a program declaring its own
+    /// `Writer` hasn't changed that (#1329).
+    pub fn conforms_to_namesake(&self, type_id: TypeId, name: &str) -> bool {
+        let meant = self.interface_ident(name);
+        self.conformances.get(&type_id).is_some_and(|set| {
+            set.iter()
+                .any(|k| k.iface != meant && Self::conformance_key(&k.applied) == name)
+        })
+    }
+
+    /// `declares_conformance` for an interface already identified.
+    pub fn declares_conformance_to(
+        &self,
+        type_id: TypeId,
+        iface: InterfaceIdent,
+        interface: &TypeExpr,
+    ) -> bool {
         let Some(set) = self.conformances.get(&type_id) else {
             return false;
         };
@@ -784,34 +907,37 @@ impl TypeTable {
         // for that one. The canonical key fills in defaults and `Self`, so a
         // bare header and its written-out equivalent agree.
         if !interface.args().is_empty() {
-            let key = self.applied_conformance_key(interface, &self.type_name(type_id));
+            let key = self.applied_key_for(iface.clone(), interface, &self.type_name(type_id));
             if set.contains(&key) {
                 return true;
             }
-        } else if set.iter().any(|k| Self::conformance_key(k) == base) {
+        } else if set.iter().any(|k| k.iface == iface) {
             return true;
         }
-        set.iter().any(|declared| {
-            self.interface_extends(&Self::conformance_key(declared), &base, &mut Vec::new())
+        let InterfaceIdent::Declared(target) = iface else {
+            return false;
+        };
+        set.iter().any(|declared| match declared.iface {
+            InterfaceIdent::Declared(id) => self.interface_extends(id, target, &mut Vec::new()),
+            InterfaceIdent::Builtin(_) => false,
         })
     }
 
-    /// Is `target` somewhere in `interface_name`'s super-interface closure? `seen` keeps
+    /// Is `target` somewhere in `interface`'s super-interface closure? Parents
+    /// are named as the interface's own side reads them (#1329). `seen` keeps
     /// a cycle in the graph from recursing forever.
-    fn interface_extends(&self, interface_name: &str, target: &str, seen: &mut Vec<String>) -> bool {
-        if seen.iter().any(|s| s == interface_name) {
+    fn interface_extends(&self, interface: TypeId, target: TypeId, seen: &mut Vec<TypeId>) -> bool {
+        if seen.contains(&interface) {
             return false;
         }
-        seen.push(interface_name.to_string());
-        let Some(TypeDef::Interface { super_interfaces, .. }) =
-            self.get_type_id(interface_name).and_then(|id| self.get(id))
-        else {
+        seen.push(interface);
+        let Some(TypeDef::Interface { super_interfaces, .. }) = self.get(interface) else {
             return false;
         };
-        let parents: Vec<String> = super_interfaces.iter().map(Self::conformance_key).collect();
-        parents
-            .iter()
-            .any(|p| p == target || self.interface_extends(p, target, seen))
+        super_interfaces.iter().any(|p| {
+            self.resolve_name_as_declared_by(interface, &Self::conformance_key(p))
+                .is_some_and(|pid| pid == target || self.interface_extends(pid, target, seen))
+        })
     }
 
     /// CC1/CC2: record the `where` condition for a conditional conformance.
@@ -821,8 +947,8 @@ impl TypeTable {
         interface: &TypeExpr,
         bounds: Vec<(String, Vec<TypeExpr>)>,
     ) {
-        self.conformance_conditions
-            .insert((type_id, Self::conformance_key(interface)), bounds);
+        let iface = self.interface_ident(&Self::conformance_key(interface));
+        self.conformance_conditions.insert((type_id, iface), bounds);
     }
 
     /// CC1: the `where` condition for a conformance, if it's conditional.
@@ -831,7 +957,7 @@ impl TypeTable {
         type_id: TypeId,
         interface: &TypeExpr,
     ) -> Option<&Vec<(String, Vec<TypeExpr>)>> {
-        self.conformance_conditions.get(&(type_id, Self::conformance_key(interface)))
+        self.conformance_conditions.get(&(type_id, self.interface_ident(&Self::conformance_key(interface))))
     }
 
     /// Check if a name is registered.

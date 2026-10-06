@@ -2096,12 +2096,27 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(format!("`{}` isn't implemented by hand — a type has it when its fields do, all the way down (std.encoding/E12)", interface_name))
             }
 
-            InterfaceNotSatisfied { ty, interface_name, context, missing, span } => {
+            InterfaceNotSatisfied { ty, interface_name, context, missing, namesake, span } => {
                 use rask_types::InterfaceBoundContext as Ctx;
                 let title = match context {
                     Ctx::CopyBound => format!("`{}` isn't Copy", ty),
                     _ => format!("`{}` does not implement `{}`", ty, interface_name),
                 };
+                // Two interfaces share the name: the type implements the
+                // stdlib's, and this program's own is a different one (#1329).
+                if *namesake {
+                    return Diagnostic::error(title)
+                        .with_code("E0333")
+                        .with_primary(*span, format!(
+                            "`{}` implements the standard library's `{}`, not this program's",
+                            ty, interface_name
+                        ))
+                        .with_fix(format!(
+                            "declare the conformance to this one, or rename the program's interface so the two stop sharing a name:\n    {} implements {} {{ … }}",
+                            ty, interface_name
+                        ))
+                        .with_why("an interface is the declaration, not its name: the program's `interface` shadows the stdlib's for the program's own code, and a conformance to one says nothing about the other [type.generics/G1]");
+                }
                 let d = Diagnostic::error(title)
                     .with_code("E0333")
                     .with_primary(*span, match (context, missing) {
