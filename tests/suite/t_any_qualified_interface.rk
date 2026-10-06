@@ -43,11 +43,35 @@ func hail(g: any Greeter) -> string {
 
 // A qualified interface in a parameter, which is what the issue is about. It parses
 // and it checks — `io.Buffer` conforms — and it stops there for now: the rest of
-// the spelling isn't built. Calling it fails to lower natively (#1309), and
-// declaring conformance with a qualified name (`Counter implements io.Writer`)
-// is refused outright (#1310). So this is a signature that has to compile, not
-// a call.
+// the spelling isn't built. Calling it fails to lower natively (#1309). So this
+// is a signature that has to compile, not a call.
 func sink(w: any io.Writer, data: string) -> bool {
+    return true
+}
+
+// The other half: a program's own type conforming to another module's
+// interface by its qualified name. The header looked the name up as written
+// and answered "no interface named `io.Writer`", so no type a program declared
+// could satisfy one (#1310).
+struct Tally {
+    seen: i64
+}
+
+Tally implements io.Writer {
+    func write(self, data: Vec<u8>) -> i64 or io.IoError {
+        return self.seen + data.len().to<i64>()!
+    }
+    func write_bytes(self, data: Vec<u8>) -> void or io.IoError {
+    }
+    func write_text(self, data: string) -> void or io.IoError {
+        if data.is_empty() {
+            return io.IoError.Other("nothing to write")
+        }
+    }
+}
+
+func send<W: Writer>(w: W, data: string) -> bool {
+    w.write_text(data) catch _ => { return false }
     return true
 }
 
@@ -70,4 +94,12 @@ test "the file compiles, which is what the qualified signatures assert" {
 test "and a bare one still round-trips" {
     let l = Loud { name: "there" }
     assert pick(l).greet() == "HI there"
+}
+
+test "a qualified conformance header satisfies the module's interface" {
+    let t = Tally { seen: 2 }
+    assert send(t, "hello")
+    assert !send(t, "")
+    let n = t.write([1u8, 2u8, 3u8]) catch _ => -1
+    assert n == 5
 }

@@ -1188,7 +1188,7 @@ impl<'a> Monomorphizer<'a> {
             let Some(binding) = bindings.iter().find(|b| b.param == tp.name) else { continue };
             for bound in &tp.bounds {
                 let Some(TypeDef::Interface { assoc_types, .. }) =
-                    bound.name().and_then(|n| types.get_type_id(&n)).and_then(|id| types.get(id))
+                    types.get_type_id(&rask_types::TypeTable::conformance_key(bound)).and_then(|id| types.get(id))
                 else {
                     continue;
                 };

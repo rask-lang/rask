@@ -446,7 +446,7 @@ impl TypeChecker {
 
     /// AT1: does this interface (by its written reference) declare `assoc`?
     fn interface_declares_assoc(&self, interface_ref: &TypeExpr, assoc: &str) -> bool {
-        let Some(base) = interface_ref.name() else { return false };
+        let base = TypeTable::conformance_key(interface_ref);
         matches!(
             self.types.get_type_id(&base).and_then(|id| self.types.get(id)),
             Some(TypeDef::Interface { assoc_types, .. }) if assoc_types.iter().any(|a| a.name == assoc)
@@ -456,7 +456,7 @@ impl TypeChecker {
     /// GT2/GT4: does a written interface reference give each parameter an argument
     /// (or leave one that has a default)? Reports and returns false if not.
     fn check_interface_arity(&mut self, interface_ref: &TypeExpr, span: rask_ast::Span) -> bool {
-        let Some(base) = interface_ref.name() else { return true };
+        let base = TypeTable::conformance_key(interface_ref);
         let Some(TypeDef::Interface { type_params, .. }) =
             self.types.get_type_id(&base).and_then(|id| self.types.get(id))
         else {
@@ -536,7 +536,7 @@ impl TypeChecker {
             None => return,
         };
         let Some(interface) = &i.interface else { return };
-        let Some(base) = interface.name() else { return };
+        let base = TypeTable::conformance_key(interface);
         let interface_ref = interface;
         if rask_ast::operators::operator_interface_method(&base).is_some() {
             return;
@@ -605,7 +605,7 @@ impl TypeChecker {
             // (or the block itself when it declares no conformance at all).
             let (interface_name, known) = match i.interface.as_ref() {
                 Some(t) => {
-                    let base = t.name().unwrap_or_default();
+                    let base = TypeTable::conformance_key(t);
                     let known = match self.types.get_type_id(&base).and_then(|id| self.types.get(id)) {
                         Some(TypeDef::Interface { assoc_types, .. }) => {
                             assoc_types.iter().map(|a| a.name.clone()).collect()
@@ -632,7 +632,7 @@ impl TypeChecker {
         }
 
         if let Some(interface) = &i.interface {
-            let base = interface.name().unwrap_or_default();
+            let base = TypeTable::conformance_key(interface);
             let interface_ref = &interface.to_string();
             if let Some(TypeDef::Interface { assoc_types, .. }) =
                 self.types.get_type_id(&base).and_then(|id| self.types.get(id))
@@ -1173,7 +1173,7 @@ impl TypeChecker {
         // wanting one method (E0889) are each already reported with a message
         // that names the real problem, so they are not reported again here.
         let same_base_sibling = i.interface.as_ref().map_or(false, |iface| {
-            let base = iface.name().unwrap_or_default();
+            let base = TypeTable::conformance_key(iface);
             self.types
                 .applied_conformances(type_id, &self.types.interface_ident(&base))
                 .iter()
@@ -2400,7 +2400,7 @@ impl TypeChecker {
                 // UT1: implementing an unsafe interface requires `unsafe extend`
                 if let Some(interface) = &i.interface {
                     let interface_name = interface.to_string();
-                    let base = interface.name().unwrap_or_default();
+                    let base = TypeTable::conformance_key(interface);
                     if let Some(type_id) = self.types.get_type_id(&base) {
                         if let Some(TypeDef::Interface { is_unsafe: true, .. }) = self.types.get(type_id) {
                             if !i.is_unsafe {

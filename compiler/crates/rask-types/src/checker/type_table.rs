@@ -630,9 +630,19 @@ impl TypeTable {
         self.types.get_mut(id.0 as usize)
     }
 
-    /// The interface an interface reference names: `Mul<f64>` → `Mul`.
-    pub(crate) fn conformance_key(interface: &TypeExpr) -> String {
-        interface.name().unwrap_or_default()
+    /// The interface an interface reference names: `Mul<f64>` → `Mul`, and
+    /// `io.Writer` → `Writer`, the name the module's interface is held under.
+    /// The same unwrapping `io.Buffer` gets as a type (#1310).
+    pub fn conformance_key(interface: &TypeExpr) -> String {
+        match interface {
+            TypeExpr::Named { path, .. } => match path.as_slice() {
+                [module, rest @ ..] if !rest.is_empty() && rask_stdlib::modules::is_module(module) => {
+                    rest.join(".")
+                }
+                _ => path.join("."),
+            },
+            _ => String::new(),
+        }
     }
 
     /// GT2/GT3: the key a conformance is filed under — the interface *with its
@@ -869,7 +879,7 @@ impl TypeTable {
     /// if two do — then the projection has no single meaning.
     pub fn projection_bound<'a>(&self, bounds: &'a [TypeExpr], assoc: &str) -> Option<&'a TypeExpr> {
         let mut through = bounds.iter().filter(|b| {
-            let Some(iface) = b.name() else { return false };
+            let iface = Self::conformance_key(b);
             matches!(
                 self.get_type_id(&iface).and_then(|id| self.get(id)),
                 Some(TypeDef::Interface { assoc_types, .. }) if assoc_types.iter().any(|a| a.name == assoc)
