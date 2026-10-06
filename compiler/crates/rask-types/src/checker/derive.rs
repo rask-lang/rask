@@ -64,9 +64,10 @@ impl TypeChecker {
     /// stand-ins for a runtime object, and an `eq` derived from no fields says
     /// yes to every pair. A program's empty struct really is always equal to
     /// another. `compare` for any struct with fields, which is where it has
-    /// always been written (a `Vec<Metadata>` sorts by it). `clone` for a
-    /// program's structs only: a stdlib struct can be a runtime object's
-    /// stand-in that the interpreter builds in Rust, and copies as one.
+    /// always been written (a `Vec<Metadata>` sorts by it). `clone` on the
+    /// same terms as `eq`: a fieldless stdlib struct is a runtime object's
+    /// stand-in that each backend copies as one, while a stdlib struct with
+    /// fields (`Path`) is copied field by field like a program's.
     pub(super) fn write_derived_methods(&mut self, annotations: &[String]) {
         for idx in 0..self.types.types.len() {
             let id = TypeId(idx as u32);
@@ -94,12 +95,8 @@ impl TypeChecker {
                     if !type_params.is_empty() =>
                 {
                     params = type_params;
-                    let parts: Vec<Type> = fields.iter().map(|(_, t)| t.clone()).collect();
-                    if program_type
-                        && !annotations.contains(name)
-                        && derived(methods, "clone")
-                        && self.clone_writable(&parts, params)
-                    {
+                    let has_body = program_type || !fields.is_empty();
+                    if has_body && !annotations.contains(name) && derived(methods, "clone") {
                         let body = self.struct_clone(name, fields, params);
                         written.push(self.method("clone", false, "Self", body));
                     }
@@ -108,8 +105,7 @@ impl TypeChecker {
                     if !type_params.is_empty() =>
                 {
                     params = type_params;
-                    let parts: Vec<Type> = variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect();
-                    if !variants.is_empty() && derived(methods, "clone") && self.clone_writable(&parts, params) {
+                    if !variants.is_empty() && derived(methods, "clone") {
                         let body = self.enum_clone(name, variants, params);
                         written.push(self.method("clone", false, "Self", body));
                     }
@@ -131,7 +127,7 @@ impl TypeChecker {
                         let body = self.struct_compare(fields);
                         written.push(self.method("compare", true, "Ordering", body));
                     }
-                    if program_type && derived(methods, "clone") {
+                    if has_body && derived(methods, "clone") {
                         let body = self.struct_clone(name, fields, &[]);
                         written.push(self.method("clone", false, "Self", body));
                     }
@@ -430,12 +426,11 @@ impl TypeChecker {
                         // type. A program type of the same name takes that name
                         // over — `struct IoError` beside the stdlib's enum — so
                         // the body would build the program's type. Such a
-                        // stdlib type keeps its in-place copy.
-                        let named_here = imp
-                            .target_ty
-                            .name()
-                            .and_then(|n| self.types.get_type_id(&n))
-                            == Some(id);
+                        // stdlib type keeps its in-place copy. Asked the way
+                        // the body's struct literal asks, so an alias taking
+                        // the name (`type alias Span = Duration`) counts too.
+                        let named_here = imp.target_ty.name().and_then(|n| self.types.lookup(&n))
+                            == Some(Type::Named(id));
                         if !named_here && imp.methods.iter().any(|m| m.name == "clone") {
                             imp.methods.retain(|m| m.name != "clone");
                             if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. }) =
@@ -710,28 +705,7 @@ impl TypeChecker {
                 let none = self.expr(ExprKind::None);
                 vec![check, self.ret(none)]
             }
-            // A `void` side has nothing to copy, and a bare `return` is it.
-            Type::Result { ok, err } => {
-                let mut arms = Vec::new();
-                for side in [&**ok, &**err] {
-                    if *side == Type::Unit {
-                        continue;
-                    }
-                    let x = self.fresh_name();
-                    let written = self.written(side);
-                    let xe = self.ident(&x);
-                    let copy = self.clone_of(xe, side, &[], &mut Vec::new());
-                    let body = self.ret_block(copy);
-                    arms.push(arm(Pattern::TypePat { ty: written, binding: Some(x) }, body));
-                }
-                if **ok == Type::Unit || **err == Type::Unit {
-                    let r = self.stmt(StmtKind::Return(None));
-                    let body = self.block(vec![r]);
-                    arms.push(arm(Pattern::Wildcard, body));
-                }
-                let a = self.ident("a");
-                vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(a), arms })]
-            }
+            Type::Result { .. } => self.result_clone_body(ty, &[]),
             Type::Tuple(elems) => {
                 let parts: Vec<Expr> = elems
                     .iter()
@@ -753,10 +727,10 @@ impl TypeChecker {
     /// bytes are all of it is just read; a wrapper has no `.clone()` and goes
     /// through its function; everything else calls its own `clone`.
     ///
-    /// `params` are the generic type's own, whose body this is. A wrapper
-    /// naming one has no function (a function would have to be generic
-    /// itself), so it is copied in line: `(v.0.clone(), v.1)` for a tuple, and
-    /// for an optional, statements pushed onto `prelude` ahead of the use:
+    /// `params` are the generic type's own, whose body this is. A tuple or
+    /// optional naming one is copied in line: `(v.0.clone(), v.1)` for a
+    /// tuple, and for an optional, statements pushed onto `prelude` ahead of
+    /// the use:
     ///
     /// ```text
     /// mut r: T? = none
@@ -764,7 +738,7 @@ impl TypeChecker {
     /// ```
     ///
     /// Not `if v? as x { x.clone() } else { none }`: an `if` doesn't widen its
-    /// branches to `T?`. `clone_writable` keeps a `T or E` out.
+    /// branches to `T?`. A `T or E` goes through `generic_result_clone`.
     fn clone_of(&mut self, v: Expr, ty: &Type, params: &[String], prelude: &mut Vec<Stmt>) -> Expr {
         if Self::clones_by_copy(ty) {
             return v;
@@ -808,6 +782,10 @@ impl TypeChecker {
                     }));
                     return self.ident(&r);
                 }
+                Type::Result { err, .. } if **err != Type::None => {
+                    let name = self.generic_result_clone(ty, params);
+                    return self.call_wrapper(&name, vec![v]);
+                }
                 _ => {}
             }
         }
@@ -824,19 +802,99 @@ impl TypeChecker {
         !params.is_empty() && ty.contains(&|t| matches!(t, Type::UnresolvedNamed(n) if params.contains(n)))
     }
 
-    /// Whether a generic type's `clone` can be written over these fields.
+    /// `match a { T as x => { return x.clone() }, E as e => … }`, one arm per
+    /// branch the value can be in. A flat `T? or E` has three, `none` among
+    /// them (OPT30), and a `void` side is the trailing `_` with a bare
+    /// `return`. Each arm returns, since a `return` is where a branch widens
+    /// back into the result.
+    fn result_clone_body(&mut self, ty: &Type, params: &[String]) -> Vec<Stmt> {
+        let Type::Result { ok, err } = ty else { return Vec::new() };
+        let mut arms = Vec::new();
+        let mut has_void = false;
+        for side in [&**ok, &**err] {
+            self.clone_branch_arms(side, params, &mut arms, &mut has_void);
+        }
+        if has_void {
+            let r = self.stmt(StmtKind::Return(None));
+            let body = self.block(vec![r]);
+            arms.push(arm(Pattern::Wildcard, body));
+        }
+        let a = self.ident("a");
+        vec![self.expr_stmt(ExprKind::Match { scrutinee: Box::new(a), arms })]
+    }
+
+    fn clone_branch_arms(&mut self, side: &Type, params: &[String], arms: &mut Vec<MatchArm>, has_void: &mut bool) {
+        if *side == Type::Unit {
+            *has_void = true;
+            return;
+        }
+        if let Some(inner) = side.as_option() {
+            let inner = inner.clone();
+            self.clone_branch_arms(&inner, params, arms, has_void);
+            let none = self.expr(ExprKind::None);
+            let body = self.ret_block(none);
+            arms.push(arm(Pattern::TypePat { ty: TypeExpr::NoneType, binding: None }, body));
+            return;
+        }
+        let x = self.fresh_name();
+        let written = self.written(side);
+        let xe = self.ident(&x);
+        let mut body = Vec::new();
+        let copy = self.clone_of(xe, side, params, &mut body);
+        body.push(self.ret(copy));
+        let block = self.block(body);
+        arms.push(arm(Pattern::TypePat { ty: written, binding: Some(x) }, block));
+    }
+
+    /// The copy of a `T or E` naming a generic type's own parameters: a
+    /// generic function over the parameters it names.
     ///
-    /// Not over a `T or E` that names a parameter: its copy is a match on the
-    /// side it holds, and a match whose arms are type parameters isn't
-    /// exhaustive to the checker. Such a type keeps the in-place copy, which
-    /// still has #1434's bug (#1439).
-    fn clone_writable(&self, parts: &[Type], params: &[String]) -> bool {
-        !parts.iter().any(|p| {
-            p.contains(&|t| {
-                matches!(t, Type::Result { err, .. } if **err != Type::None)
-                    && Self::names_param(t, params)
+    /// ```text
+    /// func derived#clone_generic#0<T>(a: T or MyErr) -> T or MyErr {
+    ///     match a {
+    ///         T as x => { return x.clone() }
+    ///         MyErr as x => { return x.clone() }
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// A function because only a `return` widens a branch back into `T or E`,
+    /// and generic because the wrapper functions the concrete case uses are one
+    /// per concrete type. Without it the type kept MIR's in-place copy, which
+    /// freed the source before deep-copying out of it (#1439).
+    fn generic_result_clone(&mut self, ty: &Type, params: &[String]) -> String {
+        if let Some((_, name)) = self.generic_wrapper_clones.iter().find(|(t, _)| t == ty) {
+            return name.clone();
+        }
+        let name = derived_fn_name("clone_generic", self.generic_wrapper_clones.len());
+        self.generic_wrapper_clones.push((ty.clone(), name.clone()));
+        let named: Vec<String> = params
+            .iter()
+            .filter(|p| ty.contains(&|t| matches!(t, Type::UnresolvedNamed(n) if n == *p)))
+            .cloned()
+            .collect();
+
+        let body = self.result_clone_body(ty, params);
+
+        let sym = self.wrapper_symbol(&name, ty, ty.clone());
+        self.wrapper_symbols.insert(name.clone(), sym);
+        self.fn_type_params.insert(sym, named.clone());
+        let mut f = self.free_fn(&name, ty, false, "void", body);
+        f.ret_ty = Some(self.written(ty));
+        f.type_params = named
+            .into_iter()
+            .map(|name| rask_ast::decl::TypeParam {
+                name,
+                is_comptime: false,
+                comptime_type: None,
+                bounds: Vec::new(),
+                default: None,
             })
-        })
+            .collect();
+        let id = self.derived_id();
+        self.resolved.decl_symbols.insert(id, sym);
+        self.pending_derived.push((Decl { id, kind: DeclKind::Fn(f), span: SP }, None));
+        name
     }
 
     /// Whether copying the bytes is the whole of a clone: scalars, and the

@@ -6378,11 +6378,11 @@ impl<'a> MirLowerer<'a> {
         // enum's copy shared its vector with the source and read it after the
         // source was freed (#1428). Generic types have a body too now (#1434).
         //
-        // What still copies in place: a stdlib struct standing in for a runtime
-        // object (`Path`), a stdlib enum whose name the program reuses, and a
-        // generic type holding a `T or E` over its own parameters, whose
-        // derived body the checker can't write (derive.rs, `clone_writable`).
-        // The enum copy below frees the source before its deep copies (#1439).
+        // What still copies in place: a stdlib struct or enum whose name the
+        // program reuses. Its derived body would have to name the type, and
+        // the name means the program's own type there (derive.rs,
+        // `check_pending_derived`). The enum copy below still frees the source
+        // before its deep copies, which is #1434's bug on that one shape.
         if method == "clone" && !self.receiver_declares_method(expr.id, "clone") {
             // A Copy scalar's clone is the value, and there is nothing to
             // call: no `i64_clone` exists and none should. The call only

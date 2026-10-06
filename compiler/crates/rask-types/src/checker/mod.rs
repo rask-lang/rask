@@ -230,6 +230,9 @@ pub struct TypeChecker {
     /// The `eq`/`hash` pairs written for wrapper types, and their symbols.
     pub(super) wrapper_fns: Vec<derive::WrapperFns>,
     pub(super) wrapper_symbols: HashMap<String, rask_resolve::SymbolId>,
+    /// The generic `clone` functions written for a `T or E` over a generic
+    /// type's own parameters (`generic_result_clone`).
+    pub(super) generic_wrapper_clones: Vec<(Type, String)>,
     /// `TypedProgram::derived_generic_methods`.
     pub(super) derived_generic_methods: std::collections::HashSet<String>,
     pub(super) next_derived_id: u32,
@@ -598,6 +601,7 @@ impl TypeChecker {
             derive_assumed: std::collections::HashSet::new(),
             wrapper_fns: Vec::new(),
             wrapper_symbols: HashMap::new(),
+            generic_wrapper_clones: Vec::new(),
             derived_generic_methods: std::collections::HashSet::new(),
             next_derived_id: derive::DERIVED_ID_BASE,
             derived_names: 0,

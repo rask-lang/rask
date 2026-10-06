@@ -258,6 +258,10 @@ impl Interpreter {
             // `none`. A flat `T? or E` wears two wrappers, so the walk goes
             // down layer by layer — the pattern names one leaf (OPT30).
             Pattern::TypePat { ty, binding } => {
+                // In a generic body `T as x` names whatever this call bound
+                // `T` to; the value only knows its concrete type (#1439).
+                let resolved = self.resolve_type_param(ty);
+                let ty = &resolved;
                 let mut current = value;
                 loop {
                     let Value::Enum { name: sc_name, variant, fields, .. } = current else {

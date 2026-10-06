@@ -104,8 +104,13 @@ impl TypeChecker {
     /// known type, or names none of them.
     pub(super) fn branch_named(&self, ty: &TypeExpr, branches: &[Type]) -> Option<usize> {
         let named = resolve_type_name(ty, &self.types);
-        if matches!(named, Type::UnresolvedNamed(_)) {
-            return None;
+        if let Type::UnresolvedNamed(n) = &named {
+            // A type parameter names no type in the table, but it does name
+            // a branch: inside `func f<T, E>(v: T or E)` the arm `T as x` is
+            // the `T` side. Without this a generic body couldn't match a
+            // `T or E` exhaustively at all (#1439).
+            let is_param = self.types.is_type_param_in_scope(n) || self.type_params_in_scope.contains(n);
+            return if is_param { branches.iter().position(|b| *b == named) } else { None };
         }
         let named = normalize_type(&named, &self.types);
         if let Some(i) = branches.iter().position(|b| *b == named) {

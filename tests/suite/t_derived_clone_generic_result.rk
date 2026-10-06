@@ -1,0 +1,147 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.clone()` on a generic type holding a `T or E` over its own parameters.
+//
+// Natively `Slot<i64>.clone()` printed a vector length of 0, or aborted with
+// "allocation failed" under a poisoned stack: the type had no derived `clone`
+// and MIR copied it in place, freeing the source before deep-copying its
+// vector. The checker couldn't write the body, because a generic body's
+// `match v { T as x => …, MyErr as e => … }` was rejected as non-exhaustive:
+// a type parameter named no branch (#1439). Now it does, and the copy of the
+// field goes through a generic function the checker writes.
+
+import path.Path
+
+enum MyErr {
+    Bad(string)
+}
+
+extend MyErr {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+enum Slot<T> {
+    Empty
+    Held(T or MyErr, Vec<i64>)
+}
+
+struct Pair<T, E> {
+    r: T or E
+    tag: string
+}
+
+struct Maybe<T> {
+    r: T? or MyErr
+}
+
+func good() -> Vec<string> or MyErr {
+    return ["a", "b"]
+}
+
+func bad() -> Vec<string> or MyErr {
+    return MyErr.Bad("nope")
+}
+
+func five() -> i64 or MyErr {
+    return 5
+}
+
+func here() -> string? or MyErr {
+    return "here"
+}
+
+func nothing() -> string? or MyErr {
+    return none
+}
+
+func side<T, E>(v: T or E) -> string {
+    return match v {
+        T as _ => "ok",
+        E as _ => "err",
+    }
+}
+
+func shown(r: string? or MyErr) -> string {
+    return match r {
+        string as x => x,
+        none => "none",
+        MyErr as _ => "err",
+    }
+}
+
+test "the issue's repro: the vector survives the clone" {
+    let xs: Vec<i64> = [1, 2, 3]
+    let s: Slot<i64> = Slot.Held(five(), xs)
+    let c = s.clone()
+    if c is Held(r, v) {
+        assert v.len() == 3
+        assert side(r) == "ok"
+    } else {
+        assert false
+    }
+}
+
+test "the T side owns a vector of strings" {
+    let s: Slot<Vec<string>> = Slot.Held(good(), [1, 2, 3])
+    let c = s.clone()
+    if c is Held(r, v) {
+        assert v.len() == 3
+        if r is Vec<string> as xs {
+            assert xs.len() == 2
+            assert xs[1] == "b"
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+    if s is Held(r, _) {
+        if r is Vec<string> as xs {
+            assert xs[0] == "a"
+        }
+    }
+}
+
+test "the error side is copied too" {
+    let s: Slot<Vec<string>> = Slot.Held(bad(), [4])
+    let c = s.clone()
+    if c is Held(r, _) {
+        if r is MyErr as m {
+            if m is Bad(msg) {
+                assert msg == "nope"
+            } else {
+                assert false
+            }
+        } else {
+            assert false
+        }
+    } else {
+        assert false
+    }
+}
+
+test "a struct over both parameters" {
+    let p: Pair<Vec<string>, MyErr> = Pair { r: good(), tag: "t" }
+    let c = p.clone()
+    assert c.tag == "t"
+    if c.r is Vec<string> as xs {
+        assert xs[0] == "a"
+    } else {
+        assert false
+    }
+}
+
+test "an optional success side has three branches" {
+    let m: Maybe<string> = Maybe { r: here() }
+    assert shown(m.clone().r) == "here"
+    let n: Maybe<string> = Maybe { r: nothing() }
+    assert shown(n.clone().r) == "none"
+}
+
+test "a stdlib struct with fields derives its clone too" {
+    let p = Path.from("/a/long/enough/path/to/leave/the/inline/string.txt")
+    let q = p.clone()
+    assert q.as_string() == "/a/long/enough/path/to/leave/the/inline/string.txt"
+    assert p.as_string() == q.as_string()
+}
