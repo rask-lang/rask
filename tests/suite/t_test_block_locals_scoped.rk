@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A test body is a scope of its own, the way a function body is (#1464).
+//
+// The checker gave test and benchmark bodies no scope, so their locals were
+// defined in module scope. A `let area` in one test then hid `func area` from
+// everything checked after it, and a call in a later test came back
+// "`Sq` is a struct, so calling it doesn't construct one".
+
+struct Sq {
+    v: f64
+}
+
+func area(x: f64) -> Sq {
+    return Sq { v: x * x }
+}
+
+test "a local named like a function" {
+    let area = Sq { v: 1.0 }
+    assert area.v == 1.0
+}
+
+test "the function is still the function in the next test" {
+    let a: Sq = area(2.0)
+    assert a.v == 4.0
+}
+
+test "a mut local, same thing" {
+    mut area = Sq { v: 5.0 }
+    area.v = 6.0
+    assert area.v == 6.0
+}
+
+// Checked after both tests, so it sees module scope as they left it.
+func uses_area() -> f64 {
+    return area(3.0).v
+}
+
+test "and in a function declared below them" {
+    assert uses_area() == 9.0
+}
+
+func main() {
+    println("{uses_area()}")
+}

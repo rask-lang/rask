@@ -2547,6 +2547,10 @@ impl TypeChecker {
                 let old_allowed =
                     std::mem::replace(&mut self.allowed_warnings, allowed_from(&t.attrs));
                 self.in_test_body = true;
+                // A test body is a scope of its own, like a function's. Without
+                // one its locals landed in module scope, and a `let area` in
+                // one test hid `func area` from every declaration after it (#1464).
+                self.push_scope();
                 for stmt in &t.body {
                     self.check_stmt(stmt);
                     // Solve as we go, same as check_fn — a later statement
@@ -2555,6 +2559,7 @@ impl TypeChecker {
                     // or it stays an unbound type var forever (#390).
                     self.solve_constraints();
                 }
+                self.pop_scope();
                 self.in_test_body = false;
                 self.allowed_warnings = old_allowed;
             }
@@ -2562,10 +2567,12 @@ impl TypeChecker {
                 let old_allowed =
                     std::mem::replace(&mut self.allowed_warnings, allowed_from(&b.attrs));
                 self.in_test_body = true;
+                self.push_scope();
                 for stmt in &b.body {
                     self.check_stmt(stmt);
                     self.solve_constraints();
                 }
+                self.pop_scope();
                 self.in_test_body = false;
                 self.allowed_warnings = old_allowed;
             }
