@@ -5154,11 +5154,12 @@ impl<'a> MirLowerer<'a> {
     fn bind_pattern_payload(
         &mut self,
         pattern: &rask_ast::expr::Pattern,
+        scrutinee: &Expr,
         value: MirOperand,
         payload_ty: Option<MirType>,
         scrutinee_ty: &MirType,
     ) {
-        self.bind_pattern_payload_niche(pattern, value, payload_ty, false, scrutinee_ty);
+        self.bind_pattern_payload_niche(pattern, scrutinee, value, payload_ty, false, scrutinee_ty);
     }
 
     /// Bind pattern payload — with niche awareness.
@@ -5169,6 +5170,19 @@ impl<'a> MirLowerer<'a> {
     /// with no answer on every `if m is Msg.Text(t)`. The paths that genuinely
     /// need it demand it below, where not knowing it is a real gap.
     fn bind_pattern_payload_niche(
+        &mut self,
+        pattern: &rask_ast::expr::Pattern,
+        scrutinee: &Expr,
+        value: MirOperand,
+        payload_ty: Option<MirType>,
+        is_niche: bool,
+        scrutinee_ty: &MirType,
+    ) {
+        self.bind_pattern_fields(pattern, value, payload_ty, is_niche, scrutinee_ty);
+        self.retain_pattern_copies(pattern, scrutinee, scrutinee_ty);
+    }
+
+    fn bind_pattern_fields(
         &mut self,
         pattern: &rask_ast::expr::Pattern,
         value: MirOperand,

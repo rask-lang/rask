@@ -2086,10 +2086,13 @@ impl Interpreter {
                 }
             }
 
+            // A literal's elements are new owners, like a struct literal's
+            // fields: `(v[0], v[1])` copies the elements out, so a later
+            // write to `v[0]` doesn't show through the tuple.
             ExprKind::Array(elements) => {
                 let values: Vec<Value> = elements
                     .iter()
-                    .map(|e| self.eval_expr(e))
+                    .map(|e| self.eval_owned(e))
                     .collect::<Result<_, _>>()?;
                 Ok(Value::vec(values))
             }
@@ -2112,7 +2115,7 @@ impl Interpreter {
             ExprKind::Tuple(elements) => {
                 let values: Vec<Value> = elements
                     .iter()
-                    .map(|e| self.eval_expr(e))
+                    .map(|e| self.eval_owned(e))
                     .collect::<Result<_, _>>()?;
                 Ok(Value::tuple(values))
             }

@@ -186,7 +186,9 @@ impl Interpreter {
             "len" | "count" => Ok(Value::int(v.lock().unwrap().len() as i64)),
             "get" => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                match v.lock().unwrap().get(idx).cloned() {
+                // A copy out of the slot (std.collections/V3): sharing the
+                // element let a later write to the slot show through it.
+                match v.lock().unwrap().get(idx).map(Value::copy_on_bind) {
                     Some(val) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -214,7 +216,7 @@ impl Interpreter {
                 Ok(Value::vec(taken))
             }
             "first" => {
-                match v.lock().unwrap().first().cloned() {
+                match v.lock().unwrap().first().map(Value::copy_on_bind) {
                     Some(val) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -230,7 +232,7 @@ impl Interpreter {
                 }
             }
             "last" => {
-                match v.lock().unwrap().last().cloned() {
+                match v.lock().unwrap().last().map(Value::copy_on_bind) {
                     Some(val) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -910,7 +912,8 @@ impl Interpreter {
             }
             "get" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
-                let found = self.map_get(&m, key)?;
+                // Copied out, as `Vec.get` is.
+                let found = self.map_get(&m, key)?.map(|v| v.copy_on_bind());
                 Ok(option_of(found))
             }
             "remove" => {

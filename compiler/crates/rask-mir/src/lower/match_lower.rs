@@ -214,6 +214,8 @@ impl<'a> MirLowerer<'a> {
                 self.locals.insert(binding.clone(), (local, bind_ty));
             }
 
+            self.retain_pattern_copies(&arm.pattern, scrutinee, &scrutinee_ty);
+
             if let Some(guard_expr) = &arm.guard {
                 // A failed guard dispatches again over the arms below.
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
@@ -320,7 +322,7 @@ impl<'a> MirLowerer<'a> {
         if matches!(scrutinee_ty, MirType::Struct(_))
             && arms.iter().any(|a| matches!(&a.pattern, Pattern::Struct { .. }))
         {
-            return self.lower_struct_match(scrutinee_op, scrutinee_ty, arms);
+            return self.lower_struct_match(scrutinee, scrutinee_op, scrutinee_ty, arms);
         }
 
         let is_enum = matches!(scrutinee_ty, MirType::Enum(_));
@@ -923,6 +925,8 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
+            self.retain_pattern_copies(&arm.pattern, scrutinee, &scrutinee_ty);
+
             if let Some(guard_expr) = &arm.guard {
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
                 // A failed guard hands the value to the arms below this one,
@@ -1319,6 +1323,22 @@ impl<'a> MirLowerer<'a> {
                 }
             }
 
+            // A literal scrutinee is read element by element, so each element
+            // is its own source.
+            match (&scrutinee.kind, &arm.pattern) {
+                (ExprKind::Tuple(elem_exprs), Pattern::Tuple(pats)) => {
+                    for ((pat, elem_expr), (_, elem_ty)) in
+                        pats.iter().zip(elem_exprs.iter()).zip(tuple_elems.iter())
+                    {
+                        self.retain_pattern_copies(pat, elem_expr, elem_ty);
+                    }
+                }
+                _ => {
+                    let whole = MirType::Tuple(tuple_elems.iter().map(|(_, t)| t.clone()).collect());
+                    self.retain_pattern_copies(&arm.pattern, scrutinee, &whole);
+                }
+            }
+
             if let Some(guard_expr) = &arm.guard {
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
                 let guard_pass = self.builder.create_block();
@@ -1368,6 +1388,7 @@ impl<'a> MirLowerer<'a> {
     /// the same, the condition is per-field instead of on the scrutinee (#307).
     pub(super) fn lower_struct_match(
         &mut self,
+        scrutinee: &Expr,
         scrutinee_op: MirOperand,
         scrutinee_ty: MirType,
         arms: &[rask_ast::expr::MatchArm],
@@ -1473,6 +1494,8 @@ impl<'a> MirLowerer<'a> {
                 self.locals
                     .insert(name.clone(), (bind_local, scrutinee_ty.clone()));
             }
+
+            self.retain_pattern_copies(&arm.pattern, scrutinee, &scrutinee_ty);
 
             if let Some(guard_expr) = &arm.guard {
                 let (guard_val, _) = self.lower_expr(guard_expr)?;
@@ -1840,6 +1863,152 @@ impl<'a> MirLowerer<'a> {
             }
             None => None,
         }
+    }
+
+    /// Give each Copy value a pattern bound out of borrowed storage
+    /// references of its own. Called once the pattern's names are bound.
+    ///
+    /// `match v[0] { Slot.Full(l) => … }` copies `l` out of the slot, the same
+    /// as `let l = …` does, so it is retained the same way
+    /// (`retain_bound_copy`): otherwise `v[0] = Slot.Empty` in the arm freed
+    /// the strings `l` was reading.
+    pub(super) fn retain_pattern_copies(
+        &mut self,
+        pattern: &rask_ast::expr::Pattern,
+        scrutinee: &Expr,
+        scrutinee_ty: &MirType,
+    ) {
+        if !self.reads_borrowed_storage(scrutinee) {
+            return;
+        }
+        let Some(ty) = self.ctx.lookup_raw_type(scrutinee.id).cloned() else { return };
+        let mut bound = Vec::new();
+        self.pattern_binding_types(pattern, scrutinee_ty, &ty, &mut bound);
+        for (name, ty) in bound {
+            if let Some((local, _)) = self.locals.get(&name).cloned() {
+                self.retain_bound_copy(local, &ty);
+            }
+        }
+    }
+
+    /// The checker's type for each name `pattern` binds against a value of
+    /// type `ty` (`mir_ty` as lowered). A binding the walk can't place is
+    /// left out, which costs a retain and never adds one.
+    fn pattern_binding_types(
+        &self,
+        pattern: &rask_ast::expr::Pattern,
+        mir_ty: &MirType,
+        ty: &rask_types::Type,
+        out: &mut Vec<(String, rask_types::Type)>,
+    ) {
+        use rask_ast::expr::Pattern;
+        match pattern {
+            Pattern::Ident(name) => {
+                if self.resolve_pattern_tag(name).is_none() {
+                    out.push((name.clone(), ty.clone()));
+                }
+            }
+            Pattern::Constructor { name, fields } => {
+                let Some((_, payload)) = self.enum_variant_payload(ty, name) else { return };
+                for (pat, field_ty) in fields.iter().zip(payload.iter()) {
+                    let field_mir = self.ctx.type_to_mir(field_ty);
+                    self.pattern_binding_types(pat, &field_mir, field_ty, out);
+                }
+            }
+            Pattern::Struct { name, fields, .. } => {
+                let named: Vec<(String, rask_types::Type)> = match self.enum_variant_payload(ty, name) {
+                    Some((Some(names), payload)) => names.into_iter().zip(payload).collect(),
+                    Some((None, _)) => return,
+                    None => match self.struct_fields_of(ty) {
+                        Some(fields) => fields,
+                        None => return,
+                    },
+                };
+                for (field_name, pat) in fields {
+                    if let Some((_, field_ty)) = named.iter().find(|(n, _)| n == field_name) {
+                        let field_mir = self.ctx.type_to_mir(field_ty);
+                        self.pattern_binding_types(pat, &field_mir, field_ty, out);
+                    }
+                }
+            }
+            Pattern::Tuple(pats) => {
+                let rask_types::Type::Tuple(elems) = ty else { return };
+                let mir_elems = match mir_ty {
+                    MirType::Tuple(m) => m.clone(),
+                    _ => elems.iter().map(|e| self.ctx.type_to_mir(e)).collect(),
+                };
+                for ((pat, elem), elem_mir) in pats.iter().zip(elems.iter()).zip(mir_elems.iter()) {
+                    self.pattern_binding_types(pat, elem_mir, elem, out);
+                }
+            }
+            Pattern::TypePat { ty: written, binding: Some(name) } => {
+                let ty_name = super::type_pat_name(written);
+                // An error variant's or a union member's own payload is bound,
+                // not the side it sits in.
+                if self.err_variant_fields(mir_ty, &ty_name).is_some()
+                    || self.union_member_binding(mir_ty, &ty_name).is_some()
+                {
+                    return;
+                }
+                let rask_types::Type::Result { ok, err } = ty else { return };
+                let side = if self.pattern_is_err_side(&ty_name, mir_ty) { err } else { ok };
+                out.push((name.clone(), (**side).clone()));
+            }
+            Pattern::Or(alts) => {
+                if let Some(first) = alts.first() {
+                    self.pattern_binding_types(first, mir_ty, ty, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The payload types of variant `variant` of the enum `ty`, instantiated,
+    /// with the field names when the variant is struct-shaped.
+    fn enum_variant_payload(
+        &self,
+        ty: &rask_types::Type,
+        variant: &str,
+    ) -> Option<(Option<Vec<String>>, Vec<rask_types::Type>)> {
+        let (id, args) = match ty {
+            rask_types::Type::Named(id) => (*id, &[][..]),
+            rask_types::Type::Generic { base, args } => (*base, args.as_slice()),
+            _ => return None,
+        };
+        let table = self.ctx.type_defs;
+        let rask_types::TypeDef::Enum { type_params, variants, .. } = table.get(id)? else {
+            return None;
+        };
+        let bare = variant.rsplit('.').next().unwrap_or(variant);
+        let (_, data) = variants.iter().find(|(v, _)| v == bare)?;
+        let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
+        let payload = data
+            .iter()
+            .map(|t| rask_types::TypeTable::substitute_generic_field(t, &subst))
+            .collect();
+        let names = table
+            .struct_variant_fields(&format!("{}.{}", table.type_name(id), bare))
+            .map(|fields| fields.into_iter().map(|(n, _)| n).collect());
+        Some((names, payload))
+    }
+
+    /// A struct type's fields, instantiated.
+    pub(super) fn struct_fields_of(&self, ty: &rask_types::Type) -> Option<Vec<(String, rask_types::Type)>> {
+        let (id, args) = match ty {
+            rask_types::Type::Named(id) => (*id, &[][..]),
+            rask_types::Type::Generic { base, args } => (*base, args.as_slice()),
+            _ => return None,
+        };
+        let rask_types::TypeDef::Struct { type_params, fields, .. } = self.ctx.type_defs.get(id)? else {
+            return None;
+        };
+        let subst = rask_types::TypeTable::generic_field_subst(type_params, args);
+        Some(
+            fields
+                .iter()
+                .map(|(n, t)| (n.clone(), rask_types::TypeTable::substitute_generic_field(t, &subst)))
+                .collect(),
+        )
     }
 }
 

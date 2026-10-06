@@ -1034,7 +1034,10 @@ impl<'a> MirLowerer<'a> {
                     self.lower_tuple_destructure(&names, init)
                 } else {
                     let (init_op, init_ty) = self.lower_expr(init)?;
-                    self.destructure_tuple_pattern(patterns, &init_op, &init_ty)
+                    let copied_from = self.reads_borrowed_storage(init)
+                        .then(|| self.ctx.lookup_raw_type(init.id).cloned())
+                        .flatten();
+                    self.destructure_tuple_pattern(patterns, &init_op, &init_ty, copied_from.as_ref())
                 }
             }
 
@@ -1083,7 +1086,7 @@ impl<'a> MirLowerer<'a> {
                 // Optional: a Constructor pattern on a user enum takes each
                 // field's type from the enum layout and never looks at this.
                 let payload_ty = self.payload_type_of(expr, &val_ty);
-                self.bind_pattern_payload(pattern, val, payload_ty, &val_ty);
+                self.bind_pattern_payload(pattern, expr, val, payload_ty, &val_ty);
                 let ensure_depth = self.ensure_stack.len();
                 self.loop_stack.push(LoopContext {
                     label: label.clone(),
@@ -1611,6 +1614,43 @@ impl<'a> MirLowerer<'a> {
     /// The source can be a collection slot, a `with` or `for mutate` binding,
     /// a `mutate` parameter, a field, or a local of the frame's own; all of
     /// them keep their references and can drop them while the copy lives.
+    fn retain_copy_of_place(&mut self, local: crate::LocalId, init: &Expr) {
+        if !self.reads_borrowed_storage(init) {
+            return;
+        }
+        let Some(ty) = self.ctx.lookup_raw_type(init.id).cloned() else { return };
+        // `v.get(i)` copies a Copy `T` out as a `T?`, which can be too wide
+        // to be Copy itself. It is a copy all the same, and holds what `T`
+        // holds.
+        let ty = match (&init.kind, ty.as_option()) {
+            (ExprKind::MethodCall { .. }, Some(inner)) => inner.clone(),
+            _ => ty,
+        };
+        self.retain_bound_copy(local, &ty);
+    }
+
+    /// Does `expr` hand back bytes out of storage that keeps owning them?
+    ///
+    /// A place does: a name, a field, an index. So does a stdlib read that
+    /// points into its receiver (`v.get(i)`, `m.get(k)`: `T?` copied out of
+    /// the slot), and a `!` on either. A call of the program's own, a
+    /// literal, or arithmetic builds a value nobody else holds.
+    pub(crate) fn reads_borrowed_storage(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. } => true,
+            ExprKind::Unwrap { expr: inner, .. } => self.reads_borrowed_storage(inner),
+            ExprKind::MethodCall { method, .. } => {
+                let Some(prefix) = self.ctx.recorded_prefix(expr.id) else { return false };
+                let name = format!("{prefix}_{method}");
+                rask_stdlib::mir_metadata::lookup(&name).is_some()
+                    && rask_stdlib::mir_metadata::returns_a_view(&name)
+            }
+            _ => false,
+        }
+    }
+
+    /// Retain what `local` holds when the checker says `ty` is Copy: `local`
+    /// was just bound to a copy of borrowed storage.
     ///
     /// Copy-ness is the checker's answer, so the decision is made here and
     /// handed down as the retain itself: `rc_insert` reads a `RcIncContents`
@@ -1619,11 +1659,7 @@ impl<'a> MirLowerer<'a> {
     /// copied, or can't be bound at all (mem.borrowing/E4). A Copy one holds
     /// no container, so the retain is strings only, never a deep clone. A bare
     /// string copy takes its reference in `rc_insert`, like any string local.
-    fn retain_copy_of_place(&mut self, local: crate::LocalId, init: &Expr) {
-        if !matches!(init.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. }) {
-            return;
-        }
-        let Some(ty) = self.ctx.lookup_raw_type(init.id) else { return };
+    pub(crate) fn retain_bound_copy(&mut self, local: crate::LocalId, ty: &rask_types::Type) {
         if !self.ctx.type_defs.is_copy(ty) {
             return;
         }
@@ -2031,14 +2067,23 @@ impl<'a> MirLowerer<'a> {
     /// Bind a tuple pattern against `base`, following the pattern's shape.
     /// A nested pattern reads its own sub-tuple out first, so element indices
     /// always match the tuple they're read from.
+    ///
+    /// `copied_from`: the checker's type for `base` when it was read out of
+    /// borrowed storage, so each Copy element bound takes references of its
+    /// own (`retain_bound_copy`).
     pub(super) fn destructure_tuple_pattern(
         &mut self,
         pats: &[TuplePat],
         base: &MirOperand,
         base_ty: &MirType,
+        copied_from: Option<&rask_types::Type>,
     ) -> Result<(), LoweringError> {
         let elem_types = match base_ty {
             MirType::Tuple(fields) => Some(fields.clone()),
+            _ => None,
+        };
+        let checker_elems = match copied_from {
+            Some(rask_types::Type::Tuple(elems)) => Some(elems.clone()),
             _ => None,
         };
         for (i, pat) in pats.iter().enumerate() {
@@ -2065,8 +2110,17 @@ impl<'a> MirLowerer<'a> {
                     access: FieldAccess::Word,
                 },
             }));
-            if let TuplePat::Nested(inner) = pat {
-                self.destructure_tuple_pattern(inner, &MirOperand::Local(dst), &elem_ty)?;
+            let checker_elem = checker_elems.as_ref().and_then(|e| e.get(i));
+            match pat {
+                TuplePat::Nested(inner) => {
+                    self.destructure_tuple_pattern(inner, &MirOperand::Local(dst), &elem_ty, checker_elem)?;
+                }
+                TuplePat::Name(_) => {
+                    if let Some(t) = checker_elem {
+                        self.retain_bound_copy(dst, t);
+                    }
+                }
+                _ => {}
             }
         }
         Ok(())
@@ -2090,6 +2144,14 @@ impl<'a> MirLowerer<'a> {
             ));
         };
         let (src_op, src_ty) = self.lower_expr(init)?;
+        // The checker's field types, for a copy out of borrowed storage. The
+        // layout's are as written, so a struct-typed field there is a name
+        // rather than a type the Copy rule can answer for.
+        let copied_fields = if self.reads_borrowed_storage(init) {
+            self.ctx.lookup_raw_type(init.id).and_then(|t| self.struct_fields_of(t))
+        } else {
+            None
+        };
         for (field_name, field_pat) in fields {
             let Pattern::Ident(binding) = field_pat else {
                 return Err(LoweringError::InvalidConstruct(format!(
@@ -2115,6 +2177,11 @@ impl<'a> MirLowerer<'a> {
                     access: FieldAccess::for_field(&field_ty, size),
                 },
             }));
+            if let Some((_, ty)) = copied_fields.as_ref()
+                .and_then(|f| f.iter().find(|(n, _)| n == field_name))
+            {
+                self.retain_bound_copy(local, ty);
+            }
             self.locals.insert(binding.clone(), (local, field_ty));
         }
         Ok(())
@@ -2145,6 +2212,8 @@ impl<'a> MirLowerer<'a> {
                     None
                 }
             });
+
+        let borrowed = self.reads_borrowed_storage(init);
 
         // Extract per-element MIR types from the tuple type.
         let mir_elem_types: Option<Vec<MirType>> = match &init_mir_ty {
@@ -2183,6 +2252,13 @@ impl<'a> MirLowerer<'a> {
                         access: FieldAccess::Word,
                     },
                 }));
+                // `let (l, n) = v[0]` copies `l` out of the slot, the same
+                // as `let l = v[0].0` would.
+                if borrowed {
+                    if let Some(elem) = tuple_elems.as_ref().and_then(|e| e.get(i)) {
+                        self.retain_bound_copy(local_id, elem);
+                    }
+                }
             }
 
             // Track type prefix so method calls get qualified names.
@@ -2278,7 +2354,7 @@ impl<'a> MirLowerer<'a> {
                     else_block: exit_block,
                 }));
                 let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
-                Some((name, val, payload_ty, is_niche))
+                Some((name, inner, val, payload_ty, is_niche))
             }
             None => {
                 let (cond_op, _) = self.lower_expr(cond)?;
@@ -2292,8 +2368,8 @@ impl<'a> MirLowerer<'a> {
         };
 
         self.builder.switch_to_block(body_block);
-        if let Some((name, val, payload_ty, is_niche)) = bind_in_body {
-            self.bind_presence_payload(&name, &val, &payload_ty, is_niche);
+        if let Some((name, inner, val, payload_ty, is_niche)) = bind_in_body {
+            self.bind_presence_payload(&name, inner, &val, &payload_ty, is_niche);
         }
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {

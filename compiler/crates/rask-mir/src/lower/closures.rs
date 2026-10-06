@@ -723,7 +723,7 @@ impl<'a> MirLowerer<'a> {
                     .map(|n| rask_ast::stmt::TuplePat::Name(n.clone()))
                     .collect();
                 if let Err(e) = self.destructure_tuple_pattern(
-                    &pats, &MirOperand::Local(item_param), &elem_ty,
+                    &pats, &MirOperand::Local(item_param), &elem_ty, None,
                 ) {
                     body_result = Err(e);
                 }

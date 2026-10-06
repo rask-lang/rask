@@ -1868,7 +1868,7 @@ impl<'a> MirLowerer<'a> {
             let payload_ty = self.payload_type_of_niche(expr, &val_ty, is_niche)
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:try_else_payload"));
             self.bind_pattern_payload_niche(
-                pattern, val.clone(), Some(payload_ty.clone()), is_niche, &val_ty);
+                pattern, expr, val.clone(), Some(payload_ty.clone()), is_niche, &val_ty);
             // Extract the payload value for the result
             let payload = self.emit_option_payload(val, payload_ty.clone(), is_niche);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
@@ -3727,7 +3727,7 @@ impl<'a> MirLowerer<'a> {
                 self.payload_type_of_niche(expr, &val_ty, is_niche)
             };
             let outer = self.save_names(pattern.bound_names());
-            self.bind_pattern_payload_niche(pattern, val.clone(), bind_ty, is_niche, &val_ty);
+            self.bind_pattern_payload_niche(pattern, expr, val.clone(), bind_ty, is_niche, &val_ty);
             let (then_val, then_ty) = self.lower_expr(then_branch)?;
             self.restore_names(outer);
             let result_local = self.builder.alloc_temp(then_ty.clone());
@@ -3930,7 +3930,19 @@ impl<'a> MirLowerer<'a> {
                 }));
                 slot
             } else {
-                self.emit_option_payload(val, payload_ty.clone(), is_niche)
+                let payload = self.emit_option_payload(val, payload_ty.clone(), is_niche);
+                // Either side may be a copy out of borrowed storage
+                // (`v.get(i) ?? fallback`), and the result is one value
+                // whichever side it came from. So each side that copies takes
+                // its references here, and the result owns what it holds on
+                // both paths.
+                if self.reads_borrowed_storage(value) {
+                    let inner = self.ctx.lookup_raw_type(value.id).and_then(|t| t.as_option()).cloned();
+                    if let Some(inner) = inner {
+                        self.retain_bound_copy(payload, &inner);
+                    }
+                }
+                payload
             };
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
@@ -3944,6 +3956,11 @@ impl<'a> MirLowerer<'a> {
                     dst: result_local,
                     rvalue: MirRValue::Use(default_val),
                 }));
+                if !keeps_shape && self.reads_borrowed_storage(default) {
+                    if let Some(ty) = self.ctx.lookup_raw_type(default.id).cloned() {
+                        self.retain_bound_copy(result_local, &ty);
+                    }
+                }
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
             }
 
@@ -10082,7 +10099,7 @@ impl<'a> MirLowerer<'a> {
         // Match path: bind the payload, yield true.
         self.builder.switch_to_block(bind_block);
         let payload_ty = self.payload_type_of_niche(scrutinee, &val_ty, is_niche);
-        self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche, &val_ty);
+        self.bind_pattern_payload_niche(pattern, scrutinee, val, payload_ty, is_niche, &val_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result_local,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
@@ -10134,9 +10151,14 @@ impl<'a> MirLowerer<'a> {
     /// Bind an `x? as v` payload as a local in the current block. Shared by the
     /// `if` form and the `while` form, so a loop reads the payload exactly the
     /// way the branch does.
+    ///
+    /// `inner` is the scrutinee: a payload read out of borrowed storage
+    /// (`v.get(i)? as l`, `slots[0]? as l`) is a copy, and takes references
+    /// of its own when it's Copy.
     pub(crate) fn bind_presence_payload(
         &mut self,
         name: &str,
+        inner: &Expr,
         val: &MirOperand,
         payload_ty: &MirType,
         is_niche: bool,
@@ -10157,6 +10179,12 @@ impl<'a> MirLowerer<'a> {
             }
         };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: local, rvalue }));
+        if self.reads_borrowed_storage(inner) {
+            let payload = self.ctx.lookup_raw_type(inner.id).and_then(|t| t.as_option()).cloned();
+            if let Some(payload) = payload {
+                self.retain_bound_copy(local, &payload);
+            }
+        }
         self.locals.insert(name.to_string(), (local, payload_ty.clone()));
         if let Some(prefix) = self.mir_type_name(payload_ty) {
             self.meta_mut(name).type_prefix = Some(prefix);
@@ -10207,7 +10235,7 @@ impl<'a> MirLowerer<'a> {
         let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
         let outer_locals = self.locals.clone();
         if let Some(name) = then_name.as_ref() {
-            self.bind_presence_payload(name, &val, &payload_ty, is_niche);
+            self.bind_presence_payload(name, inner, &val, &payload_ty, is_niche);
         }
         let (then_val, then_ty) = self.lower_expr(then_branch)?;
         self.locals = outer_locals;

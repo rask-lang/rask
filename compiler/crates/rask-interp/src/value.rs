@@ -1496,6 +1496,8 @@ impl Value {
                 type_name: type_name.clone(),
                 inner: Box::new(inner.copy_on_bind()),
             },
+            // A tuple's elements are owned the way a struct's fields are.
+            Value::Tuple(items) => Value::tuple(items.iter().map(|v| v.copy_on_bind()).collect()),
             // Reference/box types share; scalars are cheap clones.
             other => other.clone(),
         }
