@@ -4015,26 +4015,29 @@ impl TypeChecker {
         // argument can only be that element. Without this, push stored a bare
         // struct pointer into a 16-byte element slot and every element read
         // back through whichever vtable was written last (#335).
-        // The receiver reached through a *field* isn't resolved yet here — its
-        // type arrives from a deferred constraint — so there was no element type
-        // to compare against and the push went in unboxed. `h.shapes.push(Circle
-        // { r: 2 })` on a `Holder { shapes: Vec<any Shape> }` wrote eight bytes
-        // into a sixteen-byte slot and the first `area()` call read a vtable
-        // pointer out of whatever followed: SIGSEGV natively, right on the
-        // interpreter (#955). Ask again once the receiver has settled.
-        if matches!(self.ctx.apply(&obj_ty), Type::Var(_)) {
-            for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+        //
+        // Either side can still be a variable here, and then there's nothing to
+        // compare yet: ask again once it has settled. The receiver reached
+        // through a *field* arrives from a deferred constraint — `h.shapes.push(
+        // Circle { r: 2 })` on a `Holder { shapes: Vec<any Shape> }` (#955). So
+        // does an argument that is itself a static method call:
+        // `ws.push(io.Buffer.new())` has no type until that call resolves.
+        // Either way the value went in unboxed, a bare struct where the fat
+        // pointer goes, and the first method call read its vtable out of the
+        // struct (#1465).
+        let recv = self.ctx.apply(&obj_ty);
+        for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
+            let applied = self.ctx.apply(arg_ty);
+            if matches!(recv, Type::Var(_)) || matches!(applied, Type::Var(_)) {
                 self.pending_interface_elem_coercions.push((
                     arg.expr.id,
                     Self::is_any_cast(&arg.expr),
                     obj_ty.clone(),
                     arg_ty.clone(),
                 ));
+                continue;
             }
-        }
-        for (arg, arg_ty) in args.iter().zip(arg_types.iter()) {
-            let applied = self.ctx.apply(arg_ty);
-            for elem in Self::interface_object_type_args(&self.ctx.apply(&obj_ty)) {
+            for elem in Self::interface_object_type_args(&recv) {
                 // Only an argument that satisfies the interface can be the element.
                 // Without this a `Map<string, any Shape>`'s key was flagged too,
                 // and codegen went looking for `string_area`.

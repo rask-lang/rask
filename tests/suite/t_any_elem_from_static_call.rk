@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A value made by a static call, put straight into a collection of `any`.
+//
+// `ws.push(io.Buffer.new())` on a `Vec<any io.Writer>` stored the bare
+// struct where the fat pointer goes, and the first call through the vtable
+// segfaulted natively (#1465). The checker hadn't worked out what
+// `Buffer.new()` returns yet when it asked whether the push needs a box, so it
+// recorded none. Nothing about `Buffer` being a stdlib type: a program's own
+// `Sink.new()` did the same.
+
+import io
+
+interface Shape {
+    func area(self) -> i64
+}
+
+struct Square {
+    side: i64
+}
+
+extend Square {
+    func new(side: i64) -> Square {
+        return Square { side }
+    }
+}
+
+Square implements Shape {
+    func area(self) -> i64 {
+        return self.side * self.side
+    }
+}
+
+test "a stdlib type made in place goes in boxed" {
+    mut ws: Vec<any io.Writer> = Vec.new()
+    ws.push(io.Buffer.new())
+    ws.push(io.Buffer.new())
+    mut wrote = 0
+    for w in ws {
+        w.write_text("x") catch _ => { return }
+        wrote = wrote + 1
+    }
+    assert wrote == 2
+}
+
+test "a program's own type made in place goes in boxed" {
+    mut shapes: Vec<any Shape> = Vec.new()
+    shapes.push(Square.new(2))
+    shapes.push(Square { side: 3 })
+    shapes.push(Square.new(4))
+    mut total = 0
+    for s in shapes {
+        total = total + s.area()
+    }
+    assert total == 29
+}
+
+test "a map value made in place goes in boxed" {
+    mut by_name: Map<string, any Shape> = Map.new()
+    by_name.insert("a", Square.new(5))
+    let a = by_name.get("a") ?? Square { side: 0 }
+    assert a.area() == 25
+}
