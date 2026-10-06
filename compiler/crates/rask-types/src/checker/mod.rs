@@ -371,6 +371,20 @@ pub struct TypeChecker {
     /// expression keeps the optional shape. Both backends read this to know
     /// whether the present path yields the payload or the operand as-is.
     pub(super) fallback_keeps_shape: std::collections::HashSet<NodeId>,
+    /// The solver's last retry of the shape constraints: nothing else will
+    /// move, so a constraint that would rather wait has to commit now.
+    pub(super) final_shape_pass: bool,
+    /// `x ?? 0` whose operand was still open when its statement finished
+    /// solving. Carried from solve to solve, and settled for good by
+    /// `resolve_carried_coalesce` once the operators waiting on literals have
+    /// answered.
+    pub(super) carried_coalesce: Vec<TypeConstraint>,
+    /// Set while `resolve_carried_coalesce` runs: nothing is left to wait for.
+    pub(super) late_coalesce: bool,
+    /// `5 ?? 0`, or a generic that returned its unsuffixed argument: never
+    /// absent, reported once defaulting has given the number its type.
+    /// (`??` node, operand, operand span, default span, `??` span)
+    pub(super) pending_literal_coalesce: Vec<(NodeId, Type, rask_ast::Span, rask_ast::Span, rask_ast::Span)>,
     /// ER16b: `try` nodes that are the left half of a `try … ??` composite.
     /// Only there may a `try` take a flat `T? or E` operand (ER47).
     pub(super) flat_try_sites: std::collections::HashSet<NodeId>,
@@ -636,6 +650,10 @@ impl TypeChecker {
             error_wraps: HashMap::new(),
             pending_try_errors: Vec::new(),
             fallback_keeps_shape: std::collections::HashSet::new(),
+            final_shape_pass: false,
+            carried_coalesce: Vec::new(),
+            late_coalesce: false,
+            pending_literal_coalesce: Vec::new(),
             flat_try_sites: std::collections::HashSet::new(),
             try_chain_steps: std::collections::HashSet::new(),
             try_chain_unwrapped: None,
@@ -796,6 +814,7 @@ impl TypeChecker {
         // about it before defaulting, or the body reports `f64 * i32` for a
         // program with no i32 in it (#904).
         self.settle_operator_literals();
+        self.resolve_carried_coalesce();
 
         // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
         self.ctx.apply_literal_defaults();
@@ -815,6 +834,16 @@ impl TypeChecker {
 
         // An integer literal has to fit the type it landed in.
         self.validate_pending_int_literals();
+
+        for (node, value, value_span, default_span, span) in std::mem::take(&mut self.pending_literal_coalesce) {
+            self.errors.push(TypeError::CoalesceOnNonOptional {
+                found: self.ctx.apply(&value),
+                from_index: self.coalesce_index_operands.contains(&node),
+                value_span,
+                default_span,
+                span,
+            });
+        }
 
         // D2: `discard` on a Copy type frees nothing. Asked here because an
         // unsuffixed literal has a type only after defaulting.

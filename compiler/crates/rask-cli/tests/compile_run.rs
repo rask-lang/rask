@@ -1334,16 +1334,19 @@ fn error_interface_bound_messages() {
 // they were rewritten into, and reported it that way — `n ?? -1` said "expected
 // `i64`, found `i32 or _`" and advised changing the type to the one already
 // written (#645). Pins the message, the `.get(k)` advice for the index case,
-// and the count: six mistakes, six errors, nothing extra from the cascade and
-// nothing for the legal shapes in the same file.
+// and the count: eight mistakes, eight errors, nothing extra from the cascade and
+// nothing for the legal shapes in the same file. Two of the `??`s have an
+// operand whose type settles late; those used to blame `m.insert` (#1290).
 #[test]
 fn error_optional_operators_need_optionals() {
     let (failed, out) = compile_error_output("optional_operators_need_optionals.rk");
     assert!(failed, "`??`/`!`/`take` on a non-optional must be rejected: {}", out);
     assert_eq!(
-        out.matches("E0831").count(), 4,
-        "one per `??`: a local, a string, a map index, a struct field: {}", out,
+        out.matches("E0831").count(), 6,
+        "one per `??`: a local, a string, a map index, a struct field, a call \
+         whose closure settles last, a generic handing back a number: {}", out,
     );
+    assert!(!out.contains("E0308"), "no mismatch blamed on another line: {}", out);
     assert_eq!(
         out.matches("E0832").count(), 1,
         "one `!` on a non-optional: {}", out,

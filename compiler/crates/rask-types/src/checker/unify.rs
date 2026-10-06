@@ -52,6 +52,10 @@ impl TypeChecker {
         let mut iterations = 0;
         const MAX_ITERATIONS: usize = 100;
 
+        for carried in std::mem::take(&mut self.carried_coalesce) {
+            self.ctx.add_constraint(carried);
+        }
+
         while changed && iterations < MAX_ITERATIONS {
             changed = false;
             iterations += 1;
@@ -78,6 +82,7 @@ impl TypeChecker {
         // it genuinely has nothing to resolve from, and looping until quiet
         // risks never going quiet.
         let deferred = std::mem::take(&mut self.ctx.constraints);
+        self.final_shape_pass = true;
         for constraint in deferred {
             if matches!(
                 constraint,
@@ -97,6 +102,8 @@ impl TypeChecker {
                 self.ctx.constraints.push(constraint);
             }
         }
+
+        self.final_shape_pass = false;
 
         // Report leftover constraints that the solver couldn't resolve.
         // These are real errors — silently dropping them lets bad code
@@ -280,6 +287,23 @@ impl TypeChecker {
                 Err(e) => self.errors.push(e),
             }
         }
+    }
+
+    /// Settle the `??`s still carried with an open operand. First the deferred
+    /// operators whose literal `settle_operator_literals` just pinned, since
+    /// those are what such an operand is usually waiting on.
+    pub(super) fn resolve_carried_coalesce(&mut self) {
+        if self.carried_coalesce.is_empty() {
+            return;
+        }
+        for constraint in std::mem::take(&mut self.deferred_methods) {
+            if let Err(e) = self.solve_constraint(constraint) {
+                self.errors.push(e);
+            }
+        }
+        self.late_coalesce = true;
+        self.solve_constraints();
+        self.late_coalesce = false;
     }
 
     pub(super) fn retry_deferred_methods(&mut self) {
@@ -885,6 +909,35 @@ impl TypeChecker {
         };
         if matches!(def, Type::Var(_)) && !def_is_bare_literal {
             self.ctx.add_constraint(TypeConstraint::Coalesce { node, value, default, result, value_span, default_span, span });
+            return Ok(false);
+        }
+        // An operand that is itself an unsuffixed number is never absent.
+        if let Type::Var(id) = self.ctx.apply(&value) {
+            if self.ctx.is_integer_literal_var(id) || self.ctx.is_float_literal_var(id) {
+                let _ = self.unify(&result, &value, span);
+                self.pending_literal_coalesce.push((node, value, value_span, default_span, span));
+                return Ok(true);
+            }
+        }
+        // An operand still open has its answer coming, and it can come late:
+        // `m.modify_with_default(…, |v| { return v + 1 })` returns what the
+        // closure does, and `v + 1` waits on its literal until the whole
+        // program is walked. Committing the operand to `<literal> or _` here
+        // turned `?? -1` on that plain `i64` into "expected `i32 or _`",
+        // reported on an earlier line that had touched the map's value type,
+        // instead of telling the `??` its operand can't be absent (#1290).
+        // So the constraint is carried from solve to solve, and only takes the
+        // literal's shape if nothing ever settles it.
+        if def_is_bare_literal
+            && !self.late_coalesce
+            && matches!(self.ctx.apply(&value), Type::Var(_))
+        {
+            let waiting = TypeConstraint::Coalesce { node, value, default, result, value_span, default_span, span };
+            if self.final_shape_pass {
+                self.carried_coalesce.push(waiting);
+            } else {
+                self.ctx.add_constraint(waiting);
+            }
             return Ok(false);
         }
 
