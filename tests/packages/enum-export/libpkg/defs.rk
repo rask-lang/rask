@@ -20,11 +20,13 @@ public func label(c: Colour) -> string {
 public enum Shape {
     Circle { r: i64 }
     Square { side: i64 }
+    Dot(i64)
 }
 
 public func area(s: Shape) -> i64 {
     match s {
         Shape.Circle { r } => return 3 * r * r
         Shape.Square { side } => return side * side
+        Shape.Dot(_) => return 0
     }
 }

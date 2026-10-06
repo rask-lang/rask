@@ -5747,9 +5747,12 @@ impl Parser {
             TokenKind::Ident(name) => {
                 self.advance();
 
-                // Handle qualified paths: Enum.Variant or Enum.Variant(args) or Enum.Variant { fields }
+                // Qualified paths: `Enum.Variant`, and through a module,
+                // `bits.BinaryParseError.UnexpectedEnd`, each optionally with
+                // `(args)` or `{ fields }`. Stopping after one dot made the
+                // module-qualified arm a parse error (#1474).
                 let mut path = vec![name];
-                if self.match_token(&TokenKind::Dot) {
+                while self.match_token(&TokenKind::Dot) {
                     path.push(self.expect_ident()?);
                 }
 

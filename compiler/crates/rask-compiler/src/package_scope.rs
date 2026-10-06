@@ -237,6 +237,8 @@ impl Rewrite for ReferenceQualifier<'_> {
     fn pattern(&mut self, p: &mut Pattern) {
         let name = match p {
             Pattern::Constructor { name, .. } | Pattern::Struct { name, .. } => name,
+            // A fieldless `libpkg.Colour.Red` parses as an identifier pattern.
+            Pattern::Ident(name) if name.contains('.') => name,
             Pattern::Wildcard
             | Pattern::Ident(_)
             | Pattern::Literal(_)
