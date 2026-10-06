@@ -39,23 +39,20 @@ impl CfgConfig {
         }
     }
 
-    /// Parse from a target triple (e.g. "x86_64-linux-musl").
-    pub fn from_target(target: &str, profile: &str, features: Vec<String>) -> Self {
-        let parts: Vec<&str> = target.splitn(3, '-').collect();
+    /// For a cross target, from facts already worked out from its name.
+    ///
+    /// The name itself isn't read here: splitting `aarch64-apple-darwin` on '-'
+    /// gave `cfg.os == "apple"` (#1315). The table that knows what a target name
+    /// means is `rask_codegen::targets`, which this crate can't depend on, so
+    /// the caller reads it and hands over the answer. The spellings match
+    /// `from_host`'s: `"macos"`, `"linux"`, `"x86_64"`, `"gnu"`.
+    pub fn for_target(arch: &str, os: &str, env: &str, profile: &str, features: Vec<String>) -> Self {
         Self {
-            arch: parts.first().unwrap_or(&"unknown").to_string(),
-            os: parts.get(1).unwrap_or(&"unknown").to_string(),
-            env: parts.get(2).unwrap_or(&"gnu").to_string(),
+            arch: arch.to_string(),
+            os: os.to_string(),
+            env: env.to_string(),
             profile: profile.to_string(),
             features,
-        }
-    }
-
-    /// Dispatch based on whether a target triple is provided.
-    pub fn from_target_or_host(target: Option<&str>, profile: &str, features: Vec<String>) -> Self {
-        match target {
-            Some(t) => Self::from_target(t, profile, features),
-            None => Self::from_host(profile, features),
         }
     }
 
@@ -299,7 +296,7 @@ fn try_eval_comptime_if_stmts(stmts: &[Stmt], cfg_values: &HashMap<String, Strin
 
 /// Evaluate a cfg condition at compile time.
 /// Supports: `cfg.field == "value"`, `cfg.field != "value"`,
-/// `!expr`, `expr && expr`, `expr || expr`.
+/// `cfg.debug`, `!expr`, `expr && expr`, `expr || expr`.
 fn eval_cfg_condition(expr: &Expr, cfg_values: &HashMap<String, String>) -> Option<bool> {
     match &expr.kind {
         ExprKind::Binary { op, left, right } => {
@@ -321,6 +318,11 @@ fn eval_cfg_condition(expr: &Expr, cfg_values: &HashMap<String, String>) -> Opti
         }
         ExprKind::Unary { op: UnaryOp::Not, operand } => {
             Some(!eval_cfg_condition(operand, cfg_values)?)
+        }
+        // CT15: the one boolean field. Not eliminated, `comptime if cfg.debug`
+        // reached the resolver as a name nothing declares.
+        _ if extract_cfg_field(expr) == Some("debug") => {
+            Some(cfg_values.get("profile")?.as_str() == "debug")
         }
         _ => None,
     }

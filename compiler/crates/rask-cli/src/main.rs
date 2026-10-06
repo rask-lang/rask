@@ -395,7 +395,7 @@ fn main() {
                 }
             };
             if dump_mir {
-                commands::codegen::cmd_dump_mir(file, format, release);
+                commands::codegen::cmd_dump_mir(file, format, release, target.as_deref());
             } else {
                 commands::codegen::cmd_compile(file, output_path.as_deref(), format, false, &link_opts, release, target.as_deref());
             }

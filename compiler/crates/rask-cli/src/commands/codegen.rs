@@ -20,10 +20,12 @@ type PipelineResult = (
 /// Run the full front-end pipeline + monomorphize + comptime eval via
 /// rask-compiler. Exits on error (including comptime hard errors, which are
 /// pipeline diagnostics). Comptime globals are evaluated once, here.
-fn run_pipeline(path: &str, format: Format) -> PipelineResult {
-    let config = rask_compiler::CompilerConfig {
-        cfg: rask_compiler::CfgConfig::from_host("debug", vec![]),
-    };
+///
+/// `cfg` is the build's, not the host's: `comptime if cfg.os` is decided in
+/// here, so a cfg built afterwards for codegen came too late and every
+/// cross-compile took the host's branch (#1315).
+fn run_pipeline(path: &str, format: Format, cfg: &rask_comptime::CfgConfig) -> PipelineResult {
+    let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
     let output = rask_compiler::compile_file(path, &config);
 
     // Build source_files for display
@@ -76,7 +78,8 @@ pub(crate) fn exit_on_comptime_errors(
 
 /// Dump monomorphization output for a single file.
 pub fn cmd_mono(path: &str, format: Format) {
-    let (mono, _typed, _decls, _comptime_globals, _source, _package_names) = run_pipeline(path, format);
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    let (mono, _typed, _decls, _comptime_globals, _source, _package_names) = run_pipeline(path, format, &cfg);
 
     if format == Format::Human {
         println!(
@@ -186,7 +189,8 @@ pub fn cmd_mono(path: &str, format: Format) {
 
 /// Dump MIR for a single file.
 pub fn cmd_mir(path: &str, format: Format) {
-    let (mono, typed, decls, comptime_globals, source, _package_names) = run_pipeline(path, format);
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    let (mono, typed, decls, comptime_globals, source, _package_names) = run_pipeline(path, format, &cfg);
 
     // Lower each monomorphized function to MIR
     if format == Format::Human {
@@ -222,7 +226,6 @@ pub fn cmd_mir(path: &str, format: Format) {
         decl
     }).collect();
     all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
-    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
     let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let type_names: std::collections::HashMap<rask_types::TypeId, String> =
@@ -310,9 +313,9 @@ pub fn cmd_mir(path: &str, format: Format) {
 
 /// Dump MIR for a .rk file — runs the full pipeline up to MIR lowering
 /// and prints the MIR functions to stderr. Used for debugging codegen issues.
-pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
-    let (mono, typed, decls, comptime_globals, source, package_names) = run_pipeline(path, format);
-    let _ = release;
+pub fn cmd_dump_mir(path: &str, format: Format, release: bool, target: Option<&str>) {
+    let cfg = target_cfg_or_exit(target, release);
+    let (mono, typed, decls, comptime_globals, source, package_names) = run_pipeline(path, format, &cfg);
     let type_names = super::compile::build_type_names(&typed);
     let interface_methods = super::compile::build_interface_methods(&typed);
     let extern_funcs = collect_extern_func_names(&decls, &typed.symbols);
@@ -378,20 +381,27 @@ pub fn cmd_dump_mir(path: &str, format: Format, release: bool) {
     }
 }
 
-/// Compile a single .rk file to a native executable.
-/// Full pipeline: lex → parse → desugar → resolve → typecheck → ownership →
-/// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
-pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions, release: bool, target: Option<&str>) {
-    if let Some(t) = target {
-        if let Err(e) = super::link::validate_target(t) {
+/// The cfg for a single-file build, or exit on a target name nobody declared.
+fn target_cfg_or_exit(target: Option<&str>, release: bool) -> rask_comptime::CfgConfig {
+    let profile = if release { "release" } else { "debug" };
+    let cfg = target
+        .map_or(Ok(()), super::link::validate_target)
+        .and_then(|()| super::link::build_cfg(target, profile, vec![]));
+    match cfg {
+        Ok(cfg) => cfg,
+        Err(e) => {
             eprintln!("{}: {}", output::error_label(), e);
             process::exit(1);
         }
     }
+}
 
-    let (mono, typed, decls, comptime_globals, source, package_names) = run_pipeline(path, format);
-    let profile = if release { "release" } else { "debug" };
-    let cfg = rask_comptime::CfgConfig::from_target_or_host(target, profile, vec![]);
+/// Compile a single .rk file to a native executable.
+/// Full pipeline: lex → parse → desugar → resolve → typecheck → ownership →
+/// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
+pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions, release: bool, target: Option<&str>) {
+    let cfg = target_cfg_or_exit(target, release);
+    let (mono, typed, decls, comptime_globals, source, package_names) = run_pipeline(path, format, &cfg);
     let build_mode = if release { rask_codegen::BuildMode::Release } else { rask_codegen::BuildMode::Debug };
 
     // Determine output paths

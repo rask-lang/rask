@@ -707,9 +707,15 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
         // Run the full pipeline through the shared driver. Moves `registry`
         // into PackageContext — not used after this point.
-        let cfg = rask_comptime::CfgConfig::from_target_or_host(
+        let cfg = match super::link::build_cfg(
             opts.target.as_deref(), &opts.profile, resolved_feature_names.clone(),
-        );
+        ) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                eprintln!("{}: {}", output::error_label(), e);
+                process::exit(1);
+            }
+        };
         let config = rask_compiler::CompilerConfig { cfg: cfg.clone() };
         let mut pkg_ctx = rask_compiler::PackageContext {
             registry,

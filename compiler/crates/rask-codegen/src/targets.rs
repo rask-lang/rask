@@ -113,6 +113,26 @@ pub fn arch_and_os(name: &str) -> Result<(String, String), String> {
     Ok((arch, os.to_string()))
 }
 
+/// The C environment a target name means, spelled as `cfg.env` spells the
+/// host's: `"gnu"`, `"musl"`, `"msvc"`, or `"unknown"` for anything else.
+pub fn target_env(name: &str) -> Result<String, String> {
+    let triple: Triple = codegen_triple(name)?
+        .parse()
+        .map_err(|e| format!("invalid target '{}': {}", name, e))?;
+    // `gnueabihf` and `musleabi` are still glibc and musl to a program asking.
+    let env = triple.environment.to_string();
+    let env = if env.starts_with("gnu") {
+        "gnu"
+    } else if env.starts_with("musl") {
+        "musl"
+    } else if env == "msvc" {
+        "msvc"
+    } else {
+        "unknown"
+    };
+    Ok(env.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +222,17 @@ mod tests {
             arch_and_os("aarch64-apple-darwin").unwrap(),
             ("aarch64".to_string(), "macos".to_string()),
         );
+    }
+
+    #[test]
+    fn both_spellings_of_a_target_answer_the_same_env() {
+        for t in TARGETS {
+            assert_eq!(target_env(t.name).ok(), target_env(t.triple).ok(), "{}", t.name);
+        }
+        assert_eq!(target_env("x86_64-linux").unwrap(), "gnu");
+        assert_eq!(target_env("aarch64-linux-musl").unwrap(), "musl");
+        assert_eq!(target_env("x86_64-windows-msvc").unwrap(), "msvc");
+        assert_eq!(target_env("aarch64-apple-darwin").unwrap(), "unknown");
     }
 
     #[test]

@@ -206,7 +206,7 @@ const PLAYGROUND: &str = "<playground>";
 /// eliminated. The playground emits no code: it interprets, on 64-bit values,
 /// through the same stdlib a Linux build uses. This is what it is emulating.
 fn cfg() -> CfgConfig {
-    CfgConfig::from_target("x86_64-linux-gnu", "debug", vec![])
+    CfgConfig::for_target("x86_64", "linux", "gnu", "debug", vec![])
 }
 
 fn config() -> CompilerConfig {

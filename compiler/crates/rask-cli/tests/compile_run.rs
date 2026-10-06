@@ -8439,6 +8439,71 @@ fn a_target_name_emits_the_object_format_it_names() {
     }
 }
 
+// `comptime if cfg.os` answered for the host on every `--target`: the
+// single-file path ran the front end with the host's cfg and built the
+// target's afterwards, for codegen only. And a full triple split on '-' gave
+// `cfg.os == "apple"` for `aarch64-apple-darwin` (#1315). Read off the MIR,
+// which is where the branch has already been chosen — no cross-linker needed.
+#[test]
+fn comptime_cfg_answers_for_the_target_not_the_host() {
+    let dir = std::env::temp_dir().join(format!("rask_cfg_target_{}_{}", std::process::id(), next_tmp_id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("cfg.rk");
+    std::fs::write(
+        &src,
+        "func main() {\n\
+         \x20   comptime if cfg.os == \"macos\" { println(\"os=macos\") }\n\
+         \x20   comptime if cfg.os == \"linux\" { println(\"os=linux\") }\n\
+         \x20   comptime if cfg.os == \"windows\" { println(\"os=windows\") }\n\
+         \x20   comptime if cfg.os == \"apple\" { println(\"os=apple\") }\n\
+         \x20   comptime if cfg.arch == \"aarch64\" { println(\"arch=aarch64\") }\n\
+         \x20   comptime if cfg.arch == \"x86_64\" { println(\"arch=x86_64\") }\n\
+         \x20   comptime if cfg.env == \"musl\" { println(\"env=musl\") }\n\
+         \x20   comptime if cfg.env == \"gnu\" { println(\"env=gnu\") }\n\
+         \x20   comptime if cfg.env == \"msvc\" { println(\"env=msvc\") }\n\
+         \x20   comptime if cfg.debug { println(\"debug\") } else { println(\"release\") }\n\
+         }\n",
+    )
+    .unwrap();
+    let branches = |target: &str, release: bool| -> Vec<String> {
+        let mut cmd = Command::new(rask_binary());
+        cmd.arg("compile").arg("--dump-mir").arg("--target").arg(target);
+        if release {
+            cmd.arg("--release");
+        }
+        let out = cmd
+            .arg(&src)
+            .env("RASK_RUNTIME_DIR", runtime_dir())
+            .output()
+            .expect("failed to run rask");
+        let text = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{target}: dump failed:\n{text}");
+        let mut seen: Vec<String> = text
+            .lines()
+            .filter_map(|l| l.split("println(\"").nth(1))
+            .filter_map(|rest| rest.split('"').next())
+            .map(str::to_string)
+            .collect();
+        seen.sort();
+        seen.dedup();
+        seen
+    };
+    let want = |xs: &[&str]| -> Vec<String> {
+        let mut v: Vec<String> = xs.iter().map(|s| s.to_string()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(branches("aarch64-macos", false), want(&["arch=aarch64", "debug", "os=macos"]));
+    assert_eq!(branches("aarch64-apple-darwin", false), want(&["arch=aarch64", "debug", "os=macos"]));
+    assert_eq!(branches("x86_64-linux-musl", false), want(&["arch=x86_64", "debug", "env=musl", "os=linux"]));
+    assert_eq!(branches("aarch64-linux", true), want(&["arch=aarch64", "env=gnu", "os=linux", "release"]));
+    assert_eq!(
+        branches("x86_64-windows-msvc", false),
+        want(&["arch=x86_64", "debug", "env=msvc", "os=windows"]),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // The other half: a name nobody declared is an error, not a guess at what was
 // meant. It used to be accepted by anything shaped like `arch-os`.
 #[test]

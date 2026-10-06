@@ -277,6 +277,22 @@ pub fn validate_target(target: &str) -> Result<(), String> {
     rask_codegen::targets::codegen_triple(target).map(|_| ())
 }
 
+/// What `cfg.*` answers for a build: the target's facts, or the host's when
+/// there is no `--target`. Built before the front end runs, since that is
+/// where `comptime if cfg.os` picks its branch.
+pub fn build_cfg(
+    target: Option<&str>,
+    profile: &str,
+    features: Vec<String>,
+) -> Result<rask_comptime::CfgConfig, String> {
+    let Some(t) = target else {
+        return Ok(rask_comptime::CfgConfig::from_host(profile, features));
+    };
+    let (arch, os) = rask_codegen::targets::arch_and_os(t)?;
+    let env = rask_codegen::targets::target_env(t)?;
+    Ok(rask_comptime::CfgConfig::for_target(&arch, &os, &env, profile, features))
+}
+
 // ─── Runtime object cache ────────────────────────────────────────────────
 //
 // The runtime is 28 C files and they were recompiled from source on every
