@@ -7978,15 +7978,21 @@ impl<'a> FunctionBuilder<'a> {
     /// `v.push(a)` on an `f32` local wrote 4, and the 4-byte read back got the
     /// double's zero low half — printing 0 for the literal and the right value
     /// for the local (#629).
+    ///
+    /// The slot is as wide as the value, and an i128 is sixteen bytes. An
+    /// eight-byte slot took the store's high half into whatever Cranelift put
+    /// next to it: in a test body that was the spill slot holding a `u128::MAX`
+    /// literal, so `assert u[1] == <max>` compared against `0` (#1407).
     fn value_to_ptr(builder: &mut ClifFunctionBuilder, val: Value) -> Value {
-        let ss = builder.create_sized_stack_slot(StackSlotData::new(
-            StackSlotKind::ExplicitSlot, 8, 0,
-        ));
         let stored = if builder.func.dfg.value_type(val) == types::F32 {
             builder.ins().fpromote(types::F64, val)
         } else {
             val
         };
+        let size = builder.func.dfg.value_type(stored).bytes().max(8);
+        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot, size, 0,
+        ));
         builder.ins().stack_store(stored, ss, 0);
         builder.ins().stack_addr(types::I64, ss, 0)
     }
