@@ -70,6 +70,24 @@ pub struct ClosureTargets {
 
 impl ClosureTargets {
     pub fn build(fns: &[MirFunction]) -> Self {
+        Self::walk(fns, false)
+    }
+
+    /// `build`, also following a closure out of the function that returns it:
+    /// `pair()` hands back `pair`'s adapter, so `for f in pair()` calls a body
+    /// this can name. The plain walk calls every call result unknown.
+    ///
+    /// Separate because the passes reading `build` act on a known set — they
+    /// free, specialise, adopt — and were tuned against what it knows. The one
+    /// reader of this answers "might this call keep its argument", where a
+    /// wider known set only ever means fewer guesses.
+    pub fn build_following_returns(fns: &[MirFunction]) -> Self {
+        Self::walk(fns, true)
+    }
+
+    fn walk(fns: &[MirFunction], follow_returns: bool) -> Self {
+        let with_body: HashSet<&str> = fns.iter().map(|f| f.name.as_str()).collect();
+        let mut returns: HashMap<String, Flow> = HashMap::new();
         // A function named by a `ClosureCreate` is reached through a pointer, so
         // its arguments come from call sites this walk can't name. Its own
         // parameters are unknown for good.
@@ -97,7 +115,9 @@ impl ClosureTargets {
             // to a known set.
             for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
                 let Some(dst) = crate::analysis::uses::stmt_def(stmt) else { continue };
-                if !modelled_def(stmt) {
+                let followed_return = follow_returns
+                    && matches!(&stmt.kind, MirStmtKind::Call { func: f, .. } if with_body.contains(f.name.as_str()));
+                if !modelled_def(stmt) && !followed_return {
                     locals.insert((func.name.clone(), dst), Flow::Unknown);
                 }
             }
@@ -152,7 +172,12 @@ impl ClosureTargets {
                                 grew |= merge_into(&mut locals, (name.clone(), *dst), &flow);
                             }
                         }
-                        MirStmtKind::Call { func: fref, args, .. } => {
+                        MirStmtKind::Call { func: fref, args, dst } => {
+                            if follow_returns {
+                                if let (Some(d), Some(flow)) = (dst, returns.get(&fref.name).cloned()) {
+                                    grew |= merge_into(&mut locals, (name.clone(), *d), &flow);
+                                }
+                            }
                             for (i, arg) in args.iter().enumerate() {
                                 let MirOperand::Local(a) = arg else { continue };
                                 let Some(flow) = locals.get(&(name.clone(), *a)).cloned() else {
@@ -163,6 +188,23 @@ impl ClosureTargets {
                             }
                         }
                         _ => {}
+                    }
+                }
+                if follow_returns {
+                    for block in &func.blocks {
+                        let returned = match &block.terminator.kind {
+                            crate::MirTerminatorKind::Return { value: Some(MirOperand::Local(id)) }
+                            | crate::MirTerminatorKind::CleanupReturn {
+                                value: Some(MirOperand::Local(id)),
+                                ..
+                            } => *id,
+                            _ => continue,
+                        };
+                        // Not a closure, or not one this walk can follow: the
+                        // caller's result is unknown, the same as before.
+                        let flow =
+                            locals.get(&(name.clone(), returned)).cloned().unwrap_or(Flow::Unknown);
+                        grew |= merge_into(&mut returns, name.clone(), &flow);
                     }
                 }
             }

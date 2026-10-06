@@ -31,9 +31,73 @@ use crate::{LocalId, MirFunction, MirOperand, MirStmt, MirStmtKind, MirTerminato
 /// Unknown callees (runtime functions, external) are assumed to take ownership.
 pub fn optimize_all_closures(fns: &mut [MirFunction]) {
     let callee_escapes = build_callee_escape_map(fns, false);
+    let kept = KeptThroughCalls::build(fns);
 
     for func in fns.iter_mut() {
-        decide_allocation(func, &callee_escapes);
+        decide_allocation(func, &callee_escapes, &kept);
+    }
+}
+
+/// Which calls *through* a closure may keep a closure they are handed.
+///
+/// A yield lends its item, and a terminal that keeps one takes a reference of
+/// its own (`retain_borrowed_closures_handed_on`). That only works on a heap
+/// block. A closure literal yielded straight out of a sequence body —
+///
+/// ```text
+/// func pair() -> Sequence<func(i64) -> i64> {
+///     return |yield| { if !yield(|n| n + 5) { return } … }
+/// }
+/// pair().to_vec()
+/// ```
+///
+/// — was given a stack environment, because a call through a closure never
+/// counted as somewhere a closure could go. `to_vec` then retained a block with
+/// no header and pushed a pointer into a frame that was about to be popped.
+///
+/// The bodies a call reaches say whether they keep the argument. A body
+/// nobody can place might be one of the keepers, unless the program has no
+/// closure body that keeps a closure parameter at all, which is nearly every
+/// program: that is what keeps an ordinary `for x in seq` from allocating its
+/// yield.
+pub(crate) struct KeptThroughCalls {
+    targets: crate::closure_targets::ClosureTargets,
+    routes: HashMap<String, Vec<Route>>,
+    any_keeper: bool,
+}
+
+impl KeptThroughCalls {
+    pub(crate) fn build(fns: &[MirFunction]) -> Self {
+        let routes = build_param_routes(fns);
+        let bodies: HashSet<&str> = fns
+            .iter()
+            .flat_map(|f| f.blocks.iter().flat_map(|b| b.statements.iter()))
+            .filter_map(|stmt| match &stmt.kind {
+                MirStmtKind::ClosureCreate { func_name, .. } => Some(func_name.as_str()),
+                _ => None,
+            })
+            .collect();
+        let any_keeper = fns.iter().filter(|f| bodies.contains(f.name.as_str())).any(|f| {
+            f.params.iter().enumerate().skip(1).any(|(i, p)| {
+                matches!(p.ty, crate::MirType::FuncPtr(_))
+                    && routes.get(&f.name).and_then(|r| r.get(i)) == Some(&Route::Away)
+            })
+        });
+        Self { targets: crate::closure_targets::ClosureTargets::build_following_returns(fns), routes, any_keeper }
+    }
+
+    /// May `closure(args)` in `func` keep argument `i`?
+    fn keeps(&self, func: &str, closure: LocalId, i: usize) -> bool {
+        if !self.any_keeper {
+            return false;
+        }
+        match self.targets.known(func, closure) {
+            // Argument `i` is parameter `i + 1`, after the environment.
+            Some(bodies) => bodies.iter().any(|b| {
+                self.routes.get(b).and_then(|r| r.get(i + 1)).is_none_or(|r| *r == Route::Away)
+            }),
+            None => true,
+        }
     }
 }
 
@@ -225,12 +289,16 @@ fn retain_borrowed_closures_handed_on(
 /// frame that had already been popped. It read back whatever was left there:
 /// the right answer in a small program, a wrong one or a segfault in a real
 /// one (#1045).
-fn decide_allocation(func: &mut MirFunction, callee_escapes: &HashMap<String, Vec<bool>>) {
+fn decide_allocation(
+    func: &mut MirFunction,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+    kept: &KeptThroughCalls,
+) {
     let created = created_closures(func);
     if created.is_empty() {
         return;
     }
-    let escaping = find_escaping_closures(func, &created, callee_escapes);
+    let escaping = find_escaping_closures(func, &created, callee_escapes, kept);
 
     for block in &mut func.blocks {
         for stmt in &mut block.statements {
@@ -270,6 +338,7 @@ fn decide_allocation(func: &mut MirFunction, callee_escapes: &HashMap<String, Ve
 pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
     let callee_escapes = build_callee_escape_map(fns, true);
     let routes = build_param_routes(fns);
+    let kept = KeptThroughCalls::build(fns);
     let mut names = HashSet::new();
 
     for func in fns {
@@ -343,6 +412,16 @@ pub(crate) fn closures_handed_on(fns: &[MirFunction]) -> HashSet<String> {
                     | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
                     | MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. } => {
                         names.extend(name_of(*id));
+                    }
+                    // Kept by a body a call through a closure reaches: it
+                    // outlives the frame, so it can't point into it.
+                    MirStmtKind::ClosureCall { closure, args, .. } => {
+                        for (i, arg) in args.iter().enumerate() {
+                            let Some(id) = uses::operand_local(arg) else { continue };
+                            if kept.keeps(&func.name, *closure, i) {
+                                names.extend(name_of(id));
+                            }
+                        }
                     }
                     // An environment that goes with an escaping closure is as
                     // gone as the closure is.
@@ -936,6 +1015,7 @@ fn find_escaping_closures(
     func: &MirFunction,
     closure_locals: &HashMap<LocalId, bool>,
     callee_escapes: &HashMap<String, Vec<bool>>,
+    kept: &KeptThroughCalls,
 ) -> HashSet<LocalId> {
     // Lowering routinely copies the `ClosureCreate` result on before returning
     // it, so reading only the original destination missed the escape. Every
@@ -969,6 +1049,14 @@ fn find_escaping_closures(
                                     escaping.insert(origin);
                                 }
                             }
+                        }
+                    }
+                }
+                MirStmtKind::ClosureCall { closure, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg) else { continue };
+                        if aliases.holds_closure(&id) && kept.keeps(&func.name, *closure, i) {
+                            escaping.extend(aliases.origins(&id).iter().copied());
                         }
                     }
                 }

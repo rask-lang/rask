@@ -103,3 +103,43 @@ test "a closure found in a sequence, spawned" {
         assert spawn(f).join()! == 4
     }
 }
+
+// A closure literal yielded straight out of a sequence body is fresh, but the
+// frame that built it ends when the body returns. It used to get a stack
+// environment, because a call through a closure never counted as somewhere a
+// closure could go, so `to_vec` took a reference on a block with no header
+// and kept a pointer into a popped frame (SIGSEGV). A call through a closure
+// that may keep its argument now puts the literal on the heap.
+
+func pair() -> Sequence<func(i64) -> i64> {
+    let k = 40
+    return |yield| {
+        if !yield(|n| { return n + 5 }) { return }
+        if !yield(|n| { return n + k }) { return }
+    }
+}
+
+test "closure literals yielded by a sequence, collected" {
+    let collected = pair().to_vec()
+    assert collected.len() == 2
+    assert collected[0](2) == 7
+    assert collected[1](2) == 42
+}
+
+test "yielded literals through an adapter, collected and spawned" {
+    using Multitasking {
+        let fs = pair().take(5).to_vec()
+        assert fs.len() == 2
+        let g = fs[1]
+        assert spawn(|| g(2)).join()! == 42
+    }
+}
+
+test "a for loop over yielded closures still writes back" {
+    mut n = 0
+    for f in pair() {
+        let g: func(i64) -> i64 = f
+        n += g(1)
+    }
+    assert n == 47
+}
