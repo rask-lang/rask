@@ -501,6 +501,20 @@ pub enum OwnershipErrorKind {
         /// The transitively-linear type that would be dropped.
         type_name: String,
     },
+
+    /// mem.linear/L1–L2 per instantiation (#1366): a generic body that is fine
+    /// for an ordinary `T` drops or reuses one, and this call makes `T` linear.
+    /// Reported at the call, since the call is what made it wrong.
+    #[error("`{}` can't be called with {type_args}: {inner}", chain.last().map(String::as_str).unwrap_or("?"))]
+    LinearInGenericInstance {
+        /// Generic functions from the call down to the one with the problem.
+        chain: Vec<String>,
+        /// `T = Conn`.
+        type_args: String,
+        /// What re-checking the body found, and where in the body.
+        inner: Box<OwnershipErrorKind>,
+        inner_span: Span,
+    },
 }
 
 /// How a link escapes its rack's scope. Drives the E0379 copy.

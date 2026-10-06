@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A generic that consumes or returns its `T` still takes a resource (#1366).
+//
+// Generic bodies are now checked again for each linear type argument, so a
+// `forget<T>` that drops its `T` is rejected when called with one. This is the
+// other half: bodies that do right by a linear `T` keep compiling, including
+// one that matches the value out of a generic enum and consumes it.
+
+@resource
+struct Conn {
+    id: i64
+}
+
+extend Conn {
+    func close(take self) -> i64 {
+        return self.id
+    }
+}
+
+enum Slot<T> {
+    Empty
+    Full(T)
+}
+
+func keep<T>(take x: T) -> T {
+    return x
+}
+
+func pass_through<T>(take x: T) -> T {
+    return keep(x)
+}
+
+func fill<T>(take x: T) -> Slot<T> {
+    return Slot.Full(x)
+}
+
+func close_slot(take s: Slot<Conn>) -> i64 {
+    match s {
+        Slot.Empty => {
+            return 0
+        }
+        Slot.Full(c) => {
+            return c.close()
+        }
+    }
+}
+
+test "a generic returning its T hands the resource back" {
+    let c = keep(Conn { id: 1 })
+    assert c.close() == 1
+}
+
+test "a chain of generics that pass the T along" {
+    let c = pass_through(Conn { id: 2 })
+    assert c.close() == 2
+}
+
+test "a resource through a generic enum, consumed at the match" {
+    let s = fill(Conn { id: 3 })
+    assert close_slot(s) == 3
+}
+
+test "the same generics with an ordinary type" {
+    assert keep(5) == 5
+    assert pass_through("x") == "x"
+}

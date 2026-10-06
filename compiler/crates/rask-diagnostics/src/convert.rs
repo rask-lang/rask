@@ -3458,6 +3458,39 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            LinearInGenericInstance { chain, type_args, inner, inner_span } => {
+                let func = chain.last().map(String::as_str).unwrap_or("?");
+                let what = match inner.as_ref() {
+                    ResourceNotConsumed { name }
+                    | ResourceNotConsumedOpaque { name, .. }
+                    | OwnedNotConsumed { name } => format!("drops `{}` without consuming it", name),
+                    LinearWildcardDiscard { .. } | ResourceDiscardedAsStatement { .. } => {
+                        "throws a value away with `_`".to_string()
+                    }
+                    ResourceAlreadyConsumed { name, .. }
+                    | UseAfterMove { name, .. }
+                    | UseAfterMaybeMove { name, .. } => format!("uses `{}` after giving it away", name),
+                    _ => "does something to it a linear value can't take".to_string(),
+                };
+                let via = if chain.len() > 1 {
+                    format!(" (reached through {})", chain.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(" → "))
+                } else {
+                    String::new()
+                };
+                Diagnostic::error(format!(
+                    "`{}` {} — with {} that's a linear value",
+                    func, what, type_args
+                ))
+                .with_code("E0904")
+                .with_primary(self.span, format!("this call makes it {}{}", type_args, via))
+                .with_secondary(*inner_span, format!("here, in `{}`: {}", func, inner))
+                .with_fix(format!(
+                    "consume it in `{}` on every path (pass it to a `take` parameter, call its consuming method, or return it), or don't pass a linear value here",
+                    func
+                ))
+                .with_why("a generic body is checked again for each type it's called with, and a linear value must be consumed exactly once. Fine for an ordinary `T`, this body isn't for that one [mem.linear/L1, L2, type.generics/G6]")
+            }
+
             SmallInstantiationTooBig { type_name, base_name, size, offending_field } => {
                 let label = match offending_field {
                     Some((field, field_size, field_ty)) => format!(

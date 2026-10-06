@@ -67,6 +67,8 @@ struct ForMutateInfo {
 pub struct OwnershipChecker<'a> {
     /// The typed program from type checking.
     program: &'a TypedProgram,
+    /// Set while a generic body is re-checked for one linear instantiation.
+    instance: Option<&'a Instance>,
     /// State of each binding (owned, moved, borrowed).
     /// Key is the binding name (since we don't have SymbolId in scope).
     bindings: HashMap<String, BindingState>,
@@ -261,6 +263,31 @@ pub struct OwnershipChecker<'a> {
     errors: Vec<OwnershipError>,
 }
 
+/// One generic function at one set of type arguments, re-checked because an
+/// argument is linear (#1366).
+///
+/// The generic body was checked once with `T` standing for nothing in
+/// particular, and a type parameter is never linear, so `func forget<T>(take
+/// x: T) {}` passed and dropped whatever `Conn` it was handed. The spec checks
+/// generics per usage with concrete types (`type.generics`, code
+/// specialization), so the body is walked again with `T` read as `Conn`.
+struct Instance {
+    /// Type parameter name to the concrete type it stands for.
+    subst: HashMap<String, Type>,
+    /// The body's expression types with `subst` applied, where that changed them.
+    node_types: HashMap<rask_ast::NodeId, Type>,
+}
+
+/// A generic instantiation waiting to be re-checked.
+struct InstanceJob<'d> {
+    func: &'d FnDecl,
+    subst: HashMap<String, Type>,
+    /// The call in concrete code the instantiation was reached from.
+    call_span: Span,
+    /// Generic functions from that call down to this one, outermost first.
+    chain: Vec<String>,
+}
+
 /// A value a container lent out, carried from wherever the walk found it to
 /// the `return` that hands it on.
 #[derive(Debug, Clone)]
@@ -297,6 +324,7 @@ impl<'a> OwnershipChecker<'a> {
     pub fn new(program: &'a TypedProgram) -> Self {
         Self {
             program,
+            instance: None,
             bindings: HashMap::new(),
             binding_types: HashMap::new(),
             borrows: Vec::new(),
@@ -348,6 +376,27 @@ impl<'a> OwnershipChecker<'a> {
             method_deleting: HashMap::new(),
             errors: Vec::new(),
         }
+    }
+
+    /// The checked type of an expression, read through the instance being
+    /// re-checked when there is one.
+    fn node_ty(&self, id: &rask_ast::NodeId) -> Option<&'a Type> {
+        let program: &'a TypedProgram = self.program;
+        if let Some(inst) = self.instance {
+            if let Some(t) = inst.node_types.get(id) {
+                return Some(t);
+            }
+        }
+        program.node_types.get(id)
+    }
+
+    /// A written type that names a parameter of the instance being re-checked.
+    fn instance_type(&self, ty: &TypeExpr) -> Option<&'a Type> {
+        let inst = self.instance?;
+        if !ty.args().is_empty() {
+            return None;
+        }
+        inst.subst.get(ty.bare_name()?)
     }
 
     /// Run ownership analysis on all declarations.
@@ -421,6 +470,7 @@ impl<'a> OwnershipChecker<'a> {
         }
         self.check_size_fences(decls);
         self.check_generic_size_fences(decls);
+        self.check_linear_instantiations(decls);
         OwnershipResult {
             errors: self.errors,
             escaping_closures: self.escaping_closures,
@@ -575,6 +625,143 @@ impl<'a> OwnershipChecker<'a> {
                 span: decl_span,
             });
         }
+    }
+
+    /// #1366: walk each generic function again for every set of type
+    /// arguments that includes a linear one, and report what that walk finds
+    /// at the call that asked for it.
+    ///
+    /// Once per `(function, type arguments)`. A generic calling another generic
+    /// passes the obligation on, so the inner call is queued with the outer
+    /// substitution applied and still blamed on the outer call.
+    fn check_linear_instantiations(&mut self, decls: &[Decl]) {
+        let generic_fns: HashMap<&str, &FnDecl> = decls
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DeclKind::Fn(f) if !f.type_params.is_empty() => Some((f.name.as_str(), f)),
+                _ => None,
+            })
+            .collect();
+        if generic_fns.is_empty() {
+            return;
+        }
+
+        let mut queue: std::collections::VecDeque<InstanceJob> = std::collections::VecDeque::new();
+        for decl in decls {
+            for stmt in decl_body(decl) {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if let Some(job) = self.linear_instance_at(e, &generic_fns, &HashMap::new(), None) {
+                        queue.push_back(job);
+                    }
+                });
+            }
+        }
+
+        let mut seen: HashSet<(String, String)> = HashSet::new();
+        while let Some(job) = queue.pop_front() {
+            if !seen.insert((job.func.name.clone(), render_subst(&job.subst, self.program))) {
+                continue;
+            }
+            for err in self.instance_errors(job.func, &job.subst) {
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::LinearInGenericInstance {
+                        chain: job.chain.clone(),
+                        type_args: render_subst(&job.subst, self.program),
+                        inner_span: err.span,
+                        inner: Box::new(err.kind),
+                    },
+                    span: job.call_span,
+                });
+            }
+            for stmt in &job.func.body {
+                rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                    if let Some(inner) = self.linear_instance_at(e, &generic_fns, &job.subst, Some(&job)) {
+                        queue.push_back(inner);
+                    }
+                });
+            }
+        }
+    }
+
+    /// A call to a program generic with a linear type argument, once `outer`
+    /// (the caller's own substitution, if it is a generic being re-checked) is
+    /// applied.
+    fn linear_instance_at<'d>(
+        &self,
+        e: &Expr,
+        generic_fns: &HashMap<&str, &'d FnDecl>,
+        outer: &HashMap<String, Type>,
+        from: Option<&InstanceJob>,
+    ) -> Option<InstanceJob<'d>> {
+        if !matches!(e.kind, ExprKind::Call { .. }) {
+            return None;
+        }
+        let rask_types::Callee::Free(sym) = self.program.call_targets.get(&e.id)? else {
+            return None;
+        };
+        let name = &self.program.symbols.get(*sym)?.name;
+        let func = *generic_fns.get(name.as_str())?;
+        let bindings = self.program.call_type_args.get(&e.id)?;
+        let subst: HashMap<String, Type> = bindings
+            .iter()
+            .map(|b| (b.param.clone(), rask_types::substitute_type(&b.ty, outer)))
+            .collect();
+        if !subst.values().any(|t| self.program.types.is_linear_value(t)) {
+            return None;
+        }
+        let (call_span, chain) = match from {
+            Some(job) => {
+                let mut chain = job.chain.clone();
+                chain.push(func.name.clone());
+                (job.call_span, chain)
+            }
+            None => (e.span, vec![func.name.clone()]),
+        };
+        Some(InstanceJob { func, subst, call_span, chain })
+    }
+
+    /// What re-checking `func` at `subst` finds that checking it generically
+    /// didn't.
+    fn instance_errors(&self, func: &FnDecl, subst: &HashMap<String, Type>) -> Vec<OwnershipError> {
+        let mut node_types = HashMap::new();
+        for stmt in &func.body {
+            rask_ast::visit::walk_stmt(stmt, &mut |e| {
+                if let Some(t) = self.program.node_types.get(&e.id) {
+                    let concrete = rask_types::substitute_type(t, subst);
+                    if concrete != *t {
+                        node_types.insert(e.id, concrete);
+                    }
+                }
+            });
+        }
+        let inst = Instance { subst: subst.clone(), node_types };
+        let generic = self.walk_alone(func, None);
+        let concrete = self.walk_alone(func, Some(&inst));
+        concrete
+            .into_iter()
+            .filter(|c| {
+                !generic
+                    .iter()
+                    .any(|g| g.span == c.span && g.kind.to_string() == c.kind.to_string())
+            })
+            .collect()
+    }
+
+    /// One function body, walked by a checker of its own that shares this
+    /// one's signatures.
+    fn walk_alone<'b>(&self, func: &FnDecl, inst: Option<&'b Instance>) -> Vec<OwnershipError>
+    where
+        'a: 'b,
+    {
+        let mut c: OwnershipChecker<'b> = OwnershipChecker::new(self.program);
+        c.instance = inst;
+        c.fn_take_params = self.fn_take_params.clone();
+        c.fn_deleting_params = self.fn_deleting_params.clone();
+        c.method_deleting = self.method_deleting.clone();
+        c.module_consts = self.module_consts.clone();
+        c.escaping_closures = self.escaping_closures.clone();
+        c.check_fn(func, &[]);
+        c.errors
     }
 
     fn check_decl(&mut self, decl: &Decl) {
@@ -1048,7 +1235,7 @@ impl<'a> OwnershipChecker<'a> {
         if !matches!(init.kind, ExprKind::Index { .. }) {
             return;
         }
-        let Some(ty) = self.program.node_types.get(&init.id).cloned() else {
+        let Some(ty) = self.node_ty(&init.id).cloned() else {
             return;
         };
         if !self.definitely_not_copy(&ty) {
@@ -1088,7 +1275,7 @@ impl<'a> OwnershipChecker<'a> {
         if fields.is_empty() || !self.names_a_value(&root) {
             return;
         }
-        let Some(ty) = self.program.node_types.get(&init.id).cloned() else {
+        let Some(ty) = self.node_ty(&init.id).cloned() else {
             return;
         };
         if !self.definitely_not_copy(&ty) {
@@ -1153,7 +1340,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 self.record_lent_binding(name, init);
-                if let Some(t) = self.program.node_types.get(&init.id).cloned() {
+                if let Some(t) = self.node_ty(&init.id).cloned() {
                     self.record_link_provenance(name, &t, init);
                     self.binding_types.insert(name.clone(), t);
                 }
@@ -1176,7 +1363,7 @@ impl<'a> OwnershipChecker<'a> {
                     && (ty.as_ref().is_some_and(|t| self.is_resource_type_name(t))
                         || self.expr_is_resource_type(init))
                 {
-                    let value_ty = self.program.node_types.get(&init.id).cloned();
+                    let value_ty = self.node_ty(&init.id).cloned();
                     self.register_resource_binding(name, value_ty.as_ref());
                 }
                 self.track_owned_binding(name, init);
@@ -1185,7 +1372,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(init);
                 self.handle_assignment(init, stmt.span, true);
                 let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
-                let elem_types = match self.program.node_types.get(&init.id) {
+                let elem_types = match self.node_ty(&init.id) {
                     Some(Type::Tuple(elems)) => Some(elems.clone()),
                     _ => None,
                 };
@@ -1209,7 +1396,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 self.record_lent_binding(name, init);
-                if let Some(t) = self.program.node_types.get(&init.id).cloned() {
+                if let Some(t) = self.node_ty(&init.id).cloned() {
                     self.binding_types.insert(name.clone(), t.clone());
                     self.record_link_provenance(name, &t, init);
                     // SL1: Only a projection (field/index) borrow creates a borrow view.
@@ -1238,7 +1425,7 @@ impl<'a> OwnershipChecker<'a> {
                     && (ty.as_ref().is_some_and(|t| self.is_resource_type_name(t))
                         || self.expr_is_resource_type(init))
                 {
-                    let value_ty = self.program.node_types.get(&init.id).cloned();
+                    let value_ty = self.node_ty(&init.id).cloned();
                     self.register_resource_binding(name, value_ty.as_ref());
                 }
                 self.track_owned_binding(name, init);
@@ -1278,7 +1465,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(init);
                 self.handle_assignment(init, stmt.span, false);
                 let names = rask_ast::stmt::tuple_pats_flat_names(patterns);
-                let elem_types = match self.program.node_types.get(&init.id) {
+                let elem_types = match self.node_ty(&init.id) {
                     Some(Type::Tuple(elems)) => Some(elems.clone()),
                     _ => None,
                 };
@@ -1304,7 +1491,7 @@ impl<'a> OwnershipChecker<'a> {
                 // already tracks; flagging it here too would double-report
                 // the same leak.
                 if !matches!(expr.kind, ExprKind::Ident(_)) && self.expr_is_resource_type(expr) {
-                    let type_name = self.program.node_types.get(&expr.id)
+                    let type_name = self.node_ty(&expr.id)
                         .map(|ty| self.resource_type_display(ty))
                         .unwrap_or_else(|| "?".to_string());
                     self.errors.push(OwnershipError {
@@ -1353,9 +1540,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
                 let link_into_field = !reinit_target
                     && self
-                        .program
-                        .node_types
-                        .get(&value.id)
+                        .node_ty(&value.id)
                         .cloned()
                         .is_some_and(|ty| self.is_link_type(&ty));
                 if !link_into_field {
@@ -1501,7 +1686,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::WhileLet { label, pattern, expr, body } => {
                 self.check_expr(expr);
-                let scrutinee_ty = self.program.node_types.get(&expr.id).cloned();
+                let scrutinee_ty = self.node_ty(&expr.id).cloned();
                 let saved_parts = self.borrowed_parts.clone();
                 let lender = self.borrowed_source(expr);
                 self.register_pattern_bindings_typed(
@@ -1536,9 +1721,7 @@ impl<'a> OwnershipChecker<'a> {
                     // untyped name.
                     if let ForBinding::Single(name) = binding {
                         if let Some(ty) = self
-                            .program
-                            .node_types
-                            .get(&iter.id)
+                            .node_ty(&iter.id)
                             .and_then(|t| Self::sequence_element(t))
                         {
                             self.binding_types.insert(name.clone(), ty);
@@ -1645,7 +1828,7 @@ impl<'a> OwnershipChecker<'a> {
                             let reason = if self.owned_bindings.contains(name) {
                                 MoveReason::Owned
                             } else {
-                                self.program.node_types.get(&expr.id)
+                                self.node_ty(&expr.id)
                                     .map(|ty| self.move_reason_at(ty, *at))
                                     .unwrap_or_else(|| self.move_reason_for_at(name, *at))
                             };
@@ -1666,7 +1849,7 @@ impl<'a> OwnershipChecker<'a> {
                             let reason = if self.owned_bindings.contains(name) {
                                 MoveReason::Owned
                             } else {
-                                self.program.node_types.get(&expr.id)
+                                self.node_ty(&expr.id)
                                     .map(|ty| self.move_reason_at(ty, *at))
                                     .unwrap_or_else(|| self.move_reason_for_at(name, *at))
                             };
@@ -2219,7 +2402,7 @@ impl<'a> OwnershipChecker<'a> {
                 // `x: i64` read as a move: the next `pair.push(x * 2)` was
                 // rejected as a use after move.
                 if let Some(Type::Fn { params: param_tys, .. }) =
-                    self.program.node_types.get(&expr.id).cloned()
+                    self.node_ty(&expr.id).cloned()
                 {
                     for (p, ty) in params.iter().zip(param_tys.iter()) {
                         self.binding_types.insert(p.name.clone(), ty.clone());
@@ -2316,7 +2499,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch, else_binding: _ } => {
                 self.check_expr(scrutinee);
                 let pre_branch = self.bindings.clone();
-                let scrutinee_ty = self.program.node_types.get(&scrutinee.id).cloned();
+                let scrutinee_ty = self.node_ty(&scrutinee.id).cloned();
                 let saved_parts = self.borrowed_parts.clone();
                 let lender = self.borrowed_source(scrutinee);
                 self.register_pattern_bindings_typed(
@@ -2354,7 +2537,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Match { scrutinee, arms } => {
                 self.check_scrutinee(scrutinee);
-                let scrutinee_ty = self.program.node_types.get(&scrutinee.id).cloned();
+                let scrutinee_ty = self.node_ty(&scrutinee.id).cloned();
                 // L5: matching destructures the scrutinee. For a non-Copy
                 // owned binding, ownership transfers into the arms — the
                 // arm patterns receive the parts. Mark the scrutinee Moved
@@ -2439,7 +2622,7 @@ impl<'a> OwnershipChecker<'a> {
                 // registered — but the *type* was missing, so anything reasoning
                 // about what `v` is saw nothing.
                 if let Some(name) = binding {
-                    if let Some(ty) = self.program.node_types.get(&inner.id).cloned() {
+                    if let Some(ty) = self.node_ty(&inner.id).cloned() {
                         let narrowed = ty.as_option().cloned().unwrap_or(ty);
                         self.bindings.insert(name.clone(), BindingState::Owned);
                         if self.type_is_resource(&narrowed) {
@@ -2758,7 +2941,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// The rack behind an expression whose *own* type is a link.
     fn link_carrying_expr_root(&self, expr: &Expr) -> Option<String> {
-        let ty = self.program.node_types.get(&expr.id)?;
+        let ty = self.node_ty(&expr.id)?;
         if !self.is_link_type(ty) {
             return None;
         }
@@ -2889,7 +3072,7 @@ impl<'a> OwnershipChecker<'a> {
         let rack = match via_container {
             Some(rack) => rack,
             None => {
-                let Some(ty) = self.program.node_types.get(&expr.id) else { return };
+                let Some(ty) = self.node_ty(&expr.id) else { return };
                 if !self.is_link_type(ty) {
                     return;
                 }
@@ -2961,9 +3144,7 @@ impl<'a> OwnershipChecker<'a> {
     /// distinct nodes and survive.
     fn kill_derived_links_into_rack(&mut self, rack: &Expr, span: Span) {
         let elem = self
-            .program
-            .node_types
-            .get(&rack.id)
+            .node_ty(&rack.id)
             .and_then(|ty| self.elem_key(ty));
         let dead: Vec<String> = self
             .binding_types
@@ -2993,18 +3174,14 @@ impl<'a> OwnershipChecker<'a> {
                 && self.receiver_type_name(object).as_deref() == Some("Rack")
             {
                 return Some(
-                    self.program
-                        .node_types
-                        .get(&object.id)
+                    self.node_ty(&object.id)
                         .and_then(|ty| self.elem_key(ty)),
                 );
             }
         }
         if self.receiver_type_name(iter).as_deref() == Some("Rack") {
             return Some(
-                self.program
-                    .node_types
-                    .get(&iter.id)
+                self.node_ty(&iter.id)
                     .and_then(|ty| self.elem_key(ty)),
             );
         }
@@ -3212,9 +3389,7 @@ impl<'a> OwnershipChecker<'a> {
     /// came from, so two racks of the same node type kill each other's locals.
     fn kill_links_into_rack(&mut self, rack: &Expr, span: Span) {
         let elem = self
-            .program
-            .node_types
-            .get(&rack.id)
+            .node_ty(&rack.id)
             .and_then(|ty| self.elem_key(ty));
         let dead: Vec<String> = self
             .binding_types
@@ -3235,7 +3410,7 @@ impl<'a> OwnershipChecker<'a> {
     }
 
     fn handle_assignment(&mut self, expr: &Expr, span: Span, is_mutable: bool) {
-        if let Some(ty) = self.program.node_types.get(&expr.id) {
+        if let Some(ty) = self.node_ty(&expr.id) {
             // Copy types: both source and target remain valid (VS1/VS2). An
             // `Owned` box is never one of them however small its payload — there
             // is one owner, and moving it hands that over (#819).
@@ -3391,12 +3566,12 @@ impl<'a> OwnershipChecker<'a> {
     fn lent_value(&self, expr: &Expr) -> Option<LentValue> {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
-                let recv = self.program.node_types.get(&object.id)?;
+                let recv = self.node_ty(&object.id)?;
                 let head = self.type_name_of(recv)?;
                 let (_, _, clone_form) = Self::LENDING_METHODS
                     .iter()
                     .find(|(t, m, _)| *t == head && m == method)?;
-                let ty = self.program.node_types.get(&expr.id)?;
+                let ty = self.node_ty(&expr.id)?;
                 if !self.lendable_payload(ty) {
                     return None;
                 }
@@ -3414,12 +3589,12 @@ impl<'a> OwnershipChecker<'a> {
             // `rows[0]` is the same read `rows.get(0)` is, minus the `T?`.
             // Binding one is already E0871; this is the return.
             ExprKind::Index { object, .. } => {
-                let recv = self.program.node_types.get(&object.id)?;
+                let recv = self.node_ty(&object.id)?;
                 let head = self.type_name_of(recv)?;
                 if !matches!(head.as_str(), "Vec" | "Map") {
                     return None;
                 }
-                let ty = self.program.node_types.get(&expr.id)?;
+                let ty = self.node_ty(&expr.id)?;
                 if !self.lendable_payload(ty) {
                     return None;
                 }
@@ -3540,7 +3715,7 @@ impl<'a> OwnershipChecker<'a> {
         if fields.is_empty() || !self.names_a_value(&root) {
             return;
         }
-        let Some(ty) = self.program.node_types.get(&arg.expr.id).cloned() else { return };
+        let Some(ty) = self.node_ty(&arg.expr.id).cloned() else { return };
         self.errors.push(OwnershipError {
             kind: OwnershipErrorKind::DropOfAnOwnedField {
                 path: format!("{}.{}", root, fields.join(".")),
@@ -3599,7 +3774,7 @@ impl<'a> OwnershipChecker<'a> {
         let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(&root) else {
             return;
         };
-        let Some(ty) = self.program.node_types.get(&expr.id).cloned() else {
+        let Some(ty) = self.node_ty(&expr.id).cloned() else {
             return;
         };
         if !self.definitely_not_copy(&ty) {
@@ -3758,6 +3933,9 @@ impl<'a> OwnershipChecker<'a> {
     /// plain named types, and a generic spelling reduced to its base name;
     /// anything else returns None (treated as non-Copy, the safe default).
     fn type_from_name(&self, ty: &TypeExpr) -> Option<Type> {
+        if let Some(t) = self.instance_type(ty) {
+            return Some(t.clone());
+        }
         // `Handle<Item>` has to reach `is_copy`, which answers by base name for
         // `Link` and stays conservative for every other container.
         // Returning None here made a captured `n: Handle<Item>` parameter look
@@ -3962,6 +4140,17 @@ impl<'a> OwnershipChecker<'a> {
     /// Resolve a scrutinee `Type` to a struct's `(name, type)` field list, if
     /// the type names a struct (or a `Generic` whose base is a struct).
     fn struct_fields_for_type(&self, ty: &Type) -> Option<Vec<(String, Type)>> {
+        if let Type::Generic { base, args } = ty {
+            let subst = self.def_args_subst(*base, args);
+            if let Some(rask_types::TypeDef::Struct { fields, .. }) = self.program.types.get(*base) {
+                return Some(
+                    fields
+                        .iter()
+                        .map(|(n, t)| (n.clone(), rask_types::substitute_type(t, &subst)))
+                        .collect(),
+                );
+            }
+        }
         let id = match ty {
             Type::Named(id) => *id,
             Type::Generic { base, .. } => *base,
@@ -3997,14 +4186,23 @@ impl<'a> OwnershipChecker<'a> {
             None => (None, ctor.to_string()),
         };
 
-        // Qualified: jump straight to the named enum.
+        // Qualified: jump straight to the named enum — through the scrutinee
+        // when it is that enum, so its type arguments come along.
         if let Some(name) = &enum_name {
+            if let Type::Generic { base, args } = scrutinee_ty {
+                if self.program.types.get_type_id(name) == Some(*base) {
+                    return self.generic_variant_payload(*base, args, &variant_name);
+                }
+            }
             return self.variant_payload_by_enum(name, &variant_name);
         }
 
         match scrutinee_ty {
             Type::Named(id) => self.variant_payload_in_def(*id, &variant_name),
-            Type::Generic { base, .. } => self.variant_payload_in_def(*base, &variant_name),
+            // The payload as this instantiation has it: `Box2<Conn>.Some2(x)`
+            // binds a `Conn`, not a `T`. Read off the declaration, `x` was
+            // never linear and dropping it went unreported (#1366).
+            Type::Generic { base, args } => self.generic_variant_payload(*base, args, &variant_name),
             Type::Result { ok, err } => self
                 .variant_payload_for(ok, &variant_name)
                 .or_else(|| self.variant_payload_for(err, &variant_name)),
@@ -4018,6 +4216,34 @@ impl<'a> OwnershipChecker<'a> {
             }
             _ => None,
         }
+    }
+
+    fn generic_variant_payload(
+        &self,
+        base: rask_types::TypeId,
+        args: &[rask_types::GenericArg],
+        variant: &str,
+    ) -> Option<Vec<Type>> {
+        let subst = self.def_args_subst(base, args);
+        self.variant_payload_in_def(base, variant)
+            .map(|ts| ts.iter().map(|t| rask_types::substitute_type(t, &subst)).collect())
+    }
+
+    /// A generic declaration's parameters bound to the arguments a type gives them.
+    fn def_args_subst(&self, id: rask_types::TypeId, args: &[rask_types::GenericArg]) -> HashMap<String, Type> {
+        let params = match self.program.types.get(id) {
+            Some(rask_types::TypeDef::Enum { type_params, .. })
+            | Some(rask_types::TypeDef::Struct { type_params, .. }) => type_params,
+            _ => return HashMap::new(),
+        };
+        params
+            .iter()
+            .zip(args)
+            .filter_map(|(p, a)| match a {
+                rask_types::GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     fn variant_payload_in_def(&self, id: rask_types::TypeId, variant: &str) -> Option<Vec<Type>> {
@@ -5305,7 +5531,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// How a method takes its receiver, looked up from the receiver's type.
     fn self_param_of(&self, object: &Expr, method_name: &str) -> Option<rask_types::SelfParam> {
-        if let Some(ty) = self.program.node_types.get(&object.id) {
+        if let Some(ty) = self.node_ty(&object.id) {
             let type_id = match ty {
                 Type::Named(id) => Some(*id),
                 Type::Generic { base, .. } => Some(*base),
@@ -5356,7 +5582,7 @@ impl<'a> OwnershipChecker<'a> {
             let ty = self
                 .binding_types
                 .get(name)
-                .or_else(|| self.program.node_types.get(&arg_expr.id));
+                .or_else(|| self.node_ty(&arg_expr.id));
             let is_copy = !self.owned_bindings.contains(name)
                 && ty.map(|t| self.is_copy(t)).unwrap_or(false);
             if !is_copy {
@@ -5698,7 +5924,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Does this call's result hold a closure, and so a borrow worth tracking?
     fn call_answers_a_closure(&self, call_id: rask_ast::NodeId) -> bool {
-        let Some(ty) = self.program.node_types.get(&call_id) else { return false };
+        let Some(ty) = self.node_ty(&call_id) else { return false };
         return Self::type_is_callable(ty);
     }
 
@@ -5751,7 +5977,7 @@ impl<'a> OwnershipChecker<'a> {
     /// and a range yields integers.
     fn loop_lender(&self, iter: &Expr) -> Option<String> {
         let place = Self::place_text(iter)?;
-        let ty = self.program.node_types.get(&iter.id)?;
+        let ty = self.node_ty(&iter.id)?;
         let lends = match ty {
             Type::Array { .. } => true,
             Type::Generic { base, .. } => {
@@ -5846,7 +6072,7 @@ impl<'a> OwnershipChecker<'a> {
     /// (`Named`/`Generic`) and still-unresolved (`UnresolvedNamed`/
     /// `UnresolvedGeneric`) forms. Returns the base name without generic params.
     fn receiver_type_name(&self, object: &Expr) -> Option<String> {
-        let ty = self.program.node_types.get(&object.id)?;
+        let ty = self.node_ty(&object.id)?;
         let id = match ty {
             Type::Named(id) => *id,
             Type::Generic { base, .. } => *base,
@@ -5870,7 +6096,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Parameter modes of a user method on the receiver's type, if resolvable.
     fn method_param_modes(&self, object: &Expr, method_name: &str) -> Option<Vec<ParamMode>> {
-        let ty = self.program.node_types.get(&object.id)?;
+        let ty = self.node_ty(&object.id)?;
         let id = match ty {
             Type::Named(id) => *id,
             Type::Generic { base, .. } => *base,
@@ -5914,6 +6140,9 @@ impl<'a> OwnershipChecker<'a> {
     /// registered. `mut maybe: Conn? = Conn { … }` then dropped it with no
     /// diagnostic at all (#827).
     fn is_resource_type_name(&self, ty: &TypeExpr) -> bool {
+        if let Some(t) = self.instance_type(Self::strip_optional(ty)) {
+            return self.program.types.is_linear_value(t);
+        }
         let Some(base) = Self::strip_optional(ty).name() else { return false };
         if let Some(id) = self.program.types.get_type_id(&base) {
             return self.program.types.is_transitive_resource_by_id(id);
@@ -6035,7 +6264,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Whether an expression's inferred type is transitively linear.
     fn expr_is_resource_type(&self, expr: &Expr) -> bool {
-        if let Some(ty) = self.program.node_types.get(&expr.id) {
+        if let Some(ty) = self.node_ty(&expr.id) {
             if self.type_is_resource(ty) {
                 return true;
             }
@@ -6046,7 +6275,7 @@ impl<'a> OwnershipChecker<'a> {
         // A resource that arrives through a fallback is still a resource (#882).
         match &expr.kind {
             ExprKind::Catch { value, .. } => {
-                let Some(ty) = self.program.node_types.get(&value.id) else { return false };
+                let Some(ty) = self.node_ty(&value.id) else { return false };
                 match ty {
                     Type::Result { ok, .. } => self.type_is_resource(ok),
                     _ => self.type_is_resource(ty),
@@ -6335,9 +6564,7 @@ impl<'a> OwnershipChecker<'a> {
             return None;
         };
         let payload = self
-            .program
-            .node_types
-            .get(&inner.id)
+            .node_ty(&inner.id)
             .and_then(|ty| ty.as_option())?
             .clone();
         if !self.type_is_resource(&payload) {
@@ -6438,6 +6665,9 @@ impl<'a> OwnershipChecker<'a> {
     /// `resource_field_paths` needs, which `type_from_name` doesn't give for a
     /// declared struct (it answers `UnresolvedGeneric` for anything with `<`).
     fn declared_type_from_name(&self, ty: &TypeExpr) -> Option<Type> {
+        if let Some(t) = self.instance_type(Self::strip_optional(ty)) {
+            return Some(t.clone());
+        }
         let base = Self::strip_optional(ty).name()?;
         self.program.types.get_type_id(&base).map(Type::Named)
     }
@@ -6593,6 +6823,32 @@ pub fn check_ownership_with_stdlib(
 ) -> OwnershipResult {
     let checker = OwnershipChecker::new(program);
     checker.check_with_signatures(decls, stdlib_decls)
+}
+
+/// The statements of a declaration's bodies: a function's, each method's, a
+/// test's or a benchmark's.
+fn decl_body(decl: &Decl) -> Vec<&Stmt> {
+    match &decl.kind {
+        DeclKind::Fn(f) => f.body.iter().collect(),
+        DeclKind::Impl(i) => i.methods.iter().flat_map(|m| m.body.iter()).collect(),
+        DeclKind::Struct(s) => s.methods.iter().flat_map(|m| m.body.iter()).collect(),
+        DeclKind::Enum(e) => e.methods.iter().flat_map(|m| m.body.iter()).collect(),
+        DeclKind::Test(t) => t.body.iter().collect(),
+        DeclKind::Benchmark(b) => b.body.iter().collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `T = Conn, U = i64`, in parameter order by name so one instantiation always
+/// renders the same.
+fn render_subst(subst: &HashMap<String, Type>, program: &TypedProgram) -> String {
+    let mut pairs: Vec<(&String, &Type)> = subst.iter().collect();
+    pairs.sort_by(|a, b| a.0.cmp(b.0));
+    pairs
+        .iter()
+        .map(|(p, t)| format!("{} = {}", p, program.types.resolve_type_names(t)))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Every `Name<Args…>` reachable inside a type, including nested ones.
