@@ -800,11 +800,25 @@ impl<'a> MirLowerer<'a> {
                         // aggregate as a value copy and stores into the copy.
                         let (index_base, path) = Self::peel_field_path(target);
                         if let ExprKind::Index { object: coll, index: idx } = &index_base.kind {
-                            if self.is_vec_expr(coll) {
-                                // Reading `v[i]` copies the element (value
-                                // semantics for `let p = v[i]`), so a store into
-                                // that copy is lost. Read-modify-writeback, the
-                                // same path a `with vec[i] as item` binding uses.
+                            let map = if self.is_vec_expr(coll) {
+                                Some(false)
+                            } else if self.is_map_expr(coll) {
+                                Some(true)
+                            } else {
+                                None
+                            };
+                            if let Some(map) = map {
+                                // Reading `v[i]` or `m[k]` copies the element
+                                // (value semantics for `let p = v[i]`), so a
+                                // store into that copy is lost. Lend, write,
+                                // write back: the path a `with v[i] as item`
+                                // binding uses. A Map took the plain read and
+                                // dropped the write (#1440).
+                                let (lend, write_back) = if map {
+                                    ("Map_lend", "Map_write_back")
+                                } else {
+                                    ("Vec_lend", "Vec_write_back")
+                                };
                                 let elem_ty = self
                                     .ctx
                                     .lookup_raw_type(index_base.id)
@@ -817,7 +831,7 @@ impl<'a> MirLowerer<'a> {
                                         let tmp = self.builder.alloc_temp(elem_ty);
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                             dst: Some(tmp),
-                                            func: FunctionRef::internal("Vec_lend".to_string()),
+                                            func: FunctionRef::internal(lend.to_string()),
                                             args: vec![coll_op.clone(), idx_op.clone()],
                                         }));
                                         // The copy holds the element's own
@@ -840,7 +854,7 @@ impl<'a> MirLowerer<'a> {
                                         }));
                                         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                             dst: None,
-                                            func: FunctionRef::internal("Vec_write_back".to_string()),
+                                            func: FunctionRef::internal(write_back.to_string()),
                                             args: vec![coll_op, idx_op, MirOperand::Local(tmp)],
                                         }));
                                         return Ok(());
