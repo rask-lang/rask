@@ -9,6 +9,8 @@
 //!
 //! See `comp.clone-elision` spec for the full algorithm.
 
+use std::collections::HashSet;
+
 use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
 use crate::analysis::uses;
 use crate::analysis::dominators::DominatorTree;
@@ -26,10 +28,11 @@ const CLONE_NAMES: &[&str] = &[
     "sender_clone",
 ];
 
-/// Elide unnecessary clone calls across all functions.
-pub fn elide_clones(fns: &mut [MirFunction]) {
+/// Elide unnecessary clone calls across all functions. `own` is the program's
+/// own function names, for asking which calls hand back a view.
+pub fn elide_clones(fns: &mut [MirFunction], own: &HashSet<String>) {
     for func in fns.iter_mut() {
-        elide_clones_in_function(func);
+        elide_clones_with(func, own);
     }
 }
 
@@ -38,7 +41,12 @@ fn is_clone_call(name: &str) -> bool {
         || CLONE_SUFFIXES.iter().any(|s| name.ends_with(s))
 }
 
+#[cfg(test)]
 fn elide_clones_in_function(func: &mut MirFunction) {
+    elide_clones_with(func, &HashSet::new());
+}
+
+fn elide_clones_with(func: &mut MirFunction, own: &HashSet<String>) {
     // Collect clone sites: (block_idx, stmt_idx, dst_local, source_local)
     let clone_sites: Vec<(usize, usize, LocalId, LocalId)> = func.blocks.iter()
         .enumerate()
@@ -72,7 +80,7 @@ fn elide_clones_in_function(func: &mut MirFunction) {
         // last-use said "move" and the clone was dropped, leaving `y` and
         // `r.values` as one Vec: a `push` through either grew both. The temp
         // dying says nothing about the struct that still holds the field.
-        if source_is_a_projection(func, *source) {
+        if source_is_a_projection(func, *source, own) {
             continue;
         }
         if is_last_use_with_liveness(func, *block_idx, *stmt_idx, *source, &live) {
@@ -96,12 +104,20 @@ fn elide_clones_in_function(func: &mut MirFunction) {
 ///
 /// A local assigned more than once is treated as a projection if any assignment
 /// is one: elision has to hold on every path.
-fn source_is_a_projection(func: &MirFunction, source: LocalId) -> bool {
+///
+/// A call that lends counts too: `items[i]` on a `Vec` is `Vec_get_unchecked`,
+/// whose result points into the vector's buffer. `dst.push(items[i].clone())`
+/// read as a last use of that temp, the clone became a move, and `dst` and
+/// `items` owned one inner vector between them — a double free at exit.
+fn source_is_a_projection(func: &MirFunction, source: LocalId, own: &HashSet<String>) -> bool {
     func.blocks.iter().flat_map(|b| b.statements.iter()).any(|stmt| match &stmt.kind {
         MirStmtKind::Assign { dst, rvalue } if *dst == source => matches!(
             rvalue,
             MirRValue::Field { .. } | MirRValue::ArrayIndex { .. } | MirRValue::Deref(_)
         ),
+        MirStmtKind::Call { dst: Some(dst), func: fref, .. } if *dst == source => {
+            crate::own_names::returns_a_view(&fref.name, own)
+        }
         _ => false,
     })
 }

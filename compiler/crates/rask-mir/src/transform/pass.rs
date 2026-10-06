@@ -232,8 +232,8 @@ pub struct CloneElisionPass;
 
 impl MirPass for CloneElisionPass {
     fn name(&self) -> &str { "clone_elision" }
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
-        crate::elide_clones(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        crate::elide_clones(fns, &ctx.own_functions);
     }
 }
 
