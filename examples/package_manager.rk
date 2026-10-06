@@ -481,21 +481,48 @@ func json_str_field(m: Map<string, JsonValue>, key: string) -> string? {
     return none
 }
 
-// Pull an array field out of a JSON object map. none if missing or not an array.
-func json_arr_field(m: Map<string, JsonValue>, key: string) -> Vec<JsonValue>? {
-    if m.get(key)? as v {
-        return v.as_array()
+// One `{"name": …, "constraint": …}` dependency entry. none if a field is
+// missing or the constraint doesn't parse.
+func parse_dep(entry: JsonValue) -> Dependency? {
+    if entry is Object(d) {
+        let dn = json_str_field(d, "name") ?? ""
+        let dc = json_str_field(d, "constraint") ?? ""
+        if dn.is_empty() || dc.is_empty() { return none }
+        let constraint = Constraint.parse(dc) is Constraint as c else {
+            return none
+        }
+        return Dependency { name: dn, constraint }
     }
     return none
 }
 
-// Shared JSON→PackageMeta extraction — used by both local and HTTP registries.
-// Takes the parsed JSON object value, avoiding type duplication.
-func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or RegistryError {
-    let m = obj.as_object() ?? {
-        return RegistryError.IoError("expected object in {source}")
+// The `deps` array. Entries that aren't a well-formed dependency are skipped.
+//
+// WORKAROUND (#1427): a function of its own, with a typed parameter, because
+// a `for` over a payload matched under `m.get(k)? as v` doesn't lower natively
+// yet. Inline it into `parse_meta_fields` once that's fixed.
+func parse_deps(deps_val: JsonValue) -> Vec<Dependency> {
+    mut deps = Vec.new()
+    if deps_val is Array(entries) {
+        for entry in entries {
+            if parse_dep(entry)? as dep {
+                deps.push(dep)
+            }
+        }
     }
+    return deps
+}
 
+// Shared JSON→PackageMeta extraction — used by both local and HTTP registries.
+// Reads the parsed value in place, so it stays the caller's.
+func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or RegistryError {
+    if obj is Object(m) {
+        return parse_meta_fields(m, source)
+    }
+    return RegistryError.IoError("expected object in {source}")
+}
+
+func parse_meta_fields(m: Map<string, JsonValue>, source: string) -> PackageMeta or RegistryError {
     let name = json_str_field(m, "name") ?? {
         return RegistryError.IoError("missing 'name' in {source}")
     }
@@ -508,19 +535,8 @@ func parse_meta_from_json(obj: JsonValue, source: string) -> PackageMeta or Regi
     }
 
     mut deps = Vec.new()
-    if json_arr_field(m, "deps")? as dep_arr {
-        for d_val in dep_arr {
-            let d_obj = d_val.as_object() ?? {
-                continue
-            }
-            let dn = json_str_field(d_obj, "name") ?? ""
-            let dc = json_str_field(d_obj, "constraint") ?? ""
-            if dn.is_empty() || dc.is_empty() { continue }
-            let constraint = Constraint.parse(dc) is Constraint as c else {
-                continue
-            }
-            deps.push(Dependency { name: dn, constraint })
-        }
+    if m.get("deps")? as deps_val {
+        deps = parse_deps(deps_val)
     }
 
     return PackageMeta {

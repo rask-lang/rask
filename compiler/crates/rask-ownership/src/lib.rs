@@ -3860,13 +3860,23 @@ impl<'a> OwnershipChecker<'a> {
     ///
     /// Only a field of a *borrowed* root: a local you own is yours to take
     /// apart, and a `take` parameter was given to you.
+    ///
+    /// A payload matched out of one is the same view under its own name:
+    /// `if self is Array(a) { return a }` handed the caller the vector the
+    /// borrowed `JsonValue` still held, and the caller freed it (#1425).
     fn check_borrowed_field_escape(&mut self, expr: &Expr) {
-        let (Some(root), Some(fields)) = Self::extract_root_and_fields(expr) else {
+        let (Some(root), fields) = Self::extract_root_and_fields(expr) else {
             return;
         };
-        if fields.is_empty() {
-            return; // whole-value return is `consume_binding`'s rule
-        }
+        let fields = fields.unwrap_or_default();
+        let (path, root) = if fields.is_empty() {
+            match self.borrowed_parts.get(&root) {
+                Some((_, from)) => (root.clone(), from.clone()),
+                None => return, // whole-value return is `consume_binding`'s rule
+            }
+        } else {
+            (format!("{}.{}", root, fields.join(".")), root)
+        };
         let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(&root) else {
             return;
         };
@@ -3878,7 +3888,7 @@ impl<'a> OwnershipChecker<'a> {
         }
         self.errors.push(OwnershipError {
             kind: OwnershipErrorKind::BorrowedFieldEscapes {
-                path: format!("{}.{}", root, fields.join(".")),
+                path,
                 root,
                 field_ty: self.resource_type_display(&ty),
                 declared_at,

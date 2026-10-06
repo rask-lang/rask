@@ -3358,7 +3358,8 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_why(
                     "a parameter without `take` is the caller's value on loan, and a \
-                     field of it is a view that lives until the block ends. Handing \
+                     field of it, or a payload matched out of it, is a view that \
+                     lives until the block ends. Handing \
                      that view back leaves the caller and the callee's caller both \
                      holding the same storage: a write through one is a write \
                      through the other, and whoever frees it second frees it twice \

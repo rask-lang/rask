@@ -58,10 +58,12 @@ json.encode_pretty(value)
 | `value.as_bool()` | `bool?` |
 | `value.as_number()` | `f64?` |
 | `value.as_string()` | `string?` |
-| `value.as_array()` | `Vec<JsonValue>?` |
-| `value.as_object()` | `Map<string, JsonValue>?` |
+| `value.as_array()` | `Vec<JsonValue>?`, takes `value` |
+| `value.as_object()` | `Map<string, JsonValue>?`, takes `value` |
 | `value["key"]` | `JsonValue?` (object index) |
 | `value[index]` | `JsonValue?` (array index) |
+
+`as_array` and `as_object` take the value, because the container inside is the value's. A borrowed value, like an element of an array or a `get` out of an object, is read in place with `if v is Array(items)`, or copied out with `v.clone().as_array()`.
 
 ## Typed Encoding/Decoding
 
