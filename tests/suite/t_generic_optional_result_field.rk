@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Matching straight on a generic struct's `T? or E` field.
+//
+// Natively `Maybe<string>` printed the string's bytes as a number. Its own
+// layout was thrown away because it came out no bigger than the shared one
+// (the error side is the wider), so the field was read through the shared
+// `T? or MyErr`, where `T` is a word (#1445). An instance layout is now kept
+// whenever a wide argument is held by value, whatever the total size.
+
+enum MyErr {
+    Bad(string)
+}
+
+extend MyErr {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+struct Maybe<T> {
+    r: T? or MyErr
+}
+
+struct Stack<T> {
+    items: Vec<T>
+}
+
+func found(s: string) -> string? or MyErr {
+    return s
+}
+
+func missing() -> string? or MyErr {
+    return none
+}
+
+func failed() -> string? or MyErr {
+    return MyErr.Bad("why")
+}
+
+func describe(m: Maybe<string>) -> string {
+    return match m.r {
+        string as x => x,
+        none => "none",
+        MyErr as e => "err",
+    }
+}
+
+test "the value branch binds the string" {
+    let m: Maybe<string> = Maybe { r: found("here") }
+    let got = match m.r {
+        string as x => x,
+        none => "none",
+        MyErr as e => "err",
+    }
+    assert got == "here"
+}
+
+test "every branch through a field" {
+    assert describe(Maybe { r: found("there") }) == "there"
+    assert describe(Maybe { r: missing() }) == "none"
+    assert describe(Maybe { r: failed() }) == "err"
+}
+
+test "a wide argument behind a vector keeps working" {
+    let s: Stack<string> = Stack { items: ["a", "bc"] }
+    assert s.items.len() == 2
+    assert s.items[1] == "bc"
+}

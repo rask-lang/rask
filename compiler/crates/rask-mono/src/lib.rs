@@ -299,7 +299,8 @@ fn compute_layouts(
     let type_names = inst.map_or(&no_names, |i| i.type_names);
     let instances = inst.map_or_else(Vec::new, |i| instance_steps(decls, &i.reached, type_names));
     let concrete = concrete_type_names(decls);
-    for step in layout_order(decls, instances, type_names) {
+    let inline_params = inline_type_params(decls);
+    for step in layout_order(decls, instances, &inline_params, type_names) {
         let idx = match step {
             LayoutStep::Decl(idx) => idx,
             LayoutStep::Instance { decl, args, name } => {
@@ -309,6 +310,7 @@ fn compute_layouts(
                     &args,
                     name,
                     inst,
+                    &inline_params,
                     &mut layout_cache,
                     &mut struct_layouts,
                     &mut enum_layouts,
@@ -373,28 +375,39 @@ fn compute_layouts(
     (struct_layouts, enum_layouts, layout_cache)
 }
 
-/// One layout per *instantiation*, but only where the shared one is too small.
+/// One layout per *instantiation*, where the shared one has the wrong shape.
 /// The placeholder gives every type parameter a word, which is right for a
 /// scalar and right for anything boxed (a `Vec`, a `Map`, a `Shared`) since
 /// those are pointers. It is wrong for anything that *is* its bytes — a struct,
 /// enum, union, tuple, array, or a `string`: `One<Big>` stored 24 bytes into an
 /// 8-byte slot and segfaulted on the read back (#781).
 ///
-/// Emitted only when the instantiated layout is bigger than the shared one, so
-/// `One<i32>` keeps using the shared layout and nothing that worked changes
-/// shape.
+/// Only where such an argument is held by value, so `One<i32>` and
+/// `Stack<Big> { items: Vec<T> }` keep the shared layout. Not "only where the
+/// instance comes out bigger": `Maybe<string> { r: T? or MyErr }` is as big as
+/// the shared one, because the error side is the wider, but its `T?` is a
+/// `string?` inside. Reading the field through the shared layout typed the
+/// string as a word and printed its bytes as a number (#1445).
 fn lay_out_instance(
     decl: &Decl,
     args: &[Type],
     instance_name: String,
     inst: &Instantiations,
+    inline_params: &HashMap<String, Vec<bool>>,
     layout_cache: &mut LayoutCache,
     struct_layouts: &mut Vec<StructLayout>,
     enum_layouts: &mut Vec<EnumLayout>,
 ) {
-    // Only when an argument can actually overflow the shared slot...
-    let overflows = args.iter().any(|a| {
-        inline_arg_size(a, inst.type_names, inst.types, layout_cache).is_some_and(|size| size > 8)
+    let base = match &decl.kind {
+        DeclKind::Struct(s) => s.name.as_str(),
+        DeclKind::Enum(e) => e.name.as_str(),
+        _ => return,
+    };
+    let held = inline_params.get(base);
+    // Only when an argument the type holds by value overflows the shared slot...
+    let overflows = args.iter().enumerate().any(|(i, a)| {
+        held.map_or(true, |flags| flags.get(i).copied().unwrap_or(true))
+            && inline_arg_size(a, inst.type_names, inst.types, layout_cache).is_some_and(|size| size > 8)
     });
     // ...or when it owns storage. A container argument fits the shared word
     // fine, and that is the problem: the shared layout says `i64`, the release
@@ -419,22 +432,14 @@ fn lay_out_instance(
         .map(|a| arg_as_cache_name(a, inst.type_names, layout_cache))
         .collect();
     match &decl.kind {
-        DeclKind::Struct(s) => {
-            let shared = layout_cache.get(s.name.as_str()).map(|(size, _)| *size).unwrap_or(0);
+        DeclKind::Struct(_) => {
             let mut layout = compute_struct_layout(decl, &named_args, layout_cache);
-            if !owns && layout.size <= shared {
-                return;
-            }
             layout.name = instance_name.clone();
             layout_cache.insert(instance_name, (layout.size, layout.align));
             struct_layouts.push(layout);
         }
-        DeclKind::Enum(e) => {
-            let shared = layout_cache.get(e.name.as_str()).map(|(size, _)| *size).unwrap_or(0);
+        DeclKind::Enum(_) => {
             let mut layout = compute_enum_layout(decl, &named_args, layout_cache);
-            if !owns && layout.size <= shared {
-                return;
-            }
             layout.name = instance_name.clone();
             layout_cache.insert(instance_name, (layout.size, layout.align));
             enum_layouts.push(layout);
@@ -505,13 +510,13 @@ fn layout_field_types(decl: &Decl) -> Vec<&TypeExpr> {
 
 /// Every struct/enum/union/newtype declaration and every instantiation in
 /// `instances`, ordered so each comes after what its fields hold by value
-/// (Kahn's algorithm). An instantiation waits on its generic declaration,
-/// whose shared size it is compared against, and on its fields with the
-/// arguments written in: `One<Big>` waits on `Big`, `Group<string>` on
-/// `Tasks$string`. A cycle falls back to source order, instantiations last.
+/// (Kahn's algorithm). An instantiation waits on its fields with the arguments
+/// written in: `One<Big>` waits on `Big`, `Group<string>` on `Tasks$string`.
+/// A cycle falls back to source order, instantiations last.
 fn layout_order(
     decls: &[Decl],
     instances: Vec<LayoutStep>,
+    inline_params: &HashMap<String, Vec<bool>>,
     type_names: &HashMap<rask_types::TypeId, String>,
 ) -> Vec<LayoutStep> {
     let mut nodes: Vec<LayoutStep> = Vec::new();
@@ -544,8 +549,6 @@ fn layout_order(
         nodes.push(step);
     }
 
-    let inline_params = inline_type_params(decls);
-
     let mut deps: Vec<HashSet<usize>> = Vec::with_capacity(nodes.len());
     let mut rdeps: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
     for (n, node) in nodes.iter().enumerate() {
@@ -553,21 +556,20 @@ fn layout_order(
         match node {
             LayoutStep::Decl(idx) => {
                 for ty in layout_field_types(&decls[*idx]) {
-                    collect_type_deps(&layout::field_type(ty), &inline_params, type_names, &mut keys);
+                    collect_type_deps(&layout::field_type(ty), inline_params, type_names, &mut keys);
                 }
             }
             LayoutStep::Instance { decl, args, .. } => {
-                let (base, params) = match &decls[*decl].kind {
-                    DeclKind::Struct(s) => (s.name.as_str(), rask_types::struct_type_param_names(s)),
-                    DeclKind::Enum(e) => (e.name.as_str(), rask_types::enum_type_param_names(e)),
-                    _ => ("", Vec::new()),
+                let params = match &decls[*decl].kind {
+                    DeclKind::Struct(s) => rask_types::struct_type_param_names(s),
+                    DeclKind::Enum(e) => rask_types::enum_type_param_names(e),
+                    _ => Vec::new(),
                 };
-                keys.insert(base.to_string());
                 let subst: HashMap<&str, &Type> =
                     params.iter().map(String::as_str).zip(args.iter()).collect();
                 for ty in layout_field_types(&decls[*decl]) {
                     let ty = layout::substitute_inside(&layout::field_type(ty), &subst);
-                    collect_type_deps(&ty, &inline_params, type_names, &mut keys);
+                    collect_type_deps(&ty, inline_params, type_names, &mut keys);
                 }
             }
         }
