@@ -7867,8 +7867,11 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// Payload types that live in their own storage, so extracting one yields
-    /// an address rather than a loaded scalar. Nested `Option`/`Result` belong
-    /// here: a `T??` payload is a whole 16-byte `T?` slot (#493).
+    /// an address rather than a loaded scalar: everything `passed_by_address`
+    /// except the niche. Spelled out as its own list, this one had no `Array`,
+    /// so `v.pop()` on a `Vec<[i32; 2]>` loaded the array's bytes and used
+    /// them as its address (#1450). Nested `Option`/`Result` (#493), interface
+    /// objects (#552) and error unions (#776) were each found the same way.
     fn is_boxed_payload(ty: &MirType) -> bool {
         // A niche option is one word — the value itself, with one reserved word
         // meaning `none` — so it loads like a scalar even though it is spelled
@@ -7878,24 +7881,7 @@ impl<'a> FunctionBuilder<'a> {
         if matches!(ty, MirType::Option(inner) if inner.is_niche_payload()) {
             return false;
         }
-        matches!(
-            ty,
-            MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Tuple(_)
-                | MirType::String
-                | MirType::Option(_)
-                | MirType::Result { .. }
-                // An interface object is two words, so the payload read has to hand
-                // back its address like any other aggregate. Loading the first
-                // 8 bytes as a scalar kept the data pointer and dropped the
-                // vtable (#552).
-                | MirType::InterfaceObject { .. }
-                // An error union is `[member:8][member bytes]` in the payload
-                // area. Loaded as a word, the member index came back as if it
-                // were the union's address (#776).
-                | MirType::Union(_)
-        )
+        ty.passed_by_address()
     }
 
     /// The Cranelift type a bare scalar takes on once it becomes an Option's
@@ -8048,23 +8034,17 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     /// MIR arg already lives behind a pointer — its i64 value is a pointer to
-    /// the data, not the data itself. Strings, structs, enums, tuples, options,
-    /// results, slices, and interface objects all qualify.
+    /// the data, not the data itself (`MirType::passed_by_address`). This and
+    /// the two destination checks below spelled out their own lists, which
+    /// left fixed arrays out: `v.push([3, 4])` handed the runtime the array's
+    /// bytes as an address and `v[0]` loaded a word where the array belonged
+    /// (#1450).
     fn is_by_ptr_arg(mir_args: &[MirOperand], index: usize, locals: &[rask_mir::MirLocal]) -> bool {
         match mir_args.get(index) {
             Some(MirOperand::Local(id)) => locals
                 .iter()
                 .find(|l| l.id == *id)
-                .map(|l| matches!(l.ty,
-                    MirType::String
-                    | MirType::Struct(_)
-                    | MirType::Enum(_)
-                    | MirType::Tuple(_)
-                    | MirType::Option(_)
-                    | MirType::Result { .. }
-                    | MirType::Union(_)
-                    | MirType::InterfaceObject { .. }
-                ))
+                .map(|l| l.ty.passed_by_address())
                 .unwrap_or(false),
             Some(MirOperand::Constant(rask_mir::MirConst::String(_))) => true,
             _ => false,
@@ -8082,15 +8062,7 @@ impl<'a> FunctionBuilder<'a> {
     /// anything wider than a word, or with its own layout.
     fn is_aggregate_dst(dst: Option<&LocalId>, ctx: &CodegenCtx) -> bool {
         dst.and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
-            .map(|l| matches!(l.ty,
-                MirType::String
-                | MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Tuple(_)
-                | MirType::Option(_)
-                | MirType::Result { .. }
-                | MirType::Union(_)
-                | MirType::InterfaceObject { .. }))
+            .map(|l| l.ty.passed_by_address())
             .unwrap_or(false)
     }
 
@@ -8153,16 +8125,7 @@ impl<'a> FunctionBuilder<'a> {
     fn deref_or_string(dst: Option<&LocalId>, ctx: &CodegenCtx) -> CallAdapt {
         let is_aggregate = dst
             .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
-            .map(|l| matches!(l.ty,
-                MirType::String
-                | MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Tuple(_)
-                | MirType::Option(_)
-                | MirType::Result { .. }
-                | MirType::Union(_)
-                | MirType::InterfaceObject { .. }
-            ))
+            .map(|l| l.ty.passed_by_address())
             .unwrap_or(false);
         if is_aggregate { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
     }
