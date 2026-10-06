@@ -9,7 +9,7 @@ use super::{
     LoweringError, MirLowerer, TypedOperand,
 };
 use crate::{
-    operand::MirConst, types::{EnumLayoutId, StructLayoutId}, FunctionRef, LocalId, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
+    operand::MirConst, types::{EnumLayoutId, StructLayoutId}, FunctionRef, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
     MirTerminatorKind, MirType,
 };
 use rask_ast::ty::TypeExpr;
@@ -2114,6 +2114,7 @@ impl<'a> MirLowerer<'a> {
                 exit_block,
                 result_local: Some(result_local),
                 ensure_depth,
+                writeback_depth: self.pending_write_backs.len(),
             });
 
             for stmt in body {
@@ -4355,25 +4356,24 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Default: simple alias binding (Vec/Map element, ...)
-            // Vec[i] / Map[k] writeback info: (collection, index/key, item_local, setter_name).
-            // Captured per binding so we can emit Vec_set / Map_set after the body runs.
-            let mut coll_writebacks: Vec<(MirOperand, MirOperand, LocalId, &'static str)> = Vec::new();
+            // A `with v[i]` / `with m[k]` binding is a copy of the element, so
+            // it goes back into the collection when the body ends — normally or
+            // by `return`, `try`, `break` or `continue`. Without that, changes
+            // made through the binding are lost.
+            let writeback_mark = self.pending_write_backs.len();
             for binding in bindings {
-                // Detect `with vec[i] as item` / `with map[k] as item` so we
-                // can write `item` back to the collection once the body
-                // finishes. Without this, mutations through `item` are lost.
                 // Reached through a field (`self.items[0]`) just as much as by
                 // bare name — the element is copied out either way.
                 let coll_writeback_info = if let ExprKind::Index { object, index } = &binding.source.kind {
-                    let setter = match self.index_object_base(object).as_deref() {
-                        Some("Vec") => Some("Vec_set"),
-                        Some("Map") => Some("Map_set"),
+                    let map = match self.index_object_base(object).as_deref() {
+                        Some("Vec") => Some(false),
+                        Some("Map") => Some(true),
                         _ => None,
                     };
-                    if let Some(setter_name) = setter {
+                    if let Some(map) = map {
                         let (obj_op, _) = self.lower_expr(object)?;
                         let (idx_op, _) = self.lower_expr(index)?;
-                        Some((obj_op, idx_op, setter_name))
+                        Some((obj_op, idx_op, map))
                     } else {
                         None
                     }
@@ -4389,19 +4389,22 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Use(val),
                 }));
 
-                if let Some((obj_op, idx_op, setter_name)) = coll_writeback_info {
-                    let _ = val_ty;
-                    coll_writebacks.push((obj_op, idx_op, local, setter_name));
+                if let Some((collection, at, map)) = coll_writeback_info {
+                    self.pending_write_backs.push(super::PendingWriteBack {
+                        collection,
+                        at,
+                        value: local,
+                        map,
+                    });
                 }
             }
             let result = self.lower_block(body);
-            // Write back Vec[i] / Map[k] mutations through `with` bindings.
-            for (obj_op, idx_op, item_local, setter_name) in coll_writebacks {
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                    dst: None,
-                    func: FunctionRef::internal(setter_name.to_string()),
-                    args: vec![obj_op, idx_op, MirOperand::Local(item_local)],
-                }));
+            // The body's own end: write back, innermost first.
+            let opened = self.pending_write_backs.split_off(writeback_mark);
+            if self.builder.current_block_unterminated() {
+                for wb in opened.iter().rev() {
+                    self.emit_write_back(wb);
+                }
             }
             result
         }

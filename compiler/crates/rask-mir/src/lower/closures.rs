@@ -693,6 +693,8 @@ impl<'a> MirLowerer<'a> {
             // not have — Cranelift reports it as `invalid block reference`.
             let saved_ensure_stack = std::mem::take(&mut self.ensure_stack);
             let saved_inline = self.inline_return_target.take();
+            // Element write-backs are the enclosing function's for the same reason.
+            let saved_write_backs = std::mem::take(&mut self.pending_write_backs);
 
             // `break` and `continue` in the body are this loop's, and this loop
             // is one call of the yield.
@@ -702,13 +704,14 @@ impl<'a> MirLowerer<'a> {
                 exit_block,
                 result_local: None,
                 ensure_depth: self.ensure_stack.len(),
+                writeback_depth: self.pending_write_backs.len(),
             });
             // `return v` assigns to the captured value local and jumps to the
             // block that raises the flag. Writing the local *is* a store through
             // the capture pointer — `transform::addr_taken` rewrites it.
             self.inline_return_target = inner_value
                 .or(inner_flag)
-                .map(|dst| (dst, nonlocal_block));
+                .map(|dst| (dst, nonlocal_block, 0));
 
             // `for (k, v) in seq` — read the names off the item, the same way
             // the index loop reads them off a Map entry. Has to happen with the
@@ -741,6 +744,7 @@ impl<'a> MirLowerer<'a> {
 
             self.loop_stack = saved_loops;
             self.ensure_stack = saved_ensure_stack;
+            self.pending_write_backs = saved_write_backs;
             self.inline_return_target = saved_inline;
             yb = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;

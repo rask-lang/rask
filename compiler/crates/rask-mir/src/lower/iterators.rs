@@ -574,7 +574,7 @@ impl<'a> MirLowerer<'a> {
         let cont_block = self.builder.create_block();
         let saved_return_target = self.inline_return_target.take();
         let saved_return_taken = self.inline_return_taken.take();
-        self.inline_return_target = Some((result_local, cont_block));
+        self.inline_return_target = Some((result_local, cont_block, self.pending_write_backs.len()));
 
         let (body_op, body_ty) = self.lower_expr(body)?;
 
@@ -900,7 +900,7 @@ impl<'a> MirLowerer<'a> {
 
                 let saved_return_target = self.inline_return_target.take();
                 let saved_return_taken = self.inline_return_taken.take();
-                self.inline_return_target = Some((result_local, cont_block));
+                self.inline_return_target = Some((result_local, cont_block, self.pending_write_backs.len()));
 
                 let (body_op, body_ty) = self.lower_expr(body)?;
 
@@ -1465,7 +1465,7 @@ impl<'a> MirLowerer<'a> {
 
                 let saved_return_target = self.inline_return_target.take();
                 let saved_return_taken = self.inline_return_taken.take();
-                self.inline_return_target = Some((acc, setup.inc_block));
+                self.inline_return_target = Some((acc, setup.inc_block, self.pending_write_backs.len()));
 
                 let (result_op, _) = self.lower_expr(body)?;
 
@@ -1919,7 +1919,7 @@ impl<'a> MirLowerer<'a> {
 
         let saved_return_target = self.inline_return_target.take();
         let saved_return_taken = self.inline_return_taken.take();
-        self.inline_return_target = Some((acc, after_block));
+        self.inline_return_target = Some((acc, after_block, self.pending_write_backs.len()));
         let (result_op, _) = self.lower_expr(body)?;
         let returned = self.inline_return_taken.take().is_some();
         self.inline_return_target = saved_return_target;

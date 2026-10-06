@@ -493,7 +493,7 @@ impl<'a> MirLowerer<'a> {
                 };
                 // Inside an inlined closure (e.g. fold callback), redirect
                 // return to an assignment + goto instead of a real return.
-                if let Some((dst_local, cont_block)) = self.inline_return_target {
+                if let Some((dst_local, cont_block, writeback_depth)) = self.inline_return_target {
                     if let Some(val) = value {
                         // `return x` from a function that answers `T?` hands
                         // back a bare payload, and the slot it lands in is the
@@ -518,6 +518,7 @@ impl<'a> MirLowerer<'a> {
                     }
                     self.inline_return_taken =
                         Some(returned_ty.unwrap_or(MirType::Void));
+                    self.emit_write_backs_above(writeback_depth);
                     self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
                 } else {
                     self.terminate_return(value);
@@ -1066,6 +1067,7 @@ impl<'a> MirLowerer<'a> {
                     exit_block,
                     result_local: None,
                     ensure_depth,
+                    writeback_depth: self.pending_write_backs.len(),
                 });
                 for s in body {
                     self.lower_stmt(s)?;
@@ -2233,6 +2235,7 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: None,
             ensure_depth,
+            writeback_depth: self.pending_write_backs.len(),
         });
 
         self.lower_body_scoped(body)?;
@@ -2501,6 +2504,32 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // The writeback the body owes its collection. `continue` and `break` pay it
+        // through the blocks below; a `return`, a `try` that propagates or a
+        // labelled jump past this loop pays it from here, because none of them
+        // passes through a block (#650). Pushed before the loop's own context,
+        // so this loop's `break` and `continue` leave it to those blocks.
+        // A map writes back into itself; everything else into the thing being
+        // walked. Handing `Map_set` the entries snapshot stored a key/value pair
+        // through a Vec pointer and segfaulted on the first iteration (#738).
+        let writeback = match map_value_local {
+            Some(value) => super::PendingWriteBack {
+                collection: MirOperand::Local(map_local.unwrap_or(collection)),
+                at: MirOperand::Local(binding_local),
+                value,
+                map: true,
+            },
+            None => super::PendingWriteBack {
+                collection: MirOperand::Local(collection),
+                at: MirOperand::Local(idx),
+                value: binding_local,
+                map: false,
+            },
+        };
+        if wb_block.is_some() {
+            self.pending_write_backs.push(writeback.clone());
+        }
+
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
@@ -2508,38 +2537,24 @@ impl<'a> MirLowerer<'a> {
             exit_block: break_target,
             result_local: None,
             ensure_depth,
+            writeback_depth: self.pending_write_backs.len(),
         });
 
-        // The writeback the body owes its collection. `continue` and `break` pay it
-        // through the blocks below; a `return` or a `try` that propagates pays it
-        // from here, because neither passes through a block (#650).
-        // A map writes back into itself; everything else into the thing being
-        // walked. Handing `Map_set` the entries snapshot stored a key/value pair
-        // through a Vec pointer and segfaulted on the first iteration (#738).
-        let writeback = super::MutateWriteback::new(
-            map_local.unwrap_or(collection),
-            idx,
-            binding_local,
-            map_value_local,
-        );
-        if wb_block.is_some() {
-            self.mutate_writebacks.push(writeback);
-        }
         self.lower_body_scoped(body)?;
         if wb_block.is_some() {
-            self.mutate_writebacks.pop();
+            self.pending_write_backs.pop();
         }
         self.close_loop_body(ensure_depth, continue_target);
 
         // Writeback blocks for `for mutate`
         if let Some(wb) = wb_block {
             self.builder.switch_to_block(wb);
-            self.emit_one_mutate_writeback(&writeback);
+            self.emit_write_back(&writeback);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
         }
         if let Some(break_wb) = break_wb_block {
             self.builder.switch_to_block(break_wb);
-            self.emit_one_mutate_writeback(&writeback);
+            self.emit_write_back(&writeback);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
         }
 
@@ -2731,6 +2746,7 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: None,
             ensure_depth,
+            writeback_depth: self.pending_write_backs.len(),
         });
 
         self.lower_body_scoped(body)?;
@@ -2966,6 +2982,7 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: None,
             ensure_depth,
+            writeback_depth: self.pending_write_backs.len(),
         });
         self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, inc_block);
@@ -3051,6 +3068,7 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: None,
             ensure_depth,
+            writeback_depth: self.pending_write_backs.len(),
         });
         self.lower_body_scoped(body)?;
         self.close_loop_body(ensure_depth, inc_block);
@@ -3095,6 +3113,7 @@ impl<'a> MirLowerer<'a> {
             exit_block,
             result_local: Some(result_local),
             ensure_depth,
+            writeback_depth: self.pending_write_backs.len(),
         });
 
         self.lower_body_scoped(body)?;
@@ -3117,6 +3136,7 @@ impl<'a> MirLowerer<'a> {
         let exit_block = ctx.exit_block;
         let result_local = ctx.result_local;
         let ensure_depth = ctx.ensure_depth;
+        let writeback_depth = ctx.writeback_depth;
 
         if let Some(val_expr) = value {
             let (val_op, _) = self.lower_expr(val_expr)?;
@@ -3132,6 +3152,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        self.emit_write_backs_above(writeback_depth);
         self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: exit_block,
@@ -3149,7 +3170,9 @@ impl<'a> MirLowerer<'a> {
         let ctx = self.find_loop(label)?;
         let continue_block = ctx.continue_block;
         let ensure_depth = ctx.ensure_depth;
+        let writeback_depth = ctx.writeback_depth;
 
+        self.emit_write_backs_above(writeback_depth);
         self.emit_loop_cleanup(ensure_depth);
         self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: continue_block,
@@ -3221,6 +3244,7 @@ impl<'a> MirLowerer<'a> {
             exit_block: setup.exit_block,
             result_local: None,
             ensure_depth,
+            writeback_depth: self.pending_write_backs.len(),
         });
 
         self.lower_body_scoped(body)?;
