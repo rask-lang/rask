@@ -3941,6 +3941,19 @@ impl Parser {
         Ok(lhs)
     }
 
+    /// `a.b.c` as its segments, when the expression is nothing but names.
+    fn name_path(expr: &Expr) -> Option<Vec<String>> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(vec![name.clone()]),
+            ExprKind::Field { object, field } => {
+                let mut path = Self::name_path(object)?;
+                path.push(field.clone());
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+
     fn parse_prefix(&mut self) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
 
@@ -4762,16 +4775,21 @@ impl Parser {
                     // starts the body. Without that second guard,
                     // `if m == Mode.On { … }` read `Mode.On { … }` as a struct
                     // literal and swallowed the if-block (#342).
-                    if let ExprKind::Ident(base) = &lhs.kind {
+                    //
+                    // The head is a name chain — `Shape.Circle`, but also
+                    // `bits.BinaryParseError.UnexpectedEnd` through a module
+                    // (#1461) — so the whole path is read, not just one dot.
+                    if let Some(mut path) = Self::name_path(&lhs) {
                         // A module namespace is lowercase by convention —
                         // `c.Rect { … }`, `http.Response { … }` — so the
                         // capitalised-head rule doesn't reach it. Only a name
                         // this file actually imports counts.
+                        let base = &path[0];
                         let head_names_a_type = base.starts_with(|c: char| c.is_uppercase())
                             || self.import_namespaces.contains(base);
                         if head_names_a_type && field.starts_with(|c: char| c.is_uppercase()) {
-                            let full_name = format!("{}.{}", base, field);
-                            self.parse_struct_literal(full_name, Vec::new(), start)
+                            path.push(field);
+                            self.parse_struct_literal(path.join("."), Vec::new(), start)
                         } else {
                             let end = self.tokens[self.pos - 1].span.end;
                             Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: self.span(start, end) })

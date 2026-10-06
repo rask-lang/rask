@@ -5,5 +5,6 @@ import libpkg.Colour
 
 func main() {
     println("{libpkg.label(Colour.Green)}")
+    println("{libpkg.area(libpkg.Shape.Circle { r: 2 })}")
     return
 }

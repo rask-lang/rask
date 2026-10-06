@@ -1227,8 +1227,11 @@ impl TypeChecker {
                     } else {
                         ty
                     }
-                } else if let Some((enum_name, variant_name)) = base_name.split_once('.') {
-                    // Struct-style enum variant literal: `Shape.Circle { radius: 5.0 }`.
+                } else if let Some((enum_path, variant_name)) = base_name.rsplit_once('.') {
+                    // Struct-style enum variant literal: `Shape.Circle { radius: 5.0 }`,
+                    // or through a module, `b.BinaryParseError.UnexpectedEnd { … }`
+                    // — the enum is the segment before the variant (#1461).
+                    let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
                     // The value's type is the enum, not the variant — so methods
                     // declared via `extend Enum` resolve. Variant field names aren't
                     // stored in the type table (variants carry positional types), so

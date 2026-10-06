@@ -1659,7 +1659,11 @@ impl Interpreter {
                 // struct named "A4.N" it was the wrong kind of value everywhere
                 // downstream: a `N { v }` arm compares against the variant name
                 // and never matched, so every such arm fell through (#910).
-                if let Some((enum_name, variant_name)) = concrete_name.split_once('.') {
+                // The enum is the segment before the variant: a module in front,
+                // `bits.BinaryParseError.UnexpectedEnd { … }`, only says where
+                // the enum lives (#1461).
+                if let Some((enum_path, variant_name)) = concrete_name.rsplit_once('.') {
+                    let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
                     if let Some(decl) = self.enums.get(enum_name) {
                         if let Some((idx, variant)) = decl
                             .variants

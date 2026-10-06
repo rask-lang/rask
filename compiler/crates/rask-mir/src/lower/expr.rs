@@ -3486,10 +3486,12 @@ impl<'a> MirLowerer<'a> {
             if let Some((op, ty)) = self.lower_newtype_wrap(name, fields.first().map(|f| &f.value))? {
                 return Ok((op, ty));
             }
-            // Check for enum variant constructor: "EnumName.VariantName { ... }"
-            let (result_ty, layout, enum_variant_info) = if let Some(dot_pos) = name.find('.') {
-                let enum_name = &name[..dot_pos];
-                let variant_name = &name[dot_pos + 1..];
+            // Check for enum variant constructor: "EnumName.VariantName { ... }".
+            // The enum is the segment before the variant — a module in front,
+            // `bits.BinaryParseError.UnexpectedEnd { … }`, only says where it
+            // lives (#1461).
+            let (result_ty, layout, enum_variant_info) = if let Some((enum_path, variant_name)) = name.rsplit_once('.') {
+                let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
                 if let Some((idx, el)) = self.ctx.find_enum(enum_name) {
                     let variant_info = el.variants.iter().find(|v| v.name == variant_name)
                         .map(|v| (v.tag, v.payload_offset, v.fields.clone()));
