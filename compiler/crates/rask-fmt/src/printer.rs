@@ -2393,7 +2393,19 @@ impl<'a> Printer<'a> {
                     self.emit(&ty.source());
                 }
                 self.emit(" ");
-                self.format_expr(body);
+                // A one-line body stays on its line, the same rule a branch
+                // follows. Always expanding it broke idempotence: the literal
+                // or call around `|n| { return n * 10 }` had already chosen
+                // one line from the source, and the second pass saw the
+                // expanded body and broke the literal too.
+                match &body.kind {
+                    ExprKind::Block(stmts) if self.fits_one_line(body.span, stmts) => {
+                        self.emit("{ ");
+                        self.format_stmt_inline(&stmts[0]);
+                        self.emit(" }");
+                    }
+                    _ => self.format_expr(body),
+                }
             }
             ExprKind::Cast { expr: inner, ty } => {
                 self.format_cast_operand(inner);
