@@ -1516,26 +1516,11 @@ impl Parser {
         Ok(type_params)
     }
 
-    /// Parse a single interface bound, e.g. `Comparable` or `Iterator<Item>`.
-    fn parse_one_bound(&mut self) -> Result<TypeExpr, ParseError> {
-        let name = self.expect_ident()?;
-        // Generic interface bound: `Iterator<Item>`
-        let mut args = Vec::new();
-        if self.match_token(&TokenKind::Lt) {
-            args.push(self.parse_type_name()?);
-            while self.match_token(&TokenKind::Comma) {
-                args.push(self.parse_type_name()?);
-            }
-            self.expect_gt_in_generic()?;
-        }
-        Ok(TypeExpr::generic(name, args))
-    }
-
-    /// Parse `+`-separated interface bounds: `A + B<X> + C`.
+    /// Parse `+`-separated interface bounds: `A + B<X> + io.Writer`.
     fn parse_interface_bounds(&mut self) -> Result<Vec<TypeExpr>, ParseError> {
-        let mut bounds = vec![self.parse_one_bound()?];
+        let mut bounds = vec![self.parse_type_body()?];
         while self.match_token(&TokenKind::Plus) {
-            bounds.push(self.parse_one_bound()?);
+            bounds.push(self.parse_type_body()?);
         }
         Ok(bounds)
     }
