@@ -1222,7 +1222,9 @@ impl TypeChecker {
                                 }
                             }
 
-                            Type::Generic { base: *type_id, args: fresh_args }
+                            let built = Type::Generic { base: *type_id, args: fresh_args };
+                            self.note_type_bounds(&built, expr.span);
+                            built
                         }
                     } else {
                         ty
@@ -3814,6 +3816,7 @@ impl TypeChecker {
                             .map(|t| crate::types::GenericArg::Type(Box::new(t)))
                             .collect(),
                     };
+                    self.note_type_bounds(&ty, span);
                     (fields, ty)
                 };
                 // C9: the slot picks the shape, and a declared payload is a

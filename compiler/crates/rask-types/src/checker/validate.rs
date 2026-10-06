@@ -30,6 +30,8 @@ pub(super) struct BoundObligation {
     pub ty: Type,
     pub bounds: Vec<rask_ast::ty::TypeExpr>,
     pub args: Vec<(String, Type)>,
+    /// The bound is a type's, met by building a value of it, not a callee's.
+    pub on_type: bool,
     pub span: Span,
 }
 
@@ -92,7 +94,7 @@ impl TypeChecker {
         let pending = std::mem::take(&mut self.pending_bound_checks);
         // Dedup identical (type, interface, span) reports.
         let mut reported: Vec<(String, String, Span)> = Vec::new();
-        for BoundObligation { ty: var, bounds, args, span } in pending {
+        for BoundObligation { ty: var, bounds, args, on_type, span } in pending {
             // Resolve `UnresolvedNamed("Foo")` to `Named(id)` so `check_satisfies`
             // can find the type's methods (an unresolved name reports none).
             let ty = self.resolve_named(&self.ctx.apply(&var));
@@ -148,7 +150,19 @@ impl TypeChecker {
                         });
                         continue;
                     }
-                    let err = self.bound_error(&ty, ty_name, interface_name, span);
+                    let mut err = self.bound_error(&ty, ty_name, interface_name, span);
+                    if on_type {
+                        if let TypeError::InterfaceNotSatisfied { context, .. } = &mut err {
+                            let declarable = match context {
+                                super::InterfaceBoundContext::GenericBound => Some(true),
+                                super::InterfaceBoundContext::BuiltinTypeBound => Some(false),
+                                _ => None,
+                            };
+                            if let Some(declarable) = declarable {
+                                *context = super::InterfaceBoundContext::TypeParamBound { declarable };
+                            }
+                        }
+                    }
                     self.errors.push(err);
                 }
             }

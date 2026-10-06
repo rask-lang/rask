@@ -85,6 +85,7 @@ impl TypeChecker {
                     if let Ok(declared) = resolve_type_expr(ty_str, &self.types) {
                         // ER3/ER4: validate `T or E` in let annotation.
                         self.validate_result_types_in(&declared, *name_span);
+                        self.note_type_bounds(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
                         (init_ty, Some(declared))
                     } else {
@@ -134,6 +135,7 @@ impl TypeChecker {
                     if let Ok(declared) = resolve_type_expr(ty_str, &self.types) {
                         // ER3/ER4: validate `T or E` in const annotation.
                         self.validate_result_types_in(&declared, *name_span);
+                        self.note_type_bounds(&declared, *name_span);
                         let init_ty = self.infer_expr_expecting(init, &declared);
                         (init_ty, Some(declared))
                     } else {

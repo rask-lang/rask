@@ -374,6 +374,16 @@ impl TypeChecker {
         bounds: impl IntoIterator<Item = (&'b String, &'b Vec<TypeExpr>)>,
         span: rask_ast::Span,
     ) {
+        self.note_bounds(pairs, bounds, false, span);
+    }
+
+    fn note_bounds<'b>(
+        &mut self,
+        pairs: &[(String, Type)],
+        bounds: impl IntoIterator<Item = (&'b String, &'b Vec<TypeExpr>)>,
+        on_type: bool,
+        span: rask_ast::Span,
+    ) {
         for (name, param_bounds) in bounds {
             let Some((_, ty)) = pairs.iter().find(|(p, _)| p == name) else { continue };
             if param_bounds.is_empty() {
@@ -383,8 +393,51 @@ impl TypeChecker {
                 ty: ty.clone(),
                 bounds: param_bounds.clone(),
                 args: pairs.to_vec(),
+                on_type,
                 span,
             });
+        }
+    }
+
+    /// A struct or enum's bounds on its parameters hold for every type it's
+    /// instantiated with — `struct Holder<T: Named>` means no `Holder<i64>`
+    /// (#1462). Walks `ty` so a bounded type nested in another counts too.
+    pub(super) fn note_type_bounds(&mut self, ty: &Type, span: rask_ast::Span) {
+        let walk_args = |this: &mut Self, args: &[GenericArg]| {
+            for a in args {
+                if let GenericArg::Type(t) = a {
+                    this.note_type_bounds(t, span);
+                }
+            }
+        };
+        match ty {
+            Type::Generic { base, args } => {
+                let bounds = self.types.param_bounds(*base).to_vec();
+                if !bounds.is_empty() {
+                    let pairs: Vec<(String, Type)> = bounds
+                        .iter()
+                        .zip(args.iter())
+                        .filter_map(|((name, _), a)| match a {
+                            GenericArg::Type(t) => Some((name.clone(), (**t).clone())),
+                            GenericArg::ConstUsize(_) => None,
+                        })
+                        .collect();
+                    self.note_bounds(&pairs, bounds.iter().map(|(n, b)| (n, b)), true, span);
+                }
+                walk_args(self, args);
+            }
+            Type::UnresolvedGeneric { args, .. } => walk_args(self, args),
+            Type::Result { ok, err } => {
+                self.note_type_bounds(ok, span);
+                self.note_type_bounds(err, span);
+            }
+            Type::Array { elem, .. } => self.note_type_bounds(elem, span),
+            Type::Tuple(elems) | Type::Union(elems) => {
+                for e in elems {
+                    self.note_type_bounds(e, span);
+                }
+            }
+            _ => {}
         }
     }
 

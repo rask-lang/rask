@@ -296,6 +296,11 @@ impl TypeChecker {
                 });
 
                 if let Some(field_ty) = result {
+                    // A variant of a generic enum: whatever its arguments
+                    // settle on has to meet the enum's bounds.
+                    if !enum_params.is_empty() {
+                        self.note_type_bounds(&enum_self, span);
+                    }
                     self.unify(&expected, &field_ty, span)
                 } else {
                     Err(TypeError::NoSuchField {
@@ -1124,6 +1129,7 @@ impl TypeChecker {
                                     .map(|t| crate::types::GenericArg::Type(Box::new(t)))
                                     .collect(),
                             };
+                            self.note_type_bounds(&constructed, span);
                         } else {
                             // User-defined enum: instantiate any TypeVars with fresh vars
                             fields = self.instantiate_type_vars(&fields);
@@ -1467,6 +1473,7 @@ impl TypeChecker {
                                 span,
                             });
                         }
+                        self.note_type_bounds(&ty, span);
                         let mut progress = false;
                         for (field_ty, arg) in fields.iter().zip(args.iter()) {
                             if self.unify(field_ty, arg, span)? {

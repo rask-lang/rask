@@ -2165,6 +2165,16 @@ impl ToDiagnostic for rask_types::TypeError {
                             interface_name
                         ))
                         .with_why("the numeric interfaces are membership, not conformance: their contents are constants like MIN, MAX and BITS, and a type is a member because of what it is [type.primitives/NT1-NT3]"),
+                    Ctx::TypeParamBound { declarable } => d
+                        .with_fix(if *declarable {
+                            format!(
+                                "use a type that implements `{0}`, or declare the conformance:\n    {1} implements {0} {{ … }}",
+                                interface_name, ty
+                            )
+                        } else {
+                            format!("use a type that implements `{}`", interface_name)
+                        })
+                        .with_why("a type's bound on its parameter holds for every value of the type: each method in its `extend` blocks may rely on it, so no instance may break it [type.generics/GF6]"),
                     Ctx::GenericBound => d
                         .with_fix(format!(
                             "pass a type that implements `{0}`, or declare the conformance:\n    {1} implements {0} {{ … }}",

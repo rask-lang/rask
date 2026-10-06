@@ -810,9 +810,6 @@ impl TypeChecker {
         self.validate_pending_mutations();
         self.validate_spawn_captures();
 
-        // #314: verify generic call type args satisfy their declared bounds.
-        self.validate_pending_bound_checks();
-
         // ER3a: verify no `T or E` in a callee's signature collapsed to `E or E`
         // once the type args are known.
         self.validate_pending_disjointness();
@@ -840,6 +837,11 @@ impl TypeChecker {
         // A method call that deferred on an unsuffixed literal receiver can be
         // resolved now that the literal has a type.
         self.retry_deferred_methods();
+
+        // #314: verify generic type args satisfy their declared bounds. After
+        // literal defaults, so `Holder { item: 5 }` is checked as the `i64` it
+        // became rather than skipped as an open variable (#1462).
+        self.validate_pending_bound_checks();
 
         // Every callee is known now, so every label has something to name.
         self.validate_arg_labels();

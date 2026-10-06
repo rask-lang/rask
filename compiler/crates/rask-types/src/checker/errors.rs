@@ -1409,6 +1409,11 @@ pub enum InterfaceBoundContext {
     /// `T: Copy` — the copy rule, not a method list, so there is nothing to
     /// implement either.
     CopyBound,
+    /// `struct Holder<T: Named>` instantiated with a `T` that isn't — by a
+    /// literal, a variant or a written type. No call is involved, so "the type
+    /// argument at the call" named nothing the author wrote (#1462).
+    /// `declarable` is false where no conformance block can be written.
+    TypeParamBound { declarable: bool },
 }
 
 /// Why an `as` cast is rejected — drives the diagnostic and suggested fix.
