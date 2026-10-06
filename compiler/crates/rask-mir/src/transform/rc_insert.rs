@@ -83,8 +83,12 @@ pub fn insert_rc_ops(
         // Insert RcInc after string copies
         insert_rc_inc(func, &string_locals);
 
+        // A string handed to a call that keeps it, and still used after,
+        // gives the keeper a reference of its own.
+        retain_locals_handed_over_while_live(func, &string_locals, own);
+
         // Insert RcDec at last-use points
-        insert_rc_dec(func, &string_locals);
+        insert_rc_dec(func, &string_locals, own);
 
         // A returned parameter is handed out, not owned — take a reference for it.
         retain_returned_params(func, &string_locals);
@@ -887,6 +891,66 @@ fn retain_params_handed_over(
     }
 }
 
+/// Does `stmt` pass `local` to a call at a parameter the callee keeps?
+fn handed_to_a_keeper(stmt: &MirStmt, local: LocalId, own: &HashSet<String>) -> bool {
+    let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { return false };
+    args.iter().enumerate().any(|(i, arg)| {
+        uses::operand_local(arg) == Some(local) && crate::own_names::keeps_argument(&fref.name, i, own)
+    })
+}
+
+/// Take a reference before giving a string this frame owns to a call that
+/// keeps it, when the frame still uses the string afterwards.
+///
+/// The hand-over moves the frame's reference into the keeper, which is right
+/// at the string's last use and is why `insert_rc_dec` releases nothing there.
+/// Anywhere earlier, the frame still needs its own: `v.push(s)` in a loop, or
+/// `v.push(s)` then `println(s)`, gave the vector copies of one reference and
+/// the second free read a dead buffer (#1341).
+fn retain_locals_handed_over_while_live(
+    func: &mut MirFunction,
+    string_locals: &[LocalId],
+    own: &HashSet<String>,
+) {
+    let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
+    let strings: HashSet<LocalId> =
+        string_locals.iter().copied().filter(|l| !params.contains(l)).collect();
+    let live = liveness::analyze_phis_on_edges(func);
+    let aliases = AddrAliases::build(func);
+    for block in &mut func.blocks {
+        let mut insertions: Vec<(usize, MirStmt)> = Vec::new();
+        for (si, stmt) in block.statements.iter().enumerate() {
+            let MirStmtKind::Call { .. } = &stmt.kind else { continue };
+            for &local in &strings {
+                if !handed_to_a_keeper(stmt, local, own) {
+                    continue;
+                }
+                let mut used_after = None;
+                for later in &block.statements[si + 1..] {
+                    if aliases.stmt_reads(later, local) {
+                        used_after = Some(true);
+                        break;
+                    }
+                    if uses::stmt_def(later) == Some(local) {
+                        used_after = Some(false);
+                        break;
+                    }
+                }
+                let used_after = used_after.unwrap_or_else(|| {
+                    aliases.terminator_reads(&block.terminator, local)
+                        || live.live_at_exit(block.id, local)
+                });
+                if used_after {
+                    insertions.push((si, MirStmt::new(MirStmtKind::RcInc { local }, stmt.span)));
+                }
+            }
+        }
+        for (idx, stmt) in insertions.into_iter().rev() {
+            block.statements.insert(idx, stmt);
+        }
+    }
+}
+
 /// Release each string where it stops being live.
 ///
 /// A string holds one reference, and the reference is given back at the
@@ -913,7 +977,7 @@ fn retain_params_handed_over(
 /// somewhere that happened to work for the shapes that found them; two of
 /// them fired for the same death in a loop that overwrote a string, and freed
 /// it twice.
-fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
+fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSet<String>) {
     let live = liveness::analyze_phis_on_edges(func);
     // `s as i64` into an unsafe call hands out the address of `s`, and the
     // native callee reads the buffer through it. Counting only the cast as a
@@ -930,7 +994,9 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
     let mut in_block: Vec<(usize, usize, LocalId)> = Vec::new();
     for (bi, block) in func.blocks.iter().enumerate() {
         for &local in &locals {
-            if let Some(at) = dies_in_block(block, local, live.live_at_exit(block.id, local), &aliases) {
+            if let Some(at) =
+                dies_in_block(block, local, live.live_at_exit(block.id, local), &aliases, own)
+            {
                 in_block.push((bi, at, local));
             }
         }
@@ -973,7 +1039,13 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId]) {
 /// Scanned backwards from the block's exit, where the value is dead unless
 /// `live_out`. The first statement met that reads it, or failing that the one
 /// that makes it, is where it dies.
-fn dies_in_block(block: &MirBlock, local: LocalId, live_out: bool, aliases: &AddrAliases) -> Option<usize> {
+fn dies_in_block(
+    block: &MirBlock,
+    local: LocalId,
+    live_out: bool,
+    aliases: &AddrAliases,
+    own: &HashSet<String>,
+) -> Option<usize> {
     if live_out {
         return None;
     }
@@ -1019,6 +1091,11 @@ fn dies_in_block(block: &MirBlock, local: LocalId, live_out: bool, aliases: &Add
             // covered.
             if hands_out_the_buffer(stmt, local) {
                 return Some(n);
+            }
+            // The last use gives the reference to a call that keeps it, so
+            // there is nothing left here to release.
+            if handed_to_a_keeper(stmt, local, own) {
+                return None;
             }
             return Some(after_increments(block, si + 1));
         }

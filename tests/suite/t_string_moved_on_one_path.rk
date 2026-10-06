@@ -1,0 +1,59 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A string handed to something that keeps it, on one path only, leaked on the
+// paths that didn't hand it over: the release pass dropped every release of
+// the string once any path gave it away. The same rule gave a vector two
+// copies of one reference when a string was pushed twice, and the second free
+// read a dead buffer (#1341).
+
+enum Thing {
+    Named(string)
+    Plain
+}
+
+func pick(k: i64) -> Thing {
+    let s = "x".repeat(40)
+    if k == 0 {
+        return Thing.Named(s)
+    }
+    return Thing.Plain
+}
+
+func push_if_zero(k: i64, mutate v: Vec<string>) -> bool {
+    let s = "z".repeat(40)
+    if k == 0 {
+        v.push(s)
+        return true
+    }
+    return false
+}
+
+test "moved into an enum on one path only" {
+    let t = pick(1)
+    assert t == Thing.Plain
+    let n = pick(0)
+    if n is Thing.Named(s) {
+        assert s.len() == 40
+    } else {
+        assert false
+    }
+}
+
+test "pushed on one path only" {
+    mut v: Vec<string> = Vec.new()
+    assert !push_if_zero(1, mutate v)
+    assert push_if_zero(0, mutate v)
+    assert v.len() == 1
+}
+
+test "pushed twice, then read" {
+    let s = "y".repeat(40)
+    mut v: Vec<string> = Vec.new()
+    for _ in 0..3 {
+        v.push(s)
+    }
+    v.push(s)
+    assert v.len() == 4
+    assert v[3] == s
+    assert s.len() == 40
+}

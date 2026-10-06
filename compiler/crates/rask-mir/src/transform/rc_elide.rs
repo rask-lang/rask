@@ -91,8 +91,8 @@ fn owned_from_elsewhere(func: &MirFunction, string_locals: &HashSet<LocalId>) ->
     owned
 }
 
-/// The two halves `container_touched` merges, kept apart: strings that point
-/// into a container's storage, and strings handed to a call that keeps them.
+/// Strings that point into a container's storage, and strings handed to a
+/// call that keeps them.
 ///
 /// A view propagates through copies and phis, because the local the call
 /// receives is usually a copy of the one the read produced.
@@ -144,47 +144,6 @@ fn views_and_handovers(
         }
     }
     (views, handed)
-}
-
-/// String locals that cross a stdlib boundary that takes the reference with it.
-fn container_touched(
-    func: &MirFunction,
-    string_locals: &HashSet<LocalId>,
-    own: &HashSet<String>,
-) -> HashSet<LocalId> {
-    let mut touched: HashSet<LocalId> = HashSet::new();
-    for block in &func.blocks {
-        for stmt in &block.statements {
-            let MirStmtKind::Call { dst, func: fref, args } = &stmt.kind else { continue };
-            // A string the call points at rather than hands over: `v.get(i)`
-            // returns the buffer's own sixteen bytes, and the vector releases
-            // them when it dies. Releasing here as well would free it twice.
-            //
-            // `pop` and `remove` do transfer out, and read the same way from a
-            // signature — so they stay elided too, and leak rather than risk
-            // the double free (#1035).
-            if crate::own_names::returns_a_view(&fref.name, own) {
-                if let Some(dst) = dst {
-                    if string_locals.contains(dst) {
-                        touched.insert(*dst);
-                    }
-                }
-            }
-            // An argument the callee keeps. The reference moves in with it, so
-            // this function no longer owes a release on it.
-            for (i, arg) in args.iter().enumerate() {
-                if !crate::own_names::keeps_argument(&fref.name, i, own) {
-                    continue;
-                }
-                if let Some(id) = crate::analysis::uses::operand_local(arg) {
-                    if string_locals.contains(&id) {
-                        touched.insert(id);
-                    }
-                }
-            }
-        }
-    }
-    touched
 }
 
 /// Group string locals that name the same buffer: `dst = src` and phis.
@@ -249,16 +208,14 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
     let string_locals: HashSet<LocalId> =
         func.locals_of_type(&crate::MirType::String).into_iter().collect();
     let owned = owned_from_elsewhere(func, &string_locals);
-    let containers = container_touched(func, &string_locals, own);
 
     // Decide per group, not per local: keeping one local's release while
     // dropping the increment on the copy that outlives it frees the buffer out
     // from under the copy.
-    // Out of one container and into another. `container_touched` lumps both
-    // halves together — a view coming out, a hand-over going in — and either
-    // one alone means the frame owes no release. Both at once is different: the
-    // view carries no reference and the destination will release, so the retain
-    // has to survive.
+    // Out of one container and into another. A view coming out carries no
+    // reference, so the frame owes no release on it; a hand-over going in takes
+    // one. Both at once: the view's copy is retained, and that retain is the
+    // reference the destination ends up holding, so it has to survive.
     //
     //     _21 = Vec_get_unchecked(_16, _19)   // a view into _16
     //     _22 = _21
@@ -278,7 +235,12 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
     let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
     let mut keep_retain_only: HashSet<LocalId> = HashSet::new();
     for group in copy_groups(func, &string_locals) {
-        let crosses_container = group.iter().any(|l| containers.contains(l));
+        // A view only. A string handed to a keeper used to count too, and
+        // that dropped every release in the group on every path: `s` pushed
+        // on one branch leaked on the other (#1341). `rc_insert` accounts for
+        // the hand-over itself — no release at the last use, a retain before
+        // an earlier one — so those ops are the right ones to keep.
+        let crosses_container = group.iter().any(|l| views.contains(l));
         let borrowed_in = group.iter().any(|l| owned.contains(l));
         let container_to_container =
             group.iter().any(|l| views.contains(l)) && group.iter().any(|l| handed_over.contains(l));
