@@ -1645,7 +1645,16 @@ impl Interpreter {
                 // without it a field declared `T` never looks like the `i64?`
                 // it was instantiated to, so the wrap below never fires (#1080).
                 let concrete_name = name.clone();
-                let decl_name = if type_args.is_empty() {
+                // `Slot<i64>.Pair { … }` (E4a): the arguments are the enum's,
+                // and an enum value doesn't carry them, so there's no struct
+                // to instantiate.
+                let names_a_variant = name.rsplit_once('.').is_some_and(|(enum_path, variant)| {
+                    let enum_name = enum_path.rsplit('.').next().unwrap_or(enum_path);
+                    self.enums
+                        .get(enum_name)
+                        .is_some_and(|decl| decl.variants.iter().any(|v| v.name == variant))
+                });
+                let decl_name = if type_args.is_empty() || names_a_variant {
                     name.clone()
                 } else {
                     let args: Vec<TypeExpr> =

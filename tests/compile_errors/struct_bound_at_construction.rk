@@ -57,4 +57,7 @@ func main() {
 
     // ERROR: and so does a variant with named fields (#1473)
     let p = Slot.Pair { left: Plain { x: 4 }, right: Plain { x: 5 } }
+
+    // ERROR: with the arguments written at the variant (#1477)
+    let r = Slot<Plain>.Pair { left: Plain { x: 6 }, right: Plain { x: 7 } }
 }

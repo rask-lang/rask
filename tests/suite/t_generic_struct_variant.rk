@@ -41,6 +41,14 @@ test "an aggregate argument gets its own layout" {
     assert joined(Slot.Pair { left: "long enough to allocate", right: "!" }) == "long enough to allocate!"
 }
 
+// The instantiation written at the variant (type.enums/E4a). The tuple form
+// `Slot<i64>.Full(1)` parsed; this one was a parse error (#1477).
+test "type arguments written at a struct-like variant" {
+    let p = Slot<string>.Pair { left: "p", right: "q" }
+    assert joined(p) == "pq"
+    assert sum(Slot<i64>.Pair { left: 20, right: 22 }) == 42
+}
+
 func main() {
     println(joined(Slot.Pair { left: "a", right: "b" }))
     println("{sum(Slot.Pair { left: 1, right: 2 })}")

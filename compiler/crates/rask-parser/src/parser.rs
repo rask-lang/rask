@@ -4779,6 +4779,18 @@ impl Parser {
                     // The head is a name chain — `Shape.Circle`, but also
                     // `bits.BinaryParseError.UnexpectedEnd` through a module
                     // (#1461) — so the whole path is read, not just one dot.
+                    //
+                    // `Slot<i64>.Pair { … }` names the instantiation at the
+                    // variant (type.enums/E4a), as `Slot<i64>.Full(1)` does.
+                    if let ExprKind::GenericName { name, type_args } = &lhs.kind {
+                        if name.starts_with(|c: char| c.is_uppercase())
+                            && field.starts_with(|c: char| c.is_uppercase())
+                        {
+                            let name = format!("{}.{}", name, field);
+                            let type_args = type_args.clone();
+                            return self.parse_struct_literal(name, type_args, start);
+                        }
+                    }
                     if let Some(mut path) = Self::name_path(&lhs) {
                         // A module namespace is lowercase by convention —
                         // `c.Rect { … }`, `http.Response { … }` — so the

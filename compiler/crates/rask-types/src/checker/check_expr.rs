@@ -1257,7 +1257,22 @@ impl TypeChecker {
                             let (declared, result_ty) = if params.is_empty() {
                                 (self.instantiate_type_vars(&field_types), Type::Named(type_id))
                             } else {
-                                let fresh: Vec<Type> = params.iter().map(|_| self.ctx.fresh_var()).collect();
+                                // `Slot<i64>.Pair { … }` writes them (E4a).
+                                let written: Option<Vec<Type>> = match self.spelled_out_enum(enum_name, type_args) {
+                                    Some(Type::Generic { args, .. }) if args.len() == params.len() => Some(
+                                        args.into_iter()
+                                            .filter_map(|a| match a {
+                                                GenericArg::Type(t) => Some(*t),
+                                                GenericArg::ConstUsize(_) => None,
+                                            })
+                                            .collect(),
+                                    ),
+                                    _ => None,
+                                };
+                                let fresh: Vec<Type> = match written {
+                                    Some(w) if w.len() == params.len() => w,
+                                    _ => params.iter().map(|_| self.ctx.fresh_var()).collect(),
+                                };
                                 let subst: std::collections::HashMap<&str, Type> = params
                                     .iter()
                                     .map(|p| p.as_str())

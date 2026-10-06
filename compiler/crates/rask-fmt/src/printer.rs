@@ -2269,8 +2269,20 @@ impl<'a> Printer<'a> {
                 }
             }
             ExprKind::StructLit { name, type_args, fields, spread } => {
-                self.emit(name);
-                self.emit_type_args(type_args);
+                // A dotted name with arguments is a variant naming its enum's
+                // instantiation: the arguments go on the enum, `Slot<i64>.Pair`.
+                match name.rsplit_once('.') {
+                    Some((enum_path, variant)) if !type_args.is_empty() => {
+                        self.emit(enum_path);
+                        self.emit_type_args(type_args);
+                        self.emit(".");
+                        self.emit(variant);
+                    }
+                    _ => {
+                        self.emit(name);
+                        self.emit_type_args(type_args);
+                    }
+                }
                 let source_is_multiline = self.source_text(expr.span).contains('\n');
                 if fields.is_empty() && spread.is_none() {
                     self.emit(" {}");
