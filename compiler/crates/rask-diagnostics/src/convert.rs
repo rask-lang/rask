@@ -420,6 +420,29 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 }
             }
 
+            ShadowsModule { name, module, imported_at } => {
+                let what = if name == module {
+                    format!("`{}` is the module imported here", name)
+                } else {
+                    format!("`{}` is the `{}` module, imported here", name, module)
+                };
+                Diagnostic::error(format!("`{}` already names an imported module", name))
+                    .with_code("E0911")
+                    .with_primary(self.span, format!("a second `{}` in the same scope", name))
+                    .with_secondary(*imported_at, what)
+                    .with_fix(format!(
+                        "name this something else, or import the module under another name: \
+                         `import {} as {}_mod`",
+                        module, module
+                    ))
+                    .with_why(format!(
+                        "one name, one meaning: with both in scope nothing in the source \
+                         says whether `{}.x` means the module's member or a field of this \
+                         value [struct.modules/IM8]",
+                        name
+                    ))
+            }
+
             NoSuchStdlibExport { module, symbol, suggestion } => {
                 let d = Diagnostic::error(format!(
                     "`{}` has no `{}` to import", module, symbol

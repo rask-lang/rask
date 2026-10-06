@@ -6617,7 +6617,7 @@ nums[1]=20
 // `let fs = Vec.from(…)` then `fs.len()` failed with "no method `len` found for
 // type `fs`". The method-call checker tried its namespace routes without asking
 // whether a local of that name existed, so an unimported module name beat the
-// variable. Imported module names can't be shadowed at all (E0209), so a local
+// variable. Imported module names can't be shadowed at all (IM8, E0911), so a local
 // always means "no module here".
 #[test]
 fn a_variable_named_after_a_module_wins_on_both_backends() {

@@ -132,6 +132,13 @@ impl ResolveError {
         }
     }
 
+    pub fn shadows_module(name: String, module: String, imported_at: Span, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::ShadowsModule { name, module, imported_at },
+            span,
+        }
+    }
+
     pub fn shadows_builtin(name: String, span: Span) -> Self {
         Self {
             kind: ResolveErrorKind::ShadowsBuiltin { name },
@@ -230,6 +237,10 @@ pub enum ResolveErrorKind {
 
     #[error("cannot define `{name}` because it shadows a built-in; built-in types and functions cannot be redefined")]
     ShadowsBuiltin { name: String },
+
+    /// IM8: a declaration or local named like a module the program imported.
+    #[error("`{name}` already names the imported module `{module}`")]
+    ShadowsModule { name: String, module: String, imported_at: Span },
 
     #[error("C header not found: `{header}` ({detail})")]
     CHeaderNotFound { header: String, detail: String },

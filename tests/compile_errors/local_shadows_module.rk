@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a local or a type named like an imported module (IM8, E0911)
+//
+// `import bits as b` then `let b = 5` was reported as "`b` is a built-in
+// type", and `let bits = 5` under `import bits` the same. Neither name is a
+// type; each is a module binding the program wrote. The error now names the
+// import and points at it (#1475).
+
+import bits as b
+import json
+
+func main() {
+    // ERROR: `b` already names an imported module
+    let b = 5
+    // ERROR: so does the module's own name
+    mut json = 1
+    json += 1
+}

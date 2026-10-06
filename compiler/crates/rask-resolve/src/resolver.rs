@@ -488,27 +488,39 @@ impl Resolver {
     /// now, and it's the accurate version: a program may declare `max`, which
     /// isn't in BF1, and may not declare `println`, which is — whether the
     /// declaration is a struct or a function.
-    fn is_reserved_name(&self, name: &str) -> bool {
+    fn reserved_name_error(&self, name: &str, span: Span) -> Option<ResolveError> {
+        if self.stdlib_mode {
+            return None;
+        }
         if crate::symbol::is_always_in_scope(name) {
-            return true;
+            return Some(ResolveError::shadows_builtin(name.to_string(), span));
         }
-        if let Some(sym_id) = self.scopes.lookup(name) {
-            // A module the *stdlib* imported for its own use isn't reserved for
-            // the program. `stdlib/http.rk` imports `net`, and that binding
-            // lands in the shared scope — so without this, `let net = …` was
-            // rejected while `let fs = …` was fine, for no reason a reader
-            // could see (#780). A name needs its own import here, which is
-            // IM1's rule and what E0210 reports.
-            if self.stdlib_symbols.contains(&sym_id) {
-                return false;
-            }
-            if let Some(sym) = self.symbols.get(sym_id) {
-                return matches!(sym.kind, SymbolKind::BuiltinModule { .. })
-                    || (matches!(sym.kind, SymbolKind::Enum { .. })
-                        && self.builtin_enums.contains(&sym_id));
-            }
+        let sym_id = self.scopes.lookup(name)?;
+        // A module the *stdlib* imported for its own use isn't reserved for
+        // the program. `stdlib/http.rk` imports `net`, and that binding
+        // lands in the shared scope — so without this, `let net = …` was
+        // rejected while `let fs = …` was fine, for no reason a reader
+        // could see (#780). A name needs its own import here, which is
+        // IM1's rule and what E0210 reports.
+        if self.stdlib_symbols.contains(&sym_id) {
+            return None;
         }
-        false
+        let sym = self.symbols.get(sym_id)?;
+        match &sym.kind {
+            // The program's own import: IM8, and the message names it. It
+            // used to say "`b` is a built-in type" for `import bits as b`
+            // followed by `let b = 5` (#1475).
+            SymbolKind::BuiltinModule { module } => Some(ResolveError::shadows_module(
+                name.to_string(),
+                module.name().to_string(),
+                sym.span,
+                span,
+            )),
+            SymbolKind::Enum { .. } if self.builtin_enums.contains(&sym_id) => {
+                Some(ResolveError::shadows_builtin(name.to_string(), span))
+            }
+            _ => None,
+        }
     }
 
     fn resolve_inner(decls: &[Decl], stdlib_mode: bool) -> Result<ResolvedProgram, Vec<ResolveError>> {
@@ -1110,8 +1122,8 @@ impl Resolver {
                 return sym_id;
             }
         }
-        if !self.stdlib_mode && self.is_reserved_name(&base) {
-            self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
+        if let Some(e) = self.reserved_name_error(&base, span) {
+            self.errors.push(e);
         }
         self.check_shadows_import(&base, span);
 
@@ -1133,8 +1145,8 @@ impl Resolver {
 
     fn declare_struct(&mut self, struct_decl: &StructDecl, span: Span) {
         let base = struct_decl.name.clone();
-        if !self.stdlib_mode && self.is_reserved_name(&base) {
-            self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
+        if let Some(e) = self.reserved_name_error(&base, span) {
+            self.errors.push(e);
         }
         self.check_shadows_import(&base, span);
 
@@ -1176,8 +1188,8 @@ impl Resolver {
 
     fn declare_union(&mut self, union_decl: &UnionDecl, span: Span) {
         let union_base = union_decl.name.clone();
-        if !self.stdlib_mode && self.is_reserved_name(&union_base) {
-            self.errors.push(ResolveError::shadows_builtin(union_base.clone(), span));
+        if let Some(e) = self.reserved_name_error(&union_base, span) {
+            self.errors.push(e);
         }
         self.check_shadows_import(&union_base, span);
 
@@ -1211,8 +1223,8 @@ impl Resolver {
 
     fn declare_enum(&mut self, enum_decl: &EnumDecl, span: Span) {
         let base = enum_decl.name.clone();
-        if !self.stdlib_mode && self.is_reserved_name(&base) {
-            self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
+        if let Some(e) = self.reserved_name_error(&base, span) {
+            self.errors.push(e);
         }
         self.check_shadows_import(&base, span);
 
@@ -1257,8 +1269,8 @@ impl Resolver {
     }
 
     fn declare_interface(&mut self, interface_decl: &InterfaceDecl, span: Span) {
-        if !self.stdlib_mode && self.is_reserved_name(&interface_decl.name) {
-            self.errors.push(ResolveError::shadows_builtin(interface_decl.name.clone(), span));
+        if let Some(e) = self.reserved_name_error(&interface_decl.name, span) {
+            self.errors.push(e);
         }
         let interface_base = interface_decl.name.clone();
         self.check_shadows_import(&interface_base, span);
@@ -2044,8 +2056,8 @@ impl Resolver {
             }
             StmtKind::Mut { name, name_span, ty, init } => {
                 self.resolve_expr(init);
-                if !self.stdlib_mode && self.is_reserved_name(name) {
-                    self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
+                if let Some(e) = self.reserved_name_error(name, *name_span) {
+                    self.errors.push(e);
                 }
                 // IM1 on a local's annotation. `check_annotations` walks
                 // declarations, so it never looked inside a body — and
@@ -2067,8 +2079,8 @@ impl Resolver {
             }
             StmtKind::Let { name, name_span, ty, init } => {
                 self.resolve_expr(init);
-                if !self.stdlib_mode && self.is_reserved_name(name) {
-                    self.errors.push(ResolveError::shadows_builtin(name.clone(), *name_span));
+                if let Some(e) = self.reserved_name_error(name, *name_span) {
+                    self.errors.push(e);
                 }
                 if let Some(ty) = ty {
                     self.check_type_annotation(ty, *name_span);
