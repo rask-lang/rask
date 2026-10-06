@@ -1644,6 +1644,10 @@ pub struct MirLowerer<'a> {
     /// matters. Scanned up front for the same reason `ensure_read_names` is
     /// (#1094).
     spawned_closure_names: std::collections::HashSet<String>,
+    /// Inside a closure body: the locals that hold a capture's address
+    /// rather than a copy of it. A whole-value write to one replaces what
+    /// the creating frame (or the environment) holds.
+    pub(crate) addressed_captures: std::collections::HashSet<LocalId>,
     /// Which of those closures actually box, once lowered — `spawn` takes a
     /// flag saying whether the word it gets back is a box the runtime owns.
     spawn_boxed_bindings: HashMap<String, bool>,
@@ -4061,6 +4065,7 @@ impl<'a> MirLowerer<'a> {
             closure_counter: 0,
             spawn_result_boxed: false,
             spawned_closure_names: std::collections::HashSet::new(),
+            addressed_captures: std::collections::HashSet::new(),
             spawn_boxed_bindings: HashMap::new(),
             parent_name: func_name,
             local_meta: HashMap::new(),

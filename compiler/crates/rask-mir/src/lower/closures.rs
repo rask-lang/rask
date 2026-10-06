@@ -417,9 +417,13 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Emit LoadCapture for each free variable
+        let mut addressed_captures = std::collections::HashSet::new();
         for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
+            if capture_access.is_addressed() {
+                addressed_captures.insert(local_id);
+            }
             closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
                 env_ptr: env_param_id,
@@ -433,6 +437,7 @@ impl<'a> MirLowerer<'a> {
         {
             let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
             let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
+            let saved_captures = std::mem::replace(&mut self.addressed_captures, addressed_captures);
             let saved_loop_stack = std::mem::take(&mut self.loop_stack);
             // The cleanup chain belongs to the enclosing function, and its
             // blocks live in that function's MIR. A `return` inside this body
@@ -454,6 +459,7 @@ impl<'a> MirLowerer<'a> {
 
             closure_builder = std::mem::replace(&mut self.builder, saved_builder);
             self.locals = saved_locals;
+            self.addressed_captures = saved_captures;
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
 

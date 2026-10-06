@@ -665,18 +665,15 @@ fn insert_aggregate_release(
     };
 
     for block in &func.blocks {
-        // Slots this block gives back before writing over them. A store that
-        // follows one is a *replacement*, not the end of the value: what was
-        // there has just been freed by name, and what lands next is the value's
-        // as much as the old one was (#1198).
-        let released_here: HashSet<(LocalId, u32)> = block
-            .statements
-            .iter()
-            .filter_map(|st| match &st.kind {
-                MirStmtKind::ReleaseSlot { addr, offset, .. } => Some((*addr, *offset)),
-                _ => None,
-            })
-            .collect();
+        // Slots this block has given back and not yet written over. A store
+        // that follows a release is a *replacement*, not the end of the value:
+        // what was there has just been freed by name, and what lands next is
+        // the value's as much as the old one was (#1198). Only the store that
+        // follows it: counting every store in the block, the one that first
+        // filled `held` read as a replacement too, so nothing ever made the
+        // value and nothing released it — `held.text = t` on a struct a
+        // closure captured leaked the struct (#1448).
+        let mut released_pending: HashSet<(LocalId, u32)> = HashSet::new();
         let mut events = Vec::with_capacity(block.statements.len());
         let mut reads = Vec::with_capacity(block.statements.len());
         let mut kills = Vec::with_capacity(block.statements.len());
@@ -696,6 +693,14 @@ fn insert_aggregate_release(
             if let MirStmtKind::RcIncContents { local } = &stmt.kind {
                 just_retained = Some(*local);
             }
+            let replaces = match &stmt.kind {
+                MirStmtKind::ReleaseSlot { addr, offset, .. } => {
+                    released_pending.insert((*addr, *offset));
+                    false
+                }
+                MirStmtKind::Store { addr, offset, .. } => released_pending.remove(&(*addr, *offset)),
+                _ => false,
+            };
             let mut ev: Vec<ownership::Event> = Vec::new();
             let is_tracked = |l: &LocalId| tracked.contains(l);
             let hand_over = |ev: &mut Vec<ownership::Event>, l: LocalId| {
@@ -811,7 +816,7 @@ fn insert_aggregate_release(
                         }
                     }
                     if aggregates.contains(addr)
-                        && !released_here.contains(&(*addr, *offset))
+                        && !replaces
                         && !store_is_narrow(stmt)
                     {
                         ev.push(ownership::Event::Fill(*addr));
@@ -839,7 +844,14 @@ fn insert_aggregate_release(
                 MirStmtKind::ClosureCreate { dst, captures, heap, .. } => {
                     let caps: Vec<LocalId> =
                         captures.iter().map(|c| c.local_id).filter(|c| is_tracked(c)).collect();
-                    if *heap && closures_dropped.contains(dst) {
+                    // A closure the frame drops reaches into what it captured,
+                    // and so does one that stays in its frame: a stack closure
+                    // points at the frame's variable (`mem.closures/CM1`), so
+                    // the frame still owns it and releases it after the
+                    // closure's last use. Counted as handed over, a struct
+                    // captured by `|| println(held.text)` was never released
+                    // (#1448). Only a closure that leaves carries its captures.
+                    if !*heap || closures_dropped.contains(dst) {
                         if caps.is_empty() {
                             ev.push(ownership::Event::Other(*dst));
                         }
@@ -899,9 +911,8 @@ fn insert_aggregate_release(
                         // `a.text = t` as the last thing done to `a` put the
                         // release between the slot's release and the store,
                         // freeing the old string twice and leaking `t`.
-                        Some((addr, offset, value)) if addr == *name => {
-                            uses::operand_local(value) == Some(*name)
-                                || released_here.contains(&(addr, offset))
+                        Some((addr, _, value)) if addr == *name => {
+                            uses::operand_local(value) == Some(*name) || replaces
                         }
                         _ => uses::stmt_reads(stmt, *name),
                     };

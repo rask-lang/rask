@@ -683,6 +683,23 @@ impl<'a> MirLowerer<'a> {
                                 store_size,
                             }));
                         } else {
+                            // A closure writing a whole struct over a capture
+                            // it reaches by address replaces the value its
+                            // creating frame (or its environment) holds, the
+                            // way a `mutate` parameter's write does above.
+                            // The frame releases only what's there at the end,
+                            // so `|| { line = Line { … } }` leaked the line it
+                            // replaced (#1448).
+                            if self.addressed_captures.contains(&local_id)
+                                && matches!(dst_ty, MirType::Struct(_) | MirType::Enum(_))
+                                && !reuses_old
+                            {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ReleaseSlot {
+                                    addr: local_id,
+                                    offset: 0,
+                                    ty: dst_ty.clone(),
+                                }));
+                            }
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                 dst: local_id,
                                 rvalue: MirRValue::Use(val_op),
