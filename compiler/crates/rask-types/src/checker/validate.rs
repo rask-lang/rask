@@ -225,8 +225,17 @@ impl TypeChecker {
         let pending = std::mem::take(&mut self.pending_linear_containers);
         let mut reported: Vec<Span> = Vec::new();
         let mut bad_key_reported: Vec<Span> = Vec::new();
+        let mut rack_reported: Vec<Span> = Vec::new();
         for (span, ty) in pending {
             let ty = self.ctx.apply(&ty);
+            // RK14 rides on the same sites: `Rack.new()`'s node type is often
+            // only known once the inserts have been seen.
+            if let Some(node) = self.types.find_rack_of_non_struct(&ty) {
+                if !rack_reported.contains(&span) {
+                    rack_reported.push(span);
+                    self.errors.push(TypeError::RackNodeNotStruct { node, span });
+                }
+            }
             if let Some((key, fix)) = self.types.find_unhashable_map_key(&ty) {
                 if !bad_key_reported.contains(&span) {
                     bad_key_reported.push(span);

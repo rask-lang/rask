@@ -1649,6 +1649,62 @@ impl TypeTable {
         }
     }
 
+    /// mem.racks/RK14: the node type of a `Rack<T>` inside `ty` whose `T` is
+    /// settled and isn't a struct.
+    ///
+    /// A type parameter or an open variable passes: the rule is checked where
+    /// the node type is concrete.
+    pub fn find_rack_of_non_struct(&self, ty: &Type) -> Option<Type> {
+        let in_args = |args: &[GenericArg]| {
+            args.iter().find_map(|a| match a {
+                GenericArg::Type(t) => self.find_rack_of_non_struct(t),
+                _ => None,
+            })
+        };
+        match ty {
+            Type::Generic { base, args } => {
+                if Some(*base) == self.stdlib_type_names.get("Rack").copied() {
+                    if let Some(GenericArg::Type(node)) = args.first() {
+                        if !self.can_be_rack_node(node) {
+                            return Some((**node).clone());
+                        }
+                    }
+                }
+                in_args(args)
+            }
+            Type::UnresolvedGeneric { args, .. } => in_args(args),
+            Type::Tuple(elems) | Type::Union(elems) => {
+                elems.iter().find_map(|t| self.find_rack_of_non_struct(t))
+            }
+            Type::Array { elem, .. } | Type::RawPtr(elem) => self.find_rack_of_non_struct(elem),
+            Type::Result { ok, err } => {
+                self.find_rack_of_non_struct(ok).or_else(|| self.find_rack_of_non_struct(err))
+            }
+            Type::Fn { params, ret } => params
+                .iter()
+                .find_map(|p| self.find_rack_of_non_struct(p))
+                .or_else(|| self.find_rack_of_non_struct(ret)),
+            _ => None,
+        }
+    }
+
+    /// A struct, or a type not settled enough to say.
+    fn can_be_rack_node(&self, node: &Type) -> bool {
+        let declared = |id: &TypeId| match self.get(*id) {
+            Some(TypeDef::Struct { .. }) => true,
+            Some(_) => false,
+            None => true,
+        };
+        match node {
+            Type::Named(id) | Type::Generic { base: id, .. } => declared(id),
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                self.get_type_id(name).is_none_or(|id| declared(&id))
+            }
+            Type::Var(_) | Type::Error | Type::Never => true,
+            _ => false,
+        }
+    }
+
     fn first_container_in_args(&self, args: &[GenericArg]) -> Option<(String, Type)> {
         args.iter().find_map(|a| match a {
             GenericArg::Type(t) => self.find_linear_container(t),

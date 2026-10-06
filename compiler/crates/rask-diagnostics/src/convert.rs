@@ -1473,6 +1473,14 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("parameters are read-only by default — add `mutate` to indicate the function modifies this value")
             }
 
+            RackNodeNotStruct { node, span } => {
+                Diagnostic::error(format!("`Rack<{}>`: a rack's nodes have to be structs", node))
+                    .with_code("E0326")
+                    .with_primary(*span, format!("`{}` has no fields for an edge to live in", node))
+                    .with_fix(format!("a list of values is a `Vec<{}>`; a graph wants a struct node whose edges are `Link<T>?` fields", node))
+                    .with_why("a rack exists so its nodes can point at each other and `delete` can null the edges into one; a node with no fields has nothing to point with, so it would be a slower `Vec` [mem.racks/RK14]")
+            }
+
             NonOptionalLink { span } => {
                 Diagnostic::error("a required `Link<T>` edge is not supported yet")
                     .with_code("E0327")

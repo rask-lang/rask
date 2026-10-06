@@ -292,6 +292,13 @@ pub enum TypeError {
     NonOptionalLink {
         span: Span,
     },
+    /// mem.racks/RK14: a rack's node is a struct. Its edges are `Link<T>?`
+    /// fields, and a scalar, a string or an enum has none for `delete` to null.
+    #[error("`Rack<{node}>`: a rack's nodes have to be structs")]
+    RackNodeNotStruct {
+        node: Type,
+        span: Span,
+    },
     /// A struct or enum that reaches itself through inline storage only, so no
     /// finite layout exists. `through` spells the chain when it goes via other
     /// types: `Node -> Edge -> Node`.
@@ -1477,6 +1484,7 @@ impl TypeError {
             TypePatternNotInUnion { union, .. } => *union = f(union),
 
             LinearInContainer { elem, .. } => *elem = f(elem),
+            RackNodeNotStruct { node, .. } => *node = f(node),
             UnhashableMapKey { key, .. } => *key = f(key),
             ToMapNeedsPairs { elem, .. } => *elem = f(elem),
 
