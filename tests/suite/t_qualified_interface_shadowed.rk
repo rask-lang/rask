@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `io.Writer` is the stdlib's `Writer`, even beside a program `Writer` (#1467).
+//
+//     interface Writer { func scribble(self) -> i64 }
+//     Tally implements io.Writer { func write(…) … }
+//     // error: `write` is not part of `Writer`
+//     // error: `Tally` has no `scribble`, which `io.Writer` requires
+//
+// The header's `io.Writer` was cut down to the bare name `Writer` and looked
+// up again, and a bare name means the program's interface when it declares
+// one. So the one thing that said "the stdlib's", the module, was gone before
+// the lookup that needed it. `any io.Writer` already meant the stdlib's; now
+// a conformance header and a bound do too, through an `import io as i` alias
+// as well.
+
+import io
+import io as i
+
+interface Writer {
+    func scribble(self) -> i64
+}
+
+struct Tally {
+    seen: i64
+}
+
+Tally implements io.Writer {
+    func write(self, data: Vec<u8>) -> i64 or io.IoError {
+        return self.seen + data.len().to<i64>()!
+    }
+    func write_bytes(self, data: Vec<u8>) -> void or io.IoError {
+    }
+    func write_text(self, data: string) -> void or io.IoError {
+    }
+}
+
+// The program's own `Writer`, on the same type.
+Tally implements Writer {
+    func scribble(self) -> i64 {
+        return self.seen * 10
+    }
+}
+
+struct Pad {
+    n: i64
+}
+
+Pad implements i.Writer {
+    func write(self, data: Vec<u8>) -> i64 or io.IoError {
+        return self.n
+    }
+    func write_bytes(self, data: Vec<u8>) -> void or io.IoError {
+    }
+    func write_text(self, data: string) -> void or io.IoError {
+    }
+}
+
+func through_any(w: any io.Writer) -> i64 {
+    return w.write([1u8, 2u8]) catch _ => -1
+}
+
+// Native lowering spelled `any i.Writer` from its text and found no vtable
+// filed under "i.Writer".
+func through_any_alias(w: any i.Writer) -> i64 {
+    return w.write([1u8, 2u8, 3u8]) catch _ => -1
+}
+
+func through_bound<W: io.Writer>(w: W) -> i64 {
+    return w.write([1u8]) catch _ => -1
+}
+
+func through_alias<W: i.Writer>(w: W) -> i64 {
+    return w.write([1u8]) catch _ => -1
+}
+
+func scribbled<W: Writer>(w: W) -> i64 {
+    return w.scribble()
+}
+
+test "a qualified header conforms to the stdlib's Writer" {
+    assert through_any(Tally { seen: 3 }) == 5
+    assert through_bound(Tally { seen: 3 }) == 4
+}
+
+test "the bare name is still the program's" {
+    assert scribbled(Tally { seen: 3 }) == 30
+}
+
+test "through an import alias" {
+    assert through_alias(Pad { n: 7 }) == 7
+    assert through_bound(Pad { n: 8 }) == 8
+    assert through_any(Pad { n: 9 }) == 9
+    assert through_any_alias(Pad { n: 10 }) == 10
+    assert through_any_alias(Tally { seen: 1 }) == 4
+    mut b = i.Buffer.new()
+    assert through_any_alias(b) == 3
+}

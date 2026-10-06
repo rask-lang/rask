@@ -669,6 +669,50 @@ impl TypeTable {
         Self::stdlib_module_member(interface).unwrap_or_else(|| interface.name().unwrap_or_default())
     }
 
+    /// The interface declaration a written reference names. A module-qualified
+    /// one is the module's: `io.Writer` is the stdlib's `Writer` even where the
+    /// program declares its own, in a bound, a conformance header and `any`
+    /// alike (#1467). Dropping the module and looking the bare name up found
+    /// the program's. Anything else is the name as the code being checked
+    /// means it. `None` for an interface the compiler provides by name only.
+    pub fn interface_decl(&self, written: &TypeExpr) -> Option<TypeId> {
+        let is_interface = |id: &TypeId| matches!(self.get(*id), Some(TypeDef::Interface { .. }));
+        if let Some(id) = self.module_interface(written) {
+            return Some(id);
+        }
+        self.get_type_id(&Self::conformance_key(written)).filter(is_interface)
+    }
+
+    /// `io.Writer`: the interface a stdlib module declares, when the reference
+    /// is written through one (an `import io as i` alias counts). Never the
+    /// program's interface of the same name, the way `module_type_id` never
+    /// answers with the program's type.
+    pub fn module_interface(&self, written: &TypeExpr) -> Option<TypeId> {
+        let TypeExpr::Named { path, .. } = written else { return None };
+        let [module, member] = path.as_slice() else { return None };
+        let module = self.module_named(module)?;
+        if !rask_stdlib::modules::exports_interface(module, member) {
+            return None;
+        }
+        self.stdlib_type_names
+            .get(member)
+            .copied()
+            .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })))
+    }
+
+    /// A parent `interface`'s declaration lists, as that declaration's own side
+    /// reads it: a stdlib interface's parents are the stdlib's.
+    pub fn parent_interface(&self, interface: TypeId, parent: &TypeExpr) -> Option<TypeId> {
+        self.module_interface(parent)
+            .or_else(|| self.resolve_name_as_declared_by(interface, &Self::conformance_key(parent)))
+    }
+
+    /// `interface_decl`, or the compiler-provided interface of that name.
+    pub fn written_interface_ident(&self, written: &TypeExpr) -> InterfaceIdent {
+        self.interface_decl(written)
+            .map_or_else(|| InterfaceIdent::Builtin(Self::conformance_key(written)), InterfaceIdent::Declared)
+    }
+
     /// GT2/GT3: the key a conformance is filed under — the interface *with its
     /// arguments*, so `Mul<f64>` and `Mul<Meters>` on one type stay apart.
     ///
@@ -679,7 +723,7 @@ impl TypeTable {
     ///
     /// The interface is the one the code being checked means by the name.
     pub fn applied_conformance_key(&self, interface: &TypeExpr, self_name: &str) -> ConformanceKey {
-        let iface = self.interface_ident(&Self::conformance_key(interface));
+        let iface = self.written_interface_ident(interface);
         self.applied_key_for(iface, interface, self_name)
     }
 
@@ -735,22 +779,15 @@ impl TypeTable {
     /// spelling it was written with, so "no interface named `io.Writer`" still
     /// names what the author typed.
     pub fn interface_object_written(&self, written: &TypeExpr) -> Type {
-        if let Some(name) = Self::stdlib_module_member(written) {
-            let stdlib = self
-                .stdlib_type_names
-                .get(&name)
-                .copied()
-                .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })));
-            if let Some(id) = stdlib {
-                return Type::InterfaceObject { interface_name: name, decl: Some(id) };
-            }
+        if let Some(id) = self.module_interface(written) {
+            return Type::InterfaceObject { interface_name: self.type_name(id), decl: Some(id) };
         }
         self.interface_object(&self.interface_name_written(written))
     }
 
     /// `Writer` for `io.Writer`: the name a stdlib module's member is held
     /// under. `None` for anything not written through a stdlib module.
-    pub fn stdlib_module_member(written: &TypeExpr) -> Option<String> {
+    fn stdlib_module_member(written: &TypeExpr) -> Option<String> {
         match written {
             TypeExpr::Named { path, .. } => match path.as_slice() {
                 [module, rest @ ..] if !rest.is_empty() && rask_stdlib::modules::is_module(module) => {
@@ -962,9 +999,8 @@ impl TypeTable {
     /// if two do — then the projection has no single meaning.
     pub fn projection_bound<'a>(&self, bounds: &'a [TypeExpr], assoc: &str) -> Option<&'a TypeExpr> {
         let mut through = bounds.iter().filter(|b| {
-            let iface = Self::conformance_key(b);
             matches!(
-                self.get_type_id(&iface).and_then(|id| self.get(id)),
+                self.interface_decl(b).and_then(|id| self.get(id)),
                 Some(TypeDef::Interface { assoc_types, .. }) if assoc_types.iter().any(|a| a.name == assoc)
             )
         });
@@ -974,7 +1010,7 @@ impl TypeTable {
 
     /// AT6: read an associated type off a conformance. A lookup, never a search.
     pub fn assoc_binding(&self, type_id: TypeId, interface: &TypeExpr, assoc: &str) -> Option<&Type> {
-        let iface = self.interface_ident(&Self::conformance_key(interface));
+        let iface = self.written_interface_ident(interface);
         self.assoc_binding_to(type_id, iface, interface, assoc)
     }
 
@@ -1213,7 +1249,7 @@ impl TypeTable {
     /// `horn as any Speak` refused for an interface the type demonstrably implements,
     /// and pushing one into a `Vec<any Speak>` was a type error (#873).
     pub fn declares_conformance(&self, type_id: TypeId, interface: &TypeExpr) -> bool {
-        let iface = self.interface_ident(&Self::conformance_key(interface));
+        let iface = self.written_interface_ident(interface);
         self.declares_conformance_to(type_id, iface, interface)
     }
 
@@ -1275,7 +1311,7 @@ impl TypeTable {
             return false;
         };
         super_interfaces.iter().any(|p| {
-            self.resolve_name_as_declared_by(interface, &Self::conformance_key(p))
+            self.parent_interface(interface, p)
                 .is_some_and(|pid| pid == target || self.interface_extends(pid, target, seen))
         })
     }
@@ -1287,7 +1323,7 @@ impl TypeTable {
         interface: &TypeExpr,
         bounds: Vec<(String, Vec<TypeExpr>)>,
     ) {
-        let iface = self.interface_ident(&Self::conformance_key(interface));
+        let iface = self.written_interface_ident(interface);
         self.conformance_conditions.insert((type_id, iface), bounds);
     }
 
@@ -1297,7 +1333,7 @@ impl TypeTable {
         type_id: TypeId,
         interface: &TypeExpr,
     ) -> Option<&Vec<(String, Vec<TypeExpr>)>> {
-        self.conformance_conditions.get(&(type_id, self.interface_ident(&Self::conformance_key(interface))))
+        self.conformance_conditions.get(&(type_id, self.written_interface_ident(interface)))
     }
 
     /// Check if a name is registered.

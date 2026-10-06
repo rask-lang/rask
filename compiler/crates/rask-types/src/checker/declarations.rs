@@ -462,9 +462,8 @@ impl TypeChecker {
 
     /// AT1: does this interface (by its written reference) declare `assoc`?
     fn interface_declares_assoc(&self, interface_ref: &TypeExpr, assoc: &str) -> bool {
-        let base = TypeTable::conformance_key(interface_ref);
         matches!(
-            self.types.get_type_id(&base).and_then(|id| self.types.get(id)),
+            self.types.interface_decl(interface_ref).and_then(|id| self.types.get(id)),
             Some(TypeDef::Interface { assoc_types, .. }) if assoc_types.iter().any(|a| a.name == assoc)
         )
     }
@@ -472,9 +471,8 @@ impl TypeChecker {
     /// GT2/GT4: does a written interface reference give each parameter an argument
     /// (or leave one that has a default)? Reports and returns false if not.
     fn check_interface_arity(&mut self, interface_ref: &TypeExpr, span: rask_ast::Span) -> bool {
-        let base = TypeTable::conformance_key(interface_ref);
         let Some(TypeDef::Interface { type_params, .. }) =
-            self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+            self.types.interface_decl(interface_ref).and_then(|id| self.types.get(id))
         else {
             return true;
         };
@@ -526,7 +524,7 @@ impl TypeChecker {
         let interface_name = TypeTable::conformance_key(interface);
         let allowed = {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
-            checker.declared_method_names(&interface_name)
+            checker.declared_method_names(interface)
         };
         let Some(allowed) = allowed else { return };
         for m in &i.methods {
@@ -559,7 +557,7 @@ impl TypeChecker {
         }
         let siblings: Vec<TypeExpr> = self
             .types
-            .applied_conformances(type_id, &self.types.interface_ident(&base))
+            .applied_conformances(type_id, &self.types.written_interface_ident(interface))
             .into_iter()
             .filter(|k| !self.same_applied_interface(k, interface_ref, &i.target_ty))
             .collect();
@@ -622,7 +620,7 @@ impl TypeChecker {
             let (interface_name, known) = match i.interface.as_ref() {
                 Some(t) => {
                     let base = TypeTable::conformance_key(t);
-                    let known = match self.types.get_type_id(&base).and_then(|id| self.types.get(id)) {
+                    let known = match self.types.interface_decl(t).and_then(|id| self.types.get(id)) {
                         Some(TypeDef::Interface { assoc_types, .. }) => {
                             assoc_types.iter().map(|a| a.name.clone()).collect()
                         }
@@ -648,10 +646,9 @@ impl TypeChecker {
         }
 
         if let Some(interface) = &i.interface {
-            let base = TypeTable::conformance_key(interface);
             let interface_ref = &interface.to_string();
             if let Some(TypeDef::Interface { assoc_types, .. }) =
-                self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+                self.types.interface_decl(interface).and_then(|id| self.types.get(id))
             {
                 let assoc_types = assoc_types.clone();
                 for a in &assoc_types {
@@ -783,7 +780,7 @@ impl TypeChecker {
         }
         let Some(type_id) = self.named_type_id(ty) else { return };
         for key in self.types.ambiguous_conformance_keys(type_id) {
-            if self.types.interface_ident(&TypeTable::conformance_key(bound)) == key.iface {
+            if self.types.written_interface_ident(bound) == key.iface {
                 self.check_conformance_ambiguity(type_id, &key, span);
             }
         }
@@ -1079,9 +1076,8 @@ impl TypeChecker {
         // code came back unresolved.
         let self_ty = self.resolve_impl_self_type(&i.target_ty);
         if let Some(interface_name) = &interface_name {
-            let base = TypeTable::conformance_key(interface_name);
             if let Some(TypeDef::Interface { assoc_types, .. }) =
-                self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+                self.types.interface_decl(interface_name).and_then(|id| self.types.get(id))
             {
                 let defaults: Vec<(String, TypeExpr)> = assoc_types
                     .iter()
@@ -1189,9 +1185,8 @@ impl TypeChecker {
         // wanting one method (E0889) are each already reported with a message
         // that names the real problem, so they are not reported again here.
         let same_base_sibling = i.interface.as_ref().map_or(false, |iface| {
-            let base = TypeTable::conformance_key(iface);
             self.types
-                .applied_conformances(type_id, &self.types.interface_ident(&base))
+                .applied_conformances(type_id, &self.types.written_interface_ident(iface))
                 .iter()
                 .any(|k| !self.same_applied_interface(k, iface, &i.target_ty))
         });
@@ -2416,8 +2411,7 @@ impl TypeChecker {
                 // UT1: implementing an unsafe interface requires `unsafe extend`
                 if let Some(interface) = &i.interface {
                     let interface_name = interface.to_string();
-                    let base = TypeTable::conformance_key(interface);
-                    if let Some(type_id) = self.types.get_type_id(&base) {
+                    if let Some(type_id) = self.types.interface_decl(interface) {
                         if let Some(TypeDef::Interface { is_unsafe: true, .. }) = self.types.get(type_id) {
                             if !i.is_unsafe {
                                 self.errors.push(TypeError::UnsafeRequired {

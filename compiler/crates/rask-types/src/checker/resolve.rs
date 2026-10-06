@@ -541,7 +541,7 @@ impl TypeChecker {
         let self_var = Type::Var(TypeVarId(0));
         for interface_name in with_interfaces {
             let Some(mut sig) = checker
-                .get_interface_methods_public(&super::TypeTable::conformance_key(interface_name))
+                .interface_methods_written(interface_name)
                 .into_iter()
                 .find(|m| m.name == method)
             else {
@@ -1706,7 +1706,7 @@ impl TypeChecker {
             let checker = crate::interfaces::InterfaceChecker::new(&self.types);
             bounds.iter().find_map(|tr| {
                 checker
-                    .get_interface_methods_public(&super::TypeTable::conformance_key(tr))
+                    .interface_methods_written(tr)
                     .into_iter()
                     .find(|m| m.name == method)
             })

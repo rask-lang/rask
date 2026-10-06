@@ -517,6 +517,22 @@ impl StubRegistry {
         decls
     }
 
+    /// Every public interface the stub sources declare, with the file it's in.
+    pub fn public_interfaces() -> Vec<(&'static str, String)> {
+        let mut out = Vec::new();
+        for (stub_index, (file, _)) in all_sources().iter().enumerate() {
+            let Some(parsed) = &parsed_stdlib()[stub_index] else { continue };
+            for decl in parsed {
+                if let DeclKind::Interface(i) = &decl.kind {
+                    if i.is_pub {
+                        out.push((*file, i.name.clone()));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     fn process_decl(&mut self, decl: &rask_ast::decl::Decl, filename: &str, source: &str) {
         let decl_span = decl.span;
         match &decl.kind {

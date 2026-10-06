@@ -111,10 +111,7 @@ impl<'a> InterfaceChecker<'a> {
         };
         let mut all = methods.clone();
         for parent in super_interfaces {
-            let Some(pid) = self
-                .types
-                .resolve_name_as_declared_by(id, &TypeTable::conformance_key(parent))
-            else {
+            let Some(pid) = self.types.parent_interface(id, parent) else {
                 continue;
             };
             for m in self.declared_interface_methods(pid, seen) {
@@ -130,8 +127,9 @@ impl<'a> InterfaceChecker<'a> {
     /// Builtin/auto-derived interfaces (Equal, Comparable, …) are handled by
     /// eligibility and keep structural matching; only user-declared interfaces
     /// require an explicit `T implements Interface` conformance.
-    fn is_nominal_user_interface(&self, interface_name: &str) -> bool {
-        let base = interface_name;
+    fn is_nominal_user_interface(&self, interface: &TypeExpr) -> bool {
+        let base = TypeTable::conformance_key(interface);
+        let base = base.as_str();
         // A compiler-provided interface is satisfied by shape, whether or not
         // `stdlib/` also writes the declaration down. `Displayable` means "has
         // `to_string`" — std.fmt/D5 says an error type gets it from `message()`
@@ -147,7 +145,7 @@ impl<'a> InterfaceChecker<'a> {
             return false;
         }
         matches!(
-            self.types.get_type_id(base).and_then(|id| self.types.get(id)),
+            self.types.interface_decl(interface).and_then(|id| self.types.get(id)),
             Some(TypeDef::Interface { is_duck: false, .. })
         )
     }
@@ -324,7 +322,7 @@ impl<'a> InterfaceChecker<'a> {
         // G1 nominal gate: a user struct/enum satisfies a user-declared interface
         // only through a declared `T implements Interface` (or auto-derive). A
         // matching shape without the declaration is rejected — the flip.
-        if self.is_nominal_user_interface(base_interface) {
+        if self.is_nominal_user_interface(interface) {
             if let Some(type_id) = self.user_type_id(ty) {
                 if !self.types.declares_conformance(type_id, interface) {
                     return Err(InterfaceError::NotSatisfied {
@@ -350,7 +348,7 @@ impl<'a> InterfaceChecker<'a> {
         // generic interface fail claiming a missing method (#1164).
         let subst = self.conformance_substitution(ty, interface);
         let required_methods: Vec<MethodSig> = self
-            .get_interface_methods(base_interface)?
+            .interface_methods(interface)?
             .into_iter()
             .map(|m| substitute_signature(&m, &subst))
             .collect();
@@ -779,6 +777,25 @@ impl<'a> InterfaceChecker<'a> {
         self.get_interface_methods(interface_name).unwrap_or_default()
     }
 
+    /// Every method the interface a written reference names declares, its
+    /// parents' included; empty for an unknown one.
+    pub fn interface_methods_written(&self, interface: &TypeExpr) -> Vec<MethodSig> {
+        self.interface_methods(interface).unwrap_or_default()
+    }
+
+    /// `io.Writer` is the module's interface, whatever the program declares
+    /// (`TypeTable::interface_decl`).
+    fn interface_methods(&self, interface: &TypeExpr) -> Result<Vec<MethodSig>, InterfaceError> {
+        match self.types.interface_decl(interface) {
+            Some(id) => Ok(self.declared_interface_methods(id, &mut Vec::new())),
+            None => {
+                let name = TypeTable::conformance_key(interface);
+                self.get_builtin_interface_methods(&name)
+                    .ok_or(InterfaceError::UnknownInterface(name))
+            }
+        }
+    }
+
     /// The methods an `any` of this interface offers: its declaration's, or a
     /// compiler-provided interface's by name.
     pub fn interface_object_methods(&self, interface_name: &str, decl: Option<TypeId>) -> Vec<MethodSig> {
@@ -799,9 +816,8 @@ impl<'a> InterfaceChecker<'a> {
         interface_ref: &TypeExpr,
     ) -> HashMap<String, Type> {
         let mut map = HashMap::new();
-        let base = TypeTable::conformance_key(interface_ref);
         let Some(TypeDef::Interface { type_params, assoc_types, .. }) =
-            self.types.get_type_id(&base).and_then(|id| self.types.get(id))
+            self.types.interface_decl(interface_ref).and_then(|id| self.types.get(id))
         else {
             return map;
         };
@@ -845,8 +861,7 @@ impl<'a> InterfaceChecker<'a> {
     /// the interface's parameters and associated types already filled in.
     pub fn required_signatures(&self, self_ty: &Type, interface_ref: &TypeExpr) -> Vec<MethodSig> {
         let subst = self.conformance_substitution(self_ty, interface_ref);
-        self.get_interface_methods(&TypeTable::conformance_key(interface_ref))
-            .unwrap_or_default()
+        self.interface_methods_written(interface_ref)
             .into_iter()
             .map(|m| substitute_signature(&m, &subst))
             .collect()
@@ -854,8 +869,8 @@ impl<'a> InterfaceChecker<'a> {
 
     /// CD2: every method name the interface declares, its parents' included.
     /// `None` when the interface is unknown, which is its own error.
-    pub fn declared_method_names(&self, interface_ref: &str) -> Option<Vec<String>> {
-        self.get_interface_methods(interface_ref)
+    pub fn declared_method_names(&self, interface_ref: &TypeExpr) -> Option<Vec<String>> {
+        self.interface_methods(interface_ref)
             .ok()
             .map(|ms| ms.into_iter().map(|m| m.name).collect())
     }
@@ -1763,7 +1778,7 @@ fn object_compatible_methods_of_seen(types: &TypeTable, id: TypeId, seen: &mut V
     };
     let mut names = def.object_compatible_method_names();
     for parent in super_interfaces {
-        let Some(pid) = types.resolve_name_as_declared_by(id, &TypeTable::conformance_key(parent)) else {
+        let Some(pid) = types.parent_interface(id, parent) else {
             continue;
         };
         for m in object_compatible_methods_of_seen(types, pid, seen) {

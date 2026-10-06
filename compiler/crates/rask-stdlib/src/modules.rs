@@ -132,6 +132,9 @@ pub struct ModuleExports {
     pub enums: Vec<(String, Vec<String>)>,
     /// Free functions that come into scope with the module.
     pub functions: Vec<String>,
+    /// The interfaces it declares: `io.Writer` in a bound, a conformance
+    /// header or `any`. Not names an `import m.name` reaches.
+    pub interfaces: Vec<String>,
 }
 
 impl ModuleExports {
@@ -268,6 +271,10 @@ fn derived() -> HashMap<String, ModuleExports> {
     }
 
     let mut out: HashMap<String, ModuleExports> = HashMap::new();
+    for (file, name) in StubRegistry::public_interfaces() {
+        let Some(module) = file.strip_suffix(".rk") else { continue };
+        out.entry(module.to_string()).or_default().interfaces.push(name);
+    }
     for name in registry.type_names() {
         let Some(module) = type_module(name) else { continue };
         // A module carries a same-named namespace struct (`struct http { }`) to
@@ -307,6 +314,11 @@ pub fn exports(module: &str) -> &'static ModuleExports {
 /// True when `module` exports a type or enum called `name`.
 pub fn exports_type(module: &str, name: &str) -> bool {
     exports(module).exports_type(name)
+}
+
+/// True when `module` declares a public interface called `name`.
+pub fn exports_interface(module: &str, name: &str) -> bool {
+    exports(module).interfaces.iter().any(|i| i == name)
 }
 
 /// `time.Duration` → `Duration`: drop the module a dotted name is reached

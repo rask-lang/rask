@@ -879,10 +879,13 @@ impl<'a> MirContext<'a> {
             // `any io.Writer` is the stdlib's `Writer`, whose symbol is its bare
             // name. Spelled from the written text it was an interface called
             // "io.Writer" that no vtable is filed under, and a call through it
-            // couldn't be lowered (#1309).
+            // couldn't be lowered (#1309). The table knows import aliases, so
+            // `any i.Writer` under `import io as i` is the same one.
             TypeExpr::Any(interface) => MirType::InterfaceObject {
-                interface_name: rask_types::TypeTable::stdlib_module_member(interface)
-                    .unwrap_or_else(|| interface.to_string()),
+                interface_name: match self.type_defs.module_interface(interface) {
+                    Some(id) => self.type_defs.type_name(id),
+                    None => interface.to_string(),
+                },
             },
             TypeExpr::RawPtr(_) | TypeExpr::FixedCount { .. } | TypeExpr::Int(_) => MirType::Ptr,
             TypeExpr::Named { path, args } if args.is_empty() => self.resolve_type_name(&path.join(".")),
