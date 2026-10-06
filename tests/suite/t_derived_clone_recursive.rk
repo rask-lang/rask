@@ -1,0 +1,112 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `.clone()` on an enum that holds a vector of itself.
+//
+// Natively the copy shared its vector with the source and read it after the
+// source was freed: "allocation size overflow". The interpreter had no `clone`
+// for `JsonValue` at all. Both came from the type having no derived `clone`: a
+// payload that names its own type was asked about before the type had one.
+// The checker now writes the body once and both backends run it (#1428).
+
+import json
+import json.JsonValue
+
+enum Tree {
+    Leaf(f64)
+    Node(Vec<Tree>)
+}
+
+func leaves(t: Tree) -> i64 {
+    if t is Node(kids) {
+        mut n = 0
+        for k in kids {
+            n += leaves(k)
+        }
+        return n
+    }
+    return 1
+}
+
+// Declared before the type it holds, and with fields a byte copy can't
+// duplicate: an optional string and a tuple with a string in it.
+struct Item {
+    name: string
+    tags: Vec<string>
+    parent: string?
+    pair: (string, i64)
+    tree: Tree
+}
+
+enum Shape {
+    Circle { radius: f64, label: string }
+    Dot
+}
+
+// A hand-written `clone` is the one that runs.
+struct Counted {
+    n: i64
+}
+
+extend Counted {
+    func clone(self) -> Counted {
+        return Counted { n: self.n + 1 }
+    }
+}
+
+test "a recursive enum clones" {
+    let t = Tree.Node([Tree.Leaf(1.0), Tree.Node([Tree.Leaf(2.0), Tree.Leaf(3.0)])])
+    let u = t.clone()
+    assert leaves(u) == 3
+    assert leaves(t) == 3
+}
+
+test "the source can go first" {
+    let t = Tree.Node([Tree.Leaf(1.0), Tree.Leaf(2.0)])
+    let u = t.clone()
+    if u is Node(kids) {
+        assert kids.len() == 2
+    } else {
+        assert false
+    }
+}
+
+test "a struct holding one clones every field" {
+    let it = Item {
+        name: "a",
+        tags: ["x", "y"],
+        parent: "p",
+        pair: ("q", 2),
+        tree: Tree.Node([Tree.Leaf(1.0)]),
+    }
+    let c = it.clone()
+    assert c.name == "a"
+    assert c.tags.len() == 2
+    assert c.parent! == "p"
+    assert c.pair.0 == "q"
+    assert leaves(c.tree) == 1
+}
+
+test "a variant with named fields clones" {
+    let s = Shape.Circle { radius: 1.5, label: "c" }
+    let c = s.clone()
+    if c is Circle(r, l) {
+        assert r == 1.5
+        assert l == "c"
+    } else {
+        assert false
+    }
+}
+
+test "a written clone wins" {
+    let a = Counted { n: 1 }
+    assert a.clone().n == 2
+}
+
+test "a JsonValue clones" {
+    let j = json.decode<JsonValue>("[1,[2,3],{{\"k\":\"v\"}}]") catch e => {
+        assert false
+        return
+    }
+    let items = j.clone().as_array() ?? Vec.new()
+    assert items.len() == 3
+    assert "{j}" == "[1,[2,3],{{\"k\":\"v\"}}]"
+}

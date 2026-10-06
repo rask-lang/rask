@@ -1898,9 +1898,60 @@ impl TypeChecker {
         }
     }
 
+    /// The types that derive `clone`, decided all at once.
+    ///
+    /// A type's clone can depend on its own — `Node(Vec<Tree>)`, a JSON value
+    /// holding an array of JSON values — or on a type declared below it.
+    /// Asked one type at a time in declaration order, both answered no, so the
+    /// type had no `clone` and the call fell to each backend's own copying
+    /// (#1428). Start from every candidate and drop the ones a field rules out
+    /// until nothing changes.
+    fn derivable_clones(&mut self) -> std::collections::HashSet<crate::types::TypeId> {
+        use crate::types::TypeId;
+        let parts_of = |def: &TypeDef| -> Option<Vec<Type>> {
+            match def {
+                TypeDef::Struct { fields, methods, is_resource, .. }
+                    if !*is_resource && !methods.iter().any(|m| m.name == "clone") =>
+                {
+                    Some(fields.iter().map(|(_, ty)| ty.clone()).collect())
+                }
+                TypeDef::Enum { variants, methods, .. }
+                    if !methods.iter().any(|m| m.name == "clone") =>
+                {
+                    Some(variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect())
+                }
+                _ => None,
+            }
+        };
+        let candidates: Vec<(TypeId, Vec<Type>)> = (0..self.types.types.len())
+            .filter_map(|idx| {
+                let id = TypeId(idx as u32);
+                parts_of(self.types.get(id)?).map(|parts| (id, parts))
+            })
+            .collect();
+        let mut set: std::collections::HashSet<TypeId> = candidates.iter().map(|(id, _)| *id).collect();
+        loop {
+            self.clone_assumed = set.clone();
+            let keep: std::collections::HashSet<TypeId> = candidates
+                .iter()
+                .filter(|(id, parts)| {
+                    set.contains(id)
+                        && parts.iter().all(|ty| self.type_has_method(ty, "clone"))
+                        && !parts.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
+                })
+                .map(|(id, _)| *id)
+                .collect();
+            if keep.len() == set.len() {
+                return set;
+            }
+            set = keep;
+        }
+    }
+
     fn auto_derive_interfaces(&mut self) {
         use crate::types::TypeId;
 
+        self.clone_assumed = self.derivable_clones();
         let type_count = self.types.types.len();
         for idx in 0..type_count {
             let id = TypeId(idx as u32);
@@ -2183,6 +2234,7 @@ impl TypeChecker {
                 _ => {}
             }
         }
+        self.clone_assumed.clear();
     }
 
     /// Check if a type has a given method (for auto-derive field checking).
@@ -2213,6 +2265,13 @@ impl TypeChecker {
             Type::String => {
                 matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
             }
+            // A type that names itself in its own fields — `Node(Vec<Tree>)` —
+            // is registered with that use still a name, because the type
+            // didn't exist yet when its fields were read.
+            Type::UnresolvedNamed(name) => match self.types.get_type_id(name) {
+                Some(id) => self.type_has_method(&Type::Named(id), method),
+                None => false,
+            },
             // Named types: check registered methods
             Type::Named(id) => {
                 if let Some(def) = self.types.get(*id) {
@@ -2220,6 +2279,7 @@ impl TypeChecker {
                         TypeDef::Struct { methods, .. } |
                         TypeDef::Enum { methods, .. } => {
                             methods.iter().any(|m| m.name == method)
+                                || (method == "clone" && self.clone_assumed.contains(id))
                         }
                         _ => false,
                     }
@@ -2267,6 +2327,16 @@ impl TypeChecker {
                         }
                         _ => false,
                     }
+            }
+            // `Map<K, V>` clones entry by entry when both halves do. Missing,
+            // a struct or enum holding a map never derived `clone`.
+            Type::Generic { base, args }
+                if self.types.type_name(*base) == "Map" && method == "clone" =>
+            {
+                args.iter().all(|a| match a {
+                    crate::types::GenericArg::Type(t) => self.type_has_method(t, method),
+                    _ => false,
+                })
             }
             _ => false,
         }

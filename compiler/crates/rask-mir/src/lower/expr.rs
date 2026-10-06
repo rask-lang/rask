@@ -396,6 +396,26 @@ impl<'a> MirLowerer<'a> {
     ///
     /// `false` for a receiver whose type isn't recorded: that answer keeps the
     /// call, which is what happened before this question was asked at all.
+    /// Whether the call's receiver type declares `method` with a body: one
+    /// somebody wrote, or one the checker derived and wrote (`eq`, `hash`,
+    /// `clone`). A method still marked `derived` has no body, and the call is
+    /// answered in place.
+    fn receiver_declares_method(&self, call: rask_ast::NodeId, method: &str) -> bool {
+        self.ctx
+            .call_targets
+            .get(&call)
+            .and_then(|target| target.recv_type_id())
+            .and_then(|id| self.ctx.type_defs.get(id))
+            .is_some_and(|def| match def {
+                rask_types::TypeDef::Struct { methods, .. }
+                | rask_types::TypeDef::Enum { methods, .. }
+                | rask_types::TypeDef::NominalAlias { methods, .. } => {
+                    methods.iter().any(|m| m.name == method && !m.derived)
+                }
+                _ => false,
+            })
+    }
+
     fn receiver_is_copy_scalar(&self, object: &Expr) -> bool {
         use rask_types::Type;
         matches!(
@@ -6312,9 +6332,13 @@ impl<'a> MirLowerer<'a> {
         // for every expression kind on the way out of `lower_expr`, not just here.
 
         // Struct clone: inline field-by-field copy with deep clone for
-        // heap fields (string, Vec, Map). Avoids needing a generated
-        // runtime clone function for every user struct.
-        if method == "clone" {
+        // heap fields (string, Vec, Map), for a type whose `clone` has no
+        // body. One that has a body — written in an `extend` block, or derived
+        // and written by the checker — is called like any method. Copied in
+        // place instead, a hand-written `clone` never ran, and a recursive
+        // enum's copy shared its vector with the source and read it after the
+        // source was freed (#1428).
+        if method == "clone" && !self.receiver_declares_method(expr.id, "clone") {
             // A Copy scalar's clone is the value, and there is nothing to
             // call: no `i64_clone` exists and none should. The call only
             // reaches MIR at all because a generic body written for `T` keeps
@@ -7550,20 +7574,7 @@ impl<'a> MirLowerer<'a> {
         // `Bag$Vec$i64_add` against the registered `Bag_add$Vec$i64` (#838,
         // #445 were earlier shapes of the same miss). Calls that resolved to an
         // `implements` conformance already returned above.
-        let declares_method = self
-            .ctx
-            .call_targets
-            .get(&call)
-            .and_then(|target| target.recv_type_id())
-            .and_then(|id| self.ctx.type_defs.get(id))
-            .is_some_and(|def| match def {
-                rask_types::TypeDef::Struct { methods, .. }
-                | rask_types::TypeDef::Enum { methods, .. }
-                | rask_types::TypeDef::NominalAlias { methods, .. } => {
-                    methods.iter().any(|m| m.name == *method && !m.derived)
-                }
-                _ => false,
-            });
+        let declares_method = self.receiver_declares_method(call, method);
         let skip_binop = skip_binop || declares_method;
 
         // std.bits B1 on an integer receiver. These aren't operator methods —

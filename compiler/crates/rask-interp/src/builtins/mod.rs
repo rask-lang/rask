@@ -21,9 +21,11 @@ use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{GenericFrame, Value};
 
 /// Methods the interpreter derives for every struct and enum. An `extend`
-/// block that defines one of these replaces the derived version.
+/// block that defines one of these replaces the derived version, and so does
+/// the body the checker writes for a derived one. `clone` was missing, so a
+/// hand-written `clone` never ran here (#1428).
 const DERIVABLE_METHODS: &[&str] = &[
-    "eq", "ne", "lt", "le", "gt", "ge", "compare", "hash", "debug",
+    "eq", "ne", "lt", "le", "gt", "ge", "compare", "hash", "debug", "clone",
 ];
 
 /// Values whose `.clone()` is just the value again.
