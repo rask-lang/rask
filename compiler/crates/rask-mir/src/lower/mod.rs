@@ -5147,21 +5147,6 @@ impl<'a> MirLowerer<'a> {
         )
     }
 
-    /// Bind pattern payload variables into the current scope.
-    ///
-    /// After confirming a tag match, extracts payload fields from the
-    /// enum value and inserts them as named locals.
-    fn bind_pattern_payload(
-        &mut self,
-        pattern: &rask_ast::expr::Pattern,
-        scrutinee: &Expr,
-        value: MirOperand,
-        payload_ty: Option<MirType>,
-        scrutinee_ty: &MirType,
-    ) {
-        self.bind_pattern_payload_niche(pattern, scrutinee, value, payload_ty, false, scrutinee_ty);
-    }
-
     /// Bind pattern payload — with niche awareness.
     /// `payload_ty` is optional because for the common case there is no such
     /// type to have: a Constructor pattern on a user enum takes each field's
@@ -5192,6 +5177,30 @@ impl<'a> MirLowerer<'a> {
     ) {
         use rask_ast::expr::Pattern;
         match pattern {
+            Pattern::Constructor { name, .. }
+                if matches!(scrutinee_ty, MirType::Result { err, .. }
+                    if matches!(err.as_ref(), MirType::Enum(_))
+                        && self.variant_field_types(err, name).is_some()) =>
+            {
+                // `MyErr.Bad(m)` against a `T or MyErr`: the variant's fields
+                // sit in the error enum, which lives in the result's payload
+                // slot. Read against the result itself, `m` came out of the
+                // wrong bytes and printed empty.
+                let MirType::Result { err, .. } = scrutinee_ty else { unreachable!() };
+                let err_ty = (**err).clone();
+                let err_local = self.builder.alloc_temp(err_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: err_local,
+                    rvalue: MirRValue::Field {
+                        base: value,
+                        field_index: 0,
+                        // An enum payload is an aggregate: this is its address.
+                        byte_offset: None,
+                        access: FieldAccess::Word,
+                    },
+                }));
+                self.bind_pattern_fields(pattern, MirOperand::Local(err_local), payload_ty, false, &err_ty);
+            }
             Pattern::Constructor { name, fields } => {
                 // User enums carry a distinct type per field (e.g. `Circle(f64)`
                 // vs `Rectangle(f64, f64)`); `payload_ty` is only a single type

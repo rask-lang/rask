@@ -2202,7 +2202,16 @@ impl Interpreter {
                     for (name, val) in &bindings {
                         self.env.define(name.clone(), val.clone());
                     }
-                    // Return the payload (first field of Ok/Some variant)
+                    // The guard's value is what the pattern binds, as the
+                    // checker types it. On a flat `T? or E` the outer payload
+                    // is the `T?`, so `is string as s` handed back an option
+                    // where a string was promised.
+                    if let Some(first) = pattern.bound_names().first() {
+                        if let Some(bound) = bindings.get(*first) {
+                            return Ok(bound.clone());
+                        }
+                    }
+                    // Nothing bound: the payload (first field of Ok/Some).
                     match &value {
                         Value::Enum { fields, .. } => {
                             Ok(fields.first().cloned().unwrap_or(Value::Unit))

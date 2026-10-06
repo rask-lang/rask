@@ -19,6 +19,13 @@ use rask_ast::{
     token::{FloatSuffix, IntSuffix},
 };
 
+/// What `emit_is_test` found out: whether the value matched, and for a
+/// flat `T? or E` leaf, the inner `T?` the payload binds out of, with `T`.
+pub(super) struct PatternTest {
+    pub(super) matches: crate::LocalId,
+    pub(super) flat_payload: Option<(crate::LocalId, MirType)>,
+}
+
 /// Detect comparison patterns in assert conditions for smart failure messages.
 ///
 /// Returns `Some((left_expr, right_expr, op_str))` if the condition is a
@@ -1829,25 +1836,14 @@ impl<'a> MirLowerer<'a> {
             let (val, val_ty) = self.lower_expr(expr)?;
             let niche = self.option_niche(expr, &val_ty);
             let is_niche = niche.is_some();
-            let tag = self.emit_option_tag(&val, niche);
-
-            let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
-            let matches = self.builder.alloc_temp(MirType::Bool);
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                dst: matches,
-                rvalue: MirRValue::BinaryOp {
-                    op: crate::operand::BinOp::Eq,
-                    left: MirOperand::Local(tag),
-                    right: MirOperand::Constant(MirConst::Int(expected)),
-                },
-            }));
+            let test = self.emit_is_test(&val, &val_ty, niche, pattern);
 
             let ok_block = self.builder.create_block();
             let else_block = self.builder.create_block();
             let merge_block = self.builder.create_block();
 
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
-                cond: MirOperand::Local(matches),
+                cond: MirOperand::Local(test.matches),
                 then_block: ok_block,
                 else_block,
             }));
@@ -1867,10 +1863,18 @@ impl<'a> MirLowerer<'a> {
             // value and needs its real width.
             let payload_ty = self.payload_type_of_niche(expr, &val_ty, is_niche)
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:try_else_payload"));
-            self.bind_pattern_payload_niche(
-                pattern, expr, val.clone(), Some(payload_ty.clone()), is_niche, &val_ty);
-            // Extract the payload value for the result
-            let payload = self.emit_option_payload(val, payload_ty.clone(), is_niche);
+            self.bind_tested_pattern(
+                &test, pattern, expr, val.clone(), Some(payload_ty.clone()), is_niche, &val_ty);
+            // The guard's own value is what the pattern binds, or with nothing
+            // bound, the outer payload — the checker's rule. On a flat
+            // `T? or E` those are different layers: `is string as s` yields
+            // the string, a bare `is string` the `string?` around it.
+            let bound_leaf = test.flat_payload.as_ref().filter(|_| !pattern.bound_names().is_empty());
+            let (src, payload_ty, src_niche) = match bound_leaf {
+                Some((inner, inner_payload)) => (MirOperand::Local(*inner), inner_payload.clone(), false),
+                None => (val, payload_ty, is_niche),
+            };
+            let payload = self.emit_option_payload(src, payload_ty.clone(), src_niche);
             self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: merge_block }));
 
             self.builder.switch_to_block(merge_block);
@@ -1880,11 +1884,8 @@ impl<'a> MirLowerer<'a> {
     fn lower_is_pattern(&mut self, inner: &Expr, pattern: &Pattern) -> Result<TypedOperand, LoweringError> {
             let (val, val_ty) = self.lower_expr(inner)?;
             let niche = self.option_niche(inner, &val_ty);
-            let is_niche = niche.is_some();
-            let tag = self.emit_option_tag(&val, niche);
-
-            let result = self.emit_two_layer_pattern_test(&val, &val_ty, tag, is_niche, pattern);
-            Ok((MirOperand::Local(result), MirType::Bool))
+            let test = self.emit_is_test(&val, &val_ty, niche, pattern);
+            Ok((MirOperand::Local(test.matches), MirType::Bool))
         }
 
     fn lower_is_present(&mut self, inner: &Expr) -> Result<TypedOperand, LoweringError> {
@@ -3691,13 +3692,13 @@ impl<'a> MirLowerer<'a> {
             let (val, val_ty) = self.lower_expr(expr)?;
             let niche = self.option_niche(expr, &val_ty);
             let is_niche = niche.is_some();
-            let tag = self.emit_option_tag(&val, niche);
 
             // Type-context resolution, so `if r is ErrEnum [as e]` against
             // `T or ErrEnum` routes to the err side (tag 1) instead of
             // falling through to 0 like the bare `pattern_tag` does — and a
             // variant of that error enum tests both layers.
-            let matches = self.emit_two_layer_pattern_test(&val, &val_ty, tag, is_niche, pattern);
+            let test = self.emit_is_test(&val, &val_ty, niche, pattern);
+            let matches = test.matches;
 
             let then_block = self.builder.create_block();
             let else_block = self.builder.create_block();
@@ -3727,7 +3728,7 @@ impl<'a> MirLowerer<'a> {
                 self.payload_type_of_niche(expr, &val_ty, is_niche)
             };
             let outer = self.save_names(pattern.bound_names());
-            self.bind_pattern_payload_niche(pattern, expr, val.clone(), bind_ty, is_niche, &val_ty);
+            self.bind_tested_pattern(&test, pattern, expr, val.clone(), bind_ty, is_niche, &val_ty);
             let (then_val, then_ty) = self.lower_expr(then_branch)?;
             self.restore_names(outer);
             let result_local = self.builder.alloc_temp(then_ty.clone());
@@ -8054,21 +8055,106 @@ impl<'a> MirLowerer<'a> {
 
     /// String comparison operators → `string_lt`, `string_ge`, etc.
     /// Read an enum's variant tag into a fresh local.
-    /// `value is <pattern>` as a bool local.
+    /// `value is <pattern>`: the bool, and where a match binds from.
     ///
-    /// A pattern naming a variant of the error enum needs *two* tags: the
-    /// value's own tag says ok vs err, and the variant tag lives one layer down
-    /// in the payload. Comparing the variant tag against the outer tag put
-    /// `MyErr.Bad`'s 0 up against the ok tag 0, so the test answered about the
-    /// wrong layer — the same two-layer mixup `match` had in #677.
-    fn emit_two_layer_pattern_test(
+    /// Two shapes need two tags. A pattern naming a variant of the error enum
+    /// is one: the value's own tag says ok vs err, and the variant tag lives
+    /// one layer down in the payload. Comparing the variant tag against the
+    /// outer tag put `MyErr.Bad`'s 0 up against the ok tag 0, so the test
+    /// answered about the wrong layer — the same two-layer mixup `match` had
+    /// in #677.
+    ///
+    /// A flat `T? or E` is the other: its success side is itself an option, so
+    /// `T` and `none` both sit under the ok tag. Testing only that tag let
+    /// `none` answer to `is string`, and binding the result's payload as the
+    /// `T` read the inner option's tag word as the string (#1451). The inner
+    /// tag tells those two apart, and the payload binds out of the inner
+    /// option. A `match` on a flat value runs this same test per arm.
+    pub(super) fn emit_is_test(
+        &mut self,
+        val: &MirOperand,
+        val_ty: &MirType,
+        niche: Option<i64>,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> PatternTest {
+        let tag = self.emit_option_tag(val, niche);
+        let is_niche = niche.is_some();
+        if let Some(matches) = self.emit_err_layer_test(val, val_ty, tag, is_niche, pattern) {
+            return PatternTest { matches, flat_payload: None };
+        }
+        if let (MirType::Result { ok, .. }, Some(want)) = (val_ty, self.flat_leaf_named(pattern, val_ty)) {
+            let payload_ty = match ok.as_ref() {
+                MirType::Option(inner) => (**inner).clone(),
+                _ => unreachable!("checked by is_flat_two_layer"),
+            };
+            let (inner, leaf) = self.emit_flat_leaf(val, ok);
+            let matches = self.emit_eq_const(leaf, want as i64);
+            return PatternTest { matches, flat_payload: Some((inner, payload_ty)) };
+        }
+        let expected = self.pattern_tag_in_type_context(pattern, val_ty);
+        PatternTest { matches: self.emit_eq_const(tag, expected), flat_payload: None }
+    }
+
+    /// The payload or `none` leaf of a flat `T? or E` that `pattern` names.
+    /// `None` for anything else, including a written `T?`, which names the
+    /// whole success side rather than a leaf inside it.
+    fn flat_leaf_named(&self, pattern: &rask_ast::expr::Pattern, val_ty: &MirType) -> Option<u64> {
+        use rask_ast::expr::Pattern;
+        if !Self::is_flat_two_layer(val_ty)
+            || self.err_variant_of_result(pattern, val_ty).is_some()
+            || self.union_member_of_result(pattern, val_ty).is_some()
+        {
+            return None;
+        }
+        let name = match pattern {
+            Pattern::TypePat { ty: TypeExpr::Optional(_), .. } => return None,
+            Pattern::TypePat { ty, .. } => super::type_pat_name(ty),
+            Pattern::Ident(name) => name.clone(),
+            _ => return None,
+        };
+        match self.flat_leaf_of(&name, val_ty) {
+            2 => None,
+            leaf => Some(leaf),
+        }
+    }
+
+    /// Bind what `test` matched. A flat leaf binds out of the inner option;
+    /// everything else out of `val`, as `payload_ty`.
+    pub(super) fn bind_tested_pattern(
+        &mut self,
+        test: &PatternTest,
+        pattern: &rask_ast::expr::Pattern,
+        scrutinee: &Expr,
+        val: MirOperand,
+        payload_ty: Option<MirType>,
+        is_niche: bool,
+        val_ty: &MirType,
+    ) {
+        match &test.flat_payload {
+            Some((inner, inner_payload)) => {
+                let opt_ty = MirType::Option(Box::new(inner_payload.clone()));
+                self.bind_pattern_payload_niche(
+                    pattern, scrutinee, MirOperand::Local(*inner),
+                    Some(inner_payload.clone()), false, &opt_ty,
+                );
+            }
+            None => {
+                self.bind_pattern_payload_niche(pattern, scrutinee, val, payload_ty, is_niche, val_ty);
+            }
+        }
+    }
+
+    /// A pattern naming one variant of the error enum, or one member of the
+    /// error union: the err tag and the variant's or member's own tag. `None`
+    /// when the pattern names neither.
+    fn emit_err_layer_test(
         &mut self,
         val: &MirOperand,
         val_ty: &MirType,
         tag: crate::LocalId,
         is_niche: bool,
         pattern: &rask_ast::expr::Pattern,
-    ) -> crate::LocalId {
+    ) -> Option<crate::LocalId> {
         if let Some((err_ty, variant_tag)) = self.err_variant_of_result(pattern, val_ty) {
             let payload = self.emit_option_payload(val.clone(), err_ty, is_niche);
             let inner_tag = self.emit_enum_tag(MirOperand::Local(payload));
@@ -8083,7 +8169,7 @@ impl<'a> MirLowerer<'a> {
                     right: MirOperand::Local(is_variant),
                 },
             }));
-            return result;
+            return Some(result);
         }
         // A union err side: "is it the err side" is only half the question. Both
         // members answer yes to that, so the member index decides which (#776).
@@ -8110,10 +8196,9 @@ impl<'a> MirLowerer<'a> {
                     right: MirOperand::Local(is_member),
                 },
             }));
-            return result;
+            return Some(result);
         }
-        let expected = self.pattern_tag_in_type_context(pattern, val_ty);
-        self.emit_eq_const(tag, expected)
+        None
     }
 
     /// `e.message()` where `e` is a union — dispatch by member index.
@@ -10081,8 +10166,8 @@ impl<'a> MirLowerer<'a> {
         let (val, val_ty) = self.lower_expr(scrutinee)?;
         let niche = self.option_niche(scrutinee, &val_ty);
         let is_niche = niche.is_some();
-        let tag = self.emit_option_tag(&val, niche);
-        let matches = self.emit_two_layer_pattern_test(&val, &val_ty, tag, is_niche, pattern);
+        let test = self.emit_is_test(&val, &val_ty, niche, pattern);
+        let matches = test.matches;
 
         let bind_block = self.builder.create_block();
         let short_block = self.builder.create_block();
@@ -10099,7 +10184,7 @@ impl<'a> MirLowerer<'a> {
         // Match path: bind the payload, yield true.
         self.builder.switch_to_block(bind_block);
         let payload_ty = self.payload_type_of_niche(scrutinee, &val_ty, is_niche);
-        self.bind_pattern_payload_niche(pattern, scrutinee, val, payload_ty, is_niche, &val_ty);
+        self.bind_tested_pattern(&test, pattern, scrutinee, val, payload_ty, is_niche, &val_ty);
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: result_local,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),

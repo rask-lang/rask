@@ -1056,25 +1056,13 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(check_block);
                 let (val, val_ty) = self.lower_expr(expr)?;
-                let tag = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: tag,
-                    rvalue: MirRValue::EnumTag { value: val.clone() },
-                }));
-                // Compare tag against expected variant. Use type-context resolution
-                // so `while c() is Reading as r` against `Reading or RecvErr` routes
-                // to the ok side (tag 0) instead of the bare `pattern_tag`'s
-                // capitalization guess (uppercase ⇒ tag 1, which is the err side).
-                let expected = self.pattern_tag_in_type_context(pattern, &val_ty);
-                let matches = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-                    dst: matches,
-                    rvalue: MirRValue::BinaryOp {
-                        op: crate::operand::BinOp::Eq,
-                        left: MirOperand::Local(tag),
-                        right: MirOperand::Constant(crate::operand::MirConst::Int(expected)),
-                    },
-                }));
+                // Same test `if … is` makes: type-context routing, so `while
+                // c() is Reading as r` against `Reading or RecvErr` is the ok
+                // side, and both tags of a flat `T? or E`.
+                let niche = self.option_niche(expr, &val_ty);
+                let is_niche = niche.is_some();
+                let test = self.emit_is_test(&val, &val_ty, niche, pattern);
+                let matches = test.matches;
                 self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: MirOperand::Local(matches),
                     then_block: body_block,
@@ -1085,8 +1073,8 @@ impl<'a> MirLowerer<'a> {
                 // Bind payload variables from the pattern
                 // Optional: a Constructor pattern on a user enum takes each
                 // field's type from the enum layout and never looks at this.
-                let payload_ty = self.payload_type_of(expr, &val_ty);
-                self.bind_pattern_payload(pattern, expr, val, payload_ty, &val_ty);
+                let payload_ty = self.payload_type_of_niche(expr, &val_ty, is_niche);
+                self.bind_tested_pattern(&test, pattern, expr, val, payload_ty, is_niche, &val_ty);
                 let ensure_depth = self.ensure_stack.len();
                 self.loop_stack.push(LoopContext {
                     label: label.clone(),

@@ -1,20 +1,30 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// `r is string` on a flat `string? or MyErr`.
+// Type tests and destructuring on a flat `string? or MyErr`.
 //
-// The interpreter answered false for a value holding a string. A bare type
-// name checked only the outer wrapper, whose payload is the `string?`, while
-// `is string as s` walked down both and matched. Both now take the same walk.
+// The value has three leaves behind two tags: the string, `none`, and the
+// error. The interpreter used to answer false for `found() is string`, because
+// a bare type name checked only the outer wrapper. Native checked only the
+// outer tag: `missing() is string` was true, and `if r is string as s`
+// read the inner option's bytes as the string and segfaulted (#1451). A
+// `match` naming two error variants sent both to the first arm and never
+// bound the variant's field.
 //
-// `missing() is string` is left out: native answers true for `none` (#1451).
+// Every form now goes through the same test, on both backends.
 
 enum MyErr {
     Bad(string)
+    Worse
 }
 
 extend MyErr {
     func message(self) -> string {
         return "bad"
     }
+}
+
+struct Point {
+    public x: i64
+    public y: i64
 }
 
 func found() -> string? or MyErr {
@@ -33,14 +43,141 @@ func count() -> i64? or MyErr {
     return 3
 }
 
-test "a bare type name finds the value under both wrappers" {
-    assert found() is string
-    assert !(failed() is string)
-    assert count() is i64
+func pick(n: i64) -> string? or MyErr {
+    if n == 0 { return none }
+    if n == -2 { return MyErr.Worse }
+    if n < 0 { return MyErr.Bad("why") }
+    return "v{n}"
 }
 
-test "the error side still answers to its type" {
+func point(n: i64) -> Point? or MyErr {
+    if n == 0 { return none }
+    if n < 0 { return MyErr.Worse }
+    return Point { x: n, y: n * 2 }
+}
+
+func bound(n: i64) -> string {
+    if pick(n) is string as s {
+        return s
+    }
+    return "-"
+}
+
+func bound_point(n: i64) -> i64 {
+    if point(n) is Point as p {
+        return p.x + p.y
+    }
+    return 0
+}
+
+func bound_and(n: i64) -> string {
+    if pick(n) is string as s && s.len() > 1 {
+        return s
+    }
+    return "-"
+}
+
+func by_leaf(n: i64) -> string {
+    return match pick(n) {
+        string as s => "s {s}",
+        none => "none",
+        MyErr as e => "err {e.message()}",
+    }
+}
+
+func by_variant(n: i64) -> string {
+    return match pick(n) {
+        string as s => "s {s}",
+        none => "none",
+        MyErr.Bad(m) => "bad {m}",
+        MyErr.Worse => "worse",
+    }
+}
+
+func by_guarded_arm(n: i64) -> string {
+    return match pick(n) {
+        string as s if s == "v1" => "one",
+        string as s => "s {s}",
+        _ => "other",
+    }
+}
+
+func guarded(n: i64) -> string {
+    let s = pick(n) is string as t else { return "-" }
+    return "{s}{t}"
+}
+
+func caught(n: i64) -> string {
+    let v = pick(n) catch e => return "caught {e.message()}"
+    return v ?? "absent"
+}
+
+func tried(n: i64) -> string? or MyErr {
+    let v = try pick(n) ?? return none
+    return "t {v}"
+}
+
+test "a bare type name finds the value under both wrappers" {
+    assert found() is string
+    assert !(missing() is string)
+    assert !(failed() is string)
+    assert count() is i64
+    assert missing() is none
+    assert !(found() is none)
+    assert !(failed() is none)
+}
+
+test "the error side still answers to its type and its variants" {
     assert failed() is MyErr
     assert !(found() is MyErr)
     assert !(missing() is MyErr)
+    assert failed() is MyErr.Bad
+    assert !(pick(-2) is MyErr.Bad)
+    assert pick(-2) is MyErr.Worse
+}
+
+test "if is binds the value inside the option" {
+    assert bound(3) == "v3"
+    assert bound(0) == "-"
+    assert bound(-1) == "-"
+    assert bound_point(4) == 12
+    assert bound_point(0) == 0
+    assert bound_point(-1) == 0
+    assert bound_and(12) == "v12"
+    assert bound_and(0) == "-"
+}
+
+test "match arms name each leaf" {
+    assert by_leaf(3) == "s v3"
+    assert by_leaf(0) == "none"
+    assert by_leaf(-1) == "err bad"
+    assert by_variant(3) == "s v3"
+    assert by_variant(0) == "none"
+    assert by_variant(-1) == "bad why"
+    assert by_variant(-2) == "worse"
+    assert by_guarded_arm(1) == "one"
+    assert by_guarded_arm(2) == "s v2"
+    assert by_guarded_arm(0) == "other"
+}
+
+test "guard, while, catch and try" {
+    assert guarded(5) == "v5v5"
+    assert guarded(0) == "-"
+    assert guarded(-1) == "-"
+
+    mut seen = ""
+    mut i = 3
+    while pick(i) is string as s {
+        seen = "{seen}{s}"
+        i -= 1
+    }
+    assert seen == "v3v2v1"
+    assert i == 0
+
+    assert caught(2) == "v2"
+    assert caught(0) == "absent"
+    assert caught(-1) == "caught bad"
+    assert (tried(2) catch _ => none) == "t v2"
+    assert tried(0) is none
+    assert tried(-1) is MyErr
 }
