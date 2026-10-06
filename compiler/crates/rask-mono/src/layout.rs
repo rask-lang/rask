@@ -428,7 +428,9 @@ pub fn field_type(ty: &TypeExpr) -> Type {
         // A fat pointer. Left as the name "any Shape" it sized right only by a
         // spelling check, and `any Shape?` became an option of a one-word
         // name: eight bytes short of the fat pointer stored in it (#1308).
-        TypeExpr::Any(interface) => Type::InterfaceObject { interface_name: interface.to_string() },
+        // The written name is the interface's symbol by now (#1426), and a
+        // size is all this needs.
+        TypeExpr::Any(interface) => Type::InterfaceObject { interface_name: interface.to_string(), decl: None },
         // Whatever a field's type is reached *through* says nothing about its
         // size, so the last segment is the whole question: `time.Duration` and
         // an aliased import's `h.Response` both size as the type they name.

@@ -518,6 +518,10 @@ impl<'a> Monomorphizer<'a> {
     pub fn with_typed_program(decls: &'a [Decl], typed: &'a TypedProgram) -> Self {
         let mut mono = Self::new(decls, &typed.call_type_args);
         mono.typed = Some(typed);
+        // One method list per interface declaration, keyed the way MIR and the
+        // vtables name it. Read off the declarations by name, a program's
+        // `interface Writer` and the stdlib's shared one entry (#1426).
+        mono.interface_methods = rask_types::interface_vtable_methods(&typed.types);
         // Instantiated copies number their nodes from here up. Anything at or
         // below this is a real node of the original program, and a copy reusing
         // one would answer type and dispatch queries with that node's record.

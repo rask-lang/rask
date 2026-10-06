@@ -531,8 +531,8 @@ impl TypeChecker {
         // no need for the unresolved-type name heuristic below, which would
         // flag every interface's `write`/`read` as mutating regardless of how it
         // was actually declared.
-        if let Type::InterfaceObject { interface_name } = &resolved {
-            let methods = crate::interfaces::InterfaceChecker::new(&self.types).get_interface_methods_public(interface_name);
+        if let Type::InterfaceObject { interface_name, decl } = &resolved {
+            let methods = crate::interfaces::InterfaceChecker::new(&self.types).interface_object_methods(interface_name, *decl);
             if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
                 return matches!(sig.self_param, SelfParam::Mutate);
             }
@@ -616,8 +616,8 @@ impl TypeChecker {
         if let Some(ty) = self.lookup_local(var_name) {
             let resolved = self.resolve_named(&self.ctx.apply(&ty));
 
-            if let Type::InterfaceObject { interface_name } = &resolved {
-                let methods = crate::interfaces::InterfaceChecker::new(&self.types).get_interface_methods_public(interface_name);
+            if let Type::InterfaceObject { interface_name, decl } = &resolved {
+                let methods = crate::interfaces::InterfaceChecker::new(&self.types).interface_object_methods(interface_name, *decl);
                 if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
                     return match sig.self_param {
                         SelfParam::Mutate | SelfParam::Take => BorrowMode::Exclusive,

@@ -49,9 +49,10 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
         // holds it by — the same unwrapping `resolve_named` does for
         // `io.Buffer`. Without it, `any io.Writer` named an interface nothing
         // could satisfy.
-        TypeExpr::Any(inner) => Ok(Type::InterfaceObject {
-            interface_name: unqualify_interface(&inner.name().unwrap_or_else(|| inner.to_string()), types),
-        }),
+        TypeExpr::Any(inner) => {
+            let written = inner.name().unwrap_or_else(|| inner.to_string());
+            Ok(types.interface_object(&unqualify_interface(&written, types)))
+        }
         TypeExpr::Int(n) => Err(TypeError::GenericError(
             format!("`{}` is a value, not a type", n),
             Span::new(0, 0),
@@ -115,7 +116,7 @@ fn resolve_named_expr(
     // After the type-parameter check on purpose: a `<Error>` parameter is
     // still the parameter.
     if rask_ast::interfaces::is_bare_error(&name) {
-        return Ok(Type::InterfaceObject { interface_name: "Error".to_string() });
+        return Ok(types.interface_object("Error"));
     }
     Ok(Type::UnresolvedNamed(name))
 }

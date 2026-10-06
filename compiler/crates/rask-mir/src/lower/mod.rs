@@ -1238,7 +1238,9 @@ impl<'a> MirContext<'a> {
             Type::Char => MirType::Char,
             Type::String => MirType::String,
             Type::Never => MirType::Void,
-            Type::InterfaceObject { interface_name } => MirType::InterfaceObject { interface_name: interface_name.clone() },
+            Type::InterfaceObject { interface_name, decl } => MirType::InterfaceObject {
+                interface_name: self.type_defs.interface_symbol(interface_name, *decl),
+            },
             // Named types — look up in struct/enum layouts by name
             Type::UnresolvedNamed(name) => self.resolve_type_name(name),
             // Handle<T> → packed i64 handle
@@ -4428,8 +4430,10 @@ impl<'a> MirLowerer<'a> {
                 // carries a vtable half that nothing downstream can recover once the
                 // binding has been typed as a plain scalar.
                 _ => {
-                    if let Some(Type::InterfaceObject { interface_name }) = self.vec_elem_raw_type(ty) {
-                        return Some(MirType::InterfaceObject { interface_name: interface_name.clone() });
+                    if let Some(Type::InterfaceObject { interface_name, decl }) = self.vec_elem_raw_type(ty) {
+                        return Some(MirType::InterfaceObject {
+                            interface_name: self.ctx.type_defs.interface_symbol(interface_name, *decl),
+                        });
                     }
                 }
             }

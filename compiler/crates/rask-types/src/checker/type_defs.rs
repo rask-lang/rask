@@ -78,7 +78,7 @@ pub fn receiver_name(ty: &Type, types: &TypeTable) -> Option<String> {
         Type::U128 => Some("u128".to_string()),
         Type::F32 => Some("f32".to_string()),
         Type::F64 => Some("f64".to_string()),
-        Type::InterfaceObject { interface_name } => Some(interface_name.clone()),
+        Type::InterfaceObject { interface_name, .. } => Some(interface_name.clone()),
         _ => None,
     }
 }
@@ -451,6 +451,25 @@ impl TypedProgram {
             }
         }
         rask_ast::rewrite::rewrite_decls(decls, &mut Aliases(&self.types));
+
+        // The backends know an interface by its symbol, one per declaration
+        // (`TypeTable::interface_symbol`). A program interface shadowing a
+        // stdlib one has a symbol that isn't its name, so the program's `any
+        // Writer` is written out as that symbol here — the stdlib's own
+        // `any Writer` keeps the plain name and means the stdlib's (#1426).
+        struct AnySymbols<'a>(&'a super::type_table::TypeTable);
+        impl rask_ast::rewrite::Rewrite for AnySymbols<'_> {
+            fn ty(&mut self, t: &mut rask_ast::ty::TypeExpr) {
+                let rask_ast::ty::TypeExpr::Any(inner) = t else { return };
+                let Some(name) = inner.name() else { return };
+                let Type::InterfaceObject { decl, .. } = self.0.interface_object(&name) else { return };
+                let symbol = self.0.interface_symbol(&name, decl);
+                if symbol != name {
+                    **inner = rask_ast::ty::TypeExpr::named(symbol);
+                }
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut AnySymbols(&self.types));
     }
 }
 
@@ -484,7 +503,8 @@ pub struct TypedProgram {
     /// backends read the answer here rather than each deciding again from the
     /// receiver alone.
     pub operator_targets: HashMap<NodeId, super::operators::OperatorTarget>,
-    /// TR5: implicit interface coercion sites. NodeId of expression → interface name.
+    /// TR5: implicit interface coercion sites. NodeId of expression → the
+    /// interface's symbol (`TypeTable::interface_symbol`).
     pub interface_coercions: HashMap<NodeId, String>,
     /// XC4: which package wrote each source file, by file id. A span carries
     /// its file id, so this answers "whose code is this?" for anything after

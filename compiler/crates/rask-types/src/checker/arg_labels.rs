@@ -118,7 +118,7 @@ impl TypeChecker {
     fn method_param_names(&self, recv: &Type, method: &str) -> Option<Vec<String>> {
         let type_id = match recv {
             Type::Named(id) | Type::Generic { base: id, .. } => Some(*id),
-            Type::InterfaceObject { interface_name } => self.types.get_type_id(interface_name),
+            Type::InterfaceObject { decl, .. } => *decl,
             _ => None,
         };
         let declared = type_id.and_then(|id| match self.types.get(id)? {

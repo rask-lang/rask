@@ -1170,8 +1170,8 @@ impl TypeChecker {
                     let is_err_branch = match &resolved_err {
                         Type::Union(variants) => variants.iter().any(|v| v == &resolved_ret),
                         // ER32: `any Interface` error — concrete types implementing the interface go to err
-                        Type::InterfaceObject { interface_name } => {
-                            crate::interfaces::implements_interface(&self.types, &resolved_ret, interface_name)
+                        Type::InterfaceObject { interface_name, decl } => {
+                            crate::interfaces::implements_interface_object(&self.types, &resolved_ret, interface_name, *decl)
                         }
                         other => other == &resolved_ret,
                     };
@@ -1186,11 +1186,12 @@ impl TypeChecker {
                     // `i64 or any Error` came back as a *success* holding 0 on
                     // native while the interpreter reported the error (#708).
                     if is_err_branch {
-                        if let (Type::InterfaceObject { interface_name }, Some(node)) =
+                        if let (Type::InterfaceObject { interface_name, decl }, Some(node)) =
                             (&resolved_err, value_node)
                         {
                             if !matches!(resolved_ret, Type::InterfaceObject { .. }) {
-                                self.interface_coercions.insert(node, interface_name.clone());
+                                self.interface_coercions
+                                    .insert(node, self.types.interface_symbol(interface_name, *decl));
                             }
                         }
                     }
@@ -1660,11 +1661,11 @@ impl TypeChecker {
             }
 
             // Interface object coercion: concrete → any Interface (TR5)
-            (concrete, Type::InterfaceObject { ref interface_name })
-            | (Type::InterfaceObject { ref interface_name }, concrete)
+            (concrete, Type::InterfaceObject { ref interface_name, decl })
+            | (Type::InterfaceObject { ref interface_name, decl }, concrete)
                 if !matches!(concrete, Type::InterfaceObject { .. }) =>
             {
-                if crate::interfaces::implements_interface(&self.types, concrete, interface_name) {
+                if crate::interfaces::implements_interface_object(&self.types, concrete, interface_name, *decl) {
                     Ok(false)
                 } else {
                     Err(TypeError::Mismatch {

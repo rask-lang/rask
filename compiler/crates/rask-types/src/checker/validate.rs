@@ -398,7 +398,7 @@ fn validate_single_result(
             continue;
         }
         // `any Error` is the interface itself — no need to check it satisfies itself
-        if matches!(comp, Type::InterfaceObject { interface_name } if interface_name == "Error") {
+        if matches!(comp, Type::InterfaceObject { interface_name, .. } if interface_name == "Error") {
             continue;
         }
         if !implements_error_message(comp, checker) {

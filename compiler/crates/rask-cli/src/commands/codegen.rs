@@ -230,21 +230,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let type_names: std::collections::HashMap<rask_types::TypeId, String> =
         typed.types.type_name_map();
-    let interface_methods: std::collections::HashMap<String, Vec<String>> = typed.types.iter()
-        .filter_map(|def| {
-            if let rask_types::TypeDef::Interface { name, .. } = def {
-                // Object-compatible methods only (TR1–TR3) — match vtable layout.
-                // Through the shared helper, not the TypeDef's own list: a
-                // super-interface's methods belong in the sub-interface's vtable too.
-                Some((
-                    name.clone(),
-                    rask_types::object_compatible_methods(&typed.types, name),
-                ))
-            } else {
-                None
-            }
-        })
-        .collect();
+    let interface_methods = super::compile::build_interface_methods(&typed);
     let mut mir_interp = rask_comptime::ComptimeInterpreter::new();
     mir_interp.inject_cfg(&cfg);
     mir_interp.register_functions(&decls);

@@ -299,8 +299,8 @@ impl TypeChecker {
         for (node, is_any_cast, recv_ty, arg_ty) in pending {
             let applied = self.ctx.apply(&arg_ty);
             for elem in Self::interface_object_type_args(&self.ctx.apply(&recv_ty)) {
-                let Type::InterfaceObject { ref interface_name } = elem else { continue };
-                if crate::interfaces::implements_interface(&self.types, &applied, interface_name) {
+                let Type::InterfaceObject { ref interface_name, decl } = elem else { continue };
+                if crate::interfaces::implements_interface_object(&self.types, &applied, interface_name, decl) {
                     self.note_interface_coercion_node(node, is_any_cast, &elem, &arg_ty);
                 }
             }
@@ -331,7 +331,7 @@ impl TypeChecker {
             }
             return;
         }
-        let Type::InterfaceObject { interface_name } = &expected else { return };
+        let Type::InterfaceObject { interface_name, decl } = &expected else { return };
         if is_any_cast {
             return;
         }
@@ -363,10 +363,12 @@ impl TypeChecker {
             resolved,
             Type::Var(_) | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. }
         );
-        if !undecided && !crate::interfaces::implements_interface(&self.types, &resolved, interface_name) {
+        if !undecided
+            && !crate::interfaces::implements_interface_object(&self.types, &resolved, interface_name, *decl)
+        {
             return;
         }
-        self.interface_coercions.insert(node, interface_name.clone());
+        self.interface_coercions.insert(node, self.types.interface_symbol(interface_name, *decl));
     }
 
     /// True when the literal's own spelling doesn't pin a type, so the slot it
@@ -1768,9 +1770,9 @@ impl TypeChecker {
                 let target = resolve_type_expr(ty, &self.types).unwrap_or(Type::Error);
 
                 // Validate interface satisfaction for `as any Interface` casts
-                if let Type::InterfaceObject { ref interface_name } = target {
+                if let Type::InterfaceObject { ref interface_name, decl } = target {
                     if !matches!(inner_ty, Type::Var(_) | Type::Error) {
-                        if !crate::interfaces::implements_interface(&self.types, &inner_ty, interface_name) {
+                        if !crate::interfaces::implements_interface_object(&self.types, &inner_ty, interface_name, decl) {
                             let ty_desc = match &inner_ty {
                                 Type::Named(id) => self.types.type_name(*id),
                                 other => format!("{}", other),
@@ -2771,7 +2773,7 @@ impl TypeChecker {
                 let ret = *ret.clone();
                 for (param, arg) in params.clone().iter().zip(args.iter()) {
                     // TR5: record implicit interface coercion for MIR boxing
-                    if let Type::InterfaceObject { ref interface_name } = param {
+                    if let Type::InterfaceObject { ref interface_name, decl } = param {
                         let is_explicit_cast = matches!(
                             &arg.expr.kind,
                             ExprKind::Cast { ty: TypeExpr::Any(_), .. }
@@ -2781,7 +2783,7 @@ impl TypeChecker {
                             if !matches!(arg_ty, Type::InterfaceObject { .. } | Type::Error) {
                                 self.interface_coercions.insert(
                                     arg.expr.id,
-                                    interface_name.clone(),
+                                    self.types.interface_symbol(interface_name, *decl),
                                 );
                             }
                         }
@@ -3957,8 +3959,8 @@ impl TypeChecker {
                 // Only an argument that satisfies the interface can be the element.
                 // Without this a `Map<string, any Shape>`'s key was flagged too,
                 // and codegen went looking for `string_area`.
-                let Type::InterfaceObject { ref interface_name } = elem else { continue };
-                if crate::interfaces::implements_interface(&self.types, &applied, interface_name) {
+                let Type::InterfaceObject { ref interface_name, decl } = elem else { continue };
+                if crate::interfaces::implements_interface_object(&self.types, &applied, interface_name, decl) {
                     self.note_interface_coercion(&arg.expr, &elem, arg_ty);
                 }
             }
@@ -4277,7 +4279,7 @@ impl TypeChecker {
             .types
             .builtin_modules
             .get_method(module, method)
-            .map(|sig| sig.params.clone())
+            .map(|sig| sig.params.iter().map(|p| self.types.as_stdlib_reads(p)).collect())
             .unwrap_or_default();
         let arg_types: Vec<_> = args
             .iter()
@@ -4308,7 +4310,11 @@ impl TypeChecker {
 
         // Cloned rather than borrowed: recording an interface coercion below mutates
         // the checker, and the borrow would outlive the whole body.
-        if let Some(sig) = self.types.builtin_modules.get_method(module, method).cloned() {
+        if let Some(mut sig) = self.types.builtin_modules.get_method(module, method).cloned() {
+            for p in &mut sig.params {
+                *p = self.types.as_stdlib_reads(p);
+            }
+            sig.ret = self.types.as_stdlib_reads(&sig.ret);
             let mut interface_params: Vec<(Expr, Type, Type)> = Vec::new();
             // Check parameter count — skip for wildcard params (_Any accepts anything)
             let has_wildcard = sig.params.iter().any(|p| {

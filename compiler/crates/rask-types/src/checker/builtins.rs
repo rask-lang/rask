@@ -76,7 +76,9 @@ pub(super) fn stub_type(ty: &TypeExpr) -> Type {
         },
         TypeExpr::Optional(inner) => Type::option(stub_type(inner)),
         TypeExpr::RawPtr(inner) => Type::RawPtr(Box::new(stub_type(inner))),
-        TypeExpr::Any(inner) => Type::InterfaceObject { interface_name: inner.to_string() },
+        // Which declaration it means is the stdlib's, settled where the
+        // signature is used (`TypeTable::as_stdlib_reads`): no table exists yet.
+        TypeExpr::Any(inner) => Type::InterfaceObject { interface_name: inner.to_string(), decl: None },
         TypeExpr::Tuple(elems) => Type::Tuple(all(elems)),
         TypeExpr::Named { path, args } if !args.is_empty() => {
             let name = path.join(".");

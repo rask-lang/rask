@@ -63,35 +63,10 @@ pub(super) fn build_nominal_underlying(
         .collect()
 }
 
-/// Extract interface method lists for interface object dispatch.
+/// Interface method lists for interface object dispatch, keyed by each
+/// interface's symbol.
 pub(super) fn build_interface_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<String>> {
-    let mut methods: HashMap<String, Vec<String>> = typed.types.iter()
-        .filter_map(|def| {
-            if let rask_types::TypeDef::Interface { name, .. } = def {
-                // Object-compatible methods only (TR1–TR3): the vtable holds
-                // slots for exactly these, and MIR dispatch offsets index the
-                // same list, so both sides agree.
-                // Through the shared helper, not the TypeDef's own list: a
-                // super-interface's methods belong in the sub-interface's vtable too.
-                Some((
-                    name.clone(),
-                    rask_types::object_compatible_methods(&typed.types, name),
-                ))
-            } else {
-                None
-            }
-        })
-        .collect();
-    // An interface the compiler provides has no declaration to read, so `any Error`
-    // got a box with no vtable behind it and dispatch fell through to the
-    // static path (#708). A program that declares an interface of the same name
-    // keeps its own — the entry is already there and isn't overwritten.
-    for name in rask_types::COMPILER_PROVIDED_TRAITS {
-        methods.entry(name.to_string()).or_insert_with(|| {
-            rask_types::object_compatible_methods(&typed.types, name)
-        });
-    }
-    methods
+    rask_types::interface_vtable_methods(&typed.types)
 }
 
 /// Lower mono functions to MIR and run optimization passes.

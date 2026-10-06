@@ -612,6 +612,84 @@ impl TypeTable {
         ConformanceKey { iface, applied: TypeExpr::generic(base, args) }
     }
 
+    /// `any name`, as the code being checked means it: the interface it
+    /// declares or imports under that name, or one the compiler provides.
+    pub fn interface_object(&self, name: &str) -> Type {
+        let decl = self
+            .get_type_id(name)
+            .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })));
+        Type::InterfaceObject { interface_name: name.to_string(), decl }
+    }
+
+    /// A stdlib signature's types as the stdlib reads them. Stub signatures are
+    /// read before any declaration is registered, so their `any I` carries no
+    /// declaration yet; it is the stdlib's `I`, even where a program declares
+    /// its own (#1426).
+    pub fn as_stdlib_reads(&self, ty: &Type) -> Type {
+        let each = |args: &[GenericArg]| -> Vec<GenericArg> {
+            args.iter()
+                .map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(Box::new(self.as_stdlib_reads(t))),
+                    other => other.clone(),
+                })
+                .collect()
+        };
+        match ty {
+            Type::InterfaceObject { interface_name, decl: None } => {
+                let decl = self
+                    .stdlib_type_names
+                    .get(interface_name)
+                    .copied()
+                    .filter(|id| matches!(self.get(*id), Some(TypeDef::Interface { .. })));
+                Type::InterfaceObject { interface_name: interface_name.clone(), decl }
+            }
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.as_stdlib_reads(ok)),
+                err: Box::new(self.as_stdlib_reads(err)),
+            },
+            Type::Generic { base, args } => Type::Generic { base: *base, args: each(args) },
+            Type::UnresolvedGeneric { name, args } => {
+                Type::UnresolvedGeneric { name: name.clone(), args: each(args) }
+            }
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.as_stdlib_reads(e)).collect()),
+            Type::Fn { params, ret } => Type::Fn {
+                params: params.iter().map(|p| self.as_stdlib_reads(p)).collect(),
+                ret: Box::new(self.as_stdlib_reads(ret)),
+            },
+            other => other.clone(),
+        }
+    }
+
+    /// The name an interface goes by after checking, in the backends' tables
+    /// and in vtable symbols: one per declaration.
+    ///
+    /// The plain name, except for a program interface that shadows one the
+    /// stdlib declares. That one gets its `TypeId` attached, so `any Writer` in
+    /// the program and `any Writer` in `io.copy`'s signature reach different
+    /// method lists and different vtables (#1426).
+    pub fn interface_symbol(&self, name: &str, decl: Option<TypeId>) -> String {
+        match decl {
+            Some(id) if self.shadows_stdlib_interface(name, id) => format!("{name}#{}", id.0),
+            _ => name.to_string(),
+        }
+    }
+
+    /// Is `id` a declaration of `name` other than the stdlib's interface of
+    /// that name?
+    fn shadows_stdlib_interface(&self, name: &str, id: TypeId) -> bool {
+        self.stdlib_type_names
+            .get(name)
+            .is_some_and(|std| *std != id && matches!(self.get(*std), Some(TypeDef::Interface { .. })))
+    }
+
+    /// Every declared interface with its id.
+    pub fn interfaces(&self) -> impl Iterator<Item = (TypeId, &str)> {
+        self.types.iter().enumerate().filter_map(|(i, def)| match def {
+            TypeDef::Interface { name, .. } => Some((TypeId(i as u32), name.as_str())),
+            _ => None,
+        })
+    }
+
     /// The interface a name means to the code being checked.
     pub fn interface_ident(&self, name: &str) -> InterfaceIdent {
         self.get_type_id(name)
@@ -915,6 +993,11 @@ impl TypeTable {
             set.iter()
                 .any(|k| k.iface != meant && Self::conformance_key(&k.applied) == name)
         })
+    }
+
+    /// `declares_conformance` to a declared interface named by its id.
+    pub fn declares_conformance_to_decl(&self, type_id: TypeId, interface: TypeId, name: &str) -> bool {
+        self.declares_conformance_to(type_id, InterfaceIdent::Declared(interface), &TypeExpr::named(name))
     }
 
     /// `declares_conformance` for an interface already identified.

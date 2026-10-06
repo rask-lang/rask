@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `any Writer` means the Writer of the code that wrote it (#1426).
+//
+// With a program `interface Writer`, `io.copy(src, dst)` with two `Buffer`s
+// failed: "expected `any Writer`, found `Buffer`". The interface object type
+// carried only the name, so the stdlib's `any Writer` parameter was checked
+// against the program's Writer. MIR keyed method lists and vtables by name
+// too, so both interfaces would have shared one. Now the type carries the
+// interface's declaration, and the program's shadowing interface has a
+// vtable symbol of its own.
+
+import io
+import io.Buffer
+
+interface Writer {
+    func tag(self) -> string
+}
+
+struct Note {
+    text: string
+}
+
+Note implements Writer {
+    func tag(self) -> string {
+        return "note:{self.text}"
+    }
+}
+
+func label(w: any Writer) -> string {
+    return w.tag()
+}
+
+test "the stdlib's any Writer takes a stdlib Buffer" {
+    let xyz: Vec<u8> = [120, 121, 122]
+    mut src = Buffer.from(xyz)
+    mut dst = Buffer.new()
+    let n = io.copy(src, dst) catch _ => -1
+    assert n == 3
+    assert dst.to_bytes().len() == 3
+}
+
+test "the program's any Writer takes the program's type" {
+    assert label(Note { text: "a" }) == "note:a"
+    let held: any Writer = Note { text: "b" }
+    assert held.tag() == "note:b"
+    let all: Vec<any Writer> = [Note { text: "c" }]
+    assert all[0].tag() == "note:c"
+}

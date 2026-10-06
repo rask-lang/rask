@@ -1432,7 +1432,7 @@ impl TypeChecker {
                 }
             }
             // Interface object: look up method in interface definition
-            Type::InterfaceObject { ref interface_name } => {
+            Type::InterfaceObject { ref interface_name, decl } => {
                 let interface_name = interface_name.clone();
                 let checker = crate::interfaces::InterfaceChecker::new(&self.types);
                 // TR3: reject generic methods — they can't be monomorphized
@@ -1440,7 +1440,7 @@ impl TypeChecker {
                 // Checked before method lookup: interface method names carry their
                 // type params (`convert<T>`) while the call site does not, so
                 // an exact-name lookup would miss and report "no such method".
-                let is_generic = self.types.get_type_id(&interface_name)
+                let is_generic = decl
                     .and_then(|id| self.types.get(id))
                     .map_or(false, |def| def.is_generic_interface_method(&method));
                 if is_generic {
@@ -1451,7 +1451,7 @@ impl TypeChecker {
                     });
                 }
 
-                let interface_methods = checker.get_interface_methods_public(&interface_name);
+                let interface_methods = checker.interface_object_methods(&interface_name, *decl);
 
                 if let Some(method_sig) = interface_methods.iter().find(|m| m.name == method) {
                     // TR2: reject methods returning Self
@@ -1969,7 +1969,7 @@ impl TypeChecker {
                     span,
                 });
             }
-            let ret_ty = super::builtins::stub_type(&method_def.ret_ty);
+            let ret_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(&method_def.ret_ty));
             return self.unify(ret, &ret_ty, span);
         }
 
@@ -2031,7 +2031,7 @@ impl TypeChecker {
                 seen.insert("_Any".to_string(), first.clone());
             }
             let ret_ty = self.freshen_free_type_params(
-                &super::builtins::stub_type(&method_def.ret_ty),
+                &self.types.as_stdlib_reads(&super::builtins::stub_type(&method_def.ret_ty)),
                 &mut seen,
             );
             return self.unify(ret, &ret_ty, span);
@@ -2356,10 +2356,10 @@ impl TypeChecker {
                         });
                     }
                     for ((_, param_ty_str), arg) in stub.params.iter().zip(args.iter()) {
-                        let param_ty = super::builtins::stub_type(param_ty_str);
+                        let param_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(param_ty_str));
                         self.unify(arg, &param_ty, span)?;
                     }
-                    let ret_ty = super::builtins::stub_type(&stub.ret_ty);
+                    let ret_ty = self.types.as_stdlib_reads(&super::builtins::stub_type(&stub.ret_ty));
                     return self.unify(ret, &ret_ty, span);
                 }
                 // Known runtime type but unknown method — hard error

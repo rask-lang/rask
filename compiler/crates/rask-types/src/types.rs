@@ -100,7 +100,12 @@ pub enum Type {
     },
     /// Interface object: `any InterfaceName` — heap-boxed, vtable-dispatched.
     InterfaceObject {
+        /// As written, for messages.
         interface_name: std::string::String,
+        /// Which interface: its declaration. A program's `interface Writer`
+        /// and the stdlib's are two interfaces with one name (#1426). `None`
+        /// for one the compiler provides without a declaration.
+        decl: Option<TypeId>,
     },
     /// Never type (for return, panic, etc.)
     Never,
@@ -345,7 +350,7 @@ impl Type {
             },
             Type::Union(members) => TypeExpr::Union(members.iter().map(Type::to_type_expr).collect()),
             Type::RawPtr(inner) => TypeExpr::RawPtr(Box::new(inner.to_type_expr())),
-            Type::InterfaceObject { interface_name } => {
+            Type::InterfaceObject { interface_name, .. } => {
                 TypeExpr::Any(Box::new(TypeExpr::named(interface_name.clone())))
             }
             other => TypeExpr::named(other.to_string()),
@@ -419,7 +424,7 @@ impl fmt::Display for Type {
             }
             Type::RawPtr(inner) => write!(f, "*{}", inner),
             Type::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
-            Type::InterfaceObject { interface_name } => write!(f, "any {}", interface_name),
+            Type::InterfaceObject { interface_name, .. } => write!(f, "any {}", interface_name),
             Type::Assoc { base, name } => write!(f, "{}.{}", base, name),
             Type::Var(_) => write!(f, "_"),
             Type::Never => write!(f, "!"),

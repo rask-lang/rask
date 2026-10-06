@@ -779,6 +779,15 @@ impl<'a> InterfaceChecker<'a> {
         self.get_interface_methods(interface_name).unwrap_or_default()
     }
 
+    /// The methods an `any` of this interface offers: its declaration's, or a
+    /// compiler-provided interface's by name.
+    pub fn interface_object_methods(&self, interface_name: &str, decl: Option<TypeId>) -> Vec<MethodSig> {
+        match decl {
+            Some(id) => self.declared_interface_methods(id, &mut Vec::new()),
+            None => self.get_builtin_interface_methods(interface_name).unwrap_or_default(),
+        }
+    }
+
     /// GT2/AT6: what an interface's written signatures mean for one conformance.
     ///
     /// Maps `Rhs` to the argument the header gave it (or the declared default),
@@ -1655,6 +1664,80 @@ fn object_compatible_methods_seen(
         })
         .map(|m| m.name)
         .collect()
+}
+
+/// Does `ty` fill an `any` of this interface? `decl` is the declaration the
+/// interface object names, which decides when the name alone wouldn't: a
+/// stdlib `Buffer` implements the stdlib's `Writer`, and a program declaring
+/// its own `Writer` hasn't changed that (#1426).
+pub fn implements_interface_object(
+    types: &TypeTable,
+    ty: &Type,
+    interface_name: &str,
+    decl: Option<TypeId>,
+) -> bool {
+    // Where the name means this declaration anyway, the full check by name
+    // applies — it also holds a conformance header to the methods it promises.
+    if let Some(id) = decl.filter(|id| types.get_type_id(interface_name) != Some(*id)) {
+        let nominal = matches!(types.get(id), Some(TypeDef::Interface { is_duck: false, .. }));
+        let target = match ty {
+            Type::Named(t) | Type::Generic { base: t, .. } => Some(*t),
+            _ => None,
+        }
+        .filter(|t| matches!(types.get(*t), Some(TypeDef::Struct { .. } | TypeDef::Enum { .. })));
+        if let (true, Some(target)) = (nominal, target) {
+            return types.declares_conformance_to_decl(target, id, interface_name);
+        }
+    }
+    implements_interface(types, ty, interface_name)
+}
+
+/// The methods a vtable holds for each interface, keyed by the interface's
+/// symbol (`TypeTable::interface_symbol`), in slot order. Codegen lays the
+/// vtables out from this and MIR reads its dispatch offsets from it, so the
+/// two agree by construction.
+pub fn interface_vtable_methods(types: &TypeTable) -> std::collections::HashMap<String, Vec<String>> {
+    let mut methods: std::collections::HashMap<String, Vec<String>> = types
+        .interfaces()
+        .map(|(id, name)| (types.interface_symbol(name, Some(id)), object_compatible_methods_of(types, id)))
+        .collect();
+    // An interface the compiler provides has no declaration to read, so `any Error`
+    // got a box with no vtable behind it and dispatch fell through to the
+    // static path (#708). A declared one of the same name keeps its own.
+    for name in COMPILER_PROVIDED_TRAITS {
+        methods
+            .entry(name.to_string())
+            .or_insert_with(|| object_compatible_methods(types, name));
+    }
+    methods
+}
+
+/// `object_compatible_methods` for a declaration already identified. Parents
+/// are named as the interface's own side reads them (#1329).
+fn object_compatible_methods_of(types: &TypeTable, id: TypeId) -> Vec<String> {
+    object_compatible_methods_of_seen(types, id, &mut Vec::new())
+}
+
+fn object_compatible_methods_of_seen(types: &TypeTable, id: TypeId, seen: &mut Vec<TypeId>) -> Vec<String> {
+    if seen.contains(&id) {
+        return Vec::new();
+    }
+    seen.push(id);
+    let Some(def @ TypeDef::Interface { super_interfaces, .. }) = types.get(id) else {
+        return Vec::new();
+    };
+    let mut names = def.object_compatible_method_names();
+    for parent in super_interfaces {
+        let Some(pid) = types.resolve_name_as_declared_by(id, &TypeTable::conformance_key(parent)) else {
+            continue;
+        };
+        for m in object_compatible_methods_of_seen(types, pid, seen) {
+            if !names.contains(&m) {
+                names.push(m);
+            }
+        }
+    }
+    names
 }
 
 pub fn implements_interface(
