@@ -617,7 +617,7 @@ func resolve(manifest: Manifest, registry: any Registry, mutate graph: DepGraph)
     // Insert root package
     let root_meta = PackageMeta {
         name: manifest.name,
-        version: manifest.version,
+        version: manifest.version.clone(),
         checksum: "",
         deps: Vec.new(),
     }
@@ -676,7 +676,7 @@ func resolve_one(name: string, constraint: Constraint, registry: any Registry, m
     mut link = graph.packages.insert(ResolvedPkg {
         meta: PackageMeta {
             name: meta.name,
-            version: meta.version,
+            version: meta.version.clone(),
             checksum: meta.checksum,
             deps: Vec.new(),
         },
@@ -729,7 +729,7 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
 
         items.push(FetchItem {
             name,
-            version: pkg.meta.version,
+            version: pkg.meta.version.clone(),
             checksum: pkg.meta.checksum,
             cache_path,
         })

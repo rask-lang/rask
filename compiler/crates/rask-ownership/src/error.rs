@@ -67,14 +67,20 @@ pub enum OwnershipErrorKind {
         field_ty: String,
     },
 
-    /// mem.borrowing/S1, S5: `out.items = src.items` on a non-Copy field. The
-    /// read is a view, and the place it's stored in owns what it holds, so the
-    /// two would be one value with two owners.
-    #[error("`{target}` and `{path}` would be the same `{field_ty}`")]
+    /// mem.borrowing/S1, S3: a non-Copy field read handed to something that
+    /// owns what it holds: `out.items = src.items`, `Bag { items: src.items }`,
+    /// `v.push(src.items)`. The read is a view, so the two would be one value
+    /// with two owners.
+    #[error("`{path}` would get a second owner")]
     FieldViewStored {
-        target: String,
+        into: ViewSink,
         path: String,
+        /// `src` of `src.items`.
+        root: String,
         field_ty: String,
+        /// `let tmp = src.items` when the view reached the owner under a name
+        /// of its own: the name and where it was bound.
+        bound: Option<(String, Span)>,
     },
 
     /// mem.borrowing/S3: a borrowed parameter, or a view into one, returned.
@@ -581,6 +587,23 @@ pub enum OwnershipErrorKind {
         inner: Box<OwnershipErrorKind>,
         inner_span: Span,
     },
+}
+
+/// What a field view was handed to. Drives the E0909 copy.
+#[derive(Debug, Clone)]
+pub enum ViewSink {
+    /// `out.items = …`, `v = …`: the place, rendered.
+    Place(String),
+    /// `Bag { items: … }`.
+    StructField { ty: String, field: String },
+    /// `(…, 1)` or `[…]`.
+    Element,
+    /// `Shape.One(…)`.
+    Payload { variant: String },
+    /// `Heap(…)`.
+    Heap,
+    /// A `take` parameter: `eat(…)`, `out.push(…)`, a channel send.
+    TakeArg { callee: String },
 }
 
 /// How a link escapes its rack's scope. Drives the E0379 copy.

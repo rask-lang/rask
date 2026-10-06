@@ -4,7 +4,7 @@ func forward(request: Request, upstream: string, path: string) -> Response or Ht
     let url = "http://{upstream}{path}"
     return try http.request(
         Request.new(request.method, url)
-            .with_headers(request.headers)
+            .with_headers(request.headers.clone())
             .with_body(request.body)
     )
 }

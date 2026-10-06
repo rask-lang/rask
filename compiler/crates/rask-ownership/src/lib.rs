@@ -15,6 +15,7 @@ pub use field_reuse::field_reuses;
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
 pub use error::{
     AccessKind, LinearDiscardPosition, LinkEscape, MoveReason, OwnershipError, OwnershipErrorKind,
+    ViewSink,
 };
 
 use std::collections::{HashMap, HashSet};
@@ -118,6 +119,15 @@ pub struct OwnershipChecker<'a> {
     /// only lent gives `c` on the same loan, so `c` is neither owed nor
     /// the arm's to give away. Scoped to the arm that bound it.
     borrowed_parts: HashMap<String, (Span, String)>,
+    /// `let tmp = src.items` on a non-Copy field: `tmp` is a view of
+    /// `src.items` under a name of its own (mem.borrowing/S1). Reading it is
+    /// fine; handing it to an owner is the same E0909 the field read gets.
+    field_views: HashMap<String, FieldView>,
+    /// The place an assignment is writing while its value is checked.
+    /// `self.list = More(h, Heap(self.list))` builds the new value out of the
+    /// old one, and the old one is gone afterwards, so a field read of the
+    /// target itself moves out rather than viewing.
+    store_target: Option<(String, Vec<String>)>,
     /// Bindings of a value-mode `for` over a collection: name → (the loop, the
     /// collection). The loop lends each element (ctrl.loops/LP1), so the
     /// binding can't be given away any more than a borrowed parameter can
@@ -297,6 +307,18 @@ struct InstanceJob<'d> {
     chain: Vec<String>,
 }
 
+/// A non-Copy field read, as the value it views.
+#[derive(Debug, Clone)]
+struct FieldView {
+    /// `src.items`.
+    path: String,
+    /// `src`.
+    root: String,
+    field_ty: String,
+    /// `let tmp = src.items` when it was bound to a name: `tmp` and the span.
+    bound: Option<(String, Span)>,
+}
+
 /// A value a container lent out, carried from wherever the walk found it to
 /// the `return` that hands it on.
 #[derive(Debug, Clone)]
@@ -348,6 +370,8 @@ impl<'a> OwnershipChecker<'a> {
             lent_locals: HashMap::new(),
             borrowed_params: HashMap::new(),
             borrowed_parts: HashMap::new(),
+            field_views: HashMap::new(),
+            store_target: None,
             borrowed_loop_items: HashMap::new(),
             copy_params: HashSet::new(),
             loop_exits: Vec::new(),
@@ -1020,6 +1044,8 @@ impl<'a> OwnershipChecker<'a> {
         self.resource_field_debts.clear();
         self.borrowed_params.clear();
         self.borrowed_parts.clear();
+        self.field_views.clear();
+        self.store_target = None;
         self.borrowed_loop_items.clear();
         self.loop_exits.clear();
         self.refills.clear();
@@ -1485,17 +1511,57 @@ impl<'a> OwnershipChecker<'a> {
     /// compiled: the interpreter shared one vector between both names and
     /// native freed it twice (#1283).
     fn check_field_view_stored(&mut self, target: &Expr, value: &Expr) -> bool {
-        let Some((path, field_ty)) = self.non_copy_field_view(value) else {
+        let Some(into) = Self::render_place(target) else {
             return false;
         };
-        let Some(target) = Self::render_place(target) else {
+        self.check_view_owned(value, ViewSink::Place(into))
+    }
+
+    /// S1/S3 wherever a value gets an owner: a field read, or a name bound to
+    /// one, handed to an aggregate, a `Heap`, a `take` parameter or a place.
+    /// Returns whether it reported, in which case the caller has nothing to
+    /// move.
+    ///
+    /// Only the assignment was checked at first (#1283). `Bag { items:
+    /// src.items }` and `let tmp = src.items` followed by `out.items = tmp`
+    /// still compiled, and native freed the caller's Vec (#1459).
+    fn check_view_owned(&mut self, expr: &Expr, into: ViewSink) -> bool {
+        let Some(view) = self.field_view(expr) else {
             return false;
         };
         self.errors.push(OwnershipError {
-            kind: OwnershipErrorKind::FieldViewStored { target, path, field_ty },
-            span: value.span,
+            kind: OwnershipErrorKind::FieldViewStored {
+                into,
+                path: view.path,
+                root: view.root,
+                field_ty: view.field_ty,
+                bound: view.bound,
+            },
+            span: expr.span,
         });
         true
+    }
+
+    /// The field this expression views, if it is a non-Copy field read or a
+    /// name bound to one.
+    ///
+    /// A read of the place being assigned is not a view: the assignment
+    /// replaces it, so what was read moves into the new value (`field_reuse`
+    /// tells lowering not to release it).
+    fn field_view(&self, expr: &Expr) -> Option<FieldView> {
+        if let ExprKind::Ident(name) = &expr.kind {
+            return self.field_views.get(name).cloned();
+        }
+        let (path, field_ty) = self.non_copy_field_view(expr)?;
+        let (Some(root), Some(fields)) = Self::extract_root_and_fields(expr) else {
+            return None;
+        };
+        if let Some((t_root, t_fields)) = &self.store_target {
+            if *t_root == root && fields.starts_with(t_fields) {
+                return None;
+            }
+        }
+        Some(FieldView { path, root, field_ty, bound: None })
     }
 
     /// `value.field` when it reads a field whose value a second owner would
@@ -1518,6 +1584,31 @@ impl<'a> OwnershipChecker<'a> {
             return None;
         }
         Some((format!("{}.{}", root, fields.join(".")), self.resource_type_display(&ty)))
+    }
+
+    /// `let tmp = src.items`: remember that `tmp` is a view, or forget that a
+    /// rebound name was one. `let t2 = tmp` is the same view again.
+    fn record_field_view(&mut self, name: &str, init: &Expr) {
+        let view = match &init.kind {
+            ExprKind::Ident(src) => self.field_views.get(src).cloned(),
+            _ => self.non_copy_field_view(init).and_then(|(path, field_ty)| {
+                let root = Self::extract_root_and_fields(init).0?;
+                Some(FieldView {
+                    path,
+                    root,
+                    field_ty,
+                    bound: Some((name.to_string(), init.span)),
+                })
+            }),
+        };
+        match view {
+            Some(v) => {
+                self.field_views.insert(name.to_string(), v);
+            }
+            None => {
+                self.field_views.remove(name);
+            }
+        }
     }
 
     /// A place expression rendered back to source, for a message. `None` for
@@ -1546,6 +1637,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.borrowed_captures.remove(name);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 self.record_lent_binding(name, init);
+                self.record_field_view(name, init);
                 if let Some(t) = self.node_ty(&init.id).cloned() {
                     self.record_link_provenance(name, &t, init);
                     self.binding_types.insert(name.clone(), t);
@@ -1603,6 +1695,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.borrowed_captures.remove(name);
                 self.binding_decl_blocks.insert(name.clone(), self.current_block);
                 self.record_lent_binding(name, init);
+                self.record_field_view(name, init);
                 if let Some(t) = self.node_ty(&init.id).cloned() {
                     self.binding_types.insert(name.clone(), t.clone());
                     self.record_link_provenance(name, &t, init);
@@ -1708,9 +1801,15 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             StmtKind::Assign { target, value, .. } => {
+                let (t_root, t_fields) = Self::extract_root_and_fields(target);
+                self.store_target = t_root.map(|r| (r, t_fields.unwrap_or_default()));
                 self.check_expr(value);
+                self.store_target = None;
                 if let ExprKind::Ident(name) = &target.kind {
                     self.record_lent_binding(name, value);
+                    // What it holds now is whatever the assignment put there;
+                    // a view stored this way is reported below.
+                    self.field_views.remove(name);
                 }
                 // A whole-variable assignment reinitializes the target — it is
                 // not a use of the old value, so don't flag a moved/maybe-moved
@@ -2102,7 +2201,7 @@ impl<'a> OwnershipChecker<'a> {
                 // after it had gone into the list, and a linked list of
                 // resources couldn't be built one node at a time.
                 if matches!(op, UnaryOp::Heap) {
-                    self.consume_owned_into_aggregate(operand);
+                    self.consume_into_owner(operand, ViewSink::Heap);
                 }
             }
             ExprKind::Call { func, args } => {
@@ -2188,7 +2287,13 @@ impl<'a> OwnershipChecker<'a> {
                         // of `p` was a use-after-move. That is the form
                         // `mem.heap` documents for exactly this, and the only
                         // reason to write it is to go on using the box (#882).
-                        self.consume_arg_or_commit(&arg.expr, callee_name.as_deref());
+                        // `drop(src.items)` has its own message (E0890).
+                        let callee = callee_name.clone().unwrap_or_else(|| "this call".to_string());
+                        if callee == "drop"
+                            || !self.check_view_owned(&arg.expr, ViewSink::TakeArg { callee })
+                        {
+                            self.consume_arg_or_commit(&arg.expr, callee_name.as_deref());
+                        }
                     }
                 }
                 for rack_arg in &deleting_args {
@@ -2263,7 +2368,13 @@ impl<'a> OwnershipChecker<'a> {
                         if method != "delete" {
                             self.require_deleting_for_derived_consume(&arg.expr, &rack_args, expr.span);
                         }
-                        self.consume_arg_or_commit(&arg.expr, Some(method.as_str()));
+                        let callee = match Self::render_place(object) {
+                            Some(o) => format!("{}.{}", o, method),
+                            None => method.clone(),
+                        };
+                        if !self.check_view_owned(&arg.expr, ViewSink::TakeArg { callee }) {
+                            self.consume_arg_or_commit(&arg.expr, Some(method.as_str()));
+                        }
                     }
                 }
                 // `List.Cons(1, rest)` — a variant constructor takes its payload by
@@ -4110,6 +4221,27 @@ impl<'a> OwnershipChecker<'a> {
                 return;
             }
             _ => {}
+        }
+        // `let t = b.items; return t` returns `b.items` under another name.
+        if let ExprKind::Ident(name) = &expr.kind {
+            if let Some(view) = self.field_views.get(name).cloned() {
+                let Some(&(declared_at, is_mutate)) = self.borrowed_params.get(&view.root) else {
+                    return;
+                };
+                let of_closure = self.closure_params.contains(&view.root);
+                self.errors.push(OwnershipError {
+                    kind: OwnershipErrorKind::BorrowedFieldEscapes {
+                        path: view.path,
+                        root: view.root,
+                        of_closure,
+                        field_ty: view.field_ty,
+                        declared_at,
+                        is_mutate,
+                    },
+                    span: expr.span,
+                });
+                return;
+            }
         }
         let (Some(root), fields) = Self::extract_root_and_fields(expr) else {
             return;
@@ -6938,39 +7070,26 @@ impl<'a> OwnershipChecker<'a> {
         self.owned_bindings.insert(name.to_string());
     }
 
-    /// Consume any `own` box stored into an aggregate being built here.
+    /// Hand each part of an aggregate being built here to it.
     ///
-    /// The same walk `consume_returned_resources` does, restricted to owned
-    /// bindings: a box in a struct field, a tuple or array element, or an enum
-    /// variant payload belongs to the aggregate now, so the binding it came from
-    /// has given it away.
+    /// A struct field, a tuple or array element, or an enum variant payload
+    /// belongs to the aggregate now. A nested aggregate is its own expression
+    /// and was handed its parts when it was checked.
     fn consume_owned_into_aggregate(&mut self, expr: &Expr) {
         match &expr.kind {
-            ExprKind::Ident(name) => {
-                // A `@resource` counts too. L5 says assigning to another binding
-                // consumes, and a field is another binding — the aggregate takes
-                // on the debt, reported as `h.c`. Leaving the source binding owing
-                // as well made the program unwritable: consuming `h` satisfies
-                // `h.c` and there is nothing left for `c` to be consumed by (#882).
-                if self.owned_bindings.contains(name) || self.resource_bindings.contains(name) {
-                    self.consume_binding(name, expr.span, None);
-                } else {
-                    // Any other non-Copy value moves in too (mem.ownership/O2):
-                    // the aggregate owns it from here. Not recording that left
-                    // `let t = (v, 1)` with two owners of one vector, and a
-                    // loop's borrowed element could be stored away and freed
-                    // twice (#1395).
-                    self.consume_arg(expr, None);
-                }
-            }
             ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
                 for e in elems {
-                    self.consume_owned_into_aggregate(e);
+                    self.consume_into_owner(e, ViewSink::Element);
                 }
             }
-            ExprKind::StructLit { fields, spread, .. } => {
+            ExprKind::StructLit { name, fields, spread, .. } => {
+                let ty = self
+                    .node_ty(&expr.id)
+                    .map(|t| self.resource_type_display(t))
+                    .unwrap_or_else(|| name.clone());
                 for f in fields {
-                    self.consume_owned_into_aggregate(&f.value);
+                    let into = ViewSink::StructField { ty: ty.clone(), field: f.name.clone() };
+                    self.consume_into_owner(&f.value, into);
                 }
                 // A spread reads the fields nobody listed (type.structs/FD5),
                 // so `Config { port, ..base }` works on a borrowed `base`. Only
@@ -6984,11 +7103,39 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::MethodCall { object, method, args, .. }
                 if self.names_a_variant(object, method) =>
             {
+                let variant = match Self::render_place(object) {
+                    Some(o) => format!("{}.{}", o, method),
+                    None => method.clone(),
+                };
                 for arg in args {
-                    self.consume_owned_into_aggregate(&arg.expr);
+                    self.consume_into_owner(&arg.expr, ViewSink::Payload { variant: variant.clone() });
                 }
             }
             _ => {}
+        }
+    }
+
+    /// One value handed to an owner: an aggregate's part or a `Heap`'s payload.
+    fn consume_into_owner(&mut self, expr: &Expr, into: ViewSink) {
+        if self.check_view_owned(expr, into) {
+            return;
+        }
+        let ExprKind::Ident(name) = &expr.kind else {
+            return;
+        };
+        // A `@resource` counts too. L5 says assigning to another binding
+        // consumes, and a field is another binding — the aggregate takes on
+        // the debt, reported as `h.c`. Leaving the source binding owing as
+        // well made the program unwritable: consuming `h` satisfies `h.c` and
+        // there is nothing left for `c` to be consumed by (#882).
+        if self.owned_bindings.contains(name) || self.resource_bindings.contains(name) {
+            self.consume_binding(name, expr.span, None);
+        } else {
+            // Any other non-Copy value moves in too (mem.ownership/O2): the
+            // aggregate owns it from here. Not recording that left
+            // `let t = (v, 1)` with two owners of one vector, and a loop's
+            // borrowed element could be stored away and freed twice (#1395).
+            self.consume_arg(expr, None);
         }
     }
 

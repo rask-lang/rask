@@ -128,12 +128,9 @@ extend Request {
         return out
     }
     public func with_body(take self, body: string) -> Request {
-        return Request {
-            method: self.method,
-            url: self.url,
-            headers: self.headers,
-            body,
-        }
+        mut out = self
+        out.body = body
+        return out
     }
 
     // URL path before '?'.
@@ -223,11 +220,9 @@ extend Response {
 
     // ── Builder ──
     public func with_status(take self, status: u16) -> Response {
-        return Response {
-            status,
-            headers: self.headers,
-            body: self.body,
-        }
+        mut out = self
+        out.status = status
+        return out
     }
     public func with_header(take self, name: string, value: string) -> Response {
         self.headers.set(name, value)

@@ -3405,25 +3405,70 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
-            FieldViewStored { target, path, field_ty } => {
-                Diagnostic::error(format!(
-                    "`{}` and `{}` would be the same `{}`",
-                    target, path, field_ty
+            FieldViewStored { into, path, root, field_ty, bound } => {
+                use rask_ownership::ViewSink;
+                // The value as written at the store: the field read, or the
+                // name that holds the view.
+                let shown = bound.as_ref().map(|(n, _)| n.as_str()).unwrap_or(path);
+                let (headline, owner) = match into {
+                    ViewSink::Place(target) => (
+                        format!("`{}` and `{}` would be the same `{}`", target, path, field_ty),
+                        format!("`{}`", target),
+                    ),
+                    ViewSink::StructField { ty, field } => (
+                        format!("the new `{}` would share its `{}` with `{}`", ty, field, path),
+                        format!("the new `{}`", ty),
+                    ),
+                    ViewSink::Element => (
+                        format!("`{}` stored in a tuple or array would get a second owner", path),
+                        "the tuple or array".to_string(),
+                    ),
+                    ViewSink::Payload { variant } => (
+                        format!("`{}` would share its payload with `{}`", variant, path),
+                        format!("`{}`", variant),
+                    ),
+                    ViewSink::Heap => (
+                        format!("`Heap({})` would be a second owner of `{}`", shown, path),
+                        "the `Heap`".to_string(),
+                    ),
+                    ViewSink::TakeArg { callee } => (
+                        format!("`{}` takes `{}`, which `{}` still holds", callee, path, root),
+                        format!("`{}`", callee),
+                    ),
+                };
+                let fix = match bound {
+                    Some((name, _)) => format!(
+                        "bind a separate value: `let {} = {}.clone()`",
+                        name, path
+                    ),
+                    None => match into {
+                        ViewSink::Place(target) => format!(
+                            "store a separate value: `{} = {}.clone()`",
+                            target, path
+                        ),
+                        _ => format!("use a separate value: `{}.clone()`", path),
+                    },
+                };
+                let mut d = Diagnostic::error(headline)
+                    .with_code("E0909")
+                    .with_primary(
+                        self.span,
+                        match bound {
+                            Some((name, _)) => format!("`{}` is a view of `{}`, not a copy", name, path),
+                            None => "a field read is a view, not a copy".to_string(),
+                        },
+                    );
+                if let Some((name, at)) = bound {
+                    d = d.with_secondary(*at, format!("`{}` views `{}` from here", name, path));
+                }
+                d.with_fix(fix).with_why(format!(
+                    "reading a field gives a view of storage `{}` still holds, \
+                     and {} would own it too: one value with two owners, so a \
+                     write through either changes both and each frees it \
+                     [mem.borrowing/S1, S3]",
+                    root,
+                    owner
                 ))
-                .with_code("E0909")
-                .with_primary(self.span, "a field read is a view, not a copy")
-                .with_fix(format!(
-                    "store a separate value: `{} = {}.clone()`",
-                    target, path
-                ))
-                .with_why(
-                    "reading a field gives a view of storage the source still \
-                     holds. The place it's assigned to owns what it holds, so \
-                     the two would be one value with two owners: a write \
-                     through either changes both, and each frees it \
-                     [mem.borrowing/S1, S5]"
-                        .to_string(),
-                )
             }
 
             BorrowedFieldEscapes { path, root, field_ty, declared_at, is_mutate, of_closure } => {
