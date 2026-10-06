@@ -392,6 +392,8 @@ impl TypedProgram {
     /// checked, and every `==` on two wrappers turned into a call to the
     /// wrapper's `eq` (`checker/derive.rs`).
     ///
+    /// Also writes each transparent alias's target where the alias was named.
+    ///
     /// Done here, by the entry points that check a program, rather than by
     /// whoever runs next: every pass after this one reads the declarations,
     /// and none of them should have to know the checker wrote some.
@@ -420,6 +422,19 @@ impl TypedProgram {
         let mut derived = std::mem::take(&mut self.derived_decls);
         rask_ast::rewrite::rewrite_decls(&mut derived, &mut Calls(&self.wrapper_eq_calls));
         decls.extend(derived);
+
+        // A transparent alias is the type it names. The checker resolves one
+        // through its alias table; mono, lowering and the interpreter read the
+        // written types and have no table, so a field or parameter typed
+        // `Names` reached them as a type nobody declared (#1316). Writing the
+        // target in its place hands them what the checker already knew.
+        struct Aliases<'a>(&'a super::type_table::TypeTable);
+        impl rask_ast::rewrite::Rewrite for Aliases<'_> {
+            fn ty(&mut self, t: &mut rask_ast::ty::TypeExpr) {
+                *t = self.0.expand_aliases(t);
+            }
+        }
+        rask_ast::rewrite::rewrite_decls(decls, &mut Aliases(&self.types));
     }
 }
 

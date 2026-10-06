@@ -173,6 +173,16 @@ impl TypeChecker {
     }
 
     pub(super) fn collect_type_declarations(&mut self, decls: &[Decl]) {
+        // Transparent aliases first: a struct field or another declaration's
+        // signature may name one declared further down, and resolving it
+        // before the alias is in the table gives a type nobody declared.
+        for decl in decls {
+            if let DeclKind::TypeAlias(a) = &decl.kind {
+                if a.is_transparent {
+                    self.register_transparent_alias(a, decl.span);
+                }
+            }
+        }
         for decl in decls {
             match &decl.kind {
                 DeclKind::Struct(s) => {
@@ -1559,20 +1569,28 @@ impl TypeChecker {
         });
     }
 
+    /// Put a transparent alias in the table. Runs before any other declaration
+    /// is registered; `register_type_alias` checks its target later, once
+    /// every type it may name is known.
+    fn register_transparent_alias(&mut self, a: &TypeAliasDecl, span: rask_ast::Span) {
+        // T6: check for cycles before registering
+        if let Some(path) = self.types.check_alias_cycle(&a.name, &a.target) {
+            self.errors.push(TypeError::CyclicTypeAlias {
+                cycle: path.join(" → "),
+                span,
+            });
+            return;
+        }
+        self.types.register_alias(a.name.clone(), a.target.clone());
+    }
+
     pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl, span: rask_ast::Span) {
         if a.is_transparent {
-            // T6: check for cycles before registering
-            if let Some(path) = self.types.check_alias_cycle(&a.name, &a.target) {
-                self.errors.push(TypeError::CyclicTypeAlias {
-                    cycle: path.join(" → "),
-                    span,
-                });
-                return;
-            }
-            self.types.register_alias(a.name.clone(), a.target.clone());
             // RC1/RC3: `alias Files = Vec<File>` is itself a rejected type.
-            if let Ok(target) = resolve_type_expr(&a.target, &self.types) {
-                self.note_linear_container_site(span, target);
+            if self.types.alias_target(&a.name).is_some() {
+                if let Ok(target) = resolve_type_expr(&a.target, &self.types) {
+                    self.note_linear_container_site(span, target);
+                }
             }
         } else {
             // `type X = Y` — nominal, gets its own TypeId

@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A type alias whose target wasn't a bare name resolved to a type nobody
+// declared: `Vec<string>` lost its methods, a function type died in lowering (#1316).
+
+struct Early {
+    xs: Later
+}
+
+func count_later(xs: Later) -> usize {
+    return xs.len()
+}
+
+type alias Later = Vec<i64>
+type alias Names = Vec<string>
+type alias Again = Names
+type alias Fn = func(i64) -> i64
+type alias Pair = (i64, string)
+type alias MaybeN = i64?
+type alias Table = Map<string, i64>
+type alias Res = i64 or Oops
+
+enum Oops { Neg }
+
+extend Oops {
+    func message(self) -> string {
+        return "negative"
+    }
+}
+
+struct Holder {
+    names: Names
+    f: Fn
+}
+
+func make() -> Fn {
+    return |n| { return n + 1 }
+}
+
+func apply(f: Fn, x: i64) -> i64 {
+    return f(x)
+}
+
+func parse(x: i64) -> Res {
+    if x < 0 {
+        return Oops.Neg
+    }
+    return x * 2
+}
+
+test "generic alias keeps its methods" {
+    mut xs: Names = Vec.new()
+    xs.push("a")
+    xs.push("b")
+    assert xs.len() == 2
+    assert xs[1] == "b"
+}
+
+test "alias of an alias of a generic" {
+    mut a: Again = Vec.new()
+    a.push("z")
+    assert a[0] == "z"
+}
+
+test "alias used before it is declared" {
+    mut l: Later = Vec.new()
+    l.push(4)
+    assert count_later(l) == 1
+    mut e = Early { xs: Vec.new() }
+    e.xs.push(1)
+    e.xs.push(2)
+    assert e.xs.len() == 2
+}
+
+test "function-typed alias" {
+    let f = make()
+    assert f(1) == 2
+    assert apply(|n| { return n * 3 }, 2) == 6
+}
+
+test "tuple, optional, map and result aliases" {
+    let p: Pair = (1, "one")
+    assert p.0 == 1
+    assert p.1 == "one"
+    let m: MaybeN = none
+    assert (m ?? 7) == 7
+    mut t: Table = Map.new()
+    t.insert("k", 3)
+    assert t.len() == 1
+    assert parse(3)! == 6
+    assert parse(-1) is Oops
+}
+
+test "aliases as struct fields" {
+    let h = Holder { names: Vec.new(), f: |n| { return n * 10 } }
+    assert h.names.len() == 0
+    assert apply(h.f, 2) == 20
+}

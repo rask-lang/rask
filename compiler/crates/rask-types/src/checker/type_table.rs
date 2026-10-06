@@ -424,6 +424,18 @@ impl TypeTable {
         Some(target)
     }
 
+    /// `ty` with every transparent alias in it replaced by what it stands for,
+    /// at any depth: `Names?` with `Names = Vec<string>` is `Vec<string>?`.
+    pub fn expand_aliases(&self, ty: &TypeExpr) -> TypeExpr {
+        if self.type_aliases.is_empty() {
+            return ty.clone();
+        }
+        // `alias_target` follows bare-name chains; a target that holds another
+        // alias deeper in (`Vec<Names>`) is expanded by the recursion. Cycles
+        // were refused at registration, so the recursion ends.
+        ty.substitute(&|name| self.alias_target(name).map(|t| self.expand_aliases(t)))
+    }
+
     /// The name an alias stands for, when its target is a plain named type.
     pub fn alias_target_name(&self, name: &str) -> Option<String> {
         self.alias_target(name).filter(|t| t.args().is_empty()).and_then(TypeExpr::name)
