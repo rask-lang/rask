@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `sort_by` and `sort_by_key` with 128-bit elements and keys.
+//
+// `Vec<i128>.sort_by(|a, b| a.compare(b))` didn't compile natively: there was
+// no lowering for `compare` on an i128 ("Function not found: i128_compare").
+// Behind that, the runtime's sort handed the comparator one 64-bit word per
+// element, so the closure got the low half of each value and read the high
+// half from whatever register came next (#1408).
+
+struct Item {
+    weight: i128
+    name: string
+}
+
+test "sort_by over i128 both ways" {
+    mut s: Vec<i128> = Vec.new()
+    s.push(5)
+    s.push(-3)
+    s.push(170141183460469231731687303715884105727)
+    s.push(-170141183460469231731687303715884105727)
+    s.sort_by(|a, b| a.compare(b))
+    assert s[0] == -170141183460469231731687303715884105727
+    assert s[1] == -3
+    assert s[2] == 5
+    assert s[3] == 170141183460469231731687303715884105727
+    s.sort_by(|a, b| b.compare(a))
+    assert s[0] == 170141183460469231731687303715884105727
+    assert s[3] == -170141183460469231731687303715884105727
+}
+
+test "sort_by over u128 above the low word" {
+    mut u: Vec<u128> = Vec.new()
+    u.push(340282366920938463463374607431768211455)
+    u.push(5)
+    u.push(18446744073709551616)
+    u.sort_by(|a, b| a.compare(b))
+    assert u[0] == 5
+    assert u[1] == 18446744073709551616
+    assert u[2] == 340282366920938463463374607431768211455
+}
+
+test "an i128 key and an i128 field" {
+    mut items: Vec<Item> = Vec.new()
+    items.push(Item { weight: 18446744073709551616, name: "big" })
+    items.push(Item { weight: -1, name: "neg" })
+    items.push(Item { weight: 3, name: "small" })
+    items.sort_by_key(|it| it.weight)
+    assert items[0].name == "neg"
+    assert items[1].name == "small"
+    assert items[2].name == "big"
+    items.sort_by(|x, y| y.weight.compare(x.weight))
+    assert items[0].name == "big"
+    assert items[2].name == "neg"
+}
+
+test "compare on wide integers" {
+    let x: i128 = -7
+    let y: u128 = 18446744073709551616
+    assert x.compare(9) == Ordering.Less
+    assert y.compare(18446744073709551615) == Ordering.Greater
+    assert y.compare(y) == Ordering.Equal
+}

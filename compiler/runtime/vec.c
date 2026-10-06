@@ -1111,32 +1111,47 @@ int64_t rask_f64_compare_total(double a, double b) {
 // env as its first argument (see closures.rs). Calling the block address
 // directly jumped into the closure's own data.
 //
-// `by_ptr` says how the two elements are handed over, and lowering decides it
-// from the element type: an aggregate or a string is a pointer to its slot,
-// anything else is the slot's word. That matches what the closure body
-// compiles to — `|a, b| a.rank.compare(b.rank)` reads fields through a
-// pointer, while `Vec<i64>` compares plain integers. It used to be guessed
-// here from the slot width, and an eight-byte struct had its field passed
-// where its address belonged. Returns <0 / 0 / >0.
+// `pass` says how the two elements are handed over, and lowering decides it
+// from the element type (RASK_SORT_PASS_*): an aggregate or a string is a
+// pointer to its slot, a 128-bit integer is the slot's two words, anything
+// else is the slot's word. That matches what the closure body compiles to —
+// `|a, b| a.rank.compare(b.rank)` reads fields through a pointer, while
+// `Vec<i64>` compares plain integers. It used to be guessed here from the slot
+// width, and an eight-byte struct had its field passed where its address
+// belonged. An i128 got its low word as the whole argument, and the closure
+// read its high half from whatever register came next (#1408).
+// Returns <0 / 0 / >0.
 /* Ordering's tags, from rask-stdlib's ORDERING_VARIANTS: Less, Equal, Greater. */
 #define RASK_ORDERING_EQUAL 1
 
 typedef int64_t (*RaskCmpFn)(int64_t env, int64_t a, int64_t b);
+// A 128-bit value is one C argument; the ABI splits it over two registers the
+// same way Cranelift splits an `i128` parameter.
+typedef int64_t (*RaskCmpFn128)(int64_t env, __int128 a, __int128 b);
 
 static __thread int64_t rask_sort_comparator;
-static __thread int rask_sort_by_ptr;
+static __thread int64_t rask_sort_pass;
+
+// Call the comparator on the elements stored at `a` and `b`, the way
+// `rask_sort_pass` says it takes them; returns the Ordering tag.
+static int64_t rask_sort_call(const char *a, const char *b) {
+    int64_t env = CLOSURE_ENV(rask_sort_comparator);
+    void *code = (void *)(uintptr_t)CLOSURE_FUNC(rask_sort_comparator);
+    switch (rask_sort_pass) {
+    case RASK_SORT_PASS_ADDRESS:
+        return ((RaskCmpFn)code)(env, (int64_t)(uintptr_t)a, (int64_t)(uintptr_t)b);
+    case RASK_SORT_PASS_WIDE: {
+        __int128 wa, wb;
+        memcpy(&wa, a, sizeof wa);
+        memcpy(&wb, b, sizeof wb);
+        return ((RaskCmpFn128)code)(env, wa, wb);
+    }
+    default:
+        return ((RaskCmpFn)code)(env, *(const int64_t *)a, *(const int64_t *)b);
+    }
+}
 
 static int rask_sort_by_adapter(const void *a, const void *b) {
-    RaskCmpFn fn = (RaskCmpFn)(uintptr_t)CLOSURE_FUNC(rask_sort_comparator);
-    int64_t env = CLOSURE_ENV(rask_sort_comparator);
-    int64_t va, vb;
-    if (rask_sort_by_ptr) {
-        va = (int64_t)(uintptr_t)a;
-        vb = (int64_t)(uintptr_t)b;
-    } else {
-        va = *(const int64_t *)a;
-        vb = *(const int64_t *)b;
-    }
     /* The comparator is declared `-> Ordering`, and an Ordering crosses this
        boundary as its tag: Less 0, Equal 1, Greater 2. The sort wants a sign, so
        the mapping is tag - 1.
@@ -1146,14 +1161,14 @@ static int rask_sort_by_adapter(const void *a, const void *b) {
        Equal for every pair reversed the whole vector. Ascending sorts still
        came out ascending, because (0, +, +) is monotone in the true ordering,
        which is why it went unnoticed. */
-    return (int)(fn(env, va, vb) - RASK_ORDERING_EQUAL);
+    return (int)(rask_sort_call(a, b) - RASK_ORDERING_EQUAL);
 }
 
-void rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t by_ptr) {
+void rask_vec_sort_by(RaskVec *v, int64_t comparator, int64_t pass) {
     vec_check_no_borrows(v, "sort_by");
     if (!v || v->len <= 1 || !comparator) return;
     rask_sort_comparator = comparator;
-    rask_sort_by_ptr = by_ptr != 0;
+    rask_sort_pass = pass;
     rask_stable_sort(v->data, v->len, v->elem_size, rask_sort_by_adapter);
 }
 
@@ -1177,24 +1192,14 @@ static __thread const char *rask_key_data;
 static __thread int64_t     rask_key_size;
 
 static int rask_sort_keys_adapter(const void *pa, const void *pb) {
-    RaskCmpFn fn = (RaskCmpFn)(uintptr_t)CLOSURE_FUNC(rask_sort_comparator);
-    int64_t env = CLOSURE_ENV(rask_sort_comparator);
     const char *ka = rask_key_data + *(const int64_t *)pa * rask_key_size;
     const char *kb = rask_key_data + *(const int64_t *)pb * rask_key_size;
-    int64_t va, vb;
-    if (rask_sort_by_ptr) {
-        va = (int64_t)(uintptr_t)ka;
-        vb = (int64_t)(uintptr_t)kb;
-    } else {
-        va = *(const int64_t *)ka;
-        vb = *(const int64_t *)kb;
-    }
     // Same Ordering-tag-to-sign conversion `sort_by` needs: Less 0, Equal 1,
     // Greater 2.
-    return (int)(fn(env, va, vb) - RASK_ORDERING_EQUAL);
+    return (int)(rask_sort_call(ka, kb) - RASK_ORDERING_EQUAL);
 }
 
-void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_t by_ptr) {
+void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_t pass) {
     vec_check_no_borrows(v, "sort_by_key");
     if (!v || v->len <= 1 || !keys || !comparator) return;
     if (keys->len < v->len) {
@@ -1207,7 +1212,7 @@ void rask_vec_sort_by_keys(RaskVec *v, RaskVec *keys, int64_t comparator, int64_
     for (int64_t i = 0; i < n; i++) order[i] = i;
 
     rask_sort_comparator = comparator;
-    rask_sort_by_ptr = by_ptr != 0;
+    rask_sort_pass = pass;
     rask_key_data = keys->data;
     rask_key_size = keys->elem_size;
     rask_stable_sort(order, n, (int64_t)sizeof(int64_t), rask_sort_keys_adapter);

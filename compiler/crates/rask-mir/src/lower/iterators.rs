@@ -2451,7 +2451,7 @@ impl<'a> MirLowerer<'a> {
                 MirOperand::Local(vec_local),
                 MirOperand::Local(keys),
                 cmp,
-                MirOperand::Constant(MirConst::Int(Self::sort_passes_by_address(&key_ty) as i64)),
+                Self::sort_pass(&key_ty),
             ],
         }));
 

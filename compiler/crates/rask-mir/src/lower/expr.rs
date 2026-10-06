@@ -423,35 +423,43 @@ impl<'a> MirLowerer<'a> {
             .map_or(false, |ty| matches!(ty, MirType::String))
     }
 
-    /// Whether the runtime's sorts hand a comparator elements of this type as
-    /// a pointer to their slot rather than as the slot's word. An aggregate or
-    /// a string is passed by address in generated code, whatever its size, so
-    /// the runtime can't tell from the slot width: guessing "wider than a word"
-    /// handed an eight-byte struct's field over as if it were its address, and
-    /// sorting a `Vec` of `struct { n: i64 }` segfaulted.
-    pub(super) fn sort_passes_by_address(ty: &MirType) -> bool {
-        matches!(
-            ty,
+    /// How the runtime's sorts hand a comparator two elements of this type,
+    /// as the `RASK_SORT_PASS_*` value `rask_vec_sort_by` takes.
+    ///
+    /// An aggregate or a string is passed by address in generated code,
+    /// whatever its size, so the runtime can't tell from the slot width:
+    /// guessing "wider than a word" handed an eight-byte struct's field over as
+    /// if it were its address, and sorting a `Vec` of `struct { n: i64 }`
+    /// segfaulted. A 128-bit integer is a value in two words, and passing it as
+    /// one gave `|a, b| a.compare(b)` half of each element (#1408).
+    pub(super) fn sort_pass(ty: &MirType) -> MirOperand {
+        const WORD: i64 = 0;
+        const ADDRESS: i64 = 1;
+        const WIDE: i64 = 2;
+        let pass = match ty {
             MirType::String
-                | MirType::Struct(_)
-                | MirType::Enum(_)
-                | MirType::Array { .. }
-                | MirType::Tuple(_)
-                | MirType::Option(_)
-                | MirType::Result { .. }
-                | MirType::Union(_)
-                | MirType::SimdVector { .. }
-                | MirType::InterfaceObject { .. }
-        )
+            | MirType::Struct(_)
+            | MirType::Enum(_)
+            | MirType::Array { .. }
+            | MirType::Tuple(_)
+            | MirType::Option(_)
+            | MirType::Result { .. }
+            | MirType::Union(_)
+            | MirType::SimdVector { .. }
+            | MirType::InterfaceObject { .. } => ADDRESS,
+            MirType::I128 | MirType::U128 => WIDE,
+            _ => WORD,
+        };
+        MirOperand::Constant(MirConst::Int(pass))
     }
 
-    /// `Vec_sort_by`'s last argument: 1 when the comparator takes this Vec's
-    /// elements by address.
-    fn sort_by_address_arg(&self, object: &Expr) -> MirOperand {
+    /// `Vec_sort_by`'s last argument: how the comparator takes this Vec's
+    /// elements.
+    fn sort_pass_arg(&self, object: &Expr) -> MirOperand {
         let elem = self.tracked_elem_of(object)
             .or_else(|| self.collection_elem_of_expr(object))
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:sort_by_elem"));
-        MirOperand::Constant(MirConst::Int(Self::sort_passes_by_address(&elem) as i64))
+        Self::sort_pass(&elem)
     }
 
     /// The `compare` function for this Vec's element type, when it has one.
@@ -6475,11 +6483,11 @@ impl<'a> MirLowerer<'a> {
             // stability is observable.
             let mut args = all_args;
             args.push(sort_comparator.expect("checked above"));
-            args.push(self.sort_by_address_arg(object));
+            args.push(self.sort_pass_arg(object));
             ("Vec_sort_by".to_string(), args)
         } else if qualified_name == "Vec_sort_by" {
             let mut args = all_args;
-            args.push(self.sort_by_address_arg(object));
+            args.push(self.sort_pass_arg(object));
             (qualified_name.clone(), args)
         } else if qualified_name == "Vec_contains" && self.vec_elem_is_string(object) {
             // The byte-compare runtime can't match two equal heap strings —
