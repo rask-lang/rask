@@ -321,11 +321,9 @@ fn env_drop_glue(
         follow_copies(func, &mut made_here);
         // Closures this frame drops. `closures::insert_drops` emits one only
         // for a closure the frame owns, so its presence says the frame will
-        // free what this closure swallowed and the glue must not.
-        let frame_drops: HashSet<LocalId> = crate::closures::closure_drops_by_create(func)
-            .into_iter()
-            .map(|(create, _, _)| create)
-            .collect();
+        // free what this closure swallowed and the glue must not — unless it
+        // shared the closure with a keeper, when the glue is what runs last.
+        let frame_drops = crate::closures::closures_the_frame_frees_last(func);
         for block in &func.blocks {
             for stmt in &block.statements {
                 let MirStmtKind::ClosureCreate { dst, func_name, captures, heap: true, .. } = &stmt.kind
@@ -1311,12 +1309,9 @@ fn captures_freed_with_the_closure(
     func: &MirFunction,
     fresh: &HashMap<LocalId, &'static str>,
 ) -> Vec<(LocalId, u32, LocalId, &'static str)> {
-    // Closures this frame drops. `closures::insert_drops` emits one only for
-    // a closure the frame owns, so its presence is the answer.
-    let dropped: HashSet<LocalId> = crate::closures::closure_drops_by_create(func)
-        .into_iter()
-        .map(|(create, _, _)| create)
-        .collect();
+    // Closures this frame drops, and holds the last reference to.
+    // `closures::insert_drops` emits a drop only for a closure the frame owns.
+    let dropped = crate::closures::closures_the_frame_frees_last(func);
     if dropped.is_empty() {
         return Vec::new();
     }

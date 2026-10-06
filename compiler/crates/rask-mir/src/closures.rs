@@ -244,16 +244,7 @@ fn retain_borrowed_closures_handed_on(
                         let Some(id) = uses::operand_local(arg).filter(|id| borrowed.contains(id)) else {
                             continue;
                         };
-                        // Same question `closure_facts` asks: a callee with no
-                        // body of its own keeps what it isn't known to borrow.
-                        let keeps = callee_escapes
-                            .get(&callee.name)
-                            .and_then(|e| e.get(i))
-                            .copied()
-                            .unwrap_or_else(|| {
-                                !rask_stdlib::mir_metadata::borrows_its_callback(&callee.name)
-                            });
-                        if keeps {
+                        if callee_keeps(callee_escapes, &callee.name, i) {
                             at.push((si, id));
                         }
                     }
@@ -276,9 +267,114 @@ fn retain_borrowed_closures_handed_on(
             }
         }
         for (si, closure) in at.into_iter().rev() {
-            block.statements.insert(si, MirStmt::dummy(MirStmtKind::ClosureRetain { closure }));
+            block.statements.insert(si, MirStmt::dummy(MirStmtKind::ClosureRetain { closure, made: None }));
         }
     }
+}
+
+/// Does a call keep argument `i`? A callee with no body of its own keeps what
+/// it isn't known to borrow.
+fn callee_keeps(callee_escapes: &HashMap<String, Vec<bool>>, callee: &str, i: usize) -> bool {
+    callee_escapes
+        .get(callee)
+        .and_then(|e| e.get(i))
+        .copied()
+        .unwrap_or_else(|| !rask_stdlib::mir_metadata::borrows_its_callback(callee))
+}
+
+/// The hand-overs of a closure this frame owns where the frame still uses the
+/// closure afterwards, as `(block, stmt, name)`.
+///
+/// A closure value is Copy, so `spawn(c)` twice, `fs.push(c)` twice, or
+/// `fs.push(c)` then `c()` are all legal — and each hands the one block to
+/// something that frees it. The first keeper used to take the frame's only
+/// reference, and whoever freed second freed a dead block (#1411). So where
+/// the closure is read again on some path after it, the keeper gets a
+/// reference of its own (`closure_retain`) and the frame goes on owning its
+/// own. Only the last use hands the frame's reference over.
+///
+/// Captured by another closure is left out: that environment's release is
+/// already accounted for as the inner closure's (`captured_environments`).
+fn handed_on_while_still_used(
+    func: &MirFunction,
+    aliases: &ClosureAliases,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+) -> HashSet<(usize, usize, LocalId)> {
+    let tracked: HashSet<LocalId> = aliases.map.keys().copied().collect();
+    let mut sites: Vec<(usize, usize, LocalId)> = Vec::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for (si, stmt) in block.statements.iter().enumerate() {
+            match &stmt.kind {
+                MirStmtKind::Call { func: callee, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        let Some(id) = uses::operand_local(arg).filter(|id| tracked.contains(id)) else {
+                            continue;
+                        };
+                        if callee_keeps(callee_escapes, &callee.name, i) {
+                            sites.push((bi, si, id));
+                        }
+                    }
+                }
+                MirStmtKind::Store { value: MirOperand::Local(id), .. }
+                | MirStmtKind::ArrayStore { value: MirOperand::Local(id), .. }
+                | MirStmtKind::InterfaceBox { value: MirOperand::Local(id), .. }
+                    if tracked.contains(id) =>
+                {
+                    sites.push((bi, si, *id));
+                }
+                _ => {}
+            }
+        }
+    }
+    if sites.is_empty() {
+        return HashSet::new();
+    }
+    // Liveness, not reachability: a closure built inside a loop is a fresh
+    // block each turn, and the next turn's read is of that one.
+    let live = crate::analysis::liveness::analyze_phis_on_edges(func);
+    let live_after = |bi: usize, si: usize, name: LocalId| -> bool {
+        let block = &func.blocks[bi];
+        for st in &block.statements[si + 1..] {
+            if uses::stmt_reads(st, name) {
+                return true;
+            }
+            if uses::stmt_def(st) == Some(name) {
+                return false;
+            }
+        }
+        uses::terminator_reads(&block.terminator, name) || live.live_at_exit(block.id, name)
+    };
+    sites
+        .into_iter()
+        .filter(|(bi, si, id)| {
+            let origins = aliases.origins(id);
+            tracked
+                .iter()
+                .filter(|t| aliases.origins(t).iter().any(|o| origins.contains(o)))
+                .any(|t| live_after(*bi, *si, *t))
+        })
+        .collect()
+}
+
+/// The heap closures built in `func` that it will share with a keeper while
+/// still using them — the creates `insert_drops` will mark with a
+/// `closure_retain`. Asked early, by `closure_specialize`, because a site that
+/// shares its closure and one that doesn't want different environment glue:
+/// the first leaves the captures to the glue, the second frees them itself.
+pub(crate) fn creates_shared_with_a_keeper(
+    func: &MirFunction,
+    callee_escapes: &HashMap<String, Vec<bool>>,
+) -> HashSet<LocalId> {
+    let made: HashMap<LocalId, bool> =
+        created_closures(func).into_iter().filter(|(_, heap)| *heap).collect();
+    if made.is_empty() {
+        return HashSet::new();
+    }
+    let aliases = closure_aliases(func, &made);
+    handed_on_while_still_used(func, &aliases, callee_escapes)
+        .into_iter()
+        .filter_map(|(_, _, id)| sole_origin(&aliases, &id))
+        .collect()
 }
 
 /// Heap exactly when the closure outlives this frame.
@@ -636,16 +732,31 @@ fn insert_drops(
     // them, and freed when it is (#1045).
     let owned_by = captured_environments(func, &owned, &aliases);
 
-    let facts = closure_facts(func, &owned, &aliases, callee_escapes);
+    let shared = handed_on_while_still_used(func, &aliases, callee_escapes);
+    let facts = closure_facts(func, &owned, &aliases, callee_escapes, &shared);
     let plan = crate::analysis::ownership::plan(
         func,
         &facts,
         crate::analysis::ownership::Placement::ScopeEnd,
     );
-    // Freeing an environment frees what only it captured, innermost first.
+    // Before the plan lands: its releases go at block ends and on edges, and
+    // the sites were found by index in the blocks as they are now.
+    let created = created_closures(func);
+    let mut shared: Vec<(usize, usize, LocalId)> = shared.into_iter().collect();
+    shared.sort_by(|a, b| b.cmp(a));
+    let mut shared_creates: HashSet<LocalId> = HashSet::new();
+    for (bi, si, closure) in shared {
+        let made = sole_origin(&aliases, &closure).filter(|c| created.contains_key(c));
+        shared_creates.extend(made);
+        func.blocks[bi].statements.insert(si, MirStmt::dummy(MirStmtKind::ClosureRetain { closure, made }));
+    }
+    // Freeing an environment frees what only it captured, innermost first —
+    // unless a keeper shares it, when the frame's free isn't the last one and
+    // the environment's glue releases what it swallowed.
     let drops_for = |name: LocalId, made: Option<LocalId>| -> Vec<MirStmt> {
         let root = made.unwrap_or(name);
-        let mut out: Vec<MirStmt> = expand_owned(&[root], &owned_by)
+        let swallowed = if shared_creates.contains(&root) { Vec::new() } else { expand_owned(&[root], &owned_by) };
+        let mut out: Vec<MirStmt> = swallowed
             .into_iter()
             .filter(|id| *id != root)
             .map(|closure| MirStmt::dummy(MirStmtKind::ClosureDrop { closure, made: Some(closure) }))
@@ -680,29 +791,19 @@ fn insert_drops(
 /// stored, returned, or passed to a callee that keeps the argument. A callee
 /// whose body says it keeps nothing leaves the closure to this frame; no
 /// answer means it might keep it. Calling a closure is a borrow.
+///
+/// A hand-over in `shared` isn't one: the keeper gets a reference of its own
+/// there (`handed_on_while_still_used`) and the frame keeps holding its own.
 fn closure_facts(
     func: &MirFunction,
     made: &HashMap<LocalId, bool>,
     aliases: &ClosureAliases,
     callee_escapes: &HashMap<String, Vec<bool>>,
+    shared: &HashSet<(usize, usize, LocalId)>,
 ) -> crate::analysis::ownership::Facts {
     use crate::analysis::ownership::Event;
     let tracked: std::collections::BTreeSet<LocalId> = aliases.map.keys().copied().collect();
     let is = |l: &LocalId| tracked.contains(l);
-    // A closure this frame goes on to call wasn't kept by a call it was passed
-    // to: a closure is moved into a callee that keeps it, and a moved closure
-    // can't be called here afterwards. So a call with no answer for the
-    // argument only lent it.
-    let called_here: HashSet<LocalId> = func
-        .blocks
-        .iter()
-        .flat_map(|b| b.statements.iter())
-        .filter_map(|st| match &st.kind {
-            MirStmtKind::ClosureCall { closure, .. } => Some(*closure),
-            _ => None,
-        })
-        .flat_map(|c| aliases.origins(&c).to_vec())
-        .collect();
     let mut facts = crate::analysis::ownership::Facts {
         names: tracked.clone(),
         events: Vec::new(),
@@ -712,12 +813,12 @@ fn closure_facts(
         terminator_reads: Vec::new(),
         foreign: func.params.iter().map(|p| p.id).filter(|p| is(p)).collect(),
     };
-    for block in &func.blocks {
+    for (bi, block) in func.blocks.iter().enumerate() {
         let (mut events, mut reads, mut kills) = (Vec::new(), Vec::new(), Vec::new());
-        for stmt in &block.statements {
+        for (si, stmt) in block.statements.iter().enumerate() {
             let mut ev: Vec<Event> = Vec::new();
             let give = |ev: &mut Vec<Event>, id: LocalId| {
-                if is(&id) {
+                if is(&id) && !shared.contains(&(bi, si, id)) {
                     ev.push(Event::HandOver(id));
                 }
             };
@@ -730,12 +831,7 @@ fn closure_facts(
                 MirStmtKind::Call { func: callee, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
                         let Some(id) = uses::operand_local(arg) else { continue };
-                        let borrowed = callee_escapes
-                            .get(&callee.name)
-                            .and_then(|e| e.get(i))
-                            .is_some_and(|escapes| !escapes)
-                            || aliases.origins(&id).iter().any(|o| called_here.contains(o));
-                        if !borrowed {
+                        if callee_keeps(callee_escapes, &callee.name, i) {
                             give(&mut ev, id);
                         }
                     }
@@ -1186,6 +1282,26 @@ pub(crate) fn closure_drops_by_create(
             _ => None,
         })
     })
+}
+
+/// The creates whose last reference is the frame's own `closure_drop`: the
+/// frame drops them and never shared one with a keeper (`closure_retain` naming
+/// the create). Those are the closures whose captures the frame may free right
+/// after the drop; a shared one's captures are the environment's glue's.
+pub(crate) fn closures_the_frame_frees_last(func: &MirFunction) -> HashSet<LocalId> {
+    let shared: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ClosureRetain { made: Some(made), .. } => Some(*made),
+            _ => None,
+        })
+        .collect();
+    closure_drops_by_create(func)
+        .map(|(create, _, _)| create)
+        .filter(|c| !shared.contains(c))
+        .collect()
 }
 
 fn closure_aliases(

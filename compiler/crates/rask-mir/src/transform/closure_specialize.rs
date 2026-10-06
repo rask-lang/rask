@@ -46,7 +46,7 @@ const FOR: &str = "__for";
 
 /// What a create site can see about the closures it captures. Two sites with
 /// the same answer can share a body.
-type Fingerprint = (BTreeMap<u32, Option<Vec<String>>>, bool);
+type Fingerprint = (BTreeMap<u32, Option<Vec<String>>>, bool, bool);
 
 /// Where a closure gets built.
 struct Site {
@@ -58,12 +58,14 @@ struct Site {
 /// Give each group of disagreeing create sites its own copy of the body.
 pub fn specialize_adapters(fns: &mut Vec<MirFunction>) {
     let targets = crate::closure_targets::ClosureTargets::build(fns);
+    let callee_escapes = crate::closures::build_callee_escape_map(fns, true);
 
     let mut sites: HashMap<String, Vec<(Site, Fingerprint)>> = HashMap::new();
     for (fi, func) in fns.iter().enumerate() {
+        let shared = crate::closures::creates_shared_with_a_keeper(func, &callee_escapes);
         for (bi, block) in func.blocks.iter().enumerate() {
             for (si, stmt) in block.statements.iter().enumerate() {
-                let MirStmtKind::ClosureCreate { func_name, captures, .. } = &stmt.kind else {
+                let MirStmtKind::ClosureCreate { dst, func_name, captures, .. } = &stmt.kind else {
                     continue;
                 };
                 let seen: BTreeMap<u32, Option<Vec<String>>> = captures
@@ -78,7 +80,12 @@ pub fn specialize_adapters(fns: &mut Vec<MirFunction>) {
                 // own glue has to. One body can't answer both, and the glue is
                 // named after the body — so the sites are split on it and each
                 // body answers for its own (#1205).
-                let print = (seen, hands_it_back(func, stmt));
+                //
+                // Same for a frame that shares the closure with a keeper while
+                // it still uses it: its own drop isn't the last reference, so
+                // the glue frees the captures, where a frame holding the only
+                // reference frees them itself (#1411).
+                let print = (seen, hands_it_back(func, stmt), shared.contains(dst));
                 sites
                     .entry(func_name.clone())
                     .or_default()

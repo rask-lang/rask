@@ -1,0 +1,81 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A closure value is Copy, so one closure the frame owns can be handed to two
+// keepers, or to a keeper and then called. Natively the first keeper took the
+// frame's only reference to the block, and whoever freed it second freed a
+// dead block: `spawn(c)` twice read garbage, `fs.push(c)` twice crashed at
+// exit (#1411).
+
+func keep_i(x: i64) -> func() -> i64 {
+    let tags: Vec<i64> = [x, x]
+    return || tags.len().wrap<i64>() + x
+}
+
+func run_on_a_task(f: func() -> i64) -> i64 {
+    using Multitasking {
+        return spawn(f).join()!
+    }
+}
+
+// After inlining, both build `keep_i`'s closure. One shares it with a keeper,
+// so its captures are the environment's to free; the other holds the only
+// reference and frees them itself. One environment glue can't serve both.
+func shared(x: i64) -> i64 {
+    let c = keep_i(x)
+    mut fs: Vec<func() -> i64> = Vec.new()
+    fs.push(c)
+    return c() + fs[0]()
+}
+
+func alone(x: i64) -> i64 {
+    let c = keep_i(x)
+    return c()
+}
+
+test "spawned twice" {
+    using Multitasking {
+        let c = keep_i(1)
+        let a = spawn(c).join()!
+        let b = spawn(c).join()!
+        assert a == 3
+        assert b == 3
+    }
+}
+
+test "pushed twice" {
+    let c = keep_i(1)
+    mut fs: Vec<func() -> i64> = Vec.new()
+    fs.push(c)
+    fs.push(c)
+    assert fs[0]() == 3
+    assert fs[1]() == 3
+}
+
+test "pushed, then called" {
+    let c = keep_i(2)
+    mut fs: Vec<func() -> i64> = Vec.new()
+    fs.push(c)
+    assert c() == 4
+    assert fs[0]() == 4
+}
+
+test "handed to a task, then called" {
+    let c = keep_i(3)
+    assert run_on_a_task(c) == 5
+    assert c() == 5
+}
+
+test "pushed on every turn of a loop" {
+    let c = keep_i(1)
+    mut fs: Vec<func() -> i64> = Vec.new()
+    for _ in 0..3 {
+        fs.push(c)
+    }
+    assert fs.len() == 3
+    assert fs[2]() == 3
+}
+
+test "one body built where it is shared and where it isn't" {
+    assert shared(2) == 8
+    assert alone(5) == 7
+}

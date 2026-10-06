@@ -388,7 +388,11 @@ The environment *is* the variable's home once the closure carried it there, so
 the body works through the slot's address for its whole life.
 
 The block itself is owned like any other value: whoever is holding it when their
-frame ends frees it. What that free doesn't yet do is release the captures inside
+frame ends frees it. A closure value is Copy, so one block can end up with two
+holders — `fs.push(c)` twice, or `spawn(c)` and then `c()`. The block carries a
+reference count for that: a hand-off to something that keeps the closure, while
+the frame still uses it afterwards, gives the keeper a reference of its own, and
+only the last use hands the frame's over. What that free doesn't yet do is release the captures inside
 — a carrying closure holding a `Vec` frees the block and leaks the Vec (#1045).
 
 ### Closure block layout

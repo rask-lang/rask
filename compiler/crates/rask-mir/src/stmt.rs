@@ -93,8 +93,14 @@ pub enum MirStmtKind {
     /// Take one more reference to a heap closure this frame only borrows,
     /// because it is about to hand the closure to something that keeps it
     /// and will free it. The closure's owner still frees its own reference.
+    ///
+    /// `made` is the `ClosureCreate` that built it, when this frame owns it
+    /// and is sharing it with a keeper: then the frame's own `closure_drop`
+    /// isn't the block's last reference, so what the closure captured is the
+    /// environment's to free, not the frame's. A label, not a read.
     ClosureRetain {
         closure: LocalId,
+        made: Option<LocalId>,
     },
     /// Store into a fixed-size array element: base_ptr[index * elem_size] = value
     ArrayStore {

@@ -1170,7 +1170,7 @@ impl<'a> FunctionBuilder<'a> {
                 crate::closures::free_closure(builder, closure_val, *free_ref);
             }
 
-            MirStmtKind::ClosureRetain { closure } => {
+            MirStmtKind::ClosureRetain { closure, .. } => {
                 let closure_val = builder.use_var(*ctx.var_map.get(closure)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "ClosureRetain closure variable not found".to_string()

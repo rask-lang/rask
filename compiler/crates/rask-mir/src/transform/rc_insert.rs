@@ -334,10 +334,8 @@ fn insert_aggregate_release(
         .collect();
     // A closure's drop goes under whichever copy still holds it, and says
     // which create built it.
-    let closures_dropped: HashSet<LocalId> = crate::closures::closure_drops_by_create(func)
-        .into_iter()
-        .map(|(create, _, _)| create)
-        .collect();
+    // One the frame shared with a keeper isn't over at the frame's drop.
+    let closures_dropped: HashSet<LocalId> = crate::closures::closures_the_frame_frees_last(func);
     // The drop is rarely on the boxing site's own name. Inlining copies the box
     // into the callee's parameter local and the drop lands there, so
     // `describe_one(one)` boxes into `_22` and drops `_32`.
@@ -449,7 +447,7 @@ fn insert_aggregate_release(
         // holds its own and still has to release it.
         let mut retained: HashSet<LocalId> = HashSet::new();
         for stmt in &block.statements {
-            if let MirStmtKind::ClosureRetain { closure } = &stmt.kind {
+            if let MirStmtKind::ClosureRetain { closure, .. } = &stmt.kind {
                 retained.insert(*closure);
             }
             let mut ev: Vec<ownership::Event> = Vec::new();
