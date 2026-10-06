@@ -395,8 +395,8 @@ fn check_loaded(
 
     let mut parse_result = rask_parser::ParseResult { decls, errors: Vec::new() };
 
-    // --- Comptime cfg elimination (CC1) ---
-    rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &config.cfg);
+    // --- Build configuration into `comptime` code (CC1) ---
+    rask_comptime::apply_cfg(&mut parse_result.decls, &config.cfg);
 
     // --- Desugar (accumulate errors, continue) ---
     let desugared = rask_desugar::desugar_with_stdlib(
@@ -423,10 +423,9 @@ fn check_loaded(
         .enumerate()
         .filter_map(|(idx, p)| Some((idx as u16, p.parent()?.to_path_buf())))
         .collect();
-    let resolved = match rask_resolve::resolve_with_stdlib_cfg_and_dirs(
+    let resolved = match rask_resolve::resolve_with_stdlib_and_dirs(
         &parse_result.decls,
         &stdlib_bodies,
-        config.cfg.to_cfg_values(),
         source_dirs,
     ) {
         Ok(r) => r,
@@ -618,9 +617,6 @@ fn check_package_scoped(
         }
     }
 
-    // --- Comptime cfg elimination (CC1) ---
-    rask_comptime::eliminate_comptime_if(&mut pkg_ctx.all_decls, &config.cfg);
-
     // --- Merge external package declarations ---
     //
     // Before desugaring, not after. A dependency's bodies are ordinary Rask and
@@ -696,6 +692,10 @@ fn check_package_scoped(
     for (_, decls) in merged {
         pkg_ctx.all_decls.extend(decls);
     }
+
+    // --- Build configuration into `comptime` code (CC1) ---
+    // After the merge, so a dependency's `comptime if` is settled too.
+    rask_comptime::apply_cfg(&mut pkg_ctx.all_decls, &config.cfg);
     if diags.iter().any(|d| d.severity == Severity::Error) {
         return PipelineOutput::fail_with_sources(diags, source_files);
     }
@@ -727,12 +727,11 @@ fn check_package_scoped(
     // internals (`fopen`, `rask_alloc`, …), pinned to spans in the user's file
     // (#203).
     let stdlib_bodies = rask_stdlib::StubRegistry::compilable_decls();
-    let resolved = match rask_resolve::resolve_package_with_stdlib_and_cfg(
+    let resolved = match rask_resolve::resolve_package_with_stdlib(
         &pkg_ctx.all_decls,
         &pkg_ctx.registry,
         pkg_ctx.root_id,
         &stdlib_bodies,
-        config.cfg.to_cfg_values(),
     ) {
         Ok(r) => r,
         Err(errors) => {

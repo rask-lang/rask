@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `cfg.features` is the build's enabled features (comptime/CT16), and a
+// feature marked `default: true` is one of them (build/F3). Neither reached a
+// program: `cfg` was an undefined name outside `cfg.field == "..."`, and
+// defaults were never turned on (#1420).
+
+import libpkg
+
+const LOGGING: bool = comptime cfg.features.contains("logging")
+
+func main() {
+    println("logging {LOGGING}")
+    comptime if cfg.features.contains("fast") {
+        println("fast")
+    } else {
+        println("plain")
+    }
+    let debug: bool = comptime cfg.debug
+    println("debug {debug}")
+    println(libpkg.mode())
+    return
+}

@@ -633,6 +633,9 @@ pub struct FeatureDecl {
     pub options: Vec<FeatureOption>,
     /// Default option name (exclusive features only, required).
     pub default: Option<String>,
+    /// F3: `default: true` — an additive feature that is on unless the build
+    /// says `--no-default-features`.
+    pub on_by_default: bool,
 }
 
 /// An option inside an exclusive feature group.

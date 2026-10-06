@@ -45,9 +45,8 @@ pub fn resolve_features(
     // Add defaults unless --no-default-features
     if !no_default {
         for feat in features {
-            if !feat.exclusive {
-                // Additive features with default: true
-                // (For now, all declared features are opt-in unless explicitly requested)
+            if !feat.exclusive && feat.on_by_default && !to_enable.contains(&feat.name) {
+                to_enable.push(feat.name.clone());
             }
             if feat.exclusive {
                 // Exclusive features always have a default selection (FG2)
@@ -188,6 +187,7 @@ mod tests {
             deps,
             options: vec![],
             default: None,
+            on_by_default: false,
         }
     }
 
@@ -200,6 +200,7 @@ mod tests {
                 rask_ast::decl::FeatureOption { name: n.into(), deps: d }
             }).collect(),
             default: Some(default.into()),
+            on_by_default: false,
         }
     }
 
@@ -228,6 +229,16 @@ mod tests {
         assert!(result.enabled.contains("ssl"));
         assert_eq!(result.activated_deps.len(), 1);
         assert_eq!(result.activated_deps[0].name, "openssl");
+    }
+
+    /// F3: `default: true` is on unless the build turns defaults off.
+    #[test]
+    fn default_feature_is_on_unless_turned_off() {
+        let mut flag = make_additive("logging", vec![]);
+        flag.on_by_default = true;
+        let features = vec![flag];
+        assert!(resolve_features(&features, &[], false, &[]).enabled.contains("logging"));
+        assert!(!resolve_features(&features, &[], true, &[]).enabled.contains("logging"));
     }
 
     #[test]

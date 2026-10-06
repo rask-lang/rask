@@ -21,6 +21,8 @@ pub struct BuildOptions {
     pub no_cache: bool,
     /// Bypass all caching (build script + compilation). Spec: struct.build/LC2.
     pub force: bool,
+    /// F3: leave out the features the manifest marks `default: true`.
+    pub no_default_features: bool,
 }
 
 impl Default for BuildOptions {
@@ -31,6 +33,7 @@ impl Default for BuildOptions {
             target: None,
             no_cache: false,
             force: false,
+            no_default_features: false,
         }
     }
 }
@@ -248,8 +251,8 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
 
         let features = rask_resolve::features::resolve_features(
             &manifest.features,
-            &[],     // no --features from CLI yet
-            false,   // no --no-default-features yet
+            &[],
+            opts.no_default_features,
             &dep_selections,
         );
 
@@ -657,7 +660,9 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         let target_str = opts.target.as_deref().unwrap_or("native");
         let compiler_fp = super::cache::compiler_fingerprint();
         let cache_key =
-            super::cache::compute_cache_key(&source_hash, &opts.profile, target_str, compiler_fp);
+            super::cache::compute_cache_key(
+                &source_hash, &opts.profile, target_str, &resolved_feature_names, compiler_fp,
+            );
         let cache_dir = root.join("build").join(".cache");
 
         let obj_path = out_dir.join(format!("{}.o", bin_name));

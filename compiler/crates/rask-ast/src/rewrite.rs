@@ -36,6 +36,9 @@ pub trait Rewrite {
     fn pattern(&mut self, _p: &mut Pattern) {}
     /// Every type as it was written — `Vec<Cat>`, `Cat?`, `i64 or Cat`.
     fn ty(&mut self, _t: &mut TypeExpr) {}
+    /// Every statement list, before its statements are walked — for a rewriter
+    /// that adds or removes statements.
+    fn body(&mut self, _b: &mut Vec<Stmt>) {}
 }
 
 /// Rewrite a whole program.
@@ -162,7 +165,8 @@ fn rewrite_fn(f: &mut FnDecl, r: &mut impl Rewrite) {
 }
 
 /// Every expression in a statement list.
-pub fn rewrite_body(body: &mut [Stmt], r: &mut impl Rewrite) {
+pub fn rewrite_body(body: &mut Vec<Stmt>, r: &mut impl Rewrite) {
+    r.body(body);
     for stmt in body {
         rewrite_stmt(stmt, r);
     }

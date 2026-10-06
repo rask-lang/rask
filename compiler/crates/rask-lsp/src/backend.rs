@@ -215,9 +215,9 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
     // Don't bail on parse errors — the parser recovers and the recovered
     // decls flow through resolve/typecheck so hover still works.
 
-    // --- Comptime cfg elimination ---
+    // --- Build configuration into `comptime` code (CC1) ---
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &cfg);
+    rask_comptime::apply_cfg(&mut parse_result.decls, &cfg);
 
     // --- Desugar (operators + default/named args) ---
     let desugared = rask_desugar::desugar_with_stdlib(
@@ -274,17 +274,17 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
                     .collect()
             })
             .unwrap_or_default();
+        rask_comptime::apply_cfg(&mut sibling_decls, &cfg);
         rask_desugar::desugar_with_stdlib(
             &mut sibling_decls,
             rask_stdlib::StubRegistry::defaulted_signatures(),
         );
         parse_result.decls.extend(sibling_decls);
 
-        match rask_resolve::resolve_package_with_cfg(
+        match rask_resolve::resolve_package(
             &parse_result.decls,
             &ctx.registry,
             ctx.root_id,
-            cfg.to_cfg_values(),
         ) {
             Ok(r) => r,
             Err(errors) => {
@@ -304,7 +304,7 @@ fn run_pipeline(uri: &Url, source: &str, version: i32) -> PipelineOutput {
             }
         }
     } else {
-        match rask_resolve::resolve_with_cfg(&parse_result.decls, cfg.to_cfg_values()) {
+        match rask_resolve::resolve(&parse_result.decls) {
             Ok(r) => r,
             Err(errors) => {
                 for error in &errors {

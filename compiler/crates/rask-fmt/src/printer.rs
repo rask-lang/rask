@@ -1497,6 +1497,11 @@ impl<'a> Printer<'a> {
             self.emit("\"");
             self.emit_newline();
         }
+        if feat.on_by_default {
+            self.emit_indent();
+            self.emit("default: true");
+            self.emit_newline();
+        }
 
         self.indent -= 1;
         self.emit_indent();

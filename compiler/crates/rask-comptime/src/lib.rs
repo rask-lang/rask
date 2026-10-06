@@ -69,17 +69,6 @@ impl CfgConfig {
         }
     }
 
-    /// Convert to a flat map of field name → value for the resolver's
-    /// dead branch elimination in `comptime if`.
-    pub fn to_cfg_values(&self) -> HashMap<String, String> {
-        let mut m = HashMap::new();
-        m.insert("os".to_string(), self.os.clone());
-        m.insert("arch".to_string(), self.arch.clone());
-        m.insert("env".to_string(), self.env.clone());
-        m.insert("profile".to_string(), self.profile.clone());
-        m
-    }
-
     /// Convert to a `ComptimeValue::Struct` for injection into the comptime environment.
     pub fn to_comptime_value(&self) -> ComptimeValue {
         let mut fields = HashMap::new();
@@ -114,237 +103,130 @@ fn detect_env() -> String {
 }
 
 // ============================================================================
-// Conditional Compilation — Dead Branch Elimination (CC1)
+// Conditional Compilation (CC1, CT11-CT16)
 // ============================================================================
 
-/// Eliminate dead branches in `comptime if cfg.*` blocks.
+/// Put the build configuration into the program, before name resolution.
 ///
-/// Walks the AST and replaces `comptime { if cfg.field == "value" { A } else { B } }`
-/// with either `A` or `B` statements. Runs before desugar so `==` is still `Binary { Eq }`.
-pub fn eliminate_comptime_if(decls: &mut [Decl], cfg: &CfgConfig) {
-    let cfg_values = cfg.to_cfg_values();
-    for decl in decls {
-        eliminate_in_decl(decl, &cfg_values);
+/// `cfg` exists only at compile time, so nothing after this pass sees it.
+/// Inside a `comptime` block or expression, each `cfg` fact becomes the literal
+/// it stands for: `cfg.os` a string, `cfg.debug` a bool, and
+/// `cfg.features.contains("x")` a bool. A `comptime if` whose condition then
+/// folds to a constant is replaced by the branch it takes, so the other
+/// branch is never resolved or checked.
+pub fn apply_cfg(decls: &mut [Decl], cfg: &CfgConfig) {
+    rask_ast::rewrite::rewrite_decls(decls, &mut ApplyCfg { cfg });
+}
+
+/// Finds the `comptime` blocks and expressions, wherever they are.
+struct ApplyCfg<'a> {
+    cfg: &'a CfgConfig,
+}
+
+impl rask_ast::rewrite::Rewrite for ApplyCfg<'_> {
+    fn body(&mut self, stmts: &mut Vec<Stmt>) {
+        let mut i = 0;
+        while i < stmts.len() {
+            if let StmtKind::Comptime(body) = &mut stmts[i].kind {
+                fold_cfg(body, self.cfg);
+                if let Some(taken) = taken_branch(body) {
+                    // The taken branch is ordinary code in the enclosing
+                    // scope; the walk continues into it from here.
+                    stmts.splice(i..=i, taken);
+                    continue;
+                }
+            }
+            i += 1;
+        }
     }
-}
 
-fn eliminate_in_decl(decl: &mut Decl, cfg_values: &HashMap<String, String>) {
-    match &mut decl.kind {
-        DeclKind::Fn(f) => eliminate_in_fn_body(&mut f.body, cfg_values),
-        DeclKind::Struct(s) => {
-            for m in &mut s.methods { eliminate_in_fn_body(&mut m.body, cfg_values); }
-        }
-        DeclKind::Enum(e) => {
-            for m in &mut e.methods { eliminate_in_fn_body(&mut m.body, cfg_values); }
-        }
-        DeclKind::Interface(t) => {
-            for m in &mut t.methods { eliminate_in_fn_body(&mut m.body, cfg_values); }
-        }
-        DeclKind::Impl(i) => {
-            for m in &mut i.methods { eliminate_in_fn_body(&mut m.body, cfg_values); }
-        }
-        DeclKind::Const(c) => eliminate_in_expr(&mut c.init, cfg_values),
-        DeclKind::Test(t) => eliminate_in_stmts(&mut t.body, cfg_values),
-        DeclKind::Benchmark(b) => eliminate_in_stmts(&mut b.body, cfg_values),
-        _ => {}
-    }
-}
-
-fn eliminate_in_fn_body(body: &mut Vec<Stmt>, cfg_values: &HashMap<String, String>) {
-    eliminate_in_stmts(body, cfg_values);
-}
-
-fn eliminate_in_stmts(stmts: &mut Vec<Stmt>, cfg_values: &HashMap<String, String>) {
-    let mut i = 0;
-    while i < stmts.len() {
-        if let StmtKind::Comptime(body) = &stmts[i].kind {
-            if let Some(replacement) = try_eval_comptime_if_stmts(body, cfg_values) {
-                // Replace the comptime stmt with the taken branch's stmts
-                stmts.splice(i..=i, replacement);
-                continue; // Re-check at same index (new stmts may contain comptime)
+    fn expr(&mut self, expr: &mut Expr) {
+        if let ExprKind::Comptime { body } = &mut expr.kind {
+            fold_cfg(body, self.cfg);
+            if let Some(taken) = taken_branch(body) {
+                expr.kind = ExprKind::Block(taken);
             }
         }
-        // Recurse into the statement
-        eliminate_in_stmt(&mut stmts[i], cfg_values);
-        i += 1;
     }
 }
 
-fn eliminate_in_stmt(stmt: &mut Stmt, cfg_values: &HashMap<String, String>) {
-    match &mut stmt.kind {
-        StmtKind::Expr(e) => eliminate_in_expr(e, cfg_values),
-        StmtKind::Mut { init, .. } | StmtKind::Let { init, .. } => eliminate_in_expr(init, cfg_values),
-        StmtKind::MutTuple { init, .. }
-        | StmtKind::LetTuple { init, .. }
-        | StmtKind::LetStruct { init, .. } => eliminate_in_expr(init, cfg_values),
-        StmtKind::Assign { target, value, .. } => {
-            eliminate_in_expr(target, cfg_values);
-            eliminate_in_expr(value, cfg_values);
-        }
-        StmtKind::Return(Some(e)) => eliminate_in_expr(e, cfg_values),
-        StmtKind::While { cond, body, .. } => {
-            eliminate_in_expr(cond, cfg_values);
-            eliminate_in_stmts(body, cfg_values);
-        }
-        StmtKind::WhileLet { expr, body, .. } => {
-            eliminate_in_expr(expr, cfg_values);
-            eliminate_in_stmts(body, cfg_values);
-        }
-        StmtKind::Loop { body, .. } => eliminate_in_stmts(body, cfg_values),
-        StmtKind::For { iter, body, .. } => {
-            eliminate_in_expr(iter, cfg_values);
-            eliminate_in_stmts(body, cfg_values);
-        }
-        StmtKind::Ensure { body, else_handler } => {
-            eliminate_in_stmts(body, cfg_values);
-            if let Some((_, handler)) = else_handler {
-                eliminate_in_stmts(handler, cfg_values);
+/// Replace every `cfg` read in a `comptime` body with its literal.
+fn fold_cfg(body: &mut Vec<Stmt>, cfg: &CfgConfig) {
+    struct Fold<'a>(&'a CfgConfig);
+    impl rask_ast::rewrite::Rewrite for Fold<'_> {
+        fn expr(&mut self, e: &mut Expr) {
+            if let Some(lit) = cfg_literal(e, self.0) {
+                e.kind = lit;
             }
         }
-        StmtKind::Comptime(body) => eliminate_in_stmts(body, cfg_values),
-        StmtKind::ComptimeFor { iter, body, .. } => {
-            eliminate_in_expr(iter, cfg_values);
-            eliminate_in_stmts(body, cfg_values);
-        }
-        _ => {}
     }
+    rask_ast::rewrite::rewrite_body(body, &mut Fold(cfg));
 }
 
-fn eliminate_in_expr(expr: &mut Expr, cfg_values: &HashMap<String, String>) {
-    match &mut expr.kind {
-        ExprKind::Binary { left, right, .. } => {
-            eliminate_in_expr(left, cfg_values);
-            eliminate_in_expr(right, cfg_values);
-        }
-        ExprKind::Unary { operand, .. } => eliminate_in_expr(operand, cfg_values),
-        ExprKind::Call { func, args } => {
-            eliminate_in_expr(func, cfg_values);
-            for arg in args { eliminate_in_expr(&mut arg.expr, cfg_values); }
-        }
-        ExprKind::MethodCall { object, args, .. } => {
-            eliminate_in_expr(object, cfg_values);
-            for arg in args { eliminate_in_expr(&mut arg.expr, cfg_values); }
-        }
-        ExprKind::Field { object, .. } => eliminate_in_expr(object, cfg_values),
-        ExprKind::Index { object, index } => {
-            eliminate_in_expr(object, cfg_values);
-            eliminate_in_expr(index, cfg_values);
-        }
-        ExprKind::Block(stmts) => eliminate_in_stmts(stmts, cfg_values),
-        ExprKind::If { cond, then_branch, else_branch, .. } => {
-            eliminate_in_expr(cond, cfg_values);
-            eliminate_in_expr(then_branch, cfg_values);
-            if let Some(e) = else_branch { eliminate_in_expr(e, cfg_values); }
-        }
-        ExprKind::Match { scrutinee, arms } => {
-            eliminate_in_expr(scrutinee, cfg_values);
-            for arm in arms { eliminate_in_expr(&mut arm.body, cfg_values); }
-        }
-        ExprKind::Closure { body, .. } => eliminate_in_expr(body, cfg_values),
-        ExprKind::Comptime { body } => {
-            // Check if this is `comptime if cfg.* { ... } else { ... }` in expression context
-            if let Some(replacement) = try_eval_comptime_if_stmts(body, cfg_values) {
-                // Replace the comptime expression with a block containing the taken branch
-                expr.kind = ExprKind::Block(replacement);
-                return;
-            }
-            eliminate_in_stmts(body, cfg_values);
-        }
-        ExprKind::Unsafe { body } => eliminate_in_stmts(body, cfg_values),
-        ExprKind::Loop { body, .. } => eliminate_in_stmts(body, cfg_values),
-        ExprKind::StructLit { fields, .. } => {
-            for f in fields { eliminate_in_expr(&mut f.value, cfg_values); }
-        }
-        ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
-            for e in elems { eliminate_in_expr(e, cfg_values); }
-        }
-        _ => {}
-    }
-}
-
-/// Try to evaluate a comptime if cfg condition and return the taken branch.
-fn try_eval_comptime_if_stmts(stmts: &[Stmt], cfg_values: &HashMap<String, String>) -> Option<Vec<Stmt>> {
-    if stmts.len() != 1 {
-        return None;
-    }
-    let inner = match &stmts[0].kind {
-        StmtKind::Expr(e) => e,
-        _ => return None,
-    };
-    let (cond, then_branch, else_branch) = match &inner.kind {
-        ExprKind::If { cond, then_branch, else_branch, .. } => (cond, then_branch, else_branch),
-        _ => return None,
-    };
-
-    let taken = eval_cfg_condition(cond, cfg_values)?;
-    if taken {
-        if let ExprKind::Block(block_stmts) = &then_branch.kind {
-            Some(block_stmts.clone())
-        } else {
-            None
-        }
-    } else if let Some(else_br) = else_branch {
-        if let ExprKind::Block(block_stmts) = &else_br.kind {
-            Some(block_stmts.clone())
-        } else {
-            None
-        }
-    } else {
-        Some(vec![])
-    }
-}
-
-/// Evaluate a cfg condition at compile time.
-/// Supports: `cfg.field == "value"`, `cfg.field != "value"`,
-/// `cfg.debug`, `!expr`, `expr && expr`, `expr || expr`.
-fn eval_cfg_condition(expr: &Expr, cfg_values: &HashMap<String, String>) -> Option<bool> {
+/// The literal a `cfg` read stands for, if this expression is one.
+fn cfg_literal(expr: &Expr, cfg: &CfgConfig) -> Option<ExprKind> {
     match &expr.kind {
-        ExprKind::Binary { op, left, right } => {
-            match op {
-                BinOp::Eq | BinOp::Ne => {
-                    let (field, value) = extract_cfg_comparison(left, right)?;
-                    let cfg_val = cfg_values.get(field)?;
-                    let result = cfg_val.as_str() == value;
-                    Some(if *op == BinOp::Eq { result } else { !result })
-                }
-                BinOp::And => {
-                    Some(eval_cfg_condition(left, cfg_values)? && eval_cfg_condition(right, cfg_values)?)
-                }
-                BinOp::Or => {
-                    Some(eval_cfg_condition(left, cfg_values)? || eval_cfg_condition(right, cfg_values)?)
-                }
-                _ => None,
+        ExprKind::Field { object, field } if is_cfg(object) => match field.as_str() {
+            "os" => Some(ExprKind::String(cfg.os.clone())),
+            "arch" => Some(ExprKind::String(cfg.arch.clone())),
+            "env" => Some(ExprKind::String(cfg.env.clone())),
+            "profile" => Some(ExprKind::String(cfg.profile.clone())),
+            "debug" => Some(ExprKind::Bool(cfg.profile == "debug")),
+            _ => None,
+        },
+        // CT16: `cfg.features` is a set, and asking it about one name is the
+        // only thing a program does with it.
+        ExprKind::MethodCall { object, method, args, .. } if method == "contains" => {
+            let ExprKind::Field { object: base, field } = &object.kind else { return None };
+            if field != "features" || !is_cfg(base) {
+                return None;
             }
-        }
-        ExprKind::Unary { op: UnaryOp::Not, operand } => {
-            Some(!eval_cfg_condition(operand, cfg_values)?)
-        }
-        // CT15: the one boolean field. Not eliminated, `comptime if cfg.debug`
-        // reached the resolver as a name nothing declares.
-        _ if extract_cfg_field(expr) == Some("debug") => {
-            Some(cfg_values.get("profile")?.as_str() == "debug")
+            let [arg] = args.as_slice() else { return None };
+            let ExprKind::String(name) = &arg.expr.kind else { return None };
+            Some(ExprKind::Bool(cfg.features.iter().any(|f| f == name)))
         }
         _ => None,
     }
 }
 
-fn extract_cfg_comparison<'a>(left: &'a Expr, right: &'a Expr) -> Option<(&'a str, &'a str)> {
-    if let Some(field) = extract_cfg_field(left) {
-        if let ExprKind::String(val) = &right.kind { return Some((field, val)); }
-    }
-    if let Some(field) = extract_cfg_field(right) {
-        if let ExprKind::String(val) = &left.kind { return Some((field, val)); }
-    }
-    None
+fn is_cfg(expr: &Expr) -> bool {
+    matches!(&expr.kind, ExprKind::Ident(n) if n == "cfg")
 }
 
-fn extract_cfg_field(expr: &Expr) -> Option<&str> {
-    if let ExprKind::Field { object, field } = &expr.kind {
-        if let Some(name) = object.name() {
-            if name == "cfg" { return Some(field); }
-        }
+/// The statements a `comptime if` takes, when its condition is a constant
+/// once `cfg` has been folded in. `None` leaves it to comptime evaluation.
+fn taken_branch(stmts: &[Stmt]) -> Option<Vec<Stmt>> {
+    let [stmt] = stmts else { return None };
+    let StmtKind::Expr(inner) = &stmt.kind else { return None };
+    let ExprKind::If { cond, then_branch, else_branch, .. } = &inner.kind else { return None };
+    let branch = if const_bool(cond)? { Some(then_branch) } else { else_branch.as_ref() };
+    match branch.map(|b| &b.kind) {
+        Some(ExprKind::Block(body)) => Some(body.clone()),
+        Some(_) => None,
+        None => Some(Vec::new()),
     }
-    None
+}
+
+/// A condition built from literals: `true`, `"linux" == "linux"`, `!`, `&&`,
+/// `||`. Runs before desugaring, so `==` is still a binary operator.
+fn const_bool(expr: &Expr) -> Option<bool> {
+    match &expr.kind {
+        ExprKind::Bool(b) => Some(*b),
+        ExprKind::Unary { op: UnaryOp::Not, operand } => Some(!const_bool(operand)?),
+        ExprKind::Binary { op, left, right } => match op {
+            BinOp::And => Some(const_bool(left)? && const_bool(right)?),
+            BinOp::Or => Some(const_bool(left)? || const_bool(right)?),
+            BinOp::Eq | BinOp::Ne => {
+                let same = match (&left.kind, &right.kind) {
+                    (ExprKind::String(a), ExprKind::String(b)) => a == b,
+                    _ => const_bool(left)? == const_bool(right)?,
+                };
+                Some(if *op == BinOp::Eq { same } else { !same })
+            }
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 // ============================================================================

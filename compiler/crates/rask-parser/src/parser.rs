@@ -2740,6 +2740,7 @@ impl Parser {
         let mut feature_deps = Vec::new();
         let mut options = Vec::new();
         let mut default = None;
+        let mut on_by_default = false;
 
         self.skip_newlines();
         if self.match_token(&TokenKind::LBrace) {
@@ -2766,11 +2767,17 @@ impl Parser {
                 } else if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
                     feature_deps.push(self.parse_dep_item(None)?);
                 } else if matches!(self.current_kind(), TokenKind::Ident(_)) {
-                    // default: "tokio"
+                    // `default: "tokio"` picks an exclusive option; `default: true`
+                    // turns an additive feature on (F3).
                     let key = self.expect_ident()?;
                     if key == "default" {
                         self.expect(&TokenKind::Colon)?;
-                        default = Some(self.expect_string()?);
+                        if let TokenKind::Bool(b) = *self.current_kind() {
+                            on_by_default = b;
+                            self.advance();
+                        } else {
+                            default = Some(self.expect_string()?);
+                        }
                     } else {
                         // skip unknown key
                         if self.match_token(&TokenKind::Colon) {
@@ -2785,7 +2792,7 @@ impl Parser {
             self.expect(&TokenKind::RBrace)?;
         }
 
-        Ok(FeatureDecl { name, exclusive, deps: feature_deps, options, default })
+        Ok(FeatureDecl { name, exclusive, deps: feature_deps, options, default, on_by_default })
     }
 
     /// Parse a single dep item inside a package block.

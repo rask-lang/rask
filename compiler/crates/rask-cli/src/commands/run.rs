@@ -151,6 +151,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
         target: None,
         no_cache: false,
         force: false,
+        no_default_features: false,
     };
 
     let prepared = super::build::prepare_build(path, opts);

@@ -354,6 +354,7 @@ fn main() {
                     target,
                     no_cache: false,
                     force: false,
+                    no_default_features: cmd_args.contains(&"--no-default-features"),
                 };
                 let run_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
                 commands::run::cmd_run_project(file, run_args, opts);
@@ -631,8 +632,9 @@ fn main() {
             let target = extract_flag_value(&cmd_args, "--target");
             let no_cache = cmd_args.contains(&"--no-cache");
             let force = cmd_args.contains(&"--force");
+            let no_default_features = cmd_args.contains(&"--no-default-features");
             let path = find_positional_arg(&cmd_args, 2, &["--profile", "--target"]).unwrap_or(".");
-            let opts = commands::build::BuildOptions { profile, verbose, target, no_cache, force };
+            let opts = commands::build::BuildOptions { profile, verbose, target, no_cache, force, no_default_features };
             commands::build::cmd_build(path, opts);
         }
         "clean" => {

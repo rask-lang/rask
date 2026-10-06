@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `cfg` read as a value at compile time, not only in `cfg.x == "..."` (#1420).
+//
+// `comptime if cfg.features.contains("fast")` and
+// `const X: bool = comptime cfg.debug` were "undefined symbol: cfg" on both
+// backends. Only an `==` against a field was understood. Now each `cfg` read
+// inside `comptime` becomes the literal it stands for before names are
+// resolved. A file run on its own has no features enabled.
+
+const DEBUG_MODE: bool = comptime cfg.debug
+const LOGGING: bool = comptime cfg.features.contains("logging")
+const PROFILE: string = comptime cfg.profile
+
+func which() -> string {
+    comptime if cfg.features.contains("fast") {
+        return "fast"
+    } else {
+        return "plain"
+    }
+}
+
+test "a feature nobody enabled is off" {
+    assert !LOGGING
+    assert which() == "plain"
+    let local: bool = comptime cfg.features.contains("logging")
+    assert !local
+}
+
+test "fields read as values" {
+    assert DEBUG_MODE
+    assert PROFILE == "debug"
+}
+
+test "conditions mix fields and features" {
+    mut hits = 0
+    comptime if cfg.debug && !cfg.features.contains("fast") {
+        hits += 1
+    }
+    comptime if cfg.profile != "debug" || cfg.features.contains("fast") {
+        hits += 10
+    }
+    assert hits == 1
+}

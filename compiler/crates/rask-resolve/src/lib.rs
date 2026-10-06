@@ -115,38 +115,27 @@ pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve(decls)
 }
 
-/// Resolve with cfg values for dead branch elimination in `comptime if`.
-pub fn resolve_with_cfg(
-    decls: &[Decl],
-    cfg_values: HashMap<String, String>,
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_with_cfg(decls, cfg_values)
-}
-
 /// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
 pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve_stdlib(decls)
 }
 
 /// Resolve the program with the stdlib's own bodies alongside it.
-pub fn resolve_with_stdlib_and_cfg(
+pub fn resolve_with_stdlib(
     decls: &[Decl],
     stdlib_decls: &[Decl],
-    cfg_values: HashMap<String, String>,
 ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_with_stdlib_and_cfg(decls, stdlib_decls, cfg_values)
+    Resolver::resolve_with_stdlib(decls, stdlib_decls)
 }
 
-/// Resolve all names in a package with access to other packages (multi-file mode).
-/// `resolve_with_stdlib_and_cfg`, told where each file lives, so `import c`
-/// can look for a header beside the file that imports it (#1096).
-pub fn resolve_with_stdlib_cfg_and_dirs(
+/// `resolve_with_stdlib`, told where each file lives, so `import c` can look
+/// for a header beside the file that imports it (#1096).
+pub fn resolve_with_stdlib_and_dirs(
     decls: &[Decl],
     stdlib_decls: &[Decl],
-    cfg_values: HashMap<String, String>,
     source_dirs: HashMap<u16, std::path::PathBuf>,
 ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_with_stdlib_cfg_and_dirs(decls, stdlib_decls, cfg_values, source_dirs)
+    Resolver::resolve_with_stdlib_and_dirs(decls, stdlib_decls, source_dirs)
 }
 
 pub fn resolve_package(
@@ -155,16 +144,6 @@ pub fn resolve_package(
     current_package: PackageId,
 ) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve_package(decls, registry, current_package)
-}
-
-/// Resolve a package with cfg values for dead branch elimination.
-pub fn resolve_package_with_cfg(
-    decls: &[Decl],
-    registry: &PackageRegistry,
-    current_package: PackageId,
-    cfg_values: HashMap<String, String>,
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_package_with_cfg(decls, registry, current_package, cfg_values)
 }
 
 /// Resolve a package with separate stdlib declarations. Stdlib decls are
@@ -178,14 +157,3 @@ pub fn resolve_package_with_stdlib(
     Resolver::resolve_package_with_stdlib(decls, registry, current_package, stdlib_decls)
 }
 
-/// Resolve a package with stdlib declarations and cfg values for
-/// dead branch elimination in `comptime if`.
-pub fn resolve_package_with_stdlib_and_cfg(
-    decls: &[Decl],
-    registry: &PackageRegistry,
-    current_package: PackageId,
-    stdlib_decls: &[Decl],
-    cfg_values: HashMap<String, String>,
-) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_package_with_stdlib_and_cfg(decls, registry, current_package, stdlib_decls, cfg_values)
-}
