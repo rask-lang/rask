@@ -5296,6 +5296,52 @@ fn bang_panic_names_the_line_of_the_bang() {
     }
 }
 
+/// AN6: inside a `comptime for`, only a `comptime if` removes a branch. A
+/// plain `if f.has<label>()` leaves `f.get<label>()` in the iteration for the
+/// field without one, and there is nothing there to read. Native rejected it
+/// at unroll time; the interpreter never reached the read and ran the program
+/// (#1291). Both reject it now, before printing anything, and both still run
+/// the `comptime if` form.
+#[test]
+fn a_runtime_if_does_not_guard_an_annotation_read() {
+    const SRC: &str = r#"import std.reflect
+
+annotation @label { name: string }
+
+struct Row {
+    @label(name: "id")
+    public id: i64
+    public value: string
+}
+
+func main() {
+    comptime for f in reflect.fields<Row>() {
+        println("field={f.name}")
+        GUARD f.has<label>() {
+            println("  label={f.get<label>().name}")
+        }
+    }
+}
+"#;
+    for interp in [false, true] {
+        let backend = if interp { "interp" } else { "native" };
+        let out = run_rask_run_source(&SRC.replace("GUARD", "if"), interp);
+        assert!(
+            out.contains("`value` has no `@label` to read `name` from"),
+            "{backend}: a plain `if` should leave the read in and be rejected:\n{out}"
+        );
+        assert!(
+            !out.contains("field="),
+            "{backend}: rejected before any of the loop runs:\n{out}"
+        );
+        let out = run_rask_run_source(&SRC.replace("GUARD", "comptime if"), interp);
+        assert_eq!(
+            out, "field=id\n  label=id\nfield=value\n",
+            "{backend}: `comptime if` drops the read for `value`"
+        );
+    }
+}
+
 /// Editing a file in a sub-package rebuilds the binary.
 ///
 /// The compilation cache keyed on the *root* package's files alone, and a

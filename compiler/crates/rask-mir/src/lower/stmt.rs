@@ -1466,73 +1466,18 @@ impl<'a> MirLowerer<'a> {
     /// Returns the taken branch's statements, or `None` when the condition
     /// isn't one of these — the caller then tries the comptime interpreter.
     fn try_eval_comptime_if_locally<'b>(&mut self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
-        let (cond, then_branch, else_branch) = Self::as_comptime_if(stmts)?;
-        let taken = self.eval_local_comptime_cond(cond)?;
-        Self::comptime_branch(taken, then_branch, else_branch)
-    }
-
-    /// `comptime { if cond { … } else { … } }` — the only shape either
-    /// evaluator handles.
-    fn as_comptime_if(stmts: &[Stmt]) -> Option<(&Expr, &Expr, &Option<Box<Expr>>)> {
-        if stmts.len() != 1 {
-            return None;
-        }
-        let StmtKind::Expr(inner) = &stmts[0].kind else { return None };
-        let ExprKind::If { cond, then_branch, else_branch, .. } = &inner.kind else {
-            return None;
-        };
-        Some((cond, then_branch, else_branch))
-    }
-
-    /// The statements of whichever branch a decided condition selects. An
-    /// undecidable branch shape gives `None`, and a false condition with no
-    /// `else` gives an empty slice — the branch is gone, not un-lowered.
-    fn comptime_branch<'b>(
-        taken: bool,
-        then_branch: &'b Expr,
-        else_branch: &'b Option<Box<Expr>>,
-    ) -> Option<&'b [Stmt]> {
-        let chosen = if taken {
-            then_branch
-        } else {
-            match else_branch {
-                Some(e) => e,
-                None => return Some(&[]),
+        use rask_ast::comptime_if;
+        let (cond, then_branch, else_branch) = comptime_if::parts(stmts)?;
+        let taken = comptime_if::decide(cond, &mut |call| {
+            let ExprKind::MethodCall { object, method, type_args, .. } = &call.kind else {
+                return None;
+            };
+            match self.comptime_field_method_const(object, method, type_args)?.0 {
+                MirOperand::Constant(MirConst::Bool(b)) => Some(b),
+                _ => None,
             }
-        };
-        match &chosen.kind {
-            ExprKind::Block(block_stmts) => Some(block_stmts),
-            _ => None,
-        }
-    }
-
-    /// A condition lowering can decide on its own: `binding.has<A>()`, and `!`
-    /// / `&&` / `||` over those. Anything else is `None`.
-    fn eval_local_comptime_cond(&mut self, cond: &Expr) -> Option<bool> {
-        match &cond.kind {
-            ExprKind::MethodCall { object, method, type_args, .. } => {
-                let (op, _) = self.comptime_field_method_const(object, method, type_args)?;
-                match op {
-                    MirOperand::Constant(MirConst::Bool(b)) => Some(b),
-                    _ => None,
-                }
-            }
-            ExprKind::Unary { op: rask_ast::expr::UnaryOp::Not, operand } => {
-                Some(!self.eval_local_comptime_cond(operand)?)
-            }
-            ExprKind::Binary { op, left, right } => {
-                let (l, r) = (
-                    self.eval_local_comptime_cond(left)?,
-                    self.eval_local_comptime_cond(right)?,
-                );
-                match op {
-                    rask_ast::expr::BinOp::And => Some(l && r),
-                    rask_ast::expr::BinOp::Or => Some(l || r),
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
+        })?;
+        comptime_if::branch(taken, then_branch, else_branch)
     }
 
     /// Try to evaluate a `comptime if` block at compile time.

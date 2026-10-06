@@ -3200,7 +3200,7 @@ impl Interpreter {
 /// The raw attachment strings a reflect FieldInfo carries in its hidden
 /// `__attrs` (type.annotations/AN6). Mirrors the native lowering's
 /// `ReflectFieldConst.attrs`.
-fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
+pub(super) fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
     let guard = s.lock().unwrap();
     match guard.fields.get("__attrs") {
         Some(Value::Vec(v)) => v
@@ -3218,12 +3218,101 @@ fn field_info_attrs(s: &Arc<Mutex<StructData>>) -> Vec<String> {
 }
 
 /// The field's own name, for a diagnostic that says which field went wrong.
-fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
+pub(super) fn field_info_name(s: &Arc<Mutex<StructData>>) -> String {
     let guard = s.lock().unwrap();
     match guard.fields.get("name") {
         Some(Value::String(text)) => text.lock().unwrap().clone(),
         _ => "field".to_string(),
     }
+}
+
+/// AN6: a `get<A>()` read that one iteration of a `comptime for` keeps, on an
+/// item that doesn't carry `A`. The annotation, the field read off it, and
+/// where.
+///
+/// Native unrolls the loop, drops the branch each `comptime if` rules out and
+/// rejects any read left over, whether or not anything would reach it at run
+/// time. The interpreter walks the loop instead, so a plain `if f.has<A>()`
+/// kept it from ever arriving at the read and the program ran here and failed
+/// to build natively (#1291). Asking before the iteration runs gives the same
+/// answer as unrolling: `comptime if` decides with the same rules
+/// (`rask_ast::comptime_if`), and every other statement is kept.
+pub(super) fn unguarded_annotation_read(
+    body: &[rask_ast::stmt::Stmt],
+    binding: &str,
+    attrs: &[String],
+) -> Option<(String, Option<String>, rask_ast::Span)> {
+    use rask_ast::comptime_if;
+    use rask_ast::stmt::{Stmt, StmtKind};
+    use rask_ast::visit::{visit_body, Visit};
+    use rask_ast::Span;
+
+    struct Reads<'b> {
+        binding: &'b str,
+        attrs: &'b [String],
+        found: Option<(String, Option<String>, Span)>,
+    }
+
+    /// `binding.<method><A>()`: the annotation it names.
+    fn names_annotation<'e>(expr: &'e Expr, binding: &str, want: &str) -> Option<&'e str> {
+        let ExprKind::MethodCall { object, method, type_args, .. } = &expr.kind else {
+            return None;
+        };
+        if method != want || object.name() != Some(binding) {
+            return None;
+        }
+        type_args.as_ref()?.first()?.bare_name()
+    }
+
+    fn carries(attrs: &[String], annotation: &str) -> bool {
+        attrs
+            .iter()
+            .any(|a| rask_ast::decl::field_attrs::attachment_name(a) == annotation)
+    }
+
+    impl<'a> Visit<'a> for Reads<'_> {
+        fn stmt(&mut self, stmt: &'a Stmt) -> bool {
+            if self.found.is_some() {
+                return false;
+            }
+            let StmtKind::Comptime(stmts) = &stmt.kind else { return true };
+            let Some((cond, then_branch, else_branch)) = comptime_if::parts(stmts) else {
+                return true;
+            };
+            let (binding, attrs) = (self.binding, self.attrs);
+            let taken = comptime_if::decide(cond, &mut |call| {
+                names_annotation(call, binding, "has").map(|a| carries(attrs, a))
+            });
+            match taken.and_then(|t| comptime_if::branch(t, then_branch, else_branch)) {
+                Some(kept) => {
+                    visit_body(kept, self);
+                    false
+                }
+                None => true,
+            }
+        }
+
+        fn expr(&mut self, expr: &'a Expr) -> bool {
+            if self.found.is_some() {
+                return false;
+            }
+            let (call, field) = match &expr.kind {
+                ExprKind::Field { object, field } => (&**object, Some(field.clone())),
+                _ => (expr, None),
+            };
+            if let Some(annotation) = names_annotation(call, self.binding, "get") {
+                if !carries(self.attrs, annotation) {
+                    self.found = Some((annotation.to_string(), field, expr.span));
+                }
+                return false;
+            }
+            true
+        }
+    }
+
+    let mut reads = Reads { binding, attrs, found: None };
+    visit_body(body, &mut reads);
+    reads.found
 }
 
 impl Interpreter {

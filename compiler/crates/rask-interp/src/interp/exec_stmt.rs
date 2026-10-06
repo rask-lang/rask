@@ -544,6 +544,27 @@ impl Interpreter {
                 match iter_val {
                     Value::Vec(v) => {
                         let items: Vec<Value> = v.lock().unwrap().items.clone();
+                        // Every iteration first: native rejects the program
+                        // before any of it runs, so none of it runs here either.
+                        for item in &items {
+                            if let (ForBinding::Single(name), Value::Struct(s)) = (binding, item) {
+                                if s.lock().unwrap().name == "FieldInfo" {
+                                    let attrs = super::eval_expr::field_info_attrs(s);
+                                    if let Some((annotation, field, span)) =
+                                        super::eval_expr::unguarded_annotation_read(body, name, &attrs)
+                                    {
+                                        let field = field.map(|f| format!(" `{f}`")).unwrap_or_default();
+                                        return Err(RuntimeDiagnostic::new(
+                                            RuntimeError::Generic(format!(
+                                                "`{}` has no `@{annotation}` to read{field} from — guard the read with `comptime if {name}.has<{annotation}>()`",
+                                                super::eval_expr::field_info_name(s),
+                                            )),
+                                            span,
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         for item in items {
                             self.env.push_scope();
                             self.define_for_binding(binding, item);

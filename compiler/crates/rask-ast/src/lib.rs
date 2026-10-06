@@ -18,6 +18,7 @@ pub mod ty;
 pub mod rewrite;
 pub mod qualify;
 pub mod visit;
+pub mod comptime_if;
 pub mod allow_names;
 
 pub use span::{Span, LineMap};
