@@ -1462,28 +1462,6 @@ impl Value {
         }
     }
 
-    /// Produce the default value for a written type (DF4).
-    pub fn default_for_type(ty: &rask_ast::ty::TypeExpr) -> Value {
-        if *ty == rask_ast::ty::TypeExpr::Unit {
-            return Value::Unit;
-        }
-        match ty.bare_name().unwrap_or_default() {
-            "i8" | "i16" | "i32" | "i64" | "int" | "isize" |
-            "u8" => Value::Int(0, IntKind::U8),
-            "u16" => Value::Int(0, IntKind::U16),
-            "u32" => Value::Int(0, IntKind::U32),
-            "u64" | "uint" => Value::Int(0, IntKind::U64),
-            "usize" => Value::Int(0, IntKind::usize_kind()),
-            "i128" => Value::Int128(0),
-            "u128" => Value::Uint128(0),
-            "f32" | "f64" => Value::Float(0.0, FloatKind::Untyped),
-            "bool" => Value::Bool(false),
-            "char" => Value::Char('\0'),
-            "string" => Value::String(Arc::new(Mutex::new(String::new()))),
-            _ => Value::Unit,
-        }
-    }
-
     /// Copy a value into a new owner, giving value-type aggregates independent
     /// storage (mem value semantics VS1). A ≤16-byte struct is Copy; binding or
     /// storing it must copy, so mutating the copy can't alias the source.

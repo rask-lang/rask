@@ -1898,48 +1898,46 @@ impl TypeChecker {
         }
     }
 
-    /// The types that derive `clone`, decided all at once.
+    /// Which types derive which of `eq`, `hash`, `clone` and `compare`,
+    /// decided all at once.
     ///
-    /// A type's clone can depend on its own — `Node(Vec<Tree>)`, a JSON value
+    /// A type's derive can depend on its own — `Node(Vec<Tree>)`, a JSON value
     /// holding an array of JSON values — or on a type declared below it.
-    /// Asked one type at a time in declaration order, both answered no, so the
-    /// type had no `clone` and the call fell to each backend's own copying
-    /// (#1428). Start from every candidate and drop the ones a field rules out
-    /// until nothing changes.
-    fn derivable_clones(&mut self) -> std::collections::HashSet<crate::types::TypeId> {
+    /// Asked one type at a time in declaration order, both answered no: the
+    /// type had no `clone` (#1428), and `==` on it was a type error (#1433).
+    /// Start from every candidate and drop the ones a field rules out until
+    /// nothing changes. `auto_derive_interfaces` then asks its per-field
+    /// questions against this answer and gets the same answer back.
+    fn derivable_methods(&mut self) -> std::collections::HashSet<(crate::types::TypeId, &'static str)> {
         use crate::types::TypeId;
-        let parts_of = |def: &TypeDef| -> Option<Vec<Type>> {
-            match def {
-                TypeDef::Struct { fields, methods, is_resource, .. }
-                    if !*is_resource && !methods.iter().any(|m| m.name == "clone") =>
-                {
-                    Some(fields.iter().map(|(_, ty)| ty.clone()).collect())
+        const DERIVABLE: [&str; 4] = ["eq", "hash", "clone", "compare"];
+        let mut candidates: Vec<(TypeId, &'static str, Vec<Type>)> = Vec::new();
+        for idx in 0..self.types.types.len() {
+            let id = TypeId(idx as u32);
+            let (parts, methods) = match self.types.get(id) {
+                Some(TypeDef::Struct { fields, methods, is_resource, .. }) if !*is_resource => {
+                    (fields.iter().map(|(_, ty)| ty.clone()).collect::<Vec<_>>(), methods)
                 }
-                TypeDef::Enum { variants, methods, .. }
-                    if !methods.iter().any(|m| m.name == "clone") =>
-                {
-                    Some(variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect())
+                Some(TypeDef::Enum { variants, methods, .. }) => {
+                    (variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect(), methods)
                 }
-                _ => None,
+                _ => continue,
+            };
+            for m in DERIVABLE {
+                if methods.iter().any(|s| s.name == m) {
+                    continue;
+                }
+                candidates.push((id, m, parts.clone()));
             }
-        };
-        let candidates: Vec<(TypeId, Vec<Type>)> = (0..self.types.types.len())
-            .filter_map(|idx| {
-                let id = TypeId(idx as u32);
-                parts_of(self.types.get(id)?).map(|parts| (id, parts))
-            })
-            .collect();
-        let mut set: std::collections::HashSet<TypeId> = candidates.iter().map(|(id, _)| *id).collect();
+        }
+        let mut set: std::collections::HashSet<(TypeId, &'static str)> =
+            candidates.iter().map(|(id, m, _)| (*id, *m)).collect();
         loop {
-            self.clone_assumed = set.clone();
-            let keep: std::collections::HashSet<TypeId> = candidates
+            self.derive_assumed = set.clone();
+            let keep: std::collections::HashSet<(TypeId, &'static str)> = candidates
                 .iter()
-                .filter(|(id, parts)| {
-                    set.contains(id)
-                        && parts.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !parts.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
-                })
-                .map(|(id, _)| *id)
+                .filter(|(id, m, parts)| set.contains(&(*id, *m)) && self.parts_derive(parts, m))
+                .map(|(id, m, _)| (*id, *m))
                 .collect();
             if keep.len() == set.len() {
                 return set;
@@ -1948,322 +1946,123 @@ impl TypeChecker {
         }
     }
 
+    /// Whether fields of these types let a type derive `method`: each has it,
+    /// `hash` also needs `eq` (HA1), and `clone` refuses a raw pointer (CL2).
+    fn parts_derive(&self, parts: &[Type], method: &str) -> bool {
+        parts.iter().all(|ty| self.type_has_method(ty, method))
+            && (method != "hash" || parts.iter().all(|ty| self.type_has_method(ty, "eq")))
+            && (method != "clone" || !parts.iter().any(|ty| matches!(ty, Type::RawPtr(_))))
+    }
+
     fn auto_derive_interfaces(&mut self) {
         use crate::types::TypeId;
 
-        self.clone_assumed = self.derivable_clones();
-        let type_count = self.types.types.len();
-        for idx in 0..type_count {
+        self.derive_assumed = self.derivable_methods();
+        for idx in 0..self.types.types.len() {
             let id = TypeId(idx as u32);
-            let def = self.types.get(id).unwrap().clone();
-            match &def {
-                TypeDef::Struct { fields, methods, is_resource, type_params, .. } => {
-                    if *is_resource { continue; }
-                    let field_types: Vec<Type> = fields.iter().map(|(_, ty)| ty.clone()).collect();
-                    let self_ty = Self::self_type_with_params(id, type_params);
-                    let mut new_methods = Vec::new();
+            let (parts, methods, type_params) = match self.types.get(id) {
+                Some(TypeDef::Struct { is_resource: true, .. }) => continue,
+                Some(TypeDef::Struct { fields, methods, type_params, .. }) => (
+                    fields.iter().map(|(_, ty)| ty.clone()).collect::<Vec<_>>(),
+                    methods.clone(),
+                    type_params.clone(),
+                ),
+                Some(TypeDef::Enum { variants, methods, type_params, .. }) => (
+                    variants.iter().flat_map(|(_, f)| f.iter().cloned()).collect(),
+                    methods.clone(),
+                    type_params.clone(),
+                ),
+                _ => continue,
+            };
+            let self_ty = Self::self_type_with_params(id, &type_params);
+            let declared = |name: &str| methods.iter().any(|m| m.name == name);
+            let sig = |name: &str, self_param: SelfParam, params: Vec<(Type, ParamMode)>, ret: Type| MethodSig {
+                param_names: Vec::new(),
+                derived: true,
+                owner_patterns: Vec::new(),
+                owner_bounds: Vec::new(),
+                type_params: Vec::new(),
+                name: name.to_string(),
+                self_param,
+                params,
+                ret,
+            };
+            let other = vec![(self_ty.clone(), ParamMode::Default)];
 
-                    // EQ1: auto-derive eq if all fields are Equatable
-                    if !methods.iter().any(|m| m.name == "eq")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "eq".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![(self_ty.clone(), ParamMode::Default)],
-                            ret: Type::Bool,
-                        });
-                    }
+            // EQ1/EQ3, HA1, CL1/CL2, CO1/ORD2: each when every field or
+            // payload has it (`parts_derive`). No `default`: there is no
+            // Default interface (type.generics, "No Default Interface").
+            let eq_ok = self.parts_derive(&parts, "eq");
+            let hash_ok = self.parts_derive(&parts, "hash");
+            let clone_ok = self.parts_derive(&parts, "clone");
+            let cmp_ok = self.parts_derive(&parts, "compare");
 
-                    // HA1: auto-derive hash if all fields are Hashable (requires eq too)
-                    if !methods.iter().any(|m| m.name == "hash")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "hash"))
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "hash".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: Type::U64,
-                        });
-                    }
-
-                    // DF1: auto-derive default if all fields are Default (structs only)
-                    if !methods.iter().any(|m| m.name == "default")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "default"))
-                    {
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "default".to_string(),
-                            self_param: SelfParam::None,
-                            params: vec![],
-                            ret: self_ty.clone(),
-                        });
-                    }
-
-                    // CL1: auto-derive clone if all fields are Clone and no raw pointers (CL2)
-                    if !methods.iter().any(|m| m.name == "clone")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
-                    {
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "clone".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: self_ty.clone(),
-                        });
-                    }
-
-                    // CO1/ORD2: auto-derive compare if all fields are Comparable
-                    // Comparable is a superinterface of Equal, so eq is implied.
-                    if !methods.iter().any(|m| m.name == "compare")
-                        && field_types.iter().all(|ty| self.type_has_method(ty, "compare"))
-                    {
-                        let ordering_ty = self.ordering_type();
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "compare".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![(self_ty.clone(), ParamMode::Default)],
-                            ret: ordering_ty.clone(),
-                        });
-                        // ORD1: lt/le/gt/ge derived from compare
-                        for op in &["lt", "le", "gt", "ge"] {
-                            if !methods.iter().any(|m| m.name == *op) {
-                                new_methods.push(MethodSig {
-                                    param_names: Vec::new(),
-                                    derived: true,
-                                    owner_patterns: Vec::new(),
-                                    owner_bounds: Vec::new(),
-                                    type_params: Vec::new(),
-                                    name: op.to_string(),
-                                    self_param: SelfParam::Value,
-                                    params: vec![(self_ty.clone(), ParamMode::Default)],
-                                    ret: Type::Bool,
-                                });
-                            }
-                        }
-                    }
-
-                    // G2: auto-derive debug for all types
-                    if !methods.iter().any(|m| m.name == "debug") {
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "debug".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: Type::String,
-                        });
-                    }
-
-                    if !new_methods.is_empty() {
-                        if let Some(TypeDef::Struct { methods, .. }) = self.types.get_mut(id) {
-                            methods.extend(new_methods);
-                        }
-                    }
-
-                    // G1: mark auto-derived conformances so the nominal check
-                    // accepts eligible types without an explicit `T implements`.
-                    let eq_ok = field_types.iter().all(|ty| self.type_has_method(ty, "eq"));
-                    let hash_ok = eq_ok && field_types.iter().all(|ty| self.type_has_method(ty, "hash"));
-                    let clone_ok = field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
-                    let cmp_ok = field_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_derived_conformance(id, "Equal"); }
-                    if hash_ok { self.types.record_derived_conformance(id, "Hashable"); }
-                    if clone_ok { self.types.record_derived_conformance(id, "Cloneable"); }
-                    if cmp_ok { self.types.record_derived_conformance(id, "Comparable"); }
-                    self.types.record_derived_conformance(id, "Debug");
-                }
-                TypeDef::Enum { variants, methods, type_params, .. } => {
-                    let payload_types: Vec<Type> = variants.iter()
-                        .flat_map(|(_, fields)| fields.iter().cloned())
-                        .collect();
-                    let self_ty = Self::self_type_with_params(id, type_params);
-                    let mut new_methods = Vec::new();
-
-                    // EQ3: auto-derive eq for enums (tag + payload equality)
-                    if !methods.iter().any(|m| m.name == "eq")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "eq".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![(self_ty.clone(), ParamMode::Default)],
-                            ret: Type::Bool,
-                        });
-                    }
-
-                    // HA1: auto-derive hash for enums
-                    if !methods.iter().any(|m| m.name == "hash")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "hash"))
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
-                    {
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "hash".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: Type::U64,
-                        });
-                    }
-
-                    // DF2: enums do NOT auto-derive Default
-
-                    // CL1: auto-derive clone for enums
-                    if !methods.iter().any(|m| m.name == "clone")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
-                    {
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "clone".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: self_ty.clone(),
-                        });
-                    }
-
-                    // CO1/ORD2: auto-derive compare for enums (variant order, then payload)
-                    if !methods.iter().any(|m| m.name == "compare")
-                        && payload_types.iter().all(|ty| self.type_has_method(ty, "compare"))
-                    {
-                        let ordering_ty = self.ordering_type();
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "compare".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![(self_ty.clone(), ParamMode::Default)],
-                            ret: ordering_ty.clone(),
-                        });
-                        // ORD1: lt/le/gt/ge derived from compare
-                        for op in &["lt", "le", "gt", "ge"] {
-                            if !methods.iter().any(|m| m.name == *op) {
-                                new_methods.push(MethodSig {
-                                    param_names: Vec::new(),
-                                    derived: true,
-                                    owner_patterns: Vec::new(),
-                                    owner_bounds: Vec::new(),
-                                    type_params: Vec::new(),
-                                    name: op.to_string(),
-                                    self_param: SelfParam::Value,
-                                    params: vec![(self_ty.clone(), ParamMode::Default)],
-                                    ret: Type::Bool,
-                                });
-                            }
-                        }
-                    }
-
-                    // G2: auto-derive debug for all types
-                    if !methods.iter().any(|m| m.name == "debug") {
-                        new_methods.push(MethodSig {
-                            param_names: Vec::new(),
-                            derived: true,
-                            owner_patterns: Vec::new(),
-                            owner_bounds: Vec::new(),
-                            type_params: Vec::new(),
-                            name: "debug".to_string(),
-                            self_param: SelfParam::Value,
-                            params: vec![],
-                            ret: Type::String,
-                        });
-                    }
-
-                    if !new_methods.is_empty() {
-                        if let Some(TypeDef::Enum { methods, .. }) = self.types.get_mut(id) {
-                            methods.extend(new_methods);
-                        }
-                    }
-
-                    // G1: mark auto-derived conformances (enum eligibility).
-                    let eq_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "eq"));
-                    let hash_ok = eq_ok && payload_types.iter().all(|ty| self.type_has_method(ty, "hash"));
-                    let clone_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
-                        && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)));
-                    let cmp_ok = payload_types.iter().all(|ty| self.type_has_method(ty, "compare"));
-                    if eq_ok { self.types.record_derived_conformance(id, "Equal"); }
-                    if hash_ok { self.types.record_derived_conformance(id, "Hashable"); }
-                    if clone_ok { self.types.record_derived_conformance(id, "Cloneable"); }
-                    if cmp_ok { self.types.record_derived_conformance(id, "Comparable"); }
-                    self.types.record_derived_conformance(id, "Debug");
-                }
-                _ => {}
+            let mut new_methods = Vec::new();
+            if eq_ok && !declared("eq") {
+                new_methods.push(sig("eq", SelfParam::Value, other.clone(), Type::Bool));
             }
+            if hash_ok && !declared("hash") {
+                new_methods.push(sig("hash", SelfParam::Value, vec![], Type::U64));
+            }
+            if clone_ok && !declared("clone") {
+                new_methods.push(sig("clone", SelfParam::Value, vec![], self_ty.clone()));
+            }
+            if cmp_ok && !declared("compare") {
+                let ordering_ty = self.ordering_type();
+                new_methods.push(sig("compare", SelfParam::Value, other.clone(), ordering_ty));
+                // ORD1: lt/le/gt/ge derived from compare
+                for op in ["lt", "le", "gt", "ge"] {
+                    if !declared(op) {
+                        new_methods.push(sig(op, SelfParam::Value, other.clone(), Type::Bool));
+                    }
+                }
+            }
+            // G2: auto-derive debug for all types
+            if !declared("debug") {
+                new_methods.push(sig("debug", SelfParam::Value, vec![], Type::String));
+            }
+            if let Some(TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. }) = self.types.get_mut(id) {
+                methods.extend(new_methods);
+            }
+
+            // G1: mark auto-derived conformances so the nominal check
+            // accepts eligible types without an explicit `T implements`.
+            if eq_ok { self.types.record_derived_conformance(id, "Equal"); }
+            if hash_ok { self.types.record_derived_conformance(id, "Hashable"); }
+            if clone_ok { self.types.record_derived_conformance(id, "Cloneable"); }
+            if cmp_ok { self.types.record_derived_conformance(id, "Comparable"); }
+            self.types.record_derived_conformance(id, "Debug");
         }
-        self.clone_assumed.clear();
+        self.derive_assumed.clear();
     }
 
-    /// Check if a type has a given method (for auto-derive field checking).
     /// The Comparable family — `compare` and the four operators ORD1 derives
     /// from it.
     fn is_ordering_method(method: &str) -> bool {
         matches!(method, "compare" | "lt" | "le" | "gt" | "ge")
     }
 
+    /// Check if a type has a given method (for auto-derive field checking).
     pub(super) fn type_has_method(&self, ty: &Type, method: &str) -> bool {
         match ty {
             // Primitives
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
+                matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
             }
             // CO4: floats are Comparable — `compare` is the total order — but
             // not Hashable (HA4).
             Type::F32 | Type::F64 => {
-                matches!(method, "eq" | "clone" | "default" | "compare" | "debug")
+                matches!(method, "eq" | "clone" | "compare" | "debug")
             }
             Type::Bool | Type::Char => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
+                matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
             }
             Type::Unit => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "debug")
+                matches!(method, "eq" | "hash" | "clone" | "debug")
             }
             Type::String => {
-                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug")
+                matches!(method, "eq" | "hash" | "clone" | "compare" | "debug")
             }
             // A type that names itself in its own fields — `Node(Vec<Tree>)` —
             // is registered with that use still a name, because the type
@@ -2278,8 +2077,15 @@ impl TypeChecker {
                     match def {
                         TypeDef::Struct { methods, .. } |
                         TypeDef::Enum { methods, .. } => {
+                            let family = match method {
+                                "eq" => Some("eq"),
+                                "hash" => Some("hash"),
+                                "clone" => Some("clone"),
+                                m if Self::is_ordering_method(m) => Some("compare"),
+                                _ => None,
+                            };
                             methods.iter().any(|m| m.name == method)
-                                || (method == "clone" && self.clone_assumed.contains(id))
+                                || family.is_some_and(|f| self.derive_assumed.contains(&(*id, f)))
                         }
                         _ => false,
                     }
@@ -2290,7 +2096,7 @@ impl TypeChecker {
             // Option/Result: delegate to the inner types, except for order.
             //
             // `T?` and `T or E` are operator-only — the wrapper shapes have no
-            // methods (std.api/SD4) — but eq, hash, clone and default are
+            // methods (std.api/SD4) — but eq, hash and clone are
             // generated over the whole slot, so a struct with an optional field
             // still gets them. Ordering has no such implementation: claiming a
             // wrapper is Comparable made the checker derive a `compare` that
@@ -2320,7 +2126,7 @@ impl TypeChecker {
                 if self.types.type_name(*base) == "Vec" =>
             {
                 !Self::is_ordering_method(method)
-                    && matches!(method, "eq" | "hash" | "clone" | "default" | "debug")
+                    && matches!(method, "eq" | "hash" | "clone" | "debug")
                     && match args.first() {
                         Some(crate::types::GenericArg::Type(elem)) => {
                             self.type_has_method(elem, method)

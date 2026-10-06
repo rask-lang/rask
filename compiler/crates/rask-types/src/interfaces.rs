@@ -1044,17 +1044,6 @@ pub fn builtin_interface_methods(interface_name: &str) -> Option<Vec<MethodSig>>
                 params: vec![],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
-            "Default" => Some(vec![MethodSig {
-                param_names: Vec::new(),
-                derived: false,
-                owner_patterns: Vec::new(),
-                owner_bounds: Vec::new(),
-                type_params: Vec::new(),
-                name: "default".to_string(),
-                self_param: SelfParam::None, // Static method
-                params: vec![],
-                ret: Type::Var(crate::types::TypeVarId(0)),
-            }]),
             "Hashable" => Some(vec![
                 MethodSig {
                     param_names: Vec::new(),
@@ -1213,33 +1202,33 @@ impl<'a> InterfaceChecker<'a> {
     /// Check if a primitive type has a builtin method.
     fn has_builtin_method(&self, ty: &Type, method: &str) -> bool {
         match ty {
-            // Integer types: eq, hash, clone, default, arithmetic, compare, to_string
+            // Integer types: eq, hash, clone, arithmetic, compare, to_string
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
                 matches!(method,
                     "add" | "sub" | "mul" | "div" | "rem" |
                     "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "hash" | "clone" | "default" | "to_string" | "debug"
+                    "hash" | "clone" | "to_string" | "debug"
                 )
             }
-            // Floats: eq, clone, default, but NOT hash (HA4)
+            // Floats: eq, clone, but NOT hash (HA4)
             Type::F32 | Type::F64 => {
                 matches!(method,
                     "add" | "sub" | "mul" | "div" | "rem" |
                     "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "clone" | "default" | "to_string" | "debug"
+                    "clone" | "to_string" | "debug"
                 )
             }
-            // Bool: eq, hash, clone, default, compare, to_string
-            Type::Bool => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug"),
-            // Char: eq, hash, clone, default, comparison, to_string
-            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug"),
-            // String: eq, hash, clone, default, len, comparison, to_string
-            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "default" | "to_string" | "debug"),
-            // Unit: eq, hash, clone, default
-            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "default" | "to_string" | "debug"),
+            // Bool: eq, hash, clone, compare, to_string
+            Type::Bool => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "debug"),
+            // Char: eq, hash, clone, comparison, to_string
+            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "to_string" | "debug"),
+            // String: eq, hash, clone, len, comparison, to_string
+            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "to_string" | "debug"),
+            // Unit: eq, hash, clone
+            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "to_string" | "debug"),
             _ => false,
         }
     }
@@ -1756,7 +1745,7 @@ pub fn implemented_interfaces(types: &TypeTable, ty: &Type) -> Vec<String> {
     let known_interfaces = [
         "Add", "Sub", "Mul", "Div", "Rem", "Neg",
         "Equal", "Eq", "Comparable", "Ord",
-        "Clone", "Cloneable", "Default", "Hashable",
+        "Clone", "Cloneable", "Hashable",
         "Displayable", "Debug",
     ];
 

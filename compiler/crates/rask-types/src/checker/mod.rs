@@ -224,9 +224,9 @@ pub struct TypeChecker {
     /// Types `write_derived_methods` has already written for. Collection runs
     /// once for the stdlib and once for the program.
     pub(super) derived_written: std::collections::HashSet<crate::types::TypeId>,
-    /// While auto-derive runs: the types that will derive `clone`, decided
-    /// up front so a type can lean on its own (`derivable_clones`).
-    pub(super) clone_assumed: std::collections::HashSet<crate::types::TypeId>,
+    /// While auto-derive runs: which types will derive which methods, decided
+    /// up front so a type can lean on its own (`derivable_methods`).
+    pub(super) derive_assumed: std::collections::HashSet<(crate::types::TypeId, &'static str)>,
     /// The `eq`/`hash` pairs written for wrapper types, and their symbols.
     pub(super) wrapper_fns: Vec<derive::WrapperFns>,
     pub(super) wrapper_symbols: HashMap<String, rask_resolve::SymbolId>,
@@ -593,7 +593,7 @@ impl TypeChecker {
             pending_derived: Vec::new(),
             derived_decls: Vec::new(),
             derived_written: std::collections::HashSet::new(),
-            clone_assumed: std::collections::HashSet::new(),
+            derive_assumed: std::collections::HashSet::new(),
             wrapper_fns: Vec::new(),
             wrapper_symbols: HashMap::new(),
             next_derived_id: derive::DERIVED_ID_BASE,
