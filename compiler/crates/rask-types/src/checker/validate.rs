@@ -21,6 +21,18 @@ pub(super) struct DisjointObligation {
     pub span: Span,
 }
 
+/// A type argument that has to satisfy its parameter's bounds (#314).
+///
+/// `args` pairs every type parameter of the same instantiation with what stands
+/// in for it, because a bound can name a sibling or the parameter itself:
+/// `T: Mul<T>` at a call where `T` is `Meters` asks for `Mul<Meters>` (#1463).
+pub(super) struct BoundObligation {
+    pub ty: Type,
+    pub bounds: Vec<rask_ast::ty::TypeExpr>,
+    pub args: Vec<(String, Type)>,
+    pub span: Span,
+}
+
 /// Gather every `T or E` node in a type as an `(ok, err)` pair.
 fn collect_result_nodes<'a>(ty: &'a Type, out: &mut Vec<(&'a Type, &'a Type)>) {
     match ty {
@@ -80,7 +92,7 @@ impl TypeChecker {
         let pending = std::mem::take(&mut self.pending_bound_checks);
         // Dedup identical (type, interface, span) reports.
         let mut reported: Vec<(String, String, Span)> = Vec::new();
-        for (var, interfaces, span) in pending {
+        for BoundObligation { ty: var, bounds, args, span } in pending {
             // Resolve `UnresolvedNamed("Foo")` to `Named(id)` so `check_satisfies`
             // can find the type's methods (an unresolved name reports none).
             let ty = self.resolve_named(&self.ctx.apply(&var));
@@ -91,6 +103,24 @@ impl TypeChecker {
                 Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => continue,
                 _ => {}
             }
+            // The bound as this instantiation reads it: every type parameter it
+            // names replaced by that parameter's argument. One still unsolved
+            // drops the bound rather than checking the literal spelling.
+            let args: Vec<(String, Type)> = args
+                .iter()
+                .map(|(p, t)| (p.clone(), self.resolve_named(&self.ctx.apply(t))))
+                .collect();
+            let interfaces: Vec<rask_ast::ty::TypeExpr> = bounds
+                .iter()
+                .filter(|b| !args.iter().any(|(p, t)| t.has_unsolved_var() && b.mentions(&|n| n == p)))
+                .map(|b| {
+                    b.substitute(&|n| {
+                        args.iter()
+                            .find(|(p, _)| p == n)
+                            .map(|(_, t)| self.types.resolve_type_names(t).to_type_expr())
+                    })
+                })
+                .collect();
             // XC3: a bound is a place that needs the conformance, so it's a
             // place two of them collide. Checked before satisfaction — with two
             // declarations in scope the type does satisfy the bound, it just

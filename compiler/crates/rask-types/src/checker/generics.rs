@@ -356,17 +356,36 @@ impl TypeChecker {
         let bounds = self.fn_type_param_bounds.get(&sym).cloned();
         let pairs: Vec<(String, Type)> = params
             .into_iter()
-            .map(|name| {
-                let fresh = self.ctx.fresh_var();
-                if let Some(param_bounds) = bounds.as_ref().and_then(|b| b.get(&name)) {
-                    self.pending_bound_checks.push((fresh.clone(), param_bounds.clone(), span));
-                }
-                (name, fresh)
-            })
+            .map(|name| (name, self.ctx.fresh_var()))
             .collect();
+        if let Some(bounds) = &bounds {
+            self.note_bound_obligations(&pairs, bounds, span);
+        }
         self.pending_call_type_args.push((node, pairs.clone()));
         let subst: HashMap<&str, Type> = pairs.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
         Self::substitute_type_params(&self.ctx.apply(&ty), &subst)
+    }
+
+    /// #314: each type argument in `pairs` has to satisfy its parameter's
+    /// bounds, read with the whole of `pairs` substituted in.
+    pub(super) fn note_bound_obligations<'b>(
+        &mut self,
+        pairs: &[(String, Type)],
+        bounds: impl IntoIterator<Item = (&'b String, &'b Vec<TypeExpr>)>,
+        span: rask_ast::Span,
+    ) {
+        for (name, param_bounds) in bounds {
+            let Some((_, ty)) = pairs.iter().find(|(p, _)| p == name) else { continue };
+            if param_bounds.is_empty() {
+                continue;
+            }
+            self.pending_bound_checks.push(super::validate::BoundObligation {
+                ty: ty.clone(),
+                bounds: param_bounds.clone(),
+                args: pairs.to_vec(),
+                span,
+            });
+        }
     }
 
     /// Build a substitution map from type param names to concrete types from generic args.

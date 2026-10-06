@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A bound that names a type parameter means what that parameter is at the
+// call (#1463). `T: Mul<T>` with `T = Meters` asks for `Mul<Meters>`.
+//
+// The bound was checked as written, so every such call failed:
+//
+//     error[E0333]: `Meters` does not implement `Mul<T>`
+//
+// tests/compile_errors/bound_names_its_param.rk has the other half: the
+// substituted bound still rejects a type that doesn't meet it.
+
+struct Meters {
+    v: f64
+}
+
+Meters implements Mul<Meters> {
+    func mul(self, o: Meters) -> Meters {
+        return Meters { v: self.v * o.v }
+    }
+}
+
+Meters implements Mul<f64> {
+    func mul(self, k: f64) -> Meters {
+        return Meters { v: self.v * k }
+    }
+}
+
+func squared<T: Mul<T>>(x: T) -> T {
+    return x.mul(x)
+}
+
+// A bound naming a sibling parameter.
+func scaled<T: Mul<K>, K>(x: T, k: K) -> T {
+    return x.mul(k)
+}
+
+// And a method's own parameter.
+struct Squarer {
+    times: i64
+}
+
+extend Squarer {
+    func apply<U: Mul<U>>(self, x: U) -> U {
+        return x.mul(x)
+    }
+}
+
+test "the parameter itself" {
+    assert squared(Meters { v: 3.0 }).v == 9.0
+    assert squared(7) == 49
+}
+
+test "a sibling parameter" {
+    assert scaled(Meters { v: 2.0 }, 4.0).v == 8.0
+    assert scaled(Meters { v: 2.0 }, Meters { v: 5.0 }).v == 10.0
+}
+
+test "a method's own parameter" {
+    let s = Squarer { times: 1 }
+    assert s.apply(Meters { v: 1.5 }).v == 2.25
+}
+
+func main() {
+    println("{squared(Meters { v: 3.0 }).v}")
+}

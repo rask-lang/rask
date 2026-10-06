@@ -450,14 +450,8 @@ impl TypeChecker {
             return;
         }
         // #314: whatever the argument settles on has to satisfy the bound.
-        for (name, bounds) in &method_sig.type_params {
-            if bounds.is_empty() {
-                continue;
-            }
-            if let Some(var) = subst.get(name.as_str()) {
-                self.pending_bound_checks.push((var.clone(), bounds.clone(), span));
-            }
-        }
+        let pairs: Vec<(String, Type)> = subst.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        self.note_bound_obligations(&pairs, method_sig.type_params.iter().map(|(n, b)| (n, b)), span);
         let Some(node) = call_node else { return };
         let args: Vec<(String, Type)> = method_sig
             .type_params
@@ -1399,11 +1393,13 @@ impl TypeChecker {
                     self.note_method_type_args(call_node, method_sig, span, &subst);
                     // CC3: the block's `where` clause, against what the
                     // receiver's arguments turn out to be.
-                    for (name, bounds) in &method_sig.owner_bounds {
-                        if let Some(arg) = subst.get(name.as_str()) {
-                            self.pending_bound_checks.push((arg.clone(), bounds.clone(), span));
-                        }
-                    }
+                    let pairs: Vec<(String, Type)> =
+                        subst.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+                    self.note_bound_obligations(
+                        &pairs,
+                        method_sig.owner_bounds.iter().map(|(n, b)| (n, b)),
+                        span,
+                    );
 
                     // ER3a: same obligation on the explicitly-spelled type args.
                     self.note_disjointness_obligations(&method, &method_sig.ret, &subst, span);

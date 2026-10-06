@@ -325,9 +325,9 @@ pub struct TypeChecker {
     /// types for `has<A>()` name resolution, but comptime-only: runtime
     /// construction is rejected.
     pub(super) annotation_types: std::collections::HashSet<String>,
-    /// Call-site bound obligations: (type-arg var, bound interface names, span).
-    /// Verified after constraint solving resolves the var to a concrete type.
-    pub(super) pending_bound_checks: Vec<(Type, Vec<TypeExpr>, rask_ast::Span)>,
+    /// Call-site bound obligations, verified after constraint solving resolves
+    /// the type args to concrete types.
+    pub(super) pending_bound_checks: Vec<validate::BoundObligation>,
     /// ER3a: call-site disjointness obligations read off the callee's signature.
     /// Verified after constraint solving resolves the type-arg vars.
     pub(super) pending_disjointness: Vec<validate::DisjointObligation>,

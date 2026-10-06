@@ -2760,13 +2760,12 @@ impl TypeChecker {
                                     let _ = self.unify(&fresh, &resolved, span);
                                 }
                             }
-                            // #314: obligate the type arg to satisfy its bounds.
-                            if let Some(param_bounds) = bounds.as_ref().and_then(|b| b.get(&name)) {
-                                self.pending_bound_checks.push((fresh.clone(), param_bounds.clone(), span));
-                            }
                             (name, fresh)
                         })
                         .collect();
+                    if let Some(bounds) = &bounds {
+                        self.note_bound_obligations(&pairs, bounds, span);
+                    }
                     self.pending_call_type_args.push((call_id, pairs.clone()));
                     pairs
                 })

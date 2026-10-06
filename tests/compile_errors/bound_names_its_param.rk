@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a bound naming a type parameter is checked with that
+// parameter's argument filled in (#1463).
+//
+// `T: Mul<T>` at a call where `T` is `Meters` asks for `Mul<Meters>`. It used
+// to ask for the literal `Mul<T>`, which nothing implements, so every such call
+// failed. tests/suite/t_bound_names_its_param.rk has the calls that now pass;
+// these are the ones that still mustn't.
+
+struct Meters {
+    v: f64
+}
+
+// Only scales by a number. No `Mul<Meters>`.
+Meters implements Mul<f64> {
+    func mul(self, k: f64) -> Meters {
+        return Meters { v: self.v * k }
+    }
+}
+
+func squared<T: Mul<T>>(x: T) -> T {
+    return x.mul(x)
+}
+
+func scaled<T: Mul<K>, K>(x: T, k: K) -> T {
+    return x.mul(k)
+}
+
+func main() {
+    // ERROR: `Meters` does not implement `Mul<Meters>`
+    let a = squared(Meters { v: 3.0 })
+
+    // ERROR: the sibling's argument fills in too: `Mul<string>`
+    let b = scaled(Meters { v: 1.0 }, "two")
+
+    // Fine: `Mul<f64>` is declared.
+    let c = scaled(Meters { v: 1.0 }, 2.0)
+    println("{c.v}")
+}
