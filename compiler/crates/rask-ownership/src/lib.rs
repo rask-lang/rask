@@ -2357,7 +2357,10 @@ impl<'a> OwnershipChecker<'a> {
                                 self.pay_field_debt(&root, &path);
                             }
                         }
-                        _ => {}
+                        // `obj.get(k)!.as_array()`: the lookup lends the value
+                        // and the container keeps it. A `take self` method
+                        // given it is its second owner (#1429).
+                        _ => self.check_lent_value_taken(object, method),
                     }
                 }
             }
@@ -3756,6 +3759,15 @@ impl<'a> OwnershipChecker<'a> {
     /// `Vec<i64>` out of `get` and one out of `Vec.new()` are the same type and
     /// different ownership, which is the whole bug.
     fn lent_value(&self, expr: &Expr) -> Option<LentValue> {
+        self.lent_value_where(expr, &|this, ty| this.lendable_payload(ty))
+    }
+
+    /// `lent_value`, asking `payload_ok` which payloads count.
+    fn lent_value_where(
+        &self,
+        expr: &Expr,
+        payload_ok: &dyn Fn(&Self, &Type) -> bool,
+    ) -> Option<LentValue> {
         match &expr.kind {
             ExprKind::MethodCall { object, method, args, .. } => {
                 let recv = self.node_ty(&object.id)?;
@@ -3764,7 +3776,7 @@ impl<'a> OwnershipChecker<'a> {
                     .iter()
                     .find(|(t, m, _)| *t == head && m == method)?;
                 let ty = self.node_ty(&expr.id)?;
-                if !self.lendable_payload(ty) {
+                if !payload_ok(self, ty) {
                     return None;
                 }
                 let source = Self::render_place(object).unwrap_or_else(|| head.to_lowercase());
@@ -3787,7 +3799,7 @@ impl<'a> OwnershipChecker<'a> {
                     return None;
                 }
                 let ty = self.node_ty(&expr.id)?;
-                if !self.lendable_payload(ty) {
+                if !payload_ok(self, ty) {
                     return None;
                 }
                 let holder = Self::render_place(object).unwrap_or_else(|| head.to_lowercase());
@@ -3802,21 +3814,48 @@ impl<'a> OwnershipChecker<'a> {
             }
             // The default side is fresh; the lookup side is not, and one path
             // out of two is enough to make the return ambiguous.
-            ExprKind::NullCoalesce { value, .. } => self.lent_value(value),
-            ExprKind::Try { expr } => self.lent_value(expr),
-            ExprKind::Unwrap { expr, .. } => self.lent_value(expr),
+            ExprKind::NullCoalesce { value, .. } => self.lent_value_where(value, payload_ok),
+            ExprKind::Try { expr } => self.lent_value_where(expr, payload_ok),
+            ExprKind::Unwrap { expr, .. } => self.lent_value_where(expr, payload_ok),
             ExprKind::Ident(name) => self.lent_locals.get(name).cloned(),
             ExprKind::If { then_branch, else_branch, .. } => self
-                .lent_value(then_branch)
-                .or_else(|| else_branch.as_ref().and_then(|b| self.lent_value(b))),
+                .lent_value_where(then_branch, payload_ok)
+                .or_else(|| else_branch.as_ref().and_then(|b| self.lent_value_where(b, payload_ok))),
             ExprKind::Block(stmts) => {
-                Self::stmts_tail(stmts).and_then(|e| self.lent_value(e))
+                Self::stmts_tail(stmts).and_then(|e| self.lent_value_where(e, payload_ok))
             }
             ExprKind::Match { arms, .. } => {
-                arms.iter().find_map(|arm| self.lent_value(&arm.body))
+                arms.iter().find_map(|arm| self.lent_value_where(&arm.body, payload_ok))
             }
             _ => None,
         }
+    }
+
+    /// A value a container lent, handed to a `take`: the receiver of a `take
+    /// self` method or an argument for a `take` parameter.
+    ///
+    /// Any payload that isn't Copy, not only a container: a `JsonValue` out of
+    /// `obj.get(k)` is the map's as much as a `Vec` is, and `as_array(take self)`
+    /// hands its vector to the caller while the map still frees it. A Copy
+    /// payload is copied into the `take` (mem.parameters/PM6b), so it has no
+    /// second owner.
+    fn check_lent_value_taken(&mut self, object: &Expr, method: &str) {
+        let not_copy = |this: &Self, ty: &Type| match ty {
+            Type::Result { ok, err } if **err == Type::None => !this.is_copy(ok),
+            other => !this.is_copy(other),
+        };
+        let Some(lent) = self.lent_value_where(object, &not_copy) else { return };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::LentValueGivenAway {
+                call: lent.call,
+                holder: lent.holder,
+                lender: lent.lender,
+                payload_ty: lent.payload_ty,
+                method: method.to_string(),
+                clone_form: lent.clone_form,
+            },
+            span: object.span,
+        });
     }
 
     /// The tail expression of a block's statements, when it has one.
@@ -5771,6 +5810,11 @@ impl<'a> OwnershipChecker<'a> {
     fn consume_arg(&mut self, arg_expr: &Expr, sink: Option<&str>) {
         if self.pay_moved_field(arg_expr) {
             return;
+        }
+        // `out.push(m.get(k)!)`: a binding is answered by its own state below;
+        // a lookup written in place has no binding to mark.
+        if !matches!(arg_expr.kind, ExprKind::Ident(_)) {
+            self.check_lent_value_taken(arg_expr, sink.unwrap_or("this call"));
         }
         if let ExprKind::Ident(name) = &arg_expr.kind {
             // An `Owned` box reads as its payload, so a small payload made the

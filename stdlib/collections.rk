@@ -79,13 +79,17 @@ extend Vec<T> {
     ///
     /// Written in Rask so both backends share the rule, like `try_push` next
     /// to it. Stopping at the first refusal is what the doc says.
+    ///
+    /// `items` is borrowed, so what goes in — and what comes back refused — is
+    /// a copy. Pushing `items[i]` itself gave `self` an element `items` still
+    /// owned (E0906, #1429).
     public func try_push_all(mutate self, items: Vec<T>) -> void or GrowError<T> {
         mut i = 0
         while i < items.len() {
             if self.is_full() {
-                return GrowError.Full(items[i])
+                return GrowError.Full(items[i].clone())
             }
-            self.push(items[i])
+            self.push(items[i].clone())
             i = i + 1
         }
     }

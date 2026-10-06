@@ -115,6 +115,24 @@ pub enum OwnershipErrorKind {
         lent_at: Span,
     },
 
+    /// mem.borrowing/S3 at a `take`: a value a container lent, handed to a
+    /// `take self` method or a `take` parameter. `obj.get(k)!.as_array()` gave
+    /// the method a value the map still holds, so two owners freed one buffer.
+    #[error("`{call}` lends what `{holder}` still holds, and `{method}` takes it")]
+    LentValueGivenAway {
+        /// `obj.get(…)`.
+        call: String,
+        /// The container the value belongs to.
+        holder: String,
+        /// `Vec` or `Map`.
+        lender: String,
+        payload_ty: String,
+        /// The method or function whose `take` it reaches.
+        method: String,
+        /// The copying twin, when the container has one (`get_clone`).
+        clone_form: Option<String>,
+    },
+
     /// mem.borrowing/E4: `let x = collection[key]` on an element that isn't
     /// Copy. Indexing hands the element back in place, so the binding is a
     /// second name for storage the collection still owns.

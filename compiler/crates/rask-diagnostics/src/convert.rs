@@ -3456,6 +3456,33 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            LentValueGivenAway { call, holder, lender, payload_ty, method, clone_form } => {
+                let fix = match clone_form {
+                    Some(c) => format!(
+                        "copy it with `{holder}.{c}(…)`, which hands back a `{payload_ty}` of your own — \
+                         or take it out with `{holder}.remove(…)` if `{holder}` is done with it"
+                    ),
+                    None => format!(
+                        "copy it first: `{call}.clone().{method}()` — the cost of the new `{payload_ty}` shows at the call"
+                    ),
+                };
+                Diagnostic::error(format!(
+                    "`{}` lends what `{}` still holds, and `{}` takes it",
+                    call, holder, method
+                ))
+                .with_code("E0906")
+                .with_primary(
+                    self.span,
+                    format!("`{}` takes this `{}`, and it stays in `{}`", method, payload_ty, holder),
+                )
+                .with_fix(fix)
+                .with_why(format!(
+                    "a `{lender}` lookup reads the element where the container keeps it, so it isn't yours \
+                     to give. A `take` owns what it's handed and frees it or passes it on, while \
+                     `{holder}` frees the same value again later [mem.borrowing/S3, mem.parameters/PM1]"
+                ))
+            }
+
             NonCopyElementCopiedOut { binding, elem_ty, collection } => {
                 let from = collection
                     .as_deref()
