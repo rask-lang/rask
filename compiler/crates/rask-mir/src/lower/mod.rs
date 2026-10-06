@@ -2201,8 +2201,11 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// LP13: a Vec element goes back by index, a Map value by key.
+    ///
+    /// Not `Vec_set`/`Map_set`: those replace the slot and release what it
+    /// held, and here what it held is the binding being put back.
     pub(crate) fn emit_write_back(&mut self, wb: &PendingWriteBack) {
-        let func = if wb.map { "Map_set" } else { "Vec_set" };
+        let func = if wb.map { "Map_write_back" } else { "Vec_write_back" };
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal(func.to_string()),
@@ -6156,7 +6159,8 @@ pub(crate) struct PendingWriteBack {
     pub(crate) collection: MirOperand,
     /// The index for a Vec, the key for a Map.
     pub(crate) at: MirOperand,
-    /// The binding holding the element, or a Map entry's value.
+    /// The binding holding the element, or a Map entry's value. Read out with
+    /// `Vec_lend`/`Map_lend`, so the frame owns it until the write-back.
     pub(crate) value: LocalId,
     /// A Map writes back by key.
     pub(crate) map: bool,

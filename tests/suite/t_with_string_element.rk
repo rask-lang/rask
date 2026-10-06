@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// `with words[0] as w` on a `Vec<string>` leaked one reference per block
+// (#1431). The binding was read as a view into the vector, so copying it into
+// `w` took a reference, and putting it back handed that reference to the slot,
+// which already had one. A `for mutate` body that replaced its binding leaked
+// the other way: the replaced string was a view, so nobody released it.
+//
+// The element is now lent out for the body: the binding holds the slot's own
+// reference until the write-back gives it back. Run under RASK_LEAK_CHECK=1.
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+test "reading through with in a loop takes nothing" {
+    mut words: Vec<string> = [heap("alpha")]
+    mut total = 0
+    for i in 0..3 {
+        with words[0] as w {
+            total += w.len()
+        }
+    }
+    assert total == 3 * heap("alpha").len()
+    assert words[0] == heap("alpha")
+}
+
+test "a map value read through with takes nothing" {
+    mut m: Map<i64, string> = Map.new()
+    m[1] = heap("one")
+    for i in 0..3 {
+        with m[1] as s {
+            assert s.len() > 0
+        }
+    }
+    assert m[1] == heap("one")
+}
+
+test "with replacing its binding" {
+    mut words: Vec<string> = [heap("alpha")]
+    with words[0] as w {
+        w = "{w}?"
+    }
+    assert words[0] == "{heap("alpha")}?"
+}
+
+test "for mutate replacing its binding, and leaving it alone" {
+    mut words: Vec<string> = [heap("alpha"), heap("beta")]
+    for mutate w in words {
+        w = "{w}!"
+    }
+    for mutate w in words {
+        assert w.len() > 0
+    }
+    assert words[0] == "{heap("alpha")}!"
+}
+
+test "for mutate over a map" {
+    mut m: Map<i64, string> = Map.new()
+    m[1] = heap("one")
+    m[2] = heap("two")
+    for mutate (k, v) in m {
+        v = "{v}{k}"
+    }
+    assert m[1] == "{heap("one")}1"
+    assert m[2] == "{heap("two")}2"
+}

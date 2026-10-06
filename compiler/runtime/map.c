@@ -475,6 +475,18 @@ void *rask_map_insert_displaced(RaskMap *m, const void *key, const void *val) {
     return old;
 }
 
+// Put back a value `with m[k]` or `for mutate` took out of the entry for `key`
+// (`Map_lend` in MIR). The key stays as it is, and what the copy owns is what
+// the entry owned, less whatever the body released and plus whatever it
+// stored, so nothing is released here.
+void rask_map_write_back(RaskMap *m, const void *key, const void *val) {
+    void *slot = rask_map_get(m, key);
+    if (!slot) {
+        rask_panic("key not found in map");
+    }
+    memcpy(slot, val, (size_t)m->val_size);
+}
+
 void *rask_map_get(const RaskMap *m, const void *key) {
     if (!m || m->len == 0) return NULL;
 

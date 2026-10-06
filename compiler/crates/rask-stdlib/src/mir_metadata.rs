@@ -279,6 +279,22 @@ enum Internal {
     /// `Vec_free` of a field's handle reads as the whole struct being handed
     /// away, and the struct then never got a release of its own.
     ReplacesSlot,
+    /// An element read out of its slot to be written back later by the
+    /// matching `WritesBack` — `with v[i] as e`, `for mutate e in v`,
+    /// `v[i].field = x`.
+    ///
+    /// The frame holds the slot's own references in between, so what comes
+    /// back is the frame's like a fresh value: a body that replaces the
+    /// binding releases the old one, and the write-back hands the binding's
+    /// references back to the slot. Borrows its receiver, keeps nothing.
+    /// Answering "a view" instead is what took a reference too many for a
+    /// `with` over a string element (#1431) and released nothing a `for
+    /// mutate` body replaced.
+    LendsElement,
+    /// Puts back what `LendsElement` took out: the slot keeps the last
+    /// argument and releases nothing. Borrows its receiver and only reads the
+    /// index or key.
+    WritesBack,
 }
 
 /// Every name MIR mints that looks like a stdlib method but isn't one.
@@ -331,6 +347,15 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Cell_replace", Internal::SameAs("Shared_replace")),
     ("Mutex_replace", Internal::SameAs("Shared_replace")),
     ("Map_set", Internal::SameAs("Map_insert")),
+
+    // ── Take an element out for a body, and put it back ──────────
+    // Putting a `with` binding back is not `v[i] = x`: the binding *is* what
+    // the slot held, so there is nothing to release. It has its own spelling
+    // rather than being recognised after the fact.
+    ("Vec_lend", Internal::LendsElement),
+    ("Map_lend", Internal::LendsElement),
+    ("Vec_write_back", Internal::WritesBack),
+    ("Map_write_back", Internal::WritesBack),
     ("Pool_set", Internal::SameAs("Vec_set")),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
@@ -513,7 +538,9 @@ fn declared(qualified_name: &str) -> Option<&'static StdlibMethodMeta> {
         Some(Internal::FreshFromReceiver)
         | Some(Internal::ConsumesReceiver)
         | Some(Internal::NoReceiver)
-        | Some(Internal::ReplacesSlot) => return None,
+        | Some(Internal::ReplacesSlot)
+        | Some(Internal::LendsElement)
+        | Some(Internal::WritesBack) => return None,
         None => {}
     }
     // A generic method reaches MIR with its type argument welded on —
@@ -689,6 +716,9 @@ mod internal_spelling_tests {
 /// counts the receiver as argument zero, so a declared parameter sits one
 /// further along on a method.
 pub fn keeps_argument(qualified_name: &str, arg_index: usize) -> bool {
+    if let Some(index) = written_back_at(qualified_name) {
+        return arg_index == index;
+    }
     let Some(m) = declared(qualified_name) else {
         // Unaccounted for: say it keeps everything. The caller then releases
         // nothing it passed, which leaks rather than double-frees.
@@ -783,6 +813,14 @@ fn internal_spelling(base: &str) -> Option<Internal> {
     INTERNAL_SPELLINGS.iter().find(|(n, _)| *n == base).map(|(_, i)| *i)
 }
 
+/// For a write-back, the position of the value it hands to the slot:
+/// `(collection, index or key, value)`.
+fn written_back_at(qualified_name: &str) -> Option<usize> {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    matches!(internal_spelling(base), Some(Internal::WritesBack)).then_some(2)
+}
+
 /// Runtime functions lowering calls by their own names, with no stdlib
 /// declaration behind them: which arguments each gives away, by position. The
 /// rest it only reads.
@@ -857,7 +895,10 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
     }
     match internal_spelling(base)? {
         Internal::SameAs(_) => None,
-        Internal::FreshFromReceiver | Internal::NoReceiver => Some(ArgMode::Lent),
+        Internal::FreshFromReceiver | Internal::NoReceiver | Internal::LendsElement => {
+            Some(ArgMode::Lent)
+        }
+        Internal::WritesBack => Some(mode(Some(arg_index) == written_back_at(base))),
         // A free gives argument zero away. So does freeing what a slot held
         // (`ReplacesSlot`): argument zero is that handle, and the aggregate it
         // came out of is untouched.
@@ -930,7 +971,10 @@ pub fn borrows_receiver(qualified_name: &str) -> bool {
     // twice.
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
     let base = head.split('$').next().unwrap_or(head);
-    matches!(internal_spelling(base), Some(Internal::FreshFromReceiver))
+    matches!(
+        internal_spelling(base),
+        Some(Internal::FreshFromReceiver | Internal::LendsElement | Internal::WritesBack)
+    )
 }
 
 // ── Return types ─────────────────────────────────────────────────

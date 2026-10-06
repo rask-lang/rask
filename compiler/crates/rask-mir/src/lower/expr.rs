@@ -3216,18 +3216,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Vec/Map/etc: dispatch through runtime
-            // Try to determine the element type from the type checker,
-            // then from tracked push/set calls, then default to I64
-            let result_ty = self.ctx.lookup_node_type(expr.id)
-                .or_else(|| self.tracked_elem_of(object))
-                // Last resort: the receiver's own `Vec<T>`. Push tracking
-                // only sees Vecs built in this function, and the checker
-                // doesn't type every index node, so a Vec that arrived some
-                // other way — a field of a struct returned from a call, or of
-                // a `json.decode` result — fell through to i64 and
-                // `h.names[0]` printed a string's first bytes as a number.
-                .or_else(|| self.collection_elem_of_expr(object))
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:vec_index_elem"));
+            let result_ty = self.index_result_ty(expr, object);
             let type_prefix = if let Some(var_name) = object.name() {
                     self.meta(var_name).and_then(|m| m.type_prefix.clone())
                 } else {
@@ -3259,6 +3248,21 @@ impl<'a> MirLowerer<'a> {
             }));
             Ok((MirOperand::Local(result_local), result_ty))
         }
+
+    /// What `object[index]` reads, for a Vec or a Map.
+    ///
+    /// The checker's type first, then tracked push/set calls. Last resort: the
+    /// receiver's own `Vec<T>`. Push tracking only sees Vecs built in this
+    /// function, and the checker doesn't type every index node, so a Vec that
+    /// arrived some other way — a field of a struct returned from a call, or
+    /// of a `json.decode` result — fell through to i64 and `h.names[0]`
+    /// printed a string's first bytes as a number.
+    fn index_result_ty(&mut self, expr: &Expr, object: &Expr) -> MirType {
+        self.ctx.lookup_node_type(expr.id)
+            .or_else(|| self.tracked_elem_of(object))
+            .or_else(|| self.collection_elem_of_expr(object))
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:vec_index_elem"))
+    }
 
     fn lower_array(&mut self, expr: &Expr, elems: &[Expr]) -> Result<TypedOperand, LoweringError> {
             // std.collections: `[1, 2, 3]` *is* a Vec value; it's a fixed
@@ -4363,7 +4367,9 @@ impl<'a> MirLowerer<'a> {
             let writeback_mark = self.pending_write_backs.len();
             for binding in bindings {
                 // Reached through a field (`self.items[0]`) just as much as by
-                // bare name — the element is copied out either way.
+                // bare name — the element is copied out either way. It is lent
+                // (`Vec_lend`/`Map_lend`): the binding holds the slot's own
+                // references until the write-back hands them back.
                 let coll_writeback_info = if let ExprKind::Index { object, index } = &binding.source.kind {
                     let map = match self.index_object_base(object).as_deref() {
                         Some("Vec") => Some(false),
@@ -4373,7 +4379,8 @@ impl<'a> MirLowerer<'a> {
                     if let Some(map) = map {
                         let (obj_op, _) = self.lower_expr(object)?;
                         let (idx_op, _) = self.lower_expr(index)?;
-                        Some((obj_op, idx_op, map))
+                        let elem_ty = self.index_result_ty(&binding.source, object);
+                        Some((obj_op, idx_op, map, elem_ty))
                     } else {
                         None
                     }
@@ -4381,7 +4388,19 @@ impl<'a> MirLowerer<'a> {
                     None
                 };
 
-                let (val, val_ty) = self.lower_expr(&binding.source)?;
+                let (val, val_ty) = match &coll_writeback_info {
+                    Some((obj_op, idx_op, map, elem_ty)) => {
+                        let lent = self.builder.alloc_temp(elem_ty.clone());
+                        let lend = if *map { "Map_lend" } else { "Vec_lend" };
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(lent),
+                            func: FunctionRef::internal(lend.to_string()),
+                            args: vec![obj_op.clone(), idx_op.clone()],
+                        }));
+                        (MirOperand::Local(lent), elem_ty.clone())
+                    }
+                    None => self.lower_expr(&binding.source)?,
+                };
                 let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
                 self.locals.insert(binding.name.clone(), (local, val_ty.clone()));
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
@@ -4389,7 +4408,7 @@ impl<'a> MirLowerer<'a> {
                     rvalue: MirRValue::Use(val),
                 }));
 
-                if let Some((collection, at, map)) = coll_writeback_info {
+                if let Some((collection, at, map, _)) = coll_writeback_info {
                     self.pending_write_backs.push(super::PendingWriteBack {
                         collection,
                         at,

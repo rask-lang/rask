@@ -2483,9 +2483,13 @@ impl<'a> MirLowerer<'a> {
                 },
             }));
         } else {
+            // A `for mutate` over a Vec takes each element out and writes it
+            // back (`Vec_lend` … `Vec_write_back`). A map's binding comes from
+            // its entries snapshot, and the value is lent below.
+            let read = if mutate && !is_map { "Vec_lend" } else { "Vec_get" };
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(elem_slot),
-                func: FunctionRef::internal("Vec_get".to_string()),
+                func: FunctionRef::internal(read.to_string()),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
             }));
         }
@@ -2493,12 +2497,17 @@ impl<'a> MirLowerer<'a> {
         // Tuple destructuring: for (a, b) in collection { ... }
         // Extract fields from the loaded element into each binding.
         // LP13: Track value local for Map writeback (key=field0, value=field1).
+        // A `for mutate` reads the value out of the map itself rather than the
+        // snapshot, because that is the entry it writes back into.
         let mut map_value_local = None;
         if let ForBinding::Tuple(names) = binding {
             if let Some(prefix) = self.mir_type_name(&binding_ty) {
                 self.meta_mut(single_name).type_prefix = Some(prefix);
             }
-            let second = self.split_destructured_element(names, &pair_tys, elem_slot, binding_local);
+            let lend_from = map_local.filter(|_| mutate);
+            let second = self.split_destructured_element(
+                names, &pair_tys, elem_slot, binding_local, lend_from,
+            );
             if is_map {
                 map_value_local = second;
             }
@@ -2618,12 +2627,16 @@ impl<'a> MirLowerer<'a> {
     /// Copy each field of the element in `elem_slot` into its own binding.
     /// Field 0 goes to the binding named first, which already has a local.
     /// Returns the local field 1 landed in — Map iteration writes back through it.
+    /// `lend_from`: the map a `for mutate (k, v)` writes back into. The value
+    /// is then lent out of it by key (`Map_lend`) instead of read off the
+    /// entries snapshot.
     fn split_destructured_element(
         &mut self,
         names: &[String],
         pair_tys: &[MirType],
         elem_slot: crate::LocalId,
         binding_local: crate::LocalId,
+        lend_from: Option<crate::LocalId>,
     ) -> Option<crate::LocalId> {
         let mut second = None;
         for (i, name) in names.iter().enumerate() {
@@ -2634,6 +2647,12 @@ impl<'a> MirLowerer<'a> {
             if let Some(prefix) = self.mir_type_name(&field_ty) {
                 self.meta_mut(name).type_prefix = Some(prefix);
             }
+            if i == 1 {
+                second = Some(field_local);
+                if lend_from.is_some() {
+                    continue;
+                }
+            }
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: field_local,
                 rvalue: MirRValue::Field {
@@ -2643,9 +2662,6 @@ impl<'a> MirLowerer<'a> {
                     access: FieldAccess::Word,
                 },
             }));
-            if i == 1 {
-                second = Some(field_local);
-            }
         }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: binding_local,
@@ -2656,6 +2672,13 @@ impl<'a> MirLowerer<'a> {
                 access: FieldAccess::Word,
             },
         }));
+        if let (Some(map), Some(value)) = (lend_from, second) {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(value),
+                func: FunctionRef::internal("Map_lend".to_string()),
+                args: vec![MirOperand::Local(map), MirOperand::Local(binding_local)],
+            }));
+        }
         second
     }
 
@@ -3234,7 +3257,7 @@ impl<'a> MirLowerer<'a> {
         }));
 
         if let ForBinding::Tuple(names) = for_binding {
-            self.split_destructured_element(names, &pair_tys, elem_slot, binding_local);
+            self.split_destructured_element(names, &pair_tys, elem_slot, binding_local, None);
         }
 
         let ensure_depth = self.ensure_stack.len();

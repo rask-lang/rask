@@ -513,12 +513,24 @@ void *rask_vec_get_opt(const RaskVec *v, int64_t index) {
     return v->data + index * v->elem_size;
 }
 
-void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
+static char *vec_slot(RaskVec *v, int64_t index) {
     if (!v || index < 0 || index >= v->len) {
         rask_panic_fmt("index out of bounds: index is %lld but length is %lld",
                        (long long)index, (long long)(v ? v->len : 0));
     }
-    memcpy(v->data + index * v->elem_size, elem, (size_t)v->elem_size);
+    return v->data + index * v->elem_size;
+}
+
+void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
+    memcpy(vec_slot(v, index), elem, (size_t)v->elem_size);
+}
+
+// Put back an element `with`, `for mutate` or a field write took out of this
+// slot (`Vec_lend` in MIR). What the copy owns is what the slot owned, less
+// whatever the body released and plus whatever it stored, so nothing is
+// released here.
+void rask_vec_write_back(RaskVec *v, int64_t index, const void *elem) {
+    memcpy(vec_slot(v, index), elem, (size_t)v->elem_size);
 }
 
 // Pop returns NULL when empty (Option encoding via DerefOption codegen
