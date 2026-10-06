@@ -1312,13 +1312,24 @@ impl TypeChecker {
                                     }
                                     None => {
                                         self.infer_expr(&field_init.value);
+                                        // Counting fields alone let a misspelt
+                                        // name stand in for the real one (#1476).
+                                        self.errors.push(TypeError::NoSuchField {
+                                            ty: result_ty.clone(),
+                                            field: field_init.name.clone(),
+                                            span: field_init.value.span,
+                                        });
                                     }
                                 }
                             }
-                            if fields.len() != declared.len() {
-                                self.errors.push(TypeError::ArityMismatch {
-                                    expected: declared.len(),
-                                    found: fields.len(),
+                            let missing: Vec<String> = names.iter()
+                                .filter(|n| !fields.iter().any(|fi| &fi.name == *n))
+                                .cloned()
+                                .collect();
+                            if !missing.is_empty() {
+                                self.errors.push(TypeError::MissingFields {
+                                    ty: base_name.to_string(),
+                                    fields: missing,
                                     span: expr.span,
                                 });
                             }

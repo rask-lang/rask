@@ -1,0 +1,19 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a struct-like variant literal names only its own fields.
+//
+// The fields were only counted, so a misspelt name stood in for the real one:
+// the interpreter caught it at runtime and native built a `Circle` whose
+// `radius` was never written (#1476).
+
+enum Shape {
+    Circle { radius: f64 }
+    Rect { w: f64, h: f64 }
+}
+
+func main() {
+    // ERROR: `Circle` has no field `radiuss`, and `radius` is missing
+    let c = Shape.Circle { radiuss: 1.0 }
+
+    // ERROR: `h` is missing
+    let r = Shape.Rect { w: 2.0 }
+}
