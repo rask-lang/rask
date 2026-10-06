@@ -512,7 +512,14 @@ fn join(
             let mut takes = Vec::new();
             for (k, st) in seen.iter().enumerate() {
                 let one = (sets[k].len() == 1).then(|| *sets[k].iter().next().unwrap());
-                let Some(v) = one.and_then(Bind::value) else { break };
+                // A view never holds what it reaches into, so it can't take
+                // it over. `let r = if … { A{…} as any R } else { B{…} as any
+                // R }` joined two boxes that only view their structs into one
+                // value owned by `r`, and released the structs through the
+                // box — the box freed twice and its contents leaked.
+                let Some(v) = one.filter(|b| !matches!(b, Bind::View(_))).and_then(Bind::value) else {
+                    break;
+                };
                 if !st.owned(v) || absorbed.iter().any(|(p, w)| *p == k && *w == v) {
                     break;
                 }

@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A boxed value picked in a branch — `match kind { Http => HttpRegistry {…},
+// Local => LocalRegistry {…} }` returned as `any Registry` — was released
+// twice natively: once as the box, and once more through the box as if the
+// box owned the struct it only points at. `examples/package_manager.rk` did
+// this with its registry and died at teardown (#1292).
+
+interface Registry {
+    func port(self) -> i64
+}
+
+struct LocalRegistry {
+    depth: i64
+}
+
+LocalRegistry implements Registry {
+    func port(self) -> i64 {
+        return self.depth
+    }
+}
+
+struct HttpRegistry {
+    port_no: i64
+    secure: bool
+}
+
+HttpRegistry implements Registry {
+    func port(self) -> i64 {
+        if self.secure {
+            return self.port_no + 1
+        }
+        return self.port_no
+    }
+}
+
+func make(k: i64) -> any Registry {
+    if k == 0 {
+        return HttpRegistry { port_no: 80, secure: true }
+    }
+    return LocalRegistry { depth: k }
+}
+
+func ask(r: any Registry) -> i64 {
+    return r.port()
+}
+
+test "a box chosen in a branch is released once" {
+    let a = make(0)
+    let b = make(7)
+    assert ask(a) == 81
+    assert ask(b) == 7
+}
+
+test "chosen in a loop" {
+    mut total = 0
+    for k in 0..4 {
+        let r = make(k)
+        total += ask(r)
+    }
+    assert total == 81 + 1 + 2 + 3
+}
