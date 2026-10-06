@@ -9,9 +9,8 @@
 // write-back gives the slot its references back, and the caller gets the
 // same strings, so it needs references of its own.
 //
-// A struct of one string is Copy too, but a copy of one still owns nothing,
-// so `v[i] = x` leaves such a slot's old value alone rather than free what a
-// copy reads. That is the leak this file is listed for in known_leaks.txt.
+// A struct of one string is Copy too, so `let tmp = lines[0]` is the same
+// case one level in; `t_copy_owns_its_strings.rk` has more of those.
 
 struct Line {
     text: string

@@ -683,6 +683,7 @@ impl<'a> MirLowerer<'a> {
                                 dst: local_id,
                                 rvalue: MirRValue::Use(val_op),
                             }));
+                            self.retain_copy_of_place(local_id, value);
                         }
                         // After the write, not before: the slots have to hold the
                         // links before there is anything to record.
@@ -913,7 +914,7 @@ impl<'a> MirLowerer<'a> {
                             // length is 8`. The interpreter accepts a map
                             // receiver for `Vec_set`, which is why only native
                             // failed.
-                            let setter = self.replacing_setter(object.id, self.is_map_expr(object));
+                            let setter = if self.is_map_expr(object) { "Map_set" } else { "Vec_set" };
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: None,
                                 func: FunctionRef::internal(setter.to_string()),
@@ -1586,6 +1587,48 @@ impl<'a> MirLowerer<'a> {
         Ok(lowered)
     }
 
+    /// Give a copy of a Copy aggregate references of its own.
+    ///
+    /// `let p = items[0]` copies the bytes, and the bytes include the source's
+    /// string pointers. Without references of its own the copy was a second
+    /// name for the source's strings, so anything that released them while
+    /// the copy lived freed what it read: `items[0].text = t`, a `with` block
+    /// writing the field, `items[0] = x`, or `a.text = t` after `let c = a`.
+    /// The source can be a collection slot, a `with` or `for mutate` binding,
+    /// a `mutate` parameter, a field, or a local of the frame's own; all of
+    /// them keep their references and can drop them while the copy lives.
+    ///
+    /// Copy-ness is the checker's answer, so the decision is made here and
+    /// handed down as the retain itself: `rc_insert` reads a `RcIncContents`
+    /// it finds already in place as "this name owns what it holds" and
+    /// releases it where the name dies. A non-Copy aggregate is moved, not
+    /// copied, or can't be bound at all (mem.borrowing/E4). A Copy one holds
+    /// no container, so the retain is strings only, never a deep clone. A bare
+    /// string copy takes its reference in `rc_insert`, like any string local.
+    fn retain_copy_of_place(&mut self, local: crate::LocalId, init: &Expr) {
+        if !matches!(init.kind, ExprKind::Ident(_) | ExprKind::Field { .. } | ExprKind::Index { .. }) {
+            return;
+        }
+        let Some(ty) = self.ctx.lookup_raw_type(init.id) else { return };
+        if !self.ctx.type_defs.is_copy(ty) {
+            return;
+        }
+        let aggregate = matches!(
+            self.builder.local_type(local),
+            Some(
+                MirType::Struct(_)
+                    | MirType::Enum(_)
+                    | MirType::Tuple(_)
+                    | MirType::Array { .. }
+                    | MirType::Option(_)
+                    | MirType::Result { .. }
+            )
+        );
+        if aggregate {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::RcIncContents { local }));
+        }
+    }
+
     /// Lower a let/const binding: evaluate init, assign to a new local.
     fn lower_binding(&mut self, name: &str, ty: Option<&TypeExpr>, init: &Expr) -> Result<(), LoweringError> {
         let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
@@ -1667,6 +1710,7 @@ impl<'a> MirLowerer<'a> {
             dst: local_id,
             rvalue: MirRValue::Use(init_op.clone()),
         }));
+        self.retain_copy_of_place(local_id, init);
         // The struct may carry edges nothing has recorded — a literal writes its
         // fields before the value has anywhere to live, so there was no slot to
         // register (mem.racks/RK3). Now there is.

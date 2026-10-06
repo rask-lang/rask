@@ -357,9 +357,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Vec_write_back", Internal::WritesBack),
     ("Map_write_back", Internal::WritesBack),
     ("Pool_set", Internal::SameAs("Vec_set")),
-    // `m[k] = v` without releasing the old value, see `replacing_setter`.
-    // (`Vec_set_keeping_old` needs no line: it trims back to `Vec.set`.)
-    ("Map_set_keeping_old", Internal::SameAs("Map_insert")),
 
     // ── Borrow the receiver, keep nothing, return something fresh ─
     ("Map_entries", Internal::FreshFromReceiver),

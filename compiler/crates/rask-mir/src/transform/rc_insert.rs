@@ -73,6 +73,20 @@ pub fn insert_rc_ops(
 ) {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::String);
 
+    // Aggregates lowering already gave references of their own: a Copy
+    // element copied out of a collection (`retain_copy_out_of_collection`).
+    // Collected before this pass adds retains of its own, which cover one
+    // hand-off each rather than the name's whole life.
+    let owns_copy: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::RcIncContents { local } => Some(*local),
+            _ => None,
+        })
+        .collect();
+
     // The three string steps only have work when there is a string. The
     // aggregate walk does not: a struct holding a `Vec` and no string needs its
     // release just the same, and bailing out here meant whether that happened
@@ -103,14 +117,14 @@ pub fn insert_rc_ops(
 
     // A copy of an aggregate read out of somebody else's storage, given to a
     // keeper, takes references of its own to what it holds.
-    retain_views_handed_over(func, kept, own);
+    retain_views_handed_over(func, kept, own, &owns_copy);
 
     // And an aggregate written back to its slot that the frame still uses.
     retain_written_back_while_live(func);
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func, kept, own);
+    insert_aggregate_release(func, kept, own, &owns_copy);
 }
 
 /// Does the call keep its argument at `i`, rather than only read it?
@@ -153,6 +167,7 @@ fn retain_views_handed_over(
     func: &mut MirFunction,
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
+    owns_copy: &HashSet<LocalId>,
 ) {
     let ty_of: HashMap<LocalId, MirType> = func
         .locals
@@ -197,7 +212,9 @@ fn retain_views_handed_over(
                 .then_some(*dst),
                 _ => None,
             };
-            if let Some(d) = found.filter(|d| is_aggregate(d)) {
+            // A copy that took references of its own isn't a view: handing
+            // it over hands those references on.
+            if let Some(d) = found.filter(|d| is_aggregate(d) && !owns_copy.contains(d)) {
                 if views.insert(d) {
                     changed = true;
                 }
@@ -499,6 +516,7 @@ fn insert_aggregate_release(
     func: &mut MirFunction,
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
+    owns_copy: &HashSet<LocalId>,
 ) {
     let ty_of: HashMap<LocalId, MirType> = func
         .locals
@@ -832,6 +850,11 @@ fn insert_aggregate_release(
                 // `Heap<T>` releases the payload's contents before giving the
                 // block back.
                 MirStmtKind::RcDecContents { local } => hand_over(&mut ev, *local),
+                // Retained by lowering: from here on the name holds references
+                // of its own, and is ours to release.
+                MirStmtKind::RcIncContents { local } if owns_copy.contains(local) && is_tracked(local) => {
+                    ev.push(ownership::Event::Make(*local))
+                }
                 _ => {
                     if let Some(d) = uses::stmt_def(stmt).filter(|d| is_tracked(d)) {
                         ev.push(ownership::Event::Other(d));
@@ -849,7 +872,7 @@ fn insert_aggregate_release(
 
             // Reads and writes, for liveness.
             let store_into = match &stmt.kind {
-                MirStmtKind::Store { addr, value, .. } => Some((*addr, value)),
+                MirStmtKind::Store { addr, offset, value, .. } => Some((*addr, *offset, value)),
                 _ => None,
             };
             let mut r = Vec::new();
@@ -857,8 +880,14 @@ fn insert_aggregate_release(
             if !matches!(stmt.kind, MirStmtKind::Phi { .. }) {
                 for name in &facts.names {
                     let reads = match store_into {
-                        Some((addr, value)) if addr == *name => {
+                        // A replacement keeps the aggregate going: what lands
+                        // in the slot is the aggregate's to release. Unread,
+                        // `a.text = t` as the last thing done to `a` put the
+                        // release between the slot's release and the store,
+                        // freeing the old string twice and leaking `t`.
+                        Some((addr, offset, value)) if addr == *name => {
                             uses::operand_local(value) == Some(*name)
+                                || released_here.contains(&(addr, offset))
                         }
                         _ => uses::stmt_reads(stmt, *name),
                     };
@@ -868,7 +897,7 @@ fn insert_aggregate_release(
                     // A store into a scratch slot writes it; one into an
                     // aggregate is a `Fill`, which the analysis decides.
                     let writes = match store_into {
-                        Some((addr, _)) => addr == *name && !aggregates.contains(name),
+                        Some((addr, _, _)) => addr == *name && !aggregates.contains(name),
                         None => uses::stmt_def(stmt) == Some(*name),
                     };
                     if writes {

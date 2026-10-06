@@ -530,13 +530,6 @@ void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     memcpy(slot, elem, (size_t)v->elem_size);
 }
 
-// `v[i] = x` for an element whose copies hold no references of their own, so
-// releasing the old one could free what a copy still reads. Leaks it instead;
-// see `replacing_setter` in the compiler.
-void rask_vec_set_keeping_old(RaskVec *v, int64_t index, const void *elem) {
-    memcpy(vec_slot(v, index), elem, (size_t)v->elem_size);
-}
-
 // Put back an element `with`, `for mutate` or a field write took out of this
 // slot (`Vec_lend` in MIR). What the copy owns is what the slot owned, less
 // whatever the body released and plus whatever it stored, so nothing is
