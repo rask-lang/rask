@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A container passed to a call through a closure is still the caller's.
+//
+// The call only lends it: a closure body can't keep a parameter, and a named
+// function behind the value answers from its own body. Natively the caller
+// used to stop owing the vector at the call while the body never freed it,
+// so it leaked (#1468). The leak gate runs this file under leak checking.
+
+func count(p: Vec<i64>) -> u64 {
+    return p.len()
+}
+
+func pass_on(p: Vec<i64>, f: func(Vec<i64>) -> u64) -> u64 {
+    return f(p)
+}
+
+test "a closure literal borrows its argument" {
+    let v: Vec<i64> = [1, 2]
+    let f = |p: Vec<i64>| p.len()
+    assert f(v) == 2
+    assert v.len() == 2
+}
+
+test "a named function as a value borrows its argument" {
+    let v: Vec<i64> = [1, 2, 3]
+    let f: func(Vec<i64>) -> u64 = count
+    assert f(v) == 3
+    assert v.len() == 3
+}
+
+test "a parameter passed on through a closure stays the caller's" {
+    let v: Vec<i64> = [4]
+    let g = |p: Vec<i64>| p.len()
+    assert pass_on(v, g) == 1
+    assert pass_on(v, count) == 1
+    assert v.len() == 1
+}
+
+test "a vector of strings lent to a closure" {
+    let names: Vec<string> = ["a", "b"]
+    let f = |p: Vec<string>| p.len()
+    assert f(names) == 2
+    assert names[1] == "b"
+}

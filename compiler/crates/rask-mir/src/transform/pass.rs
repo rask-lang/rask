@@ -256,7 +256,8 @@ impl MirPass for StringRcInsertionPass {
     // by value needs to know whether the callee kept it, and that answer is
     // read off every body (see `container_drop::params_a_callee_keeps`).
     fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
-        let kept = crate::container_drop::params_a_callee_keeps(fns);
+        let targets = crate::closure_targets::ClosureTargets::build(fns);
+        let kept = crate::container_drop::params_a_callee_keeps(fns, &targets);
         for func in fns.iter_mut() {
             crate::transform::rc_insert::insert_rc_ops(func, &kept, &ctx.own_functions);
         }

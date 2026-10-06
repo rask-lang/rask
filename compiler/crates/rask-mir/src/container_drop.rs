@@ -25,6 +25,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use crate::closure_targets::ClosureTargets;
 use crate::{
     BlockId, FunctionRef, LocalId, MirBlock, MirFunction, MirOperand, MirRValue, MirStmt,
     MirStmtKind, MirTerminatorKind, MirType,
@@ -182,8 +183,9 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     // and the "hands a container back" fixed point needs it.
     let targets = crate::closure_targets::ClosureTargets::build(fns);
     let handing_over = functions_that_hand_a_container_back(fns, &targets);
-    let kept = params_a_callee_keeps(fns);
+    let kept = params_a_callee_keeps(fns, &targets);
     let interface_kept = interface_method_args_kept(fns, &kept);
+    let keeps = Keeps { by_name: &kept, interface: &interface_kept, targets: &targets };
     let interface_handing = interface_methods_that_hand_back(fns, &handing_over);
     // A snapshot, because tracing a container through a capture cell has to
     // read the closure that captured it while the frame it belongs to is being
@@ -194,7 +196,7 @@ pub fn insert_container_drops(fns: &mut Vec<MirFunction>) {
     let own: HashSet<String> = fns.iter().map(|f| f.name.clone()).collect();
     for func in fns.iter_mut() {
         insert_for_function(
-            func, &snapshot, &handing_over, &interface_handing, &kept, &interface_kept, &targets, &own,
+            func, &snapshot, &handing_over, &interface_handing, &keeps, &targets, &own,
         );
     }
     let glue = env_drop_glue(fns, &handing_over, &targets);
@@ -619,7 +621,10 @@ fn build_env_drop(
 ///
 /// Grows to a fixed point because "passed on to something that keeps it" is
 /// itself one of these answers.
-pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<bool>> {
+pub(crate) fn params_a_callee_keeps(
+    fns: &[MirFunction],
+    targets: &ClosureTargets,
+) -> HashMap<String, Vec<bool>> {
     let mut kept: HashMap<String, Vec<bool>> =
         fns.iter().map(|f| (f.name.clone(), vec![false; f.params.len()])).collect();
 
@@ -630,7 +635,7 @@ pub(crate) fn params_a_callee_keeps(fns: &[MirFunction]) -> HashMap<String, Vec<
                 if kept.get(&func.name).is_some_and(|v| v[i]) {
                     continue;
                 }
-                if param_is_kept_by(func, param.id, &kept) {
+                if param_is_kept_by(func, param.id, &kept, targets) {
                     if let Some(v) = kept.get_mut(&func.name) {
                         v[i] = true;
                         grew = true;
@@ -731,6 +736,7 @@ fn param_is_kept_by(
     func: &MirFunction,
     param: LocalId,
     kept: &HashMap<String, Vec<bool>>,
+    targets: &ClosureTargets,
 ) -> bool {
     // Follow the value through renames: lowering copies a parameter into a
     // local before doing anything with it often enough that reading only the
@@ -785,7 +791,14 @@ fn param_is_kept_by(
                         }
                     }
                 }
-                MirStmtKind::ClosureCall { args, .. } | MirStmtKind::InterfaceCall { args, .. } => {
+                MirStmtKind::ClosureCall { closure, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        if holds(arg) && closure_call_keeps_argument(targets, kept, &func.name, *closure, i) {
+                            return true;
+                        }
+                    }
+                }
+                MirStmtKind::InterfaceCall { args, .. } => {
                     if args.iter().any(holds) {
                         return true;
                     }
@@ -833,6 +846,52 @@ pub(crate) fn call_keeps_argument(
     }
     let head = fref.name.rsplit("::").next().unwrap_or(&fref.name);
     rask_stdlib::mir_metadata::keeps_argument(head, index)
+}
+
+/// Does `closure(args)` in `func` keep the argument at `index`?
+///
+/// A closure call has no name to look up, but `ClosureTargets` says which
+/// bodies it reaches, and each of those answers for itself. The call borrows
+/// only when every one of them does. Argument `i` is the body's parameter
+/// `i + 1`, after the environment. A call whose bodies aren't known keeps
+/// everything: a leak, where the other answer is a double free.
+///
+/// Reading every closure call as a hand-over left the argument to nobody: the
+/// caller stopped owing it and the body, which only borrows, never freed it
+/// (#1468).
+fn closure_call_keeps_argument(
+    targets: &ClosureTargets,
+    kept: &HashMap<String, Vec<bool>>,
+    func: &str,
+    closure: LocalId,
+    index: usize,
+) -> bool {
+    match targets.known(func, closure) {
+        Some(bodies) => bodies
+            .iter()
+            .any(|b| kept.get(b).and_then(|v| v.get(index + 1)).copied().unwrap_or(true)),
+        None => true,
+    }
+}
+
+/// What a call does with each argument, for every kind of call: by name, through
+/// a vtable slot, or through a closure.
+struct Keeps<'a> {
+    by_name: &'a HashMap<String, Vec<bool>>,
+    interface: &'a HashMap<String, Vec<bool>>,
+    targets: &'a ClosureTargets,
+}
+
+impl Keeps<'_> {
+    /// `self` isn't in an interface call's argument list, so this is already
+    /// shifted to match it (`interface_method_args_kept`).
+    fn interface_call(&self, method: &str, index: usize) -> bool {
+        self.interface.get(method).and_then(|v| v.get(index)).copied().unwrap_or(true)
+    }
+
+    fn closure_call(&self, func: &str, closure: LocalId, index: usize) -> bool {
+        closure_call_keeps_argument(self.targets, self.by_name, func, closure, index)
+    }
 }
 
 /// Functions that build a container and return it, so the caller owns what
@@ -1054,11 +1113,11 @@ fn insert_for_function(
     all: &[MirFunction],
     handing_over: &HashMap<String, HandBack>,
     interface_handing: &HashMap<String, HandBack>,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
-    targets: &crate::closure_targets::ClosureTargets,
+    keeps: &Keeps,
+    targets: &ClosureTargets,
     own: &HashSet<String>,
 ) {
+    let kept = keeps.by_name;
     // Every name that may hold a container this frame made, and where each
     // is made. Whether a given name holds one of this frame's on a given path
     // is the ownership analysis's question, not a property of the name:
@@ -1072,10 +1131,10 @@ fn insert_for_function(
     // The pruned answer, for the two rules below that still key on a name:
     // a container captured by a closure the frame drops, and one in a cell.
     let fresh = collect_fresh_containers_with(func, all, handing_over, interface_handing, targets);
-    let ensured = consumed_by_an_ensure(func, all, &fresh, kept, interface_kept);
+    let ensured = consumed_by_an_ensure(func, all, &fresh, keeps);
 
     let lent = lent_slots(func, &mut tracked, kept);
-    let facts = container_facts(func, &tracked, &made_here, &ensured, &lent, kept, interface_kept, own);
+    let facts = container_facts(func, &tracked, &made_here, &ensured, &lent, keeps, own);
     let plan = crate::analysis::ownership::plan(
         func,
         &facts,
@@ -1085,7 +1144,7 @@ fn insert_for_function(
     // A container in a capture cell is reached through a store, which reads
     // as handing it over — so its free goes in separately, keyed on the cell
     // rather than on a name.
-    let cells = cells_this_frame_frees(func, all, &fresh, kept, interface_kept, &lent.slots);
+    let cells = cells_this_frame_frees(func, all, &fresh, keeps, &lent.slots);
 
     // A capture the frame frees itself, because it frees the closure too. The
     // capture is a hand-over as far as the analysis is concerned, so the two
@@ -1163,8 +1222,7 @@ fn container_facts(
     made_here: &HashSet<LocalId>,
     ensured: &HashSet<LocalId>,
     lent: &LentSlots,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
+    keeps: &Keeps,
     own: &HashSet<String>,
 ) -> crate::analysis::ownership::Facts {
     use crate::analysis::ownership::Event;
@@ -1212,7 +1270,7 @@ fn container_facts(
                         if i == 0 && borrows {
                             continue;
                         }
-                        if call_keeps_argument(fref, i, kept) {
+                        if call_keeps_argument(fref, i, keeps.by_name) {
                             give(&mut ev, arg);
                         }
                     }
@@ -1226,9 +1284,7 @@ fn container_facts(
                 // the right (#1199).
                 MirStmtKind::InterfaceCall { method_name, args, dst, .. } => {
                     for (i, arg) in args.iter().enumerate() {
-                        let keeps =
-                            interface_kept.get(method_name).and_then(|v| v.get(i)).copied().unwrap_or(true);
-                        if keeps {
+                        if keeps.interface_call(method_name, i) {
                             give(&mut ev, arg);
                         }
                     }
@@ -1236,9 +1292,11 @@ fn container_facts(
                         ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
                     }
                 }
-                MirStmtKind::ClosureCall { args, dst, .. } => {
-                    for arg in args {
-                        give(&mut ev, arg);
+                MirStmtKind::ClosureCall { closure, args, dst, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        if keeps.closure_call(&func.name, *closure, i) {
+                            give(&mut ev, arg);
+                        }
                     }
                     if let Some(d) = dst.filter(|d| is(d)) {
                         ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
@@ -1290,7 +1348,7 @@ fn container_facts(
                     }
                 }
                 MirStmtKind::Assign { dst, rvalue: MirRValue::Ref(src) } => {
-                    if is(src) && !lent_for_the_call(func, *dst, kept) {
+                    if is(src) && !lent_for_the_call(func, *dst, keeps.by_name) {
                         ev.push(Event::HandOver(*src));
                     }
                 }
@@ -1923,10 +1981,10 @@ fn cells_this_frame_frees(
     func: &MirFunction,
     all: &[MirFunction],
     fresh: &HashMap<LocalId, &'static str>,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
+    keeps: &Keeps,
     lent: &HashMap<LocalId, &'static str>,
 ) -> Vec<(LocalId, Holds, BlockId)> {
+    let kept = keeps.by_name;
     let mut by_ref_cells: HashSet<LocalId> = func
         .blocks
         .iter()
@@ -2037,11 +2095,21 @@ fn cells_this_frame_frees(
                     }
                 }
             }
-            // No name to ask about, so the conservative answer.
-            MirStmtKind::InterfaceCall { args, .. } | MirStmtKind::ClosureCall { args, .. } => {
-                for arg in args {
+            MirStmtKind::InterfaceCall { method_name, args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
                     if let MirOperand::Local(id) = arg {
-                        kept_by_a_call.insert(*id);
+                        if keeps.interface_call(method_name, i) {
+                            kept_by_a_call.insert(*id);
+                        }
+                    }
+                }
+            }
+            MirStmtKind::ClosureCall { closure, args, .. } => {
+                for (i, arg) in args.iter().enumerate() {
+                    if let MirOperand::Local(id) = arg {
+                        if keeps.closure_call(&func.name, *closure, i) {
+                            kept_by_a_call.insert(*id);
+                        }
                     }
                 }
             }
@@ -2100,7 +2168,7 @@ fn cells_this_frame_frees(
         // way out of the frame, so a value already taken away must not be
         // named at all. The path-sensitivity below is for a frame's own locals,
         // which have a placement to be sensitive about.
-        let (escapes, taken) = find_escaping(func, &carried, kept, interface_kept);
+        let (escapes, taken) = find_escaping(func, &carried, keeps);
         if !escapes.is_empty() || !taken.is_empty() {
             continue;
         }
@@ -2758,9 +2826,9 @@ fn lent_for_the_call(
 fn find_escaping(
     func: &MirFunction,
     containers: &HashMap<LocalId, &'static str>,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
+    keeps: &Keeps,
 ) -> (HashSet<LocalId>, HashMap<LocalId, HashSet<BlockId>>) {
+    let kept = keeps.by_name;
     let mut escaping = HashSet::new();
     // Where a container is handed to a stdlib method declared `take self`.
     //
@@ -2814,19 +2882,16 @@ fn find_escaping(
                 // so an implementation's parameters sit one to the right.
                 MirStmtKind::InterfaceCall { method_name, args, .. } => {
                     for (i, arg) in args.iter().enumerate() {
-                        let keeps = interface_kept
-                            .get(method_name)
-                            .and_then(|v| v.get(i))
-                            .copied()
-                            .unwrap_or(true);
-                        if keeps {
+                        if keeps.interface_call(method_name, i) {
                             mark(arg, &mut escaping);
                         }
                     }
                 }
-                MirStmtKind::ClosureCall { args, .. } => {
-                    for arg in args {
-                        mark(arg, &mut escaping);
+                MirStmtKind::ClosureCall { closure, args, .. } => {
+                    for (i, arg) in args.iter().enumerate() {
+                        if keeps.closure_call(&func.name, *closure, i) {
+                            mark(arg, &mut escaping);
+                        }
                     }
                 }
                 MirStmtKind::Store { value, .. }
@@ -2875,8 +2940,7 @@ fn consumed_by_an_ensure(
     func: &MirFunction,
     all: &[MirFunction],
     fresh: &HashMap<LocalId, &'static str>,
-    kept: &HashMap<String, Vec<bool>>,
-    interface_kept: &HashMap<String, Vec<bool>>,
+    keeps: &Keeps,
 ) -> HashSet<LocalId> {
     let mut out = HashSet::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
@@ -2898,7 +2962,7 @@ fn consumed_by_an_ensure(
                     _ => {}
                 }
             }
-            let (escaping, consumed) = find_escaping(body, &names, kept, interface_kept);
+            let (escaping, consumed) = find_escaping(body, &names, keeps);
             if !escaping.is_empty() || !consumed.is_empty() {
                 out.insert(cap.local_id);
             }
