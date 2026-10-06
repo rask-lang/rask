@@ -2531,21 +2531,19 @@ impl<'a> MirLowerer<'a> {
                 }
             };
 
-            // If the callee is a known closure variable, emit ClosureCall
-            if self.closure_locals.contains(&func_name) {
-                if let Some((closure_local, _)) = self.locals.get(&func_name).cloned() {
-                    let ret_ty = self.func_sigs
-                        .get(&func_name)
-                        .map(|s| s.ret_ty.clone())
-                        .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:902"));
-                    let result_local = self.builder.alloc_temp(ret_ty.clone());
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
-                        dst: Some(result_local),
-                        closure: closure_local,
-                        args: arg_operands,
-                    }));
-                    return Ok((MirOperand::Local(result_local), ret_ty));
-                }
+            // A local that holds a function value is called through it. The
+            // checker's type for the callee says so; asking each binding site
+            // to register its name instead missed one form after another — a
+            // `for` element, a `T?` payload, a `with` binding, a `Sequence`
+            // element (#869, #1151, #1241, #1421).
+            if let Some((closure_local, ret_ty)) = self.callable_local(func) {
+                let result_local = self.builder.alloc_temp(ret_ty.clone());
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+                    dst: Some(result_local),
+                    closure: closure_local,
+                    args: arg_operands,
+                }));
+                return Ok((MirOperand::Local(result_local), ret_ty));
             }
 
             // transmute(val) — identity at MIR level (all values are i64)
@@ -10102,7 +10100,6 @@ impl<'a> MirLowerer<'a> {
         val: &MirOperand,
         payload_ty: &MirType,
         is_niche: bool,
-        scrutinee: &Expr,
     ) {
         let local = self.builder.alloc_local(name.to_string(), payload_ty.clone());
         let rvalue = if is_niche {
@@ -10124,27 +10121,6 @@ impl<'a> MirLowerer<'a> {
         if let Some(prefix) = self.mir_type_name(payload_ty) {
             self.meta_mut(name).type_prefix = Some(prefix);
         }
-        // A callable payload binds a closure, and calling it has to emit an
-        // indirect call. Every other way of binding one registers it; this one
-        // didn't, so `if m.get(k)? as f` left `f(2)` lowering as a call to a
-        // function named `f` — which is nothing, so lowering gave up (#1151).
-        if let Some(ret_ty) = self.presence_payload_callable_ret(scrutinee) {
-            self.note_callable_binding(name, ret_ty);
-        }
-    }
-
-
-    /// What the payload of `scrutinee` answers when called, if it is callable.
-    ///
-    /// The scrutinee of `x? as f` is a `T?` or a `T or E`; what `f` binds is the
-    /// good side of it.
-    fn presence_payload_callable_ret(&self, scrutinee: &Expr) -> Option<MirType> {
-        let ty = self.ctx.lookup_raw_type(scrutinee.id)?;
-        let payload = match ty {
-            rask_types::Type::Result { ok, .. } => ok.as_ref(),
-            other => other,
-        };
-        self.ctx.callable_ret_ty(payload, self.ctx.type_names)
     }
 
     fn lower_if_present(
@@ -10191,7 +10167,7 @@ impl<'a> MirLowerer<'a> {
         let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
         let outer_locals = self.locals.clone();
         if let Some(name) = then_name.as_ref() {
-            self.bind_presence_payload(name, &val, &payload_ty, is_niche, inner);
+            self.bind_presence_payload(name, &val, &payload_ty, is_niche);
         }
         let (then_val, then_ty) = self.lower_expr(then_branch)?;
         self.locals = outer_locals;

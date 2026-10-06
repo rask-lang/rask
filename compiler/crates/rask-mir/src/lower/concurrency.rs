@@ -254,15 +254,6 @@ impl<'a> MirLowerer<'a> {
     ///
     /// Release (and the write-back) go in a cleanup block on the ensure stack,
     /// so `return`, `try`, `break` and `continue` all run them on the way out.
-    /// What the payload of the box `object` answers when called, if it is
-    /// callable.
-    fn box_payload_callable_ret(&self, object: &Expr) -> Option<MirType> {
-        let ty = self.ctx.lookup_raw_type(object.id)?;
-        let (_, args) = self.generic_head(ty)?;
-        let rask_types::GenericArg::Type(payload) = args.first()? else { return None };
-        self.ctx.callable_ret_ty(payload, self.ctx.type_names)
-    }
-
     pub(super) fn lower_box_with_block(
         &mut self,
         object: &Expr,
@@ -299,13 +290,6 @@ impl<'a> MirLowerer<'a> {
         if by_address {
             self.meta_mut(binding_name).assigns_through = true;
         }
-        // A box holding a function value binds a callable, so `with b.read() as
-        // f { f(2) }` has to emit an indirect call — without it the call went
-        // looking for a function named `f` and lowering gave up (#1241).
-        if let Some(ret_ty) = self.box_payload_callable_ret(object) {
-            self.note_callable_binding(binding_name, ret_ty);
-        }
-
         let writeback = (!by_address).then(|| guard_ty.size());
         let depth = self.ensure_stack.len();
         self.push_guard_cleanup(&box_op, guard_local, writeback, syms);

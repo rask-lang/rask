@@ -1918,29 +1918,12 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        // Track closure bindings and alias the func_sig so callers can
-        // look up the return type by variable name.
+        // Alias the closure's signature under the binding's name, so a call
+        // through it knows which parameters are `mutate`.
         if is_closure {
-            self.closure_locals.insert(name.to_string());
             let closure_fn = format!("{}__closure_{}", self.parent_name, self.closure_counter - 1);
             if let Some(sig) = self.func_sigs.get(&closure_fn).cloned() {
                 self.func_sigs.insert(name.to_string(), sig);
-            }
-        }
-
-        // Track locals assigned from calls that return closure types.
-        // e.g., `const add_5 = make_adder(5)` where make_adder returns |i32| -> i32.
-        // Check via type checker's node_types: if init expr has Type::Fn, it's a closure.
-        if !is_closure {
-            // A `Sequence<T>` counts: `let chain = src.filter(p)` binds
-            // something callable, and calling it is how the next adapter drives
-            // it (type.sequence/SEQ1 makes it nominal, so the `Type::Fn` test
-            // alone doesn't see it).
-            let bound_ret = self.ctx.node_types.get(&init.id)
-                .and_then(|ty| self.ctx.callable_ret_ty(ty, self.ctx.type_names));
-            if let Some(ret_mir) = bound_ret {
-                self.closure_locals.insert(name.to_string());
-                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
             }
         }
 
@@ -2226,7 +2209,7 @@ impl<'a> MirLowerer<'a> {
                     else_block: exit_block,
                 }));
                 let payload_ty = self.presence_payload_type(inner, &scrutinee_ty);
-                Some((name, val, payload_ty, is_niche, inner))
+                Some((name, val, payload_ty, is_niche))
             }
             None => {
                 let (cond_op, _) = self.lower_expr(cond)?;
@@ -2240,8 +2223,8 @@ impl<'a> MirLowerer<'a> {
         };
 
         self.builder.switch_to_block(body_block);
-        if let Some((name, val, payload_ty, is_niche, inner)) = bind_in_body {
-            self.bind_presence_payload(&name, &val, &payload_ty, is_niche, inner);
+        if let Some((name, val, payload_ty, is_niche)) = bind_in_body {
+            self.bind_presence_payload(&name, &val, &payload_ty, is_niche);
         }
         let ensure_depth = self.ensure_stack.len();
         self.loop_stack.push(LoopContext {
@@ -2472,7 +2455,6 @@ impl<'a> MirLowerer<'a> {
         };
         let (pair_tys, binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&elem_ty, binding, single_name);
-        self.note_closure_binding(single_name, iter_expr);
         if let Some(prefix) = self.mir_type_name(&elem_ty) {
             self.meta_mut(single_name).type_prefix = Some(prefix);
         } else {
@@ -2582,37 +2564,6 @@ impl<'a> MirLowerer<'a> {
         self.ensure_stack.truncate(ensure_depth);
         self.builder.switch_to_block(exit_block);
         Ok(())
-    }
-
-    /// A `for` over a collection of functions binds a closure value, so record
-    /// it the way `let`/`mut` already do.
-    ///
-    /// Without this the call site had no reason to emit a `ClosureCall`: it
-    /// lowered `f(5)` as a call to a *function named `f`*, found no signature
-    /// for it, and gave up on the return type — "couldn't work out a type here"
-    /// out of MIR lowering, while `let g = fs[0]` two lines away was fine
-    /// (#869). The interpreter has no such split and ran both.
-    fn note_closure_binding(&mut self, name: &str, source: &Expr) {
-        let Some(source_ty) = self.ctx.lookup_raw_type(source.id) else { return };
-        let Some(elem) = self.checker_elem_of(source_ty) else { return };
-        if let rask_types::Type::Fn { ret, .. } = elem {
-            let ret_mir = self.ctx.type_to_mir(&ret);
-            self.note_callable_binding(name, ret_mir);
-        }
-    }
-
-    /// The checker's element type of a `Vec`/`Iterator` source, as a checker
-    /// type rather than a MIR one — a function type has no MIR shape beyond
-    /// "pointer", so this has to look before the conversion.
-    fn checker_elem_of(&self, ty: &rask_types::Type) -> Option<rask_types::Type> {
-        let (name, args) = self.generic_head(ty)?;
-        if !matches!(name.as_str(), "Vec" | "Iterator") {
-            return None;
-        }
-        match args.first()? {
-            rask_types::GenericArg::Type(inner) => Some((**inner).clone()),
-            _ => None,
-        }
     }
 
     /// Work out where a `for` loop's element and its destructured pieces live.
@@ -3254,13 +3205,6 @@ impl<'a> MirLowerer<'a> {
         };
         let (pair_tys, _binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&final_ty, for_binding, binding_name);
-        // Adapters can change the element type, so ask about the chain's own
-        // source only when nothing was applied. Otherwise `for f in fs.iter()`
-        // over a Vec of functions still binds a callable, but
-        // `for n in fs.map(|f| f(1))` binds an i64.
-        if chain.adapters.is_empty() {
-            self.note_closure_binding(binding_name, chain.source);
-        }
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: elem_slot,
             rvalue: MirRValue::Use(final_op),

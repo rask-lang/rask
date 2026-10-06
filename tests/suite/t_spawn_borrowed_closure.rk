@@ -138,8 +138,7 @@ test "yielded literals through an adapter, collected and spawned" {
 test "a for loop over yielded closures still writes back" {
     mut n = 0
     for f in pair() {
-        let g: func(i64) -> i64 = f
-        n += g(1)
+        n += f(1)
     }
     assert n == 47
 }

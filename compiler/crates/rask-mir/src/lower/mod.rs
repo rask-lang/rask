@@ -1644,8 +1644,6 @@ pub struct MirLowerer<'a> {
     spawn_boxed_bindings: HashMap<String, bool>,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
-    /// Variable names known to hold closure values
-    closure_locals: std::collections::HashSet<String>,
     /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
     /// Keys may exist here without a corresponding entry in `locals` (e.g. module imports).
     local_meta: HashMap<String, LocalMeta>,
@@ -2314,25 +2312,15 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
-    /// Record that `name` binds something callable, and what calling it
-    /// answers.
-    ///
-    /// This is what makes a call site emit an indirect call instead of looking
-    /// for a function by that name, so every way of binding a function value
-    /// has to do it: a `let`, a `for` element, a closure parameter, the payload
-    /// of a `T?`, the binding of a `with`.
-    pub(crate) fn note_callable_binding(&mut self, name: &str, ret_ty: MirType) {
-        self.closure_locals.insert(name.to_string());
-        self.func_sigs.insert(
-            name.to_string(),
-            FuncSig {
-                ret_ty,
-                scalar_mutate_params: Vec::new(),
-                aggregate_mutate_params: Vec::new(),
-                ret_vec_elem: None,
-                param_tys: Vec::new(),
-            },
-        );
+    /// When `callee` names a local holding a function value: that local, and
+    /// what calling it answers. Read off the checker's type for the callee, so
+    /// every way of binding a function value is covered at once.
+    pub(crate) fn callable_local(&self, callee: &Expr) -> Option<(LocalId, MirType)> {
+        let ExprKind::Ident(name) = &callee.kind else { return None };
+        let (local, _) = self.locals.get(name)?;
+        let ty = self.ctx.lookup_raw_type(callee.id)?;
+        let ret = self.ctx.callable_ret_ty(ty, self.ctx.type_names)?;
+        Some((*local, ret))
     }
 
     /// Box a value on its way into a declared `Heap<T>` slot, unless it is a
@@ -4073,7 +4061,6 @@ impl<'a> MirLowerer<'a> {
             spawned_closure_names: std::collections::HashSet::new(),
             spawn_boxed_bindings: HashMap::new(),
             parent_name: func_name,
-            closure_locals: std::collections::HashSet::new(),
             local_meta: HashMap::new(),
             reassigned_names: std::collections::HashSet::new(),
             ensure_read_names: std::collections::HashSet::new(),
@@ -4175,17 +4162,6 @@ impl<'a> MirLowerer<'a> {
                         meta.elem_type = Some(ctx.resolve_type_expr(elem));
                     }
                 }
-            }
-
-            // Function-type params are closures passed as arguments. Register
-            // them so call sites emit ClosureCall instead of Call.
-            if let Some(callable) = written.filter(|t| is_callable_type(t)) {
-                lowerer.closure_locals.insert(param.name.clone());
-                let ret_ty = match callable {
-                    TypeExpr::Func { ret, .. } => ctx.resolve_type_expr(ret),
-                    _ => MirType::Void,
-                };
-                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty, scalar_mutate_params: Vec::new(), aggregate_mutate_params: Vec::new(), ret_vec_elem: None, param_tys: Vec::new() });
             }
         }
 
@@ -6149,12 +6125,6 @@ pub fn type_prefix_of(ty: &TypeExpr) -> Option<String> {
         return None;
     }
     name.starts_with(char::is_uppercase).then(|| name.to_string())
-}
-
-/// A function type, or a sequence — what a call through a binding drives.
-pub(crate) fn is_callable_type(ty: &TypeExpr) -> bool {
-    matches!(ty, TypeExpr::Func { .. })
-        || matches!(ty.name().as_deref(), Some("Sequence" | "SequenceMut"))
 }
 
 /// The name a type pattern tests against: `none`, `MyErr`, `MyErr.Worse`,
