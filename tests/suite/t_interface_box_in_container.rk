@@ -85,8 +85,7 @@ test "type.interfaces — a Map of interface boxes" {
     by_name.insert("sq", Square { side: 6 })
     by_name.insert("re", Rect { w: 4, h: 2 })
     assert by_name.len() == 2
-    let s = by_name["sq"]
-    assert s.area() == 36
+    assert by_name["sq"].area() == 36
 }
 
 // One per turn, so a block released twice lands on one the next turn reused.

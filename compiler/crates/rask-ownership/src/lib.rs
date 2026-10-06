@@ -24,7 +24,7 @@ use rask_ast::expr::{Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
-use rask_types::{ParamMode, Type, TypedProgram};
+use rask_types::{CopyVerdict, ParamMode, Type, TypedProgram};
 
 /// Result of ownership analysis.
 #[derive(Debug)]
@@ -1424,7 +1424,7 @@ impl<'a> OwnershipChecker<'a> {
         let Some(ty) = self.node_ty(&init.id).cloned() else {
             return;
         };
-        if !self.definitely_not_copy(&ty) {
+        if self.copy_verdict(&ty) != CopyVerdict::Move {
             return;
         }
         let collection = match &init.kind {
@@ -1464,7 +1464,7 @@ impl<'a> OwnershipChecker<'a> {
         let Some(ty) = self.node_ty(&init.id).cloned() else {
             return;
         };
-        if !self.definitely_not_copy(&ty) {
+        if self.copy_verdict(&ty) != CopyVerdict::Move {
             return;
         }
         // A linear field isn't viewed, it's moved out: the obligation goes with
@@ -1480,25 +1480,6 @@ impl<'a> OwnershipChecker<'a> {
             },
             span: init.span,
         });
-    }
-
-    /// `is_copy` answers "treat this as a move", so a type it can't place — a
-    /// name the type table never resolved, an inference variable, a generic it
-    /// has no declaration for — comes back non-Copy. That is the safe direction
-    /// for a move analysis and the wrong one for a rejection: it would reject on
-    /// "couldn't tell". This asks the narrower question, and says yes only for a
-    /// type the pass can actually look up.
-    fn definitely_not_copy(&self, ty: &Type) -> bool {
-        let placed = match ty {
-            Type::Result { .. } | Type::Union(_) => true,
-            Type::Named(id) => self.program.types.get(*id).is_some(),
-            Type::Generic { base, .. } => {
-                let name = self.program.types.type_name(*base);
-                rask_types::TypeTable::is_native_opaque_generic(&name) || self.program.types.get(*base).is_some()
-            }
-            _ => false,
-        };
-        placed && !self.is_copy(ty)
     }
 
     /// A place expression rendered back to source, for a message. `None` for
@@ -4018,7 +3999,7 @@ impl<'a> OwnershipChecker<'a> {
         let Some(ty) = self.node_ty(&expr.id).cloned() else {
             return;
         };
-        if !self.definitely_not_copy(&ty) {
+        if self.copy_verdict(&ty) != CopyVerdict::Move {
             return;
         }
         self.errors.push(OwnershipError {
@@ -4213,7 +4194,14 @@ impl<'a> OwnershipChecker<'a> {
     /// Copied rather than moved (mem.value/VS1). A type parameter is when this
     /// function or its owner bounds it by `Copy`.
     fn is_copy(&self, ty: &Type) -> bool {
-        self.program.types.is_copy_with(ty, &|name| self.copy_params.contains(name))
+        self.copy_verdict(ty) == CopyVerdict::Copy
+    }
+
+    /// A check that rejects a program asks for `Move`, not `!is_copy`:
+    /// `is_copy` counts a type it can't place as a move, and rejecting on
+    /// "couldn't tell" would reject on a guess.
+    fn copy_verdict(&self, ty: &Type) -> CopyVerdict {
+        self.program.types.copy_verdict_with(ty, &|name| self.copy_params.contains(name))
     }
 
     /// Determine why a type is move-only (not Copy).
@@ -5852,7 +5840,9 @@ impl<'a> OwnershipChecker<'a> {
                     self.resource_type_display(err)
                 }
             }
-            _ => ty.to_string(),
+            // A tuple or an array names its parts, and `Display` alone
+            // prints a registered one as `<type#7>`.
+            _ => self.program.types.resolve_type_names(ty).to_string(),
         }
     }
 
