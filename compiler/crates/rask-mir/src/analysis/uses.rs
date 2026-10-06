@@ -31,7 +31,7 @@ fn visit_operand_uses(op: &MirOperand, f: &mut impl FnMut(LocalId)) {
 }
 
 /// Visit every local read by an rvalue.
-fn visit_rvalue_uses(rv: &MirRValue, f: &mut impl FnMut(LocalId)) {
+pub(crate) fn visit_rvalue_uses(rv: &MirRValue, f: &mut impl FnMut(LocalId)) {
     match rv {
         MirRValue::Use(o) | MirRValue::Deref(o) => visit_operand_uses(o, f),
         MirRValue::Ref(id) => f(*id),
