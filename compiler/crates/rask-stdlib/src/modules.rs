@@ -113,6 +113,11 @@ pub fn module_names() -> &'static [&'static str] {
     })
 }
 
+/// True for a module the compiler answers itself, with no `.rk` file behind it.
+pub fn is_compiler_module(name: &str) -> bool {
+    COMPILER_MODULES.contains(&name)
+}
+
 /// True when `name` is an importable stdlib module.
 pub fn is_module(name: &str) -> bool {
     module_names().binary_search(&name).is_ok()

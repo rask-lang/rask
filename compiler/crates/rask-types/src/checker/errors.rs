@@ -94,6 +94,20 @@ pub enum TypeError {
         method: String,
         span: Span,
     },
+    /// `module.f(…)` where the module has no function `f`. Reached through a
+    /// module with no namespace struct, the call used to be a method lookup on
+    /// the module's placeholder type, which is dropped unreported (#1404).
+    #[error("`{module}` has no function `{function}`")]
+    NoSuchModuleFunction {
+        module: String,
+        function: String,
+        /// A type in the module that declares `function`, and whether it
+        /// takes `self` — `async.join_all` is `Handles.join_all`.
+        owner: Option<(String, bool)>,
+        /// What the module does have, for a near-name suggestion.
+        available: Vec<String>,
+        span: Span,
+    },
     /// std.fmt/D4: `{}` (and a bare `to_string()`) needs `Displayable`, and
     /// structs opt in (D3). Optionals and results never render on their own.
     #[error("`{ty}` does not implement `Displayable`")]
@@ -1510,6 +1524,7 @@ impl TypeError {
             | ArityMismatch { .. }
             | ArgLabelMismatch { .. }
             | UnimplementedStdlibMethod { .. }
+            | NoSuchModuleFunction { .. }
             | NotDisplayable { .. }
             | UnboundedTypeParamMethod { .. }
             | CannotInfer { .. }

@@ -3133,6 +3133,69 @@ impl TypeChecker {
         }
     }
 
+    /// `async.join_all(…)` — a call through a stdlib module to a function the
+    /// module doesn't have. `Some(Type::Error)` once reported, `None` when the
+    /// receiver isn't a module or the module does have it.
+    ///
+    /// A free function the module exports never gets here: the resolver points
+    /// the call at it and `call_module_functions_bare` makes it a plain call. So
+    /// what's left is a member of the module's namespace struct (`time.sleep`,
+    /// `fs.read_text`), or nothing. A module with no namespace struct (`async`)
+    /// fell through to a method lookup on its `__module_` placeholder, which the
+    /// solver drops unreported, so the only symptom was "couldn't work out the
+    /// type of `y`" — or nothing, and a crash in MIR lowering (#1404).
+    fn check_unknown_module_function(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        args: &[CallArg],
+        span: Span,
+    ) -> Option<Type> {
+        let name = object.name()?;
+        if self.local_shadows_namespace(name) {
+            return None;
+        }
+        let &sym = self.resolved.resolutions.get(&object.id)?;
+        let SymbolKind::BuiltinModule { module } = &self.resolved.symbols.get(sym)?.kind else {
+            return None;
+        };
+        let module = module.name();
+        // `env`, `core`, `cfg`: no `.rk` file, so the checker answers them by
+        // name and there is no declaration list to check against.
+        if rask_stdlib::modules::is_compiler_module(module) {
+            return None;
+        }
+        let reg = rask_stdlib::StubRegistry::load();
+        if reg.has_method(module, method) {
+            return None;
+        }
+        let exports = rask_stdlib::modules::exports(module);
+        let owner = exports
+            .types
+            .iter()
+            .chain(exports.enums.iter().map(|(n, _)| n))
+            .find_map(|ty| reg.lookup_method(ty, method).map(|m| (ty.clone(), m.takes_self)));
+        let mut available: Vec<String> = reg
+            .methods(module)
+            .iter()
+            .map(|m| m.name.clone())
+            .chain(exports.functions.iter().cloned())
+            .collect();
+        available.sort();
+        available.dedup();
+        for a in args {
+            self.infer_expr(&a.expr);
+        }
+        self.errors.push(TypeError::NoSuchModuleFunction {
+            module: module.to_string(),
+            function: method.to_string(),
+            owner,
+            available,
+            span,
+        });
+        Some(Type::Error)
+    }
+
     /// A call into a dependency — `libpkg.make()`.
     ///
     /// The resolver already points the call node at the exported declaration's
@@ -3445,6 +3508,10 @@ impl TypeChecker {
         // `libpkg.make()` reported "couldn't work out the type of `d`", and
         // annotating `d` moved the complaint to `t` (#1112).
         if let Some(ret) = self.check_package_call(call_id, object, args, span) {
+            return ret;
+        }
+
+        if let Some(ret) = self.check_unknown_module_function(object, method, args, span) {
             return ret;
         }
 

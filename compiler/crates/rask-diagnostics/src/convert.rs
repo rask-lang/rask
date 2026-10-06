@@ -43,12 +43,16 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// match everything. Empty when the type has no registry entry — a user-defined
 /// type, where there's nothing to compare against.
 fn nearest_methods(ty: &str, method: &str) -> Vec<&'static str> {
-    let candidates = rask_stdlib::registry::type_method_names(type_base(ty));
+    nearest_names(rask_stdlib::registry::type_method_names(type_base(ty)), method)
+}
+
+/// The rules `nearest_methods` describes, over any list of names.
+fn nearest_names<'a>(candidates: &[&'a str], method: &str) -> Vec<&'a str> {
     if candidates.is_empty() || method.is_empty() {
         return Vec::new();
     }
     let budget = (method.len() / 3).max(1);
-    let mut scored: Vec<(usize, &'static str)> = candidates
+    let mut scored: Vec<(usize, &'a str)> = candidates
         .iter()
         // Never the name that was written. "did you mean `load`?" for a call
         // that says `load` is worse than no suggestion: it reads as a compiler
@@ -934,6 +938,45 @@ impl ToDiagnostic for rask_types::TypeError {
                         .with_help(format!("check available methods on `{}`", ty))
                         .with_fix(format!("check available methods on `{}`", ty))
                         .with_why("method calls are resolved at compile time against the type's extend blocks"),
+                }
+            }
+
+            NoSuchModuleFunction { module, function, owner, available, span } => {
+                let diag = Diagnostic::error(format!(
+                    "`{}` has no function `{}`",
+                    module, function
+                ))
+                .with_code("E0411")
+                .with_primary(*span, format!("not declared in `{}`", module))
+                .with_why(
+                    "a call through a module names something the module declares, and \
+                     `module.name(…)` is looked up in that module only [structure.modules/IM1]",
+                );
+                if let Some((ty, takes_self)) = owner {
+                    return if *takes_self {
+                        let var = {
+                            let mut c = ty.chars();
+                            c.next()
+                                .map(|f| f.to_lowercase().chain(c).collect::<String>())
+                                .unwrap_or_default()
+                        };
+                        diag.with_help(format!("`{}` is a method on `{}`, not a function of `{}`", function, ty, module))
+                            .with_fix(format!("call it on a `{}`: `{}.{}()`", ty, var, function))
+                    } else {
+                        diag.with_help(format!("`{}` belongs to `{}`, not to `{}`", function, ty, module))
+                            .with_fix(format!("{}.{}(…)", ty, function))
+                    };
+                }
+                let names: Vec<&str> = available.iter().map(String::as_str).collect();
+                match nearest_names(&names, function).first() {
+                    Some(n) => diag
+                        .with_help(format!("did you mean `{}.{}`?", module, n))
+                        .with_fix(format!("{}.{}(…)", module, n)),
+                    None if available.is_empty() => diag.with_fix(format!(
+                        "`{}` has no functions of its own; call a method on one of its types",
+                        module
+                    )),
+                    None => diag.with_fix(format!("pick one `{}` has: {}", module, available.join(", "))),
                 }
             }
 

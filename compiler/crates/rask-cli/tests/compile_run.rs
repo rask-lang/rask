@@ -1946,18 +1946,39 @@ fn main_ok_return_exits_0() {
 #[test]
 fn error_stdlib_renames() {
     // task-2b (#302): the old stdlib names are HARD errors, not aliases. Each
-    // old name must be rejected as an unknown method (E0313), not silently
-    // resolved. Witnesses recv/try_recv, as_secs*, getpid, os.vars,
+    // old name must be rejected, not silently resolved: a method as an unknown
+    // method (E0313), a module function as one the module doesn't have (E0411).
+    // Witnesses recv/try_recv, as_secs*, getpid, os.vars,
     // fs.read_file/write_file/append_file, and the removed File.lines().
     let (failed, out) = compile_error_output("stdlib_renames.rk");
     assert!(failed, "old stdlib names must be rejected: {}", out);
-    assert!(out.contains("E0313"), "should be an unknown-method error (E0313): {}", out);
-    for old in ["recv", "try_recv", "as_secs", "getpid", "read_file", "lines"] {
+    for old in ["recv", "try_recv", "as_secs", "lines"] {
         assert!(
             out.contains(&format!("no method `{}`", old)),
             "old name `{}` should be rejected as unknown method: {}", old, out,
         );
     }
+    for (module, old) in [("os", "getpid"), ("os", "vars"), ("fs", "read_file")] {
+        assert!(
+            out.contains(&format!("`{}` has no function `{}`", module, old)),
+            "old name `{}.{}` should be rejected as not in the module: {}", module, old, out,
+        );
+    }
+    assert!(out.contains("fix: os.pid(…)"), "the renamed one is named: {}", out);
+}
+
+// `async` has no namespace struct, so `async.join_all(5)` was a method lookup
+// on the module's placeholder type, dropped unreported: the only error was
+// "couldn't work out the type of `y`", and with the result used, a crash in
+// MIR lowering (#1404). `time.nosuch` was caught, by a different path.
+#[test]
+fn error_unknown_module_function() {
+    let (failed, out) = compile_error_output("unknown_module_function.rk");
+    assert!(failed, "{}", out);
+    assert!(out.contains("`async` has no function `join_all`"), "{}", out);
+    assert!(out.contains("`time` has no function `nosuch`"), "{}", out);
+    assert!(out.contains("call it on a `Handles`: `handles.join_all()`"), "{}", out);
+    assert!(!out.contains("couldn't work out the type"), "the call is the error, not its result: {}", out);
 }
 
 /// Run a .rk file given by repo-relative path via `rask run --interp`.
