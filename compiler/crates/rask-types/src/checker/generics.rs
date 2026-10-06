@@ -136,7 +136,8 @@ impl TypeChecker {
                     _ => None,
                 } {
                     if let Some(bound) = self.types.assoc_binding_any(id, name) {
-                        return bound.clone();
+                        let bound = self.types.instantiate_assoc(&base_ty, bound);
+                        return self.resolve_named(&bound);
                     }
                 }
                 Type::Assoc { base: Box::new(base_ty), name: name.clone() }

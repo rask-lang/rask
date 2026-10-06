@@ -17,7 +17,7 @@ use rask_ast::{
 };
 use rask_ast::{NodeId, Span};
 use rask_ast::ty::TypeExpr;
-use rask_types::{Callee, Type, TypeBinding, TypeId, TypedProgram};
+use rask_types::{Callee, Type, TypeBinding, TypeDef, TypeId, TypedProgram};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Monomorphization work item
@@ -1044,9 +1044,10 @@ impl<'a> Monomorphizer<'a> {
             } else {
                 let (param_names, bound_args, self_ty) =
                     self.instantiation_params(&item.name, &item.type_args);
+                let projections = self.projections_for(original, &item.type_args);
                 let (mut cloned, origins) =
                     crate::instantiate::instantiate_function_with_params(
-                        original, &param_names, &bound_args,
+                        original, &param_names, &bound_args, projections,
                         &mut self.next_instantiated_id,
                     );
                 // The receiver's own layout. A copy made for `One<Big>`
@@ -1165,6 +1166,45 @@ impl<'a> Monomorphizer<'a> {
             }))
         });
         (names, args, self_ty)
+    }
+
+    /// AT6/AT8: what each `T.Out` a generic function writes reads on this
+    /// instance. The projection goes through `T`'s bound — `T: Mul<f64>` asks
+    /// the argument's `Mul<f64>` conformance, not whichever `Mul` it has — and
+    /// is spelled into the copy like any other type. Left alone, `H.Out` reached
+    /// lowering unresolved and became a pointer, so an `f64` came back as a
+    /// truncated integer (#1365).
+    fn projections_for(
+        &self,
+        original: &Decl,
+        bindings: &[TypeBinding],
+    ) -> HashMap<(String, String), TypeExpr> {
+        let mut out = HashMap::new();
+        let (Some(typed), DeclKind::Fn(f)) = (self.typed, &original.kind) else { return out };
+        let types = &typed.types;
+        let spelled = |ty: &Type| Self::nameable_type(ty, types).unwrap_or_else(|| ty.clone());
+        let arg_of = |name: &str| bindings.iter().find(|b| b.param == name).map(|b| spelled(&b.ty).to_type_expr());
+        for tp in &f.type_params {
+            let Some(binding) = bindings.iter().find(|b| b.param == tp.name) else { continue };
+            for bound in &tp.bounds {
+                let Some(TypeDef::Interface { assoc_types, .. }) =
+                    bound.name().and_then(|n| types.get_type_id(&n)).and_then(|id| types.get(id))
+                else {
+                    continue;
+                };
+                // `T: Mul<U>` asks about the conformance to `Mul<` U's argument `>`.
+                let applied = bound.substitute(&arg_of);
+                for a in assoc_types {
+                    if types.projection_bound(&tp.bounds, &a.name) != Some(bound) {
+                        continue;
+                    }
+                    if let Some(ty) = types.project(&binding.ty, &applied, &a.name) {
+                        out.insert((tp.name.clone(), a.name.clone()), spelled(&ty).to_type_expr());
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// A method's own type arguments, minus any that name one of the owning

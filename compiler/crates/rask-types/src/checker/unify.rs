@@ -1338,6 +1338,25 @@ impl TypeChecker {
             return self.unify(&t1, &inner, span);
         }
 
+        // AT6: a projection is whatever its base's conformance says. Read it as
+        // soon as the base is concrete; while the base is still open, wait for
+        // it rather than binding anything to the projection itself. Without
+        // this `let x: i64 = first(c)` compared `i64` against the raw
+        // `Cell1<i32>.Out` and failed, though the same call unannotated was
+        // fine (#1365).
+        if t1 != t2 && (matches!(t1, Type::Assoc { .. }) || matches!(t2, Type::Assoc { .. })) {
+            let r1 = self.resolve_named(&t1);
+            let r2 = self.resolve_named(&t2);
+            if r1 != t1 || r2 != t2 {
+                return self.unify(&r1, &r2, span);
+            }
+            let open = |t: &Type| matches!(t, Type::Assoc { base, .. } if matches!(**base, Type::Var(_)));
+            if open(&t1) || open(&t2) {
+                self.ctx.add_constraint(TypeConstraint::Equal(t1, t2, span));
+                return Ok(false);
+            }
+        }
+
         match (&t1, &t2) {
             (a, b) if a == b => Ok(false),
 

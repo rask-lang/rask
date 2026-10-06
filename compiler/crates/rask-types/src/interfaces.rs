@@ -824,7 +824,7 @@ impl<'a> InterfaceChecker<'a> {
         for a in assoc_types {
             let bound = type_id
                 .and_then(|id| self.types.assoc_binding(id, interface_ref, &a.name))
-                .cloned()
+                .map(|b| self.types.instantiate_assoc(self_ty, b))
                 .or_else(|| match &a.default {
                     Some(d) if d.is_name("Self") => Some(self_ty.clone()),
                     Some(d) => crate::checker::resolve_type_expr(d, self.types).ok(),
@@ -1203,9 +1203,31 @@ impl<'a> InterfaceChecker<'a> {
             Type::UnresolvedGeneric { name, .. } => self.types.get_type_id(name),
             _ => None,
         };
+        // On an instance the receiver's parameters are its arguments, so the
+        // signatures compare against required ones read off the same instance
+        // (AT10): `get(self) -> U` in `Boxed<U> implements Unwrap` is
+        // `-> f64` on a `Boxed<f64>`, whatever the header called it.
+        let on_instance = |methods: &Vec<MethodSig>| -> Vec<MethodSig> {
+            let Type::Generic { args, .. } = ty else { return methods.clone() };
+            methods
+                .iter()
+                .map(|m| {
+                    let map: HashMap<String, Type> = m
+                        .owner_patterns
+                        .iter()
+                        .zip(args)
+                        .filter_map(|(p, a)| match (p.bare_name(), a) {
+                            (Some(n), crate::types::GenericArg::Type(t)) => Some((n.to_string(), (**t).clone())),
+                            _ => None,
+                        })
+                        .collect();
+                    substitute_signature(m, &map)
+                })
+                .collect()
+        };
         match id.and_then(|id| self.types.get(id)) {
-            Some(TypeDef::Struct { methods, .. }) => methods.clone(),
-            Some(TypeDef::Enum { methods, .. }) => methods.clone(),
+            Some(TypeDef::Struct { methods, .. }) => on_instance(methods),
+            Some(TypeDef::Enum { methods, .. }) => on_instance(methods),
             Some(TypeDef::Interface { methods, .. }) => methods.clone(),
             // T13: an `extend` block on a nominal type puts its methods on the
             // nominal type, which is where `register_impl_methods` writes them.

@@ -1030,11 +1030,25 @@ impl TypeChecker {
                 self.types.record_conformance_condition(type_id, interface_name, condition.clone());
             }
         }
+        // AT10: a binding may name the block's type parameters. It's filed in
+        // the declaration's spelling of them, so a lookup on `Cell1<i32>` can
+        // substitute the instance's arguments by name whatever the header
+        // called them (#1365).
+        let to_declared = self.header_to_declared_params(type_id, &i.target_ty);
+        let normalize = |ty: Type| -> Type {
+            if to_declared.is_empty() {
+                return ty;
+            }
+            let subst: std::collections::HashMap<&str, Type> =
+                to_declared.iter().map(|(h, d)| (h.as_str(), d.clone())).collect();
+            Self::substitute_type_params(&ty, &subst)
+        };
         // AT2/AT8: file each `type Out = ...` under the conformance that asked
         // for it. A binding no listed interface declares is reported at the check
         // pass, where the block's span is available.
         for b in &i.assoc_bindings {
             let Ok(bound_ty) = resolve_type_expr(&b.ty, &self.types) else { continue };
+            let bound_ty = normalize(bound_ty);
             if let (Some(interface), Some(interface_name)) = (&i.interface, &interface_name) {
                 if self.interface_declares_assoc(interface, &b.name) {
                     self.types.record_assoc_binding(type_id, interface_name, &b.name, bound_ty.clone());
@@ -1065,6 +1079,7 @@ impl TypeChecker {
                         resolve_type_expr(&default, &self.types).ok()
                     };
                     if let Some(ty) = resolved {
+                        let ty = normalize(ty);
                         self.types.record_assoc_binding(type_id, interface_name, &name, ty);
                     }
                 }
@@ -2954,6 +2969,25 @@ pub(super) fn allowed_from(attrs: &[String]) -> Vec<String> {
 /// `extend Sequence<(K, V)>` binds `K` and `V`, so the scan goes through the
 /// punctuation rather than splitting on commas.
 impl TypeChecker {
+    /// Header parameter name → the declaration's parameter at that position:
+    /// `Cell1<U> implements Unwrap` on a `struct Cell1<T>` gives `U → T`.
+    /// Empty when the header names none.
+    fn header_to_declared_params(&self, type_id: crate::types::TypeId, target_ty: &TypeExpr) -> Vec<(String, Type)> {
+        let declared = self.declared_type_params(type_id);
+        let header = target_ty.args();
+        if declared.len() != header.len() {
+            return Vec::new();
+        }
+        header
+            .iter()
+            .zip(declared)
+            .filter_map(|(arg, decl)| {
+                let name = arg.bare_name().filter(|n| is_type_param_name(n))?;
+                Some((name.to_string(), Type::UnresolvedNamed(decl)))
+            })
+            .collect()
+    }
+
     /// The bounds the type's own declaration puts on the parameters an `extend`
     /// header names. A `Holder<T>` can't exist unless `T: Named`, so every
     /// method in `extend Holder<U>` may assume `U: Named` (#1364). Matched by

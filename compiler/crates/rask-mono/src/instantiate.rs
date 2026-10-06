@@ -18,6 +18,9 @@ use std::collections::HashMap;
 struct TypeSubstitutor {
     /// Mapping from type parameter name to concrete type
     substitutions: HashMap<String, Type>,
+    /// AT6: what each `T.Out` reads on this instance, worked out by the caller
+    /// from `T`'s bound and its argument's conformance. Keyed `("T", "Out")`.
+    projections: HashMap<(String, String), TypeExpr>,
     /// Counter for generating fresh NodeIds. Seeded by the caller so copies
     /// never reuse the original program's ids.
     next_node_id: u32,
@@ -34,6 +37,7 @@ impl TypeSubstitutor {
         }
         Self {
             substitutions,
+            projections: HashMap::new(),
             next_node_id: 0,
             node_origin: HashMap::new(),
         }
@@ -58,6 +62,13 @@ impl TypeSubstitutor {
     /// has to come out as `func() -> string` in the copy, or the call through
     /// it takes the return as a word (#887).
     fn substitute_type(&self, ty: &TypeExpr) -> TypeExpr {
+        let ty = if self.projections.is_empty() {
+            ty.clone()
+        } else {
+            ty.substitute_projections(&|head, tail| {
+                self.projections.get(&(head.to_string(), tail.to_string())).cloned()
+            })
+        };
         ty.substitute(&|name| self.substitutions.get(name).map(Type::to_type_expr))
     }
 
@@ -685,6 +696,7 @@ pub fn instantiate_function_with_params(
     decl: &Decl,
     param_names: &[String],
     type_args: &[Type],
+    projections: HashMap<(String, String), TypeExpr>,
     next_node_id: &mut u32,
 ) -> (Decl, HashMap<NodeId, NodeId>) {
     let params: Vec<TypeParam> = param_names
@@ -698,6 +710,7 @@ pub fn instantiate_function_with_params(
         })
         .collect();
     let mut substitutor = TypeSubstitutor::new(&params, type_args);
+    substitutor.projections = projections;
     substitutor.next_node_id = *next_node_id;
     let cloned = substitutor.clone_decl(decl);
     *next_node_id = substitutor.next_node_id;

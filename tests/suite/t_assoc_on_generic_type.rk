@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// type.associated-types/AT10: a binding on a generic type's conformance may
+// name the type's parameters, resolved per instantiation (#1365).
+// `Cell1<T> implements Unwrap { type Out = T }` handed back the bare `T` for
+// `Cell1<i32>.Out`, and an annotated `let x: i64 = first(c)` compared `i64`
+// against the projection itself, which never matched.
+
+func main() {}
+
+interface Unwrap {
+    type Out
+    func get(self) -> Self.Out
+}
+
+struct Cell1<T> {
+    v: T
+}
+
+Cell1<T> implements Unwrap {
+    type Out = T
+    func get(self) -> T {
+        return self.v
+    }
+}
+
+// The header renames the parameter; the binding follows it.
+struct Boxed<T> {
+    inner: T
+}
+
+Boxed<U> implements Unwrap {
+    type Out = U
+    func get(self) -> U {
+        return self.inner
+    }
+}
+
+interface Wrapped {
+    type Me = Self
+    func me(self) -> Self.Me
+}
+
+Cell1<T> implements Wrapped {
+    func me(self) -> Cell1<T> {
+        return self
+    }
+}
+
+func first<H: Unwrap>(h: H) -> H.Out {
+    return h.get()
+}
+
+func itself<W: Wrapped>(w: W) -> W.Me {
+    return w.me()
+}
+
+test "a binding naming the type's parameter reads the instance's argument" {
+    let c = Cell1 { v: 5 }
+    let x: i64 = first(c)
+    assert x == 5
+}
+
+test "unannotated, the projection still settles" {
+    let c = Cell1 { v: "hi" }
+    let s = first(c)
+    assert s.len() == 2
+}
+
+test "a renamed header parameter" {
+    let b = Boxed { inner: 2.5 }
+    let f: f64 = first(b)
+    assert f == 2.5
+}
+
+test "a `Self` default on a generic type is the instance" {
+    let c = Cell1 { v: 7 }
+    let back: Cell1<i64> = itself(c)
+    assert back.v == 7
+}

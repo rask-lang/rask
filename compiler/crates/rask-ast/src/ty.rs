@@ -132,6 +132,42 @@ impl TypeExpr {
         }
     }
 
+    /// Replace every two-segment projection `T.Out` that `f` answers for. The
+    /// pair is passed split: `("T", "Out")`.
+    pub fn substitute_projections(&self, f: &dyn Fn(&str, &str) -> Option<TypeExpr>) -> TypeExpr {
+        let mut out = self.clone();
+        out.replace_projections(f);
+        out
+    }
+
+    fn replace_projections(&mut self, f: &dyn Fn(&str, &str) -> Option<TypeExpr>) {
+        match self {
+            TypeExpr::Named { path, args } => {
+                if let ([head, tail], true) = (path.as_slice(), args.is_empty()) {
+                    if let Some(to) = f(head, tail) {
+                        *self = to;
+                        return;
+                    }
+                }
+                args.iter_mut().for_each(|a| a.replace_projections(f));
+            }
+            TypeExpr::Int(_) | TypeExpr::Unit | TypeExpr::NoneType => {}
+            TypeExpr::Optional(inner) | TypeExpr::RawPtr(inner) | TypeExpr::Any(inner) => {
+                inner.replace_projections(f)
+            }
+            TypeExpr::Result { ok, err } => {
+                ok.replace_projections(f);
+                err.replace_projections(f);
+            }
+            TypeExpr::Union(ts) | TypeExpr::Tuple(ts) => ts.iter_mut().for_each(|t| t.replace_projections(f)),
+            TypeExpr::Array { elem, .. } | TypeExpr::FixedCount { elem, .. } => elem.replace_projections(f),
+            TypeExpr::Func { params, ret } => {
+                params.iter_mut().for_each(|t| t.replace_projections(f));
+                ret.replace_projections(f);
+            }
+        }
+    }
+
     /// Rename every single-segment type name `f` answers for, with or without
     /// arguments, and walk into everything.
     pub fn rename(&mut self, f: &dyn Fn(&str) -> Option<String>) {

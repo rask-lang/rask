@@ -833,6 +833,52 @@ impl TypeTable {
             .insert(assoc.to_string(), ty);
     }
 
+    /// AT10: a binding read off a generic type's conformance names the type's
+    /// parameters in the declaration's spelling (`type Out = T` on `Cell1<T>`).
+    /// On the instance `Cell1<i32>` that's `i32`.
+    pub fn instantiate_assoc(&self, base: &Type, binding: &Type) -> Type {
+        let Type::Generic { base: id, args } = base else {
+            return binding.clone();
+        };
+        let params = match self.get(*id) {
+            Some(TypeDef::Struct { type_params, .. }) | Some(TypeDef::Enum { type_params, .. }) => type_params,
+            _ => return binding.clone(),
+        };
+        let map: HashMap<String, Type> = params
+            .iter()
+            .zip(args)
+            .filter_map(|(p, a)| match a {
+                GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
+                _ => None,
+            })
+            .collect();
+        crate::interfaces::substitute_type(binding, &map)
+    }
+
+    /// AT6/AT8: `base.assoc` projected through the applied interface `bound`:
+    /// the binding `base`'s conformance to exactly that interface gives, on
+    /// this instance. `None` when the conformance doesn't exist or says nothing.
+    pub fn project(&self, base: &Type, bound: &TypeExpr, assoc: &str) -> Option<Type> {
+        let id = self.conformance_target(base)?;
+        let binding = self.assoc_binding(id, bound, assoc)?;
+        Some(self.instantiate_assoc(base, binding))
+    }
+
+    /// Which of a parameter's bounds a projection `T.assoc` goes through: the
+    /// one bound whose interface declares `assoc`. `None` if no bound does, or
+    /// if two do — then the projection has no single meaning.
+    pub fn projection_bound<'a>(&self, bounds: &'a [TypeExpr], assoc: &str) -> Option<&'a TypeExpr> {
+        let mut through = bounds.iter().filter(|b| {
+            let Some(iface) = b.name() else { return false };
+            matches!(
+                self.get_type_id(&iface).and_then(|id| self.get(id)),
+                Some(TypeDef::Interface { assoc_types, .. }) if assoc_types.iter().any(|a| a.name == assoc)
+            )
+        });
+        let first = through.next()?;
+        through.next().is_none().then_some(first)
+    }
+
     /// AT6: read an associated type off a conformance. A lookup, never a search.
     pub fn assoc_binding(&self, type_id: TypeId, interface: &TypeExpr, assoc: &str) -> Option<&Type> {
         let iface = self.interface_ident(&Self::conformance_key(interface));
@@ -2010,6 +2056,11 @@ impl TypeTable {
                 args: args.iter().map(|a| self.named_arg(a, written)).collect(),
             },
             Type::Union(types) => Type::Union(types.iter().map(|t| self.named(t, written)).collect()),
+            // A message naming `Cell1<i32>.Out` printed `<type#134><i32>.Out`.
+            Type::Assoc { base, name } => Type::Assoc {
+                base: Box::new(self.named(base, written)),
+                name: name.clone(),
+            },
             other => other.clone(),
         }
     }
