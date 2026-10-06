@@ -145,6 +145,10 @@ pub struct TypeTable {
     /// loser's methods too, and a mangled `Type_method` string can't tell them
     /// apart. Binding happens here, where the TypeId is still known.
     pub(super) type_method_decls: HashMap<TypeId, Vec<NodeId>>,
+    /// V1, V2, V5: methods a caller may not see from everywhere, by the name
+    /// they're filed under. A public method, or one in a conformance block,
+    /// has no entry.
+    pub(super) method_access: HashMap<(TypeId, String), super::method_visibility::MethodAccess>,
     /// G1: declared/derived interface conformances (nominal). TypeId → the interfaces
     /// the type conforms to, from `T implements Interface` and auto-derive.
     pub(super) conformances: HashMap<TypeId, std::collections::HashSet<ConformanceKey>>,
@@ -214,6 +218,7 @@ impl TypeTable {
             binary_structs: HashMap::new(),
             variant_field_names: HashMap::new(),
             type_method_decls: HashMap::new(),
+            method_access: HashMap::new(),
             conformances: HashMap::new(),
             assoc_bindings: HashMap::new(),
             conformance_spans: HashMap::new(),
@@ -432,6 +437,25 @@ impl TypeTable {
         if !decls.contains(&decl) {
             decls.push(decl);
         }
+    }
+
+    /// Note who may call a method that isn't public.
+    pub(super) fn record_method_access(
+        &mut self,
+        id: TypeId,
+        method: &str,
+        access: super::method_visibility::MethodAccess,
+    ) {
+        self.method_access.insert((id, method.to_string()), access);
+    }
+
+    /// Who may call this method, when not everyone may.
+    pub(super) fn method_access(
+        &self,
+        id: TypeId,
+        method: &str,
+    ) -> Option<&super::method_visibility::MethodAccess> {
+        self.method_access.get(&(id, method.to_string()))
     }
 
     /// Every type that declares methods, paired with the declarations carrying them.

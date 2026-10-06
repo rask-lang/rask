@@ -209,9 +209,10 @@ pub struct CompilableStdlib {
 #[derive(Debug, Clone)]
 pub struct MethodStub {
     pub name: String,
-    /// Declared `public`. A stdlib module is its own package, so a member
-    /// without it is the module's own and a program can't name it
-    /// (struct.modules/V1, V2).
+    /// Visible to a program: declared `public`, or part of a conformance,
+    /// whose methods carry the conformance's visibility (TV1). A stdlib module
+    /// is its own package, so a member without it is the module's own and a
+    /// program can't name it (struct.modules/V1, V2).
     pub is_pub: bool,
     pub takes_self: bool,
     /// True if declared `mutate self` — method mutates the receiver.
@@ -532,7 +533,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !s.is_pub;
                 for m in &s.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false));
                 }
             }
             DeclKind::Enum(e) => {
@@ -548,7 +549,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !e.is_pub;
                 for m in &e.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false));
                 }
             }
             DeclKind::Impl(i) => {
@@ -562,10 +563,11 @@ impl StubRegistry {
                 // stdlib-implemented — `extend char { … }` in char.rk is where
                 // their methods come from — so an inherent block on a primitive
                 // still files the type it's written on.
-                if i.interface.is_some() && rask_ast::primitives::is_scalar(&base_name) {
+                let in_conformance = i.interface.is_some();
+                if in_conformance && rask_ast::primitives::is_scalar(&base_name) {
                     if let Some(entry) = self.types.get_mut(&base_name) {
                         for m in &i.methods {
-                            entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
+                            entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, true));
                         }
                     }
                     return;
@@ -579,7 +581,7 @@ impl StubRegistry {
                     span: find_name_span(source, &base_name, "extend", decl_span),
                 });
                 for m in &i.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, in_conformance));
                 }
             }
             DeclKind::Fn(f) => {
@@ -706,7 +708,15 @@ fn declared_type(name: &str, type_params: &[rask_ast::decl::TypeParam]) -> TypeE
     )
 }
 
-fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span) -> MethodStub {
+/// `in_conformance`: the method is part of an `implements` block, so its
+/// visibility is the conformance's rather than its own.
+fn fn_to_method_stub(
+    f: &FnDecl,
+    filename: &str,
+    source: &str,
+    parent_span: Span,
+    in_conformance: bool,
+) -> MethodStub {
     let self_param = f.params.iter().find(|p| p.name == "self");
     let takes_self = self_param.is_some();
     let mutate_self = self_param.map_or(false, |p| p.is_mutate);
@@ -730,7 +740,7 @@ fn fn_to_method_stub(f: &FnDecl, filename: &str, source: &str, parent_span: Span
 
     MethodStub {
         name: bare_name,
-        is_pub: f.is_pub,
+        is_pub: f.is_pub || in_conformance,
         takes_self,
         mutate_self,
         take_self,

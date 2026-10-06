@@ -2543,6 +2543,33 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_why("a type's fields and methods share one namespace, so a call site never has to know which of two things it reached [type.structs/M7]")
             }
 
+            MethodNotVisible { ty, method, declared_by: None, span } => {
+                Diagnostic::error(format!("`{}.{}` is private", ty, method))
+                    .with_code("E0413")
+                    .with_primary(*span, format!("called from outside `{}`'s own methods", ty))
+                    .with_fix(format!(
+                        "call it from a method of `{}`, or drop `private` from its declaration",
+                        ty
+                    ))
+                    .with_why(
+                        "`private` keeps a method to the type's own `extend` blocks, so its \
+                         author can change it without checking every caller [struct.modules/V5]",
+                    )
+            }
+
+            MethodNotVisible { ty, method, declared_by: Some(owner), span } => {
+                Diagnostic::error(format!("`{}.{}` is not public", ty, method))
+                    .with_code("E0413")
+                    .with_primary(*span, format!("internal to {}", owner))
+                    .with_fix(format!("use a public method of `{}`", ty))
+                    .with_why(
+                        "a method declared without `public` belongs to the package that \
+                         declared it, and the stdlib is a package of its own. It can change or \
+                         go away without notice, which is the point of not making it public \
+                         [struct.modules/V1, V2]",
+                    )
+            }
+
             PrivateFieldAccess { ty, field, span } => {
                 Diagnostic::error(format!("field `{}` on `{}` is private", field, ty))
                     .with_code("E0396")

@@ -952,6 +952,11 @@ impl TypeChecker {
             }
         };
         self.types.record_method_decl(type_id, decl_id);
+        if i.interface.is_none() {
+            for m in &i.methods {
+                self.note_method_access(type_id, m);
+            }
+        }
         // G1: record each declared conformance.
         let mut dup_pair = false;
         // CC1/CC2: a `where` clause makes every listed conformance conditional
@@ -1326,7 +1331,25 @@ impl TypeChecker {
         if let Some(info) = binary_info {
             self.types.register_binary_info(type_id, info);
         }
+        for m in &s.methods {
+            self.note_method_access(type_id, m);
+        }
         type_id
+    }
+
+    /// V1, V2, V5: who may call `m`, unless it's public. Methods in a
+    /// conformance block never come here: their visibility is the
+    /// conformance's (TV1).
+    fn note_method_access(&mut self, type_id: crate::types::TypeId, m: &FnDecl) {
+        use super::method_visibility::MethodAccess;
+        let access = if m.is_private {
+            MethodAccess::Private
+        } else if !m.is_pub {
+            MethodAccess::Package(self.type_owner(m.span))
+        } else {
+            return;
+        };
+        self.types.record_method_access(type_id, &m.name, access);
     }
 
     pub(super) fn register_enum(&mut self, e: &EnumDecl, span: Span) -> crate::types::TypeId {
@@ -1468,6 +1491,9 @@ impl TypeChecker {
             self.types
                 .variant_field_names
                 .insert((enum_id, variant), field_names);
+        }
+        for m in &e.methods {
+            self.note_method_access(enum_id, m);
         }
         enum_id
     }

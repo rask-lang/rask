@@ -27,6 +27,7 @@ links and then prints the wrong number.
 | `enum-export/` | `import libpkg.SomeEnum` | #1126 |
 | `named-args/` | named arguments in declaration order on a library function and method | green |
 | `named-args-out-of-order/` | a library function called with its labels swapped, rejected with E0903 | green (#1347) |
+| `package-method/` | a dependency's method without `public`, rejected with E0413 | green (#1417) |
 | `default-features/` | `default: true` features reaching `cfg.features`, and a dependency's own `comptime if` | green (#1420) |
 
 Five of the six are the same root: `check_package` flattens a dependency's public

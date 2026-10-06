@@ -878,6 +878,17 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// V1, V2, V5: a method called from code that may not see it.
+    /// `declared_by` names the package for a method without `public`; `None`
+    /// is a `private` one.
+    #[error("`{ty}.{method}` is not visible here")]
+    MethodNotVisible {
+        ty: String,
+        method: String,
+        declared_by: Option<String>,
+        span: Span,
+    },
+
     /// V5: private field accessed outside extend block
     #[error("field `{field}` on `{ty}` is private")]
     PrivateFieldAccess {
@@ -1615,6 +1626,7 @@ impl TypeError {
             | TakeOnCopyType { .. }
             | FieldMethodCollision { .. }
             | PrivateFieldAccess { .. }
+            | MethodNotVisible { .. }
             | MissingFields { .. }
             | TypeCalledAsFunction { .. }
             | PublicMissingAnnotation { .. }

@@ -3484,6 +3484,7 @@ impl TypeChecker {
             None => method.to_string(),
         };
         self.note_arg_labels(call_id, written, args, span);
+        self.note_method_call(call_id, span);
 
         // AN8: a `get<A>()` that reaches here wasn't field-projected — the
         // projection is handled in `check_field_access` and never recurses into

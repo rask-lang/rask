@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+package "libpkg" "0.1.0" {
+    description: "A type with a method only the package may call"
+    license: "MIT OR Apache-2.0"
+}

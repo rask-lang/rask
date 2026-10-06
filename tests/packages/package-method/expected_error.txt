@@ -1,0 +1,1 @@
+Counter.raw` is not public

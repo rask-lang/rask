@@ -30,6 +30,7 @@ pub mod operators;
 mod validate;
 mod derive;
 mod arg_labels;
+mod method_visibility;
 pub use derive::WrapperFns;
 pub(crate) mod resolved_types;
 
@@ -451,6 +452,8 @@ pub struct TypeChecker {
     pub(super) spawn_arg_spans: Vec<(rask_ast::Span, usize)>,
     /// Calls that wrote a named argument, checked once callees are settled.
     pub(super) labeled_calls: Vec<arg_labels::LabeledCall>,
+    /// Every method call with where it was written, for the visibility check.
+    pub(super) method_calls: Vec<method_visibility::PlacedCall>,
     /// Closures bound to a name, keyed by the name and the depth of the scope
     /// holding it, each with its span and the scope depth where it was
     /// written. `spawn(f)` runs these as surely as `spawn(|| …)` runs its
@@ -651,6 +654,7 @@ impl TypeChecker {
             comptime_string_names: vec![HashMap::new()],
             spawn_arg_spans: Vec::new(),
             labeled_calls: Vec::new(),
+            method_calls: Vec::new(),
             closure_bindings: HashMap::new(),
             closure_spans: Vec::new(),
             pending_linear_containers: Vec::new(),
@@ -795,6 +799,7 @@ impl TypeChecker {
 
         // Every callee is known now, so every label has something to name.
         self.validate_arg_labels();
+        self.validate_method_visibility();
 
         // An integer literal has to fit the type it landed in.
         self.validate_pending_int_literals();
