@@ -1083,10 +1083,12 @@ impl TypeTable {
         }
         match ty {
             Type::Named(id) => self.is_transitive_resource_by_id(*id),
-            Type::Generic { base, .. } => {
+            Type::Generic { base, args } => {
                 let full = self.type_name(*base);
                 let name = full.as_str();
-                !Self::is_nonlinear_wrapper(name) && self.is_transitive_resource_by_id(*base)
+                !Self::is_nonlinear_wrapper(name)
+                    && (self.is_transitive_resource_by_id(*base)
+                        || self.instance_slot_owes(*base, args))
             }
             Type::UnresolvedGeneric { name, .. } => {
                 let base = name;
@@ -1112,6 +1114,37 @@ impl TypeTable {
             Type::Array { elem, .. } => self.slot_owes(elem),
             _ => false,
         }
+    }
+
+    /// Does a generic struct or enum, at these type arguments, hold a field or
+    /// payload that owes a consume? `Holder<Conn>` does when `Holder<T>` has
+    /// an `item: T`. The declaration alone can't say — `T` is linear only at
+    /// some instantiations — so `is_transitive_resource` was false and a
+    /// `Holder<Conn>` was dropped with no error (#1366).
+    fn instance_slot_owes(&self, base: TypeId, args: &[GenericArg]) -> bool {
+        let (params, slots): (&Vec<String>, Vec<&Type>) = match self.get(base) {
+            Some(TypeDef::Struct { type_params, fields, .. }) => {
+                (type_params, fields.iter().map(|(_, t)| t).collect())
+            }
+            Some(TypeDef::Enum { type_params, variants, .. }) => {
+                (type_params, variants.iter().flat_map(|(_, ts)| ts.iter()).collect())
+            }
+            _ => return false,
+        };
+        let subst: HashMap<String, Type> = params
+            .iter()
+            .zip(args)
+            .filter_map(|(p, a)| match a {
+                GenericArg::Type(t) => Some((p.clone(), (**t).clone())),
+                _ => None,
+            })
+            .collect();
+        if !subst.values().any(|t| self.holds_linear_value(t)) {
+            return false;
+        }
+        slots
+            .into_iter()
+            .any(|t| self.slot_owes(&crate::interfaces::substitute_type(t, &subst)))
     }
 
     /// A slot inside an aggregate: does it leave the aggregate owing a consume?

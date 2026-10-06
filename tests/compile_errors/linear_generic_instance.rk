@@ -56,7 +56,45 @@ func outer<T>(take x: T) {
     middle(x)
 }
 
+struct Sink {
+    n: i64
+}
+
+extend Sink {
+    func swallow<T>(self, take x: T) {
+    }
+}
+
+struct Holder<T> {
+    item: T
+}
+
+extend Holder<T> {
+    func drop_it(take self) {
+    }
+}
+
+struct Pair {
+    c: Conn
+}
+
+extend Pair {
+    // ERROR: `take self` lets `self.c` go unconsumed — no generics needed
+    func leak(take self) {
+    }
+}
+
 func main() {
+    let s = Sink { n: 1 }
+    // ERROR: a generic method drops its `T`, here a `Conn`
+    s.swallow(Conn { id: 4 })
+
+    let h = Holder { item: Conn { id: 5 } }
+    // ERROR: `Holder<T>.drop_it` drops `self.item`, which is a `Conn` here
+    h.drop_it()
+
+    Pair { c: Conn { id: 6 } }.leak()
+
     // ERROR: `forget` drops its `T`, and here `T` is `Conn`
     forget(Conn { id: 1 })
 

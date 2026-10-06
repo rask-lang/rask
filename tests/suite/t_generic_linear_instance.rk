@@ -45,6 +45,38 @@ func close_slot(take s: Slot<Conn>) -> i64 {
     }
 }
 
+struct Sink {
+    n: i64
+}
+
+extend Sink {
+    func keep<T>(self, take x: T) -> T {
+        return x
+    }
+}
+
+struct Holder<T> {
+    item: T
+}
+
+extend Holder<T> {
+    func unwrap_it(take self) -> T {
+        return self.item
+    }
+}
+
+test "a generic method returning its T" {
+    let s = Sink { n: 0 }
+    let c = s.keep(Conn { id: 4 })
+    assert c.close() == 4
+}
+
+test "a method of a generic type hands back the resource it holds" {
+    let h = Holder { item: Conn { id: 5 } }
+    let c = h.unwrap_it()
+    assert c.close() == 5
+}
+
 test "a generic returning its T hands the resource back" {
     let c = keep(Conn { id: 1 })
     assert c.close() == 1
