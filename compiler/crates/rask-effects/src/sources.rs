@@ -13,18 +13,17 @@ use crate::Effects;
 /// async primitives, pool structural mutations). Unknown functions return
 /// `Effects::default()` — their effects come from transitive propagation.
 pub fn classify_call(callee: &str) -> Effects {
-    // IO sources (conc.io-context table)
+    // IO sources (conc.io-context table). The async ones among them are the
+    // calls that wait — sleep, a channel op, a join (AS3).
     if is_io_source(callee) {
-        // Some IO sources are also Async (AS3: Async implies IO)
-        if is_async_source(callee) {
-            return Effects { io: true, async_: true, grow: false, shrink: false, needs_runtime: false };
-        }
-        return Effects { io: true, async_: false, grow: false, shrink: false, needs_runtime: false };
+        return Effects { io: true, async_: is_async_source(callee), grow: false, shrink: false, needs_runtime: false };
     }
 
-    // Async-only sources (also get IO via AS3)
+    // `spawn` hands the task to the scheduler and returns. It's concurrency,
+    // not a wait, so it carries no IO: a loop of spawns doesn't block, and
+    // calling it blocking I/O sent CW1/CW2 after the wrong call (#1362).
     if is_async_source(callee) {
-        return Effects { io: true, async_: true, grow: false, shrink: false, needs_runtime: false };
+        return Effects { io: false, async_: true, grow: false, shrink: false, needs_runtime: false };
     }
 
     // Container structural mutation sources (EF1: split into Grow/Shrink)
@@ -51,9 +50,9 @@ fn is_io_source(callee: &str) -> bool {
         // io module (stdio)
         | "Stdin.read" | "Stdout.write" | "Stderr.write"
         | "print" | "println" | "eprint" | "eprintln"
-        // async sources that are also IO (AS3)
+        // async sources that wait (AS3)
         | "sleep" | "timeout"
-        | "spawn" | "Channel.send" | "Channel.receive" | "Handle.join"
+        | "Channel.send" | "Channel.receive" | "Handle.join"
     )
 }
 
@@ -92,14 +91,23 @@ mod tests {
     }
 
     #[test]
-    fn async_sources_also_io() {
-        let e = classify_call("spawn");
-        assert!(e.io, "AS3: Async implies IO");
+    fn waiting_async_sources_are_io() {
+        let e = classify_call("Handle.join");
+        assert!(e.io, "AS3: an async source that waits is IO");
         assert!(e.async_);
 
         let e = classify_call("Channel.send");
         assert!(e.io);
         assert!(e.async_);
+    }
+
+    /// Starting a task returns at once. Classing it as I/O told every spawn
+    /// loop it blocked on each iteration (#1362).
+    #[test]
+    fn spawn_is_async_without_io() {
+        let e = classify_call("spawn");
+        assert!(e.async_);
+        assert!(!e.io);
     }
 
     #[test]

@@ -2963,6 +2963,34 @@ fn check_output(source: &str) -> String {
     format!("{}{}", stdout, stderr)
 }
 
+// Starting a thread or handing work to a pool returns at once, but `spawn` was
+// classed as I/O, so every spawn loop got CW2's "blocks thread on each
+// iteration" and an advice to wrap it in `using Multitasking`, which doesn't
+// change what `Thread.spawn` does (#1362). Real I/O in a loop of the same
+// concurrent program still warns.
+#[test]
+fn spawn_in_a_loop_is_not_blocking_io() {
+    let output = check_output(
+        "import thread.Thread\nimport async.Handles\n\
+         func main() {\n\
+         \x20   mut hs = Handles<i64>.new()\n\
+         \x20   ensure hs.detach()\n\
+         \x20   mut i = 0\n\
+         \x20   while i < 4 {\n\
+         \x20       let k = i\n\
+         \x20       hs.add(Thread.spawn(|| { return k }))\n\
+         \x20       i += 1\n\
+         \x20   }\n\
+         \x20   for j in 0..2 {\n\
+         \x20       println(\"{j}\")\n\
+         \x20   }\n\
+         }\n",
+    );
+    assert!(output.contains("Typecheck OK"), "{}", output);
+    assert!(!output.contains("`spawn` in loop"), "a spawn doesn't block: {}", output);
+    assert!(output.contains("`println` in loop"), "real I/O still warns: {}", output);
+}
+
 #[test]
 fn error_message_includes_line_number() {
     let output = check_output("func main() {\n    let x: i32 = \"hello\"\n}");

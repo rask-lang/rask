@@ -349,13 +349,6 @@ impl InferPass {
                 break;
             }
         }
-
-        // AS3: Async implies IO — enforce invariant after propagation
-        for effects in self.effects.values_mut() {
-            if effects.async_ {
-                effects.io = true;
-            }
-        }
     }
 }
 
@@ -1000,7 +993,7 @@ mod tests {
             expr_stmt(call("spawn", vec![])),
         ])];
         let effects = infer(&decls);
-        assert!(effects["run"].io, "AS3: Async implies IO");
+        assert!(!effects["run"].io, "spawning waits on nothing, so it isn't IO (#1362)");
         assert!(effects["run"].async_);
     }
 
@@ -1130,7 +1123,6 @@ mod tests {
         let decls = vec![make_fn("run", vec![expr_stmt(call("spawn", vec![]))])];
         let effects = infer(&decls);
         assert!(effects["run"].async_);
-        assert!(effects["run"].io, "AS3: Async implies IO");
     }
 
     #[test]

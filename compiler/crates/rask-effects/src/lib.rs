@@ -70,7 +70,7 @@ impl Effects {
             (false, false, true) => "[mutation]",
             (true, false, true) => "[io, mutation]",
             (true, true, true) => "[io, async, mutation]",
-            // AS3: Async implies IO, so async without io shouldn't happen.
+            // A function that only spawns: concurrency, nothing waited on.
             (false, true, false) => "[async]",
             (false, true, true) => "[async, mutation]",
         }

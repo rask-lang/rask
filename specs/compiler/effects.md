@@ -63,7 +63,7 @@ From `conc.io-context`:
 |------|-------------|
 | **AS1: Source functions** | `spawn()`, `sleep()`, `timeout()`, `Channel.send()`, `Channel.receive()`, `Handle.join()` |
 | **AS2: Transitive** | Any function that transitively calls an Async source has the Async effect |
-| **AS3: Subset of IO** | All Async source functions are also IO sources (they involve scheduler/reactor). A function with Async always has IO too |
+| **AS3: Waiting is IO** | An Async source that waits — `sleep()`, `timeout()`, the channel ops, `Handle.join()` — is also an IO source. `spawn()` hands a task to the scheduler and returns, so it is Async without IO. A loop of spawns blocks nothing; the `join` is where the wait is |
 
 ## Mutation Effect
 
@@ -93,7 +93,8 @@ infer_effects(func):
             effects.add(IO)
         if call.target is async_source:
             effects.add(Async)
-            effects.add(IO)  // AS3: Async implies IO
+            if call.target waits:
+                effects.add(IO)  // AS3: waiting is IO, spawning isn't
         if call.target is grow_or_shrink:
             effects.add(Mutation)
 
@@ -173,6 +174,7 @@ func run_server() -> void or Error {                      // ghost: [io, async]
 | No effects | `[pure]` |
 | IO only | `[io]` |
 | IO + Async | `[io, async]` |
+| Async only (spawns, never waits) | `[async]` |
 | Mutation only | `[mutation]` |
 | IO + Mutation | `[io, mutation]` |
 
