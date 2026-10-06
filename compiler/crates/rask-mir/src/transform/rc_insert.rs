@@ -153,7 +153,8 @@ fn call_keeps_arg(fname: &str, i: usize, kept: &HashMap<String, Vec<bool>>) -> b
 /// frame owns is handed over instead, and `insert_aggregate_release` stops
 /// releasing it. The checker only lets a Copy value be given away from a
 /// borrow (`mem.parameters/PM6`, `type.sequence/SEQ47`), and a Copy aggregate
-/// holds no container, so what this retains is strings.
+/// holds no container, so what this retains is strings — and the count on a
+/// box, which a derived container shares rather than copies.
 fn retain_views_handed_over(
     func: &mut MirFunction,
     kept: &HashMap<String, Vec<bool>>,
@@ -165,7 +166,14 @@ fn retain_views_handed_over(
         .chain(func.params.iter())
         .map(|l| (l.id, l.ty.clone()))
         .collect();
-    let is_aggregate = |l: &LocalId| ty_of.get(l).is_some_and(aggregate_may_hold_string);
+    // A box read out of a container is the same case: the element is a
+    // pointer to a counted block, and a second owner needs a count of its own
+    // (`boxes.skip(1).to_vec()`).
+    let is_aggregate = |l: &LocalId| {
+        ty_of.get(l).is_some_and(|t| {
+            aggregate_may_hold_string(t) || matches!(t, MirType::InterfaceObject { .. })
+        })
+    };
 
     // Names that hold a view, grown to a fixed point through copies, parts
     // and joins. A join counts only when every way in is a view: retaining
@@ -1187,6 +1195,11 @@ fn retain_locals_handed_over_while_live(
     let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
     let strings: HashSet<LocalId> =
         string_locals.iter().copied().filter(|l| !params.contains(l)).collect();
+    // A view has no reference to move, so the keeper always needs one taken
+    // for it: `out.push(names[0])` gave `out` the vector's own reference, and
+    // both vectors released it.
+    let views = string_views(func, &strings, own);
+    let write_backs = WriteBacks::new(func, own);
     let live = liveness::analyze_phis_on_edges(func);
     let aliases = AddrAliases::build(func);
     for block in &mut func.blocks {
@@ -1195,6 +1208,11 @@ fn retain_locals_handed_over_while_live(
             let MirStmtKind::Call { .. } = &stmt.kind else { continue };
             for &local in &strings {
                 if !handed_to_a_keeper(stmt, local, own) {
+                    continue;
+                }
+                let MirStmtKind::Call { func: fref, args, .. } = &stmt.kind else { continue };
+                if views.contains(&local) && !write_backs.writes_back(&fref.name, args, local) {
+                    insertions.push((si, MirStmt::new(MirStmtKind::RcInc { local }, stmt.span)));
                     continue;
                 }
                 let mut used_after = None;
@@ -1261,7 +1279,18 @@ fn insert_rc_dec(func: &mut MirFunction, string_locals: &[LocalId], own: &HashSe
     // takes its own reference (storing incs, and returning a parameter incs in
     // `retain_returned_params`).
     let params: HashSet<LocalId> = func.params.iter().map(|p| p.id).collect();
-    let locals: Vec<LocalId> = string_locals.iter().copied().filter(|l| !params.contains(l)).collect();
+    // Nor a view: `v[i]` points at the vector's own reference and holds none.
+    // Releasing one at its last use gave back the vector's — `rc_elide` took
+    // most of those back out again, but not one whose view was stored, so
+    // `words.enumerate()` built a pair holding a string with no reference of
+    // its own and freed the vector's string with the pair.
+    let strings: HashSet<LocalId> = string_locals.iter().copied().collect();
+    let views = string_views(func, &strings, own);
+    let locals: Vec<LocalId> = string_locals
+        .iter()
+        .copied()
+        .filter(|l| !params.contains(l) && !views.contains(l))
+        .collect();
 
     let mut in_block: Vec<(usize, usize, LocalId)> = Vec::new();
     for (bi, block) in func.blocks.iter().enumerate() {

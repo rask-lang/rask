@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A fused `to_vec` over a chain with no `map` — only `filter`, `take`, `skip`,
+// `enumerate` — collects items its source lent it. The vector it built owned
+// nothing, and the two ways in disagreed about references: the `filter`
+// closure's parameter took one per item and never gave it back, while `take`
+// took none, so describing the elements freed what the source still held
+// (#1419). Now every pushed item takes one reference, the closure parameter
+// gives its own back, and the vector releases what it holds.
+
+struct Tag {
+    name: string
+}
+
+func heap(label: string, i: i64) -> string {
+    return "{label} {i}, long enough to live on the heap"
+}
+
+test "a filter keeps the items it passes and leaks none it drops" {
+    let words: Vec<string> = [heap("alpha", 1), heap("short", 2), heap("gamma", 3)]
+    let picked = words.filter(|s| s.starts_with("a") || s.starts_with("g")).to_vec()
+    assert picked.len() == 2
+    assert picked[1] == heap("gamma", 3)
+    assert words.len() == 3
+}
+
+test "take and skip share nothing with the source" {
+    let words: Vec<string> = [heap("alpha", 1), heap("beta", 2), heap("gamma", 3)]
+    let first = words.take(1).to_vec()
+    let rest = words.skip(1).to_vec()
+    let both = words.filter(|s| s.len() > 3).take(2).to_vec()
+    assert first[0] == heap("alpha", 1)
+    assert rest.len() == 2
+    assert both[1] == heap("beta", 2)
+    assert words[2] == heap("gamma", 3)
+}
+
+test "a Copy struct holding a string" {
+    let tags: Vec<Tag> = [Tag { name: heap("tag", 1) }, Tag { name: "x" }]
+    let long_tags = tags.filter(|t| t.name.len() > 3).to_vec()
+    let some_tags = tags.skip(1).to_vec()
+    assert long_tags.len() == 1
+    assert long_tags[0].name == tags[0].name
+    assert some_tags[0].name == "x"
+}
+
+test "enumerate pairs each item with a reference of its own" {
+    let words: Vec<string> = [heap("alpha", 1), heap("beta", 2), heap("gamma", 3)]
+    let numbered = words.enumerate().filter(|p| p.0 > 0).to_vec()
+    assert numbered.len() == 2
+    assert numbered[0].1 == heap("beta", 2)
+}
+
+test "a zip pairs strings out of two vectors" {
+    let names: Vec<string> = [heap("name", 1), heap("name", 2)]
+    let ids: Vec<i64> = [1, 2, 3]
+    let pairs: Vec<(i64, string)> = ids.zip(names)
+    assert pairs.len() == 2
+    assert pairs[1].1 == heap("name", 2)
+}
+
+test "a pushed element straight out of an index" {
+    let words: Vec<string> = [heap("alpha", 1), heap("beta", 2)]
+    mut out: Vec<string> = Vec.new()
+    out.push(words[0])
+    out.push(words[1])
+    assert out[1] == words[1]
+}

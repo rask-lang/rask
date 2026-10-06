@@ -226,6 +226,22 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
     // vector started being freed (#1035).
     let (views, handed_over) = views_and_handovers(func, &string_locals, own);
 
+    // `dst = src` between strings: `rc_insert` gives every one its own
+    // retain, and a release where it dies.
+    let plain_copies: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
+                if string_locals.contains(dst) && string_locals.contains(src) =>
+            {
+                Some(*dst)
+            }
+            _ => None,
+        })
+        .collect();
+
     let mut keep: HashSet<LocalId> = HashSet::new();
     // Retain only, for the container-to-container case: the copy's increment is
     // the reference the destination ends up holding, and there is no release to
@@ -247,7 +263,18 @@ fn elide_local_only(func: &mut MirFunction, own: &HashSet<String>) -> usize {
         let param_handed_over =
             group.iter().any(|l| params.contains(l) && handed_over.contains(l));
         if container_to_container || param_handed_over {
-            keep_retain_only.extend(group);
+            // Only the members the hand-over runs through. A copy that is
+            // never handed on took a reference for itself, and gives it back
+            // at its last use like any copy: a `filter` closure's parameter
+            // is a copy of the element the loop then pushes, and keeping its
+            // retain without its release leaked one reference per item (#1419).
+            for l in group {
+                if plain_copies.contains(&l) && !handed_over.contains(&l) {
+                    keep.insert(l);
+                } else {
+                    keep_retain_only.insert(l);
+                }
+            }
         } else if borrowed_in && !crosses_container {
             keep.extend(group);
         }

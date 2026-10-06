@@ -420,7 +420,8 @@ impl<'a> MirLowerer<'a> {
             // as a call to `Vec_zip`, which nothing emits (#887).
             "zip" if args.len() == 1 => {
                 if let Some(chain) = self.try_parse_iter_chain(object) {
-                    let result = self.lower_iter_zip(&chain, &args[0].expr)?;
+                    let pair = self.container_elem_type(_full_expr.id, 0);
+                    let result = self.lower_iter_zip(&chain, &args[0].expr, pair)?;
                     return Ok(Some(result));
                 }
             }
@@ -1345,12 +1346,13 @@ impl<'a> MirLowerer<'a> {
     /// `Vec_free` thought they owned nothing: `v.map(|x| mk(x)).to_vec()` over
     /// a `mk` returning a `Vec` leaked every inner vector (#1412).
     ///
-    /// They're its own when a `map` made them (SEQ47: `map` is the ownership
-    /// boundary). Workaround: a chain of only `filter`/`take`/`skip` still
-    /// builds a vector that owns nothing, because nothing on that path takes a
-    /// reference per element — `filter` retains through its closure's
-    /// parameter, `take` doesn't retain at all — so describing those elements
-    /// releases what the source still holds (#1419).
+    /// They're always its own. A `map` makes values the chain owns, and the
+    /// push moves them in (SEQ47). A chain of only `filter`/`take`/`skip`
+    /// pushes items it was lent — Copy ones, the checker sees to that — and
+    /// the push is a hand-over of a view, which takes a reference of its own
+    /// the way any view given to a keeper does (`rc_insert`). Before that, a
+    /// lent chain built a vector that owned nothing, so describing its
+    /// elements released what the source still held (#1419).
     pub(super) fn lower_iter_collect(
         &mut self,
         chain: &super::IterChain<'_>,
@@ -1375,14 +1377,10 @@ impl<'a> MirLowerer<'a> {
         )?;
         let elem_size = Self::mir_slot_size(&final_ty);
         if elem_size > 0 {
-            let mut args = vec![MirOperand::Constant(MirConst::Int(elem_size))];
-            let owns_items = chain
-                .adapters
-                .iter()
-                .any(|a| matches!(a, super::IterAdapter::Map { .. }));
-            if owns_items {
-                args.push(crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())));
-            }
+            let args = vec![
+                MirOperand::Constant(MirConst::Int(elem_size)),
+                crate::elem_strs::elem(elem.unwrap_or_else(|| final_ty.clone())),
+            ];
             self.builder.set_call_args(vec_new_pos.0, vec_new_pos.1, "Vec_new", args);
             self.collected_elem_types.insert(result_vec, final_ty);
         }
@@ -2094,10 +2092,16 @@ impl<'a> MirLowerer<'a> {
     /// `other` argument. Before this, nothing tied the checker's
     /// own `U` to anything either, so the mangled name carried an unresolved
     /// type parameter and the pair's second slot got the wrong width (#887).
+    ///
+    /// `pair` is the checker's element type, for the result to describe its
+    /// pairs by. Each side is read out of its vector and stored into the
+    /// pair, which takes a reference of its own, so the pairs are the
+    /// result's to release.
     pub(super) fn lower_iter_zip(
         &mut self,
         chain: &super::IterChain<'_>,
         other: &Expr,
+        pair: Option<MirType>,
     ) -> Result<TypedOperand, LoweringError> {
         let other_elem_ty = self.collection_elem_of_expr(other)
             .unwrap_or_else(|| crate::fallback::unknown_type("lower/iterators:zip_elem"));
@@ -2180,7 +2184,10 @@ impl<'a> MirLowerer<'a> {
             vec_new_pos.0,
             vec_new_pos.1,
             "Vec_new",
-            vec![MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&pair_ty)))],
+            vec![
+                MirOperand::Constant(MirConst::Int(Self::mir_slot_size(&pair_ty))),
+                crate::elem_strs::elem(pair.unwrap_or_else(|| pair_ty.clone())),
+            ],
         );
         self.collected_elem_types.insert(result_vec, pair_ty);
 
