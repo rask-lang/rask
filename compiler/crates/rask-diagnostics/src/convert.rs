@@ -3368,6 +3368,27 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
+            FieldViewStored { target, path, field_ty } => {
+                Diagnostic::error(format!(
+                    "`{}` and `{}` would be the same `{}`",
+                    target, path, field_ty
+                ))
+                .with_code("E0909")
+                .with_primary(self.span, "a field read is a view, not a copy")
+                .with_fix(format!(
+                    "store a separate value: `{} = {}.clone()`",
+                    target, path
+                ))
+                .with_why(
+                    "reading a field gives a view of storage the source still \
+                     holds. The place it's assigned to owns what it holds, so \
+                     the two would be one value with two owners: a write \
+                     through either changes both, and each frees it \
+                     [mem.borrowing/S1, S5]"
+                        .to_string(),
+                )
+            }
+
             BorrowedFieldEscapes { path, root, field_ty, declared_at, is_mutate } => {
                 let mode = if *is_mutate { "`mutate` borrow" } else { "borrow" };
                 Diagnostic::error(format!(

@@ -67,6 +67,16 @@ pub enum OwnershipErrorKind {
         field_ty: String,
     },
 
+    /// mem.borrowing/S1, S5: `out.items = src.items` on a non-Copy field. The
+    /// read is a view, and the place it's stored in owns what it holds, so the
+    /// two would be one value with two owners.
+    #[error("`{target}` and `{path}` would be the same `{field_ty}`")]
+    FieldViewStored {
+        target: String,
+        path: String,
+        field_ty: String,
+    },
+
     /// mem.borrowing/S3: a borrowed parameter, or a view into one, returned.
     #[error("`{path}` belongs to the caller — returning it hands out a second name for it")]
     BorrowedFieldEscapes {

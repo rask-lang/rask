@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a non-Copy field read assigned into a place (E0909)
+//
+// A field read is a view (mem.borrowing/S1), and the place it's assigned to
+// owns what it holds, so `out.items = src.items` is one Vec with two owners.
+// From a borrowed parameter this was reported as "cannot write to `src`
+// while it is being read", naming the variable nothing wrote. From a local
+// it compiled: the interpreter shared one Vec between both names and native
+// freed it twice (#1283).
+
+struct Bag {
+    public items: Vec<i64>
+    public count: i64
+}
+
+func from_borrowed(src: Bag) -> Bag {
+    mut out = Bag { items: [], count: 0 }
+    // ERROR: `out.items` and `src.items` would be the same `Vec`
+    out.items = src.items
+    return out
+}
+
+func from_taken(take src: Bag) -> Bag {
+    mut out = Bag { items: [], count: 0 }
+    // ERROR: a `take` parameter's field is still a view
+    out.items = src.items
+    return out
+}
+
+func from_local() -> u64 {
+    let a = Bag { items: [1, 2], count: 2 }
+    mut out = Bag { items: [], count: 0 }
+    // ERROR: a local's field is still a view
+    out.items = a.items
+    out.items.push(9)
+    return a.items.len()
+}
+
+func into_variable(src: Bag) -> u64 {
+    mut v: Vec<i64> = []
+    // ERROR: a variable is a place too
+    v = src.items
+    return v.len()
+}
+
+// Legal: a copy of its own, and a Copy field.
+func copies(src: Bag) -> Bag {
+    mut out = Bag { items: [], count: 0 }
+    out.items = src.items.clone()
+    out.count = src.count
+    return out
+}
+
+func main() {}

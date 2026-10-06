@@ -1456,31 +1456,63 @@ impl<'a> OwnershipChecker<'a> {
         if !is_mut {
             return;
         }
-        let (Some(root), Some(fields)) = Self::extract_root_and_fields(init) else {
+        let Some((path, field_ty)) = self.non_copy_field_view(init) else {
             return;
         };
-        if fields.is_empty() || !self.names_a_value(&root) {
-            return;
-        }
-        let Some(ty) = self.node_ty(&init.id).cloned() else {
-            return;
-        };
-        if self.copy_verdict(&ty) != CopyVerdict::Move {
-            return;
-        }
-        // A linear field isn't viewed, it's moved out: the obligation goes with
-        // it, and the move rules decide whether the root was ours to take from.
-        if self.type_is_resource(&ty) {
-            return;
-        }
         self.errors.push(OwnershipError {
             kind: OwnershipErrorKind::MutableFieldView {
                 binding: name.to_string(),
-                path: format!("{}.{}", root, fields.join(".")),
-                field_ty: self.resource_type_display(&ty),
+                path,
+                field_ty,
             },
             span: init.span,
         });
+    }
+
+    /// S1/S5 at an assignment: `out.items = src.items` stores a view of
+    /// `src.items` in a place that owns what it holds. Returns whether it
+    /// reported.
+    ///
+    /// This used to be caught by accident: the read was recorded as an
+    /// *exclusive* borrow of `src`, which collided with whatever else borrowed
+    /// it. A borrowed parameter always collides, so the error named `src` and
+    /// called the read a write. An owned local usually didn't, so the program
+    /// compiled: the interpreter shared one vector between both names and
+    /// native freed it twice (#1283).
+    fn check_field_view_stored(&mut self, target: &Expr, value: &Expr) -> bool {
+        let Some((path, field_ty)) = self.non_copy_field_view(value) else {
+            return false;
+        };
+        let Some(target) = Self::render_place(target) else {
+            return false;
+        };
+        self.errors.push(OwnershipError {
+            kind: OwnershipErrorKind::FieldViewStored { target, path, field_ty },
+            span: value.span,
+        });
+        true
+    }
+
+    /// `value.field` when it reads a field whose value a second owner would
+    /// share: not Copy, and not linear. The path and the field's type name.
+    fn non_copy_field_view(&self, expr: &Expr) -> Option<(String, String)> {
+        let (Some(root), Some(fields)) = Self::extract_root_and_fields(expr) else {
+            return None;
+        };
+        if fields.is_empty() || !self.names_a_value(&root) {
+            return None;
+        }
+        let ty = self.node_ty(&expr.id)?.clone();
+        if self.copy_verdict(&ty) != CopyVerdict::Move {
+            return None;
+        }
+        // A linear field isn't viewed, it's moved out: the obligation goes with
+        // it, and the move rules decide whether the root was ours to take from.
+        // A link is a pointer the rack keeps honest, so it copies.
+        if self.type_is_resource(&ty) || self.is_link_type(&ty) {
+            return None;
+        }
+        Some((format!("{}.{}", root, fields.join(".")), self.resource_type_display(&ty)))
     }
 
     /// A place expression rendered back to source, for a message. `None` for
@@ -1713,7 +1745,7 @@ impl<'a> OwnershipChecker<'a> {
                         .node_ty(&value.id)
                         .cloned()
                         .is_some_and(|ty| self.is_link_type(&ty));
-                if !link_into_field {
+                if !link_into_field && !self.check_field_view_stored(target, value) {
                     self.handle_assignment(value, stmt.span, true);
                 }
                 if reinit_target {
