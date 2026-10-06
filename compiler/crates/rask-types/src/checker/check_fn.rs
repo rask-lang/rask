@@ -436,7 +436,7 @@ impl TypeChecker {
                 }
                 if types.get_type_id(name).is_some()
                     || types.builtins.contains_key(name)
-                    || types.type_aliases.contains_key(name)
+                    || types.aliases().contains_key(name)
                     || rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
                 {
                     return;
@@ -459,7 +459,7 @@ impl TypeChecker {
             .type_names
             .keys()
             .chain(self.types.builtins.keys())
-            .chain(self.types.type_aliases.keys())
+            .chain(self.types.aliases().keys())
             .chain(rask_stdlib::mir_metadata::stdlib_type_names().iter())
             // A module isn't a type, so it's never the fix for a type position.
             // `str` used to suggest `std`, and `st` still would.

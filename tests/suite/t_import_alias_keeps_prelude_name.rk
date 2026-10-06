@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A program's import alias is the program's name, not the stdlib's (#1479).
+//
+//     import time.Duration as Span
+//
+// The prelude declares its own `Span { start, end }` with a `Span.new` body
+// that builds one. Aliases sat in one table that every lookup read first, so
+// that body was checked with `Span` meaning `Duration`. Nothing noticed until
+// struct literals started rejecting unknown fields (#1476), and then the
+// program failed on a stdlib line it never wrote: "no field `start` on type
+// `Duration`". Aliases are scoped now, like declared types: the stdlib's bodies
+// see the stdlib's aliases and nothing the program wrote.
+
+import time.Duration as Span
+
+func wait_for(d: Span) -> u64 {
+    return d.as_millis()
+}
+
+test "the alias is the program's Duration" {
+    assert Span.millis(5).as_millis() == 5
+    let s: Span = Span.seconds(2)
+    assert wait_for(s) == 2000
+}

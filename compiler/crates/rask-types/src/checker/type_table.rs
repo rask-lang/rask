@@ -110,8 +110,12 @@ pub struct TypeTable {
     pub(super) stdlib_mode: bool,
     /// Built-in type names mapped to Type.
     pub(super) builtins: HashMap<String, Type>,
-    /// Type alias name → target type string.
-    pub(super) type_aliases: HashMap<String, TypeExpr>,
+    /// Type alias name → target, as program code reads them: the program's
+    /// own aliases and imports, then the stdlib's.
+    type_aliases: HashMap<String, TypeExpr>,
+    /// The stdlib's aliases alone, which is all stdlib code sees. A program's
+    /// `import time.Duration as Span` is not the prelude's `Span` (#1479).
+    stdlib_aliases: HashMap<String, TypeExpr>,
     /// Type parameter names in scope right now — the declaration or signature
     /// being checked.
     ///
@@ -227,6 +231,7 @@ impl TypeTable {
             stdlib_mode: false,
             builtins: HashMap::new(),
             type_aliases: HashMap::new(),
+            stdlib_aliases: HashMap::new(),
             type_param_scope: Vec::new(),
             const_lengths: HashMap::new(),
             option_type_id: None,
@@ -567,8 +572,22 @@ impl TypeTable {
     }
 
     /// Register a transparent type alias.
+    ///
+    /// Scoped like a declared type: a stdlib alias is the stdlib's and, unless
+    /// the program takes the name, the program's too; a program alias is the
+    /// program's only.
     pub fn register_alias(&mut self, name: String, target: TypeExpr) {
-        self.type_aliases.insert(name, target);
+        if self.stdlib_mode {
+            self.stdlib_aliases.insert(name.clone(), target.clone());
+            self.type_aliases.entry(name).or_insert(target);
+        } else {
+            self.type_aliases.insert(name, target);
+        }
+    }
+
+    /// The aliases the code being checked can see.
+    pub(super) fn aliases(&self) -> &HashMap<String, TypeExpr> {
+        if self.stdlib_mode { &self.stdlib_aliases } else { &self.type_aliases }
     }
 
     /// The type `name` is an alias for, following a chain of aliases that name
@@ -578,11 +597,12 @@ impl TypeTable {
     /// matched against the stub registry by its spelling, and an alias isn't in
     /// there under its own name.
     pub fn alias_target(&self, name: &str) -> Option<&TypeExpr> {
-        let mut target = self.type_aliases.get(name)?;
+        let aliases = self.aliases();
+        let mut target = aliases.get(name)?;
         let mut seen = vec![name];
         // A cycle was rejected at registration; `seen` only keeps a bad table
         // from looping.
-        while let Some(next) = target.bare_name().and_then(|n| self.type_aliases.get(n)) {
+        while let Some(next) = target.bare_name().and_then(|n| aliases.get(n)) {
             let n = target.bare_name().unwrap_or_default();
             if seen.contains(&n) {
                 return None;
@@ -596,7 +616,7 @@ impl TypeTable {
     /// `ty` with every transparent alias in it replaced by what it stands for,
     /// at any depth: `Names?` with `Names = Vec<string>` is `Vec<string>?`.
     pub fn expand_aliases(&self, ty: &TypeExpr) -> TypeExpr {
-        if self.type_aliases.is_empty() {
+        if self.aliases().is_empty() {
             return ty.clone();
         }
         // `alias_target` follows bare-name chains; a target that holds another
@@ -620,7 +640,7 @@ impl TypeTable {
             if current_name == name {
                 return Some(path);
             }
-            let next = self.type_aliases.get(current_name)?;
+            let next = self.aliases().get(current_name)?;
             path.push(next.to_string());
             current = next;
         }
@@ -1340,7 +1360,7 @@ impl TypeTable {
     pub fn contains(&self, name: &str) -> bool {
         self.builtins.contains_key(name)
             || self.type_names.contains_key(name)
-            || self.type_aliases.contains_key(name)
+            || self.aliases().contains_key(name)
     }
 
     /// Get TypeId for a name (user-defined types only).
