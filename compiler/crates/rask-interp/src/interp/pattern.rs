@@ -100,14 +100,15 @@ impl Interpreter {
                 // treatment as Result (#579) — without it, `x is i32` on a
                 // `T?` fell through to the variable-binding case and matched
                 // unconditionally, `none` included.
-                if let Value::Enum { name: sc_name, fields, .. } = value {
+                //
+                // It's the type pattern with nothing bound, so it goes through
+                // the same walk: a flat `string? or E` wears two wrappers, and
+                // checking only the outer one answered `r is string` false
+                // while `r is string as s` matched.
+                if let Value::Enum { name: sc_name, .. } = value {
                     if (sc_name == "Result" || sc_name == "Option") && self.is_known_type_name(name) {
-                        return match fields.first() {
-                            Some(inner) if runtime_type_matches(inner, &TypeExpr::named(name.as_str())) => {
-                                Some(HashMap::new())
-                            }
-                            _ => None,
-                        };
+                        let as_type = Pattern::TypePat { ty: TypeExpr::named(name.as_str()), binding: None };
+                        return self.match_pattern(&as_type, value);
                     }
                 }
                 // Not a known variant — treat as variable binding

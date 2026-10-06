@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `r is string` on a flat `string? or MyErr`.
+//
+// The interpreter answered false for a value holding a string. A bare type
+// name checked only the outer wrapper, whose payload is the `string?`, while
+// `is string as s` walked down both and matched. Both now take the same walk.
+//
+// `missing() is string` is left out: native answers true for `none` (#1451).
+
+enum MyErr {
+    Bad(string)
+}
+
+extend MyErr {
+    func message(self) -> string {
+        return "bad"
+    }
+}
+
+func found() -> string? or MyErr {
+    return "here"
+}
+
+func missing() -> string? or MyErr {
+    return none
+}
+
+func failed() -> string? or MyErr {
+    return MyErr.Bad("why")
+}
+
+func count() -> i64? or MyErr {
+    return 3
+}
+
+test "a bare type name finds the value under both wrappers" {
+    assert found() is string
+    assert !(failed() is string)
+    assert count() is i64
+}
+
+test "the error side still answers to its type" {
+    assert failed() is MyErr
+    assert !(found() is MyErr)
+    assert !(missing() is MyErr)
+}
