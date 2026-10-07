@@ -77,6 +77,11 @@ the only thing E3 has to contain. A runtime guard that comes back — a
 `Rack.take` handing a linear value out of a container would be one — has to
 say what it does mid-unwind, and get a test for it (rask-lang/rask#1296).
 
+Under `RASK_RUNTIME_CHECKS=1` the interpreter also panics if a linear value is
+still live when a function returns normally, as a debugging aid for holes in
+the static check; that's not part of the language's semantics, the static
+linearity check is.
+
 ## Locks: Released, Not Poisoned
 
 | Rule | Description |

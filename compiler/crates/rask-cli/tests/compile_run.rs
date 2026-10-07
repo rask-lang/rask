@@ -4062,7 +4062,9 @@ fn panic_ensure_e3_first_panic_wins() {
 // last trigger was a pool still holding a resource; with pools gone, every
 // unconsumed linear value is a compile error, so the guard and that half of
 // the rule were deleted (rask-lang/rask#1296). A guard that comes back needs
-// its unwind behaviour specified and tested here.
+// its unwind behaviour specified and tested here. The interpreter's
+// RASK_RUNTIME_CHECKS leak check isn't one: it skips a scope a panic is
+// unwinding (rask-interp `resource::tests`).
 
 #[test]
 fn panic_detached_task_reports_to_stderr() {

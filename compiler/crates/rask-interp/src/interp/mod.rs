@@ -146,6 +146,8 @@ pub struct Interpreter {
     /// `main` (#1110). Taken and restored around each call, never read as
     /// ambient state.
     pub(crate) failed_call_span: Option<Span>,
+    /// `RASK_RUNTIME_CHECKS`: report a linear value still live at scope exit.
+    pub(crate) runtime_checks: bool,
     /// The whole declaration list, kept so a layout can be computed from it.
     ///
     /// `reflect.fields<T>()` reports each field's offset and size, and there was
@@ -455,6 +457,7 @@ impl Interpreter {
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             failed_call_span: None,
+            runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
             layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
@@ -497,6 +500,7 @@ impl Interpreter {
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             failed_call_span: None,
+            runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
             layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
@@ -541,6 +545,7 @@ impl Interpreter {
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
             failed_call_span: None,
+            runtime_checks: crate::resource::runtime_checks_enabled(),
             type_decls: Vec::new(),
             layout_cache: rask_mono::LayoutCache::new(),
             monomorphized_structs: HashMap::new(),
@@ -575,6 +580,11 @@ impl Interpreter {
             yield_stack: Vec::new(),
         };
         (interp, buffer)
+    }
+
+    /// Turn the scope-exit leak check on or off, whatever `RASK_RUNTIME_CHECKS` said.
+    pub fn set_runtime_checks(&mut self, on: bool) {
+        self.runtime_checks = on;
     }
 
     /// Inject `cfg` build configuration into the interpreter environment (CT11-CT16).
@@ -840,6 +850,7 @@ impl Interpreter {
         // source it's running (#748). Without this a spawned task's message
         // came back as bare text while the main thread's carried a location.
         child.source_info = self.source_info.clone();
+        child.runtime_checks = self.runtime_checks;
         // The same capture buffer, not a fresh one. A `test` block's runner
         // captures the main thread's output and prints it under the test's
         // name; a task writing to the real stdout instead put its lines

@@ -13,6 +13,37 @@ use crate::value::{GenericFrame, Value};
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
+    /// End a scope's resource tracking. Under `RASK_RUNTIME_CHECKS`, a linear
+    /// value still live here panics, naming where it was made and where the
+    /// scope (spanning `scope`) ended. The static linearity check is what the
+    /// language promises; this only catches a hole in it (rask-lang/rask#1296).
+    pub(crate) fn end_resource_scope(
+        &mut self,
+        scope_depth: usize,
+        scope: Span,
+    ) -> Result<(), RuntimeDiagnostic> {
+        let leaked = self.resource_tracker.end_scope(scope_depth);
+        if leaked.is_empty() || !self.runtime_checks {
+            return Ok(());
+        }
+        let end = Span { start: scope.end.saturating_sub(1), end: scope.end, file_id: scope.file_id };
+        let what: Vec<String> = leaked.iter().map(|l| {
+            let name = l.var_name.as_deref().map(|n| format!(" '{}'", n)).unwrap_or_default();
+            let born = l.born.map(|b| format!(" (made at {})", self.origin_string(b))).unwrap_or_default();
+            format!("{}{}{}", l.type_name, name, born)
+        }).collect();
+        Err(RuntimeDiagnostic::new(
+            RuntimeError::Panic(format!(
+                "resource leak: {} never consumed before its scope ended at {} \
+                 (RASK_RUNTIME_CHECKS; the static linearity check should have caught this, \
+                 so please report it)",
+                what.join(", "),
+                self.origin_string(end),
+            )),
+            end,
+        ))
+    }
+
     /// Keep recursing past the end of the host stack by moving onto a new one.
     ///
     /// The interpreter spends one host stack frame per Rask call, and those
@@ -196,7 +227,25 @@ impl Interpreter {
             }
         }
 
-        self.resource_tracker.end_scope(scope_depth);
+        // A body that panicked leaves its linear values unconsumed because it
+        // panicked; that's unwind, not a leak, so only a normal exit is checked.
+        let body_failed = matches!(
+            &result,
+            Err(diag) if !matches!(
+                diag.error,
+                RuntimeError::Return(_)
+                    | RuntimeError::TryError(_)
+                    | RuntimeError::Break(_, _)
+                    | RuntimeError::Continue(_)
+            )
+        );
+        if body_failed {
+            self.resource_tracker.end_scope(scope_depth);
+        } else if let Err(leak) = self.end_resource_scope(scope_depth, func.span) {
+            self.generic_frames.pop();
+            self.env.pop_scope();
+            return Err(leak);
+        }
 
         self.generic_frames.pop();
         self.env.pop_scope();

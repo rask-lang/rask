@@ -31,7 +31,7 @@ impl Interpreter {
                     value = auto_wrap_for_annotation(value, ty_str, is_none_literal(init));
                 }
                 if let Some(id) = self.get_resource_id(&value) {
-                    self.resource_tracker.set_var_name(id, name.clone());
+                    self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
@@ -54,7 +54,7 @@ impl Interpreter {
                     value
                 };
                 if let Some(id) = self.get_resource_id(&value) {
-                    self.resource_tracker.set_var_name(id, name.clone());
+                    self.resource_tracker.set_var_name(id, name.clone(), stmt.span);
                 }
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)

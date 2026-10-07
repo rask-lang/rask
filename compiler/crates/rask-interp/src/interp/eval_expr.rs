@@ -2018,7 +2018,9 @@ impl Interpreter {
                 }
 
                 let resource_id = if self.is_resource_type(&concrete_name) {
-                    Some(self.resource_tracker.register(&concrete_name, self.env.scope_depth()))
+                    let id = self.resource_tracker.register(&concrete_name, self.env.scope_depth());
+                    self.resource_tracker.set_born(id, expr.span);
+                    Some(id)
                 } else {
                     None
                 };
@@ -2765,11 +2767,12 @@ impl Interpreter {
                     }
                 };
 
-                self.resource_tracker.end_scope(scope_depth);
+                let leak = self.end_resource_scope(scope_depth, expr.span);
 
                 runtime.shutdown();
                 *ACTIVE_RUNTIME.write().unwrap() = None;
                 self.env.pop_scope();
+                leak?;
                 Ok(result)
             }
 

@@ -5,6 +5,17 @@
 //! are consumed exactly once before scope exit.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use rask_ast::Span;
+
+/// `RASK_RUNTIME_CHECKS=1`, the switch compiled code reads for its extra checks.
+pub fn runtime_checks_enabled() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("RASK_RUNTIME_CHECKS").is_ok_and(|v| v.starts_with('1'))
+    })
+}
 
 /// State of a tracked resource.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -22,6 +33,16 @@ pub struct ResourceEntry {
     var_name: Option<String>,
     state: ResourceState,
     scope_depth: usize,
+    /// Where it was made, or failing that first bound — for the leak report.
+    born: Option<Span>,
+}
+
+/// A linear value still live when its scope ended.
+#[derive(Debug)]
+pub struct Leaked {
+    pub type_name: String,
+    pub var_name: Option<String>,
+    pub born: Option<Span>,
 }
 
 /// Tracks linear resource lifetimes across scopes.
@@ -59,6 +80,7 @@ impl ResourceTracker {
             var_name: None,
             state: ResourceState::Live,
             scope_depth,
+            born: None,
         });
         id
     }
@@ -75,10 +97,19 @@ impl ResourceTracker {
         self.file_ids.get(&ptr).copied()
     }
 
-    /// Set the variable name for a resource (for error messages).
-    pub fn set_var_name(&mut self, id: u64, name: String) {
+    /// Set the variable name for a resource (for error messages). `at` is the
+    /// binding, which stands in for the birthplace when nothing recorded one.
+    pub fn set_var_name(&mut self, id: u64, name: String, at: Span) {
         if let Some(entry) = self.entries.get_mut(&id) {
             entry.var_name = Some(name);
+            entry.born.get_or_insert(at);
+        }
+    }
+
+    /// Record where a resource was made.
+    pub fn set_born(&mut self, id: u64, at: Span) {
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.born = Some(at);
         }
     }
 
@@ -177,20 +208,97 @@ impl ResourceTracker {
         self.next_id = self.next_id.max(id + 1);
     }
 
-    /// Forget every entry registered at this scope depth.
+    /// Forget every entry registered at this scope depth, returning the ones
+    /// still live.
     ///
-    /// No leak check: an unconsumed linear value is a compile error (L1–L7,
-    /// RC1–RC4), so there is nothing left at runtime for a guard to catch
-    /// (rask-lang/rask#1296).
-    pub fn end_scope(&mut self, scope_depth: usize) {
+    /// An unconsumed linear value is a compile error (L1–L7, RC1–RC4), so the
+    /// list should always be empty. Callers only look at it under
+    /// `RASK_RUNTIME_CHECKS`, as a debugging aid (rask-lang/rask#1296).
+    pub fn end_scope(&mut self, scope_depth: usize) -> Vec<Leaked> {
         let ended: Vec<u64> = self.entries.iter()
             .filter(|(_, e)| e.scope_depth == scope_depth)
             .map(|(&id, _)| id)
             .collect();
+        let mut leaked = Vec::new();
         for id in &ended {
             self.file_ids.retain(|_, v| v != id);
             self.handle_ids.retain(|_, v| v != id);
-            self.entries.remove(id);
+            if let Some(e) = self.entries.remove(id) {
+                if e.state == ResourceState::Live {
+                    leaked.push(Leaked { type_name: e.type_name, var_name: e.var_name, born: e.born });
+                }
+            }
+        }
+        leaked
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Interpreter, RuntimeError};
+
+    /// A `@resource` value made and never consumed. The checker rejects this
+    /// (E0882), and nothing found gets one past it, so the parse goes straight
+    /// to the interpreter to reach the runtime check at all.
+    const LEAKS: &str = "\
+@resource
+struct Conn {
+    id: i32
+}
+
+extend Conn {
+    func close(take self) {
+    }
+}
+
+func main() {
+    let c = Conn { id: 1 }
+}
+";
+
+    fn run(src: &str, checks: bool) -> Result<(), RuntimeError> {
+        let lexed = rask_lexer::Lexer::new(src).tokenize();
+        assert!(lexed.errors.is_empty(), "{:?}", lexed.errors);
+        let parsed = rask_parser::Parser::new(lexed.tokens).parse();
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let (mut interp, _out) = Interpreter::with_captured_output();
+        interp.set_source_info("leak.rk", src);
+        interp.set_runtime_checks(checks);
+        interp.run(&parsed.decls).map(|_| ()).map_err(|d| d.error)
+    }
+
+    #[test]
+    fn leak_panics_with_runtime_checks() {
+        match run(LEAKS, true) {
+            Err(RuntimeError::Panic(msg)) => {
+                assert!(msg.contains("Conn 'c'"), "names what leaked: {msg}");
+                assert!(msg.contains("made at leak.rk:12"), "names where it was made: {msg}");
+                assert!(msg.contains("ended at leak.rk:13"), "names where the scope ended: {msg}");
+            }
+            other => panic!("expected a leak panic, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn leak_is_silent_without_runtime_checks() {
+        if let Err(e) = run(LEAKS, false) {
+            panic!("the check is off, so nothing should fire: {e:?}");
+        }
+    }
+
+    /// A panic leaves `c` unconsumed because it unwound past the close. That's
+    /// not a leak, and the panic in flight is the one to report (ctrl.panic/E3).
+    #[test]
+    fn unwinding_scope_is_not_checked() {
+        let src = LEAKS.replace(
+            "    let c = Conn { id: 1 }\n",
+            "    let c = Conn { id: 1 }\n    panic(\"boom\")\n",
+        );
+        match run(&src, true) {
+            Err(RuntimeError::Panic(msg)) => {
+                assert!(msg.contains("boom") && !msg.contains("leak"), "the first panic wins: {msg}");
+            }
+            other => panic!("expected the program's own panic, got {:?}", other),
         }
     }
 }
