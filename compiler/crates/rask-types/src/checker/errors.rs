@@ -690,7 +690,8 @@ pub enum TypeError {
 
     /// A generic name written with the wrong number of type arguments: a bound
     /// or conformance header on an interface (GT2), or an enum named at a
-    /// variant, `Slot<i64, i64>.Full(1)` (#1480).
+    /// variant, `Slot<i64, i64>.Full(1)` (#1480), or a type written wherever
+    /// a type goes, `func f(b: Box2<i64, string>)` (#1481).
     #[error("`{name}` takes {expected} type argument(s), found {found}")]
     TypeArgCount {
         name: String,
@@ -699,9 +700,8 @@ pub enum TypeError {
         params: Vec<String>,
         expected: usize,
         found: usize,
-        /// An interface's parameters are substituted through its signatures;
-        /// a type's are its own. The fix and the reason differ.
-        of_interface: bool,
+        /// The fix differs by where it was written.
+        site: TypeArgSite,
         span: Span,
     },
 
@@ -1442,7 +1442,34 @@ pub enum InvalidCastClass {
     Other,
 }
 
+/// Where a miscounted generic was written, for `TypeError::TypeArgCount`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeArgSite {
+    /// A bound or conformance header: the arguments are substituted through
+    /// the interface's signatures.
+    Interface,
+    /// A variant naming its enum, where writing none also works: the payload
+    /// decides.
+    Variant,
+    /// Anywhere else a type is written: a parameter, field, annotation, cast,
+    /// struct literal.
+    Type,
+}
+
 impl TypeError {
+    /// Place an error from type resolution. A `TypeExpr` carries no position,
+    /// so `resolve_type_expr` builds its errors without one and whoever knows
+    /// where the type was written puts it there.
+    pub fn at(self, span: Span) -> Self {
+        match self {
+            TypeError::GenericError(msg, _) => TypeError::GenericError(msg, span),
+            TypeError::TypeArgCount { name, params, expected, found, site, .. } => {
+                TypeError::TypeArgCount { name, params, expected, found, site, span }
+            }
+            other => other,
+        }
+    }
+
     /// Rewrite every type this error carries.
     ///
     /// Diagnostics print a `Type`, and `Type::Named(id)` carries no name — the

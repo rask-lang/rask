@@ -13,7 +13,7 @@ pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use copy_rule::CopyVerdict;
 pub use checker::{
     typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, WrapperFns, TypeTable, TypeDef,
-    TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
+    TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext, InferenceContext, TypeConstraint, MethodSig, SelfParam,
     ParamMode, Callee, ErrorWrap, receiver_name, conformance_symbol, BoundFrom, TypeBinding,
     OperatorTarget, operator_interface, primitive_spelling, TaskBound,
     signature_type_param_names, struct_type_param_names,

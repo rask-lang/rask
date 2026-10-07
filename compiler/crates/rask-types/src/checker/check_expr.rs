@@ -311,22 +311,23 @@ impl TypeChecker {
         }
         let base = rask_stdlib::modules::strip_module_qualifier(name);
         let type_id = self.types.get_type_id(base)?;
-        let Some(TypeDef::Enum { type_params, .. }) = self.types.get(type_id) else {
-            return None;
-        };
-        if type_params.len() != type_args.len() {
-            self.errors.push(TypeError::TypeArgCount {
-                name: base.to_string(),
-                params: type_params.clone(),
-                expected: type_params.len(),
-                found: type_args.len(),
-                of_interface: false,
-                span,
-            });
+        if !matches!(self.types.get(type_id), Some(TypeDef::Enum { .. })) {
             return None;
         }
         match resolve_type_expr(&TypeExpr::generic(base, type_args.to_vec()), &self.types) {
             Ok(ty @ Type::Generic { .. }) => Some(ty),
+            // Here writing none is fine too, so the fix says so.
+            Err(TypeError::TypeArgCount { name, params, expected, found, .. }) => {
+                self.errors.push(TypeError::TypeArgCount {
+                    name,
+                    params,
+                    expected,
+                    found,
+                    site: super::errors::TypeArgSite::Variant,
+                    span,
+                });
+                None
+            }
             _ => None,
         }
     }
@@ -1136,8 +1137,8 @@ impl TypeChecker {
                 let explicit_args: Option<Vec<GenericArg>> = if type_args.is_empty() {
                     None
                 } else {
-                    match resolve_type_expr(&TypeExpr::generic(base_name, type_args.clone()), &self.types) {
-                        Ok(Type::Generic { args, .. }) => Some(args),
+                    match self.resolve_written(&TypeExpr::generic(base_name, type_args.clone()), expr.span) {
+                        Some(Type::Generic { args, .. }) => Some(args),
                         _ => None,
                     }
                 };
@@ -1860,9 +1861,10 @@ impl TypeChecker {
                 let param_types: Vec<_> = params
                     .iter()
                     .map(|p| {
-                        p.ty.as_ref()
-                            .and_then(|t| resolve_type_expr(t, &self.types).ok())
-                            .unwrap_or_else(|| self.ctx.fresh_var())
+                        match &p.ty {
+                            Some(t) => self.resolve_written(t, p.name_span).unwrap_or(Type::Error),
+                            None => self.ctx.fresh_var(),
+                        }
                     })
                     .collect();
 
@@ -1909,7 +1911,7 @@ impl TypeChecker {
 
                 // Check declared return type if present
                 let ret_ty = if let Some(declared) = declared_ret {
-                    let expected_ret = resolve_type_expr(declared, &self.types)
+                    let expected_ret = self.resolve_written(declared, expr.span)
                         .unwrap_or(Type::Error);
                     if let Err(err) = self.unify(&closure_return_type, &expected_ret, expr.span) {
                         self.errors.push(err);
@@ -1938,7 +1940,7 @@ impl TypeChecker {
 
             ExprKind::Cast { expr: inner, ty } => {
                 let inner_ty = self.infer_expr(inner);
-                let target = resolve_type_expr(ty, &self.types).unwrap_or(Type::Error);
+                let target = self.resolve_written(ty, expr.span).unwrap_or(Type::Error);
 
                 // Validate interface satisfaction for `as any Interface` casts
                 if let Type::InterfaceObject { ref interface_name, decl } = target {
@@ -1999,7 +2001,7 @@ impl TypeChecker {
 
             ExprKind::Convert { expr: inner, target, kind } => {
                 let inner_ty = self.infer_expr(inner);
-                let target_ty = resolve_type_expr(target, &self.types).unwrap_or(Type::Error);
+                let target_ty = self.resolve_written(target, expr.span).unwrap_or(Type::Error);
                 self.pending_casts.push(PendingCast {
                     source: inner_ty,
                     target: target_ty.clone(),
@@ -2846,7 +2848,7 @@ impl TypeChecker {
         let written_type_args: Vec<Type> = func
             .written_type_args()
             .iter()
-            .map(|t| self.resolve_type_name(t))
+            .map(|t| self.resolve_type_arg(t, span))
             .collect();
         let generic_subst: Option<Vec<(String, Type)>> = if func.name().is_some() {
             // Resolve the callee's SymbolId, then look up its type params
@@ -3695,7 +3697,7 @@ impl TypeChecker {
         if let Some(ta) = type_args {
             let written: Vec<Type> = ta
                 .iter()
-                .map(|ty| self.resolve_type_name(ty))
+                .map(|ty| self.resolve_type_arg(ty, span))
                 .collect();
             self.written_method_type_args.insert(call_id, written);
         }
@@ -3825,6 +3827,9 @@ impl TypeChecker {
                 let obj_ty = if type_args.is_empty() {
                     Type::UnresolvedNamed(base_name.to_string())
                 } else {
+                    // `Vec<i64, i64>.new()` writes a type, so it's counted
+                    // like one.
+                    self.resolve_written(&TypeExpr::generic(base_name, type_args.to_vec()), object.span);
                     Type::UnresolvedGeneric {
                         name: base_name.to_string(),
                         args: type_args
@@ -4428,7 +4433,7 @@ impl TypeChecker {
         // which is what `time.sleep(d)` files too. The solved constraint
         // records the target.
         if !type_args.is_empty() {
-            let written: Vec<Type> = type_args.iter().map(|ty| self.resolve_type_name(ty)).collect();
+            let written: Vec<Type> = type_args.iter().map(|ty| self.resolve_type_arg(ty, span)).collect();
             self.written_method_type_args.insert(call_id, written);
         }
         let slots = self.stub_static_param_types(module, function);
@@ -4546,7 +4551,7 @@ impl TypeChecker {
             let param_type_params = sig.param_type_params.clone();
             if let Some(ta) = type_args {
                 if ta.len() == 1 {
-                    let explicit_ty = self.resolve_type_name(&ta[0]);
+                    let explicit_ty = self.resolve_type_arg(&ta[0], span);
                     // The stub's bound is the whole check on this path — there's
                     // no body to infer from. `json.decode<T: Decode>` with a T
                     // that isn't Decode used to type-check clean and then fail in
@@ -4649,6 +4654,21 @@ impl TypeChecker {
     }
 
     /// A type written as a call's type argument: `json.decode<Vec<Point>>`.
+    /// What's wrong with it is reported at `span`. A number there is a
+    /// comptime argument, not a type, and isn't this function's to judge.
+    fn resolve_type_arg(&mut self, ty: &TypeExpr, span: Span) -> Type {
+        if matches!(ty, TypeExpr::Int(_)) {
+            return Type::Error;
+        }
+        let resolved = self.resolve_written(ty, span).unwrap_or(Type::Error);
+        match &resolved {
+            Type::UnresolvedNamed(_) => self.resolve_named(&resolved),
+            _ => resolved,
+        }
+    }
+
+    /// `resolve_type_arg` for a type the program didn't write here, a stub's
+    /// parameter: nothing to report.
     fn resolve_type_name(&self, ty: &TypeExpr) -> Type {
         let resolved = resolve_type_expr(ty, &self.types).unwrap_or(Type::Error);
         match &resolved {
@@ -5106,15 +5126,19 @@ impl TypeChecker {
                     let param_types: Vec<_> = params
                         .iter()
                         .filter_map(|pid| {
+                            // A parameter whose type doesn't resolve stays in the
+                            // list as `Error`: dropping it would make every call
+                            // look like it passes one argument too many, on top
+                            // of the error the signature already got.
                             self.resolved.symbols.get(*pid).and_then(|p| {
                                 p.ty.as_ref()
-                                    .and_then(|t| resolve_type_expr(t, &self.types).ok())
+                                    .map(|t| resolve_type_expr(t, &self.types).unwrap_or(Type::Error))
                             })
                         })
                         .collect();
                     let ret = ret_ty
                         .as_ref()
-                        .and_then(|t| resolve_type_expr(t, &self.types).ok())
+                        .map(|t| resolve_type_expr(t, &self.types).unwrap_or(Type::Error))
                         .unwrap_or(Type::Unit);
                     return Type::Fn {
                         params: param_types,

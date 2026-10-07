@@ -547,6 +547,9 @@ impl TypeChecker {
             // Result by type. In `if r is E as e`, typically the err side.
             // Union `E = A | B | ...`: accept if TypeName is a union component.
             Pattern::TypePat { ty, binding } => {
+                if self.resolve_written(ty, span).is_none() {
+                    return binding.iter().map(|name| (name.clone(), Type::Error)).collect();
+                }
                 let narrow_ty = normalize_type(&resolve_type_name(ty, &self.types), &self.types);
                 let resolved = self.ctx.apply(scrutinee_ty);
                 // ER23 at variant granularity. `match` already dispatches on one

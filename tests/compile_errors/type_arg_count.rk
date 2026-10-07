@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: a type is written with one argument per declared parameter.
+//
+// Nothing compared the written count with the declared one, so
+// `func f(b: Box2<i64, string>)` with a one-parameter `Box2` type-checked
+// (#1481). Same for stdlib generics, for too few, and for arguments on a type
+// that takes none. `Shared`'s strategy is defaulted, so `Shared<i64>` is fine.
+
+import sync.{Shared, Readers}
+
+struct Box2<T> {
+    v: T,
+}
+
+struct Plain {
+    v: i64,
+}
+
+enum Slot<T> {
+    Empty
+    Full(T)
+}
+
+struct Holder {
+    // ERROR: `Box2` takes 1 type argument, found 2
+    b: Box2<i64, i64>,
+}
+
+enum Wrapped {
+    // ERROR: `Plain` takes no type arguments, found 1
+    One(Plain<i64>)
+}
+
+// ERROR: `Box2` takes 1 type argument, found 2
+extend Box2<T, U> {
+    func get(self) -> T {
+        return self.v
+    }
+}
+
+// ERROR: `Box2` takes 1 type argument, found 2
+func f(b: Box2<i64, string>) -> i64 {
+    return 1
+}
+
+// ERROR: `Plain` takes no type arguments, found 1
+func g(p: Plain<i64>) -> i64 {
+    return 2
+}
+
+// ERROR: `Vec` takes 1 type argument, found 2
+func h(v: Vec<i64, i64>) -> i64 {
+    return 3
+}
+
+// ERROR: `Map` takes 2 type arguments, found 1
+func k(m: Map<string>) -> i64 {
+    return 4
+}
+
+// ERROR: `Box2` takes 1 type argument, found 2
+func r() -> Box2<i64, i64> {
+    return Box2 { v: 1 }
+}
+
+func fine(s: Shared<i64>, t: Shared<i64, Readers>, b: Box2<i64>, m: Map<string, i64>) -> i64 {
+    return 5
+}
+
+func main() {
+    // ERROR: `Slot` takes 1 type argument, found 2
+    let x: Slot<i64, i64> = Slot.Full(1)
+
+    // ERROR: `Box2` takes 1 type argument, found 2
+    let b = Box2<i64, string> { v: 1 }
+
+    // ERROR: `Shared` takes 2 type arguments, found 3
+    let s: Shared<i64, Readers, i64> = Shared.new(1)
+
+    // ERROR: `Vec` takes 1 type argument, found 2
+    let v = Vec<i64, i64>.new()
+
+    // ERROR: `Box2` takes 1 type argument, found 2
+    let c = |q: Box2<i64, i64>| 0
+}

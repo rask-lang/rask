@@ -490,7 +490,7 @@ impl TypeChecker {
             expected: if found > type_params.len() { type_params.len() } else { required },
             params,
             found,
-            of_interface: true,
+            site: super::errors::TypeArgSite::Interface,
             span,
         });
         false
@@ -1556,12 +1556,12 @@ impl TypeChecker {
                     if p.name == "self" {
                         continue;
                     }
-                    if let Ok(ty) = resolve_type_expr(pty, &self.types) {
+                    if let Some(ty) = self.resolve_written(pty, p.name_span) {
                         self.validate_signature_names(&ty, &allowed, p.name_span);
                     }
                 }
                 if let Some(rt) = &m.ret_ty {
-                    if let Ok(ty) = resolve_type_expr(rt, &self.types) {
+                    if let Some(ty) = self.resolve_written(rt, m.span) {
                         self.validate_signature_names(&ty, &allowed, m.span);
                     }
                 }
@@ -2372,7 +2372,7 @@ impl TypeChecker {
                 if !s.attrs.iter().any(|a| a == "binary") {
                     let owner = self.types.get_type_id(&s.name);
                     for field in &s.fields {
-                        if let Ok(ty) = resolve_type_expr(&field.ty, &self.types) {
+                        if let Some(ty) = self.resolve_written(&field.ty, field.name_span) {
                             self.validate_signature_names(&ty, &allowed, field.name_span);
                             self.reject_non_optional_link(&ty, field.name_span);
                             if let Some(owner) = owner {
@@ -2393,7 +2393,7 @@ impl TypeChecker {
                 let owner = self.types.get_type_id(&e.name);
                 for variant in &e.variants {
                     for field in &variant.fields {
-                        if let Ok(ty) = resolve_type_expr(&field.ty, &self.types) {
+                        if let Some(ty) = self.resolve_written(&field.ty, field.name_span) {
                             self.validate_signature_names(&ty, &allowed, field.name_span);
                             self.reject_non_optional_link(&ty, field.name_span);
                             if let Some(owner) = owner {
@@ -2423,6 +2423,9 @@ impl TypeChecker {
                         }
                     }
                 }
+                // The receiver is written like any other type: `extend Box2<T, U>`
+                // on a one-parameter `Box2` names nothing.
+                self.resolve_written(&i.target_ty, decl.span);
                 self.current_self_type = self.resolve_impl_self_type(&i.target_ty);
 
                 // G1: verify the declared conformance at the extend site — the
@@ -2528,7 +2531,7 @@ impl TypeChecker {
             }
             DeclKind::Const(c) => {
                 let (init_ty, declared_ty) = if let Some(ty) = &c.ty {
-                    if let Ok(declared) = resolve_type_expr(ty, &self.types) {
+                    if let Some(declared) = self.resolve_written(ty, decl.span) {
                         let init_ty = self.infer_expr_expecting(&c.init, &declared);
                         (init_ty, Some(declared))
                     } else {
@@ -2612,7 +2615,17 @@ impl TypeChecker {
                     }
                 }
             }
-            DeclKind::Union(_) => {} // No methods to check
+            // Registration resolved these quietly, before every type they
+            // may name was in the table. What's wrong with them is reported
+            // here, once.
+            DeclKind::Union(u) => {
+                for field in &u.fields {
+                    self.resolve_written(&field.ty, field.name_span);
+                }
+            }
+            DeclKind::TypeAlias(a) => {
+                self.resolve_written(&a.target, decl.span);
+            }
             _ => {}
         }
     }

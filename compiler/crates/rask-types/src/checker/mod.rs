@@ -38,7 +38,7 @@ pub use type_defs::{Callee, ErrorWrap, TypeDef, MethodSig, SelfParam, ParamMode,
 pub use type_table::{primitive_spelling, TaskBound, TypeTable};
 pub use operators::{operator_interface, OperatorTarget};
 pub use inference::{TypeConstraint, InferenceContext};
-pub use errors::{TypeError, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
+pub use errors::{TypeError, TypeArgSite, MapKeyFix, InvalidCastClass, IndexErrorKind, InterfaceBoundContext};
 pub use parse_type::resolve_type_expr;
 pub use generics::{bind_header_pattern, bind_header_patterns};
 pub use declarations::{binary_field_runtime_type, signature_type_param_names, struct_type_param_names, enum_type_param_names};

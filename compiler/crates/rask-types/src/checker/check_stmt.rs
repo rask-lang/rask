@@ -8,7 +8,6 @@ use rask_ast::Span;
 
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
-use super::parse_type::resolve_type_expr;
 use super::check_expr::ContainerElem;
 use super::TypeChecker;
 
@@ -82,7 +81,7 @@ impl TypeChecker {
                     // asking for a value nothing can produce, and the type
                     // error would blame the initializer for it.
                     self.reject_annotation_binding_type(ty_str, *name_span);
-                    if let Ok(declared) = resolve_type_expr(ty_str, &self.types) {
+                    if let Some(declared) = self.resolve_written(ty_str, *name_span) {
                         // ER3/ER4: validate `T or E` in let annotation.
                         self.validate_result_types_in(&declared, *name_span);
                         self.note_type_bounds(&declared, *name_span);
@@ -132,7 +131,7 @@ impl TypeChecker {
                     // asking for a value nothing can produce, and the type
                     // error would blame the initializer for it.
                     self.reject_annotation_binding_type(ty_str, *name_span);
-                    if let Ok(declared) = resolve_type_expr(ty_str, &self.types) {
+                    if let Some(declared) = self.resolve_written(ty_str, *name_span) {
                         // ER3/ER4: validate `T or E` in const annotation.
                         self.validate_result_types_in(&declared, *name_span);
                         self.note_type_bounds(&declared, *name_span);

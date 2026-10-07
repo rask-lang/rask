@@ -8,7 +8,6 @@ use rask_ast::Span;
 
 use super::declarations::{for_each_unresolved_name, is_type_param_name, signature_type_param_names};
 use super::errors::TypeError;
-use super::parse_type::resolve_type_expr;
 use rask_ast::ty::TypeExpr;
 use super::type_defs::TypeDef;
 use super::TypeChecker;
@@ -96,19 +95,20 @@ impl TypeChecker {
         let inferred = self.inferred_fn_types.get(&f.name).cloned();
 
         let ret_ty = if let Some(ok) = inferred_error_ok {
+            // Resolved here either way: the pre-registration doesn't report.
+            let ok_ty = self.resolve_written(ok, f.span).unwrap_or(Type::Error);
             // `or _` — reuse the pre-registered Result with fresh error var
             if let Some((_, ref ret_var)) = inferred {
                 ret_var.clone()
             } else {
                 // Fallback: the written ok type with a fresh error var
-                let ok_ty = resolve_type_expr(ok, &self.types).unwrap_or(Type::Error);
                 Type::Result {
                     ok: Box::new(ok_ty),
                     err: Box::new(self.ctx.fresh_var()),
                 }
             }
         } else if let Some(t) = &f.ret_ty {
-            resolve_type_expr(t, &self.types).unwrap_or(Type::Error)
+            self.resolve_written(t, f.span).unwrap_or(Type::Error)
         } else if let Some((_, ref ret_var)) = inferred {
             ret_var.clone()
         } else {
@@ -239,22 +239,25 @@ impl TypeChecker {
                 continue;
             }
             // GC1: Look up pre-created type var for inferred params
-            let resolved = param.ty.as_ref().map(|t| resolve_type_expr(t, &self.types));
-            let ty = if resolved.is_none() {
-                if let Some((ref pvars, _)) = inferred {
-                    pvars.iter()
-                        .find(|(name, _)| name == &param.name)
-                        .map(|(_, ty)| ty.clone())
-                        .unwrap_or_else(|| self.ctx.fresh_var())
-                } else {
-                    self.ctx.fresh_var()
+            let resolved = param.ty.as_ref().map(|t| self.resolve_written(t, param.name_span));
+            let ty = match resolved {
+                None => {
+                    if let Some((ref pvars, _)) = inferred {
+                        pvars.iter()
+                            .find(|(name, _)| name == &param.name)
+                            .map(|(_, ty)| ty.clone())
+                            .unwrap_or_else(|| self.ctx.fresh_var())
+                    } else {
+                        self.ctx.fresh_var()
+                    }
                 }
-            } else if let Some(Ok(ty)) = resolved {
-                // PC2: unknown PascalCase names in parameter types are errors.
-                self.validate_signature_names(&ty, &sig_type_params, param.name_span);
-                ty
-            } else {
-                continue;
+                Some(Some(ty)) => {
+                    // PC2: unknown PascalCase names in parameter types are errors.
+                    self.validate_signature_names(&ty, &sig_type_params, param.name_span);
+                    ty
+                }
+                // Reported. Still bound, so its uses don't read as undefined.
+                Some(None) => Type::Error,
             };
             // ER3/ER4: validate nested `T or E` in parameter types.
             self.validate_result_types_in(&ty, param.name_span);

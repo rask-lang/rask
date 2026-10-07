@@ -4,10 +4,32 @@
 use rask_ast::Span;
 use rask_ast::ty::TypeExpr;
 
+use super::type_defs::TypeDef;
 use super::type_table::TypeTable;
-use super::errors::TypeError;
+use super::errors::{TypeArgSite, TypeError};
+use super::TypeChecker;
 
 use crate::types::{GenericArg, Type, TypeId};
+
+impl TypeChecker {
+    /// A type the program wrote, resolved, with anything wrong with it
+    /// reported at `span`. `None` after reporting, so the caller falls back
+    /// the way it does for any type it can't use.
+    ///
+    /// The one place a written type's errors get reported. Resolution happens
+    /// in many places, several of them more than once for the same type, and
+    /// those stay quiet: each position the program writes a type in reports
+    /// through here exactly once.
+    pub(super) fn resolve_written(&mut self, ty: &TypeExpr, span: Span) -> Option<Type> {
+        match resolve_type_expr(ty, &self.types) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                self.errors.push(e.at(span));
+                None
+            }
+        }
+    }
+}
 
 /// The checker's type for a written one.
 pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeError> {
@@ -142,6 +164,19 @@ fn resolve_generic(
     args: Vec<GenericArg>,
     types: &TypeTable,
 ) -> Result<Type, TypeError> {
+    if let Some((params, required)) = declared_params(name, pinned, types) {
+        let found = args.len();
+        if found < required || found > params.len() {
+            return Err(TypeError::TypeArgCount {
+                name: name.to_string(),
+                expected: if found > params.len() { params.len() } else { required },
+                params,
+                found,
+                site: TypeArgSite::Type,
+                span: Span::new(0, 0),
+            });
+        }
+    }
     match name {
         // `Heap<T>` keeps its wrapper. HP5 says it behaves as `T`, and this
         // used to implement that by unwrapping — which is transparency and
@@ -185,6 +220,33 @@ fn resolve_generic(
             }
         }
         _ => Ok(generic_named(name, pinned, args, types)),
+    }
+}
+
+/// The parameters a generic name declares, and how many of them have to be
+/// written. `None` where there's nothing to count against: a type parameter,
+/// an interface (GT2 counts those, in bounds and headers), a name nothing
+/// declares.
+///
+/// `Heap` and `Shared` are compiler-provided and have no declaration to read.
+/// `Shared`'s strategy is a defaulted parameter (conc.sync/SH2), the one
+/// type-side default there is.
+fn declared_params(name: &str, pinned: Option<TypeId>, types: &TypeTable) -> Option<(Vec<String>, usize)> {
+    match name {
+        "Heap" => return Some((vec!["T".to_string()], 1)),
+        "Shared" => return Some((vec!["T".to_string(), "S".to_string()], 1)),
+        _ => {}
+    }
+    let id = match pinned {
+        Some(id) => id,
+        None if types.is_type_param_in_scope(name) => return None,
+        None => types.get_type_id(name)?,
+    };
+    match types.get(id)? {
+        TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
+            Some((type_params.clone(), type_params.len()))
+        }
+        _ => None,
     }
 }
 
