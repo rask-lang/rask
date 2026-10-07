@@ -119,31 +119,33 @@ extend Db {
             return kv.value
         }
 
-        // Search levels from newest to oldest
-        mut level_idx: usize = 0
-        while level_idx < self.levels.len() {
-            let level = self.levels[level_idx].clone()
-            mut sst_idx = level.len()
-            while sst_idx > 0 {
-                sst_idx -= 1
-                let meta = level[sst_idx].clone()
-
+        // A merged file gets a fresh id, so neither level nor file order says
+        // which copy of a key is newest. The sequence number does, as in scan.
+        mut newest: KeyValue? = none
+        mut newest_seq: i64 = -1
+        for level in self.levels.clone() {
+            for meta in level {
                 if key < meta.min_key || key > meta.max_key { continue }
 
-                let result = self.lookup.lookup(meta, key, mutate self.cache) catch e => {
+                let result = self.lookup.lookup(meta.clone(), key, mutate self.cache) catch e => {
                     return DbError.Sst(e)
                 }
 
                 if result? as found {
-                    if found.deleted {
-                        return DbError.KeyNotFound(key)
+                    if found.seq > newest_seq {
+                        newest_seq = found.seq
+                        newest = found
                     }
-                    return found.value
                 }
             }
-            level_idx += 1
         }
 
+        if newest? as kv {
+            if kv.deleted {
+                return DbError.KeyNotFound(key)
+            }
+            return kv.value
+        }
         return DbError.KeyNotFound(key)
     }
 
@@ -296,14 +298,7 @@ extend Db {
     }
 
     func close(take self) -> void or DbError {
-        if !self.memtable.is_empty() {
-            let id = self.next_sst_id
-            let entries = self.memtable.take_sorted()
-            match write_sstable(id, 0, self.config.dir, entries) {
-                SstMeta => {}
-                SstError => {}
-            }
-        }
+        try self.flush()
         self.wal.close() catch e => {
             return DbError.Wal(e)
         }

@@ -15,7 +15,7 @@ Database statistics:
   Memtable:  0 entries, 0 bytes
   SSTables:  3 total
     L0: 3 files
-  Cache:     32 blocks, 2702 accesses
+  Cache:     32 blocks, 3202 accesses
   Sequence:  2251
 
 Benchmark complete.
@@ -37,16 +37,18 @@ Forcing compaction...
 Compaction complete.
 Database statistics:
   Memtable:  0 entries, 0 bytes
-  SSTables:  8 total
-    L0: 7 files
+  SSTables:  3 total
+    L0: 1 files
+    L1: 1 files
     L2: 1 files
   Cache:     0 blocks, 0 accesses
   Sequence:  2255
 fresh
 Database statistics:
   Memtable:  0 entries, 0 bytes
-  SSTables:  8 total
-    L0: 7 files
+  SSTables:  3 total
+    L0: 1 files
+    L1: 1 files
     L2: 1 files
   Cache:     0 blocks, 0 accesses
   Sequence:  2255
