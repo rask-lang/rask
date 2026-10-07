@@ -590,6 +590,16 @@ pub enum TypeError {
         guarded: bool,
         span: Span,
     },
+    /// `for mutate x in src` where `src` lends its items read-only
+    /// (type.sequence/SEQ45). A `Sequence<T>` hands each item to the body as a
+    /// borrow, so the writes went to a copy and vanished (#1512).
+    #[error("`for mutate` over a `{found}`, which lends its items read-only")]
+    ForMutateReadOnlySource {
+        found: Type,
+        /// A chain head walked through its `as_sequence()` — a `Set`.
+        through_as_sequence: bool,
+        span: Span,
+    },
     /// `break 42` from a `while` or a `for` (ctrl.flow/CF20, CF21).
     ///
     /// Those forms are statements — when the condition goes false there is
@@ -1531,6 +1541,7 @@ impl TypeError {
             | ForceUnwrapOnNonOptional { found, .. }
             | GuardElseMustDiverge { found, .. }
             | NotIterable { found, .. }
+            | ForMutateReadOnlySource { found, .. }
             | NotOnOptional { found, .. }
             | PresenceTestOnResult { found, .. }
             | TakeOnNonOptional { found, .. }

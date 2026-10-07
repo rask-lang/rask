@@ -1,0 +1,64 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Rejects: `for mutate` over a source that lends its items read-only
+//
+// Spec: type.sequence (SEQ34, SEQ45)
+//
+// A `Sequence<T>` hands each item to the loop body as a borrow. `for mutate`
+// over one compiled and every write went nowhere, on both backends (#1512). A
+// `Set` is walked through its `as_sequence()`, so it hit the same thing — and
+// its values are its keys, so there is nothing to change in place anyway.
+
+import sequence.Sequence
+
+struct Bag {
+    items: Vec<i64>
+}
+
+extend Bag {
+    func each(self) -> Sequence<i64> {
+        return self.items
+    }
+}
+
+func through_as_sequence() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    // ERROR: a `Sequence` lends read-only [E0914]
+    for mutate x in v.as_sequence() {
+        x = 5
+    }
+}
+
+func through_a_set() {
+    mut s: Set<string> = Set.new()
+    s.insert("a")
+    // ERROR: a set's values are its keys [E0914]
+    for mutate e in s {
+        e = "b"
+    }
+}
+
+func through_a_user_sequence() {
+    let b = Bag { items: Vec.new() }
+    // ERROR: a `Sequence` returned by a method lends read-only [E0914]
+    for mutate y in b.each() {
+        y = 3
+    }
+}
+
+// FIX 1: loop over the Vec itself
+func over_the_vec() {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    for mutate x in v {
+        x = 5
+    }
+}
+
+// FIX 2: a set changes by remove and insert
+func replace_in_a_set() {
+    mut s: Set<string> = Set.new()
+    s.insert("a")
+    s.remove("a")
+    s.insert("b")
+}

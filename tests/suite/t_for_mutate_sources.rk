@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// The `for mutate` sources that write through (type.sequence/SEQ45).
+//
+// A plain `Sequence<T>` and a `Set` are refused now (#1512, E0914): both lend
+// their items read-only, and the loop used to compile and drop every write.
+// These are the forms that stay legal, and the writes have to land.
+
+import sequence.SequenceMut
+
+struct Counter {
+    n: i64
+}
+
+struct Bag {
+    items: Vec<Counter>
+}
+
+extend Bag {
+    func each_mut(mutate self) -> SequenceMut<Counter> {
+        return |yield| {
+            for mutate c in self.items {
+                if !yield(mutate c) {
+                    return
+                }
+            }
+        }
+    }
+}
+
+test "a Vec writes through" {
+    mut v: Vec<i64> = Vec.new()
+    v.push(1)
+    v.push(2)
+    for mutate x in v {
+        x = x * 10
+    }
+    assert v[0] == 10
+    assert v[1] == 20
+}
+
+test "a Map's values write through" {
+    mut m: Map<string, i64> = Map.new()
+    m.insert("a", 1)
+    for mutate (k, val) in m {
+        val = val + 100
+    }
+    assert m["a"] == 101
+}
+
+test "a SequenceMut writes through" {
+    mut b = Bag { items: Vec.new() }
+    b.items.push(Counter { n: 1 })
+    b.items.push(Counter { n: 2 })
+    for mutate c in b.each_mut() {
+        c.n += 5
+    }
+    assert b.items[0].n == 6
+    assert b.items[1].n == 7
+}

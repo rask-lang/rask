@@ -414,6 +414,9 @@ pub struct TypeChecker {
     /// CV1–CV10: cast/convert sites validated after literal defaults resolve
     /// their source types. Deferred so `1 as bool` sees `i32`, not a fresh var.
     pub(super) pending_casts: Vec<check_expr::PendingCast>,
+    /// `for mutate` loops: the source's node, type and span. Judged once the
+    /// source's type has settled, since a method call's often hasn't (SEQ45).
+    pub(super) pending_for_mutate: Vec<(rask_ast::NodeId, Type, rask_ast::Span)>,
     /// #310: index sites validated after literal defaults resolve their index
     /// type. Deferred so `v[0]` sees `i32`, not a fresh literal var.
     pub(super) pending_index: Vec<check_expr::PendingIndex>,
@@ -666,6 +669,7 @@ impl TypeChecker {
             discarded_bindings: HashMap::new(),
             multitasking_depth: 0,
             pending_casts: Vec::new(),
+            pending_for_mutate: Vec::new(),
             pending_int_literals: Vec::new(),
             pending_discards: Vec::new(),
             pending_match_wildcards: Vec::new(),
@@ -873,6 +877,10 @@ impl TypeChecker {
         // CV1–CV10: validate casts/conversions now that literal source types
         // are concrete (e.g. `1 as bool` sees `i32`).
         self.validate_pending_casts();
+
+        // SEQ45: after literal defaults, so the message names `Sequence<i32>`
+        // rather than an open variable.
+        self.validate_for_mutate_sources();
 
         // RC1/RC3: reject Vec/Map holding linear elements now that inferred
         // element types (`Vec.new()` + `push`, `collect`, generic returns) are

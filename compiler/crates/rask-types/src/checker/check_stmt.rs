@@ -4,6 +4,7 @@
 use rask_ast::coercion::CoercionSite;
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
+use rask_ast::ty::ParamMode;
 use rask_ast::Span;
 
 use super::errors::TypeError;
@@ -55,6 +56,27 @@ impl TypeChecker {
             span,
         });
         elem
+    }
+
+    /// SEQ45: `for mutate x in src` needs a source that lends its items for
+    /// writing. A `Sequence<T>` lends them read-only, so the loop compiled and
+    /// every write landed in a copy (#1512). A `Set` reaches the same place:
+    /// it's walked through its `as_sequence()` (SEQ48), and its values are its
+    /// keys besides.
+    pub(super) fn validate_for_mutate_sources(&mut self) {
+        for (node, ty, span) in std::mem::take(&mut self.pending_for_mutate) {
+            let resolved = self.resolve_named(&self.ctx.apply(&ty));
+            let through_as_sequence = self.sequence_coercions.contains_key(&node);
+            let read_only = through_as_sequence
+                || matches!(self.sequence_element(&resolved), Some((_, ParamMode::Borrow)));
+            if read_only {
+                self.errors.push(TypeError::ForMutateReadOnlySource {
+                    found: resolved,
+                    through_as_sequence,
+                    span,
+                });
+            }
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -334,6 +356,9 @@ impl TypeChecker {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
                 let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
+                if *mutate {
+                    self.pending_for_mutate.push((iter.id, iter_ty.clone(), iter.span));
+                }
                 // std.iteration/I1: a plain `for` yields elements read-only;
                 // `for mutate x in xs` is the mode whose writes reach the
                 // collection. Nothing enforced this, so `for c in xs { c.n += 1 }`

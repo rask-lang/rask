@@ -2570,6 +2570,40 @@ impl ToDiagnostic for rask_types::TypeError {
                 }
             }
 
+            ForMutateReadOnlySource { found, through_as_sequence, span } => {
+                let ty = found.to_string();
+                if *through_as_sequence {
+                    // A set's values are its keys: changing one in place would
+                    // leave it filed under the old one.
+                    Diagnostic::error(format!("can't mutate the values of a `{}` in place", ty))
+                        .with_code("E0914")
+                        .with_primary(*span, "lends each value read-only")
+                        .with_fix("remove the old value and insert the new one: `s.remove(old)` then `s.insert(new)`")
+                        .with_why(
+                            "a set's values are its keys — a value changed in place would sit \
+                             where the old one hashed, so the set walks them read-only \
+                             [type.sequence/SEQ45, std.collections]",
+                        )
+                } else {
+                    Diagnostic::error(format!(
+                        "`for mutate` needs a `SequenceMut`, and this is a `{}`",
+                        ty
+                    ))
+                    .with_code("E0914")
+                    .with_primary(*span, "lends each item read-only")
+                    .with_fix(
+                        "loop over the collection itself — `for mutate x in v` writes \
+                         through for a Vec or a Map's values — or have your type return a \
+                         `SequenceMut<T>`",
+                    )
+                    .with_why(
+                        "a `Sequence<T>` hands each item to the loop body as a borrow, so a \
+                         write would land in nothing the source keeps. Writing through takes \
+                         a source that lends items for writing [type.sequence/SEQ34, SEQ45]",
+                    )
+                }
+            }
+
             BreakValueFromStatementLoop { form, header, span } => {
                 Diagnostic::error(format!("cannot break with a value from a `{}` loop", form))
                     .with_code("E0865")
