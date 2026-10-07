@@ -300,6 +300,7 @@ RaskVec *rask_iter_take(const RaskVec *src, int64_t n);
 RaskVec *rask_vec_clone(const RaskVec *v);
 RaskVec *rask_vec_take_all(RaskVec *v);
 int64_t  rask_vec_move_out(RaskVec *v, int64_t index, void *out);
+int64_t  rask_field_take(const void *field, int64_t size, void *out);
 int64_t  rask_wide_sum(const RaskVec *v);
 void     rask_vec_sort(RaskVec *v);
 // Sort by the scalar at offset 0 of each element — the element itself, or the

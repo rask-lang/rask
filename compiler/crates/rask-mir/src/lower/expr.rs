@@ -1541,6 +1541,9 @@ impl<'a> MirLowerer<'a> {
             } => self.lower_method_call(expr, object, method, args, type_args),
 
             // Field access
+            ExprKind::Field { .. } if self.ctx.field_reuses.contains(&expr.id) => {
+                self.lower_field_move_out(expr)
+            }
             ExprKind::Field { object, field } => self.lower_field(expr, object, field),
 
             // Dynamic field access: value.(expr) — CT49 resolves this to a
@@ -2824,6 +2827,49 @@ impl<'a> MirLowerer<'a> {
 
             Ok((MirOperand::Local(result_local), ret_ty))
         }
+
+    /// A field read that moves the value out: `let old = self.memtable`
+    /// before `self.memtable = Memtable.new()` (mem.parameters/PM7).
+    ///
+    /// The ownership pass marks it (`field_reuses`), and marks the refill so
+    /// the slot isn't released there. The read itself goes through
+    /// `Field_take`, which copies the bytes like any read but hands them over:
+    /// the frame owns what came back and frees it, where a plain read would
+    /// be a view of a slot that is about to hold something else.
+    fn lower_field_move_out(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        let ExprKind::Field { object, field } = &expr.kind else {
+            unreachable!("lower_field_move_out is only called on a field read");
+        };
+        let Some((base, offset, fty, fsize)) = self.lower_place_chain(expr) else {
+            return self.lower_field(expr, object, field);
+        };
+        // A container field is a bare `Ptr` in the layout. Which container it
+        // is decides its free, so it comes from the checker's type.
+        let ty = match (&fty, self.ctx.lookup_raw_type(expr.id)) {
+            (MirType::Ptr, Some(t)) => self.ctx.payload_to_mir(t),
+            _ => fty.clone(),
+        };
+        let size = fsize.unwrap_or_else(|| fty.size());
+        let addr = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: addr,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(base),
+                right: MirOperand::Constant(MirConst::Int(offset as i64)),
+            },
+        }));
+        let dst = self.builder.alloc_temp(ty);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(dst),
+            func: FunctionRef::internal("Field_take".to_string()),
+            args: vec![
+                MirOperand::Local(addr),
+                MirOperand::Constant(MirConst::Int(size as i64)),
+            ],
+        }));
+        Ok((MirOperand::Local(dst), fty))
+    }
 
     fn lower_field(&mut self, expr: &Expr, object: &Expr, field: &str) -> Result<TypedOperand, LoweringError> {
             // CT49: inside an unrolled `comptime for field in reflect.fields<T>()`

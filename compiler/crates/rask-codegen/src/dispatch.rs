@@ -333,6 +333,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         // `for x in v.take_all()`: the binding takes the element over, and the
         // slot is zeroed so the vector's free skips it.
+        // `let old = self.f` before a refill: the field's bytes, handed over.
+        StdlibEntry {
+            mir_name: "Field_take", c_name: "rask_field_take",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry {
             mir_name: "Vec_move_out", c_name: "rask_vec_move_out",
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,

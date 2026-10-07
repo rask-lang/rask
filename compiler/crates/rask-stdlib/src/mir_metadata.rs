@@ -369,6 +369,10 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // `for x in v.take_all()` moves each element out of the vector `take_all`
     // returned: a `remove` that zeroes the slot instead of shifting.
     ("Vec_move_out", Internal::SameAs("Vec_remove")),
+    // `let old = self.f` ahead of `self.f = …` (mem.parameters/PM7): the
+    // field's value, handed to the binding. Argument zero is the field's
+    // address, borrowed; nothing in the slot is released.
+    ("Field_take", Internal::SameAs("Vec_remove")),
     ("Map_lend", Internal::LendsElement),
     ("Vec_write_back", Internal::WritesBack),
     ("Map_write_back", Internal::WritesBack),
@@ -776,6 +780,7 @@ const TRANSFERS_OUT: &[&str] = &[
     "Vec_remove",
     "Vec_remove_unordered",
     "Vec_move_out",
+    "Field_take",
     "Map_insert",
     "Map_remove",
     "Pool_remove",

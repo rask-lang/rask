@@ -16,6 +16,18 @@
 //! a `take` argument or receiver, a struct, tuple or array literal's element, a
 //! variant's payload, `Heap(x)`, a channel send, or the value itself.
 //!
+//! The other half is an assignment that refills a place an earlier statement
+//! in the same block moved out of — mem.parameters/PM7's consume-and-replace:
+//!
+//! ```text
+//! let old = self.memtable          // the old memtable is `old`'s now
+//! self.memtable = Memtable.new()   // nothing left in the slot to release
+//! ```
+//!
+//! Releasing there freed what `old` holds (#1496). The
+//! field read in the `let` is in the set too: lowering reads it as a move, so
+//! the frame owns `old` and frees what it holds.
+//!
 //! It is a fact lowering needs about every body it compiles, the stdlib's
 //! included, so it is worked out on its own and reports nothing. Whether a
 //! body follows the ownership rules is the checker's question, asked of the
@@ -44,9 +56,32 @@ pub fn field_reuses(program: &TypedProgram, bodies: &[&[Decl]], signatures: &[&[
     for decls in bodies {
         for decl in decls.iter() {
             visit::visit_decl(decl, &mut finder);
+            for body in decl_bodies(decl) {
+                finder.refills_in(body);
+                visit::walk_body(body, &mut |e| {
+                    if let ExprKind::Block(stmts) = &e.kind {
+                        finder.refills_in(stmts);
+                    }
+                });
+            }
         }
     }
     finder.found
+}
+
+/// The statement lists a declaration holds directly.
+fn decl_bodies(decl: &Decl) -> Vec<&[Stmt]> {
+    use rask_ast::decl::DeclKind;
+    match &decl.kind {
+        DeclKind::Fn(f) => vec![&f.body[..]],
+        DeclKind::Struct(s) => s.methods.iter().map(|m| &m.body[..]).collect(),
+        DeclKind::Enum(e) => e.methods.iter().map(|m| &m.body[..]).collect(),
+        DeclKind::Interface(t) => t.methods.iter().map(|m| &m.body[..]).collect(),
+        DeclKind::Impl(i) => i.methods.iter().map(|m| &m.body[..]).collect(),
+        DeclKind::Test(t) => vec![&t.body[..]],
+        DeclKind::Benchmark(b) => vec![&b.body[..]],
+        _ => Vec::new(),
+    }
 }
 
 struct Finder<'c, 'a> {
@@ -72,6 +107,38 @@ impl<'c, 'a, 'e> Visit<'e> for Finder<'c, 'a> {
 }
 
 impl Finder<'_, '_> {
+    /// Assignments in one statement list that refill a field an earlier `let`
+    /// of the same list moved out of, and the field reads that moved them.
+    /// Only the same list: a move inside a branch leaves the slot full on the
+    /// other path, and that one still has to be released.
+    ///
+    /// Only a `let`'s move. A field handed to a `take` parameter is released
+    /// at the refill as before; that convention is the callee's, and a
+    /// whole-variable `b = …` after `eat(b)` relies on it.
+    fn refills_in(&mut self, stmts: &[Stmt]) {
+        // Each field a `let` moved out of, with the read that moved it.
+        let mut emptied: Vec<(Vec<String>, rask_ast::NodeId)> = Vec::new();
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Assign { target, .. } => {
+                    if let Some(place) = place_path(target) {
+                        if let Some(at) = emptied.iter().position(|(p, _)| *p == place) {
+                            self.found.insert(stmt.id);
+                            self.found.insert(emptied[at].1);
+                            emptied.remove(at);
+                        }
+                    }
+                }
+                StmtKind::Let { init, .. } | StmtKind::Mut { init, .. } => {
+                    if let (Some(place), ExprKind::Field { .. }) = (place_path(init), &init.kind) {
+                        emptied.push((place, init.id));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Whether `value`, or anything in it, takes ownership of `place`.
     fn takes(&self, value: &Expr, place: &[String]) -> bool {
         if overlaps(value, place) {

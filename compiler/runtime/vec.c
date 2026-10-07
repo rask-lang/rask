@@ -697,6 +697,14 @@ RaskVec *rask_vec_take_all(RaskVec *v) {
     return out;
 }
 
+// `let old = self.f` ahead of `self.f = …`: the field's bytes, for a binding
+// that owns them from here. The refill writes over the slot without releasing
+// it, so nothing is zeroed.
+int64_t rask_field_take(const void *field, int64_t size, void *out) {
+    if (out && field) memcpy(out, field, (size_t)size);
+    return 0;
+}
+
 // `for x in v.take_all()`: the loop binding takes element `index` over. The
 // slot is zeroed so the free at the end releases only what the loop never
 // reached (a `break`, or a filtered-out element) — every release treats an
