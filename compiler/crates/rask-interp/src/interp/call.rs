@@ -141,7 +141,6 @@ impl Interpreter {
 
         self.generic_frames.push(generics);
 
-        let mut aliased = Vec::new();
         for (i, (param, arg)) in func.params.iter().zip(args.into_iter()).enumerate() {
             // A by-value parameter receives an independent copy (VS1): mutating
             // it inside the callee can't alias the caller's value. `mutate`/`self`
@@ -159,18 +158,13 @@ impl Interpreter {
                 Some(ty) => wrap_optional_layers(arg, ty),
                 None => arg,
             };
-            // PM2: a `mutate` parameter is the caller's variable. Bound to its
-            // storage when the argument is one, so there is nothing to write
-            // back; otherwise to a copy the call site writes back. Either way
-            // it is borrowed, which a closure built here has to know (CM3).
+            // PM2: a `mutate` parameter is the caller's place, bound as such.
+            // An argument that isn't one (a temporary) gets storage of its
+            // own, since nobody can see what is written there. Either way the
+            // binding is borrowed, which a closure built here has to know (CM3).
             if param.is_mutate {
-                match lent.get(i).cloned().flatten() {
-                    Some(cell) => {
-                        aliased.push(i);
-                        self.env.define_lent(param.name.clone(), cell);
-                    }
-                    None => self.env.define_lent(param.name.clone(), crate::env::slot(arg)),
-                }
+                let cell = lent.get(i).cloned().flatten().unwrap_or_else(|| crate::env::slot(arg));
+                self.env.define_lent(param.name.clone(), cell);
                 continue;
             }
             self.env.define(param.name.clone(), arg);
@@ -203,14 +197,6 @@ impl Interpreter {
         }
 
         self.resource_tracker.end_scope(scope_depth);
-
-        // mem.parameters/PM2: snapshot the final values of `mutate` params before
-        // the scope is dropped, so the call site can write each back to its
-        // argument place. Keyed by parameter index (self is param 0 for methods).
-        self.mutate_writebacks = func.params.iter().enumerate()
-            .filter(|(i, p)| p.is_mutate && !aliased.contains(i))
-            .filter_map(|(i, p)| self.env.get(&p.name).map(|v| (i, v.clone())))
-            .collect();
 
         self.generic_frames.pop();
         self.env.pop_scope();

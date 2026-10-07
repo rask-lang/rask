@@ -256,18 +256,8 @@ pub struct Interpreter {
     /// ER16a: the `try` whose propagation is still owed, and the step it waits
     /// for. Armed when a `try` node is evaluated, discharged at that step.
     pub(crate) pending_try_step: Option<(rask_ast::NodeId, rask_ast::NodeId)>,
-    /// Final values of `mutate` parameters from the most recent user-function
-    /// call, keyed by parameter index (mem.parameters/PM2). The call site reads
-    /// this to write each value back to its argument place. Cleared before every
-    /// call so stale entries can't leak into an unrelated call's arguments.
-    pub(crate) mutate_writebacks: Vec<(usize, Value)>,
-    /// `mutate_writebacks` of the last method body `call_rask_method` ran,
-    /// self included at index 0. Kept apart because a builtin method runs
-    /// user functions of its own (`sort` reaching `compare`), and what those
-    /// leave in `mutate_writebacks` isn't this call's to write back.
-    pub(crate) method_writebacks: Vec<(usize, Value)>,
-    /// The caller's storage for each `mutate` argument of the call about to
-    /// start, so the callee binds the caller's variable instead of a copy.
+    /// The caller's place behind each `mutate` argument of the call about to
+    /// start, so the callee binds that place instead of a copy.
     pub(crate) lent_args: Option<LentArgs>,
     /// The `for` loops currently driving a `Sequence<T>`, innermost last
     /// (type.sequence/SEQ6). A `SequenceYield` builtin call runs the top
@@ -275,17 +265,16 @@ pub struct Interpreter {
     pub(crate) yield_stack: Vec<YieldFrame>,
 }
 
-/// The caller's variables behind a call's `mutate` arguments, per parameter
-/// index (self is 0 for a method).
+/// The caller's places behind a call's `mutate` arguments, per parameter
+/// index (self is 0 for a method): a variable, a field, an element or a map
+/// entry (`env::Slot`).
 ///
-/// A `mutate` parameter is the caller's variable, not a copy of it
+/// A `mutate` parameter is the caller's place, not a copy of it
 /// (mem.parameters/PM2). Copy-in at the call and copy-back at the return look
 /// the same until something writes after the return: a `Sequence` built from
 /// the parameter runs when a terminal drives it, long after the callee
-/// returned, and its writes landed on the copy (#1324). Binding the caller's
-/// slot makes the write the caller's whenever it happens. An argument that
-/// isn't a plain variable — `mutate b.n` — has no slot of its own, so it
-/// still goes through the copy-back, and a write after the return is lost (#1489).
+/// returned, and its writes landed on the copy (#1324, #1489). Binding the
+/// place makes the write the caller's whenever it happens.
 ///
 /// Handed over through a field because the call machinery between the call
 /// site and the binding passes values only. `callee` and `depth` pin it to
@@ -496,8 +485,6 @@ impl Interpreter {
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
-            mutate_writebacks: Vec::new(),
-            method_writebacks: Vec::new(),
             lent_args: None,
             yield_stack: Vec::new(),
         }
@@ -540,8 +527,6 @@ impl Interpreter {
             fallback_keeps_shape: std::collections::HashSet::new(),
             build_state: None,
             source_info: None,
-            mutate_writebacks: Vec::new(),
-            method_writebacks: Vec::new(),
             lent_args: None,
             yield_stack: Vec::new(),
         }
@@ -586,8 +571,6 @@ impl Interpreter {
             try_chain_placement: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
-            mutate_writebacks: Vec::new(),
-            method_writebacks: Vec::new(),
             lent_args: None,
             yield_stack: Vec::new(),
         };
@@ -873,7 +856,7 @@ impl Interpreter {
         // has no tracker — printed nothing (#882).
         let handed: Vec<Value> = captured_vars
             .values()
-            .map(|slot| slot.lock().unwrap().clone())
+            .filter_map(|slot| slot.get())
             .collect();
         for (name, cell) in captured_vars {
             child.env.define_slot(name, cell);

@@ -1558,7 +1558,7 @@ impl Value {
                 // Deep-cloning a closure detaches it from what it borrowed, so
                 // each capture gets storage of its own.
                 let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
-                    .map(|(k, v)| (k.clone(), crate::env::slot(v.lock().unwrap().deep_clone_impl(share_closures))))
+                    .map(|(k, v)| (k.clone(), crate::env::slot(v.get().unwrap_or(Value::Unit).deep_clone_impl(share_closures))))
                     .collect();
                 Value::Closure {
                     params: params.clone(),

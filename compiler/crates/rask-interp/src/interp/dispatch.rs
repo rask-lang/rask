@@ -19,11 +19,9 @@ impl Interpreter {
     /// `|u| { u.visit_count += 1 }` example did nothing at all (#843).
     ///
     /// The interpreter's closure values carry parameter *names* and nothing
-    /// else, with no `mutate` marker, so the write-back can't be keyed off the
-    /// declaration the way `mutate_writebacks` is for a named function. Reading
-    /// the binding back out before the scope is popped is the same snapshot,
-    /// taken from the other side. Whether the closure was *allowed* to write is
-    /// the checker's business, and it already enforces `mutate`.
+    /// else, with no `mutate` marker, so the binding is read back out before
+    /// the scope is popped. Whether the closure was *allowed* to write is the
+    /// checker's business, and it already enforces `mutate`.
     pub(crate) fn call_closure_keeping_arg(
         &mut self,
         func: Value,
@@ -45,15 +43,24 @@ impl Interpreter {
             };
             return Ok((value, final_arg));
         }
-        // A named function passed where a closure was expected keeps the
-        // ordinary path; its `mutate` snapshot is already recorded by index.
-        let value = self.call_value(func, args)?;
-        let written = self
-            .mutate_writebacks
-            .iter()
-            .find(|(i, _)| *i == 0)
-            .map(|(_, v)| v.clone());
-        Ok((value, written))
+        // A named function does declare `mutate`: lend it storage for the
+        // argument, and read that back.
+        let decl = match &func {
+            Value::Function { name, .. } => self.functions.get(name).cloned(),
+            _ => None,
+        };
+        let lent = decl.filter(|d| d.params.first().is_some_and(|p| p.is_mutate)).map(|d| {
+            let cell = crate::env::slot(args.first().cloned().unwrap_or(Value::Unit));
+            self.lent_args = Some(super::LentArgs {
+                depth: self.call_depth,
+                callee: d.name.clone(),
+                slots: vec![Some(cell.clone())],
+            });
+            cell
+        });
+        let value = self.call_value(func, args);
+        self.lent_args = None;
+        Ok((value?, lent.and_then(|cell| cell.get())))
     }
 
     /// Call a value, keeping where the failure happened.
@@ -737,17 +744,14 @@ impl Interpreter {
         self.call_method_body(&func, all, generics)
     }
 
-    /// Run a Rask method body, receiver first, and keep its `mutate` finals
-    /// for the call site in `method_writebacks`.
+    /// Run a Rask method body, receiver first.
     pub(crate) fn call_method_body(
         &mut self,
         func: &rask_ast::decl::FnDecl,
         args: Vec<Value>,
         generics: GenericFrame,
     ) -> Result<Value, RuntimeError> {
-        let result = self.call_function(func, args, generics).map_err(|d| d.error);
-        self.method_writebacks = std::mem::take(&mut self.mutate_writebacks);
-        result
+        self.call_function(func, args, generics).map_err(|d| d.error)
     }
 
     /// Call a Rask `extend`-block function that takes no `self` —

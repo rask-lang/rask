@@ -629,7 +629,7 @@ impl Interpreter {
         // yield was called from.
         self.env.push_scope();
         for (name, cell) in &frame.scope {
-            let cell = std::sync::Arc::clone(cell);
+            let cell = cell.clone();
             if frame.lent.contains(name) {
                 self.env.define_lent(name.clone(), cell);
             } else {

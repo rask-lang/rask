@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `mutate` argument can be a field, an element or a map entry, not only a
+// variable, and the parameter is that place: a write made after the callee
+// returned, by a Sequence driven later, still lands there (#1489). The
+// interpreter used to copy those in and write them back at the return, so
+// the later write went to the copy.
+
+import sequence.Sequence
+
+func counting_source(mutate calls: i32) -> Sequence<i32> {
+    return |yield| {
+        calls = calls + 1
+        if !yield(1) { return }
+    }
+}
+
+struct Inner {
+    n: i32,
+}
+
+struct Outer {
+    n: i32,
+    inner: Inner,
+}
+
+enum Light {
+    Red,
+    Green,
+}
+
+extend Light {
+    func advance(mutate self) {
+        self = match self {
+            Light.Red => Light.Green,
+            Light.Green => Light.Red,
+        }
+    }
+}
+
+struct Lamp {
+    light: Light,
+}
+
+test "a field" {
+    mut b = Outer { n: 0, inner: Inner { n: 0 } }
+    let seq = counting_source(mutate b.n)
+    assert b.n == 0
+    let total: i32 = seq.sum()
+    assert total == 1
+    assert b.n == 1
+}
+
+test "a nested field" {
+    mut b = Outer { n: 0, inner: Inner { n: 4 } }
+    let seq = counting_source(mutate b.inner.n)
+    let total: i32 = seq.sum()
+    assert total == 1
+    assert b.inner.n == 5
+    assert b.n == 0
+}
+
+test "a Vec element" {
+    mut v = Vec.from([0, 0, 0])
+    let seq = counting_source(mutate v[1])
+    let total: i32 = seq.sum()
+    assert total == 1
+    assert v[0] == 0
+    assert v[1] == 1
+    assert v[2] == 0
+}
+
+test "a Map value" {
+    mut m = Map.new()
+    m.insert("a", 5)
+    let seq = counting_source(mutate m["a"])
+    let total: i32 = seq.sum()
+    assert total == 1
+    assert m["a"] == 6
+}
+
+test "a whole `mutate self` replacement through a field" {
+    mut lamp = Lamp { light: Light.Red }
+    lamp.light.advance()
+    assert lamp.light == Light.Green
+    mut lights = Vec.from([Light.Red, Light.Red])
+    lights[1].advance()
+    assert lights[0] == Light.Red
+    assert lights[1] == Light.Green
+}
