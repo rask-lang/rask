@@ -33,12 +33,79 @@ pub enum TypeExpr {
     Array { elem: Box<TypeExpr>, len: String },
     /// `[N]T`, the fixed-count form `@binary` layouts use.
     FixedCount { count: String, elem: Box<TypeExpr> },
-    /// `func(A, B) -> R` and `|A, B| -> R`.
-    Func { params: Vec<TypeExpr>, ret: Box<TypeExpr> },
+    /// `func(A, mutate B, take C) -> R` and `|A, mutate B| -> R`. Each
+    /// parameter carries its mode: it is part of the type (type.functions/FT1).
+    Func { params: Vec<FuncParam>, ret: Box<TypeExpr> },
     /// `*T`
     RawPtr(Box<TypeExpr>),
     /// `any Interface`
     Any(Box<TypeExpr>),
+}
+
+/// How a parameter is passed: lent, lent for writing, or handed over.
+///
+/// A `deleting` parameter is `Mutate` here. The extra promise it makes is
+/// about which links survive the call, which the ownership pass reads off the
+/// declaration, not off a function's type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParamMode {
+    Borrow,
+    Mutate,
+    Take,
+}
+
+impl ParamMode {
+    /// The word written before the parameter, or `None` for a borrow.
+    pub fn keyword(self) -> Option<&'static str> {
+        match self {
+            ParamMode::Borrow => None,
+            ParamMode::Mutate => Some("mutate"),
+            ParamMode::Take => Some("take"),
+        }
+    }
+
+    pub fn from_flags(is_take: bool, is_mutate: bool) -> ParamMode {
+        if is_take {
+            ParamMode::Take
+        } else if is_mutate {
+            ParamMode::Mutate
+        } else {
+            ParamMode::Borrow
+        }
+    }
+}
+
+/// One parameter of a function type: its mode and its type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FuncParam {
+    pub mode: ParamMode,
+    pub ty: TypeExpr,
+}
+
+impl FuncParam {
+    pub fn borrowed(ty: TypeExpr) -> FuncParam {
+        FuncParam { mode: ParamMode::Borrow, ty }
+    }
+
+    fn map(&self, f: impl FnOnce(&TypeExpr) -> TypeExpr) -> FuncParam {
+        FuncParam { mode: self.mode, ty: f(&self.ty) }
+    }
+
+    fn source(&self) -> String {
+        match self.mode.keyword() {
+            Some(kw) => format!("{} {}", kw, self.ty.source()),
+            None => self.ty.source(),
+        }
+    }
+}
+
+impl fmt::Display for FuncParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(kw) = self.mode.keyword() {
+            write!(f, "{} ", kw)?;
+        }
+        write!(f, "{}", self.ty)
+    }
 }
 
 impl TypeExpr {
@@ -125,7 +192,7 @@ impl TypeExpr {
                 TypeExpr::FixedCount { count: count.clone(), elem: sub_box(elem) }
             }
             TypeExpr::Func { params, ret } => {
-                TypeExpr::Func { params: params.iter().map(sub).collect(), ret: sub_box(ret) }
+                TypeExpr::Func { params: params.iter().map(|p| p.map(sub)).collect(), ret: sub_box(ret) }
             }
             TypeExpr::RawPtr(inner) => TypeExpr::RawPtr(sub_box(inner)),
             TypeExpr::Any(inner) => TypeExpr::Any(sub_box(inner)),
@@ -162,7 +229,7 @@ impl TypeExpr {
             TypeExpr::Union(ts) | TypeExpr::Tuple(ts) => ts.iter_mut().for_each(|t| t.replace_projections(f)),
             TypeExpr::Array { elem, .. } | TypeExpr::FixedCount { elem, .. } => elem.replace_projections(f),
             TypeExpr::Func { params, ret } => {
-                params.iter_mut().for_each(|t| t.replace_projections(f));
+                params.iter_mut().for_each(|p| p.ty.replace_projections(f));
                 ret.replace_projections(f);
             }
         }
@@ -191,7 +258,7 @@ impl TypeExpr {
             TypeExpr::Union(ts) | TypeExpr::Tuple(ts) => ts.iter_mut().for_each(|t| t.rename(f)),
             TypeExpr::Array { elem, .. } | TypeExpr::FixedCount { elem, .. } => elem.rename(f),
             TypeExpr::Func { params, ret } => {
-                params.iter_mut().for_each(|t| t.rename(f));
+                params.iter_mut().for_each(|p| p.ty.rename(f));
                 ret.rename(f);
             }
         }
@@ -211,7 +278,7 @@ impl TypeExpr {
             TypeExpr::Result { ok, err } => ok.mentions(f) || err.mentions(f),
             TypeExpr::Union(ts) | TypeExpr::Tuple(ts) => ts.iter().any(|t| t.mentions(f)),
             TypeExpr::Array { elem, .. } | TypeExpr::FixedCount { elem, .. } => elem.mentions(f),
-            TypeExpr::Func { params, ret } => params.iter().any(|t| t.mentions(f)) || ret.mentions(f),
+            TypeExpr::Func { params, ret } => params.iter().any(|p| p.ty.mentions(f)) || ret.mentions(f),
         }
     }
 
@@ -238,7 +305,7 @@ impl TypeExpr {
                 TypeExpr::FixedCount { count: count.clone(), elem: sub_box(elem) }
             }
             TypeExpr::Func { params, ret } => {
-                TypeExpr::Func { params: params.iter().map(sub).collect(), ret: sub_box(ret) }
+                TypeExpr::Func { params: params.iter().map(|p| p.map(sub)).collect(), ret: sub_box(ret) }
             }
         }
     }
@@ -262,7 +329,7 @@ impl TypeExpr {
             TypeExpr::Union(ts) | TypeExpr::Tuple(ts) => ts.iter().for_each(|t| t.walk_paths(f)),
             TypeExpr::Array { elem, .. } | TypeExpr::FixedCount { elem, .. } => elem.walk_paths(f),
             TypeExpr::Func { params, ret } => {
-                params.iter().for_each(|t| t.walk_paths(f));
+                params.iter().for_each(|p| p.ty.walk_paths(f));
                 ret.walk_paths(f);
             }
         }
@@ -290,7 +357,7 @@ impl TypeExpr {
             TypeExpr::Union(ts) | TypeExpr::Tuple(ts) => ts.iter().for_each(|t| t.walk_names(f)),
             TypeExpr::Array { elem, .. } | TypeExpr::FixedCount { elem, .. } => elem.walk_names(f),
             TypeExpr::Func { params, ret } => {
-                params.iter().for_each(|t| t.walk_names(f));
+                params.iter().for_each(|p| p.ty.walk_names(f));
                 ret.walk_names(f);
             }
         }
@@ -350,10 +417,13 @@ impl TypeExpr {
             // arrow the source never had. `func(…)` rather than `|…|`: `||` is
             // the or-operator token, so a zero-parameter closure type can't use
             // the other spelling.
-            TypeExpr::Func { params, ret } => match **ret {
-                TypeExpr::Unit => format!("func({})", list(params, ", ")),
-                _ => format!("func({}) -> {}", list(params, ", "), ret.source()),
-            },
+            TypeExpr::Func { params, ret } => {
+                let params = params.iter().map(FuncParam::source).collect::<Vec<_>>().join(", ");
+                match **ret {
+                    TypeExpr::Unit => format!("func({})", params),
+                    _ => format!("func({}) -> {}", params, ret.source()),
+                }
+            }
             TypeExpr::RawPtr(inner) => format!("*{}", inner.source()),
             TypeExpr::Any(inner) => format!("any {}", inner.source()),
         }
@@ -397,7 +467,12 @@ impl fmt::Display for TypeExpr {
             TypeExpr::FixedCount { count, elem } => write!(f, "[{}]{}", count, elem),
             TypeExpr::Func { params, ret } => {
                 f.write_str("func(")?;
-                join(f, params, ", ")?;
+                for (i, p) in params.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", p)?;
+                }
                 write!(f, ") -> {}", ret)
             }
             TypeExpr::RawPtr(inner) => write!(f, "*{}", inner),

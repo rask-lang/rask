@@ -379,7 +379,10 @@ impl TypeChecker {
                         Some(t) => resolve_type_expr(t, &self.types).unwrap_or(Type::Error),
                     };
                     param_vars.push((p.name.clone(), ty.clone()));
-                    param_types.push(ty);
+                    param_types.push(crate::types::FnParam {
+                        mode: ParamMode::from_flags(p.is_take, p.is_mutate),
+                        ty,
+                    });
                 }
 
                 let ret_ty = if let Some(ok) = inferred_error_ok {
@@ -1836,7 +1839,7 @@ impl TypeChecker {
                 } else if p.is_mutate {
                     ParamMode::Mutate
                 } else {
-                    ParamMode::Default
+                    ParamMode::Borrow
                 };
                 (ty, mode)
             })
@@ -2111,7 +2114,7 @@ impl TypeChecker {
                 ret,
                 defaults: Vec::new(),
             };
-            let other = vec![(self_ty.clone(), ParamMode::Default)];
+            let other = vec![(self_ty.clone(), ParamMode::Borrow)];
 
             // EQ1/EQ3, HA1, CL1/CL2, CO1/ORD2: each when every field or
             // payload has it (`parts_derive`). No `default`: there is no
@@ -2776,7 +2779,7 @@ impl TypeChecker {
                     type_params: Vec::new(),
                     name: "parse".to_string(),
                     self_param: SelfParam::None,
-                    params: vec![(bytes.clone(), ParamMode::Default)],
+                    params: vec![(bytes.clone(), ParamMode::Borrow)],
                     ret: parse_result,
                     defaults: Vec::new(),
                 },
@@ -3095,7 +3098,7 @@ pub(super) fn for_each_unresolved_name(ty: &Type, f: &mut impl FnMut(&str)) {
         | Type::SimdVector { elem, .. } => for_each_unresolved_name(elem, f),
         Type::Fn { params, ret } => {
             for p in params {
-                for_each_unresolved_name(p, f);
+                for_each_unresolved_name(&p.ty, f);
             }
             for_each_unresolved_name(ret, f);
         }

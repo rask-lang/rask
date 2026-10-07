@@ -25,7 +25,7 @@ use rask_ast::{
 };
 use rask_mono::{StructLayout, EnumLayout};
 use rask_types::Type;
-use rask_ast::ty::TypeExpr;
+use rask_ast::ty::{ParamMode, TypeExpr};
 use std::collections::HashMap;
 
 /// Typed expression result from lowering
@@ -125,12 +125,7 @@ fn scalar_mutate_params(f: &rask_ast::decl::FnDecl, ctx: &MirContext) -> Vec<Opt
                 return None;
             }
             let written = p.ty.as_ref().filter(|_| p.is_mutate)?;
-            let ty = ctx.resolve_type_expr(written);
-            if crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty) {
-                Some(ty)
-            } else {
-                None
-            }
+            mutate_param_passing(ParamMode::Mutate, &p.name, &ctx.resolve_type_expr(written)).0
         })
         .collect()
 }
@@ -144,11 +139,26 @@ fn aggregate_mutate_params(params: &[rask_ast::decl::Param], ctx: &MirContext) -
             let Some(written) = p.ty.as_ref().filter(|_| p.is_mutate) else {
                 return false;
             };
-            let ty = ctx.resolve_type_expr(written);
-            crate::lower::stmt::mutate_param_by_pointer(&ty)
-                && !crate::lower::stmt::mutate_param_needs_own_pointer(&p.name, &ty)
+            mutate_param_passing(ParamMode::Mutate, &p.name, &ctx.resolve_type_expr(written)).1
         })
         .collect()
+}
+
+/// How a parameter of type `ty` is passed: `(Some(ty), _)` for a `mutate`
+/// parameter that gets a pointer of its own (a scalar, or a container handle
+/// that isn't `self`), `(_, true)` for a `mutate` aggregate whose local
+/// already is the caller's address. A declared function, a closure literal
+/// and a call through a function value all answer from here, so the two
+/// ends of a call can't disagree.
+pub(crate) fn mutate_param_passing(mode: ParamMode, name: &str, ty: &MirType) -> (Option<MirType>, bool) {
+    if mode != ParamMode::Mutate {
+        return (None, false);
+    }
+    if crate::lower::stmt::mutate_param_needs_own_pointer(name, ty) {
+        (Some(ty.clone()), false)
+    } else {
+        (None, crate::lower::stmt::mutate_param_by_pointer(ty))
+    }
 }
 
 /// Function signature for type inference
@@ -5972,7 +5982,7 @@ pub(crate) fn type_names_a_parameter(ty: &Type) -> Option<String> {
         }
         Type::Fn { params, ret } => params
             .iter()
-            .find_map(type_names_a_parameter)
+            .find_map(|p| type_names_a_parameter(&p.ty))
             .or_else(|| type_names_a_parameter(ret)),
         _ => None,
     }

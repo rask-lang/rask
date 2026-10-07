@@ -62,7 +62,10 @@ impl<'a> TypeFormatter<'a> {
 
             Type::Fn { params, ret } => {
                 let params_str = params.iter()
-                    .map(|p| self.format(p))
+                    .map(|p| match p.mode.keyword() {
+                        Some(kw) => format!("{} {}", kw, self.format(&p.ty)),
+                        None => self.format(&p.ty),
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("func({}) -> {}", params_str, self.format(ret))

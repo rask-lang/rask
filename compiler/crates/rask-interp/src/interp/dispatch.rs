@@ -95,6 +95,38 @@ impl Interpreter {
         self.call_value(func, args).map_err(|e| (e, None))
     }
 
+    /// Run a closure. `places` holds the caller's storage behind each `mutate`
+    /// argument, by position: the parameter binds to it, so the body's writes
+    /// land there (mem.closures/CP2). The checker matched the call's markers
+    /// against the closure's modes (type.functions/FT1), so a place is there
+    /// exactly where the parameter is `mutate`.
+    pub(crate) fn call_closure(
+        &mut self,
+        closure: Value,
+        args: Vec<Value>,
+        places: Vec<Option<crate::env::Slot>>,
+    ) -> Result<Value, RuntimeError> {
+        let Value::Closure { params, body, captured_env, lent, generics, .. } = closure else {
+            return self.call_value(closure, args);
+        };
+        self.enter_closure(&captured_env, &lent, &generics);
+        for (i, (param, arg)) in params.iter().zip(args.into_iter()).enumerate() {
+            match places.get(i).cloned().flatten() {
+                Some(cell) => self.env.define_lent(param.clone(), cell),
+                // Closure params are by-value bindings (VS1) — copy so the
+                // body can't alias the caller's value.
+                None => self.env.define(param.clone(), arg.copy_on_bind()),
+            }
+        }
+        let result = self.eval_expr(&body).map_err(|diag| diag.error);
+        self.leave_closure();
+        match result {
+            Ok(v) => Ok(v),
+            Err(RuntimeError::Return(v)) => Ok(v),
+            Err(e) => Err(e),
+        }
+    }
+
     pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match func {
             Value::Function { name, generics } => {
@@ -140,28 +172,7 @@ impl Interpreter {
                     origin: None,
                 })
             }
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-                lent,
-                generics,
-                ..
-            } => {
-                self.enter_closure(&captured_env, &lent, &generics);
-                for (param, arg) in params.iter().zip(args.into_iter()) {
-                    // Closure params are by-value bindings (VS1) — copy so the
-                    // body can't alias the caller's value.
-                    self.env.define(param.clone(), arg.copy_on_bind());
-                }
-                let result = self.eval_expr(&body).map_err(|diag| diag.error);
-                self.leave_closure();
-                match result {
-                    Ok(v) => Ok(v),
-                    Err(RuntimeError::Return(v)) => Ok(v),
-                    Err(e) => Err(e),
-                }
-            }
+            closure @ Value::Closure { .. } => self.call_closure(closure, args, Vec::new()),
             Value::NominalConstructor { type_name } => {
                 if args.len() != 1 {
                     return Err(RuntimeError::ArityMismatch {

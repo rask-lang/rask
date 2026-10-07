@@ -396,7 +396,10 @@ pub fn field_type(ty: &TypeExpr) -> Type {
         },
         TypeExpr::Tuple(elems) => Type::Tuple(elems.iter().map(field_type).collect()),
         TypeExpr::Func { params, ret } => Type::Fn {
-            params: params.iter().map(field_type).collect(),
+            params: params
+                .iter()
+                .map(|p| rask_types::FnParam { mode: p.mode, ty: field_type(&p.ty) })
+                .collect(),
             ret: Box::new(field_type(ret)),
         },
         TypeExpr::RawPtr(inner) => Type::RawPtr(Box::new(field_type(inner))),
@@ -1209,7 +1212,7 @@ mod tests {
     #[test]
     fn fn_pointer_size() {
         let (size, align) = tsa(&Type::Fn {
-            params: vec![Type::I32],
+            params: vec![rask_types::FnParam::borrowed(Type::I32)],
             ret: Box::new(Type::I32),
         });
         assert_eq!(size, 8);

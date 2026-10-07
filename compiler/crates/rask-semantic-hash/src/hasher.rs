@@ -141,7 +141,11 @@ impl Hasher {
             }
             TypeExpr::Func { params, ret } => {
                 self.feed_tag(11);
-                self.feed_types(params);
+                self.feed_u32(params.len() as u32);
+                for p in params {
+                    self.feed_tag(p.mode as u8);
+                    self.feed_type(&p.ty);
+                }
                 self.feed_type(ret);
             }
             TypeExpr::RawPtr(inner) => {

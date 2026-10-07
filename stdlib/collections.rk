@@ -153,7 +153,7 @@ extend Vec<T> {
 
     /// Modify element at index through a closure.
     @native
-    public func modify(mutate self, index: i64, f: func(T) -> R) -> Option<R> {}
+    public func modify(mutate self, index: i64, f: func(mutate T) -> R) -> Option<R> {}
 
     /// Swap elements at two indices.
     @native("rask_vec_swap")
@@ -551,7 +551,7 @@ extend Map<K, V> {
 
     /// Modify value for key through a closure.
     @native
-    public func modify(mutate self, key: K, f: func(V) -> R) -> Option<R> {}
+    public func modify(mutate self, key: K, f: func(mutate V) -> R) -> Option<R> {}
 
     /// Insert default if key absent, no-op if present. Panics on alloc failure.
     /// Named for what it does — `ensure` is the cleanup keyword.
@@ -572,7 +572,7 @@ extend Map<K, V> {
     /// Insert default if key absent, then modify the value. One hash lookup.
     /// Panics on alloc failure.
     @native
-    public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R {}
+    public func modify_with_default(mutate self, key: K, default: func() -> V, f: func(mutate V) -> R) -> R {}
 
     /// The chain head: each entry as a `(key, value)` pair (type.sequence/SEQ49).
     ///

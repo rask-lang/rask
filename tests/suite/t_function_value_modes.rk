@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A function value's type carries each parameter's mode (type.functions/FT1),
+// and a call through the value passes its arguments exactly as a direct call
+// would. Before, `func(T)` had no modes: a `take` function sat behind a
+// borrowing type, so the caller kept a value the callee had consumed (native
+// leaked it), and a `mutate` function wrote through a `let` and natively read
+// a vector handle as the address of one (#1478).
+
+struct Counter {
+    n: i64
+}
+
+struct Bag {
+    items: Vec<string>
+}
+
+func consume(take p: Vec<i64>) -> u64 {
+    return p.len()
+}
+
+func keep(take p: Vec<i64>, mutate into: Vec<Vec<i64>>) {
+    into.push(p)
+}
+
+func weigh(take b: Bag) -> u64 {
+    return b.items.len()
+}
+
+func grow(mutate p: Vec<i64>) {
+    p.push(9)
+}
+
+func bump(mutate n: i64) {
+    n += 1
+}
+
+func tick(mutate c: Counter) {
+    c.n += 100
+}
+
+func count(p: Vec<i64>) -> u64 {
+    return p.len()
+}
+
+func run_take(f: func(take Vec<i64>) -> u64, take v: Vec<i64>) -> u64 {
+    return f(v)
+}
+
+func run_mutate(f: func(mutate i64), mutate x: i64) {
+    f(mutate x)
+}
+
+test "take through a value hands the argument over" {
+    let f: func(take Vec<i64>) -> u64 = consume
+    let v: Vec<i64> = [1, 2, 3]
+    assert f(v) == 3
+    let w: Vec<i64> = [4, 5]
+    assert run_take(consume, w) == 2
+    let k = keep
+    mut all: Vec<Vec<i64>> = Vec.new()
+    let x: Vec<i64> = [6]
+    k(x, mutate all)
+    assert all.len() == 1
+    assert all[0][0] == 6
+    let wf = weigh
+    let bag = Bag { items: ["a", "b"] }
+    assert wf(bag) == 2
+}
+
+test "mutate through a named function's value" {
+    let g: func(mutate Vec<i64>) = grow
+    mut xs: Vec<i64> = [1, 2]
+    g(mutate xs)
+    assert xs.len() == 3
+    let b = bump
+    mut n = 5
+    b(mutate n)
+    assert n == 6
+    run_mutate(bump, mutate n)
+    assert n == 7
+    let t = tick
+    mut c = Counter { n: 1 }
+    t(mutate c)
+    t(mutate c)
+    assert c.n == 201
+    mut cs: Vec<Counter> = Vec.new()
+    cs.push(Counter { n: 0 })
+    t(mutate cs[0])
+    assert cs[0].n == 100
+}
+
+test "mutate through a closure's value" {
+    mut n = 5
+    let h = |mutate x: i64| { x += 10 }
+    h(mutate n)
+    assert n == 15
+    run_mutate(h, mutate n)
+    assert n == 25
+    let hv = |mutate p: Vec<i64>| { p.push(7) }
+    mut xs: Vec<i64> = [1]
+    hv(mutate xs)
+    assert xs.len() == 2
+    let hc = |mutate k: Counter| { k.n += 1 }
+    mut c = Counter { n: 1 }
+    hc(mutate c)
+    assert c.n == 2
+    mut cs: Vec<Counter> = Vec.new()
+    cs.push(Counter { n: 0 })
+    hc(mutate cs[0])
+    assert cs[0].n == 1
+}
+
+test "borrowed through a value leaves the caller owning it" {
+    let k = count
+    let xs: Vec<i64> = [1, 2, 3, 4]
+    assert k(xs) == 4
+    assert xs.len() == 4
+    let kc = |p: Vec<i64>| p.len()
+    assert kc(xs) == 4
+    assert xs.len() == 4
+}
+
+func main() {}

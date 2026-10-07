@@ -1126,13 +1126,18 @@ impl Parser {
 
     /// Parse one parameter inside a function type: `T`, `name: T`, or `mutate name: T`.
     /// In type position, names and modifiers are noise — only the type part is kept.
-    fn parse_func_type_param(&mut self) -> Result<TypeExpr, ParseError> {
-        // Skip optional `mutate` modifier
-        if matches!(self.current_kind(), TokenKind::MutateKw) {
-            self.advance();
-        }
+    /// One parameter of a function type: `T`, `mutate T`, `take T`, with an
+    /// optional `name:` before the type (names are noise in type position).
+    fn parse_func_type_param(&mut self) -> Result<rask_ast::ty::FuncParam, ParseError> {
+        use rask_ast::ty::ParamMode;
+        let mode = if self.match_token(&TokenKind::Take) {
+            ParamMode::Take
+        } else if self.match_token(&TokenKind::MutateKw) {
+            ParamMode::Mutate
+        } else {
+            ParamMode::Borrow
+        };
 
-        // If `name :` precedes the type, skip the name and colon
         if let TokenKind::Ident(_) = self.current_kind() {
             if matches!(self.peek(1), TokenKind::Colon) {
                 self.advance(); // name
@@ -1140,7 +1145,7 @@ impl Parser {
             }
         }
 
-        self.parse_type_name()
+        Ok(rask_ast::ty::FuncParam { mode, ty: self.parse_type_name()? })
     }
 
     /// The whole token stream as one type, or `None`.

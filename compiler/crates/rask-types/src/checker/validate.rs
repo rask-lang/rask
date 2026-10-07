@@ -51,7 +51,7 @@ fn collect_result_nodes<'a>(ty: &'a Type, out: &mut Vec<(&'a Type, &'a Type)>) {
             }
         }
         Type::Fn { params, ret } => {
-            for p in params {
+            for p in params.iter().map(|p| &p.ty) {
                 collect_result_nodes(p, out);
             }
             collect_result_nodes(ret, out);
@@ -343,7 +343,7 @@ fn collect_result_errors(
             }
         }
         Type::Fn { params, ret } => {
-            for p in params {
+            for p in params.iter().map(|p| &p.ty) {
                 collect_result_errors(p, span, checker, errs);
             }
             collect_result_errors(ret, span, checker, errs);

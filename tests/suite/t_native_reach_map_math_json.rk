@@ -29,8 +29,8 @@ test "map read, modify and modify_with_default" {
     m.insert("a", 1)
 
     assert((m.read("a", |v| { return v * 10 }) ?? -1) == 10)
-    assert((m.modify("a", |v| { return v + 5 }) ?? -1) == 6)
-    assert(m.modify_with_default("b", || { return 7 }, |v| { return v + 1 }) == 8)
+    assert((m.modify("a", |mutate v: i64| { return v + 5 }) ?? -1) == 6)
+    assert(m.modify_with_default("b", || { return 7 }, |mutate v: i64| { return v + 1 }) == 8)
 }
 
 // The capacity is a hint and nothing else: it decides the first table size, so

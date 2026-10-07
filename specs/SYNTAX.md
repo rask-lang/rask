@@ -679,6 +679,8 @@ type alias Handler = func(i32) -> string
 let coords: Pair<f64> = (1.0, 2.0)  // Pair<f64> IS (f64, f64)
 ```
 
+A function type says how each parameter is passed, the same way a declaration does: `func(take Vec<i64>)`, `func(mutate Counter)`. A function value only fits a type with its own modes ([functions.md](types/functions.md)).
+
 A function type's return runs to the end of the type, so a trailing `?` or `or E` belongs to the return. To apply it to the whole function, put the function in parentheses:
 
 ```rask

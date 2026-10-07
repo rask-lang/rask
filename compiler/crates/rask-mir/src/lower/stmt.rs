@@ -2052,15 +2052,6 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        // Alias the closure's signature under the binding's name, so a call
-        // through it knows which parameters are `mutate`.
-        if is_closure {
-            let closure_fn = format!("{}__closure_{}", self.parent_name, self.closure_counter - 1);
-            if let Some(sig) = self.func_sigs.get(&closure_fn).cloned() {
-                self.func_sigs.insert(name.to_string(), sig);
-            }
-        }
-
         // Propagate Vec element types from "self.field" to "<name>.field"
         // so struct field access like `state.data.get(i)` finds the right type.
         if let ExprKind::StructLit { fields, .. } = &init.kind {

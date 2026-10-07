@@ -11,7 +11,8 @@ use super::check_expr::ContainerElem;
 use super::TypeChecker;
 use super::type_defs::TypeDef;
 
-use crate::types::{GenericArg, Type};
+use crate::types::{FnParam, GenericArg, Type};
+use rask_ast::ty::ParamMode;
 
 /// Can a bare literal of this kind stand in for `ty`? An integer literal takes
 /// any numeric width (including a float, so `const x: f64 = 1` reads fine); a
@@ -1766,9 +1767,21 @@ impl TypeChecker {
                         span,
                     });
                 }
+                // FT1: a parameter's mode is part of the function type. A
+                // `take` function in a borrowing slot would let the caller go
+                // on using what the callee consumed; a borrowing one in a
+                // `take` slot would leak what it was handed.
+                if let Some(index) = p1.iter().zip(p2.iter()).position(|(a, b)| a.mode != b.mode) {
+                    return Err(TypeError::FnParamModeMismatch {
+                        expected: t1,
+                        found: t2,
+                        index,
+                        span,
+                    });
+                }
                 let mut progress = false;
                 for (param1, param2) in p1.iter().zip(p2.iter()) {
-                    if self.unify(param1, param2, span)? {
+                    if self.unify(&param1.ty, &param2.ty, span)? {
                         progress = true;
                     }
                 }
@@ -2055,7 +2068,9 @@ impl TypeChecker {
         }
     }
 
-    /// The element type behind `Sequence<T>` or `SequenceMut<T>`, if this is one.
+    /// The element type behind `Sequence<T>` or `SequenceMut<T>`, if this is
+    /// one, with the mode its yield closure lends each element in: a borrow
+    /// for `Sequence`, `mutate` for `SequenceMut` (SEQ1, SEQ2).
     ///
     /// `Sequence` is nominal so that adapters can attach to the name — `extend`
     /// is name-keyed, and an alias has dissolved into its function type before
@@ -2063,35 +2078,38 @@ impl TypeChecker {
     /// shape still fills a Sequence-typed slot with no constructor (SEQ36), so
     /// the checker has to know the shape the name stands for. Same arrangement
     /// as `string`: a compiler type whose representation the compiler knows.
-    pub(super) fn sequence_element(&self, ty: &Type) -> Option<Type> {
+    pub(super) fn sequence_element(&self, ty: &Type) -> Option<(Type, ParamMode)> {
         let (base, args) = match ty {
             Type::Generic { base, args } => (Some(*base), args),
             Type::UnresolvedGeneric { name, args } => (self.types.get_type_id(name), args),
             _ => return None,
         };
         let base = base?;
-        let is_sequence = ["Sequence", "SequenceMut"]
-            .iter()
-            .any(|n| self.types.get_type_id(n) == Some(base));
-        if !is_sequence || args.len() != 1 {
+        let mode = if self.types.get_type_id("Sequence") == Some(base) {
+            ParamMode::Borrow
+        } else if self.types.get_type_id("SequenceMut") == Some(base) {
+            ParamMode::Mutate
+        } else {
+            return None;
+        };
+        if args.len() != 1 {
             return None;
         }
         match &args[0] {
-            GenericArg::Type(t) => Some((**t).clone()),
+            GenericArg::Type(t) => Some(((**t).clone(), mode)),
             GenericArg::ConstUsize(_) => None,
         }
     }
 
     /// The function type a sequence over `elem` is written as:
-    /// `func(func(elem) -> bool)`.
-    pub(super) fn sequence_fn_shape(elem: Type) -> Type {
-        Type::Fn {
-            params: vec![Type::Fn {
-                params: vec![elem],
-                ret: Box::new(Type::Bool),
-            }],
-            ret: Box::new(Type::Unit),
-        }
+    /// `func(func(elem) -> bool)`, or `func(func(mutate elem) -> bool)` for a
+    /// `SequenceMut`.
+    pub(super) fn sequence_fn_shape((elem, mode): (Type, ParamMode)) -> Type {
+        let yield_fn = Type::Fn {
+            params: vec![FnParam { mode, ty: elem }],
+            ret: Box::new(Type::Bool),
+        };
+        Type::fn_borrowing(vec![yield_fn], Type::Unit)
     }
 
     /// Unify a `Sequence<T>` against the function shape it stands for (SEQ36).

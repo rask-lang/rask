@@ -1141,7 +1141,7 @@ impl TypeChecker {
             }
             Type::Tuple(items) | Type::Union(items) => items.iter().any(Self::contains_type_var),
             Type::Fn { params, ret } => {
-                params.iter().any(Self::contains_type_var) || Self::contains_type_var(ret)
+                params.iter().any(|p| Self::contains_type_var(&p.ty)) || Self::contains_type_var(ret)
             }
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
                 args.iter().any(|a| match a {
@@ -1187,6 +1187,12 @@ impl TypeChecker {
             TypeError::Mismatch { expected, found, span } => TypeError::Mismatch {
                 expected: ctx.apply(&expected),
                 found: ctx.apply(&found),
+                span,
+            },
+            TypeError::FnParamModeMismatch { expected, found, index, span } => TypeError::FnParamModeMismatch {
+                expected: ctx.apply(&expected),
+                found: ctx.apply(&found),
+                index,
                 span,
             },
             TypeError::NotCallable { ty, span } => TypeError::NotCallable {

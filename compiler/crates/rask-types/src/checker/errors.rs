@@ -28,6 +28,16 @@ pub enum TypeError {
         found: Type,
         span: Span,
     },
+    /// Two function types that agree on every parameter's type but not on
+    /// how one of them is passed (type.functions/FT1).
+    #[error("function types pass parameter {} differently: expected {expected}, found {found}", index + 1)]
+    FnParamModeMismatch {
+        expected: Type,
+        found: Type,
+        /// Zero-based position of the first parameter whose modes differ.
+        index: usize,
+        span: Span,
+    },
     #[error("undefined type: {0}")]
     Undefined(String),
     /// Inference finished and this binding's type is still open. Either nothing
@@ -1560,7 +1570,7 @@ impl TypeError {
                 *src_ty = f(src_ty);
             }
 
-            Mismatch { expected, found, .. } => {
+            Mismatch { expected, found, .. } | FnParamModeMismatch { expected, found, .. } => {
                 *expected = f(expected);
                 *found = f(found);
             }

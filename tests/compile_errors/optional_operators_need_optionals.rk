@@ -71,7 +71,7 @@ func late_operands() {
     mut m: Map<string, i64> = Map.new()
     m.insert("a", 1)
     // ERROR: the closure's `v + 1` settles last; the call returns a plain `i64`
-    let g = m.modify_with_default("b", || { return 7 }, |v| { return v + 1 }) ?? -1
+    let g = m.modify_with_default("b", || { return 7 }, |mutate v: i64| { return v + 1 }) ?? -1
 
     // ERROR: a generic handing back an unsuffixed number
     let h = id(5) ?? -1

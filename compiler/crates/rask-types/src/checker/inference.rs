@@ -380,7 +380,7 @@ impl InferenceContext {
                 args: args.iter().map(|a| self.apply_generic_arg(a)).collect(),
             },
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|t| self.apply(t)).collect(),
+                params: params.iter().map(|t| t.map(|t| self.apply(t))).collect(),
                 ret: Box::new(self.apply(ret)),
             },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|t| self.apply(t)).collect()),
@@ -438,7 +438,7 @@ impl InferenceContext {
                 args.iter().any(|a| self.occurs_in_generic_arg(var, a))
             }
             Type::Fn { params, ret } => {
-                params.iter().any(|p| self.occurs_in(var, p)) || self.occurs_in(var, ret)
+                params.iter().any(|p| self.occurs_in(var, &p.ty)) || self.occurs_in(var, ret)
             }
             Type::Tuple(elems) => elems.iter().any(|e| self.occurs_in(var, e)),
             Type::Array { elem, .. } => self.occurs_in(var, elem),

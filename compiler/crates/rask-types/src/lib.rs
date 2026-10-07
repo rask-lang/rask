@@ -9,7 +9,7 @@ mod interfaces;
 mod copy_rule;
 pub mod reflect;
 
-pub use types::{GenericArg, Type, TypeId, TypeVarId};
+pub use types::{FnParam, GenericArg, Type, TypeId, TypeVarId};
 pub use copy_rule::CopyVerdict;
 pub use checker::{
     typecheck, typecheck_with_stdlib, typecheck_with_stdlib_lenient, TypeChecker, TypedProgram, WrapperFns, TypeTable, TypeDef,

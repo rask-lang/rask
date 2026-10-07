@@ -29,7 +29,7 @@ impl<'a> MirLowerer<'a> {
     /// Returns `None` if the name isn't a known function, so the caller can
     /// report its own unresolved-variable error.
     pub(super) fn lower_fn_as_value(&mut self, name: &str) -> Option<TypedOperand> {
-        let sig = self.func_sigs.get(name)?;
+        let sig = self.func_sigs.get(name)?.clone();
         let ret_ty = sig.ret_ty.clone();
         let param_tys = sig.param_tys.clone();
 
@@ -45,10 +45,16 @@ impl<'a> MirLowerer<'a> {
 
             let mut args = Vec::new();
             for (i, ty_str) in param_tys.iter().enumerate() {
-                let ty = ty_str
-                    .as_ref()
-                    .map(|t| self.ctx.resolve_type_expr(t))
-                    .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"));
+                // A scalar `mutate` parameter arrives as the caller's address
+                // and goes on to the function as one.
+                let ty = if sig.scalar_mutate_params.get(i).is_some_and(Option::is_some) {
+                    MirType::Ptr
+                } else {
+                    ty_str
+                        .as_ref()
+                        .map(|t| self.ctx.resolve_type_expr(t))
+                        .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:fnval_param"))
+                };
                 let id = wb.add_param(format!("__a{}", i), ty);
                 args.push(MirOperand::Local(id));
             }
@@ -389,12 +395,16 @@ impl<'a> MirLowerer<'a> {
             .and_then(|id| self.ctx.lookup_raw_type(id))
             .and_then(|ty| match ty {
                 rask_types::Type::Fn { params, .. } => Some(
-                    params.iter().map(|p| self.ctx.type_to_mir(p)).collect()
+                    params.iter().map(|p| self.ctx.type_to_mir(&p.ty)).collect()
                 ),
                 _ => None,
             })
             .unwrap_or_default();
 
+        // The parameters' metadata is the closure's own. One flat table holds
+        // every name, so an outer binding the parameter shadows gets its own
+        // back once the body is lowered.
+        let outer_param_names = self.save_names(params.iter().map(|p| p.name.as_str()).collect());
         let mut closure_locals = std::collections::HashMap::new();
         for (i, param) in params.iter().enumerate() {
             // Written annotation first, then the type the callee declares for
@@ -405,8 +415,18 @@ impl<'a> MirLowerer<'a> {
                 .map(|t| self.ctx.resolve_type_expr(t))
                 .or_else(|| checked_params.get(i).cloned())
                 .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:param"));
-            let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
-            closure_locals.insert(param.name.clone(), (param_id, param_ty.clone()));
+            // A `mutate` parameter takes the caller's address the way a
+            // declared function's does, so one function type means one calling
+            // convention whichever kind of function is behind the value.
+            let mode = rask_ast::ty::ParamMode::from_flags(param.is_take, param.is_mutate);
+            let (scalar_mutate, _) = super::mutate_param_passing(mode, &param.name, &param_ty);
+            let local_ty = if scalar_mutate.is_some() { MirType::Ptr } else { param_ty.clone() };
+            let param_id = closure_builder.add_param(param.name.clone(), local_ty.clone());
+            closure_locals.insert(param.name.clone(), (param_id, local_ty));
+            if param.is_mutate {
+                self.meta_mut(&param.name).assigns_through = true;
+            }
+            self.meta_mut(&param.name).scalar_through_ptr = scalar_mutate;
             if let Some(prefix) = self.mir_type_name(&param_ty) {
                 self.meta_mut(&param.name).type_prefix = Some(prefix);
             } else if let Some(t) = written.as_ref() {
@@ -462,6 +482,7 @@ impl<'a> MirLowerer<'a> {
             self.addressed_captures = saved_captures;
             self.loop_stack = saved_loop_stack;
             self.ensure_stack = saved_ensure_stack;
+            self.restore_names(outer_param_names);
 
             let (body_val, _body_ty) = body_result?;
 

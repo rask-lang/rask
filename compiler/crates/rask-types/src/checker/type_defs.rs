@@ -310,13 +310,7 @@ pub enum SelfParam {
     Take,   // take self (consumed)
 }
 
-/// How a parameter is passed to a function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParamMode {
-    Default, // Normal pass (read-only, default)
-    Mutate,  // mutate param (mutable borrow)
-    Take,    // take param (consumed)
-}
+pub use rask_ast::ty::ParamMode;
 
 /// Builtin module method signature.
 #[derive(Debug, Clone)]

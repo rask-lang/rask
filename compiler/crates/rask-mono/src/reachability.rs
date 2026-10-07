@@ -786,7 +786,12 @@ impl<'a> Monomorphizer<'a> {
                 err: Box::new(Self::concretize(err, type_args, bindings)?),
             }),
             Type::Fn { params, ret } => Some(Type::Fn {
-                params: Self::concretize_all(params, type_args, bindings)?,
+                params: params
+                    .iter()
+                    .map(|p| {
+                        Some(rask_types::FnParam { mode: p.mode, ty: Self::concretize(&p.ty, type_args, bindings)? })
+                    })
+                    .collect::<Option<_>>()?,
                 ret: Box::new(Self::concretize(ret, type_args, bindings)?),
             }),
             Type::Var(_) => None,
@@ -1354,8 +1359,12 @@ impl<'a> Monomorphizer<'a> {
             // shared unmangled body, whose vector was built for 8-byte
             // integers and so never freed the closures it held (#1386).
             Type::Fn { params, ret } => {
-                let params: Option<Vec<Type>> =
-                    params.iter().map(|p| Self::nameable_type(p, types)).collect();
+                let params: Option<Vec<rask_types::FnParam>> = params
+                    .iter()
+                    .map(|p| {
+                        Some(rask_types::FnParam { mode: p.mode, ty: Self::nameable_type(&p.ty, types)? })
+                    })
+                    .collect();
                 Some(Type::Fn {
                     params: params?,
                     ret: Box::new(Self::nameable_type(ret, types)?),

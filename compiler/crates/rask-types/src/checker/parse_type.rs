@@ -9,7 +9,7 @@ use super::type_table::TypeTable;
 use super::errors::{TypeArgSite, TypeError};
 use super::TypeChecker;
 
-use crate::types::{GenericArg, Type, TypeId};
+use crate::types::{FnParam, GenericArg, Type, TypeId};
 
 impl TypeChecker {
     /// A type the program wrote, resolved, with anything wrong with it
@@ -91,7 +91,10 @@ pub fn resolve_type_expr(ty: &TypeExpr, types: &TypeTable) -> Result<Type, TypeE
         )),
         TypeExpr::RawPtr(inner) => Ok(Type::RawPtr(Box::new(resolve_type_expr(inner, types)?))),
         TypeExpr::Func { params, ret } => Ok(Type::Fn {
-            params: resolve_all(params)?,
+            params: params
+                .iter()
+                .map(|p| Ok(FnParam { mode: p.mode, ty: resolve_type_expr(&p.ty, types)? }))
+                .collect::<Result<_, TypeError>>()?,
             ret: Box::new(resolve_type_expr(ret, types)?),
         }),
         // A qualified name is the module's interface under the name the table

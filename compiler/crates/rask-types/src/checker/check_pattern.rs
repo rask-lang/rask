@@ -66,7 +66,7 @@ pub(super) fn normalize_type(ty: &Type, types: &TypeTable) -> Type {
             len: *len,
         },
         Type::Fn { params, ret } => Type::Fn {
-            params: params.iter().map(|p| normalize_type(p, types)).collect(),
+            params: params.iter().map(|p| p.map(|p| normalize_type(p, types))).collect(),
             ret: Box::new(normalize_type(ret, types)),
         },
         Type::Union(variants) => Type::Union(variants.iter().map(|v| normalize_type(v, types)).collect()),

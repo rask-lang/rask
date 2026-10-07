@@ -7,7 +7,7 @@ use super::type_defs::TypeDef;
 use super::TypeChecker;
 use rask_ast::ty::TypeExpr;
 
-use crate::types::{GenericArg, Type, TypeVarId};
+use crate::types::{FnParam, GenericArg, Type, TypeVarId};
 use super::inference::TypeConstraint;
 
 impl TypeChecker {
@@ -236,7 +236,7 @@ impl TypeChecker {
                 Type::Tuple(elems.iter().map(|e| Self::substitute_type_params(e, subst)).collect())
             }
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| Self::substitute_type_params(p, subst)).collect(),
+                params: params.iter().map(|p| p.map(|p| Self::substitute_type_params(p, subst))).collect(),
                 ret: Box::new(Self::substitute_type_params(ret, subst)),
             },
             Type::Generic { base, args } => Type::Generic {
@@ -283,7 +283,7 @@ impl TypeChecker {
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
             Type::Union(elems) => Type::Union(elems.iter().map(|e| Self::map_projections(e, f)).collect()),
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| Self::map_projections(p, f)).collect(),
+                params: params.iter().map(|p| FnParam { mode: p.mode, ty: Self::map_projections(&p.ty, f) }).collect(),
                 ret: Box::new(Self::map_projections(ret, f)),
             },
             Type::Generic { base, args } => Type::Generic {
@@ -529,7 +529,7 @@ impl TypeChecker {
                 err: Box::new(self.freshen_free_type_params(err, seen)),
             },
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| self.freshen_free_type_params(p, seen)).collect(),
+                params: params.iter().map(|p| p.map(|p| self.freshen_free_type_params(p, seen))).collect(),
                 ret: Box::new(self.freshen_free_type_params(ret, seen)),
             },
             Type::Tuple(elems) => Type::Tuple(
@@ -602,7 +602,7 @@ impl TypeChecker {
                 }
             }
             Type::Fn { params, ret } => {
-                for p in params {
+                for p in params.iter().map(|p| &p.ty) {
                     self.collect_type_vars(p, subst);
                 }
                 self.collect_type_vars(ret, subst);
@@ -652,7 +652,7 @@ impl TypeChecker {
             Type::Fn { params, ret } => Type::Fn {
                 params: params
                     .iter()
-                    .map(|p| self.apply_type_var_substitution(p, substitution))
+                    .map(|p| p.map(|p| self.apply_type_var_substitution(p, substitution)))
                     .collect(),
                 ret: Box::new(self.apply_type_var_substitution(ret, substitution)),
             },

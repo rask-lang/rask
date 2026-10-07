@@ -508,6 +508,20 @@ impl<'a> OwnershipChecker<'a> {
 
     /// The checked type of an expression, read through the instance being
     /// re-checked when there is one.
+    /// Which of a callee's parameters are `take`, read off its type. A call
+    /// through a function value moves exactly what a direct call would,
+    /// because the modes are part of the value's type (type.functions/FT1).
+    /// A callee the checker left untyped falls back to the declaration of
+    /// that name.
+    fn callee_take_params(&self, func: &Expr) -> Option<Vec<bool>> {
+        match self.node_ty(&func.id) {
+            Some(Type::Fn { params, .. }) => {
+                Some(params.iter().map(|p| p.mode == ParamMode::Take).collect())
+            }
+            _ => func.name().and_then(|n| self.fn_take_params.get(n).cloned()),
+        }
+    }
+
     fn node_ty(&self, id: &rask_ast::NodeId) -> Option<&'a Type> {
         let program: &'a TypedProgram = self.program;
         if let Some(inst) = self.instance {
@@ -2218,10 +2232,10 @@ impl<'a> OwnershipChecker<'a> {
                         self.check_drop_of_a_field(args);
                         Some(vec![true])
                     } else {
-                        self.fn_take_params.get(name).cloned()
+                        self.callee_take_params(func)
                     }
                 } else {
-                    None
+                    self.callee_take_params(func)
                 };
                 let callee_deletings: Option<Vec<bool>> = if let Some(name) = func.name() {
                     self.fn_deleting_params.get(name).cloned()
@@ -2748,7 +2762,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.node_ty(&expr.id).cloned()
                 {
                     for (p, ty) in params.iter().zip(param_tys.iter()) {
-                        self.binding_types.insert(p.name.clone(), ty.clone());
+                        self.binding_types.insert(p.name.clone(), ty.ty.clone());
                     }
                 }
 
@@ -5126,10 +5140,7 @@ impl<'a> OwnershipChecker<'a> {
         rask_ast::visit::walk_expr_pruned(expr, &mut |e| {
             match &e.kind {
                 ExprKind::Call { func, args } => {
-                    let takes = match &func.kind {
-                        ExprKind::Ident(name) => self.fn_take_params.get(name).cloned(),
-                        _ => None,
-                    };
+                    let takes = self.callee_take_params(func);
                     for (i, arg) in args.iter().enumerate() {
                         if takes.as_ref().and_then(|t| t.get(i)).copied().unwrap_or(false) {
                             self.mark_escaping(&arg.expr, named);
@@ -7521,7 +7532,7 @@ fn collect_generic_instances(
         }
         Type::Fn { params, ret } => {
             for p in params {
-                collect_generic_instances(p, out);
+                collect_generic_instances(&p.ty, out);
             }
             collect_generic_instances(ret, out);
         }

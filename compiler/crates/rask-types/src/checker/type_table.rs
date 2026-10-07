@@ -890,7 +890,7 @@ impl TypeTable {
             },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.as_stdlib_reads(e)).collect()),
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| self.as_stdlib_reads(p)).collect(),
+                params: params.iter().map(|p| p.map(|p| self.as_stdlib_reads(p))).collect(),
                 ret: Box::new(self.as_stdlib_reads(ret)),
             },
             other => other.clone(),
@@ -1868,7 +1868,7 @@ impl TypeTable {
             }
             Type::Fn { params, ret } => params
                 .iter()
-                .find_map(|p| self.find_linear_container(p))
+                .find_map(|p| self.find_linear_container(&p.ty))
                 .or_else(|| self.find_linear_container(ret)),
             _ => None,
         }
@@ -1907,7 +1907,7 @@ impl TypeTable {
             }
             Type::Fn { params, ret } => params
                 .iter()
-                .find_map(|p| self.find_rack_of_non_struct(p))
+                .find_map(|p| self.find_rack_of_non_struct(&p.ty))
                 .or_else(|| self.find_rack_of_non_struct(ret)),
             _ => None,
         }
@@ -2204,7 +2204,7 @@ impl TypeTable {
                 }
             }
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| self.named(p, written)).collect(),
+                params: params.iter().map(|p| p.map(|p| self.named(p, written))).collect(),
                 ret: Box::new(self.named(ret, written)),
             },
             Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.named(e, written)).collect()),

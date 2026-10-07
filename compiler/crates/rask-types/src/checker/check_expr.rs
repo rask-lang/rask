@@ -15,7 +15,8 @@ use super::parse_type::resolve_type_expr;
 use rask_ast::ty::TypeExpr;
 use super::TypeChecker;
 
-use crate::types::{GenericArg, Type};
+use crate::types::{FnParam, GenericArg, Type};
+use rask_ast::ty::ParamMode;
 
 impl TypeChecker {
     /// Walk a block body and return the type it produces.
@@ -1940,7 +1941,11 @@ impl TypeChecker {
                 };
 
                 Type::Fn {
-                    params: param_types,
+                    params: params
+                        .iter()
+                        .zip(param_types)
+                        .map(|(p, ty)| FnParam { mode: ParamMode::from_flags(p.is_take, p.is_mutate), ty })
+                        .collect(),
                     ret: Box::new(ret_ty),
                 }
             }
@@ -2948,9 +2953,12 @@ impl TypeChecker {
                     return Type::Error;
                 }
 
+                let value_params = params.clone();
+                self.check_value_call_annotations(func, args, &value_params);
+
                 // Propagate expected param types to arguments
                 let ret = *ret.clone();
-                for (param, arg) in params.clone().iter().zip(args.iter()) {
+                for (param, arg) in params.clone().iter().map(|p| &p.ty).zip(args.iter()) {
                     // TR5: record implicit interface coercion for MIR boxing
                     if let Type::InterfaceObject { ref interface_name, decl } = param {
                         let is_explicit_cast = matches!(
@@ -2980,12 +2988,27 @@ impl TypeChecker {
                 self.resolve_assoc_projections(ret)
             }
             Type::Var(_) => {
-                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                // The call's own markers are all there is to say how each
+                // argument goes in: `mutate x` lends it for writing, anything
+                // else lends it to read. A `take` parameter has no marker, so
+                // a callee that turns out to take one is a mode mismatch.
+                let params: Vec<_> = args
+                    .iter()
+                    .map(|a| FnParam {
+                        mode: match a.mode {
+                            rask_ast::expr::ArgMode::Default => ParamMode::Borrow,
+                            rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting => {
+                                ParamMode::Mutate
+                            }
+                        },
+                        ty: self.infer_expr(&a.expr),
+                    })
+                    .collect();
                 let ret = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     func_ty,
                     Type::Fn {
-                        params: arg_types,
+                        params,
                         ret: Box::new(ret.clone()),
                     },
                     span,
@@ -3073,7 +3096,6 @@ impl TypeChecker {
     /// call sites, which is the intent — noted because it turned on as a side
     /// effect of fixing the parameter list, not as a change written here.
     fn check_call_annotations(&mut self, func: &Expr, args: &[CallArg], _span: Span) {
-        use rask_ast::expr::ArgMode;
         use rask_resolve::SymbolKind;
 
         // Get the function's symbol ID
@@ -3097,17 +3119,69 @@ impl TypeChecker {
             _ => sym.name.clone(),
         };
 
-        // Validate each argument annotation
-        for (i, (arg, &param_id)) in args.iter().zip(param_ids.iter()).enumerate() {
-            let Some(param_sym) = self.resolved.symbols.get(param_id) else { continue };
-            let (is_take, is_mutate, is_deleting) = match &param_sym.kind {
-                SymbolKind::Parameter { is_take, is_mutate, is_deleting } => {
-                    (*is_take, *is_mutate, *is_deleting)
-                }
-                _ => continue,
-            };
+        let params: Vec<Option<CallParam>> = param_ids
+            .iter()
+            .map(|&id| {
+                let p = self.resolved.symbols.get(id)?;
+                let SymbolKind::Parameter { is_take, is_mutate, is_deleting } = p.kind else {
+                    return None;
+                };
+                Some(CallParam {
+                    name: p.name.clone(),
+                    is_take,
+                    is_mutate,
+                    is_deleting,
+                    is_link: p
+                        .ty
+                        .as_ref()
+                        .is_some_and(|t| t.name().as_deref() == Some("Link") && !t.args().is_empty()),
+                })
+            })
+            .collect();
+        self.check_arg_markers(&callee_name, args, &params);
+    }
 
-            let param_name = &param_sym.name;
+    /// The same checks for a call through a function value, read off the
+    /// value's type: its modes are the callee's modes (type.functions/FT1).
+    /// A function type has no parameter names, so a message names the
+    /// parameter by its type.
+    fn check_value_call_annotations(&mut self, func: &Expr, args: &[CallArg], params: &[FnParam]) {
+        use rask_resolve::SymbolKind;
+        if func.name().is_some() {
+            let sym = self.resolved.resolutions.get(&func.id).and_then(|&id| self.resolved.symbols.get(id));
+            // A declared function was checked by name, with its parameter
+            // names in the messages; a constructor has no modes to check.
+            if !matches!(sym.map(|s| &s.kind), Some(SymbolKind::Variable { .. } | SymbolKind::Parameter { .. })) {
+                return;
+            }
+        }
+        let callee_name = Self::argument_text(func).unwrap_or_else(|| "this function".to_string());
+        let params: Vec<Option<CallParam>> = params
+            .iter()
+            .map(|p| {
+                Some(CallParam {
+                    name: self.types.display_type_names(&p.ty).to_string(),
+                    is_take: p.mode == ParamMode::Take,
+                    is_mutate: p.mode == ParamMode::Mutate,
+                    is_deleting: false,
+                    is_link: false,
+                })
+            })
+            .collect();
+        self.check_arg_markers(&callee_name, args, &params);
+    }
+
+    /// `params` has `None` for a parameter whose symbol didn't resolve:
+    /// nothing to check that argument against.
+    fn check_arg_markers(&mut self, callee_name: &str, args: &[CallArg], params: &[Option<CallParam>]) {
+        use rask_ast::expr::ArgMode;
+        let callee_name = callee_name.to_string();
+
+        // Validate each argument annotation
+        for (i, (arg, param)) in args.iter().zip(params.iter()).enumerate() {
+            let Some(param) = param else { continue };
+            let CallParam { is_take, is_mutate, is_deleting, is_link: arg_is_link, .. } = *param;
+            let param_name = &param.name;
 
             // Deep const: passing a const binding to a `mutate` parameter is
             // rejected. `take` (ownership transfer) is still allowed — moving
@@ -3124,10 +3198,6 @@ impl TypeChecker {
             // there the caller never granted write access, so passing it on as
             // `mutate` would launder a view into a writer in one hop. That's the
             // guarantee that makes `n: Link<T>` a usable read-only view.
-            let arg_is_link = param_sym
-                .ty
-                .as_ref()
-                .is_some_and(|t| t.name().as_deref() == Some("Link") && !t.args().is_empty());
             if is_mutate && !is_take {
                 if let ExprKind::Ident(arg_name) = &arg.expr.kind {
                     match self.lookup_binding_kind(arg_name) {
@@ -3229,7 +3299,7 @@ impl TypeChecker {
             }
         }
 
-        self.check_overlapping_argument_borrows(&callee_name, args, &param_ids);
+        self.check_overlapping_argument_borrows(&callee_name, args, params);
     }
 
     /// F1-F3: two arguments of one call that reach the same storage, where at
@@ -3244,10 +3314,8 @@ impl TypeChecker {
         &mut self,
         callee: &str,
         args: &[CallArg],
-        param_ids: &[rask_resolve::SymbolId],
+        params: &[Option<CallParam>],
     ) {
-        use rask_resolve::SymbolKind;
-
         // (path, writes, span) for every argument that names a place.
         let mut places: Vec<(Vec<String>, bool, Span)> = Vec::new();
         for (i, arg) in args.iter().enumerate() {
@@ -3255,13 +3323,7 @@ impl TypeChecker {
             let writes = matches!(
                 arg.mode,
                 rask_ast::expr::ArgMode::Mutate | rask_ast::expr::ArgMode::Deleting
-            ) || param_ids.get(i).and_then(|&id| self.resolved.symbols.get(id)).is_some_and(
-                |p| matches!(
-                    p.kind,
-                    SymbolKind::Parameter { is_mutate: true, .. }
-                        | SymbolKind::Parameter { is_deleting: true, .. }
-                ),
-            );
+            ) || params.get(i).and_then(Option::as_ref).is_some_and(|p| p.is_mutate || p.is_deleting);
             places.push((path, writes, arg.expr.span));
         }
 
@@ -3454,7 +3516,7 @@ impl TypeChecker {
             });
             return Some(*ret);
         }
-        for (arg, want) in args.iter().zip(params.iter()) {
+        for (arg, want) in args.iter().zip(params.iter().map(|p| &p.ty)) {
             let got = self.infer_expr_expecting(&arg.expr, want);
             self.coerce_into_node(
                 rask_ast::coercion::CoercionSite::Argument,
@@ -3515,7 +3577,7 @@ impl TypeChecker {
         // registered under the namespace, as `c.Rect`. Without this the
         // argument checked against a name that resolves to nothing, so a
         // `Vec<i64>` went in where a `Rect` was declared without complaint.
-        let params: Vec<Type> = params.iter().map(|p| self.qualify_c_type(ns, p)).collect();
+        let params: Vec<Type> = params.iter().map(|p| self.qualify_c_type(ns, &p.ty)).collect();
 
         // A struct handed *to* C rides in registers or on the stack; one handed
         // *back* is a separate ABI rule that isn't built (#1101). Say so, rather
@@ -5135,8 +5197,16 @@ impl TypeChecker {
                             // look like it passes one argument too many, on top
                             // of the error the signature already got.
                             self.resolved.symbols.get(*pid).and_then(|p| {
-                                p.ty.as_ref()
-                                    .map(|t| resolve_type_expr(t, &self.types).unwrap_or(Type::Error))
+                                let mode = match p.kind {
+                                    SymbolKind::Parameter { is_take, is_mutate, .. } => {
+                                        ParamMode::from_flags(is_take, is_mutate)
+                                    }
+                                    _ => ParamMode::Borrow,
+                                };
+                                p.ty.as_ref().map(|t| FnParam {
+                                    mode,
+                                    ty: resolve_type_expr(t, &self.types).unwrap_or(Type::Error),
+                                })
                             })
                         })
                         .collect();
@@ -5158,10 +5228,7 @@ impl TypeChecker {
                         .as_ref()
                         .and_then(|t| resolve_type_expr(t, &self.types).ok())
                         .unwrap_or(Type::Unit);
-                    return Type::Fn {
-                        params: param_types,
-                        ret: Box::new(ret),
-                    };
+                    return Type::fn_borrowing(param_types, ret);
                 }
                 SymbolKind::Variable { .. } | SymbolKind::Parameter { .. } => {
                     if let Some(ty_str) = &sym.ty {
@@ -5266,10 +5333,7 @@ impl TypeChecker {
                                         }
                                     };
 
-                                    return Type::Fn {
-                                        params: param_types,
-                                        ret: Box::new(ret_type),
-                                    };
+                                    return Type::fn_borrowing(param_types, ret_type);
                                 }
                             } else {
                                 return Type::Named(id);
@@ -6972,10 +7036,21 @@ fn contains_assoc(ty: &Type) -> bool {
         Type::Result { ok, err } => contains_assoc(ok) || contains_assoc(err),
         Type::Array { elem, .. } | Type::RawPtr(elem) => contains_assoc(elem),
         Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(contains_assoc),
-        Type::Fn { params, ret } => params.iter().any(contains_assoc) || contains_assoc(ret),
+        Type::Fn { params, ret } => params.iter().any(|p| contains_assoc(&p.ty)) || contains_assoc(ret),
         Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
             args.iter().any(|a| matches!(a, GenericArg::Type(t) if contains_assoc(t)))
         }
         _ => false,
     }
+}
+
+/// What a call's argument check needs to know about one parameter.
+struct CallParam {
+    /// The parameter's name, or its type when it has none (a function value).
+    name: String,
+    is_take: bool,
+    is_mutate: bool,
+    is_deleting: bool,
+    /// A `Link<T>` parameter: `mutate` writes the node, not the link.
+    is_link: bool,
 }

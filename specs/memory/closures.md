@@ -147,7 +147,7 @@ Parameters are independent of capture mode. Both closure modes use the same para
 | **CP1: Borrow by default** | `\|x\|` binds parameter `x` by read-only borrow |
 | **CP2: Mutable parameter** | `\|mutate x: T\|` binds parameter `x` by mutable borrow. The type is required for the same reason a public function's is — this parameter writes back to the caller, so the shape it writes gets named |
 | **CP3: Only parameters live in the pipes** | Everything in `\|…\|` is a parameter. Captures never appear there — they're inferred (MC1) — so there is nothing for a reader to disambiguate |
-| **CP4: No take parameter** | Closures cannot take ownership via a parameter. Use a standalone function |
+| **CP4: No take parameter** | Closures cannot take ownership via a parameter. Use a standalone function. A closure's type carries its parameters' modes, so `\|mutate x: T\|` fills a `func(mutate T)` slot and nothing a closure can declare fills `func(take T)` (`type.functions/FT1`, `FT2`) |
 
 <!-- test: parse -->
 ```rask

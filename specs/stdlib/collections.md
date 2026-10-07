@@ -211,14 +211,14 @@ let name = with vec[i] as v { v.name.clone() }
 | Method | Returns | Semantics |
 |--------|---------|-----------|
 | `map.insert_if_missing(k, \|\| v)` | `()` | Insert if missing, no-op if present. Panics on alloc failure |
-| `map.modify_with_default(k, \|\| v, \|v\| R)` | `R` | Insert default if missing, then mutate. One hash lookup. Panics on alloc failure |
+| `map.modify_with_default(k, \|\| v, \|mutate v: V\| R)` | `R` | Insert default if missing, then mutate. One hash lookup. Panics on alloc failure |
 
 Named for what they do — `ensure` is taken by the cleanup keyword (`ctrl.ensure`) and means something else.
 
 <!-- test: parse -->
 ```rask
 map.insert_if_missing(user_id, || User.new(user_id))
-map.modify_with_default(user_id, || User.new(user_id), |u| {
+map.modify_with_default(user_id, || User.new(user_id), |mutate u: User| {
     u.last_seen = now()
     u.visit_count += 1
 })

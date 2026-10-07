@@ -697,6 +697,47 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_fix("check spelling or add an import for this type")
                 .with_why("all types must be defined or imported before use"),
 
+            FnParamModeMismatch { expected, found, index, span } => {
+                use rask_ast::ty::ParamMode;
+                let mode_at = |t: &rask_types::Type| match t {
+                    rask_types::Type::Fn { params, .. } => params.get(*index).map(|p| p.mode),
+                    _ => None,
+                };
+                let n = index + 1;
+                let help = match (mode_at(expected), mode_at(found)) {
+                    (Some(ParamMode::Take), _) => format!(
+                        "a `{expected}` hands parameter {n} over, and this function only lends \
+                         it, so nothing would free it. Declare that parameter `take` in a named \
+                         function (a closure can't take its parameter, mem.closures/CP4), or \
+                         make the slot `{found}`"
+                    ),
+                    (_, Some(ParamMode::Take)) => format!(
+                        "this function takes ownership of parameter {n}. Through a `{expected}` \
+                         the caller would go on using what it gave away; write the slot as \
+                         `{found}` so a call through it moves the argument"
+                    ),
+                    (Some(ParamMode::Borrow), Some(ParamMode::Mutate)) => format!(
+                        "this function writes parameter {n}. Write the slot as `{found}` and \
+                         call it with `f(mutate x)`, so the write is visible where it happens"
+                    ),
+                    _ => format!(
+                        "the slot lends parameter {n} for writing. Declare it `mutate` in the \
+                         function (`|mutate x: T|` in a closure), or make the slot `{found}`"
+                    ),
+                };
+                Diagnostic::error(format!(
+                    "these function types pass parameter {n} differently"
+                ))
+                .with_code("E0912")
+                .with_primary(*span, format!("expected `{}`, found `{}`", expected, found))
+                .with_fix(help)
+                .with_why(
+                    "how a parameter is passed is part of a function's type: a call through a \
+                     function value moves, lends, or lends for writing exactly as a direct call \
+                     does, so the value's type has to say which [type.functions/FT1]",
+                )
+            }
+
             ArityMismatch {
                 expected,
                 found,

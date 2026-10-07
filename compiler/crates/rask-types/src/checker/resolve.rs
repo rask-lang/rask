@@ -275,13 +275,13 @@ impl TypeChecker {
                                 if fields.is_empty() {
                                     enum_self.clone()
                                 } else {
-                                    Type::Fn {
-                                        params: fields
+                                    Type::fn_borrowing(
+                                        fields
                                             .iter()
                                             .map(|t| Self::substitute_type_params(t, &param_map))
                                             .collect(),
-                                        ret: Box::new(enum_self.clone()),
-                                    }
+                                        enum_self.clone(),
+                                    )
                                 }
                             })
                         }
@@ -345,12 +345,12 @@ impl TypeChecker {
                                 if fields.is_empty() {
                                     ty.clone()
                                 } else {
-                                    Type::Fn {
-                                        params: fields.iter()
+                                    Type::fn_borrowing(
+                                        fields.iter()
                                             .map(|t| Self::substitute_type_params(t, &subst))
                                             .collect(),
-                                        ret: Box::new(ty.clone()),
-                                    }
+                                        ty.clone(),
+                                    )
                                 }
                             })
                         }
@@ -1871,7 +1871,7 @@ impl TypeChecker {
                 elems.iter().map(|e| Self::substitute_self_placeholder(e, receiver)).collect(),
             ),
             Type::Fn { params, ret } => Type::Fn {
-                params: params.iter().map(|p| Self::substitute_self_placeholder(p, receiver)).collect(),
+                params: params.iter().map(|p| p.map(|t| Self::substitute_self_placeholder(t, receiver))).collect(),
                 ret: Box::new(Self::substitute_self_placeholder(ret, receiver)),
             },
             _ => ty.clone(),
@@ -1992,10 +1992,7 @@ impl TypeChecker {
             "min" | "max" if args.is_empty() => self.unify(ret, &Type::option(elem), span),
             "map" if args.len() == 1 => {
                 let out = self.ctx.fresh_var();
-                let expected_fn = Type::Fn {
-                    params: vec![elem],
-                    ret: Box::new(out.clone()),
-                };
+                let expected_fn = Type::fn_borrowing(vec![elem], out.clone());
                 self.unify(&args[0], &expected_fn, span)?;
                 let iter_out = Type::UnresolvedGeneric {
                     name: "Iterator".to_string(),
@@ -2004,19 +2001,13 @@ impl TypeChecker {
                 self.unify(ret, &iter_out, span)
             }
             "filter" if args.len() == 1 => {
-                let expected_fn = Type::Fn {
-                    params: vec![elem],
-                    ret: Box::new(Type::Bool),
-                };
+                let expected_fn = Type::fn_borrowing(vec![elem], Type::Bool);
                 self.unify(&args[0], &expected_fn, span)?;
                 self.unify(ret, &self_ty, span)
             }
             "fold" if args.len() == 2 => {
                 let acc = args[0].clone();
-                let expected_fn = Type::Fn {
-                    params: vec![acc.clone(), elem],
-                    ret: Box::new(acc.clone()),
-                };
+                let expected_fn = Type::fn_borrowing(vec![acc.clone(), elem], acc.clone());
                 self.unify(&args[1], &expected_fn, span)?;
                 self.unify(ret, &acc, span)
             }
@@ -2033,18 +2024,12 @@ impl TypeChecker {
                 self.unify(ret, &iter_pairs, span)
             }
             "any" | "all" if args.len() == 1 => {
-                let expected_fn = Type::Fn {
-                    params: vec![elem],
-                    ret: Box::new(Type::Bool),
-                };
+                let expected_fn = Type::fn_borrowing(vec![elem], Type::Bool);
                 self.unify(&args[0], &expected_fn, span)?;
                 self.unify(ret, &Type::Bool, span)
             }
             "find" if args.len() == 1 => {
-                let expected_fn = Type::Fn {
-                    params: vec![elem.clone()],
-                    ret: Box::new(Type::Bool),
-                };
+                let expected_fn = Type::fn_borrowing(vec![elem.clone()], Type::Bool);
                 self.unify(&args[0], &expected_fn, span)?;
                 self.unify(ret, &Type::option(elem), span)
             }
@@ -2537,7 +2522,7 @@ impl TypeChecker {
         let result = match self.ctx.apply(closure_ty) {
             Type::Fn { params, ret: closure_ret } => {
                 if let Some(param) = params.first() {
-                    let _ = self.unify(param, inner_type, span);
+                    let _ = self.unify(&param.ty, inner_type, span);
                 }
                 *closure_ret
             }
@@ -3055,10 +3040,7 @@ impl TypeChecker {
                 let key = self.ctx.fresh_var();
                 let _ = self.unify(
                     &args[0],
-                    &Type::Fn {
-                        params: vec![inner_type.clone()],
-                        ret: Box::new(key),
-                    },
+                    &Type::fn_borrowing(vec![inner_type.clone()], key),
                     span,
                 );
                 self.unify(ret, &Type::Unit, span)
@@ -3076,10 +3058,7 @@ impl TypeChecker {
             // and `doubled[0] == 2` reported "no method eq for type U" (#327).
             "map" if args.len() == 1 => {
                 let fresh = self.ctx.fresh_var();
-                let expected_fn = Type::Fn {
-                    params: vec![inner_type],
-                    ret: Box::new(fresh.clone()),
-                };
+                let expected_fn = Type::fn_borrowing(vec![inner_type], fresh.clone());
                 let _ = self.unify(&args[0], &expected_fn, span);
                 let result_ty = sequence_of(fresh);
                 self.unify(ret, &result_ty, span)
@@ -3092,10 +3071,7 @@ impl TypeChecker {
                     name: "Vec".to_string(),
                     args: vec![GenericArg::Type(Box::new(fresh.clone()))],
                 };
-                let expected_fn = Type::Fn {
-                    params: vec![inner_type],
-                    ret: Box::new(inner_vec),
-                };
+                let expected_fn = Type::fn_borrowing(vec![inner_type], inner_vec);
                 let _ = self.unify(&args[0], &expected_fn, span);
                 let result_ty = sequence_of(fresh);
                 self.unify(ret, &result_ty, span)
@@ -3128,10 +3104,7 @@ impl TypeChecker {
             // vec.fold(init, f) -> U, with f: func(U, T) -> U
             "fold" if args.len() == 2 => {
                 let acc = args[0].clone();
-                let expected_fn = Type::Fn {
-                    params: vec![acc.clone(), inner_type],
-                    ret: Box::new(acc.clone()),
-                };
+                let expected_fn = Type::fn_borrowing(vec![acc.clone(), inner_type], acc.clone());
                 let _ = self.unify(&args[1], &expected_fn, span);
                 let _ = self.unify(ret, &acc, span);
                 Ok(true)

@@ -3,7 +3,7 @@
 
 use std::fmt;
 
-use rask_ast::ty::TypeExpr;
+use rask_ast::ty::{ParamMode, TypeExpr};
 use std::hash::Hash;
 
 /// Unique identifier for user-defined types (structs, enums, interfaces).
@@ -21,6 +21,33 @@ pub enum GenericArg {
     Type(Box<Type>),
     /// A const usize argument (const generic)
     ConstUsize(usize),
+}
+
+/// One parameter of a function type.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FnParam {
+    pub mode: ParamMode,
+    pub ty: Type,
+}
+
+impl FnParam {
+    pub fn borrowed(ty: Type) -> FnParam {
+        FnParam { mode: ParamMode::Borrow, ty }
+    }
+
+    /// The same mode around a different type.
+    pub fn map(&self, f: impl FnOnce(&Type) -> Type) -> FnParam {
+        FnParam { mode: self.mode, ty: f(&self.ty) }
+    }
+}
+
+impl fmt::Display for FnParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(kw) = self.mode.keyword() {
+            write!(f, "{} ", kw)?;
+        }
+        write!(f, "{}", self.ty)
+    }
 }
 
 /// A type in Rask.
@@ -63,9 +90,10 @@ pub enum Type {
         name: std::string::String,
         args: Vec<GenericArg>,
     },
-    /// Function type
+    /// Function type. Each parameter's mode is part of it (type.functions/FT1):
+    /// `func(take Vec<i64>)` and `func(Vec<i64>)` are different types.
     Fn {
-        params: Vec<Type>,
+        params: Vec<FnParam>,
         ret: Box<Type>,
     },
     /// Tuple type
@@ -127,6 +155,15 @@ impl Type {
             _ => None,
         }
     }
+
+    /// A function type whose parameters are all borrowed: a constructor,
+    /// a compiler-made callback, a stub with no modes.
+    pub fn fn_borrowing(params: Vec<Type>, ret: Type) -> Type {
+        Type::Fn {
+            params: params.into_iter().map(FnParam::borrowed).collect(),
+            ret: Box::new(ret),
+        }
+    }
 }
 
 impl Type {
@@ -179,7 +216,7 @@ impl Type {
             Type::RawPtr(inner) => inner.contains(pred),
             Type::Array { elem, .. } => elem.contains(pred),
             Type::Tuple(elems) | Type::Union(elems) => elems.iter().any(|t| t.contains(pred)),
-            Type::Fn { params, ret } => params.iter().any(|t| t.contains(pred)) || ret.contains(pred),
+            Type::Fn { params, ret } => params.iter().any(|p| p.ty.contains(pred)) || ret.contains(pred),
             Type::SimdVector { elem, .. } => elem.contains(pred),
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => args
                 .iter()
@@ -336,7 +373,10 @@ impl Type {
                 TypeExpr::generic(name.clone(), args.iter().map(arg).collect())
             }
             Type::Fn { params, ret } => TypeExpr::Func {
-                params: params.iter().map(Type::to_type_expr).collect(),
+                params: params
+                    .iter()
+                    .map(|p| rask_ast::ty::FuncParam { mode: p.mode, ty: p.ty.to_type_expr() })
+                    .collect(),
                 ret: Box::new(ret.to_type_expr()),
             },
             Type::Tuple(elems) => TypeExpr::Tuple(elems.iter().map(Type::to_type_expr).collect()),

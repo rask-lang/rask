@@ -996,7 +996,7 @@ impl<'a> MirLowerer<'a> {
         i: usize,
     ) -> Vec<TypeExpr> {
         match callee_params.get(i) {
-            Some(Some(TypeExpr::Func { params, .. })) => params.clone(),
+            Some(Some(TypeExpr::Func { params, .. })) => params.iter().map(|p| p.ty.clone()).collect(),
             _ => Vec::new(),
         }
     }
@@ -1228,6 +1228,39 @@ impl<'a> MirLowerer<'a> {
     /// Settle every `mutate` argument opened since `mark`. Called right after
     /// the call statement, so a borrow covers exactly the call that writes
     /// through it and a spilled scalar is read back before anything else runs.
+    /// How a call through a function value passes each argument, read off the
+    /// value's type. A `mutate` parameter goes by address exactly as it would
+    /// to a declared function (`mutate_param_needs_own_pointer`), which is
+    /// what the closure literal or the named function behind the value
+    /// expects. `None` when the callee isn't a function value.
+    fn value_call_sig(&self, func: &Expr) -> Option<super::FuncSig> {
+        if let Some(name) = func.name() {
+            // A name that isn't a local is a function, a constructor or an
+            // intrinsic, and has its own signature.
+            if !self.locals.contains_key(name) {
+                return None;
+            }
+        }
+        let rask_types::Type::Fn { params, ret } = self.ctx.lookup_raw_type(func.id)? else {
+            return None;
+        };
+        let mut scalar_mutate_params = Vec::with_capacity(params.len());
+        let mut aggregate_mutate_params = Vec::with_capacity(params.len());
+        for p in params {
+            let ty = self.ctx.type_to_mir(&p.ty);
+            let (scalar, aggregate) = super::mutate_param_passing(p.mode, "", &ty);
+            scalar_mutate_params.push(scalar);
+            aggregate_mutate_params.push(aggregate);
+        }
+        Some(super::FuncSig {
+            ret_ty: self.ctx.type_to_mir(ret),
+            scalar_mutate_params,
+            aggregate_mutate_params,
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        })
+    }
+
     fn flush_elem_writebacks(&mut self, mark: usize) {
         for wb in self.elem_writebacks.split_off(mark) {
             match wb {
@@ -2480,10 +2513,14 @@ impl<'a> MirLowerer<'a> {
             }
             // The callee's signature says which arguments go by address
             // (`mutate`) and which wrapper layers each parameter declares.
-            let callee_sig: Option<super::FuncSig> = func.name().and_then(|name| {
-                let key = self.ctx.call_rewrites.get(&expr.id).cloned()
-                    .unwrap_or_else(|| name.to_string());
-                self.func_sigs.get(&key).cloned()
+            // A function value has no declaration to read, so its type is the
+            // signature: the modes are part of it (type.functions/FT1).
+            let callee_sig: Option<super::FuncSig> = self.value_call_sig(func).or_else(|| {
+                func.name().and_then(|name| {
+                    let key = self.ctx.call_rewrites.get(&expr.id).cloned()
+                        .unwrap_or_else(|| name.to_string());
+                    self.func_sigs.get(&key).cloned()
+                })
             });
             let callee_params: Vec<Option<TypeExpr>> = callee_sig
                 .as_ref()
@@ -2573,6 +2610,7 @@ impl<'a> MirLowerer<'a> {
                         closure: callee_local,
                         args: arg_operands,
                     }));
+                    self.flush_elem_writebacks(wb_mark);
                     return Ok((MirOperand::Local(result_local), ret_ty));
                 }
             };
@@ -2589,6 +2627,7 @@ impl<'a> MirLowerer<'a> {
                     closure: closure_local,
                     args: arg_operands,
                 }));
+                self.flush_elem_writebacks(wb_mark);
                 return Ok((MirOperand::Local(result_local), ret_ty));
             }
 

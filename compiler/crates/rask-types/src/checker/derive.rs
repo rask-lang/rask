@@ -518,10 +518,7 @@ impl TypeChecker {
             let sym = self.wrapper_symbols[&name];
             let callee = self.derived_id();
             self.resolved.resolutions.insert(callee, sym);
-            self.node_types.insert(callee, Type::Fn {
-                params: vec![a.clone(), a.clone()],
-                ret: Box::new(Type::Bool),
-            });
+            self.node_types.insert(callee, Type::fn_borrowing(vec![a.clone(), a.clone()], Type::Bool));
             self.call_targets.insert(call, super::type_defs::Callee::Free(sym));
             self.wrapper_eq_calls.insert(call, (callee, name));
         }
@@ -656,7 +653,7 @@ impl TypeChecker {
         } else {
             vec![ty.clone(), ty.clone()]
         };
-        self.symbol_types.insert(sym, Type::Fn { params, ret: Box::new(ret) });
+        self.symbol_types.insert(sym, Type::fn_borrowing(params, ret));
         sym
     }
 
@@ -1330,7 +1327,7 @@ fn collect_wrapper_args(ty: &Type, out: &mut Vec<Type>) {
             collect_wrapper_args(err, out);
         }
         Type::Fn { params, ret } => {
-            params.iter().for_each(|p| collect_wrapper_args(p, out));
+            params.iter().for_each(|p| collect_wrapper_args(&p.ty, out));
             collect_wrapper_args(ret, out);
         }
         _ => {}
@@ -1349,7 +1346,7 @@ fn is_concrete(ty: &Type) -> bool {
         }),
         Type::Tuple(elems) => elems.iter().all(is_concrete),
         Type::Result { ok, err } => is_concrete(ok) && is_concrete(err),
-        Type::Fn { params, ret } => params.iter().all(is_concrete) && is_concrete(ret),
+        Type::Fn { params, ret } => params.iter().all(|p| is_concrete(&p.ty)) && is_concrete(ret),
         Type::Array { elem, .. } => is_concrete(elem),
         _ => true,
     }

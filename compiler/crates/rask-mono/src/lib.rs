@@ -738,8 +738,14 @@ fn type_arg_key(
         // would key the same as `func(i64) -> func(i64) -> void`.
         Type::Fn { params, ret } => {
             let mut parts = Vec::with_capacity(params.len() + 1);
+            // The mode is part of the type (FT1): `func(take T)` and
+            // `func(T)` are two instantiations, not one.
             for p in params {
-                parts.push(type_arg_key(p, type_names)?);
+                let key = type_arg_key(&p.ty, type_names)?;
+                parts.push(match p.mode.keyword() {
+                    Some(kw) => format!("{}_{}", kw, key),
+                    None => key,
+                });
             }
             parts.push(type_arg_key(ret, type_names)?);
             format!("fn{}${}", params.len(), parts.join("$"))

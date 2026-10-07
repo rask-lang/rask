@@ -17,8 +17,8 @@ test "the operand settles late and turns out optional" {
     mut m: Map<string, i64> = Map.new()
     m.insert("even", 1)
     m.insert("odd", 2)
-    let hit = m.modify_with_default("even", || { return 7 }, |v| { return half(v + 1) }) ?? -1
-    let miss = m.modify_with_default("odd", || { return 7 }, |v| { return half(v + 1) }) ?? -1
+    let hit = m.modify_with_default("even", || { return 7 }, |mutate v: i64| { return half(v + 1) }) ?? -1
+    let miss = m.modify_with_default("odd", || { return 7 }, |mutate v: i64| { return half(v + 1) }) ?? -1
     assert hit == 1
     assert miss == -1
 }

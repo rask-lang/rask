@@ -1194,6 +1194,11 @@ impl Interpreter {
                 // (`count<Plain>()`, #968) or inferred: the checker recorded
                 // both under this call.
                 let generics = self.call_generics(expr.id);
+                if let Value::Closure { .. } = &func_val {
+                    return self
+                        .call_closure(func_val, arg_vals, places)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
+                }
                 if let Value::Function { name, .. } = &func_val {
                     if let Some(decl) = self.functions.get(name) {
                         let callee = decl.name.clone();
