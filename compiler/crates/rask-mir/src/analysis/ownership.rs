@@ -97,12 +97,13 @@ pub enum Event {
     /// `dst` also reaches into whatever `base` holds, on top of what it
     /// reached already: a scratch slot filled field by field.
     ViewAlso { dst: LocalId, base: LocalId },
-    /// `dst` holds a new value, ours exactly when what `src` held was ours
-    /// here, and `src` is handed over either way. A call that gives back
-    /// either the container it took or one it built in its place: the caller
-    /// owns what comes back if it owned what went in. It may not be the same
-    /// container as `src`, so it can't be an `Alias`.
-    Remake { dst: LocalId, src: LocalId },
+    /// `dst` holds a new value, ours exactly when what every one of `srcs`
+    /// held was ours here, and each is handed over either way. A call that
+    /// gives back one of the containers it took, or one it built in their
+    /// place: the caller owns what comes back if it owned everything that
+    /// might. It may not be the same container as any of them, so it can't be
+    /// an `Alias`.
+    Remake { dst: LocalId, srcs: Vec<LocalId> },
     /// The name now holds something untracked.
     Other(LocalId),
     /// Whatever the name holds leaves the frame here, on this path.
@@ -407,11 +408,16 @@ fn apply(
                 let cur = st.bind.entry(*dst).or_default();
                 cur.extend(seen);
             }
-            Event::Remake { dst, src } => {
-                let held = st.binds(*src);
-                let ours = !held.is_empty()
-                    && held.iter().all(|b| matches!(b, Bind::Own(v) | Bind::Part(v) if st.owned(*v)));
-                hand_over(st, *src);
+            Event::Remake { dst, srcs } => {
+                let ours = !srcs.is_empty()
+                    && srcs.iter().all(|src| {
+                        let held = st.binds(*src);
+                        !held.is_empty()
+                            && held.iter().all(|b| matches!(b, Bind::Own(v) | Bind::Part(v) if st.owned(*v)))
+                    });
+                for src in srcs {
+                    hand_over(st, *src);
+                }
                 if ours {
                     make(st, *dst, bi, si);
                 } else {

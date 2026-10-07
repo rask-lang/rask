@@ -23,7 +23,7 @@
 //! *receiver* — argument zero — and escapes the rest: `v.push(inner)` hands
 //! `inner` over and keeps `v`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::closure_reach::ClosureReach;
 use crate::closure_targets::ClosureTargets;
@@ -733,8 +733,8 @@ fn interface_methods_that_hand_back(
         }
         // Only a container the implementation built: a vtable call has no
         // argument list this pass reads the way `pass_edges` needs.
-        let mine = handing.get(&func.name).filter(|b| b.made().is_some()).copied();
-        let entry = per_method.entry(method).or_insert(mine);
+        let mine = handing.get(&func.name).filter(|b| b.made().is_some()).cloned();
+        let entry = per_method.entry(method).or_insert(mine.clone());
         let agrees = match (entry.as_ref(), mine.as_ref()) {
             (Some(a), Some(b)) => a.free == b.free && a.wrapped == b.wrapped,
             _ => false,
@@ -943,9 +943,10 @@ impl Keeps<'_> {
 /// A `take` argument handed back is the caller's for the same reason: the
 /// caller gave it up at the call, and nobody else holds it. Asking for every
 /// path to be the *same* argument, or every path to be fresh, left the result
-/// of `if c { return Vec.new() }  return p` to nobody (#1502, #1504). The caller
-/// owns that result exactly when it owned the argument going in, which is what
-/// `Event::Remake` says at the call.
+/// of `if c { return Vec.new() }  return p` to nobody (#1502, #1504), and so did
+/// returning `a` on one path and `b` on another (#1505). The caller owns that
+/// result exactly when it owned every argument that might come back, which is
+/// what `Event::Remake` says at the call.
 ///
 /// A path returning anything else — a field, a map's own vector, a borrowed
 /// parameter's contents — means the whole function is left out:
@@ -980,12 +981,11 @@ fn functions_that_hand_a_container_back(
 }
 
 /// What one returning path hands back.
-#[derive(Clone, Copy, PartialEq)]
 enum Path {
     /// A container this frame made, and its free.
     Made(&'static str),
-    /// The argument at this index.
-    Arg(usize),
+    /// One of the arguments at these indices.
+    Args(BTreeSet<usize>),
 }
 
 /// `func`'s answer for `functions_that_hand_a_container_back`, given what is
@@ -1006,17 +1006,12 @@ fn what_comes_back(
     // callee's answer.
     let forwarded = forwarded_wrappers(func, handing);
     let edges = pass_edges(func, handing, targets);
-    // Which parameter's owner each name has. Asked before `fresh`: what
+    // Which parameters' owners each name has. Asked before `fresh`: what
     // `stash(p)` hands back is this frame's, since a frame owns the `take`
     // parameters it keeps (`params_this_frame_owns`) — but to *this*
     // function's caller it is still the argument it passed, which it may not
     // have owned.
-    let mut param_of: HashMap<LocalId, usize> = HashMap::new();
-    for (i, param) in func.params.iter().enumerate() {
-        for name in renames_of(func, param.id, &edges) {
-            param_of.insert(name, i);
-        }
-    }
+    let param_of = owned_like_params(func, &edges, &fresh);
 
     let mut paths: Vec<Path> = Vec::new();
     let mut wrapped = false;
@@ -1035,8 +1030,9 @@ fn what_comes_back(
         let MirOperand::Local(id) = v else {
             return None;
         };
-        if let Some(i) = param_of.get(id) {
-            paths.push(Path::Arg(*i));
+        // Empty when only containers this frame made reach it: that is `fresh`.
+        if let Some(from) = param_of.get(id).filter(|from| !from.is_empty()) {
+            paths.push(Path::Args(from.clone()));
             continue;
         }
         if let Some(f) = fresh.get(id) {
@@ -1072,93 +1068,91 @@ fn what_comes_back(
         return None;
     }
     let mut free: Option<&'static str> = None;
-    let mut arg: Option<usize> = None;
+    let mut args: BTreeSet<usize> = BTreeSet::new();
     for p in paths {
-        let (f, a) = match p {
-            Path::Made(f) => (Some(f), None),
-            Path::Arg(i) => (None, Some(i)),
-        };
-        if f.is_some() {
-            free = f;
-        }
-        if let Some(i) = a {
-            // Two different arguments: the caller would have to own both, and
-            // one event can't say that. Nobody's, as before.
-            if arg.is_some_and(|j| j != i) {
-                return None;
-            }
-            arg = Some(i);
+        match p {
+            Path::Made(f) => free = Some(f),
+            Path::Args(from) => args.extend(from),
         }
     }
     // A fresh container needs a free to be named here; an argument handed
     // back is freed the way the caller's argument is.
-    match (arg, free) {
-        (None, None) => None,
-        (Some(_), _) if wrapped => None,
-        _ => Some(HandBack { free, wrapped, arg }),
+    match (args.is_empty(), free) {
+        (true, None) => None,
+        (false, _) if wrapped => None,
+        _ => Some(HandBack { free, wrapped, args }),
     }
 }
 
-/// The calls in `func` that may hand back one of their arguments: the call's
-/// destination, mapped to which argument and the local passed there.
+/// What a call that may hand back one of its arguments was passed there: per
+/// call destination, each such argument's index and the local passed for it.
+type Passes = HashMap<LocalId, Vec<(usize, LocalId)>>;
+
+/// The calls in `func` that may hand back one of their arguments.
 ///
-/// What comes back is the caller's exactly when that argument was, so each
-/// frame reads such a call as `Event::Remake`, and follows the container's
-/// free from the argument to the result.
-fn pass_edges(
-    func: &MirFunction,
-    handing: &HashMap<String, HandBack>,
-    targets: &ClosureTargets,
-) -> HashMap<LocalId, (usize, LocalId)> {
-    let bare_arg = |name: &str| handing.get(name).filter(|b| !b.wrapped).map(|b| b.arg);
+/// What comes back is the caller's exactly when every one of those arguments
+/// was, so each frame reads such a call as `Event::Remake`, and follows the
+/// container's free from the arguments to the result.
+fn pass_edges(func: &MirFunction, handing: &HashMap<String, HandBack>, targets: &ClosureTargets) -> Passes {
+    let bare_args = |name: &str| handing.get(name).filter(|b| !b.wrapped).map(|b| &b.args);
     let mut out = HashMap::new();
     for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-        let (dst, index, args) = match &stmt.kind {
+        let (dst, indices, args): (LocalId, BTreeSet<usize>, _) = match &stmt.kind {
             MirStmtKind::Call { dst: Some(dst), func: fref, args } => {
-                let Some(Some(i)) = bare_arg(&fref.name) else { continue };
-                (*dst, i, args)
+                let Some(from) = bare_args(&fref.name).filter(|from| !from.is_empty()) else { continue };
+                (*dst, from.clone(), args)
             }
-            // Every body the closure can be hands back what its caller owns,
-            // and those that hand back an argument agree on which. Argument
-            // `i` is the body's parameter `i + 1`, after the environment.
+            // Every body the closure can be hands back what its caller owns.
+            // Any argument one of them may hand back counts. Argument `i` is
+            // the body's parameter `i + 1`, after the environment.
             MirStmtKind::ClosureCall { dst: Some(dst), closure, args, .. } => {
                 let Some(bodies) = targets.known(&func.name, *closure) else { continue };
-                let mut agreed: Option<usize> = None;
+                let mut from = BTreeSet::new();
                 let all = !bodies.is_empty()
-                    && bodies.iter().all(|b| match bare_arg(b) {
-                        Some(None) => true,
-                        Some(Some(p)) if p > 0 && agreed.is_none_or(|a| a == p) => {
-                            agreed = Some(p);
+                    && bodies.iter().all(|b| match bare_args(b) {
+                        Some(ps) if !ps.contains(&0) => {
+                            from.extend(ps.iter().map(|p| p - 1));
                             true
                         }
                         _ => false,
                     });
-                match (all, agreed) {
-                    (true, Some(p)) => (*dst, p - 1, args),
-                    _ => continue,
+                if !all || from.is_empty() {
+                    continue;
                 }
+                (*dst, from, args)
             }
             _ => continue,
         };
-        if let Some(MirOperand::Local(src)) = args.get(index) {
-            out.insert(dst, (index, *src));
+        let srcs: Option<Vec<(usize, LocalId)>> = indices
+            .into_iter()
+            .map(|i| match args.get(i) {
+                Some(MirOperand::Local(src)) => Some((i, *src)),
+                _ => None,
+            })
+            .collect();
+        if let Some(srcs) = srcs {
+            out.insert(dst, srcs);
         }
     }
     out
 }
 
-/// Every name whose owner is certainly whoever owned what arrived in `param`:
-/// copies of it, phis whose every input is one, and what a call that may hand
-/// it back returned (`pass_edges`).
-/// Every definition of the name has to be one of those — lowering assigns a
-/// loop variable in more than one place.
+/// Every name whose owner is certainly whoever owned what arrived in some of
+/// `func`'s parameters, and which ones: copies, phis whose every input is one,
+/// and what a call that may hand one back returned (`pass_edges`). A phi of
+/// `a` and `b` is owned like both.
 ///
-/// Not a copy that took references of its own — that is a new value (#1447).
-fn renames_of(
+/// A container this frame made (`fresh`) counts too, owned like no parameter:
+/// it is the caller's once handed back, whatever the caller owned.
+///
+/// Every definition of the name has to be one of those — lowering assigns a
+/// loop variable in more than one place. Not a copy that took references of
+/// its own — that is a new value (#1447).
+fn owned_like_params(
     func: &MirFunction,
-    param: LocalId,
-    edges: &HashMap<LocalId, (usize, LocalId)>,
-) -> HashSet<LocalId> {
+    edges: &Passes,
+    fresh: &HashMap<LocalId, &'static str>,
+) -> HashMap<LocalId, BTreeSet<usize>> {
     let owns_copy: HashSet<LocalId> = func
         .blocks
         .iter()
@@ -1168,60 +1162,75 @@ fn renames_of(
             _ => None,
         })
         .collect();
-    let mut names: HashSet<LocalId> = HashSet::from([param]);
+    let mut from: HashMap<LocalId, BTreeSet<usize>> =
+        fresh.keys().map(|id| (*id, BTreeSet::new())).collect();
+    for (i, p) in func.params.iter().enumerate() {
+        from.insert(p.id, BTreeSet::from([i]));
+    }
+    let seeds: HashSet<LocalId> = from.keys().copied().collect();
+    // What one definition says `d` is owned like, when it says anything.
+    let def_from = |from: &HashMap<LocalId, BTreeSet<usize>>, stmt: &MirStmt, d: LocalId| {
+        let union = |srcs: &mut dyn Iterator<Item = Option<LocalId>>| {
+            let mut out = BTreeSet::new();
+            for s in srcs {
+                out.extend(from.get(&s?)?.iter().copied());
+            }
+            Some(out)
+        };
+        match &stmt.kind {
+            MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => {
+                if owns_copy.contains(&d) {
+                    return None;
+                }
+                from.get(src).cloned()
+            }
+            MirStmtKind::Phi { args, .. } if !args.is_empty() => union(&mut args.iter().map(|(_, op)| match op {
+                MirOperand::Local(s) => Some(*s),
+                _ => None,
+            })),
+            MirStmtKind::Phi { .. } => None,
+            _ => union(&mut edges.get(&d)?.iter().map(|(_, s)| Some(*s))),
+        }
+    };
+    let defs = || {
+        func.blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|stmt| Some((stmt, crate::analysis::uses::stmt_def(stmt)?)))
+            .filter(|(_, d)| !seeds.contains(d))
+    };
+    // Grown on "some definition is one"; the sets only widen, so this ends.
     loop {
-        let before = names.len();
-        for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
-            match &stmt.kind {
-                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) }
-                    if names.contains(src) && !owns_copy.contains(dst) =>
-                {
-                    names.insert(*dst);
+        let mut grew = false;
+        for (stmt, d) in defs() {
+            let Some(more) = def_from(&from, stmt, d) else { continue };
+            match from.get_mut(&d) {
+                Some(cur) if more.is_subset(cur) => {}
+                Some(cur) => {
+                    cur.extend(more);
+                    grew = true;
                 }
-                MirStmtKind::Phi { dst, args } => {
-                    if !args.is_empty()
-                        && args.iter().all(|(_, op)| matches!(op, MirOperand::Local(s) if names.contains(s)))
-                    {
-                        names.insert(*dst);
-                    }
+                None => {
+                    from.insert(d, more);
+                    grew = true;
                 }
-                _ => {}
             }
         }
-        for (dst, (_, src)) in edges {
-            if names.contains(src) {
-                names.insert(*dst);
-            }
-        }
-        if names.len() == before {
+        if !grew {
             break;
         }
     }
-    // Grown on "some definition is a rename"; keep only names where all are.
+    // Keep only names where every definition is one.
     loop {
-        let doomed: Vec<LocalId> = func
-            .blocks
-            .iter()
-            .flat_map(|b| b.statements.iter())
-            .filter_map(|stmt| {
-                let d = crate::analysis::uses::stmt_def(stmt).filter(|d| names.contains(d))?;
-                let ok = match &stmt.kind {
-                    MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => {
-                        names.contains(src) && !owns_copy.contains(&d)
-                    }
-                    MirStmtKind::Phi { args, .. } => {
-                        args.iter().all(|(_, op)| matches!(op, MirOperand::Local(s) if names.contains(s)))
-                    }
-                    _ => edges.get(&d).is_some_and(|(_, src)| names.contains(src)),
-                };
-                (!ok).then_some(d)
-            })
+        let doomed: Vec<LocalId> = defs()
+            .filter(|(stmt, d)| from.contains_key(d) && def_from(&from, stmt, *d).is_none())
+            .map(|(_, d)| d)
             .collect();
         if doomed.is_empty() {
-            return names;
+            return from;
         }
         for d in doomed {
-            names.remove(&d);
+            from.remove(&d);
         }
     }
 }
@@ -1251,23 +1260,25 @@ fn forwarded_wrappers(
 }
 
 /// How a function hands a container to its caller.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct HandBack {
-    /// What frees it, when a path builds one. Always there when `arg` isn't.
+    /// What frees it, when a path builds one. Always there when `args` is
+    /// empty.
     free: Option<&'static str>,
     /// The container is a slot inside what is returned (`-> Vec<i64>?`), not
     /// the returned value itself. The caller owns what it reads out of that
-    /// slot, not the wrapper. Never with `arg`.
+    /// slot, not the wrapper. Never with `args`.
     wrapped: bool,
-    /// Some paths hand back the argument at this index instead of building
-    /// one. The caller owns the result exactly when it owned that argument.
-    arg: Option<usize>,
+    /// Some paths hand back one of the arguments at these indices instead of
+    /// building one. The caller owns the result exactly when it owned every
+    /// one of them.
+    args: BTreeSet<usize>,
 }
 
 impl HandBack {
     /// The free, when every path builds what it returns.
     fn made(&self) -> Option<&'static str> {
-        if self.arg.is_some() {
+        if !self.args.is_empty() {
             return None;
         }
         self.free
@@ -1514,7 +1525,7 @@ fn container_facts(
     lent: &LentSlots,
     keeps: &Keeps,
     own: &HashSet<String>,
-    passed: &HashMap<LocalId, (usize, LocalId)>,
+    passed: &Passes,
     owned: &HashSet<LocalId>,
 ) -> crate::analysis::ownership::Facts {
     use crate::analysis::ownership::Event;
@@ -1547,19 +1558,23 @@ fn container_facts(
                     }
                 }
             };
-            // A call that may hand back its argument: the result is ours
-            // exactly when the argument was (`Event::Remake`). Only when both
-            // ends are tracked — otherwise the argument is handed over as
-            // before, and the result is nobody's.
+            // A call that may hand back one of its arguments: the result is
+            // ours exactly when every one of them was (`Event::Remake`). Only
+            // when all ends are tracked — otherwise the arguments are handed
+            // over as before, and the result is nobody's.
             let pass = match &stmt.kind {
                 MirStmtKind::Call { dst: Some(d), .. } | MirStmtKind::ClosureCall { dst: Some(d), .. }
                     if is(d) && !made_here.contains(d) =>
                 {
-                    passed.get(d).filter(|(_, src)| is(src)).map(|&(i, src)| (i, src, *d))
+                    passed.get(d).filter(|srcs| srcs.iter().all(|(_, s)| is(s))).map(|srcs| (srcs, *d))
                 }
                 _ => None,
             };
-            let passes_arg = |i: usize| pass.is_some_and(|(p, _, _)| p == i);
+            let passes_arg = |i: usize| pass.is_some_and(|(srcs, _)| srcs.iter().any(|(p, _)| *p == i));
+            let remake = |srcs: &[(usize, LocalId)], d: LocalId| Event::Remake {
+                dst: d,
+                srcs: srcs.iter().map(|(_, s)| *s).collect(),
+            };
             match &stmt.kind {
                 MirStmtKind::Phi { .. } => {}
                 MirStmtKind::Call { func: fref, args, dst } => {
@@ -1586,8 +1601,8 @@ fn container_facts(
                             give(&mut ev, arg);
                         }
                     }
-                    if let Some((_, src, d)) = pass {
-                        ev.push(Event::Remake { dst: d, src });
+                    if let Some((srcs, d)) = pass {
+                        ev.push(remake(srcs, d));
                     } else if let Some(d) = dst.filter(|d| is(d)) {
                         ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
                     }
@@ -1612,8 +1627,8 @@ fn container_facts(
                             give(&mut ev, arg);
                         }
                     }
-                    if let Some((_, src, d)) = pass {
-                        ev.push(Event::Remake { dst: d, src });
+                    if let Some((srcs, d)) = pass {
+                        ev.push(remake(srcs, d));
                     } else if let Some(d) = dst.filter(|d| is(d)) {
                         ev.push(if made_here.contains(&d) { Event::Make(d) } else { Event::Other(d) });
                     }
@@ -2222,13 +2237,14 @@ fn containers_and_makers(
 fn follow_copies_and_passes(
     func: &MirFunction,
     fresh: &mut HashMap<LocalId, &'static str>,
-    edges: &HashMap<LocalId, (usize, LocalId)>,
+    edges: &Passes,
 ) {
     loop {
         follow_copies(func, fresh);
         let mut added = false;
-        for (dst, (_, src)) in edges {
-            if let Some(free) = fresh.get(src).copied() {
+        for (dst, srcs) in edges {
+            let frees: Option<Vec<&'static str>> = srcs.iter().map(|(_, s)| fresh.get(s).copied()).collect();
+            if let Some(&free) = frees.as_deref().and_then(|f| f.first()) {
                 if fresh.insert(*dst, free).is_none() {
                     added = true;
                 }
@@ -3044,7 +3060,7 @@ fn every_def_is_fresh(
     func: &MirFunction,
     local: LocalId,
     fresh: &HashMap<LocalId, &'static str>,
-    edges: &HashMap<LocalId, (usize, LocalId)>,
+    edges: &Passes,
 ) -> bool {
     let mut any = false;
     for block in &func.blocks {
@@ -3060,8 +3076,9 @@ fn every_def_is_fresh(
                 MirStmtKind::Phi { args, .. } => args.iter().all(|(_, op)| {
                     matches!(op, MirOperand::Local(src) if fresh.contains_key(src))
                 }),
-                // A call that may hand back its argument is owned like it.
-                _ => edges.get(&local).is_some_and(|(_, src)| fresh.contains_key(src)),
+                // A call that may hand back one of its arguments is owned like
+                // all of them.
+                _ => edges.get(&local).is_some_and(|srcs| srcs.iter().all(|(_, s)| fresh.contains_key(s))),
             };
             if !ok {
                 return false;
