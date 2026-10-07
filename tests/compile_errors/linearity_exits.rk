@@ -166,22 +166,22 @@ func twice(f: func()) {
 func bad_closure_consumes_borrow() {
     let c = Conn { id: 1 }
     twice(|| {
-        // ERROR: the closure borrowed `c` and cannot give it away [E0891]
+        // ERROR: a closure can't give away what it captured [E0891]
         c.close()
     })
 }
 
-// Handed to a `take` parameter, the closure outlives the frame and carries `c`
-// with it (mem.closures/CM1), so the closure owes it and the outer binding does
-// not. Still compiles. This used to be spelled `own || …`, which no longer parses
-// and was what E0891's fix line suggested (#1361).
-func run_once(take f: func()) {
-    f()
+// What a closure consumes comes in as its own `take` parameter (CP4). Each
+// call is handed a value of its own, so a callee that calls it twice closes
+// two handles, not one twice. Capturing `c` here was legal once, because the
+// closure carried it; it no longer is, whatever the closure does with it
+// (mem.closures/CM4) — closure_consumes_capture.rk has those.
+func run_once(take f: func(take Conn)) {
+    f(Conn { id: 2 })
 }
 
-func good_carrying_closure() {
-    let c = Conn { id: 1 }
-    run_once(|| {
+func good_take_parameter() {
+    run_once(|take c: Conn| {
         c.close()
     })
 }

@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A task's closure can't consume what it captured either (mem.closures/CM4,
+// E0891, #1318). What the task consumes is handed to it as the body's `take`
+// parameter, `spawn_with` (conc.async/S6), so the bars show what crosses.
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) {
+        println("closed {self.id}")
+    }
+}
+
+func eat(take v: Vec<i64>) -> u64 {
+    return v.len()
+}
+
+func main() {
+    using Multitasking {
+        let c = Conn { id: 1 }
+        let h = spawn(|| {
+            // ERROR: the task's closure captured `c`, so it can't close it [E0891]
+            c.close()
+        })
+        h.join()!
+
+        let v: Vec<i64> = [1, 2]
+        let k = spawn(|| {
+            // ERROR: a non-linear capture can't be given away either [E0891]
+            return eat(v)
+        })
+        println("{k.join()!}")
+
+        // Fine: handed over as the task's argument.
+        let d = Conn { id: 2 }
+        spawn_with(d, |take d: Conn| {
+            d.close()
+        }).join()!
+        let w: Vec<i64> = [3]
+        println("{spawn_with(w, |take w: Vec<i64>| { return eat(w) }).join()!}")
+    }
+}

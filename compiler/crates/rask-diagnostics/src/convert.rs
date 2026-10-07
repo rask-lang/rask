@@ -4322,19 +4322,38 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 )
             }
 
-            ResourceNotConsumedInClosure { name, context } => {
+            ResourceNotConsumedInClosure { name } => {
                 Diagnostic::error(format!(
-                    "resource `{}` captured by {} is not consumed on all code paths",
-                    name, context
+                    "resource `{}` is not consumed on every path through the closure",
+                    name
                 ))
                 .with_code("E0810")
-                .with_primary(self.span, format!("{} body ends without consuming `{}`", context, name))
-                .with_help(format!(
-                    "consume `{}` on every code path, or use `ensure` inside the {} body",
-                    name, context
+                .with_primary(self.span, format!("closure body ends without consuming `{}`", name))
+                .with_fix(format!("ensure {}.close()", name))
+                .with_why("the closure owns it — a `take` parameter or something the body acquired — and a resource is consumed exactly once [mem.linear/L1]")
+            }
+
+            LinearCaptureCarried { name, ty } => {
+                let ty = ty.clone().unwrap_or_else(|| "T".to_string());
+                Diagnostic::error(format!(
+                    "`{}` must be consumed, and a closure can't consume what it captures",
+                    name
                 ))
-                .with_fix(format!("consume `{}` (e.g. `ensure {{ {}.close() }}`) at the top of the {} body", name, name, context))
-                .with_why("resource types must be consumed exactly once — a closure/spawn that captures a resource takes ownership and must consume it")
+                .with_code("E0913")
+                .with_primary(self.span, format!("this closure outlives its frame, so it would carry `{}` away and never let go of it", name))
+                .with_fix(format!(
+                    "pass it in as an argument the closure takes — for a task:\n\n  \
+                     spawn_with({n}, |take {n}: {t}| {{ … }})\n\n\
+                     for any other callback, a `take` parameter its caller fills:\n\n  \
+                     |take {n}: {t}| {{ … }}",
+                    n = name, t = ty
+                ))
+                .with_why(
+                    "a closure may run any number of times, so its body can't give away \
+                     what it captured [mem.closures/CM4]. One that outlives its frame moves \
+                     its captures in [CM2], and a linear value moved there could never be \
+                     consumed. A `take` parameter is a fresh value per call, so consuming it is fine",
+                )
             }
 
             ConsumeBorrowedPart { name, from, matched_at, sink } => {
@@ -4375,41 +4394,48 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
             }
 
-            ConsumeBorrowedCapture { name, closure_at } => {
+            ConsumeBorrowedCapture { name, closure_at, ty, linear } => {
+                let t = ty.as_deref().unwrap_or("…");
+                let copy = if *linear {
+                    String::new()
+                } else {
+                    format!("\n\nor give away a copy instead: `{}.clone()`", name)
+                };
                 Diagnostic::error(format!(
-                    "cannot consume `{}` — the closure borrowed it",
+                    "cannot consume `{}` — a closure can't give away what it captured",
                     name
                 ))
                 .with_code("E0891")
                 .with_primary(self.span, format!("this consumes `{}`", name))
-                .with_secondary(*closure_at, format!("this closure captured `{}` by borrow", name))
+                .with_secondary(*closure_at, format!("this closure captured `{}`", name))
                 .with_fix(format!(
-                    "hand the closure to a `take` parameter so it carries `{}` with it, \
-                     as in `func run_once(take f: func()) {{ f() }}`, or consume `{}` \
-                     outside the closure. A value that isn't a resource can give away \
-                     a copy instead: `{}.clone()`",
-                    name, name, name
+                    "pass `{n}` in instead of capturing it — a `take` parameter:\n\n  \
+                     |take {n}: {t}| {{ … }}\n\n\
+                     or, for a task, the spawn argument form:\n\n  \
+                     spawn_with({n}, |take {n}: {t}| {{ … }}){copy}",
+                    n = name
                 ))
                 .with_why(
-                    "a closure that stays in its frame borrows what it captures, and a \
-                     borrow is not yours to give away. Nothing says how many times a \
-                     closure runs either, so one `close()` in the body can be any number \
-                     of closes at runtime. A closure handed to `take` outlives the frame, \
-                     so it carries the value instead [mem.closures/CM1, mem.linear/L2, L3]",
+                    "nothing says how many times a closure runs, so one `close()` in the \
+                     body can be any number of closes at runtime. A `take` parameter is a \
+                     new value on every call, so consuming it is fine [mem.closures/CM4]",
                 )
             }
 
             BorrowedCaptureEscapes { path, root, ty, closure_at } => {
                 Diagnostic::error(format!(
-                    "`{}` belongs to the enclosing scope — the closure only borrowed it, so it can't return it",
+                    "`{}` is a capture — a closure can't return what it captured",
                     path
                 ))
                 .with_code("E0907")
                 .with_primary(self.span, format!("`{}` isn't Copy, so this hands out `{}` itself", ty, path))
-                .with_secondary(*closure_at, format!("this closure stays here, so it points at `{}`", root))
+                .with_secondary(*closure_at, format!("this closure captured `{}`", root))
                 .with_fix(format!("return a copy: `{}.clone()`", path))
                 .with_why(
-                    "a closure that stays in its frame borrows what it captures.                      Returning a borrowed value gives the caller a second name for                      storage the enclosing scope still owns, the same as returning a                      borrowed parameter's field (E0872), and nothing says how many                      times the closure runs, so every call would hand out the same                      value again [mem.closures/CM1, mem.borrowing/S3]",
+                    "a closure can't give away what it captured: nothing says how many \
+                     times it runs, so every call would hand out the same value again, \
+                     and the scope or environment that holds it still owns it \
+                     [mem.closures/CM4]",
                 )
             }
 

@@ -413,11 +413,20 @@ pub enum OwnershipErrorKind {
         acquired_at: Span,
     },
 
-    /// Resource captured by closure/spawn not consumed on all code paths.
-    #[error("resource `{name}` captured by {context} is not consumed on all code paths")]
+    /// A resource the closure body owns — a `take` parameter or a local it
+    /// acquired — not consumed on every path through the body.
+    #[error("resource `{name}` is not consumed on every path through the closure")]
     ResourceNotConsumedInClosure {
         name: String,
-        context: String,
+    },
+
+    /// A closure that outlives its frame would carry a linear value into an
+    /// environment that can never consume it: the body may not give a
+    /// capture away (mem.closures/CM4), and nothing else ever will.
+    #[error("`{name}` must be consumed, and a closure can't consume what it captures")]
+    LinearCaptureCarried {
+        name: String,
+        ty: Option<String>,
     },
 
     /// A part matched out of a borrowed value was given away. `match s {
@@ -445,23 +454,27 @@ pub enum OwnershipErrorKind {
         sink: Option<String>,
     },
 
-    /// A closure that stays in its frame consumed a linear value it only borrowed.
+    /// A closure body gave away something it captured (mem.closures/CM4).
     ///
-    /// The parameter version of this is `ConsumeBorrowedParam` (#804). Same
-    /// rule, different door: a borrow can't be given away. What makes the
-    /// closure version worse is that nothing bounds how many times a closure
-    /// runs, so one consume in the body is any number of consumes at runtime.
-    #[error("cannot consume `{name}` — the closure borrowed it")]
+    /// The parameter version of this is `ConsumeBorrowedParam` (#804). What
+    /// makes the closure version worse is that nothing bounds how many times
+    /// a closure runs, so one consume in the body is any number of consumes
+    /// at runtime.
+    #[error("cannot consume `{name}` — a closure can't give away what it captured")]
     ConsumeBorrowedCapture {
         name: String,
         /// Where the closure literal is.
         closure_at: Span,
+        /// The capture's type, for the fix.
+        ty: Option<String>,
+        /// Linear, so a copy is no way out.
+        linear: bool,
     },
 
-    /// A closure that stays in its frame returns a non-Copy capture, or a
-    /// part of one. It only points at the variable (`mem.closures/CM1`), so
-    /// the result would be a second name for what the frame still owns.
-    #[error("`{path}` belongs to the frame the closure points into — returning it hands out a second name for it")]
+    /// A closure returns a non-Copy capture, or a part of one. The body may
+    /// not give a capture away (`mem.closures/CM4`): every call would hand
+    /// out the same value again.
+    #[error("`{path}` is the closure's capture — returning it hands out a second name for it")]
     BorrowedCaptureEscapes {
         /// `b`, `b.items`.
         path: String,

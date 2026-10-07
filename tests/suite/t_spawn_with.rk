@@ -113,9 +113,12 @@ test "one per turn of a loop" {
     }
 }
 
-test "an OS thread and a pool job" {
+test "an OS thread" {
     let t = Thread.spawn_with(Conn { id: 4 }, |take c: Conn| { return c.close() })
     assert t.join()! == 4
+}
+
+test "a pool job" {
     using ThreadPool {
         let p = ThreadPool.spawn_with(Bag { items: [2, 3], name: "pool" }, total)
         assert p.join()! == 5

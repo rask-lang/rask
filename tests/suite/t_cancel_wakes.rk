@@ -82,7 +82,7 @@ test "a task asleep" {
 test "a task waiting to accept" {
     using Multitasking(workers: 2) {
         let listener = net.tcp_listen("127.0.0.1:0")!
-        let h = spawn(|| {
+        let h = spawn_with(listener, |take listener| {
             ensure listener.close()
             match listener.accept() {
                 IoError.Cancelled => { return "cancelled" }

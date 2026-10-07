@@ -2606,14 +2606,22 @@ impl<'a> OwnershipChecker<'a> {
                     .cloned()
                     .collect();
 
-                // A carrying closure takes a captured resource in; one that
-                // points at its captures only borrows it. `mem.closures`' edge
-                // case table has always drawn that line — "Resource consumed by
-                // closure" on one side, "Resource borrowed; can't escape scope"
-                // on the other — and the pass treated both as a move, which is
-                // what let a closure consume something it had only borrowed.
+                // A closure never consumes what it captured (mem.closures/CM4):
+                // nothing bounds how many times it runs, so one `close()` in
+                // the body is any number of closes. A carrying closure would
+                // still move a linear capture into an environment that can
+                // never give it up, so that is refused here, at the capture.
+                // The value goes in as a `take` argument instead (CP4).
+                //
+                // Reported after the body: a body that tries to consume the
+                // capture gets E0891 there, which says the same thing closer
+                // to the mistake. The outer name is moved all the same, so one
+                // mistake is one error and not a cascade of "never consumed".
+                let mut stranded: Vec<(String, Option<String>)> = Vec::new();
                 if carries {
                     for name in &resource_captures {
+                        let ty = self.binding_types.get(name).map(|t| self.program.types.resolve_type_names(t).to_string());
+                        stranded.push((name.clone(), ty));
                         self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
                     }
                 }
@@ -2771,43 +2779,40 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
 
-                // Register resource captures in closure's resource set.
-                //
-                // Only a carrying closure owns one, so only a carrying closure
-                // owes its consumption. A borrowing closure has it on loan: the
-                // body may read it, the outer scope still owes it, and a
-                // consume in the body is an error.
-                //
-                // Nothing bounds how many times a closure runs, which is why
-                // the borrow reading has to be the strict one. `twice(|| {
-                // c.close() })` type-checked, and the interpreter's runtime
-                // flag caught the second close while native closed the handle
-                // twice and carried on (#882).
+                // Every capture is on loan to the body, whether the closure
+                // points at it or carries it: the body may read and write it,
+                // never give it away (CM4). Nothing bounds how many times a
+                // closure runs, so a give-away in the body is any number of
+                // them — `twice(|| { c.close() })` closed one handle twice on
+                // native (#882, #1318), and `|| b` handed every caller the same
+                // `Bag` (#1449).
                 let saved_borrowed_captures = std::mem::take(&mut self.borrowed_captures);
                 for name in &resource_captures {
                     self.bindings.insert(name.clone(), BindingState::Owned);
-                    if carries {
-                        self.resource_bindings.insert(name.clone());
-                    } else {
-                        self.borrowed_captures.insert(name.clone(), expr.span);
-                    }
+                    self.borrowed_captures.insert(name.clone(), expr.span);
                 }
-                // Register non-resource captures as owned.
-                //
-                // A closure that stays borrows the non-Copy ones too, so they
-                // can't be given away either: not to a `take`, and not as the
-                // closure's result (`|| b`), which gave the caller the frame's
-                // own `Bag` on every call (#1449).
                 for name in &captures {
                     if !resource_captures.contains(name) {
-                        if !carries && self.bindings.contains_key(name) && !self.capture_is_copy(name) {
+                        if self.bindings.contains_key(name) && !self.capture_is_copy(name) {
                             self.borrowed_captures.insert(name.clone(), expr.span);
                         }
                         self.bindings.insert(name.clone(), BindingState::Owned);
                     }
                 }
 
+                let errors_before_body = self.errors.len();
                 self.check_expr(body);
+                for (name, ty) in stranded {
+                    let consumed_in_body = self.errors[errors_before_body..].iter().any(|e| {
+                        matches!(&e.kind, OwnershipErrorKind::ConsumeBorrowedCapture { name: n, .. } if *n == name)
+                    });
+                    if !consumed_in_body {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::LinearCaptureCarried { name, ty },
+                            span: expr.span,
+                        });
+                    }
+                }
                 if !matches!(body.kind, ExprKind::Block(_)) {
                     self.check_borrowed_capture_escape(body);
                     // The implicit return of an expression body, held to the
@@ -2830,7 +2835,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
 
                 // Check resource consumption at closure exit
-                self.check_resource_consumption_in_closure(expr.span, "closure");
+                self.check_resource_consumption_in_closure(expr.span);
 
                 // Restore outer scope
                 self.bindings = saved_bindings;
@@ -4309,10 +4314,9 @@ impl<'a> OwnershipChecker<'a> {
         });
     }
 
-    /// A non-Copy capture of a closure that stays in its frame, or a part of
-    /// one, handed back as the closure's result. The closure points at the
-    /// variable (`mem.closures/CM1`), so this is S3 one door along: the
-    /// frame still owns what the caller would get (#1449).
+    /// A non-Copy capture, or a part of one, handed back as the closure's
+    /// result. The body may not give a capture away (`mem.closures/CM4`):
+    /// every call would hand out the same value (#1449).
     fn check_borrowed_capture_escape(&mut self, expr: &Expr) {
         let (Some(root), fields) = Self::extract_root_and_fields(expr) else {
             return;
@@ -6627,10 +6631,13 @@ impl<'a> OwnershipChecker<'a> {
             return;
         }
         if let Some(&closure_at) = self.borrowed_captures.get(name) {
+            let ty = self.binding_types.get(name);
             self.errors.push(OwnershipError {
                 kind: OwnershipErrorKind::ConsumeBorrowedCapture {
                     name: name.to_string(),
                     closure_at,
+                    ty: ty.map(|t| self.program.types.resolve_type_names(t).to_string()),
+                    linear: ty.is_some_and(|t| self.program.types.is_linear_value(t)),
                 },
                 span,
             });
@@ -6977,6 +6984,15 @@ impl<'a> OwnershipChecker<'a> {
     fn commit_in_ensure(&mut self, consumed: &Expr, ensure_at: Span) {
         match &consumed.kind {
             ExprKind::Ident(name) => {
+                // An `ensure` gives the value away as surely as the call does,
+                // later. What this frame only has on loan — a borrowed
+                // parameter, a capture, a matched-out part, a loop item — gets
+                // the error the direct call gets. `ensure c.close()` on a
+                // borrowed `c` used to pass, and closed the caller's handle.
+                if self.is_on_loan(name) {
+                    self.consume_binding(name, consumed.span, None);
+                    return;
+                }
                 if self.resource_bindings.contains(name) {
                     self.register_ensure(name, ensure_at);
                 }
@@ -6993,6 +7009,16 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
+    /// Whether giving `name` away is refused outright — `consume_binding`'s
+    /// early returns.
+    fn is_on_loan(&self, name: &str) -> bool {
+        self.module_consts.contains(name)
+            || self.borrowed_params.contains_key(name)
+            || self.borrowed_parts.contains_key(name)
+            || self.borrowed_loop_items.contains_key(name)
+            || self.borrowed_captures.contains_key(name)
+    }
+
     /// An argument handed to a `take` parameter: consumed, or committed when
     /// the call sits in an `ensure` body.
     fn consume_arg_or_commit(&mut self, arg_expr: &Expr, sink: Option<&str>) {
@@ -7002,8 +7028,8 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// At closure/spawn exit, emit errors for unconsumed @resource captures.
-    fn check_resource_consumption_in_closure(&mut self, span: Span, context: &str) {
+    /// At closure exit, report what the body owns and didn't consume.
+    fn check_resource_consumption_in_closure(&mut self, span: Span) {
         let mut names: Vec<String> = self.resource_bindings.iter().cloned().collect();
         names.sort();
         for name in names {
@@ -7026,10 +7052,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             if !matches!(self.bindings.get(&name), Some(BindingState::Moved { .. })) {
                 self.errors.push(OwnershipError {
-                    kind: OwnershipErrorKind::ResourceNotConsumedInClosure {
-                        name,
-                        context: context.to_string(),
-                    },
+                    kind: OwnershipErrorKind::ResourceNotConsumedInClosure { name },
                     span,
                 });
             }

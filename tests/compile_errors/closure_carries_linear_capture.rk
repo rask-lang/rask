@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure that outlives its frame can't capture a linear value (E0913,
+// mem.closures/CM4, #1318).
+//
+// Carrying moves the capture into the closure's environment (CM2), and the
+// body can never give it away (CM4), so nothing would ever consume it. The
+// value goes in as a `take` parameter, or `spawn_with` for a task.
+
+import memory.Heap
+
+@resource
+struct Conn {
+    public id: i32
+}
+
+extend Conn {
+    public func close(take self) {
+        println("closed {self.id}")
+    }
+}
+
+func peek(c: Conn) -> i32 {
+    return c.id
+}
+
+func make_reader() -> func() -> i32 {
+    let c = Conn { id: 1 }
+    // ERROR: the returned closure would hold `c` forever [E0913]
+    return || peek(c)
+}
+
+func make_sizer() -> func() -> i64 {
+    let h: Heap<i64> = Heap(5)
+    // ERROR: a `Heap<T>` is linear too [E0913]
+    return || *h
+}
+
+func main() {
+    using Multitasking {
+        let c = Conn { id: 2 }
+        // ERROR: the task only reads `c`, and nothing ever closes it [E0913]
+        let t = spawn(|| {
+            return peek(c)
+        })
+        println("{t.join()!}")
+
+        // Fine: the task is handed `d` and closes it.
+        let d = Conn { id: 3 }
+        let u = spawn_with(d, |take d: Conn| {
+            ensure d.close()
+            return peek(d)
+        })
+        println("{u.join()!}")
+    }
+
+    // Fine: a closure that stays in its frame only borrows.
+    let e = Conn { id: 4 }
+    ensure e.close()
+    let read = || peek(e)
+    println("{read()}")
+}

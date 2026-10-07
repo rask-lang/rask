@@ -206,7 +206,7 @@ func main() -> void or Error {
         let serve = spawn(|| {
             while !cancelled() {
                 let (req, responder) = try server.accept()
-                spawn(|| {
+                spawn_with(responder, |take responder: Responder| {
                     ensure responder.respond(Response.internal_error("error"))
                     responder.respond(handle(req))
                 }).detach()

@@ -6950,23 +6950,49 @@ fn error_mutate_param_left_empty() {
     assert!(!out.contains("`consume`"), "and so is `take`: {}", out);
 }
 
-// mem.parameters/PM1 with mem.linear/L1: a parameter the caller only lent out
-// can't be given away. This made "consumed exactly once" false in the shipped
-// compiler — the interpreter caught the double-consume with a runtime flag, and
-// native, which has no flag, closed a live `@resource` twice (#804).
-//
-// A `mutate` parameter is deliberately still allowed to be consumed: exclusive
-// access means taking the value out and writing a replacement back is the point.
-// E0891's fix line said `own ||`, which no longer parses (#1361). The fix is to
-// hand the closure to a `take` parameter, and the fixture's legal case does
-// exactly that — so it must stay clean, and the advice must name `take`.
+// A closure can't give away what it captured (mem.closures/CM4, #1318). The
+// fix names both ways out, as code: a `take` parameter, and `spawn_with` for a
+// task. E0891's fix line once said `own ||`, which no longer parses (#1361).
+// The fixture's legal case takes its `Conn` as a parameter and must stay clean.
 #[test]
 fn error_closure_consumes_borrowed_capture() {
     let (failed, out) = compile_error_output("linearity_exits.rk");
     assert!(failed, "{}", out);
-    assert_eq!(out.matches("error[E0891]").count(), 1, "the carrying closure must compile: {}", out);
+    assert_eq!(out.matches("error[E0891]").count(), 1, "the `take` parameter must compile: {}", out);
     assert!(!out.contains("own ||") && !out.contains("`own`"), "still suggests `own`: {}", out);
-    assert!(out.contains("hand the closure to a `take` parameter"), "{}", out);
+    assert!(out.contains("|take c: Conn| { … }"), "the fix should show a `take` parameter: {}", out);
+    assert!(out.contains("spawn_with(c, |take c: Conn| { … })"), "the fix should show `spawn_with`: {}", out);
+    assert!(!out.contains("c.clone()"), "a resource has no copy to offer: {}", out);
+}
+
+// The carrying side of the same rule: a returned closure, one a `take` keeps,
+// and a task's closure (#1318). Each consumption is one E0891 or E0907, and the
+// legal shapes beside them stay clean.
+#[test]
+fn error_carrying_closure_consumes_capture() {
+    let (failed, out) = compile_error_output("closure_consumes_capture.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0891]").count(), 2, "{}", out);
+    assert_eq!(out.matches("error[E0907]").count(), 1, "{}", out);
+    assert!(out.contains("`b.clone()`"), "a non-linear capture can offer a copy: {}", out);
+
+    let (failed, out) = compile_error_output("spawn_consumes_capture.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0891]").count(), 2, "{}", out);
+    assert!(out.contains("spawn_with(v, |take v: Vec<i64>| { … })"), "{}", out);
+}
+
+// A linear value can't be carried at all: nothing in the closure could ever
+// consume it (E0913). The message points at `spawn_with` and a `take`
+// parameter, with the value's type filled in.
+#[test]
+fn error_closure_carries_linear_capture() {
+    let (failed, out) = compile_error_output("closure_carries_linear_capture.rk");
+    assert!(failed, "{}", out);
+    assert_eq!(out.matches("error[E0913]").count(), 3, "{}", out);
+    assert!(out.contains("spawn_with(c, |take c: Conn| { … })"), "{}", out);
+    assert!(out.contains("|take h: Heap<i64>| { … }"), "{}", out);
+    assert!(!out.contains("error[E0805]"), "a refused capture is one error, not a leak too: {}", out);
 }
 
 // A closure that stays borrows its non-Copy captures, so it can't hand one
@@ -6981,6 +7007,13 @@ fn error_closure_returns_borrowed_capture() {
     assert!(out.contains("`b.clone()`"), "the fix should be a copy: {}", out);
 }
 
+// mem.parameters/PM1 with mem.linear/L1: a parameter the caller only lent out
+// can't be given away. This made "consumed exactly once" false in the shipped
+// compiler — the interpreter caught the double-consume with a runtime flag, and
+// native, which has no flag, closed a live `@resource` twice (#804).
+//
+// A `mutate` parameter is deliberately still allowed to be consumed: exclusive
+// access means taking the value out and writing a replacement back is the point.
 #[test]
 fn error_consume_borrowed_param() {
     let (failed, out) = compile_error_output("consume_borrowed_param.rk");

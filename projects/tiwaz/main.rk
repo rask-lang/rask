@@ -2,7 +2,9 @@ import http.Request
 import http.Response
 import http.HttpError
 import http.HttpServer
+import http.Responder
 import async.spawn
+import async.spawn_with
 import json
 
 func main() -> void or Error {
@@ -16,7 +18,7 @@ func main() -> void or Error {
             println("waiting for request")
             let (request, responder) = try server.accept()
             println("got request")
-            spawn(|| {
+            spawn_with(responder, |take responder: Responder| {
                 ensure responder.respond(Response.internal_error("unhandled"))
                 println("forwarding request")
 

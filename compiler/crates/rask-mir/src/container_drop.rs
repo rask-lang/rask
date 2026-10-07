@@ -281,9 +281,10 @@ fn env_drop_glue(
     }
 
     // What each closure body gives up by itself, by capture offset. A capture
-    // the body consumes is not the glue's to free:
+    // the body consumes is not the glue's to free. Only a Copy one can be —
+    // `mem.closures/CM4` refuses the rest — and a channel end is one:
     //
-    //     spawn(own || { for i in 1..n { tx.send(i) }  tx.close() })
+    //     spawn(|| { for i in 1..n { tx.send(i) }  tx.close() })
     //
     // `close` takes the sender away — closing an end *is* dropping it — so the
     // glue freeing it again on the way out aborted the process on a double

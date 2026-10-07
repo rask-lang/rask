@@ -815,14 +815,11 @@ impl Interpreter {
         ));
     }
 
-    /// Clones function/enum/method tables and captured environment for spawned thread.
-    /// Build the interpreter a task will run on, and hand it what it owns.
-    ///
-    /// Every spawn form makes one of these — `spawn`, `Thread.spawn`, the
-    /// pool submit — and the resource handover belongs to all of them, so it
-    /// lives here rather than at each. Patching one copy and not the others is
-    /// how #882's first fix changed nothing: two copies looked identical and
-    /// only one was reached.
+    /// Build the interpreter a task will run on: the program's tables and the
+    /// closure's captures. Every spawn form goes through `task_from_args`, which
+    /// calls this and hands over the task's argument. One path, because
+    /// patching one copy and not the others is how #882's first fix changed
+    /// nothing: two copies looked identical and only one was reached.
     pub(crate) fn spawn_child(
         &mut self,
         captured_vars: HashMap<String, crate::env::Slot>,
@@ -859,21 +856,11 @@ impl Interpreter {
         // reason, which is the failure std.testing/T19 exists to surface
         // (#1093). Shared rather than copied, because there is one report.
         child.output_buffer = self.output_buffer.clone();
-        // The task owns what it was handed. A task runs on its own
-        // interpreter with its own resource tracker, so without this the
-        // parent went on owing a resource the task had already closed:
-        // `spawn(own || { ensure c.close() … })` ran correctly and then died
-        // at the enclosing scope's exit claiming a leak, while native — which
-        // has no tracker — printed nothing (#882).
-        let handed: Vec<Value> = captured_vars
-            .values()
-            .filter_map(|slot| slot.get())
-            .collect();
+        // Captures hold nothing the task owes: a closure that outlives its
+        // frame can't capture a linear value (mem.closures/CM4). What the task
+        // consumes arrives as its argument, handed over in `task_from_args`.
         for (name, cell) in captured_vars {
             child.env.define_slot(name, cell);
-        }
-        for value in &handed {
-            self.hand_resources_to_task(value, &mut child);
         }
         child
     }

@@ -6,7 +6,7 @@
 // end's receive window, from 1 KB to 256 KB, and on the seeds where both are
 // smaller than the message the deadlock is reported.
 import net
-import async.spawn
+import async.spawn_with
 
 func big() -> string {
     return "x".repeat(200000)
@@ -16,7 +16,7 @@ test "both sides write before reading" {
     using Multitasking {
         let listener = try net.tcp_listen("127.0.0.1:0")
         let addr = listener.local_addr()
-        let server = spawn(|| {
+        let server = spawn_with(listener, |take listener| {
             let conn = listener.accept() catch e => { return }
             let _ = conn.write_text(big())
             let _ = conn.read_text()
