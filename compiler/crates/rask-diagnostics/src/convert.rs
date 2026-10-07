@@ -1547,6 +1547,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a link is the address of its node [mem.racks/RK2], so `<` answers from wherever the allocator put the chunk. Padding the heap before the rack is built changes the result, which makes a sorted walk over links unreproducible [determinism/D11]. Two nodes have no order to define — only identity, which is what `==` compares [mem.racks/RK11]")
             }
 
+            SequenceNotOrderable { op, recv, span } => {
+                Diagnostic::error(format!("`{}` on `{}`: a sequence has no order", op, recv))
+                    .with_code("E0414")
+                    .with_primary(*span, "vectors and arrays compare for equality only")
+                    .with_help("say which order you mean: by length, by one element, or by a key")
+                    .with_fix("`a.len() < b.len()`, `a[0] < b[0]`, or `rows.sort_by_key(|r| r[0])`")
+                    .with_why("`Vec<T>` is `Equal` and `Hashable` when `T` is [type.generics/EQ4, HA3b], but not `Comparable` [CO1]. Shorter-first, element-by-element and sum-first are all reasonable orders for a sequence, and none of them is the obvious one, so there is no `<` to guess at. A fixed array shares `Vec`'s methods and its answer")
+            }
+
             TakeSelfThroughLink { method, node, span } => {
                 Diagnostic::error(format!("`{}` takes its `{}`, and a link only reaches one", method, node))
                     .with_code("E0910")

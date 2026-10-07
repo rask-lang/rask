@@ -100,8 +100,14 @@ impl TypeChecker {
             let ty = self.resolve_named(&self.ctx.apply(&var));
             // Only check concrete, registered types — skip vars, errors, and
             // bare type parameters (unresolved names with no registered type).
+            // A `Vec` still in its written spelling is checked for the four
+            // contract interfaces, which `check_satisfies` answers from the
+            // element type alone. Skipped, `T: Comparable` took a `Vec` and
+            // `vv.sort()` ran on a `Vec<Vec<T>>`, which has no order (#1491).
+            let written_vec = matches!(&ty, Type::UnresolvedGeneric { name, .. } if name == "Vec");
             match &ty {
                 Type::Var(_) | Type::Error => continue,
+                Type::UnresolvedGeneric { .. } if written_vec => {}
                 Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => continue,
                 _ => {}
             }
@@ -134,7 +140,14 @@ impl TypeChecker {
             // (`check_bound_names`), once; nothing can satisfy it here.
             let interfaces: Vec<_> = {
                 let checker = crate::interfaces::InterfaceChecker::new(&self.types);
-                interfaces.into_iter().filter(|t| checker.names_an_interface(t)).collect()
+                interfaces
+                    .into_iter()
+                    .filter(|t| checker.names_an_interface(t))
+                    .filter(|t| !written_vec || matches!(
+                        self.types.interface_name(t).as_str(),
+                        "Equal" | "Hashable" | "Cloneable" | "Comparable"
+                    ))
+                    .collect()
             };
             let bound = crate::interfaces::InterfaceBound::new("_", interfaces);
             if let Err(errs) = crate::interfaces::verify_instantiation(&self.types, &ty, std::slice::from_ref(&bound), span) {
@@ -534,6 +547,22 @@ impl TypeChecker {
         interface_name: String,
         span: Span,
     ) -> TypeError {
+        // A sequence's missing order has its own message: the generic one
+        // offers `Vec<i64> implements Comparable`, which XC1 forbids and CO1
+        // says has no right answer anyway.
+        let sequence = match ty {
+            Type::Array { .. } => true,
+            Type::UnresolvedGeneric { name, .. } => name == "Vec",
+            Type::Generic { base, .. } => self.types.type_name(*base) == "Vec",
+            _ => false,
+        };
+        if sequence && interface_name == "Comparable" {
+            return TypeError::SequenceNotOrderable {
+                op: "Comparable".to_string(),
+                recv: ty_name,
+                span,
+            };
+        }
         if interface_name != "Encode" && interface_name != "Decode" {
             let context = if matches!(interface_name.as_str(), "Numeric" | "Integer" | "Float") {
                 super::InterfaceBoundContext::NumericBound

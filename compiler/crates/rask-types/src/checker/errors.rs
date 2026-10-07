@@ -317,6 +317,14 @@ pub enum TypeError {
         recv: String,
         span: Span,
     },
+    /// type.generics/CO1: `<` or `compare` on a `Vec` or fixed array. Equal
+    /// and Hashable, never Comparable. `op` is what the source wrote.
+    #[error("`{op}` on `{recv}`: a sequence has no order")]
+    SequenceNotOrderable {
+        op: String,
+        recv: String,
+        span: Span,
+    },
     /// mem.racks/RK1: a `take self` method called through a link would move
     /// the node out of the rack that owns it.
     #[error("`{method}` takes its `{node}`, and a link only reaches one")]
@@ -1626,6 +1634,7 @@ impl TypeError {
             | NonOptionalLink { .. }
             | RecursiveTypeHasNoSize { .. }
             | LinkNotOrderable { .. }
+            | SequenceNotOrderable { .. }
             | TakeSelfThroughLink { .. }
             | MutateWithBinding { .. }
             | MutateBoundName { .. }

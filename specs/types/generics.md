@@ -505,10 +505,10 @@ enum Ordering { Less, Equal, Greater }
 | Type | Comparable Status |
 |------|-------------------|
 | Integer primitives, bool, char, string | Auto-derived |
-| `f32`, `f64` | NOT Comparable (NaN breaks totality) |
+| `f32`, `f64` | Comparable through the total order; `<` stays IEEE (CO4) |
 | Struct with all Comparable fields | Auto-derived (lexicographic by field order) |
 | Enum with all Comparable payloads | Auto-derived (variant order, then payload) |
-| Struct with float field | NOT Comparable unless manually implemented with `.total_cmp()` |
+| `Vec<T>`, `[T; N]` | NOT Comparable — shorter-first and element-by-element are both reasonable, so `<` has no one meaning. Equal and Hashable through `T` (EQ4, HA3b) |
 
 <!-- test: skip -->
 ```rask

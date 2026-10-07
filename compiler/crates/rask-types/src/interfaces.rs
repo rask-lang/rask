@@ -191,6 +191,16 @@ impl<'a> InterfaceChecker<'a> {
             || builtin_interface_methods(&name).is_some()
     }
 
+    /// A `Vec`, in either spelling, or a fixed array.
+    fn is_sequence(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Array { .. } => true,
+            Type::Generic { base, .. } => self.types.type_name(*base) == "Vec",
+            Type::UnresolvedGeneric { name, .. } => name == "Vec",
+            _ => false,
+        }
+    }
+
     /// Check if a type satisfies an interface bound.
     pub fn check_satisfies(
         &mut self,
@@ -279,6 +289,17 @@ impl<'a> InterfaceChecker<'a> {
         //
         // A fixed array is the same argument with one element type, and so is
         // a `Vec`: equal when its elements are, hashed element by element.
+        // type.generics/CO1: a sequence has no order, whatever its elements
+        // have. `Vec` and a fixed array are Equal, Hashable and Cloneable
+        // through their elements (below) and never Comparable (#1491).
+        if base_interface == "Comparable" && self.is_sequence(ty) {
+            return Err(InterfaceError::NotSatisfied {
+                ty: self.type_name(ty),
+                interface_name: interface_name.clone(),
+                span,
+            });
+        }
+
         if matches!(base_interface, "Equal" | "Hashable" | "Cloneable") {
             let elems: Option<Vec<Type>> = match ty {
                 Type::Tuple(elems) => Some(elems.clone()),
@@ -289,8 +310,8 @@ impl<'a> InterfaceChecker<'a> {
                 Type::Result { ok, err } if **err == Type::None => Some(vec![(**ok).clone()]),
                 Type::Result { ok, err } => Some(vec![(**ok).clone(), (**err).clone()]),
                 Type::Array { elem, .. } => Some(vec![(**elem).clone()]),
-                Type::Generic { base, args }
-                    if self.types.type_name(*base) == "Vec" =>
+                Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. }
+                    if self.is_sequence(ty) =>
                 {
                     match args.first() {
                         Some(crate::types::GenericArg::Type(elem)) => Some(vec![(**elem).clone()]),

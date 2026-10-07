@@ -678,6 +678,9 @@ impl TypeChecker {
         if let Some(err) = self.reject_link_ordering(&ty, &method, &args, &ret, span) {
             return Err(err);
         }
+        if let Some(err) = self.reject_sequence_ordering(&ty, &method, &args, &ret, span) {
+            return Err(err);
+        }
 
         // A link reads like its node (`mem.racks/RK2`): `a.has_tag(t)` on a
         // `Link<Task>` is `Task`'s method, the same way `a.tags` is `Task`'s
@@ -4092,6 +4095,46 @@ impl TypeChecker {
     /// integer path does it: leaving `ret` open turns one error into two, the
     /// second being "couldn't work out the type of x" pointing at a binding
     /// that is fine.
+/// `<` or `compare` on two vectors, or two fixed arrays.
+    ///
+    /// `Vec<T>` is `Equal` and `Hashable` when `T` is (type.generics/EQ4,
+    /// HA3b) and never `Comparable`: CO1 lists what gets an order, and a
+    /// sequence isn't on it. Nothing stopped the call, though — it fell through
+    /// the `Vec` arms, type-checked, and then the interpreter failed at run
+    /// time while native compared the two handles or failed to link
+    /// `Vec_compare` (#1491). An array borrows `Vec`'s methods and shares its
+    /// answer.
+    fn reject_sequence_ordering(
+        &mut self,
+        recv: &Type,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Option<TypeError> {
+        if args.len() != 1 {
+            return None;
+        }
+        let ordering = match method {
+            "lt" | "le" | "gt" | "ge" => false,
+            "compare" => true,
+            _ => return None,
+        };
+        let is_sequence = matches!(recv, Type::Array { .. })
+            || self.first_type_arg(recv, "Vec").is_some();
+        if !is_sequence {
+            return None;
+        }
+        let answer = if ordering { self.ordering_type() } else { Type::Bool };
+        let _ = self.unify(ret, &answer, span);
+        let op = if ordering { "compare" } else { Self::operator_spelling(method) };
+        Some(TypeError::SequenceNotOrderable {
+            op: op.to_string(),
+            recv: self.types.resolve_type_names(&self.ctx.apply(recv)).to_string(),
+            span,
+        })
+    }
+
     fn reject_link_ordering(
         &mut self,
         recv: &Type,
