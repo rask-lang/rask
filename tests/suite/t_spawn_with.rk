@@ -134,7 +134,8 @@ test "the responder an HTTP server hands out" {
             return http.get("http://{addr}/items/7")
         })
         ensure client.detach()
-        // The shape `http.serve` has: both handed over in a tuple.
+        // Both handed over in a tuple. `http.serve` carries the request in
+        // instead (t_carried_captures_released.rk).
         let (req, responder) = server.accept()!
         spawn_with((req, responder), |take handed: (Request, Responder)| {
             let (req, r) = handed

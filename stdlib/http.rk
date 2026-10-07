@@ -895,16 +895,11 @@ extend http {
             let (req, responder) = server.accept() catch _ => {
                 continue
             }
-            // Both are handed to the task. The responder has to be: it's
-            // linear, and a closure can't consume what it captured
-            // (mem.closures/CM4). The request could be carried in instead —
-            // the task mustn't read this iteration's frame, which the next
-            // accept() reuses (#474) — but a struct carried into a task's
-            // closure is never released natively, one request per
-            // connection (#1507). Workaround: as an argument the task's body
-            // owns it, and releases it.
-            spawn_with((req, responder), |take handed: (Request, Responder)| {
-                let (req, r) = handed
+            // The responder is handed to the task: it's linear, and a
+            // closure can't consume what it captured (mem.closures/CM4). The
+            // request is carried in, so the task never reads this
+            // iteration's frame, which the next accept() reuses (#474).
+            spawn_with(responder, |take r: Responder| {
                 r.respond(handler(req))
             }).detach()
         }
