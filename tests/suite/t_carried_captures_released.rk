@@ -1,0 +1,235 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// What a carrying closure captured is released when its environment dies (#1507).
+//
+// A closure that leaves its frame — spawned, returned, stored in a field —
+// takes its captures with it (mem.closures/CM2). The frame stops owning them
+// at the capture, so the environment's drop glue is the only thing left that
+// can give them back. It knew container handles and strings and nothing else,
+// so a struct went with the block and stayed behind:
+//
+//     let held = Line { text: heap("captured") }
+//     spawn(|| println(held.text)).join()!
+//
+//     rask: 1 allocation never released (338 bytes, undercounted)
+//
+// `http.serve` had that shape, one `Request` per connection. The glue now
+// releases a whole aggregate the frame handed over, with the same walk the
+// frame would have done for it.
+
+import async.{spawn, spawn_with, Channel, Sender}
+import http
+import http.{Response, Responder}
+
+struct Line {
+    text: string
+}
+
+struct Bag {
+    name: string
+    items: Vec<string>
+    counts: Map<string, i64>
+}
+
+struct Inner {
+    words: Vec<string>
+}
+
+struct Outer {
+    label: string
+    inner: Inner
+}
+
+struct Wire {
+    label: string
+    tx: Sender<i64>
+}
+
+struct Keeper {
+    run: func() -> i64
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+func make_bag(tag: string) -> Bag {
+    mut items: Vec<string> = Vec.new()
+    items.push(heap("{tag}-one"))
+    items.push(heap("{tag}-two"))
+    mut counts: Map<string, i64> = Map.new()
+    counts.insert(heap("{tag}-k"), 3)
+    return Bag { name: heap(tag), items, counts }
+}
+
+func bag_size(b: Bag) -> i64 {
+    return b.items.len().wrap<i64>() + b.counts.len().wrap<i64>() + b.name.len().wrap<i64>()
+}
+
+// Big enough that the inliner leaves it alone, so the closure really outlives
+// the frame that built it.
+func returns_over_a_struct(tag: string) -> func() -> i64 {
+    let b = make_bag(tag)
+    let o = Outer { label: heap("outer"), inner: Inner { words: [heap("w1"), heap("w2")] } }
+    mut pad = 0
+    pad += 1
+    pad += 2
+    pad += 3
+    pad += 4
+    pad += 5
+    pad += 6
+    pad += 7
+    pad += 8
+    pad -= 36
+    return || bag_size(b) + o.inner.words.len().wrap<i64>() + o.label.len().wrap<i64>() + pad
+}
+
+func returns_over_containers() -> func() -> i64 {
+    let words: Vec<string> = [heap("a"), heap("b"), heap("c")]
+    mut seen: Map<string, i64> = Map.new()
+    seen.insert(heap("x"), 1)
+    let s = heap("tail")
+    mut pad = 0
+    pad += 1
+    pad += 2
+    pad += 3
+    pad -= 6
+    return || words.len().wrap<i64>() + seen.len().wrap<i64>() + s.len().wrap<i64>() + pad
+}
+
+func keeper_over_a_struct(tag: string) -> Keeper {
+    let b = make_bag(tag)
+    return Keeper { run: || bag_size(b) }
+}
+
+func keeper_over_containers() -> Keeper {
+    let words: Vec<string> = [heap("a"), heap("b")]
+    mut seen: Map<string, i64> = Map.new()
+    seen.insert(heap("y"), 2)
+    let s = heap("str")
+    return Keeper { run: || words.len().wrap<i64>() + seen.len().wrap<i64>() + s.len().wrap<i64>() }
+}
+
+func pass_through(take f: func() -> i64) -> i64 {
+    return f()
+}
+
+test "a struct carried into a spawned closure" {
+    using Multitasking {
+        let held = Line { text: heap("captured") }
+        let h = spawn(|| {
+            return held.text.len().wrap<i64>()
+        })
+        assert (h.join() catch e => -1) == 41
+    }
+}
+
+test "a struct holding a Vec and a Map, carried into a task" {
+    using Multitasking {
+        let bag = make_bag("task")
+        let h = spawn(|| {
+            return bag_size(bag)
+        })
+        assert (h.join() catch e => -1) == 40
+    }
+}
+
+test "a nested struct, a Vec, a Map and a string, carried into a task" {
+    using Multitasking {
+        let o = Outer { label: heap("o"), inner: Inner { words: [heap("p"), heap("q")] } }
+        let words: Vec<string> = [heap("v")]
+        mut m: Map<string, i64> = Map.new()
+        m.insert(heap("m"), 9)
+        let s = heap("s")
+        let h = spawn(|| {
+            let nested = o.inner.words.len().wrap<i64>() + o.label.len().wrap<i64>()
+            return nested + words.len().wrap<i64>() + m.len().wrap<i64>() + s.len().wrap<i64>()
+        })
+        assert (h.join() catch e => -1) == 2 + 34 + 1 + 1 + 34
+    }
+}
+
+test "one struct per turn, each carried into its own task" {
+    using Multitasking {
+        mut total = 0
+        for i in 0..4 {
+            let line = Line { text: heap("turn {i}") }
+            let h = spawn(|| {
+                return line.text.len().wrap<i64>()
+            })
+            total += h.join() catch e => -1
+        }
+        assert total == 156
+    }
+}
+
+test "a detached task's struct goes when the task does" {
+    using Multitasking {
+        let bag = make_bag("gone")
+        spawn(|| {
+            let n = bag_size(bag)
+            assert n > 0
+        }).detach()
+    }
+}
+
+test "a returned closure over structs" {
+    let f = returns_over_a_struct("ret")
+    assert f() == 79
+    assert f() == 79
+}
+
+test "a returned closure over a Vec, a Map and a string" {
+    let f = returns_over_containers()
+    assert f() == 41
+}
+
+test "a closure stored in a field, over a struct" {
+    let k = keeper_over_a_struct("kept")
+    assert (k.run)() == 40
+}
+
+test "a closure stored in a field, over a Vec, a Map and a string" {
+    let k = keeper_over_containers()
+    assert (k.run)() == 39
+}
+
+test "a returned closure handed on to a take parameter" {
+    assert pass_through(returns_over_a_struct("on")) == 78
+}
+
+// The body may close a channel end it reaches through the struct — CM4 only
+// refuses non-Copy fields. The walk that releases the struct doesn't touch a
+// channel end, so the sender is closed once and the label still goes.
+test "a carried struct whose body closes its channel field" {
+    using Multitasking {
+        let (tx, rx) = Channel<i64>.buffered(4)
+        let w = Wire { label: heap("wire"), tx }
+        let h = spawn(|| {
+            w.tx.send(7)
+            let _ = w.tx.close()
+        })
+        h.join()!
+        assert rx.try_receive() is i64
+    }
+}
+
+// The shape `http.serve` has: the responder handed over, the request carried.
+test "a request carried into the task that answers it" {
+    using Multitasking {
+        let server = http.listen("127.0.0.1:0")!
+        ensure server.close()
+        let addr = server.local_addr()
+        let client = spawn(|| {
+            return http.get("http://{addr}/items/7")
+        })
+        ensure client.detach()
+        let (req, responder) = server.accept()!
+        spawn_with(responder, |take r: Responder| {
+            let _ = r.respond(Response.ok("you asked for {req.path()}"))
+        }).join()!
+        let resp = client.join()!!
+        assert resp.body == "you asked for /items/7"
+    }
+}
+
+func main() {}

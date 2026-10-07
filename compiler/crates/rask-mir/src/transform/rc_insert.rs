@@ -70,7 +70,7 @@ pub fn insert_rc_ops(
     func: &mut MirFunction,
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
-) {
+) -> Vec<CarriedSite> {
     let string_locals: Vec<LocalId> = func.locals_of_type(&MirType::String);
 
     // Aggregates lowering already gave references of their own: a Copy
@@ -124,7 +124,31 @@ pub fn insert_rc_ops(
 
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
-    insert_aggregate_release(func, kept, own, &owns_copy);
+    insert_aggregate_release(func, kept, own, &owns_copy)
+}
+
+/// One site that builds a heap closure, and the aggregate captures it handed
+/// the environment outright: `(offset, type)` per slot, sorted. Empty when it
+/// handed over none, which is an answer too — every site of one closure has
+/// to agree before its glue may release anything
+/// (`container_drop::add_carried_releases`).
+#[derive(Debug, Clone)]
+pub struct CarriedSite {
+    pub closure: String,
+    pub slots: Vec<(u32, MirType)>,
+}
+
+/// Every heap closure this function builds, each with no slots yet.
+fn heap_create_sites(func: &MirFunction) -> Vec<((usize, usize), CarriedSite)> {
+    let mut out = Vec::new();
+    for (bi, block) in func.blocks.iter().enumerate() {
+        for (si, stmt) in block.statements.iter().enumerate() {
+            if let MirStmtKind::ClosureCreate { func_name, heap: true, .. } = &stmt.kind {
+                out.push(((bi, si), CarriedSite { closure: func_name.clone(), slots: Vec::new() }));
+            }
+        }
+    }
+    out
 }
 
 /// Does the call keep its argument at `i`, rather than only read it?
@@ -525,7 +549,8 @@ fn insert_aggregate_release(
     kept: &HashMap<String, Vec<bool>>,
     own: &HashSet<String>,
     owns_copy: &HashSet<LocalId>,
-) {
+) -> Vec<CarriedSite> {
+    let mut sites = heap_create_sites(func);
     let ty_of: HashMap<LocalId, MirType> = func
         .locals
         .iter()
@@ -547,7 +572,7 @@ fn insert_aggregate_release(
         .map(|l| l.id)
         .collect();
     if aggregates.is_empty() {
-        return;
+        return sites.into_iter().map(|(_, s)| s).collect();
     }
 
     // Closures this frame drops, and boxes it drops.
@@ -872,8 +897,19 @@ fn insert_aggregate_release(
                             ev.push(ownership::Event::View { dst: *dst, base: c });
                         }
                     } else {
+                        // It leaves, and takes what it captured with it
+                        // (`mem.closures/CM2`). A whole aggregate goes into a
+                        // slot of its own, which the environment's glue can
+                        // release when it dies — the analysis says where that
+                        // is really the frame's value to give. Anything else,
+                        // a part read out of an aggregate, stays a plain
+                        // hand-over: the glue has no slot that is all of it.
                         for c in caps {
-                            hand_over(&mut ev, c);
+                            if aggregates.contains(&c) {
+                                ev.push(ownership::Event::Carry(c));
+                            } else {
+                                hand_over(&mut ev, c);
+                            }
                         }
                         ev.push(ownership::Event::Other(*dst));
                     }
@@ -970,7 +1006,31 @@ fn insert_aggregate_release(
         );
     }
 
-    let plan = ownership::plan(func, &facts, ownership::Placement::LastUse);
+    let paths = field_paths(func);
+    let disjoint = |a: LocalId, b: LocalId| match (paths.get(&a), paths.get(&b)) {
+        (Some((ra, pa)), Some((rb, pb))) => {
+            ra == rb && !pa.starts_with(pb) && !pb.starts_with(pa)
+        }
+        _ => false,
+    };
+    let (plan, carried) =
+        ownership::plan_carrying(func, &facts, ownership::Placement::LastUse, &disjoint);
+
+    // Before anything is inserted: the carries are indexed into the blocks as
+    // they are now.
+    for ((bi, si), site) in sites.iter_mut() {
+        let MirStmtKind::ClosureCreate { captures, .. } = &func.blocks[*bi].statements[*si].kind else {
+            continue;
+        };
+        for c in captures.iter().filter(|c| !c.by_ref) {
+            if !carried.contains(&(*bi, *si, c.local_id)) {
+                continue;
+            }
+            let Some(l) = func.locals.iter().find(|l| l.id == c.local_id) else { continue };
+            site.slots.push((c.offset, l.unerased.clone().unwrap_or_else(|| l.ty.clone())));
+        }
+        site.slots.sort_by_key(|(off, _)| *off);
+    }
 
     // Insert back to front so earlier indices stay put. Step over the retains
     // already sitting at the spot: the last use of a wrapper is usually the
@@ -1014,6 +1074,61 @@ fn insert_aggregate_release(
     }
     // After the in-block ones: those index into the blocks as they were.
     ownership::insert_on_edges(func, on_edges);
+    sites.into_iter().map(|(_, s)| s).collect()
+}
+
+/// Where each name's bytes sit, as a field path from the local they were
+/// read out of: `_61 = _60.0` after `_60 = _58.0` is `(_58, [0, 0])`, and a
+/// copy has its source's path. Two names with the same root whose paths
+/// branch apart hold different bytes — `let (req, r) = …` reads two fields of
+/// one tuple. Anything reached another way has no path, and is never called
+/// disjoint from anything.
+fn field_paths(func: &MirFunction) -> HashMap<LocalId, (LocalId, Vec<u32>)> {
+    let mut defs: HashMap<LocalId, (LocalId, Option<u32>)> = HashMap::new();
+    let mut defined_twice: HashSet<LocalId> = HashSet::new();
+    for stmt in func.blocks.iter().flat_map(|b| b.statements.iter()) {
+        let Some(d) = uses::stmt_def(stmt) else { continue };
+        let step = match &stmt.kind {
+            MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(src)), .. } => Some((*src, None)),
+            MirStmtKind::Assign {
+                rvalue: MirRValue::Field { base: MirOperand::Local(src), field_index, .. },
+                ..
+            } => Some((*src, Some(*field_index))),
+            _ => None,
+        };
+        if defs.contains_key(&d) || defined_twice.contains(&d) {
+            defs.remove(&d);
+            defined_twice.insert(d);
+            continue;
+        }
+        if let Some(step) = step {
+            defs.insert(d, step);
+        } else {
+            defined_twice.insert(d);
+        }
+    }
+    let mut out = HashMap::new();
+    for &start in defs.keys() {
+        let mut path = Vec::new();
+        let mut at = start;
+        let mut hops = 0;
+        while let Some((src, field)) = defs.get(&at) {
+            if let Some(f) = field {
+                path.push(*f);
+            }
+            at = *src;
+            hops += 1;
+            if hops > defs.len() {
+                break;
+            }
+        }
+        if hops > defs.len() {
+            continue;
+        }
+        path.reverse();
+        out.insert(start, (at, path));
+    }
+    out
 }
 
 /// Whether reading a field of `base` into `dst` gives a part of what `base`

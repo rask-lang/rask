@@ -547,6 +547,63 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
     out
 }
 
+/// Release the aggregates a closure's environment was handed outright.
+///
+/// A struct carried into a closure that leaves its frame — `spawn(|| …)`,
+/// returned, stored — is the environment's from then on (`mem.closures/CM2`),
+/// and the frame stops owning it at the create. `env_drop_glue` only knew
+/// handles and strings, so nothing released the struct, and `http.serve`
+/// leaked a `Request` per connection (#1507).
+///
+/// Which captures those are is the aggregate release's answer
+/// (`rc_insert::insert_aggregate_release`), so this runs after it: one slot
+/// per capture it saw handed over whole, by the frame that owned it. Every site
+/// that builds the closure has to give the same answer, because the glue is
+/// one function per closure body. A site that kept its value — the frame
+/// drops the closure itself, or still reads the value — releases it there, so
+/// a glue that also released it would be a double free; disagreeing sites get
+/// no aggregate releases at all, which leaks instead.
+///
+/// The release is the same walk a frame does for its own aggregate
+/// (`ReleaseSlot`), pointed at the slot.
+pub(crate) fn add_carried_releases(
+    fns: &mut Vec<MirFunction>,
+    sites: Vec<crate::transform::rc_insert::CarriedSite>,
+) {
+    let mut answers: HashMap<String, Vec<Vec<(u32, MirType)>>> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+    for site in sites {
+        if !answers.contains_key(&site.closure) {
+            order.push(site.closure.clone());
+        }
+        answers.entry(site.closure).or_default().push(site.slots);
+    }
+    for name in order {
+        let all = &answers[&name];
+        let first = &all[0];
+        if first.is_empty() || all.iter().any(|s| s != first) {
+            continue;
+        }
+        // Nothing here is the body's to give away first. CM4 refuses consuming
+        // a non-Copy capture or a non-Copy field of one, and the Copy things a
+        // body can consume — a channel end's `close` — are not what the walk
+        // releases.
+        let releases = first.iter().cloned().map(|(offset, ty)| {
+            MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: LocalId(0), offset, ty })
+        });
+        let glue_name = format!("{name}{ENV_DROP_SUFFIX}");
+        match fns.iter_mut().find(|f| f.name == glue_name) {
+            Some(glue) => glue.blocks[0].statements.extend(releases),
+            None => {
+                let source_file = fns.iter().find(|f| f.name == name).and_then(|f| f.source_file.clone());
+                let mut glue = build_env_drop(&name, &[], source_file);
+                glue.blocks[0].statements.extend(releases);
+                fns.push(glue);
+            }
+        }
+    }
+}
+
 /// `<closure>__env_drop(env: ptr)` — give back everything the environment owns.
 ///
 /// `LoadCapture` is the same statement the closure's own body reads a capture

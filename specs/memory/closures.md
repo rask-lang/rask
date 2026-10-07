@@ -440,8 +440,9 @@ frame ends frees it. A closure value is Copy, so one block can end up with two
 holders — `fs.push(c)` twice, or `spawn(c)` and then `c()`. The block carries a
 reference count for that: a hand-off to something that keeps the closure, while
 the frame still uses it afterwards, gives the keeper a reference of its own, and
-only the last use hands the frame's over. What that free doesn't yet do is release the captures inside
-— a carrying closure holding a `Vec` frees the block and leaks the Vec (#1045).
+only the last use hands the frame's over. The free releases what the block carries too: a
+capture moved in is the environment's, so the environment gives it back when it dies, the
+same way the frame would have.
 
 ### Closure block layout
 
