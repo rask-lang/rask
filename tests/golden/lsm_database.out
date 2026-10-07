@@ -1,0 +1,54 @@
+Running benchmark with 1500 operations...
+
+Writing 1500 keys...
+  Wrote 1500 keys
+Reading 1500 keys...
+  Found 1500, missing 0
+Scanning key_000000 to key_000750...
+  Scan returned 751 entries
+Deleting 750 keys...
+  Deleted 750 keys
+Verifying deletes...
+  Found 750, deleted 750
+
+Database statistics:
+  Memtable:  0 entries, 0 bytes
+  SSTables:  3 total
+    L0: 3 files
+  Cache:     32 blocks, 2702 accesses
+  Sequence:  2251
+
+Benchmark complete.
+OK
+OK
+one
+OK
+alpha	one
+key_000001	value_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+key_000003	value_3_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+key_000005	value_5_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+key_000007	value_7_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+key_000009	value_9_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+(6 entries)
+Forcing compaction...
+Compaction complete.
+Database statistics:
+  Memtable:  0 entries, 0 bytes
+  SSTables:  6 total
+    L0: 5 files
+    L2: 1 files
+  Cache:     0 blocks, 0 accesses
+  Sequence:  4
+Database statistics:
+  Memtable:  0 entries, 0 bytes
+  SSTables:  6 total
+    L0: 5 files
+    L2: 1 files
+  Cache:     0 blocks, 0 accesses
+  Sequence:  1
+key_001491	value_1491_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+key_001493	value_1493_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+key_001495	value_1495_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+key_001497	value_1497_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+key_001499	value_1499_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+(5 entries)

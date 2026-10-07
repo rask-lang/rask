@@ -44,39 +44,14 @@ func write_sstable(id: i32, level: i32, dir: string, entries: Vec<KeyValue>) -> 
         bloom.insert(entry.key)
     }
 
-    mut index = Vec.new()
-    mut blocks = Vec.new()
-    mut block_entries = Vec.new()
-    mut block_id = 0
-
-    for entry in entries {
-        if block_entries.len() >= BLOCK_SIZE {
-            index.push(BlockIndex {
-                first_key: block_entries[0].key,
-                offset: block_id,
-                count: block_entries.len().wrap<i32>(),
-            })
-            blocks.push(block_entries)
-            block_entries = Vec.new()
-            block_id += 1
-        }
-        block_entries.push(entry)
-    }
-
-    if !block_entries.is_empty() {
-        index.push(BlockIndex {
-            first_key: block_entries[0].key,
-            offset: block_id,
-            count: block_entries.len().wrap<i32>(),
-        })
-        blocks.push(block_entries)
-    }
+    // BLOCK_SIZE entries to a block, the last one short.
+    let blocks = entries.chunks(BLOCK_SIZE.wrap<usize>())
 
     mut out = StringBuilder.new()
     out.push("BLOOM:{encode_bloom(bloom)}\n")
 
-    for idx_entry in index {
-        out.push("INDEX:{idx_entry.first_key}\t{idx_entry.offset}\t{idx_entry.count}\n")
+    for (block_id, block) in blocks.enumerate() {
+        out.push("INDEX:{block[0].key}\t{block_id}\t{block.len()}\n")
     }
 
     out.push("---\n")

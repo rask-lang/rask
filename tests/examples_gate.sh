@@ -9,13 +9,19 @@
 # against the golden. A native run that crashes, aborts, or prints something
 # different from interp is a FAILURE — an exit-0-but-wrong miscompile fails here.
 #
-# Adding tests/golden/<name>.out (for examples/<name>.rk) auto-enrolls it.
+# Adding tests/golden/<name>.out (for examples/<name>.rk) auto-enrolls it. A
+# package example — a directory, examples/<name>/main.rk — enrolls the same way.
 #
 # An example that needs command-line arguments gets tests/golden/<name>.args:
 # one argv per line, blank and #-comment lines ignored, each line run in order
 # with stdout concatenated into the single golden. That's how a CLI example
 # covers its flags without needing a golden per invocation. Paths in .args are
 # relative to the repo root; put input files under tests/fixtures/.
+#
+# `$SCRATCH` in an .args line is an empty directory of the run's own, one per
+# backend, shared by that backend's lines. An example that keeps state on disk
+# (lsm_database) builds it there across its invocations, and the two backends
+# never see each other's files.
 #
 # An example that reads stdin gets tests/golden/<name>.stdin — the session to
 # feed it. Examples without one get /dev/null, so an interactive example sees
@@ -121,12 +127,15 @@ run_backend() {
         return $?
     fi
     rc=0
+    scratch="$(mktemp -d)"
     while IFS= read -r argv || [ -n "$argv" ]; do
         case "$argv" in ''|\#*) continue ;; esac
+        argv="${argv//\$SCRATCH/$scratch}"
         # Word-split argv on purpose: the file holds a command line.
         # shellcheck disable=SC2086
         (cd "$ROOT" && env $leak timeout "$RUN_TIMEOUT" "$RASK" run "$backend" "$src" -- $argv 2>"$errlog" < "$infile") || rc=$?
     done < "$argsfile"
+    rm -rf "$scratch"
     return $rc
 }
 
@@ -152,6 +161,7 @@ run_one() {
     golden="$1"
     name="$(basename "$golden" .out)"
     src="$EXAMPLES_DIR/$name.rk"
+    [ -f "$src" ] || src="$EXAMPLES_DIR/$name/main.rk"
     [ -f "$src" ] || { printf 'MISSINGSRC\n' > "$WORK/$name.res"; return; }
     argsfile="$GOLDEN_DIR/$name.args"
     stdinfile="$GOLDEN_DIR/$name.stdin"

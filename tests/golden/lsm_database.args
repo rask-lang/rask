@@ -1,0 +1,12 @@
+# One database for the whole session, in the backend's own scratch dir. The
+# bench writes enough to flush three SSTables, so the later commands open a
+# database with files on disk, a WAL to recover and a block cache to fill.
+--dir $SCRATCH/db bench --count 1500
+--dir $SCRATCH/db put alpha one
+--dir $SCRATCH/db put beta two
+--dir $SCRATCH/db get alpha
+--dir $SCRATCH/db delete beta
+--dir $SCRATCH/db scan a key_000010
+--dir $SCRATCH/db compact
+--dir $SCRATCH/db stats
+--dir $SCRATCH/db scan key_001490 key_001499

@@ -37,7 +37,7 @@ struct Db {
 }
 
 extend Db {
-    func open(config: DbConfig) -> Db or DbError {
+    func open(take config: DbConfig) -> Db or DbError {
         fs.create_dir_all(config.dir) catch e => {
             return DbError.Io("cannot create directory: {config.dir}: {e.message()}")
         }
@@ -50,11 +50,11 @@ extend Db {
         // Recover memtable from WAL
         mut memtable = Memtable.new()
         mut max_seq: i64 = 0
-        let recovered = recover_wal(config.wal_path) catch e => {
+        mut recovered = recover_wal(config.wal_path) catch e => {
             return DbError.Wal(e)
         }
 
-        for kv in recovered {
+        for kv in recovered.take_all() {
             if kv.seq > max_seq { max_seq = kv.seq }
             memtable.put(kv)
         }
@@ -66,8 +66,8 @@ extend Db {
         }
         mut next_sst_id = 0
 
-        let discovered = discover_sstables(config.dir)
-        for meta in discovered {
+        mut discovered = discover_sstables(config.dir)
+        for meta in discovered.take_all() {
             if meta.id >= next_sst_id { next_sst_id = meta.id + 1 }
             if meta.level < MAX_LEVELS {
                 with levels[meta.level.wrap<usize>()] as level_ssts {
@@ -172,12 +172,10 @@ extend Db {
             for meta in level {
                 if meta.max_key < start || meta.min_key > end { continue }
 
-                let entries = read_all_sstable_entries(meta.path) catch e => {
+                mut entries = read_all_sstable_entries(meta.path) catch e => {
                     return DbError.Sst(e)
                 }
-
-                let in_range = entries.filter(|kv| kv.key >= start && kv.key <= end)
-                for kv in in_range {
+                for kv in entries.take_all().filter(|kv| kv.key >= start && kv.key <= end) {
                     all_entries.push(kv)
                 }
             }
@@ -194,7 +192,7 @@ extend Db {
 
         mut deduped = Vec.new()
         mut last_key = ""
-        for entry in all_entries {
+        for entry in all_entries.take_all() {
             if entry.key == last_key { continue }
             last_key = entry.key
             if !entry.deleted {

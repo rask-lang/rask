@@ -397,6 +397,7 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Link_hash", Internal::FreshFromReceiver),
     ("string_eq", Internal::FreshFromReceiver),
     ("string_gt", Internal::FreshFromReceiver),
+    ("string_ge", Internal::FreshFromReceiver),
     ("string_compare", Internal::FreshFromReceiver),
     ("string_substr", Internal::FreshFromReceiver),
     ("string_clone", Internal::FreshFromReceiver),
