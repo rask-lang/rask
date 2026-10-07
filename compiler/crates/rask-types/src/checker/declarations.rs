@@ -1611,25 +1611,23 @@ impl TypeChecker {
             let assoc_names: Vec<String> =
                 t.assoc_types.iter().map(|a| a.name.clone()).collect();
             for m in &t.methods {
-                let mut allowed = signature_type_param_names(m);
+                let mut params = signature_type_param_names(m);
                 // GT1: the interface's own parameters are in scope for every
                 // signature it declares.
-                allowed.extend(t.type_params.iter().map(|p| p.name.clone()));
+                params.extend(t.type_params.iter().map(|p| p.name.clone()));
                 self.validate_interface_projections(m, t, &assoc_names);
-                for p in &m.params {
-                    let Some(pty) = &p.ty else { continue };
-                    if p.name == "self" {
-                        continue;
+                self.with_type_params(params, |this| {
+                    for p in &m.params {
+                        let Some(pty) = &p.ty else { continue };
+                        if p.name == "self" {
+                            continue;
+                        }
+                        this.resolve_written(pty, p.name_span);
                     }
-                    if let Some(ty) = self.resolve_written(pty, p.name_span) {
-                        self.validate_signature_names(&ty, &allowed, p.name_span);
+                    if let Some(rt) = &m.ret_ty {
+                        this.resolve_written(rt, m.span);
                     }
-                }
-                if let Some(rt) = &m.ret_ty {
-                    if let Some(ty) = self.resolve_written(rt, m.span) {
-                        self.validate_signature_names(&ty, &allowed, m.span);
-                    }
-                }
+                });
             }
         }
     }
@@ -2433,16 +2431,18 @@ impl TypeChecker {
                 // and turns them into the runtime types. Judging the raw
                 // spelling here as well rejected every `@binary` struct there
                 // is, with a message telling you to declare `u16be`.
-                let allowed: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
                 if !s.attrs.iter().any(|a| a == "binary") {
                     let owner = self.types.get_type_id(&s.name);
-                    for field in &s.fields {
-                        if let Some(ty) = self.resolve_written(&field.ty, field.name_span) {
-                            self.validate_signature_names(&ty, &allowed, field.name_span);
-                            self.reject_non_optional_link(&ty, field.name_span);
-                            if let Some(owner) = owner {
-                                self.reject_recursive_type(owner, &ty, field.name_span);
-                            }
+                    let fields = self.with_type_params(struct_type_param_names(s), |this| {
+                        s.fields
+                            .iter()
+                            .filter_map(|f| Some((this.resolve_written(&f.ty, f.name_span)?, f.name_span)))
+                            .collect::<Vec<_>>()
+                    });
+                    for (ty, span) in fields {
+                        self.reject_non_optional_link(&ty, span);
+                        if let Some(owner) = owner {
+                            self.reject_recursive_type(owner, &ty, span);
                         }
                     }
                 }
@@ -2454,17 +2454,18 @@ impl TypeChecker {
             }
             DeclKind::Enum(e) => {
                 // PC2: variant payload types must name declared types
-                let allowed: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
                 let owner = self.types.get_type_id(&e.name);
-                for variant in &e.variants {
-                    for field in &variant.fields {
-                        if let Some(ty) = self.resolve_written(&field.ty, field.name_span) {
-                            self.validate_signature_names(&ty, &allowed, field.name_span);
-                            self.reject_non_optional_link(&ty, field.name_span);
-                            if let Some(owner) = owner {
-                                self.reject_recursive_type(owner, &ty, field.name_span);
-                            }
-                        }
+                let payloads = self.with_type_params(enum_type_param_names(e), |this| {
+                    e.variants
+                        .iter()
+                        .flat_map(|v| v.fields.iter())
+                        .filter_map(|f| Some((this.resolve_written(&f.ty, f.name_span)?, f.name_span)))
+                        .collect::<Vec<_>>()
+                });
+                for (ty, span) in payloads {
+                    self.reject_non_optional_link(&ty, span);
+                    if let Some(owner) = owner {
+                        self.reject_recursive_type(owner, &ty, span);
                     }
                 }
                 self.current_self_type = self.types.get_type_id(&e.name).map(Type::Named);
@@ -2488,6 +2489,9 @@ impl TypeChecker {
                         }
                     }
                 }
+                // `extend Vec<T>` binds `T` for every method in the block,
+                // whether or not a `where` clause says anything about it.
+                self.type_params_in_scope = header_type_params(&i.target_ty, &self.types);
                 // The receiver is written like any other type: `extend Box2<T, U>`
                 // on a one-parameter `Box2` names nothing.
                 self.resolve_written(&i.target_ty, decl.span);
@@ -2591,9 +2595,6 @@ impl TypeChecker {
                         .or_default()
                         .extend(tp.bound_types());
                 }
-                // `extend Vec<T>` binds `T` for every method in the block,
-                // whether or not a `where` clause says anything about it.
-                self.type_params_in_scope = header_type_params(&i.target_ty, &self.types);
                 for method in &i.methods {
                     self.check_fn(method);
                 }
@@ -2696,7 +2697,8 @@ impl TypeChecker {
                 }
             }
             DeclKind::TypeAlias(a) => {
-                self.resolve_written(&a.target, decl.span);
+                let params = a.type_params.iter().map(|p| p.name.clone()).collect();
+                self.with_type_params(params, |this| this.resolve_written(&a.target, decl.span));
             }
             _ => {}
         }

@@ -20,14 +20,60 @@ impl TypeChecker {
     /// in many places, several of them more than once for the same type, and
     /// those stay quiet: each position the program writes a type in reports
     /// through here exactly once.
+    ///
+    /// Two things can be wrong: the shape (`Box2<i64, string>` on a
+    /// one-parameter `Box2`), which resolution itself refuses, and a name
+    /// that names nothing (PC2). Resolution can't judge the second, because
+    /// an unknown name and a type parameter come out the same, so it's asked
+    /// here against the parameters in scope at this position.
     pub(super) fn resolve_written(&mut self, ty: &TypeExpr, span: Span) -> Option<Type> {
-        match resolve_type_expr(ty, &self.types) {
-            Ok(t) => Some(t),
+        let resolved = match resolve_type_expr(ty, &self.types) {
+            Ok(t) => t,
             Err(e) => {
                 self.errors.push(e.at(span));
-                None
+                return None;
+            }
+        };
+        let unknown = self.unknown_type_names(&resolved);
+        if unknown.is_empty() {
+            return Some(resolved);
+        }
+        for name in unknown {
+            self.report_unknown_type_name(name, span);
+        }
+        None
+    }
+
+    /// Every type parameter name in scope where a type is being written: the
+    /// function's and an `extend` header's, and those of the type whose
+    /// methods are being checked.
+    pub(super) fn type_param_names_here(&self) -> Vec<String> {
+        let mut names = self.type_params_here();
+        if let Some(Type::Named(id)) = &self.current_self_type {
+            if let Some(TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. }) =
+                self.types.get(*id)
+            {
+                for tp in type_params {
+                    if !names.contains(tp) {
+                        names.push(tp.clone());
+                    }
+                }
             }
         }
+        names
+    }
+
+    /// Resolve written types with `params` in scope — a declaration's own,
+    /// for the types in its header and members.
+    pub(super) fn with_type_params<R>(
+        &mut self,
+        params: Vec<String>,
+        f: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let outer = self.types.push_type_params(params);
+        let out = f(self);
+        self.types.pop_type_params(outer);
+        out
     }
 }
 

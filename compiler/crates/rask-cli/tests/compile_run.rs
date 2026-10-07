@@ -2689,6 +2689,21 @@ fn error_unknown_type_name() {
     assert!(compile_error("unknown_type_name.rk"), "should reject unknown PascalCase type in signature (PC2)");
 }
 
+/// #1484: the unknown-name check ran per signature position, so a cast or a
+/// closure parameter naming nothing type-checked. Once per written type, and a
+/// declared parameter (`Holder<Thing>`) still passes.
+#[test]
+fn error_unknown_type_in_body() {
+    let (failed, out) = compile_error_output("unknown_type_in_body.rk");
+    assert!(failed, "{out}");
+    for name in ["Nowhere", "Nope", "Nada", "Missing", "Elsewhere"] {
+        assert_eq!(out.matches(&format!("unknown type `{name}`")).count(), 1, "{name}:\n{out}");
+    }
+    assert_eq!(out.matches("unknown type `Nonexistent`").count(), 2, "{out}");
+    assert!(!out.contains("`Thing`"), "a declared parameter was reported:\n{out}");
+    assert_eq!(out.matches("error[").count(), 7, "{out}");
+}
+
 #[test]
 fn error_single_letter_type_name() {
     assert!(compile_error("single_letter_type_name.rk"), "should reject single-letter concrete type names (PC3)");

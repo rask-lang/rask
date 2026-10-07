@@ -5907,7 +5907,7 @@ impl TypeChecker {
 
     /// Every type parameter name in scope: the function's own, implicit ones
     /// included, and an enclosing `extend` header's.
-    fn type_params_here(&self) -> Vec<String> {
+    pub(super) fn type_params_here(&self) -> Vec<String> {
         let mut names = self.types.type_param_scope().to_vec();
         for n in &self.type_params_in_scope {
             if !names.contains(n) {

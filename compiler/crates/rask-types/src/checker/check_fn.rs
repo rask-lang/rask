@@ -6,10 +6,9 @@ use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
 
-use super::declarations::{for_each_unresolved_name, is_type_param_name, signature_type_param_names};
+use super::declarations::{for_each_unresolved_name, is_type_param_name};
 use super::errors::TypeError;
 use rask_ast::ty::TypeExpr;
-use super::type_defs::TypeDef;
 use super::TypeChecker;
 
 use crate::types::Type;
@@ -114,20 +113,6 @@ impl TypeChecker {
         } else {
             Type::Unit
         };
-        // PC1/PC2: type params in scope for this signature — explicit <T>,
-        // implicit single letters, and the enclosing type's params (methods).
-        let mut sig_type_params = signature_type_param_names(f);
-        if let Some(Type::Named(id)) = &self.current_self_type {
-            if let Some(TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. }) =
-                self.types.get(*id)
-            {
-                for tp in type_params {
-                    if !sig_type_params.contains(tp) {
-                        sig_type_params.push(tp.clone());
-                    }
-                }
-            }
-        }
         // #314: record interface bounds so the body can call interface methods on a
         // bounded type param (`func f(g: T) where T: Greeter { g.greet() }`).
         // `where` bounds already folded into `type_params` by the parser.
@@ -151,8 +136,6 @@ impl TypeChecker {
         self.type_params_in_scope
             .extend(f.type_params.iter().map(|tp| tp.name.clone()));
 
-        // PC2: unknown PascalCase names in the return type are errors.
-        self.validate_signature_names(&ret_ty, &sig_type_params, f.span);
         // ER3/ER4: validate every `T or E` that appears in the return type.
         self.validate_result_types_in(&ret_ty, f.span);
         self.current_return_type = Some(ret_ty);
@@ -251,11 +234,7 @@ impl TypeChecker {
                         self.ctx.fresh_var()
                     }
                 }
-                Some(Some(ty)) => {
-                    // PC2: unknown PascalCase names in parameter types are errors.
-                    self.validate_signature_names(&ty, &sig_type_params, param.name_span);
-                    ty
-                }
+                Some(Some(ty)) => ty,
                 // Reported. Still bound, so its uses don't read as undefined.
                 Some(None) => Type::Error,
             };
@@ -373,10 +352,12 @@ impl TypeChecker {
         }
     }
 
-    /// PC2: every PascalCase name in an explicit signature type must resolve
-    /// to a declared type, a stdlib type, or a type parameter. A typo'd type
-    /// name must error here, not silently become a generic parameter.
-    pub(super) fn validate_signature_names(&mut self, ty: &Type, type_params: &[String], span: Span) {
+    /// PC2: the names in a written type that name nothing. Every name has to
+    /// resolve to a declared type, a stdlib type, or a type parameter in
+    /// scope; a typo'd type name must error, not silently become a generic
+    /// parameter.
+    pub(super) fn unknown_type_names(&self, ty: &Type) -> Vec<String> {
+        let type_params = self.type_param_names_here();
         let mut unknown: Vec<String> = Vec::new();
         {
             let types = &self.types;
@@ -402,10 +383,13 @@ impl TypeChecker {
                 // there is nothing to call on one, `Heap(…)` makes it and `*`
                 // and `drop` are the whole vocabulary. It stayed off this list
                 // while the parser unwrapped `Heap<T>` to `T` and the name
-                // never reached here (#1256).
+                // never reached here (#1256). `Atomic<T>` is compiler-provided
+                // the same way: its methods live in the checker, not a stub.
+                // Only signatures were asked while nobody wrote one there; a
+                // `const` annotation is where it turned up (#1484).
                 if name == "Self"
                     || name.starts_with('_')
-                    || matches!(name, "Iterator" | "Error" | "Heap")
+                    || matches!(name, "Iterator" | "Error" | "Heap" | "Atomic")
                 {
                     return;
                 }
@@ -449,10 +433,13 @@ impl TypeChecker {
                 }
             });
         }
-        for name in unknown {
-            let suggestion = self.closest_type_name(&name);
-            self.errors.push(TypeError::UnknownTypeName { name, suggestion, span });
-        }
+        unknown
+    }
+
+    /// Report a name `unknown_type_names` found, with a "did you mean".
+    pub(super) fn report_unknown_type_name(&mut self, name: String, span: Span) {
+        let suggestion = self.closest_type_name(&name);
+        self.errors.push(TypeError::UnknownTypeName { name, suggestion, span });
     }
 
     /// Closest declared type name by edit distance, for "did you mean" hints.
