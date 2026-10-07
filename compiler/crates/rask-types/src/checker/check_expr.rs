@@ -3887,27 +3887,16 @@ impl TypeChecker {
                 && (Self::resolved_by_name(base_name)
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
-                // A generic stdlib type declared in Rask (`Set<T>`) gets one
-                // fresh variable per parameter, the same as a program type
-                // below (#820), so the dispatch record says which instantiation
-                // `Set.new()` is. Named bare, mono had nothing to bind `T` from
-                // and built one shared `Set_new` whose map hashed a string key
-                // as an 8-byte pointer. The types `resolve_method` answers by
-                // name keep the bare spelling it matches on.
+                // A generic stdlib type declared in Rask (`Set<T>`) is a
+                // receiver like a program type's. The types `resolve_method`
+                // answers by name keep the bare spelling it matches on.
                 let declared = self
                     .types
                     .get_type_id(base_name)
-                    .filter(|_| type_args.is_empty() && !Self::resolved_by_name(base_name))
-                    .map(|id| (id, self.declared_type_params(id)))
-                    .filter(|(_, params)| !params.is_empty());
-                let obj_ty = if let Some((id, params)) = declared {
-                    Type::Generic {
-                        base: id,
-                        args: params
-                            .iter()
-                            .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
-                            .collect(),
-                    }
+                    .filter(|_| !Self::resolved_by_name(base_name))
+                    .and_then(|id| self.static_receiver(id, base_name, type_args, object.span));
+                let obj_ty = if let Some(receiver) = declared {
+                    receiver
                 } else if type_args.is_empty() {
                     Type::UnresolvedNamed(base_name.to_string())
                 } else {
@@ -4139,30 +4128,13 @@ impl TypeChecker {
 
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
-        // A static method's receiver is a bare type name — `Box.new("hei")`.
-        // Named bare it says nothing about which instantiation the call is for,
-        // and the instantiation is what the dispatch record has to carry:
-        // `Box.new` stayed on the shared placeholder layout while
-        // `Box<string>.get()` got a per-instantiation one, and the value one
-        // wrote the other read back at the wrong field size (#820). Give each
-        // declared parameter a fresh variable and let the signature bind it —
-        // `new`'s own `-> Box<T>` does exactly that. Downstream then reads the
-        // instantiation off the receiver like any other call, instead of
-        // guessing it back out of the call's result type.
         let obj_ty = match (&object.kind, &obj_ty) {
-            (ExprKind::Ident(name), Type::Named(id)) if self.lookup_local(name).is_none() => {
-                let params = self.declared_type_params(*id);
-                if params.is_empty() {
-                    obj_ty
-                } else {
-                    Type::Generic {
-                        base: *id,
-                        args: params
-                            .iter()
-                            .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
-                            .collect(),
-                    }
-                }
+            (ExprKind::Ident(name) | ExprKind::GenericName { name, .. }, Type::Named(id))
+                if self.lookup_local(name).is_none() =>
+            {
+                let id = *id;
+                self.static_receiver(id, name, object.written_type_args(), object.span)
+                    .unwrap_or(obj_ty)
             }
             _ => obj_ty,
         };
@@ -5772,6 +5744,41 @@ impl TypeChecker {
                 });
             }
         }
+    }
+
+    /// The receiver of a static call on a generic type, carrying the
+    /// instantiation: `Bag<string>.new()` takes the written arguments, bare
+    /// `Bag.new()` gives each declared parameter a fresh variable for the
+    /// signature's `-> Bag<T>` to bind. `None` when the type has no parameters.
+    ///
+    /// The dispatch record has to say which instantiation the call is for —
+    /// mono reads it there to name `Bag_new$string`. Left bare, `Box.new` sat
+    /// on the shared placeholder layout while `Box<string>.get()` got its own
+    /// (#820); `Set.new()` built a map hashing a string key as an 8-byte
+    /// pointer; and `Bag<string>.new()` dropped what it wrote and did the same
+    /// (#1510). Program and stdlib types, written and inferred, all come here.
+    fn static_receiver(
+        &mut self,
+        id: crate::types::TypeId,
+        name: &str,
+        written: &[TypeExpr],
+        span: Span,
+    ) -> Option<Type> {
+        let params = self.declared_type_params(id);
+        if params.is_empty() {
+            return None;
+        }
+        if written.is_empty() {
+            let args = params
+                .iter()
+                .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
+                .collect();
+            return Some(Type::Generic { base: id, args });
+        }
+        Some(
+            self.resolve_written(&TypeExpr::generic(name, written.to_vec()), span)
+                .unwrap_or(Type::Error),
+        )
     }
 
     /// The stdlib types whose static methods `resolve_method` matches by their

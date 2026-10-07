@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//
+// A static call with the type arguments written on the receiver builds that
+// instantiation, the same as one whose binding says the type (#1510).
+//
+// `mut c = Bag<string>.new()` dropped the `<string>`: the call was recorded
+// against bare `Bag`, so native built one shared `Bag_new`, and inside it
+// `Map.new()` made a map with 8-byte pointer keys. A string key went in as half
+// a string and `has` missed it. The annotated `mut b: Bag<string> = Bag.new()`
+// was already fine (#820). Long strings and a wide struct, so a short layout
+// shows.
+
+struct Bag<T> {
+    entries: Map<T, bool>
+}
+
+extend Bag<T> {
+    func new() -> Bag<T> {
+        return Bag { entries: Map.new() }
+    }
+
+    func put(mutate self, take v: T) {
+        self.entries.insert(v, true)
+    }
+
+    func has(self, v: T) -> bool {
+        return self.entries.contains(v)
+    }
+
+    func count(self) -> usize {
+        return self.entries.len()
+    }
+}
+
+struct Point {
+    x: i64
+    y: i64
+    z: i64
+}
+
+test "written string arguments build a string bag" {
+    let a = "abcdefghijklmnopqrstuvwxyz"
+    mut c = Bag<string>.new()
+    c.put("{a}c")
+    c.put("{a}d")
+    assert c.has("abcdefghijklmnopqrstuvwxyzc")
+    assert c.has("abcdefghijklmnopqrstuvwxyzd")
+    assert !c.has("abcdefghijklmnopqrstuvwxyze")
+    assert c.count() == 2
+}
+
+test "annotated and written agree" {
+    let a = "abcdefghijklmnopqrstuvwxyz"
+    mut b: Bag<string> = Bag.new()
+    mut c = Bag<string>.new()
+    b.put("{a}c")
+    c.put("{a}c")
+    assert b.has("abcdefghijklmnopqrstuvwxyzc") == c.has("abcdefghijklmnopqrstuvwxyzc")
+}
+
+test "written struct arguments build a struct bag" {
+    mut c = Bag<Point>.new()
+    c.put(Point { x: 1, y: 2, z: 3 })
+    c.put(Point { x: 4, y: 5, z: 6 })
+    assert c.has(Point { x: 1, y: 2, z: 3 })
+    assert c.has(Point { x: 4, y: 5, z: 6 })
+    assert !c.has(Point { x: 1, y: 2, z: 4 })
+    assert c.count() == 2
+}
+
+test "a stdlib set with written arguments" {
+    let a = "abcdefghijklmnopqrstuvwxyz"
+    mut s = Set<string>.new()
+    assert s.insert("{a}c")
+    assert !s.insert("{a}c")
+    assert s.contains("abcdefghijklmnopqrstuvwxyzc")
+    assert s.len() == 1
+}
