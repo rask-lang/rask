@@ -499,6 +499,8 @@ pub enum TypeError {
         callee: String,
         arg: String,
         param_name: String,
+        /// The call as it should read, for the fix: `f(mutate c)`.
+        call: String,
         span: Span,
     },
     /// PM4: an argument going into a `mutate` parameter is written
@@ -508,6 +510,8 @@ pub enum TypeError {
         callee: String,
         arg: String,
         param_name: String,
+        /// The call as it should read, for the fix: `f(mutate c)`.
+        call: String,
         span: Span,
     },
     /// mem.borrowing/W1: a `with` source that is neither an element reached by

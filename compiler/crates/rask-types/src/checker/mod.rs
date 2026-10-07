@@ -483,6 +483,11 @@ pub struct TypeChecker {
     /// return or a field is invisible at the spawn site, so each closure is
     /// judged on its own (#1356).
     pub(super) closure_spans: Vec<(NodeId, rask_ast::Span, usize)>,
+    /// Parameter types a closure literal's slot gives it, keyed by the
+    /// closure's node. Set by `infer_expr_expecting` just before the closure
+    /// is checked, so an unannotated parameter has its type while the body is
+    /// checked rather than only after.
+    pub(super) closure_param_expectations: HashMap<NodeId, Vec<Type>>,
     /// Every integer literal, checked against its final type once solving is
     /// done. Deferred because the type is usually a var at the point the literal
     /// is seen. (value, whether the text was above `i64::MAX`, type, span).
@@ -691,6 +696,7 @@ impl TypeChecker {
             method_calls: Vec::new(),
             closure_bindings: HashMap::new(),
             closure_spans: Vec::new(),
+            closure_param_expectations: HashMap::new(),
             pending_linear_containers: Vec::new(),
             pending_view_bindings: Vec::new(),
             channel_send_sites: std::collections::HashSet::new(),

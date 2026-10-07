@@ -225,6 +225,25 @@ impl TypeChecker {
                     return ty;
                 }
             }
+            // A closure's unannotated parameters take their types from the slot
+            // before the body is checked. Typed from the body instead, a
+            // `SequenceMut` source's `yield(c)` made `yield` a
+            // `func(Counter) -> bool`; the missing `mutate` at that call then
+            // surfaced as a function-type mismatch at the closure header, with
+            // a fix that asked for a `mutate` closure parameter (#1514).
+            ExprKind::Closure { params, .. } => {
+                let want = self.ctx.apply(expected);
+                let want = match self.sequence_element(&want) {
+                    Some(elem) => Self::sequence_fn_shape(elem),
+                    None => want,
+                };
+                if let Type::Fn { params: want_params, .. } = want {
+                    if want_params.len() == params.len() {
+                        self.closure_param_expectations
+                            .insert(expr.id, want_params.into_iter().map(|p| p.ty).collect());
+                    }
+                }
+            }
             _ => {}
         }
         let ty = self.infer_expr(expr);
@@ -1864,12 +1883,20 @@ impl TypeChecker {
 
             ExprKind::Closure { params, ret_ty: declared_ret, body, .. } => {
                 self.closure_spans.push((expr.id, expr.span, self.local_types.len()));
+                // A slot type still naming a generic parameter (`func(T)` before
+                // substitution) says nothing the body can use yet.
+                let expected_params = self.closure_param_expectations.remove(&expr.id);
                 let param_types: Vec<_> = params
                     .iter()
-                    .map(|p| {
+                    .enumerate()
+                    .map(|(i, p)| {
                         match &p.ty {
                             Some(t) => self.resolve_written(t, p.name_span).unwrap_or(Type::Error),
-                            None => self.ctx.fresh_var(),
+                            None => match expected_params.as_ref().map(|e| &e[i]) {
+                                Some(want) if !want.contains(&|t| matches!(t,
+                                    Type::UnresolvedNamed(_) | Type::Error)) => want.clone(),
+                                _ => self.ctx.fresh_var(),
+                            },
                         }
                     })
                     .collect();
@@ -3057,6 +3084,34 @@ impl TypeChecker {
         }
     }
 
+    /// The call as it should read once argument `index` carries `marker`:
+    /// `apply(bump, mutate c)`. An argument with no short spelling prints as
+    /// `…`, so the fix still shows where the marker goes.
+    fn call_with_marker(callee: &str, args: &[CallArg], index: usize, marker: rask_ast::expr::ArgMode) -> String {
+        use rask_ast::expr::ArgMode;
+        let rendered: Vec<String> = args
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let mode = if i == index { marker } else { a.mode };
+                let prefix = match mode {
+                    ArgMode::Default => "",
+                    ArgMode::Mutate => "mutate ",
+                    ArgMode::Deleting => "deleting ",
+                };
+                let label = a.name.as_ref().map(|n| format!("{}: ", n)).unwrap_or_default();
+                let text = match &a.expr.kind {
+                    ExprKind::Int(v, None) => Some(v.to_string()),
+                    ExprKind::Bool(b) => Some(b.to_string()),
+                    _ => Self::argument_text(&a.expr),
+                }
+                .unwrap_or_else(|| "…".to_string());
+                format!("{}{}{}", label, prefix, text)
+            })
+            .collect();
+        format!("{}({})", callee, rendered.join(", "))
+    }
+
     /// The argument as the reader wrote it, for PM4's message and its fix.
     ///
     /// Only the shapes a `mutate` argument can be — a name or a field path.
@@ -3245,6 +3300,7 @@ impl TypeChecker {
                         callee: callee_name.clone(),
                         arg: arg_text,
                         param_name: param_name.clone(),
+                        call: Self::call_with_marker(&callee_name, args, i, ArgMode::Mutate),
                         span: arg.expr.span,
                     });
                 }
@@ -3263,6 +3319,7 @@ impl TypeChecker {
                         callee: callee_name.clone(),
                         arg: arg_text,
                         param_name: param_name.clone(),
+                        call: Self::call_with_marker(&callee_name, args, i, ArgMode::Deleting),
                         span: arg.expr.span,
                     });
                 }

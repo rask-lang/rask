@@ -1813,6 +1813,7 @@ fn error_missing_call_site_mutate_marker() {
         out.contains("`apply_damage` mutates `player` — mark it at the call site"),
         "should name callee and argument: {}", out,
     );
+    assert!(out.contains("fix: apply_damage(mutate player, 10)"), "the fix is the call: {}", out);
     // PM5: the marker follows the signature, not the argument's size.
     assert!(
         out.contains("`bump_scalar` mutates `count`"),
@@ -1828,6 +1829,21 @@ fn error_missing_call_site_mutate_marker() {
         !out.contains("mutates `c` —"),
         "a method receiver takes no marker: {}", out,
     );
+}
+
+// #1514 / PM4: a call through a `func(mutate T)` value is marked like any
+// other. A `SequenceMut` yield takes its type from the return slot, so a bare
+// `yield(c)` is reported at the argument with the call as the fix, not as a
+// function-type mismatch at the closure header.
+#[test]
+fn error_missing_mutate_marker_through_function_value() {
+    let (failed, out) = compile_error_output("mutate_marker_function_value.rk");
+    assert!(failed, "a `mutate` argument through a function value needs its marker: {}", out);
+    assert!(out.contains("`yield` mutates `c` — mark it at the call site"), "the yield call: {}", out);
+    assert!(out.contains("fix: yield(mutate c)"), "the yield fix is the call: {}", out);
+    assert!(out.contains("`f` mutates `c` — mark it at the call site"), "the plain value call: {}", out);
+    assert!(out.contains("fix: f(mutate c)"), "the plain value fix is the call: {}", out);
+    assert!(!out.contains("E0912"), "no function-type mismatch at the closure: {}", out);
 }
 
 // ER47 (#598): bare `try` sends the operand's other branch out unchanged, so
