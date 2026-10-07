@@ -496,11 +496,23 @@ impl<'a> MirLowerer<'a> {
                     // whose own return type is `bool`; the `return` is the
                     // enclosing function's, so that function's type decides.
                     let seq_ret = self.inline_return_target.as_ref().and_then(|t| t.3.clone());
+                    // An inlined closure's `return` answers the closure, not
+                    // the function it was inlined into, so the enclosing
+                    // function's type has no say in its shape: the slot it
+                    // lands in is widened below. Coerced against the enclosing
+                    // `-> Vec<T>?`, `m.modify(k, |b| { return b.v.clone() })`
+                    // came back as `Some(Some(v))` and the caller read the
+                    // inner option's address as the vector (#1498).
+                    let inlined_closure = self.inline_return_target.is_some() && seq_ret.is_none();
                     let ret_ty = seq_ret.clone().unwrap_or_else(|| self.builder.ret_ty().clone());
-                    let final_op = self.coerce_into_wrapper(
-                        rask_ast::coercion::CoercionSite::Return,
-                        op, &op_ty, &ret_ty,
-                    );
+                    let final_op = if inlined_closure {
+                        op
+                    } else {
+                        self.coerce_into_wrapper(
+                            rask_ast::coercion::CoercionSite::Return,
+                            op, &op_ty, &ret_ty,
+                        )
+                    };
                     // A function's own `return e` leaves the error side for
                     // its exit to build. This one is stored in a slot of the
                     // whole `T or E`, so it's built here: unbuilt, the slot
