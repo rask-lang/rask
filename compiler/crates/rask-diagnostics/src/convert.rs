@@ -707,9 +707,8 @@ impl ToDiagnostic for rask_types::TypeError {
                 let help = match (mode_at(expected), mode_at(found)) {
                     (Some(ParamMode::Take), _) => format!(
                         "a `{expected}` hands parameter {n} over, and this function only lends \
-                         it, so nothing would free it. Declare that parameter `take` in a named \
-                         function (a closure can't take its parameter, mem.closures/CP4), or \
-                         make the slot `{found}`"
+                         it, so nothing would free it. Declare that parameter `take` \
+                         (`|take p: T|` in a closure), or make the slot `{found}`"
                     ),
                     (_, Some(ParamMode::Take)) => format!(
                         "this function takes ownership of parameter {n}. Through a `{expected}` \
@@ -3563,12 +3562,9 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
 
             BorrowedFieldEscapes { path, root, field_ty, declared_at, is_mutate, of_closure } => {
                 let mode = if *is_mutate { "`mutate` borrow" } else { "borrow" };
-                // A closure has no `take` parameter (mem.closures/CP4), so the
-                // ownership fix is a function instead.
                 let fix = if *of_closure {
                     format!(
-                        "return a copy — `{}.clone()` — or, to hand the value over, \
-                         make this a function with `take {}: …`",
+                        "return a copy — `{}.clone()` — or take the parameter: `|take {}: …|`",
                         path, root
                     )
                 } else {
@@ -3861,11 +3857,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                     .with_primary(self.span, label)
                     .with_secondary(*declared_at, format!("`{}` is declared as a {}", name, how))
                     .with_fix(if *of_closure {
-                        // mem.closures/CP4: no `take` between the pipes.
-                        format!(
-                            "hand over a copy — `{}.clone()` — or make this a function with `take {}: …`; a closure parameter can't be `take`",
-                            name, name
-                        )
+                        format!("take it: `|take {}: …|` — then the caller can see it goes", name)
                     } else {
                         format!("take it: `take {}: …` in the signature — then the caller can see it goes", name)
                     })

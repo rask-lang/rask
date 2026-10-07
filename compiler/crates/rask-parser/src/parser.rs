@@ -4582,11 +4582,11 @@ impl Parser {
 
         let mut params = Vec::new();
         while !self.check(&TokenKind::Pipe) && !self.at_end() {
-            // Typed mutable parameter: |mutate x: T|. Explicit type is required
-            // (mem.closures/CP2). Untyped `|mutate x|` is mutable-capture syntax
-            // (CP3), not a parameter — and is not handled by this loop.
+            // `|mutate x: T|` needs its type (mem.closures/CP2); `|take x|`
+            // hands the argument over (CP4) and may leave it to inference.
             let mutate_span = self.current().span;
-            let is_mutate = self.match_token(&TokenKind::MutateKw);
+            let is_take = self.match_token(&TokenKind::Take);
+            let is_mutate = !is_take && self.match_token(&TokenKind::MutateKw);
             let name_span = self.current().span;
             let name = self.expect_ident()?;
             let ty = if self.match_token(&TokenKind::Colon) {
@@ -4624,7 +4624,7 @@ impl Parser {
             } else {
                 None
             };
-            params.push(ClosureParam { name, name_span, ty, is_mutate, is_take: false });
+            params.push(ClosureParam { name, name_span, ty, is_mutate, is_take });
             if !self.match_token(&TokenKind::Comma) { break; }
         }
 

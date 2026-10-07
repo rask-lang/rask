@@ -14,7 +14,7 @@ Iteration in Rask is **push**: the source owns the loop and hands you each item.
 | **SEQ1: Core type** | `Sequence<T>` is a nominal type wrapping `func(yield: \|T\| -> bool)`. Nominal, not an alias — methods need a name to attach to, and an alias is transparent by the time the checker sees a value |
 | **SEQ2: Mutable variant** | `SequenceMut<T>` wraps `func(yield: \|mutate item: T\| -> bool)` |
 | **SEQ3: Yield return** | `yield` returns `true` to continue, `false` to stop. The sequence must honor the return — on `false`, stop yielding and return |
-| **SEQ34: Yields lend, except to a terminal** | A yield lends its item for the length of one call — `Sequence<T>` a read-only borrow, `SequenceMut<T>` a mutable one (`mem.closures/CP1`, `CP4`). The one exception is a terminal consuming a value the chain **owns**: nothing can observe that item afterwards, so the terminal may move it instead of copying it (SEQ47) |
+| **SEQ34: Yields lend, except to a terminal** | A yield lends its item for the length of one call — `Sequence<T>` a read-only borrow, `SequenceMut<T>` a mutable one (`mem.closures/CP1`, `CP2`). The one exception is a terminal consuming a value the chain **owns**: nothing can observe that item afterwards, so the terminal may move it instead of copying it (SEQ47) |
 | **SEQ35: Owned iteration is not a sequence** | Consuming a collection is `take_all()`, which returns the drained `Vec<T>`. `for x in v.take_all()` is an ordinary for-over-Vec on a temporary the loop owns |
 | **SEQ46: Naming it needs an import, using it doesn't** | `import sequence.Sequence` to write `Sequence<T>` in a signature — the same terms as `memory.Heap` or `memory.Link`. Iterating one needs no import: `for x in tree.in_order()` works because the compiler knows the type, not because the name is in scope. So the import lands only in files that *author* sequences, never in files that merely consume them |
 | **SEQ36: A closure literal fills a Sequence slot** | Where a `Sequence<T>` is expected, a closure of the right shape is one — no constructor call. Same rule as `let xs: Vec<i64> = [1, 2, 3]`: the slot picks the shape (`std.collections/C9`) |
@@ -34,7 +34,7 @@ A `Sequence<T>` is a first-class value. It can be stored, passed, returned — s
 
 ## Yields Lend, Except to a Terminal
 
-The yield closure's parameter is a parameter like any other, so `mem.closures` has already decided this: `|T|` is a read-only borrow, `|mutate item: T|` a mutable one, and a closure cannot take ownership through a parameter at all. A sequence lends each item for one call and takes it back.
+The yield closure's parameter is a parameter like any other, so `mem.closures` has already decided this: `|T|` is a read-only borrow, `|mutate item: T|` a mutable one. The yield's slot in `Sequence<T>` is a borrowed `func(T) -> bool`, and a function type matches modes exactly (`type.functions/FT1`), so a `|take item: T|` closure doesn't fit it. A sequence lends each item for one call and takes it back.
 
 Two things fall out.
 

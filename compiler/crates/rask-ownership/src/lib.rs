@@ -150,8 +150,8 @@ pub struct OwnershipChecker<'a> {
     /// being walked.
     borrowed_captures: HashMap<String, Span>,
     /// Which of the borrowed and `mutate` parameters belong to the closure
-    /// being walked. They follow the function rules, but the fix differs: a
-    /// closure parameter can't be `take` (mem.closures/CP4).
+    /// being walked. They follow the function rules; only the fix is spelled
+    /// differently, `|take p: T|` (mem.closures/CP4).
     closure_params: HashSet<String>,
     /// `mutate` parameters: name → declaration span. Consuming one is allowed —
     /// that's what exclusive access is for — but the value has to be back before
@@ -2731,12 +2731,12 @@ impl<'a> OwnershipChecker<'a> {
                 self.resource_bindings.clear();
                 self.ensure_registered.clear();
 
-                // A closure parameter is a parameter: borrowed unless `mutate`
-                // (mem.closures/CP1, CP2), and there is no `take` (CP4). So the
-                // function rules apply — it can't be given away or returned
-                // whole. Registered as owned, `|p: Vec<i64>| { return p }`
-                // handed the caller its own vector back under a second name
-                // (#1458).
+                // A closure parameter is a parameter, and the function rules
+                // apply (mem.closures/CP1, CP2, CP4): a borrowed one can't be
+                // given away or returned whole, a `take` one is the body's and
+                // owes what a `take` parameter owes. Registered as owned,
+                // `|p: Vec<i64>| { return p }` handed the caller its own vector
+                // back under a second name (#1458).
                 let saved_borrowed_params = self.borrowed_params.clone();
                 let saved_mutate_params = self.mutate_params.clone();
                 let saved_closure_params = self.closure_params.clone();
@@ -2747,7 +2747,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.mutate_params.remove(&p.name);
                     if p.is_mutate {
                         self.mutate_params.insert(p.name.clone(), p.name_span);
-                    } else {
+                    } else if !p.is_take {
                         self.borrowed_params.insert(p.name.clone(), (p.name_span, false));
                     }
                 }
@@ -2763,6 +2763,11 @@ impl<'a> OwnershipChecker<'a> {
                 {
                     for (p, ty) in params.iter().zip(param_tys.iter()) {
                         self.binding_types.insert(p.name.clone(), ty.ty.clone());
+                        // A `take` parameter arrives owed, like a function's.
+                        if p.is_take && self.program.types.is_linear_value(&ty.ty) {
+                            self.register_resource_binding(&p.name, Some(&ty.ty));
+                            self.resource_acquired_at.insert(p.name.clone(), p.name_span);
+                        }
                     }
                 }
 

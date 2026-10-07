@@ -147,7 +147,7 @@ Parameters are independent of capture mode. Both closure modes use the same para
 | **CP1: Borrow by default** | `\|x\|` binds parameter `x` by read-only borrow |
 | **CP2: Mutable parameter** | `\|mutate x: T\|` binds parameter `x` by mutable borrow. The type is required for the same reason a public function's is — this parameter writes back to the caller, so the shape it writes gets named |
 | **CP3: Only parameters live in the pipes** | Everything in `\|…\|` is a parameter. Captures never appear there — they're inferred (MC1) — so there is nothing for a reader to disambiguate |
-| **CP4: No take parameter** | Closures cannot take ownership via a parameter. Use a standalone function. A closure's type carries its parameters' modes, so `\|mutate x: T\|` fills a `func(mutate T)` slot and nothing a closure can declare fills `func(take T)` (`type.functions/FT1`, `FT2`) |
+| **CP4: Take parameter** | `\|take x: T\|` takes ownership of its argument, like a function's `take` parameter: the body owes what it was handed, and a call through it moves the argument (`type.functions/FT1`). Its type is `func(take T)`, so it fills `func(take T)` slots; `\|mutate x: T\|` fills `func(mutate T)` (FT2). The type can be left to the slot, as for a borrowed parameter: nothing writes back through this one |
 
 <!-- test: parse -->
 ```rask
@@ -156,6 +156,9 @@ let print_name = |u: User| print(u.name)
 
 // Mutable-borrow parameter (explicit type required)
 let grow = |mutate item: Item| { item.level += 1 }
+
+// Take parameter: the body owns what each call hands it
+let finish = |take c: Conn| { c.close() }
 ```
 
 **Return semantics:** `return` inside a closure exits the closure, not the enclosing function

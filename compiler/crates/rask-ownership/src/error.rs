@@ -94,7 +94,7 @@ pub enum OwnershipErrorKind {
         /// Where the parameter is declared, to point at and suggest `take` on.
         declared_at: Span,
         is_mutate: bool,
-        /// A closure's parameter, which can't be `take` (mem.closures/CP4).
+        /// A closure's parameter: the fix is spelled between the pipes.
         of_closure: bool,
     },
 
@@ -207,7 +207,7 @@ pub enum OwnershipErrorKind {
         is_mutate: bool,
         /// What the value was being handed to, when it has a name.
         sink: Option<String>,
-        /// A closure's parameter, which can't be `take` (mem.closures/CP4).
+        /// A closure's parameter: the fix is spelled between the pipes.
         of_closure: bool,
     },
 

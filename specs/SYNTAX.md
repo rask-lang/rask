@@ -1283,7 +1283,7 @@ println("{sum}")
 | Attributes | `@name` | Familiar from Python/Java |
 | Omitted types | `func f(x) { x + 1 }` | Private functions only; see [gradual constraints](types/gradual-constraints.md) |
 | Generics | Implicit single letters (`T`, `U`); explicit `<Name>` otherwise | `where` for constraints |
-| Closures | `\|x\| expr` | Rust-style pipes |
+| Closures | `\|x\| expr`, `\|take x: T\| expr` | Rust-style pipes; parameters take modes like a function's |
 | Named args | `name: value` | Order-fixed, optional (IDE ghosts) |
 | Default args | `param = value` | Constants only, after required |
 | Interpolation | `"{x}"` | In all strings |
