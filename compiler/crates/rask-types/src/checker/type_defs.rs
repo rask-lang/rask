@@ -481,6 +481,33 @@ impl TypedProgram {
         }
         rask_ast::rewrite::rewrite_decls(decls, &mut Calls(&self.wrapper_eq_calls));
 
+        // A collection standing in for a `Sequence<E>` (SEQ48) gets the
+        // `as_sequence()` the checker typed for it. The wrapping call is the
+        // node the slot's type and the call's target were recorded on.
+        // The walk goes on into the wrapped value, which still has its own
+        // id, so each one is wrapped once.
+        struct ChainHeads<'a>(&'a HashMap<NodeId, NodeId>, std::collections::HashSet<NodeId>);
+        impl rask_ast::rewrite::Rewrite for ChainHeads<'_> {
+            fn expr(&mut self, e: &mut rask_ast::expr::Expr) {
+                use rask_ast::expr::{Expr, ExprKind};
+                let Some(call) = self.0.get(&e.id) else { return };
+                if !self.1.insert(e.id) {
+                    return;
+                }
+                let span = e.span;
+                let value = std::mem::replace(e, Expr { id: *call, kind: ExprKind::Bool(false), span });
+                e.kind = ExprKind::MethodCall {
+                    object: Box::new(value),
+                    method: "as_sequence".to_string(),
+                    type_args: None,
+                    args: Vec::new(),
+                };
+            }
+        }
+        if !self.sequence_coercions.is_empty() {
+            rask_ast::rewrite::rewrite_decls(decls, &mut ChainHeads(&self.sequence_coercions, Default::default()));
+        }
+
         // Defaults the checker filled into method calls.
         struct Defaults<'a>(&'a HashMap<NodeId, Vec<(usize, rask_ast::expr::Expr)>>);
         impl rask_ast::rewrite::Rewrite for Defaults<'_> {
@@ -716,6 +743,9 @@ pub struct TypedProgram {
     /// `==` calls on two wrappers that go through the wrapper's `eq`:
     /// call node → (callee node, function name). Applied by `attach_derived`.
     pub wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
+    /// A collection filling a `Sequence<E>` slot: value node → the node of
+    /// the `as_sequence()` call `attach_derived` wraps it in (SEQ48).
+    pub sequence_coercions: HashMap<NodeId, NodeId>,
     /// The `eq`/`hash` written for each wrapper type, for a map keyed by one.
     pub wrapper_fns: Vec<super::derive::WrapperFns>,
     /// The methods the checker wrote for generic types, as `Type_method`

@@ -1062,7 +1062,7 @@ impl TypeChecker {
 
     // ─── AST shorthands ────────────────────────────────────────
 
-    fn derived_id(&mut self) -> NodeId {
+    pub(super) fn derived_id(&mut self) -> NodeId {
         let id = NodeId(self.next_derived_id);
         self.next_derived_id += 1;
         id

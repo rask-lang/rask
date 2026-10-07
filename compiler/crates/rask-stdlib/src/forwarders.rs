@@ -36,6 +36,12 @@ fn hosts() -> Vec<(TypeExpr, TypeExpr)> {
     ]
 }
 
+/// Is `name` a chain head — a collection that stands for its own sequence
+/// (SEQ48), and so fills a `Sequence<E>` slot through its `as_sequence`?
+pub fn is_chain_head(name: &str) -> bool {
+    hosts().iter().any(|(header, _)| header.name().as_deref() == Some(name))
+}
+
 /// Rask source declaring every host's generated forwarders.
 pub fn generated_source(sequence_src: &str, host_srcs: &[&str]) -> String {
     let seq = parse(sequence_src);

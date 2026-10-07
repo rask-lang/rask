@@ -2970,7 +2970,7 @@ impl TypeChecker {
                     let arg_ty = self.infer_expr_expecting(&arg.expr, param);
                     // OPT6: optional parameters widen bare arguments. Bind
                     // position keeps non-optional sums strict (ER11).
-                    self.coerce_into(CoercionSite::Argument, arg_ty, param.clone(), span);
+                    self.coerce_into_node(CoercionSite::Argument, arg_ty, param.clone(), Some(arg.expr.id), span);
                 }
 
                 // AT6: `func doubled<T: Mul<f64>>(x: T) -> T.Out` answers with
@@ -3456,10 +3456,11 @@ impl TypeChecker {
         }
         for (arg, want) in args.iter().zip(params.iter()) {
             let got = self.infer_expr_expecting(&arg.expr, want);
-            self.coerce_into(
+            self.coerce_into_node(
                 rask_ast::coercion::CoercionSite::Argument,
                 got,
                 want.clone(),
+                Some(arg.expr.id),
                 arg.expr.span,
             );
         }
@@ -3541,10 +3542,11 @@ impl TypeChecker {
         }
         for (arg, want) in args.iter().zip(params.iter()) {
             let got = self.infer_expr_expecting(&arg.expr, want);
-            self.coerce_into(
+            self.coerce_into_node(
                 rask_ast::coercion::CoercionSite::Argument,
                 got,
                 want.clone(),
+                Some(arg.expr.id),
                 arg.expr.span,
             );
         }
@@ -3660,6 +3662,7 @@ impl TypeChecker {
         type_args: Option<&[TypeExpr]>,
         span: Span,
     ) -> Type {
+        self.method_call_args.insert(call_id, args.iter().map(|a| a.expr.id).collect());
         let written = match object.name() {
             Some(o) => format!("{o}.{method}"),
             None => method.to_string(),

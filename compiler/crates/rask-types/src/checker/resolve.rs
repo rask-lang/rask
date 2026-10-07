@@ -1105,7 +1105,8 @@ impl TypeChecker {
                         // the same question — which side is the slot — so one
                         // call answers both: `coerce_arg` runs `check_fits`
                         // before deciding whether layers are needed.
-                        if self.coerce_arg(&substituted, arg, span)? {
+                        let node = self.method_arg_node(call_node, i);
+                        if self.coerce_arg(&substituted, arg, node, span)? {
                             progress = true;
                         }
                     }
@@ -1465,7 +1466,8 @@ impl TypeChecker {
                         let substituted =
                             self.freshen_free_type_params(&substituted, &mut method_params);
                         // Same direction as above, same one call (#649, #701).
-                        if self.coerce_arg(&substituted, arg, span)? {
+                        let node = self.method_arg_node(call_node, i);
+                        if self.coerce_arg(&substituted, arg, node, span)? {
                             progress = true;
                         }
                     }
@@ -1564,8 +1566,9 @@ impl TypeChecker {
                     }
 
                     let mut progress = false;
-                    for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
-                        if self.coerce_arg(param_ty, arg, span)? {
+                    for (i, ((param_ty, _mode), arg)) in method_sig.params.iter().zip(args.iter()).enumerate() {
+                        let node = self.method_arg_node(call_node, i);
+                        if self.coerce_arg(param_ty, arg, node, span)? {
                             progress = true;
                         }
                     }
@@ -1823,10 +1826,11 @@ impl TypeChecker {
         }
 
         let mut progress = false;
-        for ((param_ty, _mode), arg) in sig.params.iter().zip(args.iter()) {
+        for (i, ((param_ty, _mode), arg)) in sig.params.iter().zip(args.iter()).enumerate() {
             let substituted = Self::substitute_self_placeholder(param_ty, &receiver);
             // Same direction as above, same one call (#649, #701).
-            if self.coerce_arg(&substituted, arg, span)? {
+            let node = self.method_arg_node(call_node, i);
+            if self.coerce_arg(&substituted, arg, node, span)? {
                 progress = true;
             }
         }
@@ -2905,7 +2909,7 @@ impl TypeChecker {
             // raw ints — every read then came back absent natively and as a
             // bare i64 on the interpreter.
             "push" if args.len() == 1 => {
-                let _ = self.coerce_arg(&inner_type, &args[0], span);
+                let _ = self.coerce_arg(&inner_type, &args[0], None, span);
                 self.unify(ret, &Type::Unit, span)
             }
             "pop" if args.is_empty() => {
@@ -2922,7 +2926,7 @@ impl TypeChecker {
             }
             "set" if args.len() == 2 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.coerce_arg(&inner_type, &args[1], span);
+                let _ = self.coerce_arg(&inner_type, &args[1], None, span);
                 self.unify(ret, &Type::Unit, span)
             }
             "clear" if args.is_empty() => {
@@ -2937,7 +2941,7 @@ impl TypeChecker {
             // vec.insert(index, value) -> ()
             "insert" if args.len() == 2 => {
                 self.check_integer_arg(&self_ty, &args[0], span);
-                let _ = self.coerce_arg(&inner_type, &args[1], span);
+                let _ = self.coerce_arg(&inner_type, &args[1], None, span);
                 self.unify(ret, &Type::Unit, span)
             }
             // vec.remove(index) -> T

@@ -244,6 +244,13 @@ pub struct TypeChecker {
     pub(super) pending_wrapper_eq: Vec<(NodeId, NodeId, NodeId)>,
     /// Those decided: call node → (callee node, function name).
     pub(super) wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
+    /// Each method call's argument nodes, in order. Method arguments are
+    /// checked as types inside the solver; this is how a coercion decided
+    /// there finds the expression it applies to.
+    pub(super) method_call_args: HashMap<NodeId, Vec<NodeId>>,
+    /// A collection filling a `Sequence<E>` slot (SEQ48): value node → the
+    /// node of the `as_sequence()` call that wraps it.
+    pub(super) sequence_coercions: HashMap<NodeId, NodeId>,
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
     pub(super) local_types: Vec<HashMap<String, (Type, BindingKind)>>,
@@ -556,9 +563,10 @@ impl TypeChecker {
 
     /// `coerce_into`, naming the expression being coerced.
     ///
-    /// Worth the extra argument only where the decision has to reach a backend:
-    /// ER32's error branch erases a concrete error into `any Interface`, and MIR
-    /// boxes at the value, keyed by its node.
+    /// Needed where the decision has to reach a backend: ER32's error branch
+    /// erases a concrete error into `any Interface`, and MIR boxes at the
+    /// value, keyed by its node; a collection filling a `Sequence<T>` slot
+    /// gets its `as_sequence()` written around that node (SEQ48).
     pub(super) fn coerce_into_node(
         &mut self,
         site: rask_ast::coercion::CoercionSite,
@@ -612,6 +620,8 @@ impl TypeChecker {
             derived_names: 0,
             pending_wrapper_eq: Vec::new(),
             wrapper_eq_calls: HashMap::new(),
+            method_call_args: HashMap::new(),
+            sequence_coercions: HashMap::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
@@ -1109,6 +1119,7 @@ impl TypeChecker {
             inferred_fn_params,
             derived_decls: self.derived_decls,
             wrapper_eq_calls: self.wrapper_eq_calls,
+            sequence_coercions: self.sequence_coercions,
             wrapper_fns: self.wrapper_fns,
             derived_generic_methods: self.derived_generic_methods,
         };

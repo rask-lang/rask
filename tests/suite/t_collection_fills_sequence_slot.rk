@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A collection fills a `Sequence<T>` slot on its own (type.sequence/SEQ48).
+//
+// The checker inserted `as_sequence()` only inside Vec's own adapter bodies,
+// so `total(v)` with `total(items: Sequence<i64>)` was "expected
+// `Sequence<i64>`, found `Vec<i64>`" (#1325).
+
+import sequence.Sequence
+
+func total(items: Sequence<i64>) -> i64 {
+    mut t = 0
+    for x in items {
+        t = t + x
+    }
+    return t
+}
+
+func weight(items: Sequence<(string, i64)>) -> i64 {
+    mut n = 0
+    for (k, v) in items {
+        n = n + v * k.len().to<i64>()!
+    }
+    return n
+}
+
+func joined(parts: Sequence<string>) -> string {
+    mut out = ""
+    for p in parts {
+        out = "{out}{p}"
+    }
+    return out
+}
+
+struct Tally {
+    seen: i64
+}
+
+extend Tally {
+    func add_all(mutate self, items: Sequence<i64>) {
+        for x in items {
+            self.seen = self.seen + x
+        }
+    }
+
+    func count_all(items: Sequence<i64>) -> i64 {
+        mut n = 0
+        for _ in items {
+            n = n + 1
+        }
+        return n
+    }
+}
+
+test "a Vec fills a function's Sequence parameter" {
+    let v: Vec<i64> = [1, 2, 3]
+    assert total(v) == 6
+    assert v.len() == 3
+    assert total(v.filter(|x| x > 1)) == 5
+}
+
+test "a Map fills a Sequence of its pairs" {
+    let m: Map<string, i64> = Map.from([("ab", 1), ("c", 2)])
+    assert weight(m) == 4
+}
+
+test "a Set fills a Sequence of its elements" {
+    mut s: Set<i64> = Set.new()
+    s.insert(4)
+    s.insert(5)
+    assert total(s) == 9
+}
+
+test "heap strings go through and stay the Vec's" {
+    let names: Vec<string> = ["ann".to_uppercase(), "bo".to_uppercase()]
+    assert joined(names) == "ANNBO"
+    assert names[0] == "ANN"
+}
+
+test "a method and a static method take one" {
+    let v: Vec<i64> = [4, 5]
+    mut t = Tally { seen: 0 }
+    t.add_all(v)
+    assert t.seen == 9
+    assert Tally.count_all(v) == 2
+}
+
+test "Vec.try_push_all takes a Vec or a chain" {
+    mut dst: Vec<i64> = Vec.new()
+    let src: Vec<i64> = [1, 2, 3]
+    if dst.try_push_all(src) is GrowError<i64> as e {
+        assert false
+    }
+    if dst.try_push_all(src.filter(|x| x > 2)) is GrowError<i64> as e {
+        assert false
+    }
+    assert dst.len() == 4
+    assert dst[3] == 3
+}

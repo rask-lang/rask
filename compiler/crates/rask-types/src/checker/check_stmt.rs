@@ -97,10 +97,11 @@ impl TypeChecker {
                     // ER11/optionals: at binding position, only the optional
                     // shape (T or none) widens. Bare T into T or E (E ≠ none)
                     // is rejected so the error-branch coercion stays visible.
-                    self.coerce_into(
+                    self.coerce_into_node(
                         CoercionSite::AnnotatedBinding,
                         init_ty,
                         declared.clone(),
+                        Some(init.id),
                         stmt.span,
                     );
                     self.define_local(name.clone(), declared.clone());
@@ -146,10 +147,11 @@ impl TypeChecker {
                 let binding_ty = if let Some(declared) = declared_ty {
                     // ER11/optionals: at binding position, only the optional
                     // shape (T or none) widens — same rule as Mut above.
-                    self.coerce_into(
+                    self.coerce_into_node(
                         CoercionSite::AnnotatedBinding,
                         init_ty,
                         declared.clone(),
+                        Some(init.id),
                         stmt.span,
                     );
                     self.define_local_const(name.clone(), declared.clone());
@@ -272,7 +274,7 @@ impl TypeChecker {
                 // Assignment is a widening position (optionals/O-widen, SYNTAX L521):
                 // the optional shape `T` widens to `T?` at the lvalue, same as a
                 // binding. Bind keeps `T or E` (E ≠ none) strict.
-                self.coerce_into(CoercionSite::Assignment, value_ty, target_ty, stmt.span);
+                self.coerce_into_node(CoercionSite::Assignment, value_ty, target_ty, Some(value.id), stmt.span);
                 if let ExprKind::Ident(name) = &target.kind {
                     self.note_closure_binding(name, value);
                 }

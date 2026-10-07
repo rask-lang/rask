@@ -1211,19 +1211,81 @@ impl TypeChecker {
     ///
     /// Method arguments used to plain-unify while function arguments coerced,
     /// which is why `f(2)` and `w.m(2)` disagreed about an `i64?` parameter.
+    ///
+    /// `value_node` is the argument's expression when the caller knows it
+    /// (`method_arg_node`); a coercion that rewrites the argument needs it.
     pub(super) fn coerce_arg(
         &mut self,
         param_ty: &Type,
         arg_ty: &Type,
+        value_node: Option<rask_ast::NodeId>,
         span: Span,
     ) -> Result<bool, TypeError> {
         self.resolve_coercion(
             arg_ty.clone(),
             param_ty.clone(),
             CoercionSite::Argument,
-            None,
+            value_node,
             span,
         )
+    }
+
+    /// Argument `i`'s expression in the method call `call`.
+    pub(super) fn method_arg_node(
+        &self,
+        call: Option<rask_ast::NodeId>,
+        i: usize,
+    ) -> Option<rask_ast::NodeId> {
+        self.method_call_args.get(&call?)?.get(i).copied()
+    }
+
+    /// A collection filling a `Sequence<E>` slot stands for its own chain head
+    /// (type.sequence/SEQ48): `total(v)` with `total(items: Sequence<i64>)`
+    /// is `total(v.as_sequence())`.
+    ///
+    /// The call is typed here like one the program wrote, on a node of its
+    /// own, and `attach_derived` writes it around the value. So everything
+    /// after the checker — ownership, mono, both backends — sees an ordinary
+    /// `as_sequence()` call. Only the stdlib's chain heads qualify; anything
+    /// else keeps the ordinary mismatch.
+    ///
+    /// `Ok(None)` when this isn't that case. A value whose type is still open
+    /// isn't: it unifies with the slot as before.
+    fn coerce_chain_head(
+        &mut self,
+        value: &Type,
+        slot: &Type,
+        node: rask_ast::NodeId,
+        span: Span,
+    ) -> Result<Option<bool>, TypeError> {
+        let is_sequence = match slot {
+            Type::Generic { base, .. } => self.types.get_type_id("Sequence") == Some(*base),
+            Type::UnresolvedGeneric { name, .. } => name == "Sequence",
+            _ => false,
+        };
+        if !is_sequence {
+            return Ok(None);
+        }
+        let value = self.resolve_named(&self.ctx.apply(value));
+        let head = match &value {
+            Type::Generic { base, .. } => self.types.type_name(*base),
+            _ => return Ok(None),
+        };
+        if !rask_stdlib::forwarders::is_chain_head(&head) {
+            return Ok(None);
+        }
+        let call = match self.sequence_coercions.get(&node) {
+            Some(call) => *call,
+            None => {
+                let call = self.derived_id();
+                self.sequence_coercions.insert(node, call);
+                call
+            }
+        };
+        let seq = self.ctx.fresh_var();
+        self.node_types.insert(call, seq.clone());
+        self.resolve_method(value, "as_sequence".to_string(), Vec::new(), seq.clone(), span, Some(call))?;
+        self.unify(slot, &seq, span).map(Some)
     }
 
     /// The one place that decides whether a value gains wrapper layers.
@@ -1250,6 +1312,12 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved_expected = self.ctx.apply(&expected);
+
+        if let Some(node) = value_node {
+            if let Some(progress) = self.coerce_chain_head(&ret_ty, &resolved_expected, node, span)? {
+                return Ok(progress);
+            }
+        }
 
         // CV1a/CV2: a position that carries a direction — `expected` is the slot
         // being filled, `ret_ty` is the value going into it — is where "does

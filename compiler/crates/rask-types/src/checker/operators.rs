@@ -471,7 +471,7 @@ impl TypeChecker {
         let mut progress = false;
         for ((param, _), arg) in found.sig.params.iter().zip(args.iter()) {
             let param = Self::substitute_type_params(param, &subst);
-            if self.coerce_arg(&param, arg, span)? {
+            if self.coerce_arg(&param, arg, None, span)? {
                 progress = true;
             }
         }
