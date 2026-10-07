@@ -17,6 +17,21 @@ import memory.Heap
 @native("rask_green_closure_spawn")
 public func spawn(take f: func() -> T) -> Handle<T> {}
 
+/// Spawn a green task and hand it `arg`. The task body takes it as a `take`
+/// parameter, so the bars show what crosses:
+///
+///     spawn_with(responder, |take r: Responder| { r.respond(handler(req)) })
+///
+/// A closure can't consume what it captured (`mem.closures/CM4`), so a linear
+/// value reaches a task this way and no other. Several go in a tuple.
+///
+/// `@builtin`: the compiler lowers the call itself. Written in Rask it would be
+/// `spawn(|| f(arg))`, a closure consuming its capture, which is the thing the
+/// rule exists to refuse; the call runs exactly once only because the runtime
+/// says so.
+@builtin
+public func spawn_with(take arg: A, take f: func(take A) -> T) -> Handle<T> {}
+
 /// Whether the task, pooled job or thread running this has been asked to stop.
 /// Use in long-running loops.
 @native("rask_handle_cancelled")
@@ -25,7 +40,7 @@ public func cancelled() -> bool {}
 // --- Handles ---
 
 /// What every spawn form hands back: `spawn`, `Thread.spawn` and
-/// `ThreadPool.spawn`. Must be joined or detached; dropping one is a compile
+/// `ThreadPool.spawn`, and their `spawn_with` twins. Must be joined or detached; dropping one is a compile
 /// error.
 @resource
 public struct Handle<T> {

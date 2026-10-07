@@ -1009,6 +1009,8 @@ Both return `!` (Never type) so they coerce to any type. `todo()` marks unfinish
 let handle = spawn(|| { return compute() })
 let result = try handle.join()
 spawn(|| { background_work() }).detach()
+// Hand the task what it consumes
+spawn_with(conn, |take c: Conn| { serve(c) }).detach()
 
 // Channels
 let (tx, rx) = Channel<Message>.buffered(100)

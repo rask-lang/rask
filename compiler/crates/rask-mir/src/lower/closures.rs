@@ -855,6 +855,159 @@ impl<'a> MirLowerer<'a> {
         Ok(())
     }
 
+    /// `spawn_with(arg, f)`, or a `Thread`/`ThreadPool` twin: a task that runs
+    /// `f(arg)` once. `target` is the plain spawn form the task goes through
+    /// (`spawn`, `Thread_spawn`, `ThreadPool_spawn`).
+    ///
+    /// Built the way the closure `|| f(arg)` would be, by hand, because that
+    /// closure consumes its capture and the language refuses it
+    /// (`mem.closures/CM4`). Here it runs once by construction: the runtime
+    /// calls a spawned body exactly once. `arg` goes into a heap block, the
+    /// way `Heap(arg)` boxes it, so the task's environment holds an address
+    /// and the value leaves it exactly once, as the call's `take` argument.
+    pub(super) fn lower_spawn_with(
+        &mut self,
+        call: &Expr,
+        args: &[rask_ast::expr::CallArg],
+        target: &str,
+    ) -> Result<TypedOperand, LoweringError> {
+        let [arg, f] = args else {
+            return Err(LoweringError::InvalidConstruct(
+                "spawn_with takes the value to hand over and the task's body".to_string(),
+            ));
+        };
+        let (arg_op, arg_ty) = self.lower_expr(&arg.expr)?;
+        // Which container a bare pointer is decides its free, and only the
+        // checker's type says.
+        let arg_ty = match (&arg_ty, self.ctx.lookup_raw_type(arg.expr.id)) {
+            (MirType::Ptr, Some(t)) => self.ctx.payload_to_mir(t),
+            _ => arg_ty,
+        };
+        let (f_op, _) = match &f.expr.kind {
+            rask_ast::expr::ExprKind::Closure { params, ret_ty, body } => self.lower_closure_expecting(
+                params, ret_ty.as_ref(), body, true, &[], Some(f.expr.id), false,
+            )?,
+            _ => self.lower_expr(&f.expr)?,
+        };
+        let ret = self
+            .ctx
+            .lookup_raw_type(f.expr.id)
+            .and_then(|t| self.ctx.callable_ret_ty(t, self.ctx.type_names))
+            .unwrap_or_else(|| crate::fallback::unknown_type("lower/closures:spawn_with_ret"));
+        let f_local = self.as_local(f_op);
+        // A body that holds a link or a `Local` box may not cross, whichever
+        // way it got here. The task's own closure is checked when it is
+        // adopted; this one sits inside it.
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("rask_closure_refuse_crossing".to_string()),
+            args: vec![MirOperand::Local(f_local)],
+        }));
+        let block = self.box_into_owned(arg_op, &arg_ty);
+        let block_local = self.as_local(block);
+        let block_ty = MirType::Heap(Box::new(arg_ty.clone()));
+
+        let boxes_result = crate::types::spawn_payload_is_boxed(&ret);
+        let thunk_name = format!("{}__spawn_with_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+        let thunk_ret = if boxes_result { MirType::I64 } else { ret.clone() };
+        let mut b = BlockBuilder::new(thunk_name.clone(), thunk_ret.clone());
+        let env = b.add_param("__env".to_string(), MirType::Ptr);
+        let body_fn = b.alloc_local("__f".to_string(), MirType::Ptr);
+        b.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
+            dst: body_fn,
+            env_ptr: env,
+            offset: 0,
+            access: crate::CaptureAccess::Value,
+        }));
+        let held = b.alloc_local("__handed".to_string(), block_ty);
+        b.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
+            dst: held,
+            env_ptr: env,
+            offset: 8,
+            access: crate::CaptureAccess::Value,
+        }));
+        // Taken out of the block the way a field is moved out of its slot
+        // (`Field_take`): the thunk owns what it read, so it answers for it
+        // like any caller of a `take` parameter — freed after the call unless
+        // the body kept it.
+        let handed = b.alloc_local("__arg".to_string(), arg_ty.clone());
+        b.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(handed),
+            func: FunctionRef::internal("Field_take".to_string()),
+            args: vec![
+                MirOperand::Local(held),
+                MirOperand::Constant(crate::operand::MirConst::Int(arg_ty.size() as i64)),
+            ],
+        }));
+        b.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: None,
+            func: FunctionRef::internal("rask_free".to_string()),
+            args: vec![MirOperand::Local(held)],
+        }));
+        let handed = MirOperand::Local(handed);
+        let result = (ret != MirType::Void).then(|| b.alloc_local("__value".to_string(), ret.clone()));
+        b.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCall {
+            dst: result,
+            closure: body_fn,
+            args: vec![handed],
+        }));
+        let returned = match result {
+            Some(value) if boxes_result => {
+                let boxed = b.alloc_local("__boxed".to_string(), MirType::Ptr);
+                b.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                    dst: Some(boxed),
+                    func: FunctionRef::internal("rask_alloc".to_string()),
+                    args: vec![MirOperand::Constant(crate::operand::MirConst::Int(ret.size().max(8) as i64))],
+                }));
+                b.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: boxed,
+                    offset: 0,
+                    value: MirOperand::Local(value),
+                    store_size: Some(ret.size()),
+                }));
+                Some(MirOperand::Local(boxed))
+            }
+            other => other.map(MirOperand::Local),
+        };
+        b.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: returned }));
+        self.func_sigs.insert(thunk_name.clone(), super::FuncSig {
+            ret_ty: thunk_ret,
+            scalar_mutate_params: Vec::new(),
+            aggregate_mutate_params: Vec::new(),
+            ret_vec_elem: None,
+            param_tys: Vec::new(),
+        });
+        self.synthesized_functions.push(b.finish());
+
+        let task = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
+            dst: task,
+            func_name: thunk_name,
+            captures: vec![
+                ClosureCapture { local_id: f_local, offset: 0, size: 8, by_ref: false },
+                ClosureCapture { local_id: block_local, offset: 8, size: 8, by_ref: false },
+            ],
+            heap: true,
+            task_bound: self.ctx.task_bound_closures.contains(&call.id),
+        }));
+        let handle_ty = self
+            .func_sigs
+            .get(target)
+            .map(|s| s.ret_ty.clone())
+            .unwrap_or(MirType::Ptr);
+        let handle = self.builder.alloc_temp(handle_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+            dst: Some(handle),
+            func: FunctionRef::internal(target.to_string()),
+            args: vec![
+                MirOperand::Local(task),
+                MirOperand::Constant(crate::operand::MirConst::Int(i64::from(boxes_result))),
+            ],
+        }));
+        Ok((MirOperand::Local(handle), handle_ty))
+    }
+
     /// Build the one-word entry point for a spawned closure whose result is
     /// wider than a word, and return its name.
     ///

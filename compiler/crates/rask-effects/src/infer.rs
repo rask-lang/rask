@@ -698,7 +698,7 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
         ExprKind::Call { func, args } => {
             let mut direct = false;
             let callee = extract_callee_name(func);
-            let spawning = callee.as_deref() == Some("spawn");
+            let spawning = matches!(callee.as_deref(), Some("spawn" | "spawn_with"));
             if let Some(name) = callee {
                 if spawning {
                     direct = depth == 0;

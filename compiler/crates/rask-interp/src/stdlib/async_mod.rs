@@ -18,7 +18,8 @@ impl Interpreter {
             // only in how they word "spawn needs a closure". Only that one is
             // reached by `spawn(|| …)`, so a fix applied here did nothing
             // (#882 was landed into this copy first and changed no behaviour).
-            "spawn" => self.spawn_async_task(args),
+            "spawn" => self.spawn_async_task(args, false),
+            "spawn_with" => self.spawn_async_task(args, true),
             "cancelled" => Ok(Value::Bool(crate::value::cancel_requested())),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "async".to_string(),

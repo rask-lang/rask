@@ -142,7 +142,10 @@ impl Interpreter {
                     return Ok(self.run_yield_body(args));
                 }
                 if kind == BuiltinKind::AsyncSpawn {
-                    return self.spawn_async_task(args);
+                    return self.spawn_async_task(args, false);
+                }
+                if kind == BuiltinKind::AsyncSpawnWith {
+                    return self.spawn_async_task(args, true);
                 }
                 if kind == BuiltinKind::Cancelled {
                     return self.call_async_method("cancelled", args);
@@ -235,7 +238,7 @@ impl Interpreter {
                     .unwrap_or_else(|| "panic".to_string());
                 Err(RuntimeError::Panic(msg))
             }
-            BuiltinKind::AsyncSpawn | BuiltinKind::Cancelled => {
+            BuiltinKind::AsyncSpawn | BuiltinKind::AsyncSpawnWith | BuiltinKind::Cancelled => {
                 // These should have been handled in call_value
                 unreachable!("Async builtins should be handled in call_value")
             }
@@ -990,7 +993,7 @@ impl Interpreter {
                 "encode" | "encode_pretty" | "to_value" | "decode"
             ),
             Path => false, // Path module has no module-level methods
-            Async => matches!(method, "spawn"),
+            Async => matches!(method, "spawn" | "spawn_with"),
             Thread => matches!(method, "Thread" | "ThreadPool"),
             Http => false,
             Env => matches!(method, "var" | "vars"),

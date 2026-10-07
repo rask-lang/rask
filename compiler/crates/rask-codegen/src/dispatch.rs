@@ -1367,6 +1367,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // records where it is; without that the report named the last line
         // that happened to record one.
         StdlibEntry::simple("spawn", "rask_green_closure_spawn", &[types::I64, types::I64], Some(types::I64), true),
+        // `spawn_with` wraps its body in the task's closure, so it asks of the
+        // body itself what adopting the task's closure asks of that.
+        StdlibEntry::simple("rask_closure_refuse_crossing", "rask_closure_refuse_crossing", &[types::I64], None, true),
         // One handle for every spawn form (conc.async/H5); the runtime reads
         // which kind it is.
         StdlibEntry::join_outcome("join", "rask_handle_join"),

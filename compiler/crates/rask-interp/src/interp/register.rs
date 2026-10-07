@@ -17,6 +17,7 @@ use super::{Interpreter, RegisteredProgram, RuntimeError, TestResult, BenchmarkR
 pub(super) fn prelude_builtin(name: &str) -> Option<BuiltinKind> {
     match name {
         "spawn" => Some(BuiltinKind::AsyncSpawn),
+        "spawn_with" => Some(BuiltinKind::AsyncSpawnWith),
         "cancelled" => Some(BuiltinKind::Cancelled),
         _ => None,
     }
@@ -36,6 +37,9 @@ impl Interpreter {
             // Async module members
             (ModuleKind::Async, "spawn") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawn));
+            }
+            (ModuleKind::Async, "spawn_with") => {
+                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawnWith));
             }
             (ModuleKind::Async, "cancelled") => {
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::Cancelled));

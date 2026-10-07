@@ -506,6 +506,7 @@ pub enum BuiltinKind {
     Panic,
     Format,
     AsyncSpawn,     // spawn(|| {}) from async module
+    AsyncSpawnWith, // spawn_with(arg, |take a| {}) from async module
     Cancelled,      // cancelled() — cooperative cancellation check
     Todo,
     Unreachable,

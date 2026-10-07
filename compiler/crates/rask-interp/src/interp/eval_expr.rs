@@ -1190,6 +1190,16 @@ impl Interpreter {
                     }
                 })?;
                 let (arg_vals, places) = self.eval_call_args(args)?;
+                // `spawn_with`'s argument crosses to the task as a value, so the
+                // call is judged the way a spawned closure's captures are.
+                if matches!(func_val, Value::Builtin(crate::value::BuiltinKind::AsyncSpawnWith))
+                    && self.closure_is_task_bound(expr.id)
+                {
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::Panic(super::TASK_BOUND_SPAWN.to_string()),
+                        expr.span,
+                    ));
+                }
                 // What the callee's type parameters stand for here, written
                 // (`count<Plain>()`, #968) or inferred: the checker recorded
                 // both under this call.
@@ -1526,6 +1536,12 @@ impl Interpreter {
                 }
 
                 if let Value::Type(type_name) = &receiver {
+                    if method == "spawn_with" && self.closure_is_task_bound(expr.id) {
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic(super::TASK_BOUND_SPAWN.to_string()),
+                            expr.span,
+                        ));
+                    }
                     return self.call_type_method(type_name, method, arg_vals)
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }

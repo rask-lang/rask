@@ -323,6 +323,7 @@ pub const BUILTIN_FUNCTIONS: &[BuiltinFnEntry] = &[
 /// BF1's set — the names BF3 reserves.
 pub fn is_reserved_builtin_fn(name: &str) -> bool {
     name == "spawn"
+        || name == "spawn_with"
         || BUILTIN_FUNCTIONS.iter().any(|f| f.name == name && f.reserved)
 }
 

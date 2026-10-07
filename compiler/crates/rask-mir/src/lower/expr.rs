@@ -2500,6 +2500,9 @@ impl<'a> MirLowerer<'a> {
         }
 
     fn lower_call(&mut self, expr: &Expr, func: &Expr, args: &[CallArg]) -> Result<TypedOperand, LoweringError> {
+            if matches!(&func.kind, ExprKind::Ident(n) if n == "spawn_with") {
+                return self.lower_spawn_with(expr, args, "spawn");
+            }
             // `Id(5)` on a nominal newtype is the value, not a call — there
             // is no `Id` function to dispatch to (#445).
             if let Some(name) = func.name() {
@@ -5688,6 +5691,11 @@ impl<'a> MirLowerer<'a> {
                         if is_known_type {
                             let base_name = name;
                             let func_name = format!("{}_{}", base_name, method);
+                            if method == "spawn_with"
+                                && (base_name == "Thread" || base_name == "ThreadPool")
+                            {
+                                return self.lower_spawn_with(expr, args, &format!("{base_name}_spawn")).map(Some);
+                            }
                             // Arguments go in the same way as a plain call's:
                             // by address for `mutate`, wrapped into the layers a
                             // `T?` parameter declares. Lowering them as bare

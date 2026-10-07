@@ -41,6 +41,7 @@ void *rask_closure_alloc(int64_t block_size, void (*env_drop)(void *), int64_t f
 #define RASK_CLOSURE_TASK_BOUND 1
 // Whether a heap closure captured a link or a `Local` box.
 int   rask_closure_task_bound(const void *ptr);
+void  rask_closure_refuse_crossing(void *closure_base);
 void  rask_closure_free(void *ptr);
 void  rask_closure_retain(void *ptr);
 

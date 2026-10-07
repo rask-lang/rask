@@ -2258,7 +2258,7 @@ impl<'a> OwnershipChecker<'a> {
                     // does. A `take` parameter is the real escape: the callee
                     // keeps it and the caller can't see where it goes (SL2).
                     self.check_closure_arg_escape(expr.id, &arg.expr, known_mode);
-                    if matches!(&func.kind, ExprKind::Ident(n) if n == "spawn") {
+                    if matches!(&func.kind, ExprKind::Ident(n) if n == "spawn" || n == "spawn_with") {
                         self.check_spawn_lost_writes(&arg.expr);
                     }
                     // Passing a rack to a `deleting` parameter revokes every link
@@ -5164,7 +5164,7 @@ impl<'a> OwnershipChecker<'a> {
                         // common case for `spawn` on a handle or a group.
                         // Reading an unplaceable `spawn` as a borrow would hand
                         // the task a pointer into the frame that spawned it.
-                        if takes || (modes.is_none() && method == "spawn") {
+                        if takes || (modes.is_none() && (method == "spawn" || method == "spawn_with")) {
                             self.mark_escaping(&arg.expr, named);
                         }
                     }
@@ -5291,7 +5291,7 @@ impl<'a> OwnershipChecker<'a> {
     /// frame, so `collect_escaping_closures` treats an unplaceable `spawn` as
     /// escaping and this one says nothing.
     fn is_task_spawn(&self, object: &Expr, method: &str) -> bool {
-        if method != "spawn" {
+        if method != "spawn" && method != "spawn_with" {
             return false;
         }
         match &object.kind {
@@ -6671,6 +6671,9 @@ impl<'a> OwnershipChecker<'a> {
         let id = match ty {
             Type::Named(id) => *id,
             Type::Generic { base, .. } => *base,
+            // A stdlib type named as the receiver of a static method —
+            // `Thread.spawn_with(conn, …)` — arrives as its name.
+            Type::UnresolvedNamed(name) => self.program.types.get_type_id(name)?,
             _ => return None,
         };
         let methods = match self.program.types.get(id)? {

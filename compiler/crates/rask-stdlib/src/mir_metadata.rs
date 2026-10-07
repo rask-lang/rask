@@ -949,8 +949,16 @@ pub fn argument_mode(qualified_name: &str, arg_index: usize) -> Option<ArgMode> 
 ///
 /// Eager helpers only. A sequence that holds a closure past the call *is*
 /// keeping it, so this list must never grow a lazy one.
-const BORROWS_ITS_CALLBACK: &[&str] =
-    &["Vec_sort_by", "Vec_sort_by_keys", "Vec_map", "Vec_filter"];
+///
+/// `rask_closure_refuse_crossing` is the check `spawn_with` makes of its body
+/// before wrapping it: it reads the closure's header and hands it back.
+const BORROWS_ITS_CALLBACK: &[&str] = &[
+    "Vec_sort_by",
+    "Vec_sort_by_keys",
+    "Vec_map",
+    "Vec_filter",
+    "rask_closure_refuse_crossing",
+];
 
 /// Does this call use its callback up before returning?
 pub fn borrows_its_callback(qualified_name: &str) -> bool {

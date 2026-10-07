@@ -87,6 +87,7 @@ fn is_io_source(callee: &str) -> bool {
 fn is_async_source(callee: &str) -> bool {
     matches!(callee,
         "spawn" | "Thread.spawn" | "ThreadPool.spawn"
+        | "spawn_with" | "Thread.spawn_with" | "ThreadPool.spawn_with"
         | "sleep" | "time.sleep"
         | "Sender.send" | "Receiver.receive"
         | "Handle.join" | "Handles.join_all"

@@ -746,6 +746,11 @@ impl TypeChecker {
                 type_args,
             } => {
                 self.in_stmt_expr = false;
+                if (method == "spawn" || method == "spawn_with")
+                    && matches!(&object.kind, ExprKind::Ident(n) if n == "Thread" || n == "ThreadPool")
+                {
+                    self.note_spawn_args(expr.id, method == "spawn_with", args);
+                }
                 let ty = self
                     .check_method_call(expr.id, object, method, args, type_args.as_deref(), expr.span);
                 if method == "eq" && args.len() == 1 && self.operator_calls.contains(&expr.id) {
@@ -2773,17 +2778,10 @@ impl TypeChecker {
         // Also: CC1 — spawn() must be inside a `using Multitasking { }` block
         // conc.sync/SH7 applies to any call named `spawn`, however it reached
         // scope — a builtin, or the `async.spawn` import. Judged after solving.
-        if matches!(&func.kind, ExprKind::Ident(n) if n == "spawn" || n.ends_with(".spawn")) {
-            let depth = self.local_types.len();
-            for a in args {
-                self.spawn_arg_spans.push((a.expr.span, depth));
-                if let ExprKind::Ident(n) = &a.expr.kind {
-                    if let Some(d) = self.local_depth(n) {
-                        if let Some(bound) = self.closure_bindings.get(&(n.clone(), d)) {
-                            self.spawn_arg_spans.extend(bound.iter().copied());
-                        }
-                    }
-                }
+        if let ExprKind::Ident(n) = &func.kind {
+            let bare = n.rsplit('.').next().unwrap_or(n);
+            if bare == "spawn" || bare == "spawn_with" {
+                self.note_spawn_args(call_id, bare == "spawn_with", args);
             }
         }
         if let Some(_) = func.name() {
@@ -5989,6 +5987,32 @@ impl TypeChecker {
                 Self::names_type_param(ok, params) || Self::names_type_param(err, params)
             }
             _ => false,
+        }
+    }
+
+    /// Everything a spawn call hands its task, for `validate_spawn_captures`:
+    /// each argument's span, and a closure bound to a name by the closure's.
+    ///
+    /// `spawn_with`'s first argument crosses as a value rather than as a
+    /// capture, and the call itself is marked the way a closure literal is, so
+    /// a task-bound value refuses the spawn natively too — per instantiation,
+    /// when its type is a type parameter's (#1356).
+    fn note_spawn_args(&mut self, call: NodeId, with_arg: bool, args: &[CallArg]) {
+        let depth = self.local_types.len();
+        for a in args {
+            self.spawn_arg_spans.push((a.expr.span, depth));
+            if let ExprKind::Ident(n) = &a.expr.kind {
+                if let Some(d) = self.local_depth(n) {
+                    if let Some(bound) = self.closure_bindings.get(&(n.clone(), d)) {
+                        self.spawn_arg_spans.extend(bound.iter().copied());
+                    }
+                }
+            }
+        }
+        if with_arg {
+            if let Some(a) = args.first() {
+                self.closure_spans.push((call, a.expr.span, depth));
+            }
         }
     }
 

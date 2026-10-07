@@ -322,9 +322,9 @@ pub struct SourceInfo {
     pub line_map: LineMap,
 }
 
-/// What every spawn form says to a closure that captured a link or a `Local`
+/// What every spawn form says when the task would hold a link or a `Local`
 /// box. Worded as native's `rask_task_adopt_closure` words it.
-const TASK_BOUND_SPAWN: &str = "spawn: this closure captured a link or a `Local` box, and \
+pub(crate) const TASK_BOUND_SPAWN: &str = "spawn: this task would hold a link or a `Local` box, and \
 another task would then reach what this one still can [mem.ownership/T2, conc.sync/SH7]. \
 Copy the values the task needs out before spawning, or use a Mutex or Readers box";
 
@@ -891,59 +891,84 @@ impl Interpreter {
         Value::Handle(inner)
     }
 
-    /// Spawn an OS thread from a closure (Thread.spawn).
-    pub(crate) fn spawn_os_thread(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        if args.is_empty() {
-            return Err(RuntimeError::TypeError(
-                "Thread.spawn requires a closure argument".to_string(),
-            ));
-        }
-
-        let closure = &args[0];
-        match closure {
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-                task_bound,
-                generics,
-                ..
-            } => {
-                if !params.is_empty() {
-                    return Err(RuntimeError::TypeError(
-                        "Thread.spawn closure must take no parameters".to_string(),
-                    ));
-                }
-                if *task_bound {
-                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
-                }
-
-                let body = body.clone();
-                let captured = captured_env.clone();
-                let child = self.spawn_child(captured, generics);
-                let cancel = Arc::new(crate::value::CancelToken::default());
-                let flag = cancel.clone();
-                let join_handle = crate::spawn_interp_thread(move || {
-                    crate::value::with_cancel_flag(flag, move || run_task_body(child, &body))
-                })?;
-                Ok(self.hand_out_handle(join_handle, cancel))
+    /// What every spawn form needs from its arguments: the task's
+    /// interpreter, holding what the task was handed, and the body it runs.
+    ///
+    /// `with_arg` is the `spawn_with` form. The first argument is the body's
+    /// one `take` parameter, and it crosses the way a capture does: into the
+    /// task's own environment, its resources owed by the task from here on.
+    ///
+    /// A named function is a body too: `spawn_with(conn, serve_one)`.
+    fn task_from_args(
+        &mut self,
+        form: &str,
+        args: Vec<Value>,
+        with_arg: bool,
+    ) -> Result<(Interpreter, TaskBody), RuntimeError> {
+        let mut args = args.into_iter();
+        let handed = if with_arg { args.next() } else { None };
+        let Some(closure) = args.next() else {
+            return Err(RuntimeError::TypeError(format!("{form} requires a closure argument")));
+        };
+        let wanted = usize::from(with_arg);
+        if let Value::Function { name, generics } = &closure {
+            let Some(decl) = self.functions.get(name).cloned() else {
+                return Err(RuntimeError::UndefinedFunction(name.clone()));
+            };
+            if decl.params.len() != wanted {
+                return Err(RuntimeError::TypeError(format!(
+                    "{form}: `{name}` must take {wanted} parameter{}",
+                    if wanted == 1 { "" } else { "s" }
+                )));
             }
-            _ => Err(RuntimeError::TypeError(format!(
-                "Thread.spawn expects a closure, got {}",
-                closure.type_name()
-            ))),
+            let mut child = self.spawn_child(HashMap::new(), &None);
+            let args: Vec<Value> = handed.into_iter().collect();
+            for value in &args {
+                self.hand_resources_to_task(value, &mut child);
+            }
+            return Ok((child, TaskBody::Function(decl, generics.clone(), args)));
         }
+        let Value::Closure { params, body, captured_env, task_bound, generics, .. } = closure else {
+            return Err(RuntimeError::TypeError(format!(
+                "{form} expects a closure, got {}",
+                closure.type_name()
+            )));
+        };
+        if params.len() != wanted {
+            return Err(RuntimeError::TypeError(format!(
+                "{form} closure must take {wanted} parameter{}",
+                if wanted == 1 { "" } else { "s" }
+            )));
+        }
+        if task_bound {
+            return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
+        }
+        let mut child = self.spawn_child(captured_env, &generics);
+        // The task owns what it was handed. It runs on its own interpreter
+        // with its own resource tracker, so without this the parent went on
+        // owing a resource the task had already closed, and died at the
+        // scope's exit claiming a leak native never had (#882).
+        if let (Some(value), Some(name)) = (handed, params.first()) {
+            self.hand_resources_to_task(&value, &mut child);
+            child.env.define_slot(name.clone(), crate::env::slot(value));
+        }
+        Ok((child, TaskBody::Closure(body)))
     }
 
-    /// Spawn an async task from a closure (spawn() in using Multitasking).
-    /// In interpreter: uses OS thread.
-    pub(crate) fn spawn_async_task(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        if args.is_empty() {
-            return Err(RuntimeError::TypeError(
-                "spawn() requires a closure argument".to_string(),
-            ));
-        }
+    /// Spawn an OS thread from a closure (`Thread.spawn`, `Thread.spawn_with`).
+    pub(crate) fn spawn_os_thread(&mut self, args: Vec<Value>, with_arg: bool) -> Result<Value, RuntimeError> {
+        let (child, body) = self.task_from_args("Thread.spawn", args, with_arg)?;
+        let cancel = Arc::new(crate::value::CancelToken::default());
+        let flag = cancel.clone();
+        let join_handle = crate::spawn_interp_thread(move || {
+            crate::value::with_cancel_flag(flag, move || run_task_body(child, body))
+        })?;
+        Ok(self.hand_out_handle(join_handle, cancel))
+    }
 
+    /// Spawn an async task from a closure (`spawn`, `spawn_with` in
+    /// `using Multitasking`). In the interpreter it's an OS thread.
+    pub(crate) fn spawn_async_task(&mut self, args: Vec<Value>, with_arg: bool) -> Result<Value, RuntimeError> {
         // Check for active runtime slot (CC3 fallback)
         if crate::value::ACTIVE_RUNTIME.read().unwrap().is_none() {
             return Err(RuntimeError::Panic(
@@ -951,130 +976,68 @@ impl Interpreter {
                  Install a `using Multitasking { ... }` block that encloses the call.".to_string(),
             ));
         }
+        let (child, body) = self.task_from_args("spawn()", args, with_arg)?;
 
-        let closure = &args[0];
-        match closure {
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-                task_bound,
-                generics,
-                ..
-            } => {
-                if !params.is_empty() {
-                    return Err(RuntimeError::TypeError(
-                        "spawn() closure must take no parameters".to_string(),
-                    ));
-                }
-                if *task_bound {
-                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
-                }
-
-                let body = body.clone();
-                let captured = captured_env.clone();
-                let child = self.spawn_child(captured, generics);
-
-                // The thread starts now; the body waits for one of the scope's
-                // task slots before running, so `workers: n` bounds how many
-                // run at once (#1111).
-                let cancel = Arc::new(crate::value::CancelToken::default());
-                let flag = cancel.clone();
-                let join_handle = crate::spawn_interp_thread(move || {
-                    crate::with_task_slot(move || {
-                        crate::value::with_cancel_flag(flag, move || run_task_body(child, &body))
-                    })
-                })?;
-                Ok(self.hand_out_handle(join_handle, cancel))
-            }
-            _ => Err(RuntimeError::TypeError(format!(
-                "spawn() expects a closure, got {}",
-                closure.type_name()
-            ))),
-        }
+        // The thread starts now; the body waits for one of the scope's
+        // task slots before running, so `workers: n` bounds how many
+        // run at once (#1111).
+        let cancel = Arc::new(crate::value::CancelToken::default());
+        let flag = cancel.clone();
+        let join_handle = crate::spawn_interp_thread(move || {
+            crate::with_task_slot(move || {
+                crate::value::with_cancel_flag(flag, move || run_task_body(child, body))
+            })
+        })?;
+        Ok(self.hand_out_handle(join_handle, cancel))
     }
 
-    /// Spawn a thread pool task from a closure (ThreadPool.spawn).
-    pub(crate) fn spawn_pool_task(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    /// Spawn a thread pool task from a closure (`ThreadPool.spawn`,
+    /// `ThreadPool.spawn_with`).
+    pub(crate) fn spawn_pool_task(&mut self, args: Vec<Value>, with_arg: bool) -> Result<Value, RuntimeError> {
         use crate::value::PoolTask;
 
-        if args.is_empty() {
+        // Check for thread pool context
+        let pool = match self.env.get("__thread_pool") {
+            Some(Value::ThreadPool(p)) => p,
+            _ => {
+                return Err(RuntimeError::TypeError(
+                    "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
+                ))
+            }
+        };
+        let (child, body) = self.task_from_args("ThreadPool.spawn", args, with_arg)?;
+
+        let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
+        let cancel = Arc::new(crate::value::CancelToken::default());
+        let flag = cancel.clone();
+
+        let task = PoolTask {
+            work: Box::new(move || {
+                let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, body));
+                let _ = result_tx.send(ended);
+            }),
+        };
+
+        let sender = pool.sender.lock().unwrap();
+        if let Some(ref tx) = *sender {
+            tx.send(task).map_err(|_| {
+                RuntimeError::ResourceClosed {
+                    resource_type: "ThreadPool".to_string(),
+                    operation: "spawn on".to_string(),
+                }
+            })?;
+        } else {
             return Err(RuntimeError::TypeError(
-                "ThreadPool.spawn requires a closure argument".to_string(),
+                "thread pool is shut down".to_string(),
             ));
         }
 
-        let closure = &args[0];
-        match closure {
-            Value::Closure {
-                params,
-                body,
-                captured_env,
-                task_bound,
-                generics,
-                ..
-            } => {
-                if !params.is_empty() {
-                    return Err(RuntimeError::TypeError(
-                        "ThreadPool.spawn closure must take no parameters".to_string(),
-                    ));
-                }
-                if *task_bound {
-                    return Err(RuntimeError::Panic(TASK_BOUND_SPAWN.to_string()));
-                }
-
-                // Check for thread pool context
-                let pool = self.env.get("__thread_pool");
-                let pool = match pool {
-                    Some(Value::ThreadPool(p)) => p,
-                    _ => {
-                        return Err(RuntimeError::TypeError(
-                            "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
-                        ))
-                    }
-                };
-
-                let body = body.clone();
-                let captured = captured_env.clone();
-                let child = self.spawn_child(captured, generics);
-
-                let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
-                let cancel = Arc::new(crate::value::CancelToken::default());
-                let flag = cancel.clone();
-
-                let task = PoolTask {
-                    work: Box::new(move || {
-                        let ended = crate::value::with_cancel_flag(flag, move || run_task_body(child, &body));
-                        let _ = result_tx.send(ended);
-                    }),
-                };
-
-                let sender = pool.sender.lock().unwrap();
-                if let Some(ref tx) = *sender {
-                    tx.send(task).map_err(|_| {
-                        RuntimeError::ResourceClosed {
-                            resource_type: "ThreadPool".to_string(),
-                            operation: "spawn on".to_string(),
-                        }
-                    })?;
-                } else {
-                    return Err(RuntimeError::TypeError(
-                        "thread pool is shut down".to_string(),
-                    ));
-                }
-
-                let join_handle = crate::spawn_interp_thread(move || {
-                    result_rx
-                        .recv()
-                        .unwrap_or(Err("thread pool task dropped".to_string()))
-                })?;
-                Ok(self.hand_out_handle(join_handle, cancel))
-            }
-            _ => Err(RuntimeError::TypeError(format!(
-                "ThreadPool.spawn expects a closure, got {}",
-                closure.type_name()
-            ))),
-        }
+        let join_handle = crate::spawn_interp_thread(move || {
+            result_rx
+                .recv()
+                .unwrap_or(Err("thread pool task dropped".to_string()))
+        })?;
+        Ok(self.hand_out_handle(join_handle, cancel))
     }
 
     /// Divert print output into a fresh buffer, handing back whatever was
@@ -1686,8 +1649,18 @@ impl std::fmt::Display for RuntimeDiagnostic {
 impl std::error::Error for RuntimeDiagnostic {}
 
 /// Run a spawned closure's body to its result, or the message it failed with.
-fn run_task_body(mut interp: Interpreter, body: &rask_ast::expr::Expr) -> Result<Value, String> {
-    match interp.eval_expr(body) {
+/// What a task runs: a closure's body, or a named function and its argument.
+enum TaskBody {
+    Closure(rask_ast::expr::Expr),
+    Function(rask_ast::decl::FnDecl, crate::value::GenericFrame, Vec<Value>),
+}
+
+fn run_task_body(mut interp: Interpreter, body: TaskBody) -> Result<Value, String> {
+    let ran = match body {
+        TaskBody::Closure(body) => interp.eval_expr(&body),
+        TaskBody::Function(decl, generics, args) => interp.call_function(&decl, args, generics),
+    };
+    match ran {
         Ok(val) => Ok(val),
         Err(diag) => match diag.error {
             RuntimeError::Return(val) => Ok(val),

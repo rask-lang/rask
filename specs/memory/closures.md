@@ -253,6 +253,13 @@ spawn(|| {
 })
 ```
 
+What the task has to consume is handed to it instead, as the body's `take` parameter
+(`conc.async/S6`). The bars say what crosses:
+
+```rask
+spawn_with(responder, |take r: Responder| { r.respond(handler(req)) })
+```
+
 Carrying keeps the task memory-safe; it doesn't make the program right.
 
 | Rule | Description |

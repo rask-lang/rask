@@ -16,6 +16,25 @@ Green tasks with must-use handles. No async/await split — the same function wo
 | **S3: Raw thread** | `Thread.spawn(|| {})` creates OS thread; no runtime required |
 | **S4: Must-use handle** | All spawn forms return handles that must be joined or detached — dropping one is a compile error |
 | **S5: The task works on copies** | Every spawn form gives the task a copy of what its closure captured. A borrow can't cross (E0862) and a write the task never reads back is an error (E0896) — see [mem.closures](../memory/closures.md#spawn) for both. The value both sides need is a `Shared` reached through a clone, or the closure's return value |
+| **S6: What the task consumes is its argument** | `spawn_with(value, \|take v: T\| { … })` hands `value` to the task as the body's `take` parameter; `Thread.spawn_with` and `ThreadPool.spawn_with` do the same. A closure can't consume what it captured (`mem.closures/CM4`), so a resource reaches a task this way and no other. Several go in a tuple, destructured in the body. The plain form is for a task that hands over nothing linear |
+
+<!-- test: skip -->
+```rask
+let (req, responder) = try server.accept()
+spawn_with(responder, |take r: Responder| { r.respond(handle(req)) }).detach()
+
+spawn_with((src, dst), |take ends: (File, File)| {
+    let (src, dst) = ends
+    ensure src.close()
+    ensure dst.close()
+    try copy(src, dst)
+}).detach()
+```
+
+It's a second name and not a second shape of `spawn`, because Rask has neither
+overloading nor a default that could stand in for "no argument". I'd rather the
+two read differently anyway: `spawn_with` at the call site says something
+crosses before you look inside the bars.
 
 Spawn functions do not appear in signatures. No function declares `using Multitasking` — the compiler infers which functions (transitively) need a runtime and checks callers against the current lexical scope. See [Runtime Scope](#runtime-scope) below.
 

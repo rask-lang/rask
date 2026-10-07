@@ -4397,7 +4397,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
             assert_ne!(code, 0, "{mode} {fixture}: the spawn has to fail; stdout: {stdout}");
             assert!(stdout.starts_with("before"), "{mode} {fixture}: {stdout}");
             assert!(
-                stderr.contains("this closure captured a link or a `Local` box"),
+                stderr.contains("this task would hold a link or a `Local` box"),
                 "{mode} {fixture}: {stderr}",
             );
             assert!(stderr.contains(&format!("{fixture}:{line}:")), "{mode} {fixture}: {stderr}");
@@ -4416,7 +4416,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
         assert_ne!(code, 0, "{mode}: the link spawn has to fail; stdout: {stdout}");
         assert_eq!(stdout, "1\nbefore\n", "{mode}");
         assert!(
-            stderr.contains("this closure captured a link or a `Local` box"),
+            stderr.contains("this task would hold a link or a `Local` box"),
             "{mode}: {stderr}",
         );
         assert!(stderr.contains("spawn_generic_closure_with_link.rk:26:"), "{mode}: {stderr}");
@@ -4446,7 +4446,7 @@ fn a_task_bound_closure_is_refused_at_spawn() {
             assert_ne!(code, 0, "{mode} {file}: the spawn has to fail; stdout: {stdout}");
             assert_eq!(stdout, "1\nbefore\n", "{mode} {file}");
             assert!(
-                stderr.contains("this closure captured a link or a `Local` box"),
+                stderr.contains("this task would hold a link or a `Local` box"),
                 "{mode} {file}: {stderr}",
             );
             assert!(stderr.contains(&format!("{file}:{line}:")), "{mode} {file}: {stderr}");

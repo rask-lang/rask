@@ -1335,6 +1335,22 @@ impl TypeChecker {
                         args: vec![GenericArg::Type(Box::new(inner))],
                     };
                     self.unify(&ret, &handle_ty, span)
+                } else if method == "spawn_with" && args.len() == 2 {
+                    // `spawn_with(arg, f)`: `f` takes `arg` (`func(take A) -> T`).
+                    let inner = self.ctx.fresh_var();
+                    let body_ty = Type::Fn {
+                        params: vec![crate::types::FnParam {
+                            mode: rask_ast::ty::ParamMode::Take,
+                            ty: args[0].clone(),
+                        }],
+                        ret: Box::new(inner.clone()),
+                    };
+                    self.unify(&args[1], &body_ty, span)?;
+                    let handle_ty = Type::UnresolvedGeneric {
+                        name: "Handle".to_string(),
+                        args: vec![GenericArg::Type(Box::new(inner))],
+                    };
+                    self.unify(&ret, &handle_ty, span)
                 } else {
                     Err(TypeError::NoSuchMethod {
                         ty,

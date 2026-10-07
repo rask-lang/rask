@@ -13,6 +13,11 @@ extend Thread {
     /// `take f`: the thread keeps the closure past this call (PM3).
     @native("rask_closure_spawn")
     public func spawn(take f: func() -> T) -> Handle<T> {}
+
+    /// Spawn an OS thread and hand it `arg` as the body's `take` parameter
+    /// (`spawn_with` in `async`).
+    @builtin
+    public func spawn_with(take arg: A, take f: func(take A) -> T) -> Handle<T> {}
 }
 
 // --- Thread pool ---
@@ -26,4 +31,9 @@ extend ThreadPool {
     /// `take f`: the pool keeps the closure past this call (PM3).
     @native("rask_threadpool_spawn")
     public func spawn(take f: func() -> T) -> Handle<T> {}
+
+    /// Run work on the pool and hand it `arg` as the body's `take` parameter
+    /// (`spawn_with` in `async`).
+    @builtin
+    public func spawn_with(take arg: A, take f: func(take A) -> T) -> Handle<T> {}
 }

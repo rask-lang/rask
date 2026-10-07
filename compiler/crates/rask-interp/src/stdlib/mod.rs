@@ -183,8 +183,8 @@ impl Interpreter {
             "Random" => self.call_rng_type_method(method, args),
             "StringBuilder" => self.call_string_builder_type_method(method, args),
             "Thread" => {
-                if method == "spawn" {
-                    self.spawn_os_thread(args)
+                if method == "spawn" || method == "spawn_with" {
+                    self.spawn_os_thread(args, method == "spawn_with")
                 } else {
                     Err(RuntimeError::TypeError(format!(
                         "Thread has no method '{}'", method
@@ -192,8 +192,8 @@ impl Interpreter {
                 }
             }
             "ThreadPool" => {
-                if method == "spawn" {
-                    self.spawn_pool_task(args)
+                if method == "spawn" || method == "spawn_with" {
+                    self.spawn_pool_task(args, method == "spawn_with")
                 } else {
                     Err(RuntimeError::TypeError(format!(
                         "ThreadPool has no method '{}'", method

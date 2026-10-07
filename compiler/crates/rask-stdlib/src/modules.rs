@@ -44,7 +44,7 @@ const EXTRA_TYPES: &[(&str, &[&str])] = &[
 /// be registered as a struct.
 const EXTRA_NAMES: &[(&str, &[&str])] = &[
     // `spawn(…)` reads as a language feature, not as `async.spawn(…)`.
-    ("async", &["spawn", "cancelled"]),
+    ("async", &["spawn", "spawn_with", "cancelled"]),
     ("core", &["transmute"]),
     // `std` re-exports the reflection module.
     ("std", &["reflect", "exit"]),

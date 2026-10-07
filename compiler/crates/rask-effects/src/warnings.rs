@@ -221,7 +221,8 @@ impl<'a> WarnContext<'a> {
                     // that function unwritable.
                     if self.in_root
                         && !self.in_multitasking
-                        && (name == "spawn" || name.ends_with(".spawn"))
+                        && (name == "spawn" || name.ends_with(".spawn")
+                            || name == "spawn_with" || name.ends_with(".spawn_with"))
                     {
                         warnings.push(EffectWarning {
                             code: "E0352",
@@ -277,7 +278,7 @@ impl<'a> WarnContext<'a> {
                 self.check_expr(func, warnings);
                 let is_spawn = callee_name
                     .as_deref()
-                    .is_some_and(|n| n == "spawn" || n == "async.spawn");
+                    .is_some_and(|n| matches!(n, "spawn" | "async.spawn" | "spawn_with" | "async.spawn_with"));
                 self.check_args_maybe_spawned(is_spawn, args, warnings);
             }
 
@@ -286,8 +287,9 @@ impl<'a> WarnContext<'a> {
                 for name in &names {
                     self.maybe_warn_io_call(name, method, expr.span, warnings);
                 }
-                let is_pool_spawn = method == "spawn"
-                    && names.iter().any(|n| n.strip_suffix(".spawn").is_some_and(is_thread_pool));
+                let is_spawn_method = method == "spawn" || method == "spawn_with";
+                let is_pool_spawn = is_spawn_method
+                    && names.iter().any(|n| n.rsplit_once('.').is_some_and(|(t, _)| is_thread_pool(t)));
                 self.check_expr(object, warnings);
                 // CW1 only covers code that actually runs on a pool worker: the
                 // body of the closure handed to `ThreadPool.spawn(...)`, not
@@ -303,7 +305,7 @@ impl<'a> WarnContext<'a> {
                     self.in_thread_pool = was_in_tp;
                 } else {
                     // `Thread.spawn` — same as the free function.
-                    self.check_args_maybe_spawned(method == "spawn", args, warnings);
+                    self.check_args_maybe_spawned(is_spawn_method, args, warnings);
                 }
             }
 
