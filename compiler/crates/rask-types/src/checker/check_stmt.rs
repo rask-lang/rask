@@ -38,7 +38,7 @@ impl TypeChecker {
     /// the same field to resolve: indexing a container and iterating it don't
     /// agree on a Map. `m[k]` is a `V` while `for e in m` is a `(K, V)`,
     /// and `p[h]` is a `T` while `for h in p` is a `Handle<T>`.
-    fn iter_elem_type(&mut self, iter_ty: &Type, span: Span) -> Type {
+    fn iter_elem_type(&mut self, iter_ty: &Type, node: rask_ast::NodeId, span: Span) -> Type {
         let resolved = self.ctx.apply(iter_ty);
         if let ContainerElem::Known(elem) = self.container_elem_type(&resolved) {
             return elem;
@@ -51,6 +51,7 @@ impl TypeChecker {
         self.ctx.add_constraint(TypeConstraint::ElementOf {
             container: iter_ty.clone(),
             elem: elem.clone(),
+            node,
             span,
         });
         elem
@@ -332,7 +333,7 @@ impl TypeChecker {
             StmtKind::For { binding, iter, body, mutate, .. } => {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
-                let elem_ty = self.iter_elem_type(&iter_ty, iter.span);
+                let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
                 // std.iteration/I1: a plain `for` yields elements read-only;
                 // `for mutate x in xs` is the mode whose writes reach the
                 // collection. Nothing enforced this, so `for c in xs { c.n += 1 }`
@@ -469,7 +470,7 @@ impl TypeChecker {
                 // iterable. `f` was then typeless for good, and `f.name` had no
                 // type to dispatch a string method from or to infer a Vec's
                 // element from (#931).
-                let elem_ty = self.iter_elem_type(&iter_ty, iter.span);
+                let elem_ty = self.iter_elem_type(&iter_ty, iter.id, iter.span);
                 match binding {
                     ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
                     ForBinding::Tuple(names) => {

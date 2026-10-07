@@ -565,8 +565,8 @@ impl TypeChecker {
                 self.resolve_take_place(place, result, span)
             }
 
-            TypeConstraint::ElementOf { container, elem, span } => {
-                self.resolve_element_of(container, elem, span)
+            TypeConstraint::ElementOf { container, elem, node, span } => {
+                self.resolve_element_of(container, elem, node, span)
             }
 
             TypeConstraint::CollectionLiteral { literal, elems, span } => {
@@ -680,15 +680,21 @@ impl TypeChecker {
     }
 
     /// The element type of an iterated container, once the container is known.
+    ///
+    /// A chain head the loop doesn't walk itself — `Set`, where `Vec` and `Map`
+    /// are walked inline (SEQ5) — is walked through its `as_sequence()`, which
+    /// gets written around the loop's source (SEQ48). The checker used to
+    /// leave its element open, and both backends then failed on the loop.
     fn resolve_element_of(
         &mut self,
         container: Type,
         elem: Type,
+        node: rask_ast::NodeId,
         span: Span,
     ) -> Result<bool, TypeError> {
         let resolved = self.ctx.apply(&container);
         if matches!(resolved, Type::Var(_)) {
-            self.ctx.add_constraint(TypeConstraint::ElementOf { container, elem, span });
+            self.ctx.add_constraint(TypeConstraint::ElementOf { container, elem, node, span });
             return Ok(false);
         }
         match self.container_elem_type(&resolved) {
@@ -696,7 +702,12 @@ impl TypeChecker {
                 self.unify(&elem, &found, span)?;
                 Ok(true)
             }
-            ContainerElem::Deferred => Ok(true),
+            ContainerElem::Deferred => {
+                if let Some(seq) = self.chain_head_sequence(&resolved, node, span)? {
+                    self.ctx.add_constraint(TypeConstraint::ElementOf { container: seq, elem, node, span });
+                }
+                Ok(true)
+            }
             ContainerElem::NotIterable => Err(TypeError::NotIterable {
                 found: self.nameable(&resolved),
                 span,
@@ -1267,6 +1278,21 @@ impl TypeChecker {
         if !is_sequence {
             return Ok(None);
         }
+        match self.chain_head_sequence(value, node, span)? {
+            Some(seq) => self.unify(slot, &seq, span).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// The `value.as_sequence()` a chain head stands for (SEQ48), typed on a
+    /// node of its own and recorded for `attach_derived` to write around
+    /// `node`. `None` when `value` isn't one of the stdlib's chain heads.
+    pub(super) fn chain_head_sequence(
+        &mut self,
+        value: &Type,
+        node: rask_ast::NodeId,
+        span: Span,
+    ) -> Result<Option<Type>, TypeError> {
         let value = self.resolve_named(&self.ctx.apply(value));
         let head = match &value {
             Type::Generic { base, .. } => self.types.type_name(*base),
@@ -1286,7 +1312,7 @@ impl TypeChecker {
         let seq = self.ctx.fresh_var();
         self.node_types.insert(call, seq.clone());
         self.resolve_method(value, "as_sequence".to_string(), Vec::new(), seq.clone(), span, Some(call))?;
-        self.unify(slot, &seq, span).map(Some)
+        Ok(Some(seq))
     }
 
     /// The one place that decides whether a value gains wrapper layers.

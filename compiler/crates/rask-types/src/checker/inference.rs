@@ -170,6 +170,8 @@ pub enum TypeConstraint {
     ElementOf {
         container: Type,
         elem: Type,
+        /// The loop's source expression.
+        node: rask_ast::NodeId,
         span: Span,
     },
     /// A `[...]` literal whose slot wasn't known when it was walked.
