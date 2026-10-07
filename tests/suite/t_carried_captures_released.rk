@@ -15,6 +15,11 @@
 // `http.serve` had that shape, one `Request` per connection. The glue now
 // releases a whole aggregate the frame handed over, with the same walk the
 // frame would have done for it.
+//
+// A Copy struct is copied in rather than handed over, and the frame keeps its
+// own (#1508). The environment takes references of its own to the strings in
+// its copy and the glue gives those back, however the frame goes on to use its
+// value — read it after the capture, or carry it again every turn.
 
 import async.{spawn, spawn_with, Channel, Sender}
 import http
@@ -46,6 +51,12 @@ struct Wire {
 
 struct Keeper {
     run: func() -> i64
+}
+
+// Two Copy halves make a struct that isn't Copy.
+struct Pair {
+    left: Line
+    right: Line
 }
 
 func heap(s: string) -> string {
@@ -107,6 +118,20 @@ func keeper_over_containers() -> Keeper {
     seen.insert(heap("y"), 2)
     let s = heap("str")
     return Keeper { run: || words.len().wrap<i64>() + seen.len().wrap<i64>() + s.len().wrap<i64>() }
+}
+
+func returns_over_a_copy(l: Line) -> func() -> i64 {
+    let mine = Line { text: heap("own {l.text}") }
+    mut pad = 0
+    pad += 1
+    pad += 2
+    pad += 3
+    pad += 4
+    pad += 5
+    pad -= 15
+    let f = || l.text.len().wrap<i64>() + mine.text.len().wrap<i64>() + pad
+    assert mine.text.len() == 75
+    return f
 }
 
 func pass_through(take f: func() -> i64) -> i64 {
@@ -229,6 +254,63 @@ test "a request carried into the task that answers it" {
         }).join()!
         let resp = client.join()!!
         assert resp.body == "you asked for /items/7"
+    }
+}
+
+// --- Copy structs: the frame keeps its own (#1508) ---
+
+test "a Copy struct the frame reads after a detached task captured it" {
+    using Multitasking {
+        let held = Line { text: heap("kept") }
+        spawn(|| {
+            assert held.text.len() == 37
+        }).detach()
+        assert held.text.len() == 37
+    }
+}
+
+test "a Copy struct made once and carried into a task every turn" {
+    using Multitasking {
+        let once = Line { text: heap("once") }
+        mut total = 0
+        for i in 0..4 {
+            let h = spawn(|| {
+                return once.text.len().wrap<i64>() + i
+            })
+            total += h.join() catch e => -1
+        }
+        assert total == 4 * 37 + 6
+    }
+}
+
+test "a Copy struct carried into a detached task every turn" {
+    using Multitasking {
+        let once = Line { text: heap("detached") }
+        for i in 0..3 {
+            spawn(|| {
+                assert once.text.len() == 41
+            }).detach()
+        }
+    }
+}
+
+test "a Copy parameter and a Copy local carried by a returned closure" {
+    let l = Line { text: heap("param") }
+    let f = returns_over_a_copy(l)
+    assert f() == 38 + 75
+    assert l.text.len() == 38
+}
+
+test "a Copy half of a struct carried while the frame keeps the rest" {
+    using Multitasking {
+        let p = Pair { left: Line { text: heap("left") }, right: Line { text: heap("right") } }
+        let half = p.left
+        let h = spawn(|| {
+            return half.text.len().wrap<i64>()
+        })
+        assert (h.join() catch e => -1) == 37
+        assert p.right.text.len() == 38
+        assert p.left.text.len() == 37
     }
 }
 

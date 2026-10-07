@@ -547,7 +547,7 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
     out
 }
 
-/// Release the aggregates a closure's environment was handed outright.
+/// Release the aggregates a closure's environment owns.
 ///
 /// A struct carried into a closure that leaves its frame — `spawn(|| …)`,
 /// returned, stored — is the environment's from then on (`mem.closures/CM2`),
@@ -564,31 +564,44 @@ fn captures_the_body_consumes(func: &MirFunction) -> HashSet<u32> {
 /// a glue that also released it would be a double free; disagreeing sites get
 /// no aggregate releases at all, which leaks instead.
 ///
+/// A Copy aggregate is the other kind: copied in, not handed over, with
+/// references of its own taken at the create (`rc_insert::retain_copy_captures`),
+/// so the glue gives those back whatever the frame does with its value (#1508).
+/// The sites have to agree on those too, since a site that took no references
+/// must not have them released.
+///
 /// The release is the same walk a frame does for its own aggregate
 /// (`ReleaseSlot`), pointed at the slot.
 pub(crate) fn add_carried_releases(
     fns: &mut Vec<MirFunction>,
     sites: Vec<crate::transform::rc_insert::CarriedSite>,
 ) {
-    let mut answers: HashMap<String, Vec<Vec<(u32, MirType)>>> = HashMap::new();
+    let mut answers: HashMap<String, Vec<crate::transform::rc_insert::CarriedSite>> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
     for site in sites {
         if !answers.contains_key(&site.closure) {
             order.push(site.closure.clone());
         }
-        answers.entry(site.closure).or_default().push(site.slots);
+        answers.entry(site.closure.clone()).or_default().push(site);
     }
     for name in order {
         let all = &answers[&name];
         let first = &all[0];
-        if first.is_empty() || all.iter().any(|s| s != first) {
+        let mut slots: Vec<(u32, MirType)> = Vec::new();
+        if all.iter().all(|s| s.slots == first.slots) {
+            slots.extend(first.slots.iter().cloned());
+        }
+        if all.iter().all(|s| s.copies == first.copies) {
+            slots.extend(first.copies.iter().cloned());
+        }
+        if slots.is_empty() {
             continue;
         }
         // Nothing here is the body's to give away first. CM4 refuses consuming
         // a non-Copy capture or a non-Copy field of one, and the Copy things a
         // body can consume — a channel end's `close` — are not what the walk
         // releases.
-        let releases = first.iter().cloned().map(|(offset, ty)| {
+        let releases = slots.into_iter().map(|(offset, ty)| {
             MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: LocalId(0), offset, ty })
         });
         let glue_name = format!("{name}{ENV_DROP_SUFFIX}");

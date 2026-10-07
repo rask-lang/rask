@@ -3576,7 +3576,7 @@ impl<'a> MirLowerer<'a> {
             let mut bound = std::collections::HashSet::new();
             bound.insert(param_name.clone());
             let mut seen: std::collections::HashSet<String> =
-                free.iter().map(|(n, _, _)| n.clone()).collect();
+                free.iter().map(|(n, _, _, _)| n.clone()).collect();
             self.walk_free_vars_block(handler_body, &bound, &mut seen, &mut free);
         }
 
@@ -3584,8 +3584,8 @@ impl<'a> MirLowerer<'a> {
         // Sound only while nothing writes it after the ensure is scheduled.
         let scalar_reads: Vec<&String> = free
             .iter()
-            .filter(|(_, _, ty)| !Self::is_ref_capturable(ty))
-            .map(|(name, _, _)| name)
+            .filter(|(_, _, ty, _)| !Self::is_ref_capturable(ty))
+            .map(|(name, _, _, _)| name)
             .collect();
         if !scalar_reads.is_empty() && !self.scalars_frozen_after_here(&scalar_reads) {
             return None;
@@ -3599,14 +3599,16 @@ impl<'a> MirLowerer<'a> {
             name: String,
             ty: MirType,
             by_ref: bool,
+            copy: bool,
         }
         let mut caps: Vec<Cap> = free
             .iter()
-            .map(|(name, id, ty)| Cap {
+            .map(|(name, id, ty, copy)| Cap {
                 outer: *id,
                 name: name.clone(),
                 ty: ty.clone(),
                 by_ref: Self::is_ref_capturable(ty),
+                copy: *copy,
             })
             .collect();
         let res_index = resource.map(|res| {
@@ -3615,6 +3617,7 @@ impl<'a> MirLowerer<'a> {
                 name: "__ensure_res".to_string(),
                 ty: MirType::I64,
                 by_ref: false,
+                copy: true,
             });
             caps.len() - 1
         });
@@ -3734,6 +3737,7 @@ impl<'a> MirLowerer<'a> {
                 offset: (i as u32) * 8,
                 size: 8,
                 by_ref: c.by_ref,
+                copy: c.copy,
             })
             .collect();
         Some((thunk_name, captures))
@@ -5484,7 +5488,7 @@ impl<'a> MirLowerer<'a> {
         &self,
         body: &Expr,
         params: &[rask_ast::expr::ClosureParam],
-    ) -> Vec<(String, LocalId, MirType)> {
+    ) -> Vec<(String, LocalId, MirType, bool)> {
         let mut free = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let bound: std::collections::HashSet<String> =
@@ -5499,7 +5503,7 @@ impl<'a> MirLowerer<'a> {
         expr: &Expr,
         bound: &std::collections::HashSet<String>,
         seen: &mut std::collections::HashSet<String>,
-        free: &mut Vec<(String, LocalId, MirType)>,
+        free: &mut Vec<(String, LocalId, MirType, bool)>,
     ) {
         use rask_ast::expr::ExprKind;
         match &expr.kind {
@@ -5507,7 +5511,12 @@ impl<'a> MirLowerer<'a> {
                 if !bound.contains(name) && !seen.contains(name) {
                     if let Some((local_id, ty)) = self.locals.get(name) {
                         seen.insert(name.clone());
-                        free.push((name.clone(), *local_id, ty.clone()));
+                        // The checker's answer, for `ClosureCapture::copy`.
+                        let copy = self
+                            .ctx
+                            .lookup_raw_type(expr.id)
+                            .is_some_and(|t| self.ctx.type_defs.is_copy(t));
+                        free.push((name.clone(), *local_id, ty.clone(), copy));
                     }
                 }
             }
@@ -5670,7 +5679,7 @@ impl<'a> MirLowerer<'a> {
         stmts: &[rask_ast::stmt::Stmt],
         bound: &std::collections::HashSet<String>,
         seen: &mut std::collections::HashSet<String>,
-        free: &mut Vec<(String, LocalId, MirType)>,
+        free: &mut Vec<(String, LocalId, MirType, bool)>,
     ) {
         let mut local_bound = bound.clone();
         for stmt in stmts {
@@ -5697,7 +5706,7 @@ impl<'a> MirLowerer<'a> {
         stmt: &rask_ast::stmt::Stmt,
         bound: &std::collections::HashSet<String>,
         seen: &mut std::collections::HashSet<String>,
-        free: &mut Vec<(String, LocalId, MirType)>,
+        free: &mut Vec<(String, LocalId, MirType, bool)>,
     ) {
         use rask_ast::stmt::{ForBinding, StmtKind};
         match &stmt.kind {

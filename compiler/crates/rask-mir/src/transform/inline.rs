@@ -723,6 +723,7 @@ fn remap_stmt(
                     offset: c.offset,
                     size: c.size,
                     by_ref: c.by_ref,
+                    copy: c.copy,
                 })
                 .collect(),
             heap: *heap,
@@ -836,6 +837,7 @@ fn remap_stmt(
                     offset: c.offset,
                     size: c.size,
                     by_ref: c.by_ref,
+                    copy: c.copy,
                 })
                 .collect(),
         },

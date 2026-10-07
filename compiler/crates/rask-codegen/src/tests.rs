@@ -1414,6 +1414,7 @@ mod tests {
                                 offset: 0,
                                 size: 8,
                                 by_ref: false,
+                                copy: true,
                             },
                         ],
                         heap: false,
@@ -1497,7 +1498,7 @@ mod tests {
                         dst: LocalId(1),
                         func_name: "make_closure__closure_0".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false },
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false, copy: true },
                         ],
                         heap: true,
                         task_bound: false,
@@ -1588,7 +1589,7 @@ mod tests {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false },
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false, copy: true },
                         ],
                         heap: true,
                         task_bound: false,
@@ -1672,7 +1673,7 @@ mod tests {
                         dst: LocalId(2),
                         func_name: "main__closure_1".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(1), offset: 0, size: 8, by_ref: false },
+                            ClosureCapture { local_id: LocalId(1), offset: 0, size: 8, by_ref: false, copy: true },
                         ],
                         heap: false,
                         task_bound: false,
@@ -1705,7 +1706,7 @@ mod tests {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![
-                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false },
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8, by_ref: false, copy: true },
                         ],
                         heap: false,
                         task_bound: false,

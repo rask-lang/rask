@@ -442,7 +442,8 @@ reference count for that: a hand-off to something that keeps the closure, while
 the frame still uses it afterwards, gives the keeper a reference of its own, and
 only the last use hands the frame's over. The free releases what the block carries too: a
 capture moved in is the environment's, so the environment gives it back when it dies, the
-same way the frame would have.
+same way the frame would have. A Copy capture is copied in, and the frame keeps its own, so the
+environment holds references of its own to the strings in its copy and gives those back.
 
 ### Closure block layout
 

@@ -236,6 +236,11 @@ pub struct ClosureCapture {
     ///
     /// A by-ref slot is 8 bytes whatever the variable's type.
     pub by_ref: bool,
+    /// The checker says the captured value's type is Copy. Capturing one by
+    /// value copies it and the frame keeps its own (`mem.closures/CM2`), so a
+    /// heap environment's copy needs references of its own to the strings in
+    /// it, the way a captured string does (`rc_insert`).
+    pub copy: bool,
 }
 
 /// How a closure body reaches one of its captures.

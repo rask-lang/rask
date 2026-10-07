@@ -122,6 +122,9 @@ pub fn insert_rc_ops(
     // And an aggregate written back to its slot that the frame still uses.
     retain_written_back_while_live(func);
 
+    // And a Copy aggregate copied into a heap closure's environment.
+    retain_copy_captures(func);
+
     // And the aggregates: a struct field or a wrapper's payload owns a string —
     // or a container — just as much as a local does.
     insert_aggregate_release(func, kept, own, &owns_copy)
@@ -132,23 +135,75 @@ pub fn insert_rc_ops(
 /// handed over none, which is an answer too — every site of one closure has
 /// to agree before its glue may release anything
 /// (`container_drop::add_carried_releases`).
+///
+/// `copies` are the Copy aggregates it copied in, which the environment took
+/// references of its own to (`retain_copy_captures`), same layout.
 #[derive(Debug, Clone)]
 pub struct CarriedSite {
     pub closure: String,
     pub slots: Vec<(u32, MirType)>,
+    pub copies: Vec<(u32, MirType)>,
 }
 
-/// Every heap closure this function builds, each with no slots yet.
+/// Every heap closure this function builds, each with no carried slots yet.
 fn heap_create_sites(func: &MirFunction) -> Vec<((usize, usize), CarriedSite)> {
     let mut out = Vec::new();
     for (bi, block) in func.blocks.iter().enumerate() {
         for (si, stmt) in block.statements.iter().enumerate() {
-            if let MirStmtKind::ClosureCreate { func_name, heap: true, .. } = &stmt.kind {
-                out.push(((bi, si), CarriedSite { closure: func_name.clone(), slots: Vec::new() }));
+            if let MirStmtKind::ClosureCreate { func_name, captures, heap: true, .. } = &stmt.kind {
+                let mut copies: Vec<(u32, MirType)> = captures
+                    .iter()
+                    .filter_map(|c| copied_aggregate(func, c).map(|ty| (c.offset, ty)))
+                    .collect();
+                copies.sort_by_key(|(off, _)| *off);
+                out.push((
+                    (bi, si),
+                    CarriedSite { closure: func_name.clone(), slots: Vec::new(), copies },
+                ));
             }
         }
     }
     out
+}
+
+/// The type of a heap closure's capture when it copies a Copy aggregate in.
+///
+/// The value stays the frame's (`mem.closures/CM2`): `let held = Line { … }`
+/// captured by `spawn(|| println(held.text))` and printed again afterwards, or
+/// carried once per loop turn. So the environment's copy is a second holder of
+/// the strings in it. A Copy aggregate holds no container (the checker's rule),
+/// so a reference per string is all it needs, the same as a captured string.
+fn copied_aggregate(func: &MirFunction, c: &crate::ClosureCapture) -> Option<MirType> {
+    if c.by_ref || !c.copy {
+        return None;
+    }
+    let l = func.locals.iter().chain(func.params.iter()).find(|l| l.id == c.local_id)?;
+    let ty = l.unerased.clone().unwrap_or_else(|| l.ty.clone());
+    aggregate_may_hold_string(&ty).then_some(ty)
+}
+
+/// Take references for each Copy aggregate a heap closure copies in. The
+/// environment's glue gives them back (`container_drop::add_carried_releases`),
+/// and the frame releases its own value wherever it would have anyway.
+///
+/// A stack environment needs none: it dies with the frame, whose value covers
+/// it.
+fn retain_copy_captures(func: &mut MirFunction) {
+    for bi in 0..func.blocks.len() {
+        let mut insertions: Vec<(usize, LocalId)> = Vec::new();
+        for (si, stmt) in func.blocks[bi].statements.iter().enumerate() {
+            let MirStmtKind::ClosureCreate { captures, heap: true, .. } = &stmt.kind else { continue };
+            for c in captures {
+                if copied_aggregate(func, c).is_some() {
+                    insertions.push((si, c.local_id));
+                }
+            }
+        }
+        for (idx, local) in insertions.into_iter().rev() {
+            let span = func.blocks[bi].statements[idx].span;
+            func.blocks[bi].statements.insert(idx, MirStmt::new(MirStmtKind::RcIncContents { local }, span));
+        }
+    }
 }
 
 /// Does the call keep its argument at `i`, rather than only read it?
@@ -904,7 +959,17 @@ fn insert_aggregate_release(
                         // is really the frame's value to give. Anything else,
                         // a part read out of an aggregate, stays a plain
                         // hand-over: the glue has no slot that is all of it.
-                        for c in caps {
+                        //
+                        // Except a Copy capture, which the closure copies and
+                        // the frame keeps: the environment took references of
+                        // its own (`retain_copy_captures`, and `insert_rc_inc`
+                        // for a string), so for this frame it is a read.
+                        let copied: HashSet<LocalId> = captures
+                            .iter()
+                            .filter(|c| !c.by_ref && c.copy)
+                            .map(|c| c.local_id)
+                            .collect();
+                        for c in caps.into_iter().filter(|c| !copied.contains(c)) {
                             if aggregates.contains(&c) {
                                 ev.push(ownership::Event::Carry(c));
                             } else {

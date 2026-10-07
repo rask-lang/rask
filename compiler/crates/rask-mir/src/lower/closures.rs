@@ -342,7 +342,7 @@ impl<'a> MirLowerer<'a> {
         };
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
-        for (_name, local_id, ty) in &free_vars {
+        for (_name, local_id, ty, copy) in &free_vars {
             // An address is a word regardless of what it points at.
             let size = if by_ref { 8 } else { ty.size() };
             let aligned_offset = (env_offset + 7) & !7;
@@ -351,6 +351,7 @@ impl<'a> MirLowerer<'a> {
                 offset: aligned_offset,
                 size,
                 by_ref,
+                copy: *copy,
             });
             env_offset = aligned_offset + size;
         }
@@ -438,7 +439,7 @@ impl<'a> MirLowerer<'a> {
 
         // Emit LoadCapture for each free variable
         let mut addressed_captures = std::collections::HashSet::new();
-        for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
+        for (i, (name, _outer_id, ty, _)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
             if capture_access.is_addressed() {
@@ -646,16 +647,16 @@ impl<'a> MirLowerer<'a> {
             ForBinding::Tuple(_) => format!("__seq_item_{}", self.closure_counter),
         };
         // The body's free variables, minus whatever the binding introduces.
-        let mut free_vars: Vec<(String, LocalId, MirType)> = self
+        let mut free_vars: Vec<(String, LocalId, MirType, bool)> = self
             .collect_free_vars_block(body)
             .into_iter()
-            .filter(|(name, _, _)| !names.contains(name))
+            .filter(|(name, _, _, _)| !names.contains(name))
             .collect();
         // The two the loop just made are captured like any other local, so a
         // `return` in the body writes the enclosing frame's storage.
-        free_vars.push((format!("__flag_{closure_name}"), ret_flag, MirType::I64));
+        free_vars.push((format!("__flag_{closure_name}"), ret_flag, MirType::I64, true));
         if let Some(v) = ret_value {
-            free_vars.push((format!("__value_{closure_name}"), v, outer_ret.clone()));
+            free_vars.push((format!("__value_{closure_name}"), v, outer_ret.clone(), false));
         }
 
         let mut captures = Vec::new();
@@ -669,11 +670,13 @@ impl<'a> MirLowerer<'a> {
                 offset: env_offset,
                 size: 8,
                 by_ref: true,
+                copy: false, // filled in below
             });
             env_offset += 8;
         }
-        for (cap, (_, id, _)) in captures.iter_mut().zip(free_vars.iter()) {
+        for (cap, (_, id, _, copy)) in captures.iter_mut().zip(free_vars.iter()) {
             cap.local_id = *id;
+            cap.copy = *copy;
         }
 
         let mut yb = BlockBuilder::new(closure_name.clone(), MirType::Bool);
@@ -687,7 +690,7 @@ impl<'a> MirLowerer<'a> {
 
         let mut inner_flag = None;
         let mut inner_value = None;
-        for (i, (name, outer_id, ty)) in free_vars.iter().enumerate() {
+        for (i, (name, outer_id, ty, _)) in free_vars.iter().enumerate() {
             let dst = yb.alloc_local(name.clone(), ty.clone());
             yb.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst,
@@ -985,8 +988,8 @@ impl<'a> MirLowerer<'a> {
             dst: task,
             func_name: thunk_name,
             captures: vec![
-                ClosureCapture { local_id: f_local, offset: 0, size: 8, by_ref: false },
-                ClosureCapture { local_id: block_local, offset: 8, size: 8, by_ref: false },
+                ClosureCapture { local_id: f_local, offset: 0, size: 8, by_ref: false, copy: false },
+                ClosureCapture { local_id: block_local, offset: 8, size: 8, by_ref: false, copy: false },
             ],
             heap: true,
             task_bound: self.ctx.task_bound_closures.contains(&call.id),
@@ -1057,7 +1060,7 @@ impl<'a> MirLowerer<'a> {
     pub(super) fn collect_free_vars_block(
         &self,
         body: &[Stmt],
-    ) -> Vec<(String, LocalId, MirType)> {
+    ) -> Vec<(String, LocalId, MirType, bool)> {
         let mut free = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let bound = std::collections::HashSet::new();
