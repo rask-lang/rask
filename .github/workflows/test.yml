@@ -264,7 +264,10 @@ jobs:
 
     - name: Install valgrind
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
-      run: sudo apt-get update && sudo apt-get install -y valgrind
+      timeout-minutes: 6
+      run: |
+        APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
+        sudo apt-get $APT update && sudo apt-get $APT install -y valgrind
 
     - name: Memory error gate (valgrind)
       if: ${{ !cancelled() && steps.compiler.outcome == 'success' }}
@@ -384,12 +387,19 @@ jobs:
     - uses: actions/checkout@v4
     # The context switch on x86_64 and, under qemu, aarch64 — the one place
     # the aarch64 switch runs at all. Needs no compiler, so it goes first.
-    - name: Fiber switch (x86_64, aarch64 under qemu)
+    # A stalled mirror once held the install until the job's 20 minutes ran
+    # out, which reads as a fiber hang. Bound it, retry it, and keep it a step
+    # of its own so the log says which half stopped.
+    - name: Install qemu and the aarch64 toolchain
+      timeout-minutes: 6
       run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq --no-install-recommends \
+        APT="-o Acquire::Retries=3 -o Acquire::http::Timeout=30"
+        sudo apt-get $APT update -qq
+        sudo apt-get $APT install -y -qq --no-install-recommends \
           qemu-user gcc-aarch64-linux-gnu libc6-dev-arm64-cross > /dev/null
-        FIBER_GATE_REQUIRE_AARCH64=1 tests/fiber_gate.sh
+    - name: Fiber switch (x86_64, aarch64 under qemu)
+      timeout-minutes: 3
+      run: FIBER_GATE_REQUIRE_AARCH64=1 tests/fiber_gate.sh
     - name: Setup Rust
       uses: dtolnay/rust-toolchain@stable
     - name: Compiler cache (sccache)
