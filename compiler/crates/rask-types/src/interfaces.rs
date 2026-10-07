@@ -81,6 +81,80 @@ pub enum InterfaceError {
 // Interface Checker
 // ============================================================================
 
+/// A builtin collection, in either spelling, with its type arguments.
+///
+/// The one answer to which contract interfaces each collection has. The bound
+/// check, `check_satisfies` and the `<` rejection all read it (#1491, #1495).
+pub(crate) struct Collection {
+    pub kind: CollectionKind,
+    pub parts: Vec<Type>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CollectionKind {
+    /// `Vec<T>` or `[T; N]`.
+    Sequence,
+    Map,
+    Set,
+}
+
+impl CollectionKind {
+    /// What a diagnostic calls one.
+    pub(crate) fn noun(self) -> &'static str {
+        match self {
+            CollectionKind::Sequence => "a sequence",
+            CollectionKind::Map => "a map",
+            CollectionKind::Set => "a set",
+        }
+    }
+}
+
+impl Collection {
+    pub(crate) fn of(types: &TypeTable, ty: &Type) -> Option<Collection> {
+        let (name, args) = match ty {
+            Type::Array { elem, .. } => {
+                return Some(Collection { kind: CollectionKind::Sequence, parts: vec![(**elem).clone()] });
+            }
+            Type::Generic { base, args } => (types.type_name(*base), args),
+            Type::UnresolvedGeneric { name, args } => (name.clone(), args),
+            _ => return None,
+        };
+        let kind = match name.as_str() {
+            "Vec" => CollectionKind::Sequence,
+            "Map" => CollectionKind::Map,
+            "Set" => CollectionKind::Set,
+            _ => return None,
+        };
+        let parts: Vec<Type> = args
+            .iter()
+            .filter_map(|a| match a {
+                GenericArg::Type(t) => Some((**t).clone()),
+                _ => None,
+            })
+            .collect();
+        let arity = if kind == CollectionKind::Map { 2 } else { 1 };
+        if parts.len() != arity {
+            return None;
+        }
+        Some(Collection { kind, parts })
+    }
+
+    /// `Some(true)`: the collection has `interface` when all its parts do.
+    /// `Some(false)`: never. `None`: not a contract interface.
+    ///
+    /// type.generics: `Vec` is Equal, Hashable and Cloneable through `T`
+    /// (EQ4, HA3b, CL1) and has no order (CO1). `Map` and `Set` are Equal and
+    /// Cloneable through their parts (EQ4a, CL1) and neither hash nor order.
+    pub(crate) fn contract(&self, interface: &str) -> Option<bool> {
+        match interface {
+            "Equal" | "Cloneable" => Some(true),
+            "Hashable" => Some(self.kind == CollectionKind::Sequence),
+            "Comparable" => Some(false),
+            _ => None,
+        }
+    }
+}
+
 /// Checks structural interface satisfaction.
 pub struct InterfaceChecker<'a> {
     /// The type table containing all type definitions.
@@ -191,16 +265,6 @@ impl<'a> InterfaceChecker<'a> {
             || builtin_interface_methods(&name).is_some()
     }
 
-    /// A `Vec`, in either spelling, or a fixed array.
-    fn is_sequence(&self, ty: &Type) -> bool {
-        match ty {
-            Type::Array { .. } => true,
-            Type::Generic { base, .. } => self.types.type_name(*base) == "Vec",
-            Type::UnresolvedGeneric { name, .. } => name == "Vec",
-            _ => false,
-        }
-    }
-
     /// Check if a type satisfies an interface bound.
     pub fn check_satisfies(
         &mut self,
@@ -287,17 +351,23 @@ impl<'a> InterfaceChecker<'a> {
         // ever get a conformance this way — and it had none, so `Map<(i64, i64),
         // V>` failed the moment the Map key bound became a real check (#812).
         //
-        // A fixed array is the same argument with one element type, and so is
-        // a `Vec`: equal when its elements are, hashed element by element.
-        // type.generics/CO1: a sequence has no order, whatever its elements
-        // have. `Vec` and a fixed array are Equal, Hashable and Cloneable
-        // through their elements (below) and never Comparable (#1491).
-        if base_interface == "Comparable" && self.is_sequence(ty) {
-            return Err(InterfaceError::NotSatisfied {
-                ty: self.type_name(ty),
-                interface_name: interface_name.clone(),
-                span,
-            });
+        // A builtin collection is the same argument over its type arguments,
+        // limited to the interfaces `Collection::contract` gives it.
+        if let Some(c) = Collection::of(self.types, ty) {
+            if let Some(through_parts) = c.contract(base_interface) {
+                let ok = through_parts
+                    && c.parts.iter().all(|e| {
+                        self.check_satisfies(e, &TypeExpr::named(base_interface), span).is_ok()
+                    });
+                if ok {
+                    return Ok(());
+                }
+                return Err(InterfaceError::NotSatisfied {
+                    ty: self.type_name(ty),
+                    interface_name: interface_name.clone(),
+                    span,
+                });
+            }
         }
 
         if matches!(base_interface, "Equal" | "Hashable" | "Cloneable") {
@@ -309,15 +379,6 @@ impl<'a> InterfaceChecker<'a> {
                 // field of this type. Order is not on this list.
                 Type::Result { ok, err } if **err == Type::None => Some(vec![(**ok).clone()]),
                 Type::Result { ok, err } => Some(vec![(**ok).clone(), (**err).clone()]),
-                Type::Array { elem, .. } => Some(vec![(**elem).clone()]),
-                Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. }
-                    if self.is_sequence(ty) =>
-                {
-                    match args.first() {
-                        Some(crate::types::GenericArg::Type(elem)) => Some(vec![(**elem).clone()]),
-                        _ => None,
-                    }
-                }
                 _ => None,
             };
             if let Some(elems) = elems {

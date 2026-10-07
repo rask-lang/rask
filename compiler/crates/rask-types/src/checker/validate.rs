@@ -100,14 +100,18 @@ impl TypeChecker {
             let ty = self.resolve_named(&self.ctx.apply(&var));
             // Only check concrete, registered types — skip vars, errors, and
             // bare type parameters (unresolved names with no registered type).
-            // A `Vec` still in its written spelling is checked for the four
-            // contract interfaces, which `check_satisfies` answers from the
-            // element type alone. Skipped, `T: Comparable` took a `Vec` and
-            // `vv.sort()` ran on a `Vec<Vec<T>>`, which has no order (#1491).
-            let written_vec = matches!(&ty, Type::UnresolvedGeneric { name, .. } if name == "Vec");
+            // A `Vec`, `Map` or `Set` still in its written spelling is checked
+            // for the four contract interfaces, which `check_satisfies` answers
+            // from the type arguments alone. Skipped, `T: Comparable` took a
+            // `Vec` or a `Map` and `vv.sort()` ran on a `Vec<Vec<T>>`, which
+            // has no order (#1491, #1495).
+            let written_collection = match &ty {
+                Type::UnresolvedGeneric { .. } => crate::interfaces::Collection::of(&self.types, &ty),
+                _ => None,
+            };
             match &ty {
                 Type::Var(_) | Type::Error => continue,
-                Type::UnresolvedGeneric { .. } if written_vec => {}
+                Type::UnresolvedGeneric { .. } if written_collection.is_some() => {}
                 Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => continue,
                 _ => {}
             }
@@ -143,10 +147,10 @@ impl TypeChecker {
                 interfaces
                     .into_iter()
                     .filter(|t| checker.names_an_interface(t))
-                    .filter(|t| !written_vec || matches!(
-                        self.types.interface_name(t).as_str(),
-                        "Equal" | "Hashable" | "Cloneable" | "Comparable"
-                    ))
+                    .filter(|t| match &written_collection {
+                        Some(c) => c.contract(&self.types.interface_name(t)).is_some(),
+                        None => true,
+                    })
                     .collect()
             };
             let bound = crate::interfaces::InterfaceBound::new("_", interfaces);
@@ -547,28 +551,30 @@ impl TypeChecker {
         interface_name: String,
         span: Span,
     ) -> TypeError {
-        // A sequence's missing order has its own message: the generic one
+        // A collection's missing order has its own message: the generic one
         // offers `Vec<i64> implements Comparable`, which XC1 forbids and CO1
         // says has no right answer anyway.
-        let sequence = match ty {
-            Type::Array { .. } => true,
-            Type::UnresolvedGeneric { name, .. } => name == "Vec",
-            Type::Generic { base, .. } => self.types.type_name(*base) == "Vec",
-            _ => false,
-        };
-        if sequence && interface_name == "Comparable" {
-            return TypeError::SequenceNotOrderable {
-                op: "Comparable".to_string(),
-                recv: ty_name,
-                span,
-            };
+        if interface_name == "Comparable" {
+            if let Some(c) = crate::interfaces::Collection::of(&self.types, ty) {
+                return TypeError::CollectionNotOrderable {
+                    op: "Comparable".to_string(),
+                    recv: ty_name,
+                    noun: c.kind.noun().to_string(),
+                    span,
+                };
+            }
         }
         if interface_name != "Encode" && interface_name != "Decode" {
             let context = if matches!(interface_name.as_str(), "Numeric" | "Integer" | "Float") {
                 super::InterfaceBoundContext::NumericBound
             } else if interface_name == "Copy" {
                 super::InterfaceBoundContext::CopyBound
-            } else if matches!(ty, Type::Named(_) | Type::Generic { .. }) {
+            } else if matches!(ty, Type::Named(_) | Type::Generic { .. })
+                // `Set<T>` is a struct, but its contract interfaces are the
+                // stdlib's to declare (XC1): "declare the conformance" would
+                // be advice the compiler then rejects.
+                && crate::interfaces::Collection::of(&self.types, ty).is_none()
+            {
                 super::InterfaceBoundContext::GenericBound
             } else {
                 super::InterfaceBoundContext::BuiltinTypeBound

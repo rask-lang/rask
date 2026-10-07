@@ -596,6 +596,27 @@ extend Map<K, V> {
     public func values(self) -> Iterator<V> {}
 }
 
+// Two maps are equal when they hold the same keys with equal values (EQ4a).
+// Insertion order doesn't count: a map has none to promise. The keys are
+// already Equal, since a map finds them by `eq` (HA3c).
+extend Map<K, V> where V: Equal {
+    public func eq(self, other: Map<K, V>) -> bool {
+        if self.len() != other.len() {
+            return false
+        }
+        for (key, value) in self {
+            if other.get(key)? as theirs {
+                if theirs != value {
+                    return false
+                }
+            } else {
+                return false
+            }
+        }
+        return true
+    }
+}
+
 // The copying read, for the same reason `Vec.get_clone` exists: `get` lends the
 // value for the expression, and past the 16-byte threshold that isn't enough.
 extend Map<K, V> where V: Cloneable {
@@ -750,5 +771,17 @@ extend Set<T> {
     /// Named for what it builds, not for what you do with it (SEQ31).
     public func to_vec(self) -> Vec<T> {
         return self.entries.keys().to_vec()
+    }
+
+    /// Clone the set.
+    public func clone(self) -> Set<T> {
+        return Set { entries: self.entries.clone() }
+    }
+}
+
+// Two sets are equal when they hold the same values, in any order (EQ4a).
+extend Set<T> where T: Equal {
+    public func eq(self, other: Set<T>) -> bool {
+        return self.entries == other.entries
     }
 }

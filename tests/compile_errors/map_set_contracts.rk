@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A `Map` or `Set` is Equal and Cloneable through its parts and nothing more
+// (type.generics/EQ4a, #1495). It has no order (E0414) and no hash (E0333).
+//
+// Bounds used to skip a `Map` entirely, so `T: Comparable` took one and
+// `vs.sort()` ran on a `Vec<Map<K, V>>` that has no order to sort by.
+
+func biggest<T: Comparable>(a: T, b: T) -> T {
+    if a < b {
+        return b
+    }
+    return a
+}
+
+func key_of<T: Hashable>(a: T) -> u64 {
+    return a.hash()
+}
+
+func same<T: Equal>(a: T, b: T) -> bool {
+    return a == b
+}
+
+func maps(a: Map<string, i64>, b: Map<string, i64>) {
+    let _lt = a < b               // ERROR: E0414 — a map has no order
+    let _hi = biggest(a, b)       // ERROR: E0414 — T: Comparable takes no Map
+    let _h = key_of(a)            // ERROR: E0333 — a map has no hash
+    let _eq = a == b              // fine: same keys, equal values (EQ4a)
+    let _also = same(a, b)        // fine: T: Equal takes a Map
+}
+
+func sets(a: Set<string>, b: Set<string>) {
+    let _lt = a < b               // ERROR: E0414 — a set has no order
+    let _hi = biggest(a, b)       // ERROR: E0414 — T: Comparable takes no Set
+    let _h = key_of(a)            // ERROR: E0333 — a set has no hash
+    let _eq = a == b              // fine: same values (EQ4a)
+}
+
+func sort_maps(mutate ms: Vec<Map<string, i64>>) {
+    ms.sort()                     // ERROR: E0414 — sort needs an element order
+    ms.sort_by_key(|m| m.len())   // fine: the key is an order you named
+}
+
+func main() {
+    println("does not compile")
+}

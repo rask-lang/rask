@@ -1587,13 +1587,13 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("a link is the address of its node [mem.racks/RK2], so `<` answers from wherever the allocator put the chunk. Padding the heap before the rack is built changes the result, which makes a sorted walk over links unreproducible [determinism/D11]. Two nodes have no order to define — only identity, which is what `==` compares [mem.racks/RK11]")
             }
 
-            SequenceNotOrderable { op, recv, span } => {
-                Diagnostic::error(format!("`{}` on `{}`: a sequence has no order", op, recv))
+            CollectionNotOrderable { op, recv, noun, span } => {
+                Diagnostic::error(format!("`{}` on `{}`: {} has no order", op, recv, noun))
                     .with_code("E0414")
-                    .with_primary(*span, "vectors and arrays compare for equality only")
+                    .with_primary(*span, "vectors, arrays, maps and sets compare for equality only")
                     .with_help("say which order you mean: by length, by one element, or by a key")
                     .with_fix("`a.len() < b.len()`, `a[0] < b[0]`, or `rows.sort_by_key(|r| r[0])`")
-                    .with_why("`Vec<T>` is `Equal` and `Hashable` when `T` is [type.generics/EQ4, HA3b], but not `Comparable` [CO1]. Shorter-first, element-by-element and sum-first are all reasonable orders for a sequence, and none of them is the obvious one, so there is no `<` to guess at. A fixed array shares `Vec`'s methods and its answer")
+                    .with_why("`Vec<T>` is `Equal` and `Hashable` when `T` is [type.generics/EQ4, HA3b], and `Map`/`Set` are `Equal` when their contents are [EQ4a], but none is `Comparable` [CO1]. Shorter-first, element-by-element and sum-first are all reasonable orders for a collection, and none of them is the obvious one, so there is no `<` to guess at. A fixed array shares `Vec`'s methods and its answer")
             }
 
             TakeSelfThroughLink { method, node, span } => {
@@ -2265,7 +2265,7 @@ impl ToDiagnostic for rask_types::TypeError {
                             format!("pass a type that implements `{}`", interface_name)
                         };
                         d.with_fix(fix)
-                            .with_why("a primitive, an optional, a result or a tuple has the conformances the language gives it and no others — there is no block to declare one in. `T?` and `T or E` in particular have operators but no methods [std.api/SD4]")
+                            .with_why("a primitive, a stdlib collection, an optional, a result or a tuple has the conformances the language gives it and no others — there is no block a program may declare one in [type.generics/XC1]. `T?` and `T or E` in particular have operators but no methods [std.api/SD4]")
                     }
                     Ctx::ConformanceHeader => d
                         .with_fix(match missing {

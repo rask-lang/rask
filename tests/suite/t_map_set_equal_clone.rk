@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `Map` and `Set` are Equal and Cloneable through their parts
+// (type.generics/EQ4a, #1495), and the two hold through a generic bound as
+// well as written directly.
+//
+// Map `==` used to fail at run time on the interpreter ("no method `eq` on
+// type `Map`") and compare handles natively, and a `Set` had no `eq` or
+// `clone` at all. `Set.new()` with its type only on the binding also built a
+// map that hashed a string key as a pointer natively, so a set of long strings
+// lost its members.
+
+func same<T: Equal>(a: T, b: T) -> bool {
+    return a == b
+}
+
+func copy_of<T: Cloneable>(a: T) -> T {
+    return a.clone()
+}
+
+test "maps with the same entries are equal in any insertion order" {
+    mut a: Map<string, i64> = Map.new()
+    mut b: Map<string, i64> = Map.new()
+    a.insert("one", 1)
+    a.insert("two", 2)
+    b.insert("two", 2)
+    b.insert("one", 1)
+    assert a == b
+    assert same(a, b)
+    b.insert("one", 3)
+    assert a != b
+    assert !same(a, b)
+}
+
+test "maps with different keys or sizes differ" {
+    mut a: Map<string, i64> = Map.new()
+    mut b: Map<string, i64> = Map.new()
+    a.insert("one", 1)
+    b.insert("uno", 1)
+    assert a != b
+    b.insert("one", 1)
+    assert a != b
+}
+
+test "a cloned map is equal and independent" {
+    mut a: Map<string, string> = Map.new()
+    a.insert("greeting-that-is-longer-than-inline", "hello there, a long value")
+    mut c = copy_of(a)
+    assert c == a
+    c.insert("extra", "x")
+    assert c != a
+    assert a.len() == 1
+}
+
+test "sets with the same values are equal in any insertion order" {
+    mut s: Set<string> = Set.new()
+    mut t: Set<string> = Set.new()
+    let stem = "a-value-long-enough-to-live-on-the-heap"
+    s.insert("{stem}-1")
+    s.insert("{stem}-2")
+    t.insert("a-value-long-enough-to-live-on-the-heap-2")
+    t.insert("a-value-long-enough-to-live-on-the-heap-1")
+    assert s.contains("a-value-long-enough-to-live-on-the-heap-1")
+    assert s == t
+    assert same(s, t)
+    t.insert("{stem}-3")
+    assert s != t
+}
+
+test "a cloned set is equal and independent" {
+    mut s: Set<i64> = Set.new()
+    s.insert(1)
+    s.insert(2)
+    mut c = copy_of(s)
+    assert c == s
+    c.insert(3)
+    assert c != s
+    assert s.len() == 2
+}
