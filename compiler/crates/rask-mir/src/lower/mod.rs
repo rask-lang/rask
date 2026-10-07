@@ -1660,8 +1660,11 @@ pub struct MirLowerer<'a> {
     /// When set, `return expr` inside an inlined closure body assigns to the
     /// target local and jumps to the continuation block instead of emitting
     /// MirTerminator::Return.  Used by fold/reduce/etc. The third part is
-    /// `pending_write_backs` depth when the body started.
-    inline_return_target: Option<(LocalId, BlockId, usize)>,
+    /// `pending_write_backs` depth when the body started. The fourth is the
+    /// enclosing function's return type when the body is a `for` over a
+    /// sequence: its `return` answers for that function, so the value is
+    /// shaped for that function's return type before it is stored.
+    inline_return_target: Option<(LocalId, BlockId, usize, Option<MirType>)>,
     /// The type a `return` inside the inlined body stored, when one fired.
     ///
     /// Doubles as "the body already stored its result and terminated". Without
@@ -1992,6 +1995,52 @@ impl<'a> MirLowerer<'a> {
             value: stored,
             store_size: None,
         }));
+    }
+
+    /// `val` as the error side of `result_ty`, when it is that `T or E`'s `E`
+    /// (or, already wrapped, its union): tag 1, no origin, the error as
+    /// payload. `None` when it isn't the error side.
+    ///
+    /// What a function's exit does for `return e` (codegen's `exit_value`),
+    /// for a `return` whose value is stored before it leaves.
+    pub(super) fn wrap_err_branch(
+        &mut self,
+        val: &MirOperand,
+        val_ty: &MirType,
+        result_ty: &MirType,
+    ) -> Option<MirOperand> {
+        let MirType::Result { err, .. } = result_ty else { return None };
+        let is_err = **err == *val_ty
+            || (matches!(**err, MirType::Union(_)) && self.union_member_index(err, val_ty).is_some());
+        if !is_err {
+            return None;
+        }
+        let err_ty = (**err).clone();
+        let slot = self.builder.alloc_temp(result_ty.clone());
+        for (offset, word) in [
+            (crate::types::RESULT_TAG_OFFSET, 1),
+            (crate::types::RESULT_ORIGIN_FILE_OFFSET, 0),
+            (crate::types::RESULT_ORIGIN_LINE_OFFSET, 0),
+        ] {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                addr: slot,
+                offset,
+                value: MirOperand::Constant(MirConst::Int(word)),
+                store_size: Some(8),
+            }));
+        }
+        let (payload, size) = if err_ty.passed_by_address() {
+            (val.clone(), self.aggregate_alloc_size(&err_ty))
+        } else {
+            (self.widen_scalar_payload(val.clone(), &err_ty), 8)
+        };
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: slot,
+            offset: crate::types::RESULT_PAYLOAD_OFFSET,
+            value: payload,
+            store_size: Some(size),
+        }));
+        Some(MirOperand::Local(slot))
     }
 
     /// Byte size to copy for an aggregate const, rounded up to whole words.

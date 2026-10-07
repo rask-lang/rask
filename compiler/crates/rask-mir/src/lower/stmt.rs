@@ -491,18 +491,32 @@ impl<'a> MirLowerer<'a> {
                     // `func -> T? or E { return t }` needs two (ER9). Returned
                     // unwrapped, the caller reads the value's first word as the
                     // tag (#274, #383).
-                    let ret_ty = self.builder.ret_ty().clone();
+                    //
+                    // In a `for` over a sequence the body is the yield closure,
+                    // whose own return type is `bool`; the `return` is the
+                    // enclosing function's, so that function's type decides.
+                    let seq_ret = self.inline_return_target.as_ref().and_then(|t| t.3.clone());
+                    let ret_ty = seq_ret.clone().unwrap_or_else(|| self.builder.ret_ty().clone());
                     let final_op = self.coerce_into_wrapper(
                         rask_ast::coercion::CoercionSite::Return,
                         op, &op_ty, &ret_ty,
                     );
+                    // A function's own `return e` leaves the error side for
+                    // its exit to build. This one is stored in a slot of the
+                    // whole `T or E`, so it's built here: unbuilt, the slot
+                    // held the bare error and the caller read it as a success
+                    // (#1325).
+                    let final_op = match &seq_ret {
+                        Some(ret_ty) => self.wrap_err_branch(&final_op, &op_ty, ret_ty).unwrap_or(final_op),
+                        None => final_op,
+                    };
                     Some(final_op)
                 } else {
                     None
                 };
                 // Inside an inlined closure (e.g. fold callback), redirect
                 // return to an assignment + goto instead of a real return.
-                if let Some((dst_local, cont_block, writeback_depth)) = self.inline_return_target {
+                if let Some((dst_local, cont_block, writeback_depth, seq_ret)) = self.inline_return_target.clone() {
                     if let Some(val) = value {
                         // `return x` from a function that answers `T?` hands
                         // back a bare payload, and the slot it lands in is the
@@ -512,7 +526,9 @@ impl<'a> MirLowerer<'a> {
                         // 4 through `??` (which reads the payload it was
                         // written into) and `== 4` was false (which reads the
                         // tag it never got).
-                        let place_ty = self.builder.local_type(dst_local);
+                        // Already shaped above when the return is a sequence
+                        // loop's enclosing function's.
+                        let place_ty = self.builder.local_type(dst_local).filter(|_| seq_ret.is_none());
                         let (val, _) = match &place_ty {
                             Some(pt) => {
                                 let val_ty = returned_ty.clone().unwrap_or(MirType::Void);

@@ -717,7 +717,7 @@ impl<'a> MirLowerer<'a> {
             // the capture pointer — `transform::addr_taken` rewrites it.
             self.inline_return_target = inner_value
                 .or(inner_flag)
-                .map(|dst| (dst, nonlocal_block, 0));
+                .map(|dst| (dst, nonlocal_block, 0, Some(outer_ret.clone())));
 
             // `for (k, v) in seq` — read the names off the item, the same way
             // the index loop reads them off a Map entry. Has to happen with the
