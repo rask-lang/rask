@@ -1257,6 +1257,9 @@ fn container_facts(
         terminator_reads: Vec::new(),
         foreign: func.params.iter().map(|p| p.id).filter(|p| is(p)).collect(),
     };
+    // The first name each wrapper's payload was read into. See the `Field`
+    // arm below.
+    let mut first_read: HashMap<(LocalId, u32), LocalId> = HashMap::new();
     for block in &func.blocks {
         let mut events = Vec::new();
         let mut reads = Vec::new();
@@ -1351,6 +1354,22 @@ fn container_facts(
                         | MirRValue::Deref(MirOperand::Local(base)),
                 } if lent.refs.contains(base) && is(dst) => {
                     ev.push(Event::View { dst: *dst, base: *base });
+                }
+                // A second read of a payload already read out is the same
+                // container under another name. `let files = r is Vec<T> as f
+                // else { … }` reads the result's payload once for `f` and once
+                // for `files`, and each read was freed (#1494). Keyed by the
+                // field as well as the base: two fields are two containers.
+                MirStmtKind::Assign {
+                    dst,
+                    rvalue: MirRValue::Field { base: MirOperand::Local(base), field_index, .. },
+                } if is(dst) && made_here.contains(dst) => {
+                    match first_read.get(&(*base, *field_index)) {
+                        Some(first) => ev.push(Event::Alias { dst: *dst, src: *first }),
+                        None => {
+                            first_read.insert((*base, *field_index), *dst);
+                        }
+                    }
                 }
                 MirStmtKind::ClosureCreate { captures, .. } => {
                     for cap in captures {
