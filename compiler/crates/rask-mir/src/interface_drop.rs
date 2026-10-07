@@ -592,6 +592,7 @@ fn box_facts(
         kills: Vec::new(),
         terminator_reads: Vec::new(),
         foreign: func.params.iter().map(|p| p.id).filter(|p| tracked.contains(p)).collect(),
+        owned: Vec::new(),
     };
     for block in &func.blocks {
         let (mut events, mut reads, mut kills) = (Vec::new(), Vec::new(), Vec::new());

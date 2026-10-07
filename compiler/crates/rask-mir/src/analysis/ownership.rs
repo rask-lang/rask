@@ -97,6 +97,12 @@ pub enum Event {
     /// `dst` also reaches into whatever `base` holds, on top of what it
     /// reached already: a scratch slot filled field by field.
     ViewAlso { dst: LocalId, base: LocalId },
+    /// `dst` holds a new value, ours exactly when what `src` held was ours
+    /// here, and `src` is handed over either way. A call that gives back
+    /// either the container it took or one it built in its place: the caller
+    /// owns what comes back if it owned what went in. It may not be the same
+    /// container as `src`, so it can't be an `Alias`.
+    Remake { dst: LocalId, src: LocalId },
     /// The name now holds something untracked.
     Other(LocalId),
     /// Whatever the name holds leaves the frame here, on this path.
@@ -121,6 +127,7 @@ impl Event {
             | Event::Fill(n)
             | Event::WriteThrough(n) => *n,
             Event::Alias { dst, .. }
+            | Event::Remake { dst, .. }
             | Event::Part { dst, .. }
             | Event::View { dst, .. }
             | Event::ViewAlso { dst, .. } => *dst,
@@ -143,6 +150,8 @@ pub struct Facts {
     pub terminator_reads: Vec<Vec<LocalId>>,
     /// Names holding something that isn't ours on entry: the parameters.
     pub foreign: Vec<LocalId>,
+    /// Parameters that are ours on entry, because the caller gave them up.
+    pub owned: Vec<LocalId>,
 }
 
 /// A release to insert, under `name`. `made` is the name the value was made
@@ -398,18 +407,21 @@ fn apply(
                 let cur = st.bind.entry(*dst).or_default();
                 cur.extend(seen);
             }
+            Event::Remake { dst, src } => {
+                let held = st.binds(*src);
+                let ours = !held.is_empty()
+                    && held.iter().all(|b| matches!(b, Bind::Own(v) | Bind::Part(v) if st.owned(*v)));
+                hand_over(st, *src);
+                if ours {
+                    make(st, *dst, bi, si);
+                } else {
+                    st.bind.insert(*dst, BTreeSet::from([Bind::Other]));
+                }
+            }
             Event::Other(n) => {
                 st.bind.insert(*n, BTreeSet::from([Bind::Other]));
             }
-            Event::HandOver(n) => {
-                for b in st.binds(*n) {
-                    if let Bind::Own(v) | Bind::Part(v) = b {
-                        if st.own.contains_key(&v) {
-                            st.own.insert(v, false);
-                        }
-                    }
-                }
-            }
+            Event::HandOver(n) => hand_over(st, *n),
             Event::Fill(n) => {
                 let held = st.binds(*n);
                 let only = (held.len() == 1).then(|| *held.iter().next().unwrap());
@@ -452,6 +464,16 @@ fn written_through(st: &mut State, n: LocalId) {
         for (m, set) in st.bind.iter_mut() {
             if *m != n && set.remove(&Bind::Own(v)) {
                 set.insert(Bind::View(v));
+            }
+        }
+    }
+}
+
+fn hand_over(st: &mut State, n: LocalId) {
+    for b in st.binds(n) {
+        if let Bind::Own(v) | Bind::Part(v) = b {
+            if st.own.contains_key(&v) {
+                st.own.insert(v, false);
             }
         }
     }
@@ -615,6 +637,12 @@ fn entry_state(facts: &Facts) -> State {
     let mut st = State::default();
     for n in &facts.foreign {
         st.bind.insert(*n, BTreeSet::from([Bind::Other]));
+    }
+    // Made before the first statement. `u32::MAX` is a join's, so one short.
+    for n in &facts.owned {
+        let v = Value { block: 0, at: u32::MAX - 1, name: *n };
+        st.bind.insert(*n, BTreeSet::from([Bind::Own(v)]));
+        st.own.insert(v, true);
     }
     st
 }

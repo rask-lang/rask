@@ -3,6 +3,11 @@
 // container it passed in. Natively nobody freed it: the caller gave it up at
 // the call, and the callee hadn't built what it returned, so neither side
 // owned the result (#1502).
+//
+// Same when only some paths hand the argument back and the rest build a new
+// container: the caller owns what comes back either way, and the callee frees
+// the argument on the paths that drop it (#1504). The callees below loop a
+// little so the inliner leaves them as calls.
 
 func stash(take p: Vec<i64>) -> Vec<i64> {
     mut q = p
@@ -41,6 +46,89 @@ func names(take p: Vec<string>) -> Vec<string> {
     mut q = p
     q.push("c")
     return q
+}
+
+// The work every callee below does before deciding, so none is small enough
+// to inline away.
+func spin(n: i64) -> i64 {
+    mut acc = n
+    for i in 0..4 {
+        acc = acc * 3 + i
+        if acc > 1000 {
+            acc = acc / 7
+        }
+    }
+    return acc
+}
+
+func pick(take p: Vec<i64>, fresh: bool) -> Vec<i64> {
+    let k = spin(p.len().clamp<i64>())
+    if fresh {
+        mut q: Vec<i64> = Vec.new()
+        q.push(k)
+        return q
+    }
+    for i in 0..2 {
+        p.push(i)
+    }
+    return p
+}
+
+func pick_names(take p: Vec<string>, fresh: bool) -> Vec<string> {
+    let k = spin(p.len().clamp<i64>())
+    if fresh {
+        mut q: Vec<string> = Vec.new()
+        q.push("new {k}")
+        return q
+    }
+    for i in 0..2 {
+        p.push("old {i}")
+    }
+    return p
+}
+
+func grow_or_reset<T>(take p: Vec<T>, reset: bool) -> Vec<T> {
+    let k = spin(p.len().clamp<i64>())
+    if reset && k > 0 {
+        return Vec.new()
+    }
+    return p
+}
+
+func maybe_keep(take p: Vec<i64>, keep: bool) -> Vec<i64>? {
+    let k = spin(p.len().clamp<i64>())
+    if keep && k > 0 {
+        return p
+    }
+    if k == -1 {
+        return none
+    }
+    mut q: Vec<i64> = Vec.new()
+    q.push(k)
+    return q
+}
+
+func keep_or_refuse(take p: Vec<i64>, keep: bool) -> Vec<i64> or Refused {
+    let k = spin(p.len().clamp<i64>())
+    if keep {
+        return p
+    }
+    return Refused { why: "no {k}" }
+}
+
+struct Refused {
+    why: string
+}
+
+extend Refused {
+    func message(self) -> string {
+        return self.why
+    }
+}
+
+func pick_again(take p: Vec<i64>, fresh: bool) -> Vec<i64> {
+    let q = pick(p, fresh)
+    return pick(q, false)
 }
 
 test "direct call" {
@@ -91,6 +179,91 @@ test "strings inside" {
     let w = names(v)
     assert w.len() == 3
     assert w[2] == "c"
+}
+
+test "some paths hand the argument back, others build one" {
+    let a: Vec<i64> = [1, 2]
+    let fresh = pick(a, true)
+    assert fresh.len() == 1
+    let b: Vec<i64> = [1, 2]
+    let same = pick(b, false)
+    assert same.len() == 4
+    assert same[3] == 1
+    let s: Vec<string> = ["a"]
+    let t = pick_names(s, true)
+    assert t[0] == "new {spin(1)}"
+    let u: Vec<string> = ["a"]
+    let w = pick_names(u, false)
+    assert w.len() == 3
+    assert w[2] == "old 1"
+    assert pick_again([5], true).len() == 3
+    assert pick_again([5], false).len() == 5
+}
+
+test "mixed paths in a loop" {
+    mut total = 0
+    for i in 0..4 {
+        let v: Vec<i64> = [i, i]
+        let w = pick(v, i % 2 == 0)
+        total = total + w.len().clamp<i64>()
+    }
+    assert total == 10
+    mut acc: Vec<i64> = []
+    for i in 0..4 {
+        acc = pick(acc, i == 2)
+    }
+    assert acc.len() == 3
+}
+
+test "mixed paths, generic" {
+    let a: Vec<i64> = [1]
+    assert grow_or_reset(a, true).len() == 0
+    let b: Vec<i64> = [1, 2]
+    assert grow_or_reset(b, false)[1] == 2
+    let s: Vec<string> = ["x"]
+    assert grow_or_reset(s, true).len() == 0
+    let t: Vec<string> = ["x", "y"]
+    assert grow_or_reset(t, false)[1] == "y"
+}
+
+test "mixed paths through a function value" {
+    let f: func(take Vec<i64>, bool) -> Vec<i64> = pick
+    let a: Vec<i64> = [7]
+    assert f(a, true).len() == 1
+    let b: Vec<i64> = [7]
+    let w = f(b, false)
+    assert w.len() == 3
+    assert w[0] == 7
+}
+
+test "the argument handed back inside a wrapper" {
+    let a: Vec<i64> = [1, 2, 3]
+    let o = maybe_keep(a, true)
+    mut n = 0
+    if o? as x {
+        n = x.len().clamp<i64>()
+    }
+    assert n == 3
+    let b: Vec<i64> = [1, 2, 3]
+    let p = maybe_keep(b, false)
+    if p? as x {
+        n = x[0]
+    }
+    assert n == spin(3)
+    let c: Vec<i64> = [4, 5]
+    let r = keep_or_refuse(c, true)
+    if r is Vec<i64> as items {
+        assert items[1] == 5
+    } else {
+        assert false
+    }
+    let d: Vec<i64> = [4, 5]
+    let r2 = keep_or_refuse(d, false)
+    if r2 is Refused as why {
+        assert why.why == "no {spin(2)}"
+    } else {
+        assert false
+    }
 }
 
 func main() {}

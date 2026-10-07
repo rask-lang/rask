@@ -667,6 +667,7 @@ fn insert_aggregate_release(
         kills: Vec::new(),
         terminator_reads: Vec::new(),
         foreign: params.iter().copied().filter(|p| tracked.contains(p)).collect(),
+        owned: Vec::new(),
     };
 
     for block in &func.blocks {
