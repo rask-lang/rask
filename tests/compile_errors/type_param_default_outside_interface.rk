@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compile Error: only an interface's type parameters take defaults
+// (type.generics/GT4).
+//
+// `struct Sx<T = i64>` parsed, and nothing read the `= i64`: the struct was
+// checked as if it weren't there (#1486). A reader sees a default that does
+// nothing, so it's refused where it's written.
+
+// ERROR: a struct's type parameter `T` can't have a default
+struct Sx<T = i64> {
+    v: T,
+}
+
+// ERROR: an enum's type parameter `T` can't have a default
+enum Slot<T = i64> {
+    Full(T),
+    Empty,
+}
+
+// ERROR: a function's type parameter `T` can't have a default
+func same<T = i64>(x: T) -> T {
+    return x
+}
+
+// ERROR: a type alias's type parameter `T` can't have a default
+type alias Items<T = i64> = Vec<T>
+
+// An interface's may: `Scale` written bare means `Scale<Self>`.
+interface Scale<Rhs = Self> {
+    func scale(self, k: Rhs) -> Self
+}
+
+func main() {
+    let s = Sx { v: 1 }
+    println(s.v)
+}

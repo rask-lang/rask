@@ -2714,6 +2714,18 @@ fn error_type_absorbs_follow_on_errors() {
     assert_eq!(out.matches("error[").count(), 3, "{out}");
 }
 
+/// #1486: a default on anything but an interface's parameter was parsed and
+/// ignored.
+#[test]
+fn error_type_param_default_outside_interface() {
+    let (failed, out) = compile_error_output("type_param_default_outside_interface.rk");
+    assert!(failed, "{out}");
+    for owner in ["a struct's", "an enum's", "a function's", "a type alias's"] {
+        assert!(out.contains(&format!("{owner} type parameter `T` can't have a default")), "{owner}:\n{out}");
+    }
+    assert_eq!(out.matches("error[").count(), 4, "{out}");
+}
+
 #[test]
 fn error_single_letter_type_name() {
     assert!(compile_error("single_letter_type_name.rk"), "should reject single-letter concrete type names (PC3)");

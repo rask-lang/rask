@@ -191,7 +191,7 @@ impl Parser {
                     }
                 }
                 TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
-                TokenKind::Interface | TokenKind::Extend | TokenKind::Import |
+                TokenKind::Interface | TokenKind::Extend | TokenKind::Import | TokenKind::Type |
                 TokenKind::Extern | TokenKind::Public | TokenKind::Private | TokenKind::Package if brace_depth == 0 => {
                     return;
                 }
@@ -537,7 +537,7 @@ impl Parser {
                     let is_conformance = self.at_conformance_header();
                     if is_annotation_decl || is_conformance || matches!(self.current_kind(),
                         TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
-                        TokenKind::Union | TokenKind::Interface | TokenKind::Extend |
+                        TokenKind::Union | TokenKind::Interface | TokenKind::Extend | TokenKind::Type |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
                         TokenKind::Test | TokenKind::Benchmark | TokenKind::Package |
                         TokenKind::Public | TokenKind::Private
@@ -947,7 +947,7 @@ impl Parser {
         let name = self.expect_ident_or_keyword()?;
 
         let mut type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Function)?;
             params
         } else {
             vec![]
@@ -1458,9 +1458,9 @@ impl Parser {
         base
     }
 
-    /// Parse type parameters like `<T, comptime N: usize>`.
-    /// Returns (type_params, name_suffix) where name_suffix is the string representation for display.
-    fn parse_type_params(&mut self) -> Result<Vec<TypeParam>, ParseError> {
+    /// Parse type parameters like `<T, comptime N: usize>`. `owner` is what
+    /// declares them, which decides whether a parameter may carry a default.
+    fn parse_type_params(&mut self, owner: ParamOwner) -> Result<Vec<TypeParam>, ParseError> {
         let mut type_params = Vec::new();
 
         loop {
@@ -1487,8 +1487,28 @@ impl Parser {
                 }
 
                 // GT4: `<Rhs = Self>` — the meaning of the bare interface name.
+                // Nothing else reads a default, so anywhere else it would be
+                // dropped without a word (#1486).
+                let eq_start = self.current().span.start;
                 let default = if self.match_token(&TokenKind::Eq) {
-                    Some(self.parse_type_name()?)
+                    let ty = self.parse_type_name()?;
+                    if let Some(kind) = owner.refuses_defaults() {
+                        let span = self.span(eq_start, self.tokens[self.pos.saturating_sub(1)].span.end);
+                        return Err(ParseError {
+                            span,
+                            message: format!("{}'s type parameter `{}` can't have a default", kind, param_name),
+                            hint: Some(format!(
+                                "remove `= {}` and write the argument where the type is used",
+                                ty
+                            )),
+                            why: Some(
+                                "only an interface's parameters take defaults (`interface Mul<Rhs = Self>`); \
+                                 a type's or function's arguments are written or inferred at each use"
+                                    .to_string(),
+                            ),
+                        });
+                    }
+                    Some(ty)
                 } else {
                     None
                 };
@@ -1587,7 +1607,7 @@ impl Parser {
         let name = self.expect_ident()?;
 
         let type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Struct)?;
             params
         } else {
             vec![]
@@ -1778,7 +1798,7 @@ impl Parser {
         let name = self.expect_ident()?;
 
         let type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Enum)?;
             params
         } else {
             vec![]
@@ -1921,7 +1941,7 @@ impl Parser {
         // resolved to nothing and every conformance failed claiming a missing
         // method the block plainly had (#1164).
         let type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Interface)?;
             params
         } else {
             Vec::new()
@@ -2058,7 +2078,7 @@ impl Parser {
         let name = self.expect_ident()?;
 
         let mut type_params = if self.match_token(&TokenKind::Lt) {
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::Function)?;
             params
         } else {
             vec![]
@@ -2470,7 +2490,7 @@ impl Parser {
         let name = self.expect_ident()?;
         let type_params = if self.check(&TokenKind::Lt) {
             self.advance();
-            let params = self.parse_type_params()?;
+            let params = self.parse_type_params(ParamOwner::TypeAlias)?;
             params
         } else {
             Vec::new()
@@ -5969,6 +5989,29 @@ impl ParseResult {
     /// Returns true if parsing completed without errors.
     pub fn is_ok(&self) -> bool {
         self.errors.is_empty()
+    }
+}
+
+/// What declares a type parameter list.
+#[derive(Clone, Copy)]
+enum ParamOwner {
+    Interface,
+    Struct,
+    Enum,
+    Function,
+    TypeAlias,
+}
+
+impl ParamOwner {
+    /// GT4: defaults belong to interfaces. Anyone else's, named for the error.
+    fn refuses_defaults(self) -> Option<&'static str> {
+        match self {
+            ParamOwner::Interface => None,
+            ParamOwner::Struct => Some("a struct"),
+            ParamOwner::Enum => Some("an enum"),
+            ParamOwner::Function => Some("a function"),
+            ParamOwner::TypeAlias => Some("a type alias"),
+        }
     }
 }
 
