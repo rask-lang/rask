@@ -713,6 +713,10 @@ pub(crate) fn params_a_callee_keeps(
 ) -> HashMap<String, Vec<bool>> {
     let mut kept: HashMap<String, Vec<bool>> =
         fns.iter().map(|f| (f.name.clone(), vec![false; f.params.len()])).collect();
+    let consumed: HashMap<&str, HashSet<u32>> = fns
+        .iter()
+        .map(|f| (f.name.as_str(), captures_the_body_consumes(f)))
+        .collect();
 
     loop {
         let mut grew = false;
@@ -721,7 +725,7 @@ pub(crate) fn params_a_callee_keeps(
                 if kept.get(&func.name).is_some_and(|v| v[i]) {
                     continue;
                 }
-                if param_is_kept_by(func, param.id, &kept, targets, reach) {
+                if param_is_kept_by(func, param.id, &kept, &consumed, targets, reach) {
                     if let Some(v) = kept.get_mut(&func.name) {
                         v[i] = true;
                         grew = true;
@@ -825,6 +829,7 @@ fn param_is_kept_by(
     func: &MirFunction,
     param: LocalId,
     kept: &HashMap<String, Vec<bool>>,
+    consumed: &HashMap<&str, HashSet<u32>>,
     targets: &ClosureTargets,
     reach: &ClosureReach,
 ) -> bool {
@@ -870,6 +875,13 @@ fn param_is_kept_by(
     }
 
     let holds = |op: &MirOperand| matches!(op, MirOperand::Local(id) if names.contains(id));
+    // A closure this frame builds and frees itself holds the parameter only
+    // while the frame runs, so capturing it is a borrow. Its glue frees only
+    // what the frame made (`env_drop_glue`), never a parameter. Read as a keep,
+    // the caller stopped owning the argument and nobody freed it: an inlined
+    // `s.as_sequence()` on a borrowed `s` leaked the caller's vector, and
+    // `for v in s` over a `Set` parameter goes through exactly that.
+    let frees_last = crate::closures::closures_the_frame_frees_last(func);
 
     for block in &func.blocks {
         for stmt in &block.statements {
@@ -902,8 +914,14 @@ fn param_is_kept_by(
                         return true;
                     }
                 }
-                MirStmtKind::ClosureCreate { captures, .. } => {
-                    if captures.iter().any(|c| names.contains(&c.local_id)) {
+                MirStmtKind::ClosureCreate { dst, func_name, captures, .. } => {
+                    let body_consumes = |offset: u32| {
+                        consumed.get(func_name.as_str()).is_none_or(|offs| offs.contains(&offset))
+                    };
+                    if captures.iter().any(|c| {
+                        names.contains(&c.local_id)
+                            && (!frees_last.contains(dst) || body_consumes(c.offset))
+                    }) {
                         return true;
                     }
                 }
