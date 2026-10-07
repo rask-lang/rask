@@ -1579,6 +1579,36 @@ fn insert_for_function(
     }
 }
 
+/// Stack closures that copied one of the frame's containers into their
+/// environment, and the names they are copied into.
+///
+/// Lowering carries a closure's captures by value when the closure looks like
+/// it leaves its frame, and `closures::decide_allocation` puts the environment
+/// back on the stack once inlining shows it doesn't: `consume(f)` with
+/// `consume` inlined calls `f` right there. The container is still the frame's
+/// then, and reading the capture as a hand-over gave it to an environment that
+/// frees nothing.
+fn stack_environments(
+    func: &MirFunction,
+    tracked: &HashMap<LocalId, &'static str>,
+) -> HashSet<LocalId> {
+    let mut envs: HashMap<LocalId, &'static str> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ClosureCreate { dst, captures, heap: false, .. }
+                if captures.iter().any(|c| !c.by_ref && tracked.contains_key(&c.local_id)) =>
+            {
+                Some((*dst, ""))
+            }
+            _ => None,
+        })
+        .collect();
+    follow_copies(func, &mut envs);
+    envs.into_keys().collect()
+}
+
 /// What each statement does to the containers this frame may hold.
 ///
 /// Given away: returned, stored, captured, boxed, handed to a call that keeps
@@ -1601,8 +1631,11 @@ fn container_facts(
 ) -> crate::analysis::ownership::Facts {
     use crate::analysis::ownership::Event;
     use crate::analysis::uses;
-    let names: std::collections::BTreeSet<LocalId> = tracked.keys().copied().collect();
+    let envs = stack_environments(func, tracked);
+    let names: std::collections::BTreeSet<LocalId> =
+        tracked.keys().chain(envs.iter()).copied().collect();
     let is = |l: &LocalId| tracked.contains_key(l);
+    let env = |l: &LocalId| envs.contains(l);
     let mut facts = crate::analysis::ownership::Facts {
         names: names.clone(),
         events: Vec::new(),
@@ -1751,12 +1784,28 @@ fn container_facts(
                         }
                     }
                 }
+                // A stack environment holds the frame's own container: it dies
+                // with the frame, so nothing else will free what is in it. It
+                // reaches into the container for as long as the closure is
+                // used.
+                MirStmtKind::ClosureCreate { dst, captures, heap: false, .. } if env(dst) => {
+                    for cap in captures.iter().filter(|c| is(&c.local_id)) {
+                        ev.push(if cap.by_ref {
+                            Event::HandOver(cap.local_id)
+                        } else {
+                            Event::View { dst: *dst, base: cap.local_id }
+                        });
+                    }
+                }
                 MirStmtKind::ClosureCreate { captures, .. } => {
                     for cap in captures {
                         if is(&cap.local_id) {
                             ev.push(Event::HandOver(cap.local_id));
                         }
                     }
+                }
+                MirStmtKind::Assign { dst, rvalue: MirRValue::Use(MirOperand::Local(src)) } if env(dst) => {
+                    ev.push(if env(src) { Event::Alias { dst: *dst, src: *src } } else { Event::Other(*dst) });
                 }
                 MirStmtKind::EnsureHookRegister { captures, .. } => {
                     for cap in captures {

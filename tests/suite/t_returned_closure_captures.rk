@@ -123,6 +123,28 @@ func hands_it_to_a_take() -> i64 {
     return consume(f)
 }
 
+struct Bag {
+    name: string
+    items: Vec<string>
+}
+
+func heap(s: string) -> string {
+    return "{s}, long enough to live on the heap"
+}
+
+// Lowering carries these captures because `f` is handed to a `take`
+// parameter, and inlining `consume` then shows the closure never leaves, so
+// its environment goes back on the stack. What it carried is still this
+// frame's to free, after the call: the frame used to count it as given to an
+// environment that frees nothing.
+func hands_containers_to_a_take() -> i64 {
+    let tags: Vec<string> = [heap("a"), heap("b")]
+    let s = heap("s")
+    let b = Bag { name: heap("bag"), items: [heap("i")] }
+    let f = |x| x + tags.len().wrap<i64>() + s.len().wrap<i64>() + b.items.len().wrap<i64>() + b.name.len().wrap<i64>()
+    return consume(f)
+}
+
 test "mem.closures/CM1 — a returned closure carries the local it captured" {
     let f = returns_over_a_local()
     assert f(1) == 4
@@ -136,4 +158,10 @@ test "mem.closures/CM1 — a take parameter is the frame's, so it travels too" {
 
 test "mem.closures/CM1 — handed to a take parameter, the capture came along" {
     assert hands_it_to_a_take() == 4
+}
+
+test "mem.closures/CM1 — a Vec, a string and a struct handed along the same way" {
+    for _ in 0..3 {
+        assert hands_containers_to_a_take() == 1 + 2 + 34 + 1 + 36
+    }
 }
