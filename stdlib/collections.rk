@@ -181,32 +181,41 @@ extend Vec<T> {
     /// Remove elements where f returns true, return count removed. No `retain`
     /// — invert the predicate on this instead.
     ///
-    /// Order-preserving, so a removal shifts what follows it: O(n·m) for m
-    /// removals. `take_where` is this plus the elements.
+    /// One pass, in place: each survivor is swapped down to the next free slot,
+    /// which keeps survivors in order and gathers the removed ones at the end,
+    /// where `pop` releases each exactly once.
     public func remove_where(mutate self, f: func(T) -> bool) -> usize {
-        mut dropped: usize = 0
+        let n = self.len()
+        mut kept: usize = 0
         mut i: usize = 0
-        while i < self.len() {
-            if f(self[i]) {
-                self.remove(i)
-                dropped = dropped + 1
-            } else {
-                i = i + 1
+        while i < n {
+            if !f(self[i]) {
+                if kept != i {
+                    self.swap(kept.wrap<i64>(), i.wrap<i64>())
+                }
+                kept = kept + 1
             }
+            i = i + 1
         }
-        return dropped
+        while self.len() > kept {
+            self.pop()
+        }
+        return n - kept
     }
 
     /// Remove and return elements where f returns true, in the order they
     /// were in.
+    ///
+    /// One pass. Swapping in place would scramble the removed elements, so
+    /// this splits the contents instead; `take_all` keeps this vector's
+    /// buffer, so pushing the survivors back doesn't grow it.
     public func take_where(mutate self, f: func(T) -> bool) -> Vec<T> {
         mut taken: Vec<T> = Vec.new()
-        mut i: usize = 0
-        while i < self.len() {
-            if f(self[i]) {
-                taken.push(self.remove(i))
+        for item in self.take_all() {
+            if f(item) {
+                taken.push(item)
             } else {
-                i = i + 1
+                self.push(item)
             }
         }
         return taken

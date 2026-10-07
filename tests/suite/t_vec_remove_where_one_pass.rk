@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// `remove_where` and `take_where` are one pass (#1493).
+//
+// Both called `remove(i)` per match, and each `remove` shifts everything after
+// it: k matches in n elements cost n·k moves. `remove_where` now swaps each
+// survivor down to the next free slot and pops the removed ones off the end;
+// `take_where` splits `take_all()` into the two vectors, because swapping
+// would scramble the order of what it hands back. The leak and memcheck gates
+// hold the "released exactly once" half for every element kind below.
+
+struct Rec {
+    name: string
+    tag: string
+    n: i64
+}
+
+func words(n: i64) -> Vec<string> {
+    mut out: Vec<string> = Vec.new()
+    for i in 0..n {
+        out.push("word-{i}-long-enough-to-live-on-the-heap")
+    }
+    return out
+}
+
+test "remove_where keeps survivors in order" {
+    mut v: Vec<i64> = [5, 1, 6, 2, 7, 3, 8]
+    let dropped = v.remove_where(|x| x > 4)
+    assert dropped == 4
+    assert v.len() == 3
+    assert v[0] == 1
+    assert v[1] == 2
+    assert v[2] == 3
+}
+
+test "remove_where on strings" {
+    mut v = words(10)
+    let dropped = v.remove_where(|w| w.contains("3") || w.contains("7"))
+    assert dropped == 2
+    assert v.len() == 8
+    assert v[3] == "word-4-long-enough-to-live-on-the-heap"
+    assert v[7] == "word-9-long-enough-to-live-on-the-heap"
+}
+
+test "remove_where with nothing and everything matching" {
+    mut v = words(4)
+    assert v.remove_where(|w| false) == 0
+    assert v.len() == 4
+    assert v.remove_where(|w| true) == 4
+    assert v.is_empty()
+    assert v.remove_where(|w| true) == 0
+}
+
+test "remove_where on structs holding strings" {
+    mut recs: Vec<Rec> = Vec.new()
+    for i in 0..8 {
+        recs.push(Rec { name: "record-name-long-enough-{i}", tag: "t{i}", n: i })
+    }
+    assert recs.remove_where(|r| r.n % 3 == 0) == 3
+    assert recs.len() == 5
+    assert recs[0].n == 1
+    assert recs[2].name == "record-name-long-enough-4"
+    assert recs[4].tag == "t7"
+}
+
+test "remove_where on nested vectors" {
+    mut vv: Vec<Vec<string>> = Vec.new()
+    for i in 0..6 {
+        vv.push(words(i))
+    }
+    assert vv.remove_where(|v| v.len() % 2 == 0) == 3
+    assert vv.len() == 3
+    assert vv[0].len() == 1
+    assert vv[1].len() == 3
+    assert vv[2].len() == 5
+}
+
+test "take_where hands back matches in their original order" {
+    mut v = words(8)
+    let taken = v.take_where(|w| w.contains("1") || w.contains("4") || w.contains("6"))
+    assert taken.len() == 3
+    assert taken[0] == "word-1-long-enough-to-live-on-the-heap"
+    assert taken[1] == "word-4-long-enough-to-live-on-the-heap"
+    assert taken[2] == "word-6-long-enough-to-live-on-the-heap"
+    assert v.len() == 5
+    assert v[0] == "word-0-long-enough-to-live-on-the-heap"
+    assert v[4] == "word-7-long-enough-to-live-on-the-heap"
+}
+
+test "take_where on nested vectors and structs" {
+    mut vv: Vec<Vec<string>> = Vec.new()
+    for i in 0..5 {
+        vv.push(words(i))
+    }
+    let big = vv.take_where(|v| v.len() > 2)
+    assert big.len() == 2
+    assert big[0].len() == 3
+    assert vv.len() == 3
+    assert vv[2].len() == 2
+
+    mut recs: Vec<Rec> = Vec.new()
+    for i in 0..4 {
+        recs.push(Rec { name: "record-name-long-enough-{i}", tag: "t{i}", n: i })
+    }
+    let nothing = recs.take_where(|r| r.n > 10)
+    assert nothing.is_empty()
+    assert recs.len() == 4
+}
+
+test "remove_where over a large vector" {
+    mut v: Vec<i64> = Vec.new()
+    for i in 0..20000 {
+        v.push(i)
+    }
+    assert v.remove_where(|x| x % 2 == 0) == 10000
+    assert v.len() == 10000
+    assert v[0] == 1
+    assert v[9999] == 19999
+}
