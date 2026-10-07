@@ -2704,6 +2704,16 @@ fn error_unknown_type_in_body() {
     assert_eq!(out.matches("error[").count(), 7, "{out}");
 }
 
+/// #1485: a result read off an error is an error, so the binding holding it
+/// isn't reported again as un-inferrable.
+#[test]
+fn error_type_absorbs_follow_on_errors() {
+    let (failed, out) = compile_error_output("error_type_no_cascade.rk");
+    assert!(failed, "{out}");
+    assert!(!out.contains("E0361"), "{out}");
+    assert_eq!(out.matches("error[").count(), 3, "{out}");
+}
+
 #[test]
 fn error_single_letter_type_name() {
     assert!(compile_error("single_letter_type_name.rk"), "should reject single-letter concrete type names (PC3)");

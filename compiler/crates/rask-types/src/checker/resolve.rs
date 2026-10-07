@@ -194,8 +194,9 @@ impl TypeChecker {
         }
 
         match &ty {
-            // Source error already reported — suppress cascading field errors
-            Type::Error => Ok(false),
+            // Source error already reported. The field is an error too, so
+            // nothing downstream reports it again (#1485).
+            Type::Error => Ok(self.poison(&expected)),
             // AT6: a projection whose base is still open. The conformance to
             // read `Out` off isn't known until the base settles, so put the
             // access back and come round again — same as an open variable.
@@ -596,6 +597,12 @@ impl TypeChecker {
         call_node: Option<NodeId>,
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
+
+        // Source error already reported. The call answers an error too, so
+        // nothing downstream reports it again (#1485).
+        if matches!(ty, Type::Error) {
+            return Ok(self.poison(&ret));
+        }
 
         // `v == opt`: the bare value made present, the way `opt == v` makes
         // its right side present, and compared with the optional's `eq`.

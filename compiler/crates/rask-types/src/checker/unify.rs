@@ -134,6 +134,7 @@ impl TypeChecker {
                         continue;
                     }
                     if !Self::is_placeholder_type(&resolved) {
+                        self.poison(&expected);
                         self.errors.push(TypeError::NoSuchField {
                             ty: resolved,
                             field,
@@ -178,6 +179,7 @@ impl TypeChecker {
                             }
                         }
                     } else if !Self::is_placeholder_type(&resolved) {
+                        self.poison(&ret);
                         self.errors.push(TypeError::NoSuchMethod {
                             ty: resolved,
                             method,
@@ -505,8 +507,11 @@ impl TypeChecker {
                 span,
                 self_type,
             } => {
-                if matches!(self.ctx.apply(&ty), Type::Error) { return Ok(false); }
+                // A read that failed was reported here; its result is an
+                // error, not an open variable to report again (#1485).
+                let result = expected.clone();
                 self.resolve_field(ty, field, expected, span, self_type)
+                    .inspect_err(|_| { self.poison(&result); })
             }
             TypeConstraint::HasMethod {
                 ty,
@@ -516,8 +521,10 @@ impl TypeChecker {
                 span,
                 call_node,
             } => {
-                if matches!(self.ctx.apply(&ty), Type::Error) { return Ok(false); }
+                // Same for a call that failed.
+                let result = ret.clone();
                 self.resolve_method(ty, method, args, ret, span, call_node)
+                    .inspect_err(|_| { self.poison(&result); })
             }
             TypeConstraint::Coerce {
                 value,
@@ -1439,6 +1446,20 @@ impl TypeChecker {
             }
         } else {
             self.unify(&expected, &ret_ty, span)
+        }
+    }
+
+    /// A result read off a value whose type is already an error is an error
+    /// too: what went wrong was reported where it went wrong, and an open
+    /// variable here would be reported again as "couldn't work out the type"
+    /// (#1485). True if that bound something.
+    pub(super) fn poison(&mut self, result: &Type) -> bool {
+        match self.ctx.apply(result) {
+            Type::Var(id) => {
+                self.ctx.bind_var(id, Type::Error);
+                true
+            }
+            _ => false,
         }
     }
 

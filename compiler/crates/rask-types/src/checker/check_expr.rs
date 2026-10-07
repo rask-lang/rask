@@ -1906,8 +1906,15 @@ impl TypeChecker {
                 self.inferred_errors = outer_inferred_errors;
 
                 // Unify the closure body type with the return type from
-                // return statements (if any)
-                let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
+                // return statements (if any). A body that's an error makes the
+                // return an error, not an open variable: `unify` leaves a
+                // variable alone against `Error`, and the binding holding the
+                // closure got "couldn't work out the type" on top (#1485).
+                if matches!(self.ctx.apply(&inferred_ret), Type::Error) {
+                    self.poison(&closure_return_type);
+                } else {
+                    let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
+                }
 
                 // Check declared return type if present
                 let ret_ty = if let Some(declared) = declared_ret {
