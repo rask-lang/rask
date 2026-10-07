@@ -177,38 +177,20 @@ impl ResourceTracker {
         self.next_id = self.next_id.max(id + 1);
     }
 
-    /// Check for unconsumed resources at the given scope depth.
-    /// Returns Err listing leaked resources, or Ok if all consumed.
-    /// Removes all entries at this scope depth regardless.
-    pub fn check_scope_exit(&mut self, scope_depth: usize) -> Result<(), String> {
-        let mut leaked: Vec<String> = Vec::new();
-        let mut to_remove: Vec<u64> = Vec::new();
-
-        for (&id, entry) in &self.entries {
-            if entry.scope_depth == scope_depth {
-                if entry.state == ResourceState::Live {
-                    let var = entry.var_name.as_deref().unwrap_or("?");
-                    leaked.push(format!("{} '{}'", entry.type_name, var));
-                }
-                to_remove.push(id);
-            }
-        }
-
-        // Clean up entries at this scope depth
-        for id in &to_remove {
-            // Also clean up file_ids and handle_ids
+    /// Forget every entry registered at this scope depth.
+    ///
+    /// No leak check: an unconsumed linear value is a compile error (L1–L7,
+    /// RC1–RC4), so there is nothing left at runtime for a guard to catch
+    /// (rask-lang/rask#1296).
+    pub fn end_scope(&mut self, scope_depth: usize) {
+        let ended: Vec<u64> = self.entries.iter()
+            .filter(|(_, e)| e.scope_depth == scope_depth)
+            .map(|(&id, _)| id)
+            .collect();
+        for id in &ended {
             self.file_ids.retain(|_, v| v != id);
             self.handle_ids.retain(|_, v| v != id);
             self.entries.remove(id);
-        }
-
-        if leaked.is_empty() {
-            Ok(())
-        } else {
-            Err(format!(
-                "resource leak: {} not consumed before scope exit",
-                leaked.join(", ")
-            ))
         }
     }
 }

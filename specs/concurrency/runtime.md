@@ -632,21 +632,10 @@ Unchanged from before: warn on I/O in tight loops, and on long-running CPU work 
 ```rust
 Handle<T> {
     task: Arc<Task<T>>,   // Shared reference to task
-    consumed: bool,       // Affine tracking
-}
-
-impl<T> Drop for Handle<T> {
-    fn drop(&mut self) {
-        if !self.consumed {
-            panic!("Handle dropped without join() or detach() (conc.async/H1)");
-        }
-    }
 }
 ```
 
-**Affine enforcement:** Drop panics if handle not consumed. This realizes H1 (must join or detach).
-
-**Why runtime check, not compile-time?** Current type system doesn't track linear resources statically. Compiler support planned for compiled version (similar to mem.resources/R1-R5). Runtime panic is sufficient for interpreter.
+**Linear, checked statically.** `Handle<T>` is linear (`mem.linear`), so a handle that is never joined or detached is a compile error, and L7 makes the statement after the spawn commit it, so no panic can land in between. Nothing checks it at runtime.
 
 ### Join Operation (H2 - realizes conc.async/H2, J1)
 
@@ -1846,13 +1835,11 @@ func main() {
 func main() {
     using Multitasking {
         spawn(|| { work() })  // Handle not consumed
-    }  // Panic on handle drop
+    }
 }
 ```
 
-**Error:** Runtime panic in Handle.drop
-
-**Message:** `"Handle dropped without join() or detach() (conc.async/H1)"`
+**Error:** Compile error. `Handle` is linear, so one that is never joined or detached is caught statically; nothing checks at runtime.
 
 **Fix:** Always consume handles:
 ```rask

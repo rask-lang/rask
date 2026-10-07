@@ -885,7 +885,7 @@ impl Interpreter {
     }
 
     /// Wrap a spawned body's thread as the `Handle` every spawn form returns,
-    /// tracked so an unconsumed one is reported (conc.async/H1).
+    /// tracked so `join`/`detach` consume it.
     fn hand_out_handle(
         &mut self,
         join_handle: std::thread::JoinHandle<Result<Value, String>>,

@@ -202,38 +202,7 @@ impl Interpreter {
             }
         }
 
-        if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
-            let guard_diag = RuntimeDiagnostic::new(RuntimeError::Panic(msg), Span::new(0, 0));
-            // E3: a guard (R5/H1) firing while the body is already failing is a
-            // secondary panic — contained and reported, not a replacement for
-            // the original.
-            //
-            // Any failure, not just a panic. A body that dies on `no method
-            // seek on type File` leaves its resource unconsumed *because* it
-            // died, so replacing the error with "resource leak: File 'f' not
-            // consumed" hides the only line that says what went wrong — and
-            // points at the import instead of the call. Return, break,
-            // continue and `try` are control flow rather than failure, and a
-            // resource leaked on the way out through one of those is the real
-            // problem, so those still lose to the guard.
-            let body_failed = matches!(
-                &result,
-                Err(diag) if !matches!(
-                    diag.error,
-                    RuntimeError::Return(_)
-                        | RuntimeError::TryError(_)
-                        | RuntimeError::Break(_, _)
-                        | RuntimeError::Continue(_)
-                )
-            );
-            if body_failed {
-                self.report_secondary_panic(&guard_diag);
-            } else {
-                self.generic_frames.pop();
-                self.env.pop_scope();
-                return Err(guard_diag);
-            }
-        }
+        self.resource_tracker.end_scope(scope_depth);
 
         // mem.parameters/PM2: snapshot the final values of `mutate` params before
         // the scope is dropped, so the call site can write each back to its

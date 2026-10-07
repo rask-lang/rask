@@ -4058,14 +4058,11 @@ fn panic_ensure_e3_first_panic_wins() {
     }
 }
 
-// E3 (issue #298) — a runtime guard tripping at scope exit while already
-// unwinding must not replace the panic in flight — has no test any more. The
-// guard it was reached through was R5, a pool still holding a resource,
-// and no container takes a linear value now that pools are gone: Vec, Map and
-// Rack are all compile errors (mem.resource-types/RC1-RC3). Every earlier
-// trigger went the same way — an unconsumed Handle behind a `join()` is
-// mem.linear/L7. The rule stands, the path is unreachable from Rask source, and
-// rask-lang/rask#1296 tracks it.
+// E3 used to cover a runtime guard tripping at scope exit mid-unwind too. Its
+// last trigger was a pool still holding a resource; with pools gone, every
+// unconsumed linear value is a compile error, so the guard and that half of
+// the rule were deleted (rask-lang/rask#1296). A guard that comes back needs
+// its unwind behaviour specified and tested here.
 
 #[test]
 fn panic_detached_task_reports_to_stderr() {

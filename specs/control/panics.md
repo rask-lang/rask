@@ -17,7 +17,7 @@ Every panic source is a programmer bug by definition. Expected failures use `T o
 | **S2: Force operators** | `x!` / `r!` on empty/error values (`type.errors/ER15`) |
 | **S3: Checked arithmetic** | Overflow, divide-by-zero, `i32.MIN / -1` (`type.overflow/OV1–OV3`) |
 | **S4: Access checks** | Index out of bounds, `with` aliasing (`mem.borrowing/W3–W4`) |
-| **S5: Runtime guards** | `spawn` with no runtime (`conc.async/CC3`), `Handle` dropped unconsumed (`conc.async/H1`), stack overflow via guard page (`conc.runtime`) |
+| **S5: Runtime guards** | `spawn` with no runtime (`conc.async/CC3`), stack overflow via guard page (`conc.runtime`) |
 | **S6: Message + location** | Every panic carries a message and the source location of the failing operation |
 | **S7: Nothing the compiler already knows** | A condition the compiler can decide from the source alone must be a compile error, never a panic compiled into the program. This covers unimplemented paths too: "not supported yet" is a diagnostic, not a runtime message |
 
@@ -72,7 +72,10 @@ There used to be a leak no static rule could see — a `Pool<Resource>` whose
 contents were a runtime fact — and it had a runtime guard of its own. Pools are
 gone (rask-lang/rask#908), and no container can hold a linear value now
 (`mem.resources/RC1`–RC3), so the guard has nothing to fire on. Every case here
-is static.
+is static, and nothing fires at a scope exit during unwind: an ensure body is
+the only thing E3 has to contain. A runtime guard that comes back — a
+`Rack.take` handing a linear value out of a container would be one — has to
+say what it does mid-unwind, and get a test for it (rask-lang/rask#1296).
 
 ## Locks: Released, Not Poisoned
 
@@ -95,7 +98,7 @@ Closes the panic half of [#280](https://github.com/rask-lang/rask/issues/280). S
 |------|-------------|
 | **E1: Ensure panic panics the task** | A panic inside an ensure body (or its `else` handler) ends that ensure and starts — or continues — unwind. The task dies |
 | **E2: Remaining ensures still run** | The other scheduled ensures, in this block and every outer block, run anyway in LIFO order. One failing cleanup never skips other releases |
-| **E3: First panic wins** | The first panic becomes the task's `Panicked` message. Any panic raised later in the same unwind — an ensure body, or a runtime guard firing at an unwound scope exit (`conc.async/H1`) — is contained at its boundary and reported to stderr as a secondary panic |
+| **E3: First panic wins** | The first panic becomes the task's `Panicked` message. An ensure body that panics later in the same unwind is contained at its boundary and reported to stderr as a secondary panic |
 | **A1: Abort escape hatch** | If the runtime itself cannot continue unwinding (panic inside the unwind machinery, stack exhaustion during unwind), the process aborts (SIGABRT). This is a runtime failure mode, not a semantic rule programs may rely on |
 
 <!-- test: parse -->
@@ -113,7 +116,7 @@ func work() {
 // a.close(): ran anyway (E2) — no leak
 ```
 
-There is no Rust-style double-panic abort. The only code that executes during unwind is ensure bodies and runtime guards at scope exits — both bounded, runtime-invoked regions where containment is cheap (`ctrl.ensure/ER5` makes ensure *errors* independent; E2–E3 extend the same shape to unwind-time *panics*).
+There is no Rust-style double-panic abort. The only code that executes during unwind is ensure bodies, each a bounded, runtime-invoked region where containment is cheap (`ctrl.ensure/ER5` makes ensure *errors* independent; E2–E3 extend the same shape to unwind-time *panics*).
 
 ## What Survivors Observe
 
@@ -150,7 +153,6 @@ Resolves the panic open question in `determinism`.
 | Panic in ensure body during normal block exit | E1–E2 | Task dies with that panic; remaining ensures run |
 | Panic in ensure body during unwind | E3 | Contained, reported as secondary; original panic wins |
 | Panic in `else \|e\|` handler | E1 | Same as ensure-body panic |
-| Unconsumed `Handle` scope exits during unwind | E3 | H1 guard fires as secondary — reported, contained; the task keeps running as if detached |
 | Panic while holding nested `with` bindings (`with v[i] as a, v[j] as b`) | U3 | Both accesses released |
 | Task parked on I/O while holding a lock | LK4 | Not a death — lock stays held, waiters wait until the task resumes and exits |
 | Task cancelled while parked holding a lock | LK4 | Task wakes; the pending I/O returns `Cancelled` as an error value; the block exits through normal control flow and releases the lock — no unwind, writes kept |
@@ -210,7 +212,6 @@ The interpreter already implements most of this model; compiled code has the big
 - Matches E2/E3 (`interp/call.rs`, `run_ensures`): a panic in an ensure body no longer skips the remaining ensures — they all run in LIFO order; the first panic wins and later ones (including any raised while already unwinding) are reported to stderr as secondary panics.
 - Matches U2 (`eval_expr.rs`, WithAs): `with`-block writes are flushed before the panic propagates, so mutations made before the panic are kept.
 - Exits with code 101 on uncaught panic (`struct.targets/EX4`, `run.rs`).
-- Residual: the `conc.async/H1` runtime guard firing at an unwound scope exit still overrides the primary panic instead of being contained as secondary (`call_function` → `check_scope_exit`) — the E3 guard case, tracked under #298.
 - `staged()` (`conc.sync/ST1–ST4`) works on both paths. The interpreter already bound a copy of the payload and wrote it back at block exit, so staged is that minus the writeback when the body panicked — except the "copy" was a `Value::clone`, which shares the `Arc` behind a struct, so writes landed in the `Shared` whatever the writeback decided; a `deep_clone` is what makes the discard mean anything. Compiled, the commit is the block's inline cleanup (which every non-panic exit already chains through, ST2) and the acquire registers the *discard* on the held-access stack `rask_panic` drains (ST3) — neither half knows about the other. ST1 (`with`-source only, E0846) and ST3a (not under `Local`, E0845) are compile errors.
 
 **Compiled** (`rask-codegen` + C runtime):

@@ -2735,16 +2735,7 @@ impl Interpreter {
                     }
                 };
 
-                // Check for unconsumed handles (conc.async/H1)
-                if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
-                    runtime.shutdown();
-                    *ACTIVE_RUNTIME.write().unwrap() = None;
-                    self.env.pop_scope();
-                    return Err(RuntimeDiagnostic::new(
-                        RuntimeError::Panic(msg),
-                        expr.span,
-                    ));
-                }
+                self.resource_tracker.end_scope(scope_depth);
 
                 runtime.shutdown();
                 *ACTIVE_RUNTIME.write().unwrap() = None;
