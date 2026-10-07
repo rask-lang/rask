@@ -116,15 +116,17 @@ pub struct TypeTable {
     /// The stdlib's aliases alone, which is all stdlib code sees. A program's
     /// `import time.Duration as Span` is not the prelude's `Span` (#1479).
     stdlib_aliases: HashMap<String, TypeExpr>,
-    /// Type parameter names in scope right now — the declaration or signature
-    /// being checked.
+    /// Type parameters in scope right now, outermost first: the enclosing
+    /// type's or `extend` block's, then the function's own.
     ///
-    /// A declared parameter has to win over a type of the same name, or
+    /// A parameter has to win over a type of the same name, or
     /// `struct Holder<Output>` silently means the stdlib's `os.Output` and
     /// every use of the field is a mismatch against a type nobody wrote (#915).
     /// Scoped rather than global: `Output` is a parameter inside that
-    /// declaration and the stdlib type everywhere else.
-    pub(super) type_param_scope: Vec<String>,
+    /// declaration and the stdlib type everywhere else. A stack, because a
+    /// method sees its owner's parameters as well as its own; replacing them
+    /// dropped `Output` out of `Holder`'s own methods (#1487).
+    pub(super) type_param_scope: Vec<ScopedTypeParam>,
     /// Module-level `const` names whose initializer is an integer literal,
     /// mapped to that value.
     ///
@@ -2246,26 +2248,82 @@ impl TypeTable {
     }
 }
 
+/// One type parameter in scope.
+#[derive(Debug, Clone)]
+pub struct ScopedTypeParam {
+    name: String,
+    /// Written in a `<…>` list or an owner's header, rather than implied by
+    /// a single letter in a function's signature (PC1).
+    declared: bool,
+}
+
+/// Where the scope stood before a push; `pop_type_params` returns to it.
+#[must_use]
+#[derive(Debug, Clone, Copy)]
+pub struct TypeParamMark(usize);
+
 impl TypeTable {
-    /// Bring a declaration's type parameters into scope for name resolution.
-    /// Returns the previous scope, to be handed back to `pop_type_params`.
-    pub fn push_type_params(&mut self, names: Vec<String>) -> Vec<String> {
-        std::mem::replace(&mut self.type_param_scope, names)
+    /// Bring parameters a declaration writes out into scope, on top of the
+    /// ones already there.
+    pub fn push_type_params(&mut self, names: impl IntoIterator<Item = String>) -> TypeParamMark {
+        self.push_scoped(names, true)
     }
 
-    /// Restore the scope `push_type_params` replaced.
-    pub fn pop_type_params(&mut self, previous: Vec<String>) {
-        self.type_param_scope = previous;
+    /// Bring the single letters a function's signature uses without
+    /// declaring into scope (PC1).
+    pub fn push_implied_type_params(
+        &mut self,
+        names: impl IntoIterator<Item = String>,
+    ) -> TypeParamMark {
+        self.push_scoped(names, false)
+    }
+
+    fn push_scoped(&mut self, names: impl IntoIterator<Item = String>, declared: bool) -> TypeParamMark {
+        let mark = TypeParamMark(self.type_param_scope.len());
+        self.type_param_scope
+            .extend(names.into_iter().map(|name| ScopedTypeParam { name, declared }));
+        mark
+    }
+
+    /// Drop everything pushed since `mark`.
+    pub fn pop_type_params(&mut self, mark: TypeParamMark) {
+        self.type_param_scope.truncate(mark.0);
+    }
+
+    /// Empty the scope, for reading a declaration somewhere it doesn't
+    /// enclose: a callee's signature parsed at a call site sees the callee's
+    /// parameters, not the caller's. Hand the result to `restore_type_params`.
+    pub fn isolate_type_params(&mut self) -> Vec<ScopedTypeParam> {
+        std::mem::take(&mut self.type_param_scope)
+    }
+
+    /// Put back the scope `isolate_type_params` took.
+    pub fn restore_type_params(&mut self, saved: Vec<ScopedTypeParam>) {
+        self.type_param_scope = saved;
     }
 
     /// Is this name a type parameter of whatever is being checked?
     pub fn is_type_param_in_scope(&self, name: &str) -> bool {
-        self.type_param_scope.iter().any(|p| p == name)
+        self.type_param_scope.iter().any(|p| p.name == name)
     }
 
-    /// The names `is_type_param_in_scope` answers yes to.
-    pub fn type_param_scope(&self) -> &[String] {
-        &self.type_param_scope
+    /// Is this name a parameter something encloses by writing it out: the
+    /// owner's, or one in the function's `<…>` list? Implied letters don't
+    /// count.
+    pub fn is_declared_type_param(&self, name: &str) -> bool {
+        self.type_param_scope.iter().any(|p| p.declared && p.name == name)
+    }
+
+    /// The names `is_type_param_in_scope` answers yes to, outermost first,
+    /// each once.
+    pub fn type_param_scope(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for p in &self.type_param_scope {
+            if !out.contains(&p.name) {
+                out.push(p.name.clone());
+            }
+        }
+        out
     }
 
     /// Record a module-level const's integer value, for array lengths.

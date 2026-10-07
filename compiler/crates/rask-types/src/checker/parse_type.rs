@@ -44,27 +44,8 @@ impl TypeChecker {
         None
     }
 
-    /// Every type parameter name in scope where a type is being written: the
-    /// function's and an `extend` header's, and those of the type whose
-    /// methods are being checked.
-    pub(super) fn type_param_names_here(&self) -> Vec<String> {
-        let mut names = self.type_params_here();
-        if let Some(Type::Named(id)) = &self.current_self_type {
-            if let Some(TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. }) =
-                self.types.get(*id)
-            {
-                for tp in type_params {
-                    if !names.contains(tp) {
-                        names.push(tp.clone());
-                    }
-                }
-            }
-        }
-        names
-    }
-
-    /// Resolve written types with `params` in scope — a declaration's own,
-    /// for the types in its header and members.
+    /// Resolve written types with `params` in scope on top of whatever
+    /// encloses them: a declaration's own, for its header and members.
     pub(super) fn with_type_params<R>(
         &mut self,
         params: Vec<String>,

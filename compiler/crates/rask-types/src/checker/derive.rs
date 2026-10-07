@@ -464,9 +464,12 @@ impl TypeChecker {
                             name_self(&mut imp);
                         }
                         let outer = self.current_self_type.replace(Type::Named(id));
-                        for m in &imp.methods {
-                            self.check_fn(m);
-                        }
+                        let params = super::declarations::header_type_params(&imp, &self.types);
+                        self.with_type_params(params, |this| {
+                            for m in &imp.methods {
+                                this.check_fn(m);
+                            }
+                        });
                         self.current_self_type = outer;
                         name_self(&mut imp);
                         Decl { id: decl.id, kind: DeclKind::Impl(imp), span: decl.span }

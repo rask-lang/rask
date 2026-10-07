@@ -244,23 +244,6 @@ pub struct TypeChecker {
     pub(super) pending_wrapper_eq: Vec<(NodeId, NodeId, NodeId)>,
     /// Those decided: call node → (callee node, function name).
     pub(super) wrapper_eq_calls: HashMap<NodeId, (NodeId, String)>,
-    /// Every type parameter name in scope right here — the enclosing `extend
-    /// Foo<T>`'s and the method's own, bounded or not.
-    ///
-    /// Separate from the two bound maps above because it answers a different
-    /// question. Those say what `T` can do; this says that `T` *is* a parameter
-    /// and stands for one type the caller picks. A method's return type that
-    /// still mentions a name gets a fresh inference variable per call, which is
-    /// right for a stub's own unbound name and wrong for this one: freshening
-    /// `T` inside `func count<T>(v: Vec<T>)` cut the result loose from the
-    /// caller's binding, so the receiver of the next call in the chain had no
-    /// type left for MIR to dispatch on.
-    ///
-    /// Folding these into `current_type_param_bounds` would have routed every
-    /// call on an unbounded parameter through the bounded-parameter resolver,
-    /// where "no bounds" means "no methods" — and an unbounded `T` resolves by
-    /// waiting for monomorphization instead.
-    pub(super) type_params_in_scope: std::collections::HashSet<String>,
     /// Scope stack for local variable types (innermost scope last).
     /// Tuple: (type, binding kind). Const bindings and default params are read-only.
     pub(super) local_types: Vec<HashMap<String, (Type, BindingKind)>>,
@@ -629,7 +612,6 @@ impl TypeChecker {
             derived_names: 0,
             pending_wrapper_eq: Vec::new(),
             wrapper_eq_calls: HashMap::new(),
-            type_params_in_scope: std::collections::HashSet::new(),
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),

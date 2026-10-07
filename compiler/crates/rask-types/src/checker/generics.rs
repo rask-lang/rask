@@ -41,15 +41,11 @@ impl TypeChecker {
             let args = header_args
                 .iter()
                 .map(|arg| {
-                    // A bare parameter name stays symbolic — resolving it would
-                    // find any type that happens to share the letter.
-                    let ty = match arg.bare_name() {
-                        Some(n) if super::declarations::is_type_param_name(n) => {
-                            Type::UnresolvedNamed(n.to_string())
-                        }
-                        _ => super::resolve_type_expr(arg, &self.types)
-                            .unwrap_or_else(|_| Type::UnresolvedNamed(arg.to_string())),
-                    };
+                    // The block's parameters are in scope (`header_type_params`),
+                    // so a parameter stays symbolic even when it shares a name
+                    // with a real type.
+                    let ty = super::resolve_type_expr(arg, &self.types)
+                        .unwrap_or_else(|_| Type::UnresolvedNamed(arg.to_string()));
                     GenericArg::Type(Box::new(ty))
                 })
                 .collect();
@@ -148,6 +144,12 @@ impl TypeChecker {
                     if let Some(self_ty) = &self.current_self_type {
                         return self_ty.clone();
                     }
+                }
+                // A parameter in scope is the parameter, whatever else shares
+                // its name: `Holder<Output>`'s `self.v.clone()` dispatched to
+                // `os.Output`'s clone (#1487).
+                if self.types.is_type_param_in_scope(name) {
+                    return ty.clone();
                 }
                 if let Some(type_id) = self.types.get_type_id(name) {
                     return Type::Named(type_id);
@@ -511,11 +513,11 @@ impl TypeChecker {
             matches!((chars.next(), chars.next()), (Some(c), None) if c.is_ascii_uppercase())
         }
         match ty {
-            // A parameter the enclosing function or extend block already binds
-            // keeps its name. Freshening it would hand this call a variable the
-            // caller's type argument never reaches, and the chain after it
-            // would have no receiver type at all.
-            Type::UnresolvedNamed(name) if self.type_params_in_scope.contains(name) => {
+            // A parameter the enclosing function, type or extend block already
+            // binds keeps its name. Freshening it would hand this call a
+            // variable the caller's type argument never reaches, and the chain
+            // after it would have no receiver type at all.
+            Type::UnresolvedNamed(name) if self.types.is_declared_type_param(name) => {
                 ty.clone()
             }
             Type::UnresolvedNamed(name) if is_param(name) => seen

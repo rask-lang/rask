@@ -584,7 +584,7 @@ impl TypeChecker {
                     // closure capturing it is judged per instantiation.
                     let resolved = self.resolve_named(&self.ctx.apply(&ty));
                     let generic = Self::names_type_param(&resolved, &|n| {
-                        self.types.is_type_param_in_scope(n) || self.type_params_in_scope.contains(n)
+                        self.types.is_type_param_in_scope(n)
                     });
                     if generic
                         || matches!(resolved, Type::Var(_))
@@ -592,7 +592,7 @@ impl TypeChecker {
                         || self.types.holds_link(&resolved)
                     {
                         let depth = self.local_depth(name).unwrap_or(0);
-                        let type_params = self.type_params_here();
+                        let type_params = self.types.type_param_scope();
                         self.task_bound_uses.push(super::TaskBoundUse {
                             name: name.clone(),
                             ty: ty.clone(),
@@ -5113,12 +5113,13 @@ impl TypeChecker {
     pub(super) fn get_symbol_type(&mut self, sym_id: SymbolId) -> Type {
         let callee_params: Vec<String> =
             self.fn_type_params.get(&sym_id).cloned().unwrap_or_default();
-        if callee_params.is_empty() {
-            return self.get_symbol_type_scoped(sym_id);
-        }
-        let outer = self.types.push_type_params(callee_params);
+        // The caller's parameters are out of scope too: a callee written
+        // against the real `os.Output` called from inside `func f<Output>` is
+        // still the real one.
+        let caller = self.types.isolate_type_params();
+        let _ = self.types.push_type_params(callee_params);
         let ty = self.get_symbol_type_scoped(sym_id);
-        self.types.pop_type_params(outer);
+        self.types.restore_type_params(caller);
         ty
     }
 
@@ -5910,18 +5911,6 @@ impl TypeChecker {
         // Already refused whatever it's instantiated with.
         let bound = &self.task_bound_closures;
         self.generic_closure_captures.retain(|id, _| !bound.contains(id));
-    }
-
-    /// Every type parameter name in scope: the function's own, implicit ones
-    /// included, and an enclosing `extend` header's.
-    pub(super) fn type_params_here(&self) -> Vec<String> {
-        let mut names = self.types.type_param_scope().to_vec();
-        for n in &self.type_params_in_scope {
-            if !names.contains(n) {
-                names.push(n.clone());
-            }
-        }
-        names
     }
 
     /// Does this type mention a name `is_param` says is a type parameter?

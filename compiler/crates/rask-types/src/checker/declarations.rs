@@ -207,98 +207,13 @@ impl TypeChecker {
             }
         }
         for decl in decls {
-            match &decl.kind {
-                DeclKind::Struct(s) => {
-                    self.check_declared_type_name(&s.name, "struct", decl.span);
-                    let id = self.register_struct(s);
-                    self.types.record_param_bounds(id, &s.type_params);
-                    self.types.record_method_decl(id, decl.id);
-                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
-                }
-                DeclKind::Enum(e) => {
-                    self.check_declared_type_name(&e.name, "enum", decl.span);
-                    let id = self.register_enum(e, decl.span);
-                    self.types.record_param_bounds(id, &e.type_params);
-                    self.types.record_method_decl(id, decl.id);
-                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
-                }
-                DeclKind::Interface(t) => {
-                    self.check_declared_type_name(&t.name, "interface", decl.span);
-                    // DT1: shape-matching stops at the package boundary
-                    if t.is_pub && t.is_duck {
-                        self.errors.push(TypeError::PublicDuckInterface {
-                            name: t.name.clone(),
-                            span: decl.span,
-                        });
-                    }
-                    self.register_interface(t);
-                }
-                DeclKind::Union(u) => {
-                    self.check_declared_type_name(&u.name, "union", decl.span);
-                    self.register_union(u);
-                }
-                // AN6: annotations register as nominal struct types so
-                // `field.has<validate>()` can name them as type arguments.
-                // The restricted shape (AN1) is enforced in annotations.rs.
-                DeclKind::Annotation(a) => {
-                    self.check_declared_type_name(&a.name, "annotation", decl.span);
-                    self.annotation_types.insert(a.name.clone());
-                    let s = rask_ast::decl::StructDecl {
-                        name: a.name.clone(),
-                        type_params: vec![],
-                        fields: a.fields.clone(),
-                        methods: vec![],
-                        is_pub: a.is_pub,
-                        attrs: vec![],
-                        doc: a.doc.clone(),
-                    };
-                    let id = self.register_struct(&s);
-                    self.types.record_method_decl(id, decl.id);
-                }
-                DeclKind::TypeAlias(a) => {
-                    self.check_declared_type_name(&a.name, "type alias", decl.span);
-                    self.register_type_alias(a, decl.span);
-                    // A nominal type (`type MyDoc = interfacepkg.Doc`) belongs to
-                    // whoever wrote it, which is what makes it XC1's way out.
-                    if let Some(id) = self.types.get_type_id(&a.name) {
-                        self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
-                    }
-                }
-                // `const W = 4` then `[i32; W]`. The length has to be known
-                // before any declared type is parsed, so it's recorded in this
-                // pass rather than where the const is checked (#906).
-                DeclKind::Const(c) => {
-                    if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
-                        if let Ok(len) = usize::try_from(*n) {
-                            self.types.register_const_length(c.name.clone(), len);
-                        }
-                    }
-                }
-                DeclKind::Fn(f) => {
-                    // PC1: explicit <T> declarations plus implicit single-letter
-                    // type params from the signature.
-                    let type_param_names = signature_type_param_names(f);
-                    if !type_param_names.is_empty() {
-                        if let Some(&sym_id) = self.resolved.decl_symbols.get(&decl.id) {
-                            self.fn_type_params.insert(sym_id, type_param_names);
-                            // #314: record bounds so call sites can verify the
-                            // type arg satisfies the declared interface bounds.
-                            let bounds: std::collections::HashMap<String, Vec<TypeExpr>> = f.type_params.iter()
-                                .filter(|tp| !tp.bounds.is_empty())
-                                .map(|tp| (tp.name.clone(), tp.bound_types()))
-                                .collect();
-                            if !bounds.is_empty() {
-                                self.fn_type_param_bounds.insert(sym_id, bounds);
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
+            let params = owner_type_params(&decl.kind, &self.types);
+            self.with_type_params(params, |this| this.collect_type_declaration(decl));
         }
         for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
-                self.register_impl_methods(i, decl.id, decl.span);
+                let params = owner_type_params(&decl.kind, &self.types);
+                self.with_type_params(params, |this| this.register_impl_methods(i, decl.id, decl.span));
             }
         }
         // ER3/ER4: validate `T or E` in declared field/payload/target types now
@@ -327,6 +242,98 @@ impl TypeChecker {
 
         // GC1/GC2: Pre-register type vars for functions with inferred params/returns
         self.pre_register_inferred_fns(decls);
+    }
+
+    /// Register one type declaration, with its own type parameters in scope.
+    fn collect_type_declaration(&mut self, decl: &Decl) {
+        match &decl.kind {
+            DeclKind::Struct(s) => {
+                self.check_declared_type_name(&s.name, "struct", decl.span);
+                let id = self.register_struct(s);
+                self.types.record_param_bounds(id, &s.type_params);
+                self.types.record_method_decl(id, decl.id);
+                self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+            }
+            DeclKind::Enum(e) => {
+                self.check_declared_type_name(&e.name, "enum", decl.span);
+                let id = self.register_enum(e, decl.span);
+                self.types.record_param_bounds(id, &e.type_params);
+                self.types.record_method_decl(id, decl.id);
+                self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+            }
+            DeclKind::Interface(t) => {
+                self.check_declared_type_name(&t.name, "interface", decl.span);
+                // DT1: shape-matching stops at the package boundary
+                if t.is_pub && t.is_duck {
+                    self.errors.push(TypeError::PublicDuckInterface {
+                        name: t.name.clone(),
+                        span: decl.span,
+                    });
+                }
+                self.register_interface(t);
+            }
+            DeclKind::Union(u) => {
+                self.check_declared_type_name(&u.name, "union", decl.span);
+                self.register_union(u);
+            }
+            // AN6: annotations register as nominal struct types so
+            // `field.has<validate>()` can name them as type arguments.
+            // The restricted shape (AN1) is enforced in annotations.rs.
+            DeclKind::Annotation(a) => {
+                self.check_declared_type_name(&a.name, "annotation", decl.span);
+                self.annotation_types.insert(a.name.clone());
+                let s = rask_ast::decl::StructDecl {
+                    name: a.name.clone(),
+                    type_params: vec![],
+                    fields: a.fields.clone(),
+                    methods: vec![],
+                    is_pub: a.is_pub,
+                    attrs: vec![],
+                    doc: a.doc.clone(),
+                };
+                let id = self.register_struct(&s);
+                self.types.record_method_decl(id, decl.id);
+            }
+            DeclKind::TypeAlias(a) => {
+                self.check_declared_type_name(&a.name, "type alias", decl.span);
+                self.register_type_alias(a, decl.span);
+                // A nominal type (`type MyDoc = interfacepkg.Doc`) belongs to
+                // whoever wrote it, which is what makes it XC1's way out.
+                if let Some(id) = self.types.get_type_id(&a.name) {
+                    self.types.record_declared_at(id, decl.span, self.type_owner(decl.span));
+                }
+            }
+            // `const W = 4` then `[i32; W]`. The length has to be known
+            // before any declared type is parsed, so it's recorded in this
+            // pass rather than where the const is checked (#906).
+            DeclKind::Const(c) => {
+                if let rask_ast::expr::ExprKind::Int(n, _) = &c.init.kind {
+                    if let Ok(len) = usize::try_from(*n) {
+                        self.types.register_const_length(c.name.clone(), len);
+                    }
+                }
+            }
+            DeclKind::Fn(f) => {
+                // PC1: explicit <T> declarations plus implicit single-letter
+                // type params from the signature.
+                let type_param_names = signature_type_param_names(f);
+                if !type_param_names.is_empty() {
+                    if let Some(&sym_id) = self.resolved.decl_symbols.get(&decl.id) {
+                        self.fn_type_params.insert(sym_id, type_param_names);
+                        // #314: record bounds so call sites can verify the
+                        // type arg satisfies the declared interface bounds.
+                        let bounds: std::collections::HashMap<String, Vec<TypeExpr>> = f.type_params.iter()
+                            .filter(|tp| !tp.bounds.is_empty())
+                            .map(|tp| (tp.name.clone(), tp.bound_types()))
+                            .collect();
+                        if !bounds.is_empty() {
+                            self.fn_type_param_bounds.insert(sym_id, bounds);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Create fresh type vars for functions with omitted parameter types or return types.
@@ -1314,10 +1321,9 @@ impl TypeChecker {
     }
 
     pub(super) fn register_struct(&mut self, s: &StructDecl) -> crate::types::TypeId {
-        // The declaration's own parameters win over types of the same name for
-        // as long as its field types are being parsed (#915).
+        // The declaration's own parameters are in scope (`owner_type_params`),
+        // so a field written `Output` is the parameter, not `os.Output` (#915).
         let type_params = struct_type_param_names(s);
-        let outer_params = self.types.push_type_params(type_params.clone());
         let field_tys: Vec<(Span, Type)> = s
             .fields
             .iter()
@@ -1326,7 +1332,6 @@ impl TypeChecker {
                 (f.name_span, ty)
             })
             .collect();
-        self.types.pop_type_params(outer_params);
         // ER3/ER4: validate nested `T or E` in field types (deferred — see
         // pending_result_validations; extend-defined `message()` must be visible).
         for (fspan, fty) in &field_tys {
@@ -1611,10 +1616,8 @@ impl TypeChecker {
             let assoc_names: Vec<String> =
                 t.assoc_types.iter().map(|a| a.name.clone()).collect();
             for m in &t.methods {
-                let mut params = signature_type_param_names(m);
-                // GT1: the interface's own parameters are in scope for every
-                // signature it declares.
-                params.extend(t.type_params.iter().map(|p| p.name.clone()));
+                let mut params = interface_type_param_names(t);
+                params.extend(signature_type_param_names(m));
                 self.validate_interface_projections(m, t, &assoc_names);
                 self.with_type_params(params, |this| {
                     for p in &m.params {
@@ -1782,7 +1785,22 @@ impl TypeChecker {
     /// binds them once, and a method claiming them again takes a *second* fresh
     /// variable per call that shadows the first, so `self.value.width()` loses
     /// the type it was already given (#872).
+    ///
+    /// The signature is read with the method's own parameters in scope on top
+    /// of the owner's, which the caller has already pushed.
     pub(super) fn method_signature(
+        &mut self,
+        m: &FnDecl,
+        owner_params: &[String],
+        owner_patterns: &[TypeExpr],
+    ) -> MethodSig {
+        let outer = self.types.push_type_params(signature_type_param_names(m));
+        let sig = self.method_signature_scoped(m, owner_params, owner_patterns);
+        self.types.pop_type_params(outer);
+        sig
+    }
+
+    fn method_signature_scoped(
         &self,
         m: &FnDecl,
         owner_params: &[String],
@@ -2417,7 +2435,15 @@ impl TypeChecker {
         }
     }
 
+    /// Check a declaration with the type parameters it owns in scope for
+    /// everything inside it: fields, payloads, and every method's signature
+    /// and body. `check_fn` stacks a method's own on top.
     pub(super) fn check_decl(&mut self, decl: &Decl) {
+        let params = owner_type_params(&decl.kind, &self.types);
+        self.with_type_params(params, |this| this.check_decl_scoped(decl));
+    }
+
+    fn check_decl_scoped(&mut self, decl: &Decl) {
         match &decl.kind {
             DeclKind::Fn(f) => self.check_fn(f),
             DeclKind::Struct(s) => {
@@ -2433,12 +2459,11 @@ impl TypeChecker {
                 // is, with a message telling you to declare `u16be`.
                 if !s.attrs.iter().any(|a| a == "binary") {
                     let owner = self.types.get_type_id(&s.name);
-                    let fields = self.with_type_params(struct_type_param_names(s), |this| {
-                        s.fields
-                            .iter()
-                            .filter_map(|f| Some((this.resolve_written(&f.ty, f.name_span)?, f.name_span)))
-                            .collect::<Vec<_>>()
-                    });
+                    let fields: Vec<_> = s
+                        .fields
+                        .iter()
+                        .filter_map(|f| Some((self.resolve_written(&f.ty, f.name_span)?, f.name_span)))
+                        .collect();
                     for (ty, span) in fields {
                         self.reject_non_optional_link(&ty, span);
                         if let Some(owner) = owner {
@@ -2455,13 +2480,12 @@ impl TypeChecker {
             DeclKind::Enum(e) => {
                 // PC2: variant payload types must name declared types
                 let owner = self.types.get_type_id(&e.name);
-                let payloads = self.with_type_params(enum_type_param_names(e), |this| {
-                    e.variants
-                        .iter()
-                        .flat_map(|v| v.fields.iter())
-                        .filter_map(|f| Some((this.resolve_written(&f.ty, f.name_span)?, f.name_span)))
-                        .collect::<Vec<_>>()
-                });
+                let payloads: Vec<_> = e
+                    .variants
+                    .iter()
+                    .flat_map(|v| v.fields.iter())
+                    .filter_map(|f| Some((self.resolve_written(&f.ty, f.name_span)?, f.name_span)))
+                    .collect();
                 for (ty, span) in payloads {
                     self.reject_non_optional_link(&ty, span);
                     if let Some(owner) = owner {
@@ -2489,9 +2513,6 @@ impl TypeChecker {
                         }
                     }
                 }
-                // `extend Vec<T>` binds `T` for every method in the block,
-                // whether or not a `where` clause says anything about it.
-                self.type_params_in_scope = header_type_params(&i.target_ty, &self.types);
                 // The receiver is written like any other type: `extend Box2<T, U>`
                 // on a one-parameter `Box2` names nothing.
                 self.resolve_written(&i.target_ty, decl.span);
@@ -2599,7 +2620,6 @@ impl TypeChecker {
                     self.check_fn(method);
                 }
                 self.current_impl_type_param_bounds = std::collections::HashMap::new();
-                self.type_params_in_scope.clear();
                 self.current_self_type = None;
             }
             DeclKind::Const(c) => {
@@ -3017,6 +3037,25 @@ pub fn enum_type_param_names(e: &EnumDecl) -> Vec<String> {
     )
 }
 
+/// GT1: an interface's own parameters, in scope for every signature it declares.
+pub(super) fn interface_type_param_names(t: &InterfaceDecl) -> Vec<String> {
+    t.type_params.iter().map(|p| p.name.clone()).collect()
+}
+
+/// The type parameters a declaration puts in scope for everything inside it:
+/// fields, payloads, and every method's signature and body. Registering and
+/// checking a declaration both run under these, and a method stacks its own
+/// on top, so a method sees its owner's parameters (#1487).
+pub(super) fn owner_type_params(kind: &DeclKind, types: &crate::TypeTable) -> Vec<String> {
+    match kind {
+        DeclKind::Struct(s) => struct_type_param_names(s),
+        DeclKind::Enum(e) => enum_type_param_names(e),
+        DeclKind::Interface(t) => interface_type_param_names(t),
+        DeclKind::Impl(i) => header_type_params(i, types),
+        _ => Vec::new(),
+    }
+}
+
 /// Walk a parsed type tree, calling `f` on every unresolved base name.
 pub(super) fn for_each_unresolved_name(ty: &Type, f: &mut impl FnMut(&str)) {
     use crate::types::GenericArg;
@@ -3129,21 +3168,52 @@ impl TypeChecker {
     }
 }
 
-pub(super) fn header_type_params(
-    target_ty: &TypeExpr,
-    types: &crate::TypeTable,
-) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
-    for arg in target_ty.args() {
+/// The type parameters an `extend` or conformance block brings into scope for
+/// its header and every method in it.
+///
+/// A header word is a parameter when it names no type, or when it's the name
+/// the target's declaration gives that position: `extend Holder<Output>` on a
+/// `struct Holder<Output>` is the parameter, not `os.Output` (#1487). A header
+/// that leaves the arguments off (`extend Wrapper` on a `Wrapper<T>`) has the
+/// declaration's names, and a `where` clause can only bound a parameter.
+pub(super) fn header_type_params(i: &ImplDecl, types: &crate::TypeTable) -> Vec<String> {
+    let declared: Vec<String> = i
+        .target_ty
+        .name()
+        .and_then(|n| types.get_type_id(&n))
+        .and_then(|id| match types.get(id)? {
+            TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
+                Some(type_params.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_default();
+    let args = i.target_ty.args();
+    let mut out: Vec<String> = if args.is_empty() { declared.clone() } else { Vec::new() };
+    let mut add = |name: &str| {
+        if !out.iter().any(|o| o == name) {
+            out.push(name.to_string());
+        }
+    };
+    for (pos, arg) in args.iter().enumerate() {
+        if let Some(word) = arg.bare_name() {
+            if declared.get(pos).is_some_and(|d| d == word) {
+                add(word);
+                continue;
+            }
+        }
         arg.walk_paths(&mut |path| {
             if let [word] = path {
                 if word.starts_with(|c: char| c.is_ascii_uppercase())
                     && types.get_type_id(word).is_none()
                 {
-                    out.insert(word.clone());
+                    add(word);
                 }
             }
         });
+    }
+    for tp in &i.where_bounds {
+        add(&tp.name);
     }
     out
 }

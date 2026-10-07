@@ -44,7 +44,8 @@ impl TypeChecker {
         return copy.then(|| t.to_string());
     }
 
-    /// Check a function with its own type parameters in scope.
+    /// Check a function with its own type parameters in scope, on top of its
+    /// owner's.
     ///
     /// A declared parameter has to win over a type of the same name for as long
     /// as this signature and body are being checked — `func first<Output>(xs:
@@ -53,8 +54,13 @@ impl TypeChecker {
     /// rather than pushing inline because the scope has to come back off on
     /// every path out.
     pub(super) fn check_fn(&mut self, f: &FnDecl) {
-        let params = super::declarations::signature_type_param_names(f);
-        let outer = self.types.push_type_params(params);
+        let declared: Vec<String> = f.type_params.iter().map(|tp| tp.name.clone()).collect();
+        let implied: Vec<String> = super::declarations::signature_type_param_names(f)
+            .into_iter()
+            .filter(|n| !declared.contains(n))
+            .collect();
+        let outer = self.types.push_type_params(declared);
+        let _ = self.types.push_implied_type_params(implied);
         self.check_fn_scoped(f);
         self.types.pop_type_params(outer);
     }
@@ -129,12 +135,6 @@ impl TypeChecker {
                     .extend(tp.bound_types());
             }
         }
-        // The method's own parameters on top of the extend header's, which
-        // `check_decl` put there. Bounds don't matter here — the question is
-        // only whether the name stands for a caller-chosen type.
-        let saved_params_in_scope = self.type_params_in_scope.clone();
-        self.type_params_in_scope
-            .extend(f.type_params.iter().map(|tp| tp.name.clone()));
 
         // ER3/ER4: validate every `T or E` that appears in the return type.
         self.validate_result_types_in(&ret_ty, f.span);
@@ -339,7 +339,6 @@ impl TypeChecker {
         self.current_return_type = None;
         self.allowed_warnings = old_allowed;
         self.current_type_param_bounds = saved_type_param_bounds;
-        self.type_params_in_scope = saved_params_in_scope;
         self.in_unsafe = was_unsafe;
 
         // ER20: Restore outer accumulation state
@@ -357,7 +356,6 @@ impl TypeChecker {
     /// scope; a typo'd type name must error, not silently become a generic
     /// parameter.
     pub(super) fn unknown_type_names(&self, ty: &Type) -> Vec<String> {
-        let type_params = self.type_param_names_here();
         let mut unknown: Vec<String> = Vec::new();
         {
             let types = &self.types;
@@ -367,7 +365,7 @@ impl TypeChecker {
                 if is_type_param_name(name) {
                     return;
                 }
-                if type_params.iter().any(|p| p == name) {
+                if types.is_type_param_in_scope(name) {
                     return;
                 }
                 // Placeholders and specials that legitimately stay unresolved.

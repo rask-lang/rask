@@ -656,7 +656,8 @@ impl TypeChecker {
         // receiver passes, so the user sees it at their call rather than as
         // `Function not found: Vec_reserve` out of codegen or a runtime error
         // part-way through a run.
-        if !matches!(ty, Type::Var(_) | Type::Error) {
+        let is_param = matches!(&ty, Type::UnresolvedNamed(n) if self.types.is_type_param_in_scope(n));
+        if !is_param && !matches!(ty, Type::Var(_) | Type::Error) {
             if let Some(prefix) = super::receiver_name(&ty, &self.types) {
                 if rask_stdlib::mir_metadata::is_unimplemented(&prefix, &method) {
                     return Err(TypeError::UnimplementedStdlibMethod {
@@ -857,6 +858,27 @@ impl TypeChecker {
         match &ty {
             // Source error already reported — suppress cascading method errors
             Type::Error => Ok(false),
+            // A type parameter is the parameter even when it shares a stdlib
+            // type's name. The name-keyed arms below would answer for
+            // `time.Duration` on a `Wrap<Duration>`'s field (#1487). What a
+            // parameter can do comes from its bounds, and an unbounded one
+            // waits for monomorphization like the fallback arm at the end.
+            Type::UnresolvedNamed(name) if self.types.is_type_param_in_scope(name) => {
+                if self.current_type_param_bounds.contains_key(name) {
+                    return self.resolve_bounded_type_param_method(
+                        name.clone(), method, args, ret, span, call_node,
+                    );
+                }
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: ty.clone(),
+                    method,
+                    args,
+                    ret,
+                    span,
+                    call_node,
+                });
+                Ok(false)
+            }
             Type::Var(id) => {
                 // A primitive arithmetic operator takes both operands at the
                 // same type, but desugaring rewrote `1000 / n` into

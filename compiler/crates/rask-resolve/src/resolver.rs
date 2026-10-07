@@ -1879,22 +1879,30 @@ impl Resolver {
                 DeclKind::Fn(fn_decl) => {
                     self.resolve_function(fn_decl);
                 }
+                // A method sees its owner's type parameters as well as its
+                // own, so they go on the stack around every method.
                 DeclKind::Struct(struct_decl) => {
+                    self.push_type_params(Self::declared_type_params(&struct_decl.type_params));
                     for method in &struct_decl.methods {
                         self.resolve_method(method, &struct_decl.type_params);
                     }
+                    self.pop_type_params();
                 }
                 DeclKind::Enum(enum_decl) => {
+                    self.push_type_params(Self::declared_type_params(&enum_decl.type_params));
                     for method in &enum_decl.methods {
                         self.resolve_method(method, &enum_decl.type_params);
                     }
+                    self.pop_type_params();
                 }
                 DeclKind::Interface(interface_decl) => {
+                    self.push_type_params(Self::declared_type_params(&interface_decl.type_params));
                     for method in &interface_decl.methods {
                         if !method.body.is_empty() {
                             self.resolve_method(method, &[]);
                         }
                     }
+                    self.pop_type_params();
                 }
                 DeclKind::Impl(impl_decl) => {
                     self.resolve_impl(impl_decl);
@@ -1963,11 +1971,8 @@ impl Resolver {
         // IM1 checks `let`/`mut` annotations as the body is resolved, so the
         // function's type parameters have to be in scope for that — a local
         // `let x: Output = …` inside `func f<Output>()` is the parameter, not
-        // `os.Output`. Outer params come along for an `extend Ring<T>` method.
-        let mut fn_params =
-            Self::declared_type_params(&fn_decl.type_params);
-        fn_params.extend(outer_type_params.iter().map(|p| p.name.clone()));
-        self.push_type_params(fn_params);
+        // `os.Output`. The owner's are already on the stack (`resolve_bodies`).
+        self.push_type_params(Self::declared_type_params(&fn_decl.type_params));
 
         // Register comptime type params from outer context (struct/enum extend)
         for tp in outer_type_params {
@@ -2040,9 +2045,11 @@ impl Resolver {
         // Look up type params from the target type's declaration
         let base = impl_decl.target_ty.name().unwrap_or_default();
         let outer_params = self.type_param_map.get(&base).cloned().unwrap_or_default();
+        self.push_type_params(self.impl_scope_params(impl_decl));
         for method in &impl_decl.methods {
             self.resolve_method(method, &outer_params);
         }
+        self.pop_type_params();
     }
 
     // =========================================================================
@@ -2401,6 +2408,20 @@ impl Resolver {
         out
     }
 
+    /// What an `extend` block puts in scope for its header and methods: the
+    /// header's names, which may rename the declaration's, or the
+    /// declaration's when the header leaves them off (`extend Wrapper`).
+    fn impl_scope_params(&self, i: &ImplDecl) -> HashSet<String> {
+        let mut out = Self::impl_type_params(i);
+        if i.target_ty.args().is_empty() {
+            let base = i.target_ty.name().unwrap_or_default();
+            if let Some(declared) = self.type_param_map.get(&base) {
+                out.extend(Self::declared_type_params(declared));
+            }
+        }
+        out
+    }
+
     fn push_type_params(&mut self, names: HashSet<String>) {
         self.type_param_scopes.push(names);
     }
@@ -2460,14 +2481,16 @@ impl Resolver {
                 }
                 DeclKind::Fn(f) => self.check_fn_annotations(f, decl.span),
                 DeclKind::Interface(t) => {
+                    self.push_type_params(Self::declared_type_params(&t.type_params));
                     for m in &t.methods {
                         self.check_fn_annotations(m, decl.span);
                     }
+                    self.pop_type_params();
                 }
                 DeclKind::Impl(i) => {
                     // `extend Ring<T>` puts `T` in scope for the target and for
                     // every method in the block.
-                    self.push_type_params(Self::impl_type_params(i));
+                    self.push_type_params(self.impl_scope_params(i));
                     self.check_type_annotation(&i.target_ty, decl.span);
                     for m in &i.methods {
                         self.check_fn_annotations(m, decl.span);
