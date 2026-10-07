@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A function that takes a container and returns it hands the caller back the
+// container it passed in. Natively nobody freed it: the caller gave it up at
+// the call, and the callee hadn't built what it returned, so neither side
+// owned the result (#1502).
+
+func stash(take p: Vec<i64>) -> Vec<i64> {
+    mut q = p
+    for i in 0..3 {
+        q.push(i)
+    }
+    return q
+}
+
+func ident<T>(take x: T) -> T {
+    return x
+}
+
+func twice(take p: Vec<i64>) -> Vec<i64> {
+    let q = stash(p)
+    return stash(q)
+}
+
+func use_and_drop(take p: Vec<i64>) -> u64 {
+    let q = stash(p)
+    return q.len()
+}
+
+func fresh_through() -> Vec<i64> {
+    return stash(Vec.new())
+}
+
+func maybe_stash(take p: Vec<i64>, c: bool) -> Vec<i64> {
+    if c {
+        return stash(p)
+    }
+    return p
+}
+
+func names(take p: Vec<string>) -> Vec<string> {
+    mut q = p
+    q.push("c")
+    return q
+}
+
+test "direct call" {
+    let v: Vec<i64> = [1, 2]
+    let w = stash(v)
+    assert w.len() == 5
+    assert w[4] == 2
+}
+
+test "through a function value" {
+    let f: func(take Vec<i64>) -> Vec<i64> = stash
+    let v: Vec<i64> = [1]
+    let w = f(v)
+    assert w.len() == 4
+}
+
+test "generic" {
+    let v: Vec<i64> = [4, 5, 6]
+    let w = ident(v)
+    assert w.len() == 3
+    let s: Vec<string> = ["a", "b"]
+    let t = ident(s)
+    assert t[1] == "b"
+}
+
+test "chained and dropped in the callee" {
+    let v: Vec<i64> = []
+    assert twice(v).len() == 6
+    assert use_and_drop([9]) == 4
+    assert fresh_through().len() == 3
+}
+
+test "in a loop" {
+    for i in 0..3 {
+        let x: Vec<i64> = [i]
+        let y = maybe_stash(x, i == 1)
+        assert y[0] == i
+    }
+    mut acc: Vec<i64> = []
+    for _ in 0..3 {
+        acc = stash(acc)
+    }
+    assert acc.len() == 9
+}
+
+test "strings inside" {
+    let v: Vec<string> = ["a", "b"]
+    let w = names(v)
+    assert w.len() == 3
+    assert w[2] == "c"
+}
+
+func main() {}

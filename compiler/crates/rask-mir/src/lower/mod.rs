@@ -4220,7 +4220,13 @@ impl<'a> MirLowerer<'a> {
             let scalar_mutate = param.is_mutate
                 && crate::lower::stmt::mutate_param_needs_own_pointer(&param.name, &param_ty);
             let local_ty = if scalar_mutate { MirType::Ptr } else { param_ty.clone() };
-            let local_id = lowerer.builder.add_param(param.name.clone(), local_ty.clone());
+            // The parameter keeps saying which container it is, so a frame that
+            // gets it back from a call knows which free matches (#1502).
+            let declared_ty = match written {
+                Some(t) if !scalar_mutate => ctx.payload_of_expr(t),
+                _ => local_ty.clone(),
+            };
+            let local_id = lowerer.builder.add_param(param.name.clone(), declared_ty);
             lowerer.locals.insert(param.name.clone(), (local_id, local_ty));
             // Set type prefix for parameters so method calls qualify correctly.
             // mir_type_name handles Struct/Enum/String/primitives; the written
