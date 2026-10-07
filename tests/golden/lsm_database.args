@@ -1,12 +1,17 @@
 # One database for the whole session, in the backend's own scratch dir. The
 # bench writes enough to flush three SSTables, so the later commands open a
 # database with files on disk, a WAL to recover and a block cache to fill.
+# Overwriting key_000001 after the reopen has to beat the copy the bench
+# flushed, both before and after compaction merges the two.
 --dir $SCRATCH/db bench --count 1500
+--dir $SCRATCH/db put key_000001 fresh
+--dir $SCRATCH/db scan key_000001 key_000001
 --dir $SCRATCH/db put alpha one
 --dir $SCRATCH/db put beta two
 --dir $SCRATCH/db get alpha
 --dir $SCRATCH/db delete beta
 --dir $SCRATCH/db scan a key_000010
 --dir $SCRATCH/db compact
+--dir $SCRATCH/db get key_000001
 --dir $SCRATCH/db stats
 --dir $SCRATCH/db scan key_001490 key_001499

@@ -20,11 +20,14 @@ Database statistics:
 
 Benchmark complete.
 OK
+key_000001	fresh
+(1 entries)
+OK
 OK
 one
 OK
 alpha	one
-key_000001	value_1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+key_000001	fresh
 key_000003	value_3_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 key_000005	value_5_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 key_000007	value_7_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -34,18 +37,19 @@ Forcing compaction...
 Compaction complete.
 Database statistics:
   Memtable:  0 entries, 0 bytes
-  SSTables:  6 total
-    L0: 5 files
+  SSTables:  8 total
+    L0: 7 files
     L2: 1 files
   Cache:     0 blocks, 0 accesses
-  Sequence:  4
+  Sequence:  2255
+fresh
 Database statistics:
   Memtable:  0 entries, 0 bytes
-  SSTables:  6 total
-    L0: 5 files
+  SSTables:  8 total
+    L0: 7 files
     L2: 1 files
   Cache:     0 blocks, 0 accesses
-  Sequence:  1
+  Sequence:  2255
 key_001491	value_1491_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 key_001493	value_1493_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 key_001495	value_1495_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx

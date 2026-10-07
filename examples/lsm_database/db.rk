@@ -47,7 +47,9 @@ extend Db {
         }
         ensure wal.close()
 
-        // Recover memtable from WAL
+        // Recover memtable from WAL. Sequence numbers continue from the
+        // highest one in the WAL or on disk: a flush truncates the WAL, and
+        // a write numbered below what an SSTable holds would lose to it.
         mut memtable = Memtable.new()
         mut max_seq: i64 = 0
         mut recovered = recover_wal(config.wal_path) catch e => {
@@ -69,6 +71,7 @@ extend Db {
         mut discovered = discover_sstables(config.dir)
         for meta in discovered.take_all() {
             if meta.id >= next_sst_id { next_sst_id = meta.id + 1 }
+            if meta.max_seq > max_seq { max_seq = meta.max_seq }
             if meta.level < MAX_LEVELS {
                 with levels[meta.level.wrap<usize>()] as level_ssts {
                     level_ssts.push(meta)
