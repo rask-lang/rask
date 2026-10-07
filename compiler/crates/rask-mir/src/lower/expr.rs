@@ -1123,6 +1123,14 @@ impl<'a> MirLowerer<'a> {
             .contains(&format!("{}_{}", base, method))
     }
 
+    /// Does `<receiver>.<method>()` consume the receiver (`take self`)?
+    fn receiver_method_takes(&self, object: &Expr, method: &str) -> bool {
+        self.ctx
+            .lookup_raw_type(object.id)
+            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+            .is_some_and(|prefix| self.take_self_methods.contains(&format!("{}_{}", prefix, method)))
+    }
+
     /// Address of a field/index place, as `base` or `base + offset`. `None` when
     /// the chain isn't a place this can take the address of.
     fn place_address(&mut self, place: &Expr) -> Option<MirOperand> {
@@ -5064,7 +5072,14 @@ impl<'a> MirLowerer<'a> {
             (
                 ExprKind::Field { .. } | ExprKind::Index { .. },
                 MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) | MirType::Array { .. },
-            ) if self.receiver_method_mutates(object, method) => {
+            // Not a `take self` method: that one is handed the value, which
+            // leaves the place. Handed the place's address instead, it was an
+            // interior pointer the frame didn't know about — `self.mt.take()`
+            // inside a `take self` body released the whole of `self` before the
+            // callee read `mt` out of it, and then released `mt` again (#1497).
+            ) if self.receiver_method_mutates(object, method)
+                && !self.receiver_method_takes(object, method) =>
+            {
                 self.place_address(object).unwrap_or(obj_op)
             }
             _ => obj_op,
