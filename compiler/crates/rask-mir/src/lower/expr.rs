@@ -5107,6 +5107,18 @@ impl<'a> MirLowerer<'a> {
         Ok(result)
     }
 
+    /// Is argument `i` of `object.<method>` an array standing in for a `Vec`?
+    ///
+    /// True when the receiver is a fixed array and `Vec` declares that
+    /// parameter as its own type (`other: Vec<T>` in `eq`), which is where the
+    /// checker let an array of the receiver's type through.
+    fn array_takes_own_type_arg(&self, object: &Expr, method: &str, i: usize) -> bool {
+        matches!(self.ctx.lookup_raw_type(object.id), Some(rask_types::Type::Array { .. }))
+            && rask_stdlib::stubs::StubRegistry::load()
+                .lookup_method("Vec", method)
+                .is_some_and(|m| m.own_type_params.get(i).copied().unwrap_or(false))
+    }
+
     /// Does the stdlib's `Vec.<method>` take `mutate self`?
     ///
     /// Asked for an array receiver, which borrows `Vec`'s methods: the stdlib's
@@ -5981,6 +5993,15 @@ impl<'a> MirLowerer<'a> {
                 self.wrap_closure_arg(op, mir_ty, callee_params.get(i + 1).and_then(|o| o.as_ref()))
             } else {
                 self.lower_arg_for_param(&arg.expr, callee_sig.as_ref(), i + 1)?
+            };
+            // An array receiver borrows `Vec`'s method, and a parameter `Vec`
+            // declares as its own type took an array of the same type (the
+            // checker's `resolve_array_method`). It needs the receiver's `Vec`
+            // view too: `Vec_eq` reads a header the array doesn't have (#1413).
+            let (op, ty) = if self.array_takes_own_type_arg(object, &method, i) {
+                self.array_receiver_as_vec(&op, &ty).unwrap_or((op, ty))
+            } else {
+                (op, ty)
             };
             all_args.push(op);
             arg_types.push(ty);

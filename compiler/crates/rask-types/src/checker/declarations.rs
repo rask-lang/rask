@@ -2252,11 +2252,16 @@ impl TypeChecker {
             }
             // Tuples: all elements must have the method
             Type::Tuple(elems) => elems.iter().all(|e| self.type_has_method_in(e, method, params)),
-            // Arrays: element must have the method
-            Type::Array { elem, .. } => self.type_has_method_in(elem, method, params),
             // `Vec<T>` is Equal and Hashable when `T` is (EQ1/HA1), compared
             // and hashed element by element. Not Comparable: no order is
-            // defined on it.
+            // defined on it. A fixed array borrows `Vec`'s methods, so it
+            // answers the same: claiming an order for it derived a `compare`
+            // that called a `lt` nothing declares (#1413).
+            Type::Array { elem, .. } => {
+                !Self::is_ordering_method(method)
+                    && matches!(method, "eq" | "hash" | "clone" | "debug")
+                    && self.type_has_method_in(elem, method, params)
+            }
             Type::Generic { base, args }
                 if self.types.type_name(*base) == "Vec" =>
             {

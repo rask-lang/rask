@@ -228,6 +228,11 @@ pub struct MethodStub {
     /// over, `m.get(k)` only reads it — and before this it had to guess from a
     /// list of method names kept by hand in two passes.
     pub param_modes: Vec<StubParamMode>,
+    /// Each parameter declared as the receiver's own type, positionally
+    /// matching `params`: `other: Vec<T>` in `extend Vec<T> { func eq(self,
+    /// other: Vec<T>) }`. A fixed array borrows `Vec`'s methods, and for it
+    /// such a parameter is the array's type, not a `Vec` (#1413).
+    pub own_type_params: Vec<bool>,
     /// `void` when nothing is declared.
     pub ret_ty: TypeExpr,
     pub doc: Option<String>,
@@ -549,7 +554,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !s.is_pub;
                 for m in &s.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&s.name, &s.type_params)));
                 }
             }
             DeclKind::Enum(e) => {
@@ -565,7 +570,7 @@ impl StubRegistry {
                 });
                 entry.is_private |= !e.is_pub;
                 for m in &e.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, false, &declared_type(&e.name, &e.type_params)));
                 }
             }
             DeclKind::Impl(i) => {
@@ -583,7 +588,7 @@ impl StubRegistry {
                 if in_conformance && rask_ast::primitives::is_scalar(&base_name) {
                     if let Some(entry) = self.types.get_mut(&base_name) {
                         for m in &i.methods {
-                            entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, true));
+                            entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, true, &i.target_ty));
                         }
                     }
                     return;
@@ -597,7 +602,7 @@ impl StubRegistry {
                     span: find_name_span(source, &base_name, "extend", decl_span),
                 });
                 for m in &i.methods {
-                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, in_conformance));
+                    entry.methods.push(fn_to_method_stub(m, filename, source, decl_span, in_conformance, &i.target_ty));
                 }
             }
             DeclKind::Fn(f) => {
@@ -725,13 +730,15 @@ fn declared_type(name: &str, type_params: &[rask_ast::decl::TypeParam]) -> TypeE
 }
 
 /// `in_conformance`: the method is part of an `implements` block, so its
-/// visibility is the conformance's rather than its own.
+/// visibility is the conformance's rather than its own. `own_ty` is the type
+/// the block extends, as its header spells it.
 fn fn_to_method_stub(
     f: &FnDecl,
     filename: &str,
     source: &str,
     parent_span: Span,
     in_conformance: bool,
+    own_ty: &TypeExpr,
 ) -> MethodStub {
     let self_param = f.params.iter().find(|p| p.name == "self");
     let takes_self = self_param.is_some();
@@ -749,6 +756,7 @@ fn fn_to_method_stub(
             is_deleting: p.is_deleting,
         })
         .collect();
+    let own_type_params: Vec<bool> = params.iter().map(|(_, ty)| ty == own_ty).collect();
 
     // Parser appends `<T: Bound>` to generic function names; strip for lookup.
     let bare_name = f.name.clone();
@@ -762,6 +770,7 @@ fn fn_to_method_stub(
         take_self,
         params,
         param_modes,
+        own_type_params,
         ret_ty: f.ret_ty.clone().unwrap_or(TypeExpr::Unit),
         doc: f.doc.clone(),
         source_file: format!("stdlib/{}", filename),

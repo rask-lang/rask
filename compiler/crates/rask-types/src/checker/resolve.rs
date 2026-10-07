@@ -1257,7 +1257,7 @@ impl TypeChecker {
             }
             Type::Char => self.resolve_char_method(&method, &args, &ret, span),
             Type::Array { .. } => {
-                self.resolve_array_method(&ty, &method, &args, &ret, span)
+                self.resolve_array_method(&ty, &method, &args, &ret, span, call_node)
             }
             Type::UnresolvedNamed(name) if name == "File" => {
                 self.resolve_file_method(&method, &args, &ret, span)
@@ -2211,6 +2211,7 @@ impl TypeChecker {
         args: &[Type],
         ret: &Type,
         span: Span,
+        call_node: Option<NodeId>,
     ) -> Result<bool, TypeError> {
         // Neither a fixed array nor a slice has a growth surface: one has a
         // length in its type, the other is a view into somebody else's storage.
@@ -2247,21 +2248,44 @@ impl TypeChecker {
         // only the registered path reads those. `resolve_named` turns the shape
         // into the registered type when there is one, and `resolve_method`
         // comes back here for anything that isn't declared.
+        //
+        // The call node goes along, so the call is recorded as the `Vec`
+        // method it is. Recorded as a call on the array, it named no type, mono
+        // couldn't tell which `Vec` instance to make, and queued the generic
+        // body: `[1, 2].hash()` reached MIR as `Vec_hash` over an unbound `T`
+        // (#1413).
         let vec_ty = self.resolve_named(&Type::UnresolvedGeneric {
             name: "Vec".to_string(),
             args: type_args.clone(),
         });
+        // A parameter `Vec` declares as its own type is the receiver's type
+        // here: `[1, 2] == [1, 2]` hands `Vec.eq` an array for `other`, the
+        // same way it hands it one for `self`. The argument has to be this
+        // array type, length included; the method then sees it as the `Vec`
+        // it reads like. MIR gives it a `Vec` view the way it does the
+        // receiver (#1413).
+        let mut args = args.to_vec();
+        if matches!(array_ty, Type::Array { .. }) {
+            if let Some(stub) = rask_stdlib::StubRegistry::load().lookup_method("Vec", method) {
+                for (arg, own) in args.iter_mut().zip(&stub.own_type_params) {
+                    if *own && matches!(self.ctx.apply(arg), Type::Array { .. }) {
+                        self.unify(array_ty, arg, span)?;
+                        *arg = vec_ty.clone();
+                    }
+                }
+            }
+        }
         if matches!(vec_ty, Type::Generic { .. }) {
             return self.resolve_method(
                 vec_ty,
                 method.to_string(),
-                args.to_vec(),
+                args,
                 ret.clone(),
                 span,
-                None,
+                call_node,
             );
         }
-        self.resolve_vec_method(&type_args, method, args, ret, span)
+        self.resolve_vec_method(&type_args, method, &args, ret, span)
     }
 
     pub(super) fn resolve_file_method(

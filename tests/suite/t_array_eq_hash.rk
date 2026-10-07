@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Fixed arrays compare and hash through `Vec`'s own `eq` and `hash`.
+//
+// An array borrows `Vec`'s methods, but `Vec.eq` declares `other: Vec<T>`, so
+// `a == b` on two arrays wanted a `Vec` for `b`, and a struct with an array
+// field didn't type-check at all: its derived `eq` compares the field (#1413).
+
+struct Name {
+    s: string
+}
+
+func name(t: string) -> Name {
+    return Name { s: t.to_uppercase() }
+}
+
+struct Holder {
+    arr: [i64; 3]
+    names: [Name; 2]
+}
+
+func holder(a: i64, t: string) -> Holder {
+    return Holder { arr: [1, 2, a], names: [name("x"), name(t)] }
+}
+
+test "arrays compare element by element" {
+    let a = [1, 2, 3]
+    let b = [1, 2, 4]
+    let c = [1, 2, 3]
+    assert a == c
+    assert a != b
+    assert a.eq(c)
+    assert !a.eq(b)
+}
+
+test "array elements compare through their own eq" {
+    let n = [name("ann"), name("bo")]
+    let m = [name("ann"), name("bo")]
+    let k = [name("ann"), name("cy")]
+    assert n == m
+    assert n != k
+}
+
+test "equal arrays hash equal" {
+    let a = [1, 2, 3]
+    let c = [1, 2, 3]
+    assert a.hash() == c.hash()
+    assert a.hash() != [3, 2, 1].hash()
+    let n = [name("ann"), name("bo")]
+    let m = [name("ann"), name("bo")]
+    assert n.hash() == m.hash()
+}
+
+test "a struct with an array field derives eq and hash" {
+    let h = holder(3, "y")
+    let g = holder(3, "y")
+    assert h == g
+    assert h != holder(4, "y")
+    assert h != holder(3, "z")
+    assert h.hash() == g.hash()
+}
+
+test "an array field is a map key's part" {
+    mut m: Map<Holder, i64> = Map.new()
+    m.insert(holder(3, "y"), 7)
+    assert m.contains(holder(3, "y"))
+    assert !m.contains(holder(3, "z"))
+}
+
+test "a mutating method on an array field changes the field" {
+    mut h = Holder { arr: [3, 1, 2], names: [name("x"), name("y")] }
+    h.arr.sort()
+    assert h.arr[0] == 1
+    assert h.arr[2] == 3
+}
