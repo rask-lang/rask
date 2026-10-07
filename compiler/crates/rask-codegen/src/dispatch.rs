@@ -65,8 +65,6 @@ pub enum ArgAdapt {
     AppendOutParam,
     /// Append iconst(0) (Channel_unbuffered capacity)
     AppendZero,
-    /// Append iconst(8) as elem_size (Shared_read/write)
-    AppendElemSize,
     /// Atomic compare-exchange: append an out_ok pointer (result written there).
     AtomicCas,
     /// parse: append an out-param for the value; the call returns 0/1 status,
@@ -1447,8 +1445,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry::simple("Shared_read", "rask_shared_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
-        StdlibEntry::simple("Shared_write", "rask_shared_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
         // Cell — the internal spelling of `Shared<T, Local>`, the strategy that
         // takes no lock (`conc.sync/SH1`). `new` takes
         // the value by pointer plus its size, the same way Shared does; `get`
@@ -1547,7 +1543,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry::simple("Shared_staged_data", "rask_shared_staged_data", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_staged_commit", "rask_shared_staged_commit", &[types::I64], None, false),
-        StdlibEntry::simple("Shared_staged_ptr", "rask_shared_staged_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_read", "rask_shared_try_read_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_try_write", "rask_shared_try_write_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("Shared_clone", "rask_shared_clone_i64", &[types::I64], Some(types::I64), false),
@@ -1559,7 +1554,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
             arg_adapt: ArgAdapt::Custom, ret_adapt: RetAdapt::None,
         },
-        StdlibEntry::simple("Mutex_lock", "rask_mutex_lock_ptr", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry {
             mir_name: "Mutex_acquire", c_name: "rask_mutex_acquire",
             params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,

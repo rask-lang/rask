@@ -129,7 +129,8 @@ the four divergences fixed in #687/#688/#677/#698 lived exactly there.
 - `src/registry.rs` — type registry for stdlib lookups
 - `src/mir_metadata.rs` — MIR-level metadata for stdlib functions (used by codegen)
 - New stdlib function: the declaration goes in `stdlib/*.rk`, and it must say
-  where its body lives — a Rask body, `comptime func`, `@native("symbol")`, or
+  where its body lives — a Rask body, `comptime func`, `@native("symbol")`,
+  `@builtin` (the compiler lowers the call itself, e.g. `Shared.read`), or
   `@unimplemented`. A hollow declaration with no marker fails
   `every_stdlib_function_says_where_its_body_lives`.
 

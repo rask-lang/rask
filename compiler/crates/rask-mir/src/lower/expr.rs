@@ -4945,9 +4945,9 @@ impl<'a> MirLowerer<'a> {
         // A bare `box.lock()` / `.read()` / `.write()` whose value is used
         // directly, with nothing chained onto it. `sync_guard` only fires when
         // the guard is the *object* of a trailing field or method access, so
-        // this form fell through to plain dispatch and mangled `Mutex_lock` —
-        // the closure-taking runtime entry point — with no closure to give it,
-        // which failed the Cranelift verifier on argument count (#479).
+        // this form fell through to plain dispatch and mangled a closure-taking
+        // runtime entry point with no closure to give it, which failed the
+        // Cranelift verifier on argument count (#479).
         //
         // Same acquire / use / release shape as the chained form, with the
         // guard itself as the value.
@@ -6661,10 +6661,6 @@ impl<'a> MirLowerer<'a> {
             (SharedStrategy::Local, "set") => "Cell_set",
             (SharedStrategy::Local, "replace") => "Cell_replace",
             (SharedStrategy::Local, "take") => "Cell_into_inner",
-            // A plain lock has one mode, so a `read()` under it takes the
-            // exclusive lock — slower than `Readers` would be there, never wrong
-            // (SH5).
-            (SharedStrategy::Mutex, "read" | "write") => "Mutex_lock",
             (SharedStrategy::Mutex, "try_read" | "try_write") => "Mutex_try_lock",
             (SharedStrategy::Mutex, "clone") => "Mutex_clone",
             // `get`/`set`/`replace` exist under every strategy (CE6), not just

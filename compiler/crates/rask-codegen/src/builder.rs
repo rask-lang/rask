@@ -8444,11 +8444,6 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            ArgAdapt::AppendElemSize => {
-                args.push(builder.ins().iconst(types::I64, 8));
-                CallAdapt::None
-            }
-
             ArgAdapt::AtomicCas => {
                 // compare-exchange writes the observed value through an out_ok
                 // pointer; the call returns success as its scalar result.

@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Regression test: calling .write() on a Mutex field via a `with` block
-// must lower to the 2-arg Mutex_lock call (mutex ptr + closure).
-// Previously `with self.index.write() as idx { ... }` was lowered as a
-// plain method call, emitting Mutex_lock with only 1 arg and failing
-// Cranelift verification.
+// Regression test: `with self.index.write() as idx { ... }` on a Mutex field
+// used to be lowered as a plain method call, handing a closure-taking
+// runtime entry point one argument and failing Cranelift verification. It
+// has to take the lock around the block instead.
 import sync.Shared
 import sync.Mutex
 

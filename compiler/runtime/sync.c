@@ -7,7 +7,7 @@
 //
 // Primary access is `with`-based blocks (conc.sync/WS1-WS4): the protected data
 // is only reachable inside the block, preventing reference escapes.
-// Non-blocking variants (try_read/try_write/try_lock) use closures.
+// Non-blocking variants (try_read/try_write) take a closure.
 
 #include "rask_runtime.h"
 #include "sim.h"
@@ -94,21 +94,6 @@ void rask_mutex_free(RaskMutex *m) {
     rask_free(m);
 }
 
-void rask_mutex_lock(RaskMutex *m, RaskAccessFn f, void *ctx) {
-    rask_task_mutex_lock(&m->lock, "Mutex lock");
-    f(m->data, ctx);
-    rask_task_mutex_unlock(&m->lock);
-}
-
-int64_t rask_mutex_try_lock(RaskMutex *m, RaskAccessFn f, void *ctx) {
-    if (rask_task_mutex_trylock(&m->lock) == 0) {
-        f(m->data, ctx);
-        rask_task_mutex_unlock(&m->lock);
-        return 1;
-    }
-    return 0;
-}
-
 // ─── Shared (RwLock) ───────────────────────────────────────
 
 struct RaskShared {
@@ -147,77 +132,14 @@ void rask_shared_free(RaskShared *s) {
     rask_free(s);
 }
 
-void rask_shared_read(RaskShared *s, RaskAccessFn f, void *ctx) {
-    RASK_CHECK_NONNULL(s, "Shared.read: shared handle is null");
-    rask_task_rwlock_rdlock(&s->lock, "Shared read");
-    f(s->data, ctx);
-    rask_task_rwlock_unlock(&s->lock);
-}
-
-void rask_shared_write(RaskShared *s, RaskAccessFn f, void *ctx) {
-    RASK_CHECK_NONNULL(s, "Shared.write: shared handle is null");
-    rask_task_rwlock_wrlock(&s->lock, "Shared write");
-    f(s->data, ctx);
-    rask_task_rwlock_unlock(&s->lock);
-}
-
-int64_t rask_shared_try_read(RaskShared *s, RaskAccessFn f, void *ctx) {
-    if (rask_task_rwlock_tryrdlock(&s->lock) == 0) {
-        f(s->data, ctx);
-        rask_task_rwlock_unlock(&s->lock);
-        return 1;
-    }
-    return 0;
-}
-
-int64_t rask_shared_try_write(RaskShared *s, RaskAccessFn f, void *ctx) {
-    if (rask_task_rwlock_trywrlock(&s->lock) == 0) {
-        f(s->data, ctx);
-        rask_task_rwlock_unlock(&s->lock);
-        return 1;
-    }
-    return 0;
-}
-
 // ─── i64-based codegen wrappers ────────────────────────────
 //
 // Rask closure layout (see closures.rs): [func_ptr | env...]
 // Calling convention: func_ptr(env_ptr, args...) where env_ptr = closure + 8.
+// Only the non-blocking `try_*` forms take a closure; every blocking access
+// is an acquire/release pair around code in the caller's frame.
 
 typedef int64_t (*RaskClosureFn1)(int64_t env, int64_t arg);
-typedef void    (*RaskClosureVoidFn1)(int64_t env, int64_t arg);
-
-int64_t rask_shared_new_i64(int64_t value) {
-    RaskShared *s = rask_shared_new(&value, sizeof(int64_t));
-    return (int64_t)(intptr_t)s;
-}
-
-int64_t rask_shared_read_i64(int64_t shared, int64_t closure) {
-    RaskShared *s = (RaskShared *)(intptr_t)shared;
-    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
-    int64_t env = CLOSURE_ENV(closure);
-
-    rask_task_rwlock_rdlock(&s->lock, "Shared read");
-    rask_access_push(rask_shared_release, shared);   // U3/U4
-    int64_t data = *(int64_t *)s->data;
-    int64_t result = fn(env, data);
-    rask_shared_release(shared);
-    return result;
-}
-
-int64_t rask_shared_write_i64(int64_t shared, int64_t closure) {
-    RaskShared *s = (RaskShared *)(intptr_t)shared;
-    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
-    int64_t env = CLOSURE_ENV(closure);
-
-    rask_task_rwlock_wrlock(&s->lock, "Shared write");
-    rask_access_push(rask_shared_release, shared);   // U3/U4
-    int64_t data = *(int64_t *)s->data;
-    int64_t new_data = fn(env, data);
-    *(int64_t *)s->data = new_data;
-    rask_shared_release(shared);
-    return new_data;
-}
 
 int64_t rask_shared_clone_i64(int64_t shared) {
     RaskShared *s = (RaskShared *)(intptr_t)shared;
@@ -389,18 +311,6 @@ void rask_shared_staged_commit(int64_t shared) {
     }
 }
 
-// The closure form, for the same reason `rask_shared_write_ptr` exists: it is
-// what `stdlib/sync.rk`'s `@native` names, and a declaration whose symbol
-// doesn't exist fails at codegen rather than at the declaration (#1007).
-int64_t rask_shared_staged_ptr(int64_t shared, int64_t closure) {
-    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
-    int64_t env = CLOSURE_ENV(closure);
-    int64_t scratch = rask_shared_staged_acquire(shared);
-    int64_t result = fn(env, scratch);
-    rask_shared_staged_commit(shared);
-    return result;
-}
-
 // ─── Mutex i64/ptr codegen wrappers ──────────────────────
 
 int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
@@ -409,22 +319,10 @@ int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_
     return (int64_t)(intptr_t)m;
 }
 
-int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure) {
-    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
-    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
-    int64_t env = CLOSURE_ENV(closure);
-
-    rask_task_mutex_lock(&m->lock, "Mutex lock");
-    rask_access_push(rask_mutex_release, mutex);   // U3/U4
-    int64_t result = fn(env, (int64_t)(intptr_t)m->data);
-    rask_mutex_release(mutex);
-    return result;
-}
-
-// Acquire/release pair for the direct `mutex.lock().method(args)` form. Unlike
-// the closure wrapper above, the method call happens in the caller's frame, so
-// it returns aggregates (a `T or E` result) through the normal ABI. Acquire
-// locks and hands back the data pointer; release unlocks.
+// Acquire/release pair for every blocking access under `Mutex`: the `with`
+// block or the chained expression runs in the caller's frame, so it returns
+// aggregates (a `T or E` result) through the normal ABI. Acquire locks and
+// hands back the data pointer; release unlocks.
 int64_t rask_mutex_acquire(int64_t mutex) {
     RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
     rask_task_mutex_lock(&m->lock, "Mutex lock");
@@ -473,38 +371,13 @@ void rask_mutex_drop(int64_t mutex) {
 
 // ─── Pointer-based wrappers for aggregate types ──────────
 //
-// These work with any data size. The closure receives a pointer to
-// the data inside the Shared, not a copy. For write, modifications
-// happen in-place through the pointer (no copy-back needed).
+// These work with any data size. A `try_*` closure receives a pointer to
+// the data inside the Shared, not a copy, so writes land in place.
 
 int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind) {
     RaskShared *s = rask_shared_new((const void *)(intptr_t)data_ptr, data_size);
     s->payload_kind = payload_kind;
     return (int64_t)(intptr_t)s;
-}
-
-int64_t rask_shared_read_ptr(int64_t shared, int64_t closure) {
-    RaskShared *s = (RaskShared *)(intptr_t)shared;
-    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
-    int64_t env = CLOSURE_ENV(closure);
-
-    rask_task_rwlock_rdlock(&s->lock, "Shared read");
-    rask_access_push(rask_shared_release, shared);   // U3/U4
-    int64_t result = fn(env, (int64_t)(intptr_t)s->data);
-    rask_shared_release(shared);
-    return result;
-}
-
-int64_t rask_shared_write_ptr(int64_t shared, int64_t closure) {
-    RaskShared *s = (RaskShared *)(intptr_t)shared;
-    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
-    int64_t env = CLOSURE_ENV(closure);
-
-    rask_task_rwlock_wrlock(&s->lock, "Shared write");
-    rask_access_push(rask_shared_release, shared);   // U3/U4
-    int64_t result = fn(env, (int64_t)(intptr_t)s->data);
-    rask_shared_release(shared);
-    return result;
 }
 
 // Acquire/release for the direct `shared.read()/.write()` guard form, mirroring

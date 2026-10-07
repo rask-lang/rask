@@ -1284,8 +1284,8 @@ mod boundary_tests {
         assert!(
             unmarked.is_empty(),
             "{} stdlib functions have an empty body and no marker. Every one has to \
-             say where its body lives — `@native(\"symbol\")`, `@unimplemented`, \
-             `comptime func`, or a Rask body:\n  {}",
+             say where its body lives — `@native(\"symbol\")`, `@builtin`, \
+             `@unimplemented`, `comptime func`, or a Rask body:\n  {}",
             unmarked.len(),
             unmarked.join("\n  ")
         );

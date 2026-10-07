@@ -340,7 +340,6 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     ("Cell_data", Internal::SameAs("Shared_read")),
     ("Mutex_acquire", Internal::SameAs("Shared_read")),
     ("Mutex_data", Internal::SameAs("Shared_read")),
-    ("Mutex_lock", Internal::SameAs("Shared_read")),
     ("Mutex_try_lock", Internal::SameAs("Shared_read")),
     ("Mutex_staged_acquire", Internal::SameAs("Shared_read")),
     // `with s.staged() as v` hands back the working copy the runtime holds
@@ -521,7 +520,7 @@ fn accountable_family_of(name: &str) -> Option<&str> {
         return Some(head);
     }
     // Or a head the list itself uses — a strategy rather than a type, as in
-    // `Cell_acquire` and `Mutex_lock`, where `Shared<T, Cell>` is the type and
+    // `Cell_acquire` and `Mutex_acquire`, where `Shared<T, Cell>` is the type and
     // `Cell` is how the call site spells the family.
     //
     // A head here is a family by declaration, so spell it the way the thing it

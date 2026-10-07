@@ -1441,21 +1441,11 @@ void  rask_access_stack_set(void *head);
 
 typedef struct RaskMutex RaskMutex;
 
-// Callback for lock/read/write: receives pointer to the protected data.
-typedef void (*RaskAccessFn)(void *data, void *ctx);
-
 RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size);
 void       rask_mutex_free(RaskMutex *m);
 
-// Acquire lock, call f(data, ctx), release lock.
-void rask_mutex_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
-
-// Non-blocking. Returns 1 if lock acquired (and f was called), 0 otherwise.
-int64_t rask_mutex_try_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
-
 // Pointer-based codegen wrappers for Mutex.
 int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size, int64_t payload_kind);
-int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_mutex_acquire(int64_t mutex);
 void    rask_mutex_release(int64_t mutex);
 int64_t rask_mutex_data(int64_t mutex);
@@ -1478,7 +1468,6 @@ int64_t rask_shared_staged_acquire(int64_t shared);
 int64_t rask_shared_staged_data(int64_t shared);
 void    rask_shared_staged_commit(int64_t shared);
 void    rask_shared_staged_discard(int64_t shared);
-int64_t rask_shared_staged_ptr(int64_t shared, int64_t closure);
 int64_t rask_mutex_clone(int64_t mutex);
 void    rask_mutex_drop(int64_t mutex);
 
@@ -1491,25 +1480,12 @@ typedef struct RaskShared RaskShared;
 RaskShared *rask_shared_new(const void *initial_data, int64_t data_size);
 void        rask_shared_free(RaskShared *s);
 
-// Shared read access — multiple concurrent readers allowed.
-void rask_shared_read(RaskShared *s, RaskAccessFn f, void *ctx);
-
-// Exclusive write access — blocks until all readers finish.
-void rask_shared_write(RaskShared *s, RaskAccessFn f, void *ctx);
-
-// Non-blocking variants. Return 1 if access granted, 0 otherwise.
-int64_t rask_shared_try_read(RaskShared *s, RaskAccessFn f, void *ctx);
-int64_t rask_shared_try_write(RaskShared *s, RaskAccessFn f, void *ctx);
-
 // Rask closure layout (see closures.rs): [func_ptr(8) | env...].
 // The call takes the env pointer as its first argument.
 #define CLOSURE_FUNC(cl)  (*(int64_t *)(intptr_t)(cl))
 #define CLOSURE_ENV(cl)   ((cl) + 8)
 
 // i64-based Shared wrappers for codegen dispatch table.
-int64_t rask_shared_new_i64(int64_t value);
-int64_t rask_shared_read_i64(int64_t shared, int64_t closure);
-int64_t rask_shared_write_i64(int64_t shared, int64_t closure);
 int64_t rask_shared_clone_i64(int64_t shared);
 void    rask_shared_drop_i64(int64_t shared);
 
@@ -1532,8 +1508,6 @@ void    rask_cell_set(int64_t cell, int64_t data_ptr);
 void    rask_cell_replace(int64_t cell, int64_t data_ptr, int64_t out);
 void    rask_cell_into_inner(int64_t cell, int64_t out);
 void    rask_cell_free(int64_t cell);
-int64_t rask_shared_read_ptr(int64_t shared, int64_t closure);
-int64_t rask_shared_write_ptr(int64_t shared, int64_t closure);
 
 // `get`/`set`/`replace` under each lock — the single-expression shorthand
 // (CE6) that `Local` gets for free. See sync.c for why they exist per strategy.

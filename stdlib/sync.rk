@@ -41,14 +41,18 @@ extend Shared<T, S> {
     @native("rask_cell_new")
     public func local(take value: T) -> Shared<T, Local> {}
 
+    // `read`, `write` and `staged` are `@builtin`: there is no function to
+    // call. The compiler takes the lock, runs the `with` block or the rest of
+    // the expression in the caller's frame, and releases it.
+
     /// Shared access, scoped to the expression or the `with` block.
     /// Under `Mutex` this takes the exclusive lock: slower than `Readers` would
     /// be there, never wrong.
-    @native("rask_shared_read_ptr")
+    @builtin
     public func read(self) -> T {}
 
     /// Exclusive access, scoped to the expression or the `with` block.
-    @native("rask_shared_write_ptr")
+    @builtin
     public func write(self) -> T {}
 
     /// Exclusive access to a working copy, committed as one move on any
@@ -60,7 +64,7 @@ extend Shared<T, S> {
     /// Only as the source of a `with`: `with s.staged() as v { … }`. The commit
     /// happens when the block exits, so a call with no block has nowhere to put
     /// it, and the checker rejects one (E0846).
-    @native("rask_shared_staged_ptr")
+    @builtin
     public func staged(self) -> T {}
 
     /// Non-blocking read. `none` if contended; always succeeds under `Local`.
