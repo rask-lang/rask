@@ -3409,12 +3409,37 @@ impl<'a> MirLowerer<'a> {
                 .unwrap_or(final_ty),
             _ => final_ty,
         };
+        // `for x in v.take_all()` owns each element (ctrl.loops/LP7). The read
+        // above is a view the filters look at; the binding takes the element
+        // out of the vector, so moving it on doesn't leave the vector's free a
+        // second owner. A `map` or `enumerate` builds a new value, and the
+        // source element then stays the vector's.
+        let consumes = Self::is_take_all_call(chain.source)
+            && chain.adapters.iter().all(|a| matches!(
+                a,
+                super::IterAdapter::Filter { .. }
+                    | super::IterAdapter::Skip { .. }
+                    | super::IterAdapter::Take { .. }
+            ));
+        let final_ty = if consumes {
+            self.handed_over_elem(chain.source, final_ty)
+        } else {
+            final_ty
+        };
         let (pair_tys, _binding_ty, binding_local, elem_slot) =
             self.alloc_destructure_slots(&final_ty, for_binding, binding_name);
-        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
-            dst: elem_slot,
-            rvalue: MirRValue::Use(final_op),
-        }));
+        if consumes {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                dst: Some(elem_slot),
+                func: FunctionRef::internal("Vec_move_out".to_string()),
+                args: vec![MirOperand::Local(setup.collection), MirOperand::Local(setup.idx)],
+            }));
+        } else {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: elem_slot,
+                rvalue: MirRValue::Use(final_op),
+            }));
+        }
 
         if let ForBinding::Tuple(names) = for_binding {
             self.split_destructured_element(names, &pair_tys, elem_slot, binding_local, None);
@@ -3439,6 +3464,12 @@ impl<'a> MirLowerer<'a> {
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
         Ok(())
+    }
+
+    /// `v.take_all()`, the one loop source whose elements the loop owns.
+    fn is_take_all_call(expr: &Expr) -> bool {
+        matches!(&expr.kind, ExprKind::MethodCall { method, args, .. }
+            if method == "take_all" && args.is_empty())
     }
 
     /// ER2: route an error out of an `ensure` body into its `else |e|` handler.

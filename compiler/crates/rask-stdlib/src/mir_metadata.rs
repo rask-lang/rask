@@ -366,6 +366,9 @@ const INTERNAL_SPELLINGS: &[(&str, Internal)] = &[
     // the slot held, so there is nothing to release. It has its own spelling
     // rather than being recognised after the fact.
     ("Vec_lend", Internal::LendsElement),
+    // `for x in v.take_all()` moves each element out of the vector `take_all`
+    // returned: a `remove` that zeroes the slot instead of shifting.
+    ("Vec_move_out", Internal::SameAs("Vec_remove")),
     ("Map_lend", Internal::LendsElement),
     ("Vec_write_back", Internal::WritesBack),
     ("Map_write_back", Internal::WritesBack),
@@ -772,10 +775,19 @@ const TRANSFERS_OUT: &[&str] = &[
     "Vec_pop",
     "Vec_remove",
     "Vec_remove_unordered",
+    "Vec_move_out",
     "Map_insert",
     "Map_remove",
     "Pool_remove",
 ];
+
+/// Does this call take an element out of its receiver and hand it over?
+/// `TRANSFERS_OUT`, asked by name.
+pub fn transfers_out(qualified_name: &str) -> bool {
+    let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);
+    let base = head.split('$').next().unwrap_or(head);
+    TRANSFERS_OUT.contains(&base)
+}
 
 pub fn returns_a_view(qualified_name: &str) -> bool {
     let head = qualified_name.rsplit("::").next().unwrap_or(qualified_name);

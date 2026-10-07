@@ -569,9 +569,18 @@ int64_t rask_vec_remove(RaskVec *v, int64_t index) {
     return 0;
 }
 
+// The elements go, so what they own goes with them. Dropping only the length
+// leaked every string a cleared `Vec<string>` held, and `take_all` (a
+// retaining copy, then this) left each element one reference too many.
 void rask_vec_clear(RaskVec *v) {
     vec_check_no_borrows(v, "clear");
-    if (v) v->len = 0;
+    if (!v) return;
+    if (v->strs.offsets && v->strs.count > 0 && v->data) {
+        for (int64_t i = 0; i < v->len; i++) {
+            rask_owned_release_all(v->data + i * v->elem_size, v->strs.offsets, v->strs.count);
+        }
+    }
+    v->len = 0;
 }
 
 int64_t rask_vec_reserve(RaskVec *v, int64_t additional) {
@@ -671,14 +680,32 @@ RaskVec *rask_vec_clone(const RaskVec *src) {
     return dst;
 }
 
-// `v.take_all()` hands the elements over and leaves `v` empty (I3). The copy
-// is what makes the source safe to keep using — iteration reads the returned
-// vec, and nothing points into the original's buffer any more.
+// `v.take_all()` hands the elements over and leaves `v` empty (I3). A move,
+// not a copy: the bytes go to a fresh vector that owns them from here, and `v`
+// keeps its buffer with nothing in it. Copying with a retain and then clearing
+// cost a reference per element and, for nested containers, a deep clone.
 RaskVec *rask_vec_take_all(RaskVec *v) {
     vec_check_no_borrows(v, "take_all");
-    RaskVec *out = rask_vec_clone(v);
-    if (v) rask_vec_clear(v);
+    if (!v) return rask_vec_new(8, NULL, 0);
+    RaskVec *out = rask_vec_with_capacity(v->elem_size, v->len,
+                                          v->strs.offsets, v->strs.count);
+    if (v->len > 0) {
+        memcpy(out->data, v->data, (size_t)(v->len * v->elem_size));
+    }
+    out->len = v->len;
+    v->len = 0;
     return out;
+}
+
+// `for x in v.take_all()`: the loop binding takes element `index` over. The
+// slot is zeroed so the free at the end releases only what the loop never
+// reached (a `break`, or a filtered-out element) — every release treats an
+// all-zero element as owning nothing.
+int64_t rask_vec_move_out(RaskVec *v, int64_t index, void *out) {
+    char *slot = vec_slot(v, index);
+    if (out) memcpy(out, slot, (size_t)v->elem_size);
+    memset(slot, 0, (size_t)v->elem_size);
+    return 0;
 }
 
 // rask_string_append is the builder primitive: when the accumulator is the sole

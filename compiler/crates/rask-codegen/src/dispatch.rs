@@ -331,6 +331,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
             arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
         },
+        // `for x in v.take_all()`: the binding takes the element over, and the
+        // slot is zeroed so the vector's free skips it.
+        StdlibEntry {
+            mir_name: "Vec_move_out", c_name: "rask_vec_move_out",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: true,
+            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
 
         // ── Subscript (desugared from args[0] → args.index(0)) ─
         StdlibEntry {

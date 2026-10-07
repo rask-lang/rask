@@ -15,6 +15,8 @@ use rask_types::Type;
 
 /// Internal state for iterator chain loop setup.
 pub(super) struct IterLoopSetup {
+    /// The vector the loop indexes — the source, or what it materialized into.
+    pub(super) collection: LocalId,
     pub(super) idx: LocalId,
     pub(super) elem_local: LocalId,
     pub(super) elem_ty: MirType,
@@ -1118,6 +1120,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         Ok(IterLoopSetup {
+            collection,
             idx,
             elem_local,
             elem_ty,

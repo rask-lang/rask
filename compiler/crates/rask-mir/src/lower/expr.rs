@@ -6336,6 +6336,7 @@ impl<'a> MirLowerer<'a> {
             self.collection_elem_of_expr(object)
                 .or_else(|| self.ctx.lookup_node_type(expr.id))
                 .map(vec_slot_type)
+                .map(|t| self.handed_over_elem(object, t))
         } else if qualified_name == "Vec_pop" {
             // Same, one level in: `.pop()` is `T?`, and the payload type sizes
             // the slot the DerefOption adapter copies into. A bare `i64?` slot
@@ -6344,7 +6345,7 @@ impl<'a> MirLowerer<'a> {
             // `tracked_elem` was in front of this too, and `None` here for the
             // same reason.
             self.extract_payload_type(expr)
-                .map(|elem| super::option_of(vec_slot_type(elem)))
+                .map(|elem| super::option_of(self.handed_over_elem(object, vec_slot_type(elem))))
         } else if matches!(qualified_name.as_str(), "Rack_insert" | "Rack_corresponding") {
             // Both hand back a link. The stub says `Link<T>`, which reaches MIR
             // without `T`'s layout attached — and a link without its layout

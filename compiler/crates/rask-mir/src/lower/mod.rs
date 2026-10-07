@@ -2440,6 +2440,51 @@ impl<'a> MirLowerer<'a> {
     /// every node, so a collection that arrived as a field of something built
     /// elsewhere has only its declaration to go on.
     pub(crate) fn collection_elem_of_expr(&self, expr: &Expr) -> Option<MirType> {
+        self.collection_elem_of_expr_inner(expr)
+    }
+
+    /// An element a call takes *out* of this collection, typed so a container
+    /// element says which container it is (`MirType::Container`).
+    ///
+    /// `elem` is the plain answer, where every container is a bare `Ptr`. The
+    /// frame owns what `remove` and friends hand over, and the free it owes a
+    /// `Vec<Vec<T>>`'s element is `Vec_free` — which a bare pointer can't say.
+    /// The checker's type first; inside a monomorphized stdlib body it often
+    /// has none, and the receiver's written type (substituted by mono) does.
+    pub(crate) fn handed_over_elem(&self, collection: &Expr, elem: MirType) -> MirType {
+        if elem != MirType::Ptr {
+            return elem;
+        }
+        if let Some(ty) = self.ctx.lookup_raw_type(collection.id) {
+            if let Some((name, args)) = self.generic_head(ty) {
+                if matches!(name.as_str(), "Vec" | "Iterator" | "Sequence") {
+                    if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
+                        if !matches!(**inner, Type::Var(_)) {
+                            return self.ctx.payload_to_mir(inner);
+                        }
+                    }
+                }
+            }
+        }
+        let written = match &collection.kind {
+            ExprKind::Ident(name) => self.meta(name).and_then(|m| m.full_type.as_ref()),
+            // `v.take_all()` holds what `v` holds.
+            ExprKind::MethodCall { object, method, .. } if method == "take_all" => {
+                return self.handed_over_elem(object, elem);
+            }
+            _ => None,
+        };
+        if let Some(t) = written {
+            if t.name().as_deref() == Some("Vec") {
+                if let Some(arg) = t.args().first() {
+                    return self.ctx.payload_of_expr(arg);
+                }
+            }
+        }
+        elem
+    }
+
+    fn collection_elem_of_expr_inner(&self, expr: &Expr) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
             if let Some(elem) = self.collection_elem_of_checker_type(ty) {
                 return Some(elem);

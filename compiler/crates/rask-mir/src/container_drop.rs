@@ -1709,6 +1709,21 @@ fn collect_fresh_containers_with(
     fresh
 }
 
+/// A local's type with its container kinds still named (`MirLocal::unerased`).
+fn unerased_type(func: &MirFunction, local: LocalId) -> Option<MirType> {
+    let l = func.locals.iter().find(|l| l.id == local)?;
+    Some(l.unerased.clone().unwrap_or_else(|| l.ty.clone()))
+}
+
+/// The free that gives back a container of this kind.
+fn container_free(kind: crate::ContainerKind) -> &'static str {
+    match kind {
+        crate::ContainerKind::Vec => "Vec_free",
+        crate::ContainerKind::Map => "Map_free",
+        crate::ContainerKind::Rack => "Rack_free",
+    }
+}
+
 /// Every name that may hold a container this frame made, with the free that
 /// matches it, and the names a container is made under: a constructor's
 /// destination, a container read out of a wrapper a callee handed back, a
@@ -1732,6 +1747,24 @@ fn containers_and_makers(
                 let base = head.split('$').next().unwrap_or(head);
                 if let Some(free) = free_for(base) {
                     fresh.insert(*dst, free);
+                } else if rask_stdlib::mir_metadata::transfers_out(base) {
+                    // A container taken out of a container — `vv.remove(i)`,
+                    // `vv.pop()`, the binding of `for v in vv.take_all()` — is
+                    // the caller's now, like one a constructor made. Nothing
+                    // listed it, so a `Vec<Vec<T>>` element that was removed
+                    // and never moved on was never freed. `pop` wraps it in an
+                    // optional, which the unwrap below reads it out of.
+                    match unerased_type(func, *dst) {
+                        Some(MirType::Container(kind)) => {
+                            fresh.insert(*dst, container_free(kind));
+                        }
+                        Some(MirType::Option(inner)) => {
+                            if let MirType::Container(kind) = *inner {
+                                unwrap_for.insert(*dst, container_free(kind));
+                            }
+                        }
+                        _ => {}
+                    }
                 } else if let Some(free) = crate::elem_strs::wrapped_free_fn(base) {
                     unwrap_for.insert(*dst, free);
                 } else if let Some(back) = handing_over.get(&fref.name) {

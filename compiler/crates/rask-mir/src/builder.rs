@@ -14,12 +14,13 @@ use rask_ast::Span;
 /// (see `MirType::Container`). So every local made here keeps the plain type
 /// and the full one side by side.
 ///
-/// Only for a container *inside* something. A bare container local is freed by
-/// the pass that tracks handles (`container_drop`); naming it here as well
-/// would have the aggregate walk free it a second time.
+/// A bare container is kept too: `container_drop` frees those, and an element
+/// taken out of a `Vec<Vec<T>>` is a bare `Ptr` that has to say it's a `Vec`
+/// for the right free to be found. The aggregate walk in `rc_insert` skips a
+/// bare one, or it would free it a second time.
 fn split_container(ty: MirType) -> (MirType, Option<MirType>) {
     let erased = ty.without_container_kinds();
-    let unerased = (erased != ty && !matches!(ty, MirType::Container(_))).then_some(ty);
+    let unerased = (erased != ty).then_some(ty);
     (erased, unerased)
 }
 

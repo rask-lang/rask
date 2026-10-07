@@ -539,7 +539,11 @@ fn insert_aggregate_release(
         // when nothing in it is a string: `Vec<i64>?` is a tag beside a handle,
         // and the vector behind that tag was nobody's. The kind is on the local
         // rather than in the type — `MirType::Container` says why.
-        .filter(|l| aggregate_may_hold_string(&l.ty) || l.unerased.is_some())
+        // A bare container's handle is `container_drop`'s to free.
+        .filter(|l| {
+            aggregate_may_hold_string(&l.ty)
+                || l.unerased.as_ref().is_some_and(|t| !matches!(t, MirType::Container(_)))
+        })
         .map(|l| l.id)
         .collect();
     if aggregates.is_empty() {
