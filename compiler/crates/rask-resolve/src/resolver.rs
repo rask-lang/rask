@@ -1895,12 +1895,11 @@ impl Resolver {
                     }
                     self.pop_type_params();
                 }
+                // A method with no default body still has a signature to check.
                 DeclKind::Interface(interface_decl) => {
                     self.push_type_params(Self::declared_type_params(&interface_decl.type_params));
                     for method in &interface_decl.methods {
-                        if !method.body.is_empty() {
-                            self.resolve_method(method, &[]);
-                        }
+                        self.resolve_method(method, &[]);
                     }
                     self.pop_type_params();
                 }
@@ -1968,11 +1967,19 @@ impl Resolver {
         };
         self.scopes.push(scope_kind);
 
-        // IM1 checks `let`/`mut` annotations as the body is resolved, so the
-        // function's type parameters have to be in scope for that — a local
+        // IM1 for the signature and for every `let`/`mut` annotation in the
+        // body, with the function's type parameters in scope — a local
         // `let x: Output = …` inside `func f<Output>()` is the parameter, not
         // `os.Output`. The owner's are already on the stack (`resolve_bodies`).
+        // Every function and method passes through here wherever it's
+        // written, so no signature can miss the check.
         self.push_type_params(Self::declared_type_params(&fn_decl.type_params));
+        for ty in fn_decl.params.iter().filter_map(|p| p.ty.as_ref()) {
+            self.check_type_annotation(ty, fn_decl.span);
+        }
+        if let Some(ret) = &fn_decl.ret_ty {
+            self.check_type_annotation(ret, fn_decl.span);
+        }
 
         // Register comptime type params from outer context (struct/enum extend)
         for tp in outer_type_params {
@@ -2450,7 +2457,9 @@ impl Resolver {
         }
     }
 
-    /// IM1 over every type annotation in the program.
+    /// IM1 over the type annotations outside any function: fields, payloads,
+    /// consts, aliases, extend headers. Signatures and bodies get theirs in
+    /// `resolve_function_body`.
     ///
     /// A pass of its own, run once `collect_declarations` has seen all the
     /// imports. Checking a field where it's declared would make the answer depend
@@ -2479,22 +2488,12 @@ impl Resolver {
                     }
                     self.pop_type_params();
                 }
-                DeclKind::Fn(f) => self.check_fn_annotations(f, decl.span),
-                DeclKind::Interface(t) => {
-                    self.push_type_params(Self::declared_type_params(&t.type_params));
-                    for m in &t.methods {
-                        self.check_fn_annotations(m, decl.span);
-                    }
-                    self.pop_type_params();
-                }
+                // Function and method signatures are checked along with their
+                // bodies, in `resolve_function_body`.
                 DeclKind::Impl(i) => {
-                    // `extend Ring<T>` puts `T` in scope for the target and for
-                    // every method in the block.
+                    // `extend Ring<T>` puts `T` in scope for the target.
                     self.push_type_params(self.impl_scope_params(i));
                     self.check_type_annotation(&i.target_ty, decl.span);
-                    for m in &i.methods {
-                        self.check_fn_annotations(m, decl.span);
-                    }
                     self.pop_type_params();
                 }
                 DeclKind::Const(c) => {
@@ -2506,19 +2505,6 @@ impl Resolver {
                 _ => {}
             }
         }
-    }
-
-    fn check_fn_annotations(&mut self, fn_decl: &FnDecl, span: Span) {
-        self.push_type_params(
-            Self::declared_type_params(&fn_decl.type_params),
-        );
-        for ty in fn_decl.params.iter().filter_map(|p| p.ty.as_ref()) {
-            self.check_type_annotation(ty, span);
-        }
-        if let Some(ret) = &fn_decl.ret_ty {
-            self.check_type_annotation(ret, span);
-        }
-        self.pop_type_params();
     }
 
     fn resolve_name(&mut self, expr: &Expr, name: &str) {
@@ -2895,8 +2881,11 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            ExprKind::Closure { params, body, .. } => {
+            ExprKind::Closure { params, ret_ty, body } => {
                 self.scopes.push(ScopeKind::Closure);
+                for ty in params.iter().filter_map(|p| p.ty.as_ref()).chain(ret_ty) {
+                    self.check_type_annotation(ty, expr.span);
+                }
                 for param in params {
                     let sym_id = self.symbols.insert(
                         param.name.clone(),
