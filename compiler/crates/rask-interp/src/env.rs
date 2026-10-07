@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Environment for variable bindings.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use crate::value::Value;
 
@@ -23,6 +23,9 @@ pub fn slot(value: Value) -> Slot {
 #[derive(Debug, Default)]
 struct Scope {
     bindings: HashMap<String, Slot>,
+    /// Names bound to storage this frame borrows from its caller: a `mutate`
+    /// parameter, or a closure's capture of one.
+    lent: HashSet<String>,
 }
 
 /// The environment holding variable bindings.
@@ -88,9 +91,34 @@ impl Environment {
         let Some(scope) = self.scopes.last_mut() else { return };
         // Redefining in the same scope replaces the binding; the index already
         // has an entry for it and must not get a second one.
+        scope.lent.remove(&name);
         if scope.bindings.insert(name.clone(), cell).is_none() {
             self.defined_at.entry(name).or_default().push(index);
         }
+    }
+
+    /// Bind a name to storage the frame borrows rather than owns — the
+    /// caller's variable behind a `mutate` parameter (`mem.closures/CM3`).
+    /// A closure that outlives this frame still shares it instead of copying,
+    /// so its writes reach the caller whenever it runs.
+    pub fn define_lent(&mut self, name: String, cell: Slot) {
+        self.define_slot(name.clone(), cell);
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.lent.insert(name);
+        }
+    }
+
+    /// Whether the innermost binding of `name` is borrowed storage.
+    fn is_lent(&self, name: &str) -> bool {
+        let Some(index) = self.defined_at.get(name).and_then(|ix| ix.last()) else {
+            return false;
+        };
+        self.scopes.get(*index).is_some_and(|s| s.lent.contains(name))
+    }
+
+    /// Every visible name whose binding is borrowed storage.
+    pub fn lent_names(&self) -> HashSet<String> {
+        self.defined_at.keys().filter(|n| self.is_lent(n)).cloned().collect()
     }
 
     /// Read a variable's current value.
@@ -167,15 +195,23 @@ impl Environment {
         captured
     }
 
-    /// Copy every visible variable into storage of its own — an `own` closure's
-    /// captures, and a spawned task's. Neither may alias the definer: `own`
-    /// captures by move and outlives its creation scope, and a task that shared
-    /// its parent's locals would be a data race.
+    /// Copy every visible variable into storage of its own — the captures of a
+    /// closure that outlives its frame. It may not alias the definer's locals:
+    /// it carries them (`mem.closures/CM2`), and the frame is going away.
+    ///
+    /// Borrowed storage is the exception. A `mutate` parameter is the caller's
+    /// variable, so the closure borrows it like the frame did (CM3); copying it
+    /// sent every write the closure made later to a copy nobody reads (#1324).
     pub fn capture_snapshot(&self) -> HashMap<String, Slot> {
         let mut captured = HashMap::new();
         for scope in &self.scopes {
             for (name, cell) in &scope.bindings {
-                captured.insert(name.clone(), slot(cell.lock().unwrap().clone()));
+                let cell = if scope.lent.contains(name) {
+                    Arc::clone(cell)
+                } else {
+                    slot(cell.lock().unwrap().clone())
+                };
+                captured.insert(name.clone(), cell);
             }
         }
         captured
@@ -311,5 +347,29 @@ mod tests {
         env.pop_scope();
 
         assert_eq!(as_int(env.get("a")), Some(1), "the definer is untouched");
+    }
+
+    // A `mutate` parameter's storage is the caller's, so even a carrying
+    // closure reaches it (#1324).
+    #[test]
+    fn a_snapshot_shares_lent_storage() {
+        let mut env = Environment::new();
+        let caller = slot(int(1));
+        env.define_lent("a".into(), Arc::clone(&caller));
+        env.define("b".into(), int(1));
+        assert_eq!(env.lent_names(), HashSet::from(["a".to_string()]));
+        let captured = env.capture_snapshot();
+        *captured["a"].lock().unwrap() = int(5);
+        *captured["b"].lock().unwrap() = int(5);
+        assert_eq!(as_int(Some(caller.lock().unwrap().clone())), Some(5));
+        assert_eq!(as_int(env.get("b")), Some(1));
+    }
+
+    #[test]
+    fn rebinding_a_lent_name_owns_it_again() {
+        let mut env = Environment::new();
+        env.define_lent("a".into(), slot(int(1)));
+        env.define("a".into(), int(2));
+        assert!(env.lent_names().is_empty());
     }
 }

@@ -496,6 +496,7 @@ impl Interpreter {
                             label: label.clone(),
                             escaped: None,
                             scope: self.env.capture_shared(),
+                            lent: self.env.lent_names(),
                         });
                         let driven = self.call_value(seq, vec![Value::Builtin(
                             crate::value::BuiltinKind::SequenceYield,
@@ -628,7 +629,12 @@ impl Interpreter {
         // yield was called from.
         self.env.push_scope();
         for (name, cell) in &frame.scope {
-            self.env.define_slot(name.clone(), std::sync::Arc::clone(cell));
+            let cell = std::sync::Arc::clone(cell);
+            if frame.lent.contains(name) {
+                self.env.define_lent(name.clone(), cell);
+            } else {
+                self.env.define_slot(name.clone(), cell);
+            }
         }
         self.define_for_binding(&frame.binding, item);
         let outcome = self.exec_stmts(&frame.body);

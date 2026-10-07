@@ -176,10 +176,11 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                lent,
                 generics,
                 ..
             } => {
-                self.enter_closure(captured_env, generics);
+                self.enter_closure(captured_env, lent, generics);
                 if let Some(param_name) = params.first() {
                     self.env.define(param_name.clone(), arg);
                 }
@@ -208,6 +209,7 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                lent,
                 generics,
                 ..
             } => {
@@ -218,7 +220,7 @@ impl Interpreter {
                     )));
                 }
 
-                self.enter_closure(captured_env, generics);
+                self.enter_closure(captured_env, lent, generics);
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
                 self.leave_closure();
                 match result {
@@ -331,6 +333,7 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                lent,
                 generics,
                 ..
             } => {
@@ -338,7 +341,7 @@ impl Interpreter {
                     RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
                 })?;
 
-                self.enter_closure(captured_env, generics);
+                self.enter_closure(captured_env, lent, generics);
                 let param_name = params
                     .first()
                     .cloned()

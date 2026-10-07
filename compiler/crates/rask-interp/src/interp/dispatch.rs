@@ -29,8 +29,8 @@ impl Interpreter {
         func: Value,
         args: Vec<Value>,
     ) -> Result<(Value, Option<Value>), RuntimeError> {
-        if let Value::Closure { params, body, captured_env, generics, .. } = func {
-            self.enter_closure(&captured_env, &generics);
+        if let Value::Closure { params, body, captured_env, lent, generics, .. } = func {
+            self.enter_closure(&captured_env, &lent, &generics);
             let first = params.first().cloned();
             for (param, arg) in params.iter().zip(args.into_iter()) {
                 self.env.define(param.clone(), arg.copy_on_bind());
@@ -137,10 +137,11 @@ impl Interpreter {
                 params,
                 body,
                 captured_env,
+                lent,
                 generics,
                 ..
             } => {
-                self.enter_closure(&captured_env, &generics);
+                self.enter_closure(&captured_env, &lent, &generics);
                 for (param, arg) in params.iter().zip(args.into_iter()) {
                     // Closure params are by-value bindings (VS1) — copy so the
                     // body can't alias the caller's value.
@@ -872,13 +873,13 @@ impl Interpreter {
 
             // Run the closure body
             let result = match closure {
-                Value::Closure { params, body, captured_env, generics, .. } => {
+                Value::Closure { params, body, captured_env, lent, generics, .. } => {
                     if !params.is_empty() {
                         return Err(RuntimeError::TypeError(
                             "step body closure must take no parameters".into(),
                         ));
                     }
-                    self.enter_closure(&captured_env, &generics);
+                    self.enter_closure(&captured_env, &lent, &generics);
                     let result = self.eval_expr(&body);
                     self.leave_closure();
                     result
@@ -900,13 +901,13 @@ impl Interpreter {
         } else {
             // No cache dir configured — always run
             match closure {
-                Value::Closure { params, body, captured_env, generics, .. } => {
+                Value::Closure { params, body, captured_env, lent, generics, .. } => {
                     if !params.is_empty() {
                         return Err(RuntimeError::TypeError(
                             "step body closure must take no parameters".into(),
                         ));
                     }
-                    self.enter_closure(&captured_env, &generics);
+                    self.enter_closure(&captured_env, &lent, &generics);
                     let result = self.eval_expr(&body);
                     self.leave_closure();
                     result.map_err(|d| d.error)

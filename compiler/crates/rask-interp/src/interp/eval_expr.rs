@@ -4,7 +4,7 @@
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
-use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, Expr, ExprKind, UnaryOp};
 use rask_ast::ty::TypeExpr;
 
 use crate::value::{FloatKind, ModuleKind, PoolTask, StructData, ThreadPoolInner, TypeConstructorKind, Value};
@@ -503,6 +503,27 @@ impl Interpreter {
         )
     }
 
+    /// Hand the next call `callee` the caller's storage behind each `mutate`
+    /// argument that is a plain variable (see `LentArgs`). `first_arg_param`
+    /// is 1 for a method, whose parameter 0 is `self`.
+    fn arm_lent_args(&mut self, callee: &str, args: &[rask_ast::expr::CallArg], first_arg_param: usize) {
+        let mut slots: Vec<Option<crate::env::Slot>> = vec![None; first_arg_param];
+        for arg in args {
+            let lent = match (&arg.mode, &arg.expr.kind) {
+                (ArgMode::Mutate | ArgMode::Deleting, ExprKind::Ident(name)) => {
+                    self.env.slot_of(name).cloned()
+                }
+                _ => None,
+            };
+            slots.push(lent);
+        }
+        self.lent_args = slots.iter().any(Option::is_some).then(|| super::LentArgs {
+            depth: self.call_depth,
+            callee: callee.to_string(),
+            slots,
+        });
+    }
+
     /// Write each `mutate` parameter's captured final value back to its argument
     /// place (mem.parameters/PM2). Consumes the pending writebacks. Parameter
     /// index i maps to `args[i]` for a plain call.
@@ -925,11 +946,18 @@ impl Interpreter {
                 // (`count<Plain>()`, #968) or inferred: the checker recorded
                 // both under this call.
                 let generics = self.call_generics(expr.id);
+                if let Value::Function { name, .. } = &func_val {
+                    if let Some(decl) = self.functions.get(name) {
+                        let callee = decl.name.clone();
+                        self.arm_lent_args(&callee, args, 0);
+                    }
+                }
                 // The callee's own line when it has one — a panic several
                 // frames down belongs where it happened, not at the outermost
                 // call (#1110).
-                let result = self
-                    .call_value_spanned(func_val, arg_vals, generics)
+                let result = self.call_value_spanned(func_val, arg_vals, generics);
+                self.lent_args = None;
+                let result = result
                     .map_err(|(e, at)| RuntimeDiagnostic::new(e, at.unwrap_or(expr.span)))?;
                 // mem.parameters/PM2: write each `mutate` param's final value back
                 // to its argument place. For a plain call, param index i is args[i].
@@ -1108,7 +1136,11 @@ impl Interpreter {
                                     .collect::<Result<_, _>>()?;
                                 let generics = self.call_generics(expr.id);
                                 self.mutate_writebacks.clear();
-                                let result = self.call_function(method_fn, arg_vals, generics)?;
+                                let callee = method_fn.name.clone();
+                                self.arm_lent_args(&callee, args, 0);
+                                let result = self.call_function(method_fn, arg_vals, generics);
+                                self.lent_args = None;
+                                let result = result?;
                                 self.apply_mutate_writebacks(args)
                                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
                                 return Ok(result);
@@ -1318,7 +1350,9 @@ impl Interpreter {
                 let outer = self.failed_call_span.take();
                 let generics = self.method_call_generics(expr.id, object.id, &method);
                 self.method_writebacks.clear();
+                self.arm_lent_args(&method, args, 1);
                 let result = self.call_method(receiver.clone(), &method, arg_vals, generics);
+                self.lent_args = None;
                 let inner = self.failed_call_span.take();
                 self.failed_call_span = outer;
                 let result =
@@ -2456,6 +2490,7 @@ impl Interpreter {
                     params: params.iter().map(|p| p.name.clone()).collect(),
                     body: (**body).clone(),
                     captured_env: captured,
+                    lent: self.env.lent_names(),
                     task_bound: self.closure_is_task_bound(expr.id),
                     generics: self.generic_frames.last().cloned().flatten(),
                 })

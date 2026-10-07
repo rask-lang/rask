@@ -102,6 +102,14 @@ impl Interpreter {
         mut args: Vec<Value>,
         generics: GenericFrame,
     ) -> Result<Value, RuntimeDiagnostic> {
+        // Taken before anything else runs, so a default argument's own calls
+        // can't see it. Only the call it was made for may use it.
+        let lent: Vec<Option<crate::env::Slot>> = self
+            .lent_args
+            .take()
+            .filter(|l| l.depth + 1 == self.call_depth && l.callee == func.name)
+            .map(|l| l.slots)
+            .unwrap_or_default();
         // Fill in default values for missing trailing arguments
         if args.len() < func.params.len() {
             for i in args.len()..func.params.len() {
@@ -133,7 +141,8 @@ impl Interpreter {
 
         self.generic_frames.push(generics);
 
-        for (param, arg) in func.params.iter().zip(args.into_iter()) {
+        let mut aliased = Vec::new();
+        for (i, (param, arg)) in func.params.iter().zip(args.into_iter()).enumerate() {
             // A by-value parameter receives an independent copy (VS1): mutating
             // it inside the callee can't alias the caller's value. `mutate`/`self`
             // borrows share the caller's storage by design; `take` moves it, so
@@ -150,6 +159,20 @@ impl Interpreter {
                 Some(ty) => wrap_optional_layers(arg, ty),
                 None => arg,
             };
+            // PM2: a `mutate` parameter is the caller's variable. Bound to its
+            // storage when the argument is one, so there is nothing to write
+            // back; otherwise to a copy the call site writes back. Either way
+            // it is borrowed, which a closure built here has to know (CM3).
+            if param.is_mutate {
+                match lent.get(i).cloned().flatten() {
+                    Some(cell) => {
+                        aliased.push(i);
+                        self.env.define_lent(param.name.clone(), cell);
+                    }
+                    None => self.env.define_lent(param.name.clone(), crate::env::slot(arg)),
+                }
+                continue;
+            }
             self.env.define(param.name.clone(), arg);
         }
 
@@ -216,7 +239,7 @@ impl Interpreter {
         // the scope is dropped, so the call site can write each back to its
         // argument place. Keyed by parameter index (self is param 0 for methods).
         self.mutate_writebacks = func.params.iter().enumerate()
-            .filter(|(_, p)| p.is_mutate)
+            .filter(|(i, p)| p.is_mutate && !aliased.contains(i))
             .filter_map(|(i, p)| self.env.get(&p.name).map(|v| (i, v.clone())))
             .collect();
 

@@ -266,10 +266,35 @@ pub struct Interpreter {
     /// user functions of its own (`sort` reaching `compare`), and what those
     /// leave in `mutate_writebacks` isn't this call's to write back.
     pub(crate) method_writebacks: Vec<(usize, Value)>,
+    /// The caller's storage for each `mutate` argument of the call about to
+    /// start, so the callee binds the caller's variable instead of a copy.
+    pub(crate) lent_args: Option<LentArgs>,
     /// The `for` loops currently driving a `Sequence<T>`, innermost last
     /// (type.sequence/SEQ6). A `SequenceYield` builtin call runs the top
     /// frame's body; nesting works because each frame is pushed by its own loop.
     pub(crate) yield_stack: Vec<YieldFrame>,
+}
+
+/// The caller's variables behind a call's `mutate` arguments, per parameter
+/// index (self is 0 for a method).
+///
+/// A `mutate` parameter is the caller's variable, not a copy of it
+/// (mem.parameters/PM2). Copy-in at the call and copy-back at the return look
+/// the same until something writes after the return: a `Sequence` built from
+/// the parameter runs when a terminal drives it, long after the callee
+/// returned, and its writes landed on the copy (#1324). Binding the caller's
+/// slot makes the write the caller's whenever it happens. An argument that
+/// isn't a plain variable — `mutate b.n` — has no slot of its own, so it
+/// still goes through the copy-back, and a write after the return is lost (#1489).
+///
+/// Handed over through a field because the call machinery between the call
+/// site and the binding passes values only. `callee` and `depth` pin it to
+/// the call it was made for: a builtin running user code of its own in
+/// between (`sort` calling `compare`) must not pick it up.
+pub(crate) struct LentArgs {
+    pub(crate) depth: usize,
+    pub(crate) callee: String,
+    pub(crate) slots: Vec<Option<crate::env::Slot>>,
 }
 
 /// A `for` loop driving a `Sequence<T>`.
@@ -295,6 +320,8 @@ pub(crate) struct YieldFrame {
     /// names. An `own` sequence captures by copy, so `for x in seq { sum += x }`
     /// wrote to the copy and the loop read `sum` back as 0.
     pub(crate) scope: std::collections::HashMap<String, crate::env::Slot>,
+    /// Which of `scope` are borrowed storage (`Environment::define_lent`).
+    pub(crate) lent: std::collections::HashSet<String>,
 }
 
 /// Source location info for computing error origins (ER15).
@@ -413,11 +440,16 @@ impl Interpreter {
     pub(crate) fn enter_closure<'c>(
         &mut self,
         captured_env: impl IntoIterator<Item = (&'c String, &'c crate::env::Slot)>,
+        lent: &std::collections::HashSet<String>,
         generics: &GenericFrame,
     ) {
         self.env.push_scope();
         for (name, slot) in captured_env {
-            self.env.define_slot(name.clone(), slot.clone());
+            if lent.contains(name) {
+                self.env.define_lent(name.clone(), slot.clone());
+            } else {
+                self.env.define_slot(name.clone(), slot.clone());
+            }
         }
         self.generic_frames.push(generics.clone());
     }
@@ -466,6 +498,7 @@ impl Interpreter {
             fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
             method_writebacks: Vec::new(),
+            lent_args: None,
             yield_stack: Vec::new(),
         }
     }
@@ -509,6 +542,7 @@ impl Interpreter {
             source_info: None,
             mutate_writebacks: Vec::new(),
             method_writebacks: Vec::new(),
+            lent_args: None,
             yield_stack: Vec::new(),
         }
     }
@@ -554,6 +588,7 @@ impl Interpreter {
             fallback_keeps_shape: std::collections::HashSet::new(),
             mutate_writebacks: Vec::new(),
             method_writebacks: Vec::new(),
+            lent_args: None,
             yield_stack: Vec::new(),
         };
         (interp, buffer)
@@ -878,6 +913,7 @@ impl Interpreter {
                 captured_env,
                 task_bound,
                 generics,
+                ..
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(
@@ -930,6 +966,7 @@ impl Interpreter {
                 captured_env,
                 task_bound,
                 generics,
+                ..
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(
@@ -981,6 +1018,7 @@ impl Interpreter {
                 captured_env,
                 task_bound,
                 generics,
+                ..
             } => {
                 if !params.is_empty() {
                     return Err(RuntimeError::TypeError(

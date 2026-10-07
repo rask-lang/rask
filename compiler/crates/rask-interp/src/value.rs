@@ -1123,6 +1123,10 @@ pub enum Value {
         params: Vec<String>,
         body: Expr,
         captured_env: HashMap<String, crate::env::Slot>,
+        /// Captures that are the caller's storage behind a `mutate`
+        /// parameter. Shared even by a carrying closure, and still borrowed
+        /// inside its body, so a closure built there shares them too (CM3).
+        lent: std::collections::HashSet<String>,
         /// Captured a link or a `Local` box, so `spawn` refuses it (#1356).
         task_bound: bool,
         /// The type arguments of the generic body it was built in, for
@@ -1550,7 +1554,7 @@ impl Value {
                 let inner = c.lock().unwrap().deep_clone_impl(share_closures);
                 Value::Cell(Arc::new(Mutex::new(inner)))
             }
-            Value::Closure { params, body, captured_env, task_bound, generics } => {
+            Value::Closure { params, body, captured_env, task_bound, generics, .. } => {
                 // Deep-cloning a closure detaches it from what it borrowed, so
                 // each capture gets storage of its own.
                 let deep_env: HashMap<String, crate::env::Slot> = captured_env.iter()
@@ -1560,6 +1564,8 @@ impl Value {
                     params: params.clone(),
                     body: body.clone(),
                     captured_env: deep_env,
+                    // Detached: nothing in it is borrowed any more.
+                    lent: Default::default(),
                     task_bound: *task_bound,
                     generics: generics.clone(),
                 }
