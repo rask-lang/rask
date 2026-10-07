@@ -3884,10 +3884,31 @@ impl TypeChecker {
                 // "Function not found: Heap_new". Every sibling — `Link`,
                 // `Shared`, `Mutex` — says "no method `new` found for type";
                 // `Heap` was the one stdlib name that didn't.
-                && (matches!(base_name, "Vec" | "Map" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic" | "Heap")
+                && (Self::resolved_by_name(base_name)
                     || rask_stdlib::StubRegistry::load().get_type(base_name).is_some())
             {
-                let obj_ty = if type_args.is_empty() {
+                // A generic stdlib type declared in Rask (`Set<T>`) gets one
+                // fresh variable per parameter, the same as a program type
+                // below (#820), so the dispatch record says which instantiation
+                // `Set.new()` is. Named bare, mono had nothing to bind `T` from
+                // and built one shared `Set_new` whose map hashed a string key
+                // as an 8-byte pointer. The types `resolve_method` answers by
+                // name keep the bare spelling it matches on.
+                let declared = self
+                    .types
+                    .get_type_id(base_name)
+                    .filter(|_| type_args.is_empty() && !Self::resolved_by_name(base_name))
+                    .map(|id| (id, self.declared_type_params(id)))
+                    .filter(|(_, params)| !params.is_empty());
+                let obj_ty = if let Some((id, params)) = declared {
+                    Type::Generic {
+                        base: id,
+                        args: params
+                            .iter()
+                            .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
+                            .collect(),
+                    }
+                } else if type_args.is_empty() {
                     Type::UnresolvedNamed(base_name.to_string())
                 } else {
                     // `Vec<i64, i64>.new()` writes a type, so it's counted
@@ -5751,6 +5772,12 @@ impl TypeChecker {
                 });
             }
         }
+    }
+
+    /// The stdlib types whose static methods `resolve_method` matches by their
+    /// bare name (`Type::UnresolvedNamed("Vec")`).
+    fn resolved_by_name(name: &str) -> bool {
+        matches!(name, "Vec" | "Map" | "Rack" | "Random" | "Thread" | "ThreadPool" | "Mutex" | "Shared" | "Channel" | "Atomic" | "Heap")
     }
 
     /// A stdlib static method's parameter types, one per parameter, `None`
