@@ -1655,9 +1655,6 @@ impl<'a> MirLowerer<'a> {
             // With-as binding
             ExprKind::WithAs { bindings, body } => self.lower_with_as(bindings, body),
 
-            // Block call (e.g., spawn_raw { ... })
-            ExprKind::BlockCall { name, body } => self.lower_block_call(name, body),
-
             // Unsafe block
             ExprKind::Unsafe { body } => self.lower_unsafe(body),
 
@@ -2096,22 +2093,6 @@ impl<'a> MirLowerer<'a> {
                 },
             }));
             Ok((MirOperand::Local(result_local), result_ty))
-        }
-
-    fn lower_block_call(&mut self, name: &str, body: &[Stmt]) -> Result<TypedOperand, LoweringError> {
-            let (body_val, _) = self.lower_block(body)?;
-            let ret_ty = self
-                .func_sigs
-                .get(name)
-                .map(|s| s.ret_ty.clone())
-                .unwrap_or_else(|| crate::fallback::unknown_type("lower/expr:2653"));
-            let result_local = self.builder.alloc_temp(ret_ty.clone());
-            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                dst: Some(result_local),
-                func: FunctionRef::internal(name.to_string()),
-                args: vec![body_val],
-            }));
-            Ok((MirOperand::Local(result_local), ret_ty))
         }
 
     fn lower_unsafe(&mut self, body: &[Stmt]) -> Result<TypedOperand, LoweringError> {

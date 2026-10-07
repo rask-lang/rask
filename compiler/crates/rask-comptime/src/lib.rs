@@ -1743,10 +1743,7 @@ impl ComptimeInterpreter {
             // nothing about which line to change. `expr_kind_name` is
             // exhaustive on purpose, so a new variant can't go unnamed.
             _ => {
-                let kind_name = match &expr.kind {
-                    ExprKind::BlockCall { name, .. } => format!("`{name} {{ }}`"),
-                    other => format!("`{}`", rask_ast::expr::expr_kind_name(other)),
-                };
+                let kind_name = format!("`{}`", rask_ast::expr::expr_kind_name(&expr.kind));
                 return Err(ComptimeError::NotSupported(kind_name));
             }
         };

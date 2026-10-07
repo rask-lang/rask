@@ -5530,8 +5530,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 self.walk_free_vars_block(body, bound, seen, free);
             }
-            ExprKind::BlockCall { body, .. }
-            | ExprKind::Loop { body, .. } => {
+            ExprKind::Loop { body, .. } => {
                 self.walk_free_vars_block(body, bound, seen, free);
             }
             ExprKind::Select { arms, .. } => {

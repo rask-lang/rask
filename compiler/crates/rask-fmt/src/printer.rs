@@ -2448,16 +2448,6 @@ impl<'a> Printer<'a> {
                 self.emit_indent();
                 self.emit("}");
             }
-            ExprKind::BlockCall { name, body } => {
-                self.emit(name);
-                self.emit(" {");
-                self.emit_newline();
-                self.indent += 1;
-                self.format_stmts(body);
-                self.indent -= 1;
-                self.emit_indent();
-                self.emit("}");
-            }
             ExprKind::Unsafe { body } => {
                 // `unsafe expr` and `unsafe { expr }` parse to the same node, and
                 // the printer only knew the braced form — so `unsafe

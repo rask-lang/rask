@@ -3074,9 +3074,6 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_block(body);
                 self.active_with_bindings.truncate(prev_count);
             }
-            ExprKind::BlockCall { name: _, body } => {
-                self.check_block(body);
-            }
             ExprKind::Unsafe { body } => {
                 self.check_block(body);
             }
@@ -5169,7 +5166,7 @@ impl<'a> OwnershipChecker<'a> {
                 // Multitasking { … }` is where the spawns live, and routing it
                 // through the plain walk instead lost the `let f = || …` that
                 // `spawn(f)` two lines down needs.
-                ExprKind::Block(body) | ExprKind::BlockCall { body, .. }
+                ExprKind::Block(body)
                 | ExprKind::Unsafe { body } | ExprKind::Comptime { body }
                 | ExprKind::Loop { body, .. } => {
                     self.escapes_in_stmts(body, named);
@@ -5755,7 +5752,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.collect_free_vars_inner(&arm.body, locals, out, projections);
                 }
             }
-            ExprKind::Unsafe { body } | ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. } | ExprKind::Loop { body, .. } => {
+            ExprKind::Unsafe { body } | ExprKind::Comptime { body } | ExprKind::Loop { body, .. } => {
                 self.collect_free_vars_body_inner(body, locals, out, projections);
             }
             _ => {

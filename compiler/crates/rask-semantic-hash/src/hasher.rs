@@ -895,11 +895,6 @@ impl Hasher {
                 self.feed_type(target);
                 self.feed_tag(*kind as u8);
             }
-            ExprKind::BlockCall { name, body } => {
-                self.feed_tag(73);
-                self.feed_str(name);
-                self.hash_stmts(body);
-            }
             ExprKind::Unsafe { body } => {
                 self.feed_tag(74);
                 self.hash_stmts(body);

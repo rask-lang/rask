@@ -2276,13 +2276,6 @@ impl TypeChecker {
                 result
             }
 
-            ExprKind::BlockCall { body, .. } => {
-                for stmt in body {
-                    self.check_stmt(stmt);
-                }
-                Type::Unit
-            }
-
             ExprKind::ArrayRepeat { value, count } => {
                 let elem_ty = self.infer_expr(value);
                 self.infer_expr(count);

@@ -80,9 +80,8 @@ impl Rewrite for Qualifier<'_> {
                     *name = q.clone();
                 }
             }
-            // `spawn_raw { … }` and `using pool { … }` name a declaration the
-            // same way a call does.
-            ExprKind::BlockCall { name, .. } | ExprKind::UsingBlock { name, .. } => {
+            // `using pool { … }` names a declaration the same way a call does.
+            ExprKind::UsingBlock { name, .. } => {
                 if let Some(q) = self.lookup(name) {
                     *name = q.clone();
                 }

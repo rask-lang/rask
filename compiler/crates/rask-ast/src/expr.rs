@@ -236,11 +236,6 @@ pub enum ExprKind {
         target: crate::ty::TypeExpr,
         kind: ConvertKind,
     },
-    /// Block call expression (identifier { body }) like spawn_raw { ... }
-    BlockCall {
-        name: String,
-        body: Vec<super::stmt::Stmt>,
-    },
     /// Unsafe block expression
     Unsafe {
         body: Vec<super::stmt::Stmt>,
@@ -663,7 +658,6 @@ pub fn expr_kind_name(kind: &ExprKind) -> &'static str {
         ExprKind::Closure { .. } => "Closure",
         ExprKind::Cast { .. } => "Cast",
         ExprKind::Convert { .. } => "Convert",
-        ExprKind::BlockCall { .. } => "BlockCall",
         ExprKind::Unsafe { .. } => "Unsafe",
         ExprKind::Comptime { .. } => "Comptime",
         ExprKind::Select { .. } => "Select",

@@ -480,7 +480,7 @@ impl DefaultDesugarer {
                 for s in body { self.desugar_stmt(s); }
             }
             ExprKind::Unsafe { body }
-            | ExprKind::BlockCall { body, .. } | ExprKind::Comptime { body }
+            | ExprKind::Comptime { body }
             | ExprKind::Loop { body, .. } => {
                 for s in body { self.desugar_stmt(s); }
             }

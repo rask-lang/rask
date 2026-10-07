@@ -2915,13 +2915,6 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            ExprKind::BlockCall { body, .. } => {
-                self.scopes.push(ScopeKind::Block);
-                for stmt in body {
-                    self.resolve_stmt(stmt);
-                }
-                self.scopes.pop();
-            }
             ExprKind::Unsafe { body } => {
                 self.scopes.push(ScopeKind::Block);
                 for stmt in body {

@@ -540,7 +540,7 @@ fn classify_expr(expr: &Expr, effects: &mut Effects, callees: &mut HashSet<Strin
             classify_body(body, effects, callees, t);
         }
         ExprKind::Closure { body, .. } => classify_expr(body, effects, callees, t),
-        ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. }
+        ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } => {
             classify_body(body, effects, callees, t);
         }
@@ -812,7 +812,7 @@ fn rt_scan_expr(expr: &Expr, depth: u32, rs: &mut ReachScan<'_>) -> bool {
             r
         }
         ExprKind::Closure { body, .. } => rt_scan_expr(body, depth, rs),
-        ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. }
+        ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } | ExprKind::Unsafe { body } => rt_scan_stmts(body, depth, rs),
         ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
             let mut r = rt_scan_expr(condition, depth, rs);

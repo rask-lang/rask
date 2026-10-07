@@ -539,11 +539,7 @@ impl TypeSubstitutor {
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),
                 },
 
-                // Spawn / block call / unsafe / comptime
-                ExprKind::BlockCall { name, body } => ExprKind::BlockCall {
-                    name: name.clone(),
-                    body: body.iter().map(|s| self.clone_stmt(s)).collect(),
-                },
+                // Unsafe / comptime
                 ExprKind::Unsafe { body } => ExprKind::Unsafe {
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),
                 },

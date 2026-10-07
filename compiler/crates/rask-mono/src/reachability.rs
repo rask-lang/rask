@@ -2180,11 +2180,6 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_stmt(s);
                 }
             }
-            ExprKind::BlockCall { body, .. } => {
-                for s in body {
-                    self.visit_stmt(s);
-                }
-            }
             ExprKind::Select { arms, .. } => {
                 for arm in arms {
                     self.visit_expr(&arm.body);

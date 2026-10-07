@@ -175,7 +175,6 @@ pub fn visit_expr<'a>(expr: &'a Expr, v: &mut impl Visit<'a>) {
         }
 
         ExprKind::Block(body)
-        | ExprKind::BlockCall { body, .. }
         | ExprKind::Unsafe { body }
         | ExprKind::Comptime { body }
         | ExprKind::Loop { body, .. } => visit_body(body, v),

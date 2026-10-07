@@ -325,14 +325,6 @@ impl<'a> WarnContext<'a> {
                 self.check_stmts(body, warnings);
             }
 
-            // BlockCall: ThreadPool.spawn(|| { ... }) parsed as BlockCall
-            ExprKind::BlockCall { name, body } if is_thread_pool(name) => {
-                let was_in_tp = self.in_thread_pool;
-                self.in_thread_pool = true;
-                self.check_stmts(body, warnings);
-                self.in_thread_pool = was_in_tp;
-            }
-
 
             // Recurse into other expressions
             ExprKind::Binary { left, right, .. } => {
@@ -412,7 +404,7 @@ impl<'a> WarnContext<'a> {
             }
             ExprKind::Closure { body, .. } => self.check_expr(body, warnings),
             ExprKind::Unsafe { body } | ExprKind::Comptime { body }
-            | ExprKind::BlockCall { body, .. } | ExprKind::Loop { body, .. } => {
+            | ExprKind::Loop { body, .. } => {
                 self.check_stmts(body, warnings);
             }
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
