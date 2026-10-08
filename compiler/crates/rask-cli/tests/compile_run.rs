@@ -1050,6 +1050,16 @@ fn error_try_in_a_function_that_returns_nothing() {
 }
 
 #[test]
+fn error_union_narrowing_is_rejected() {
+    // #1520: `T or A | B` went where `T or A` was wanted, at a `let`, a push
+    // and an argument, and the backends then disagreed about the stored error.
+    let (failed, out) = compile_error_output("error_union_narrowing.rk");
+    assert!(failed, "a wider error union into a narrower slot must be rejected: {}", out);
+    assert_eq!(out.matches("E0415").count(), 3, "one error per narrowing site: {}", out);
+    assert!(out.contains("can fail with `Other`"), "should name the error that doesn't fit: {}", out);
+}
+
+#[test]
 fn try_without_an_error_branch_is_rejected() {
     // #1251: the same rule one step wider. The check asked "does this return
     // void?" when the question is "does this return type have a branch to

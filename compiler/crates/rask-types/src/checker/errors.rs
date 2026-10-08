@@ -238,6 +238,10 @@ pub enum TypeError {
     /// Widening is implicit; anything that can lose a value has to name a policy.
     #[error("`{from}` doesn't fit in `{to}`")]
     NarrowingNeedsPolicy { from: Type, to: Type, span: Span },
+    /// ER11/ER31: a result whose error side can hold `extra`, going into a slot
+    /// whose error side can't. An error union never narrows.
+    #[error("`{from}` doesn't fit in `{to}`: `{extra}` isn't one of its errors")]
+    ErrorUnionNarrowing { from: Type, to: Type, extra: Type, span: Span },
     /// A pointer whose element type isn't the one the slot declares.
     ///
     /// Nothing converts here: the pointer is an address, and the reader decides
@@ -1593,6 +1597,11 @@ impl TypeError {
             NarrowingNeedsPolicy { from, to, .. } => {
                 *from = f(from);
                 *to = f(to);
+            }
+            ErrorUnionNarrowing { from, to, extra, .. } => {
+                *from = f(from);
+                *to = f(to);
+                *extra = f(extra);
             }
 
             MixedSignednessArithmetic { left, right, .. } => {
