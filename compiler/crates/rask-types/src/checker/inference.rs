@@ -271,6 +271,30 @@ impl InferenceContext {
         self.literal_int_values.insert(id, value);
     }
 
+    /// The type an unsuffixed literal takes when nothing else decides it.
+    ///
+    /// i32 is the default (type.primitives/L1), but only where the value fits:
+    /// `const big = 3000000000` used to keep the low 32 bits and print
+    /// -1294967296. Past that the narrowest type that holds it wins, which is
+    /// how `18446744073709551615` on its own comes out a `u64` rather than an
+    /// `i128`.
+    ///
+    /// The one answer for every place that needs it: defaulting, an early bind
+    /// that can't wait for defaulting, and an error naming the literal's type.
+    /// The error used to say `i64` while the literal became an `i32` (#1523).
+    pub fn literal_default(&self, id: TypeVarId, kind: LiteralKind) -> Type {
+        match kind {
+            LiteralKind::Integer => match self.literal_int_values.get(&id) {
+                Some(&v) if i32::try_from(v).is_ok() => Type::I32,
+                Some(&v) if i64::try_from(v).is_ok() => Type::I64,
+                Some(&v) if u64::try_from(v).is_ok() => Type::U64,
+                Some(_) => Type::I128,
+                None => Type::I32,
+            },
+            LiteralKind::Float => Type::F64,
+        }
+    }
+
     /// Apply defaults for unresolved literal type vars.
     ///
     /// A literal var can be bound to another *variable* rather than a type —
@@ -289,21 +313,7 @@ impl InferenceContext {
             .collect();
         let mut defaults: HashMap<TypeVarId, Type> = HashMap::new();
         for (var_id, kind) in pending {
-            let default = match kind {
-                // i32 is the default (type.primitives/L1), but only where the
-                // value fits — `const big = 3000000000` used to keep the low 32
-                // bits and print -1294967296. Past that the narrowest type that
-                // holds it wins, which is how `18446744073709551615` on its own
-                // comes out a `u64` rather than an `i128`.
-                LiteralKind::Integer => match self.literal_int_values.get(&var_id) {
-                    Some(&v) if i32::try_from(v).is_ok() => Type::I32,
-                    Some(&v) if i64::try_from(v).is_ok() => Type::I64,
-                    Some(&v) if u64::try_from(v).is_ok() => Type::U64,
-                    Some(_) => Type::I128,
-                    None => Type::I32,
-                },
-                LiteralKind::Float => Type::F64,
-            };
+            let default = self.literal_default(var_id, kind);
             // Follow the chain. An unresolved literal var applies to itself, so
             // this covers the plain case too; a literal already bound to a
             // concrete type isn't a variable and needs nothing.

@@ -38,15 +38,6 @@ fn literal_fits(kind: super::inference::LiteralKind, ty: &Type) -> bool {
     }
 }
 
-/// The type to name in a mismatch when the value is still an unpinned literal.
-fn literal_kind_type(kind: super::inference::LiteralKind) -> Type {
-    use super::inference::LiteralKind;
-    match kind {
-        LiteralKind::Integer => Type::I64,
-        LiteralKind::Float => Type::F64,
-    }
-}
-
 impl TypeChecker {
     pub(super) fn solve_constraints(&mut self) {
         let mut changed = true;
@@ -1405,11 +1396,7 @@ impl TypeChecker {
                     // never satisfy the union type. Default the literal var
                     // immediately so unify reports a precise type mismatch
                     // instead of silently dropping a deferred constraint.
-                    use super::inference::LiteralKind;
-                    let default = match self.ctx.literal_vars[id] {
-                        LiteralKind::Integer => Type::I32,
-                        LiteralKind::Float => Type::F64,
-                    };
+                    let default = self.ctx.literal_default(*id, self.ctx.literal_vars[id]);
                     let id = *id;
                     self.ctx.substitutions.insert(id, default);
                     let resolved_ret = self.ctx.apply(&ret_ty);
@@ -1678,7 +1665,7 @@ impl TypeChecker {
                     if !literal_fits(kind, other) {
                         return Err(TypeError::Mismatch {
                             expected: other.clone(),
-                            found: literal_kind_type(kind),
+                            found: self.ctx.literal_default(*id, kind),
                             span,
                         });
                     }
@@ -1710,7 +1697,7 @@ impl TypeChecker {
                     if !literal_fits(kind, other) {
                         return Err(TypeError::Mismatch {
                             expected: other.clone(),
-                            found: literal_kind_type(kind),
+                            found: self.ctx.literal_default(*id, kind),
                             span,
                         });
                     }

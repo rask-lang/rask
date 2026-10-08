@@ -8602,7 +8602,9 @@ fn assert_says_which_side_wanted_a_bool() {
     let cases = [
         ("func opt() -> i32? { return 42 }\nfunc main() { assert opt() }", "found `i32?`"),
         ("func main() { assert \"nonempty\" }", "found `string`"),
-        ("func main() { assert 1 }", "found `i64`"),
+        // An unsuffixed `1` is an `i32` (type.primitives/L1); the message
+        // used to say `i64` while the literal became an `i32` (#1523).
+        ("func main() { assert 1 }", "found `i32`"),
         ("func opt() -> i32? { return 42 }\nfunc main() { check opt() }", "found `i32?`"),
     ];
     for (src, found) in cases {
@@ -8617,7 +8619,7 @@ fn assert_says_which_side_wanted_a_bool() {
     // The message argument had the same inversion.
     let out = check_output("func main() { assert 1 == 1, 42 }");
     assert!(
-        out.contains("expected `string`") && out.contains("found `i64`"),
+        out.contains("expected `string`") && out.contains("found `i32`"),
         "the message has to be a string, and 42 isn't one:\n{out}"
     );
 }
