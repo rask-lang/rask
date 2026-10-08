@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// A closure read out of a struct field and captured by a closure that outlives
+// the call.
+//
+// The field's closure belongs to the struct, and the struct belongs to the
+// caller. `doubled` copied it into the new closure's environment without a
+// reference of its own, so when the caller dropped the temporary `Plan` the
+// inner closure was freed under the new one. Natively the next call read a
+// freed environment: an empty Vec, an index out of bounds, or "allocation size
+// overflow" depending on what reused the memory. The interpreter was right.
+
+struct Plan {
+    run: func() -> Vec<i64>
+}
+
+func stage(v: Vec<i64>) -> Plan {
+    let lanes = v.clone()
+    return Plan { run: || { return lanes.clone() } }
+}
+
+func doubled(p: Plan) -> Plan {
+    let src = p.run
+    return Plan {
+        run: || {
+            let xs = src()
+            mut out: Vec<i64> = Vec.new()
+            for x in xs {
+                out.push(x * 2)
+            }
+            return out
+        },
+    }
+}
+
+func run_plan(p: Plan) -> Vec<i64> {
+    let r = p.run
+    return r()
+}
+
+test "the captured closure outlives the plan it was read from" {
+    let v: Vec<i64> = [1, 2, 3]
+    let q = doubled(stage(v))
+    let out = run_plan(q)
+    assert out.len() == 3
+    assert out[0] == 2
+    assert out[2] == 6
+}
+
+test "stacked twice, each layer keeps the one below alive" {
+    let v: Vec<i64> = [1, 2, 3]
+    let q = doubled(doubled(stage(v)))
+    let out = run_plan(q)
+    assert out[1] == 8
+}
+
+test "the original plan still works after a stage built on it" {
+    let v: Vec<i64> = [5, 6]
+    let s = stage(v)
+    let q = doubled(s)
+    assert run_plan(q)[1] == 12
+    assert run_plan(s)[1] == 6
+}
