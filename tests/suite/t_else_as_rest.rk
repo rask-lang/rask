@@ -186,3 +186,61 @@ test "a union error less one member" {
     assert after_member_then_success(-1) == "rest b b, on the heap for sure"
     assert after_member_then_success(-2) == "rest c c, on the heap for sure"
 }
+
+// The test needn't bind for the else to (#1516). Without the `as`, the bare
+// type name was read as a pattern nobody had checked for a complement, and
+// `else as e` was rejected even on a two-branch value.
+func two(n: i64) -> string or MyErr {
+    if n < 0 { return MyErr.Bad("two, on the heap for sure") }
+    return "v{n}, on the heap for sure"
+}
+
+func bare_two(n: i64) -> string {
+    if two(n) is string {
+        return "ok"
+    } else as e {
+        return e.message()
+    }
+}
+
+func bare_flat(n: i64) -> string {
+    if pick(n) is string {
+        return "ok"
+    } else as e {
+        return (e ?? MyErr.Worse).message()
+    }
+}
+
+func bare_err(n: i64) -> string {
+    if pick(n) is MyErr {
+        return "err"
+    } else as e {
+        return e ?? "absent"
+    }
+}
+
+func bare_member(n: i64) -> string {
+    if get(n) is AErr {
+        return "a"
+    } else as e {
+        if e is string as s {
+            return s
+        } else as rest {
+            return rest.message()
+        }
+    }
+}
+
+test "a bare type test binds the same else" {
+    assert bare_two(1) == "ok"
+    assert bare_two(-1) == "bad two, on the heap for sure"
+    assert bare_flat(3) == "ok"
+    assert bare_flat(0) == "worse"
+    assert bare_flat(-1) == "bad why, on the heap for sure"
+    assert bare_err(3) == "v3, on the heap for sure"
+    assert bare_err(0) == "absent"
+    assert bare_err(-1) == "err"
+    assert bare_member(1) == "ok 1, on the heap for sure"
+    assert bare_member(0) == "a"
+    assert bare_member(-1) == "b b, on the heap for sure"
+}

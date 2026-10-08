@@ -252,17 +252,27 @@ impl TypeChecker {
         }
         let ty = match pattern {
             Pattern::TypePat { ty: TypeExpr::NoneType, .. } => return None,
-            Pattern::TypePat { ty, binding: None } => ty.clone(),
+            Pattern::TypePat { binding: Some(_), .. } => return None,
+            _ => self.tested_type(pattern, scrutinee_ty)?,
+        };
+        Some(Pattern::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) })
+    }
+
+    /// The type an `is` pattern tests for, written with or without `as`:
+    /// `x is Point as p`, `x is Point`, `x is none`. `None` for a variant, a
+    /// destructure, or a name that isn't a type.
+    pub(super) fn tested_type(&mut self, pattern: &Pattern, scrutinee_ty: &Type) -> Option<TypeExpr> {
+        match pattern {
+            Pattern::TypePat { ty, .. } => Some(ty.clone()),
             Pattern::Ident(name) if !name.contains('.') => {
                 if self.variant_of_scrutinee(name, scrutinee_ty).is_some() {
                     return None;
                 }
                 self.pattern_type_name(name)?;
-                TypeExpr::named(name.as_str())
+                Some(TypeExpr::named(name.as_str()))
             }
-            _ => return None,
-        };
-        Some(Pattern::TypePat { ty, binding: Some(GUARD_BINDING.to_string()) })
+            _ => None,
+        }
     }
 
     pub(super) fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {

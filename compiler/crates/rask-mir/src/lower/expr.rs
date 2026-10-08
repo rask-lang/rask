@@ -3905,9 +3905,11 @@ impl<'a> MirLowerer<'a> {
         }
         let other_ty = match val_ty {
             MirType::Result { ok, err } => {
+                // The test may be bare, `is MyErr` with no `as` (#1516).
                 let err_side = match pattern {
-                    rask_ast::expr::Pattern::TypePat { ty, .. } => {
-                        self.pattern_is_err_side(&super::type_pat_name(ty), val_ty)
+                    rask_ast::expr::Pattern::TypePat { .. } | rask_ast::expr::Pattern::Ident(_) => {
+                        super::match_lower::pattern_name(pattern)
+                            .is_some_and(|name| self.pattern_is_err_side(&name, val_ty))
                     }
                     _ => false,
                 };

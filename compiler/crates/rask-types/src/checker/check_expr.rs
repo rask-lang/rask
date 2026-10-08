@@ -5688,8 +5688,9 @@ impl TypeChecker {
         }
     }
 
-    /// ER22: what an `else as e` binds after `if r is T as v`: the scrutinee
-    /// with the named leaf taken out, as the type the leftover leaves make.
+    /// ER22: what an `else as e` binds after `if r is T`, with or without
+    /// `as v`: the scrutinee with the named leaf taken out, as the type the
+    /// leftover leaves make.
     /// On a two-branch `T or E` that's the other branch. On a flat `T? or E`
     /// it keeps the layering: testing `T` leaves `E?`, `none` leaves `T or E`,
     /// `E` leaves `T?`. A union with `none` in it would have no layout and
@@ -5702,13 +5703,13 @@ impl TypeChecker {
         pattern: &Pattern,
         scrutinee_ty: &Type,
     ) -> Option<Type> {
-        let Pattern::TypePat { ty, .. } = pattern else { return None };
         let resolved = self.ctx.apply(scrutinee_ty);
         if !matches!(resolved, Type::Result { .. }) {
             return None;
         }
+        let ty = self.tested_type(pattern, scrutinee_ty)?;
         let named = super::check_pattern::normalize_type(
-            &resolve_type_expr(ty, &self.types).ok()?,
+            &resolve_type_expr(&ty, &self.types).ok()?,
             &self.types,
         );
         let rest = self.without_leaf(&resolved, &named)?;
