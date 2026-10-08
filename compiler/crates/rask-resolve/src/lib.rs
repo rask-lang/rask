@@ -129,13 +129,15 @@ pub fn resolve_with_stdlib(
 }
 
 /// `resolve_with_stdlib`, told where each file lives, so `import c` can look
-/// for a header beside the file that imports it (#1096).
+/// for a header beside the file that imports it (#1096), and which (arch, os)
+/// is being built for, so it reads that target's system headers (#1102).
 pub fn resolve_with_stdlib_and_dirs(
     decls: &[Decl],
     stdlib_decls: &[Decl],
     source_dirs: HashMap<u16, std::path::PathBuf>,
+    c_target: Option<(String, String)>,
 ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_with_stdlib_and_dirs(decls, stdlib_decls, source_dirs)
+    Resolver::resolve_with_stdlib_and_dirs(decls, stdlib_decls, source_dirs, c_target)
 }
 
 pub fn resolve_package(
@@ -153,7 +155,8 @@ pub fn resolve_package_with_stdlib(
     registry: &PackageRegistry,
     current_package: PackageId,
     stdlib_decls: &[Decl],
+    c_target: Option<(String, String)>,
 ) -> Result<ResolvedProgram, Vec<ResolveError>> {
-    Resolver::resolve_package_with_stdlib(decls, registry, current_package, stdlib_decls)
+    Resolver::resolve_package_with_stdlib(decls, registry, current_package, stdlib_decls, c_target)
 }
 

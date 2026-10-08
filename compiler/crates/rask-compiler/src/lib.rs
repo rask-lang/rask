@@ -424,6 +424,7 @@ fn check_loaded(
         &parse_result.decls,
         &stdlib_bodies,
         source_dirs,
+        Some((config.cfg.arch.clone(), config.cfg.os.clone())),
     ) {
         Ok(r) => r,
         Err(errors) => {
@@ -729,6 +730,7 @@ fn check_package_scoped(
         &pkg_ctx.registry,
         pkg_ctx.root_id,
         &stdlib_bodies,
+        Some((config.cfg.arch.clone(), config.cfg.os.clone())),
     ) {
         Ok(r) => r,
         Err(errors) => {

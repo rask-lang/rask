@@ -8155,6 +8155,49 @@ fn a_c_header_is_found_through_cpath() {
     let _ = std::fs::remove_dir_all(&src_dir);
 }
 
+/// A cross build reads the target's system headers or none, never the host's
+/// (#1102). A struct laid out from the host's `/usr/include` and passed by value
+/// to code built for another machine is wrong in a way nothing else catches.
+///
+/// `CC` pointing nowhere makes "no compiler answered" deterministic: the host
+/// build still falls back to the usual places, the cross build refuses.
+#[test]
+fn a_cross_build_never_reads_the_hosts_system_headers() {
+    let src_dir = std::env::temp_dir().join("rask_cross_header_src");
+    let _ = std::fs::create_dir_all(&src_dir);
+    let src = src_dir.join("uses_stdint.rk");
+    std::fs::write(&src, "import c \"stdint.h\" as cstd\n\nfunc main() {\n    return\n}\n")
+        .expect("write source");
+
+    let run = |target: Option<&str>| {
+        let mut cmd = Command::new(rask_binary());
+        cmd.arg("compile").arg(&src).arg("-o").arg(src_dir.join("out"));
+        if let Some(t) = target {
+            cmd.arg("--target").arg(t);
+        }
+        cmd.env("RASK_RUNTIME_DIR", runtime_dir())
+            .env("CC", "/nonexistent/cc")
+            .env_remove("CPATH")
+            .env_remove("C_INCLUDE_PATH");
+        let out = cmd.output().expect("failed to run rask compile");
+        format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+    };
+
+    let host = run(None);
+    assert!(
+        !host.contains("C header not found"),
+        "the host build should still find <stdint.h>:\n{host}"
+    );
+
+    let cross = run(Some("aarch64-macos"));
+    assert!(
+        cross.contains("C header not found") && cross.contains("cross-compiling to aarch64-macos"),
+        "the cross build should refuse the host's headers and say why:\n{cross}"
+    );
+
+    let _ = std::fs::remove_dir_all(&src_dir);
+}
+
 #[test]
 fn a_name_a_c_header_never_declared_is_not_a_type() {
     let (text, ok) = check_in_fixtures("c_struct_unknown.rk");
