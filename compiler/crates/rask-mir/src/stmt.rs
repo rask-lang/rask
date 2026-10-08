@@ -57,6 +57,23 @@ pub enum MirStmtKind {
     /// cleanup block, so a normal scope exit removes the hook (the inline path
     /// runs the body) and only a panic reaches it through `rask_ensure_run_all`.
     EnsureHookPop,
+    /// From here on this frame owns what `value` holds: store it in slot
+    /// `slot` of the frame's unwind record, so a panic that abandons the frame
+    /// releases it (ctrl.panic/U6).
+    ///
+    /// `release` is how: the statements the normal path would run to release
+    /// it, written against `release.placeholder`. A label, not a read: the
+    /// record pass builds `<fn>__unwind` from it, and nothing else looks inside.
+    UnwindArm {
+        slot: u32,
+        value: LocalId,
+        release: UnwindRelease,
+    },
+    /// The value in `slot` stopped being this frame's: handed over, or about to
+    /// be released on the normal path.
+    UnwindDisarm {
+        slot: u32,
+    },
     /// Create a closure value: heap-allocated `[func_ptr | captures...]`.
     /// `captures` lists the locals whose values are stored into the environment.
     /// `heap` controls allocation strategy: true = heap (escaping), false = stack (local-only).
@@ -219,6 +236,17 @@ impl MirStmt {
     pub fn dummy(kind: MirStmtKind) -> Self {
         Self { kind, span: Span::new(0, 0) }
     }
+}
+
+/// How an unwind releases what one record slot holds.
+///
+/// `stmts` read `placeholder` for the slot's value. Any other local they read
+/// has to be one they define first; a release that needs more of the frame than
+/// the one value isn't armed at all.
+#[derive(Debug, Clone)]
+pub struct UnwindRelease {
+    pub placeholder: LocalId,
+    pub stmts: Vec<MirStmt>,
 }
 
 /// A captured variable in a closure environment.

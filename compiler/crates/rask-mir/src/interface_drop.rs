@@ -415,16 +415,21 @@ fn insert_for_function(
         &facts,
         crate::analysis::ownership::Placement::ScopeEnd,
     );
-    let owning = drops_that_own(func, &plan, &made);
+    let owning = drops_that_own(func, &plan.releases, &made);
     let drop_of = |interface_object: LocalId| {
         MirStmt::dummy(MirStmtKind::InterfaceDrop {
             interface_object,
             owns: owning.contains(&interface_object),
         })
     };
+    let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
+        func,
+        plan.unwind,
+        &mut |_: &mut MirFunction, name: LocalId, _| vec![drop_of(name)],
+    );
     let mut at_end: Vec<(usize, LocalId)> = Vec::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
-    for r in plan {
+    for r in plan.releases {
         match r {
             crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
             crate::analysis::ownership::Release::OnEdge { from, to, name, .. } => {
@@ -436,7 +441,10 @@ fn insert_for_function(
     for (block, name) in at_end {
         func.blocks[block].statements.push(drop_of(name));
     }
-    crate::analysis::ownership::insert_on_edges(func, on_edges);
+    crate::analysis::ownership::insert_on_edges(
+        func,
+        crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+    );
 }
 
 /// The names whose drop releases the boxed value too, not only the block.

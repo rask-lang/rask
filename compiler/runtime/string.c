@@ -35,14 +35,6 @@ static _Atomic int64_t rask_string_live_buffers = 0;
 
 int rask_leak_check_enabled = 0;
 
-// Allocations abandoned by a test that unwound — what its frames still held
-// when a skip or a panic jumped past their frees (`test_run_one`).
-static _Atomic int64_t rask_unwound_allocs = 0;
-
-void rask_leak_forgive_unwound(int64_t n) {
-    if (n > 0) atomic_fetch_add_explicit(&rask_unwound_allocs, n, memory_order_relaxed);
-}
-
 #define RASK_HEAP_FLAG   ((uint64_t)1 << 63)
 #define RASK_RC_SENTINEL UINT32_MAX
 
@@ -217,8 +209,7 @@ void rask_leak_check(void) {
     // still reported "32 bytes never released, in 0 allocations". The count is
     // exact on both sides, so a clean program ends at exactly zero live
     // allocations, and that is what makes this a gate rather than a threshold.
-    int64_t live_allocs = st.alloc_count - st.free_count
-        - atomic_load_explicit(&rask_unwound_allocs, memory_order_relaxed);
+    int64_t live_allocs = st.alloc_count - st.free_count;
     if (live_allocs <= 0) return;
     int64_t live_bytes = st.bytes_allocated - st.bytes_freed;
 

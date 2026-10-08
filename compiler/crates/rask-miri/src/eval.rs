@@ -269,7 +269,10 @@ impl MiriEngine {
 
             // Runtime panic-unwind hooks. Comptime has no panic unwinding — the
             // inline cleanup path (CleanupReturn) handles scope exit here.
-            MirStmtKind::EnsureHookRegister { .. } | MirStmtKind::EnsureHookPop => {}
+            MirStmtKind::EnsureHookRegister { .. }
+            | MirStmtKind::EnsureHookPop
+            | MirStmtKind::UnwindArm { .. }
+            | MirStmtKind::UnwindDisarm { .. } => {}
 
             // Forbidden at comptime
             MirStmtKind::ResourceRegister { .. }

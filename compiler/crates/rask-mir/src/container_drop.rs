@@ -1622,9 +1622,16 @@ fn insert_for_function(
             MirStmt::dummy(MirStmtKind::Call { dst: None, func: free, args: vec![MirOperand::Local(tmp)] }),
         ]
     };
+    // Ahead of the releases, which go at block ends and on edges: the marks
+    // index into the blocks as planned.
+    let (_, unwind_edges) = crate::analysis::ownership::place_unwind(
+        func,
+        plan.unwind,
+        &mut |func: &mut MirFunction, name: LocalId, _| release(func, name),
+    );
     let mut at_end: Vec<(usize, LocalId)> = Vec::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
-    for r in plan {
+    for r in plan.releases {
         match r {
             crate::analysis::ownership::Release::At { block, name, .. } => at_end.push((block, name)),
             crate::analysis::ownership::Release::OnEdge { from, to, name, .. } => {
@@ -1638,7 +1645,10 @@ fn insert_for_function(
         let stmts = release(func, name);
         func.blocks[block].statements.extend(stmts);
     }
-    crate::analysis::ownership::insert_on_edges(func, on_edges);
+    crate::analysis::ownership::insert_on_edges(
+        func,
+        crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+    );
     if !cells.is_empty() {
         insert_cell_drops(func, &cells);
     }
@@ -2984,6 +2994,7 @@ fn slots_whose_address_is_taken(func: &MirFunction) -> HashSet<LocalId> {
 fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) {
     let dom = crate::analysis::dominators::DominatorTree::build(func);
     let return_blocks = exit_blocks(func);
+    let slots = arm_cells(func, cells);
 
     let mut next = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
     for (block_idx, consumed_here) in return_blocks {
@@ -2995,6 +3006,9 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
             // Already handed away on the path that reaches this exit.
             if consumed_here.contains(cell) {
                 continue;
+            }
+            if let Some(slot) = slots.get(cell) {
+                func.blocks[block_idx].statements.push(MirStmt::dummy(MirStmtKind::UnwindDisarm { slot: *slot }));
             }
             // A string's 16-byte header *is* the slot, so the release takes the
             // cell's address as it stands — the same shape a struct field's
@@ -3032,6 +3046,70 @@ fn insert_cell_drops(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]
             }));
         }
     }
+}
+
+/// Arm each cell's unwind slot right after the store that fills it: from there
+/// on a panic releases what it holds, the way the frame's last exit would
+/// (ctrl.panic/U6). The release reads the cell when it runs, so the slot holds
+/// the cell's address.
+///
+/// Not a cell an `ensure`'s resource names: on the path where that resource is
+/// consumed the cell's contents were handed away, and nothing here can see
+/// when that happened to disarm it.
+fn arm_cells(func: &mut MirFunction, cells: &[(LocalId, Holds, BlockId)]) -> HashMap<LocalId, u32> {
+    let registered: HashSet<LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|st| match &st.kind {
+            MirStmtKind::ResourceRegister { slot: Some(slot), .. } => Some(*slot),
+            _ => None,
+        })
+        .collect();
+    let mut next_slot = crate::analysis::ownership::next_unwind_slot(func);
+    let mut next_local = func.locals.iter().map(|l| l.id.0).max().unwrap_or(0) + 1;
+    let mut slots = HashMap::new();
+    for (cell, holds, store_block) in cells {
+        if registered.contains(cell) {
+            continue;
+        }
+        let Some(bi) = func.blocks.iter().position(|b| b.id == *store_block) else { continue };
+        let Some(si) = func.blocks[bi]
+            .statements
+            .iter()
+            .position(|s| matches!(&s.kind, MirStmtKind::Store { addr, offset: 0, .. } if addr == cell))
+        else {
+            continue;
+        };
+        let stmts = match holds {
+            Holds::Str => vec![MirStmt::dummy(MirStmtKind::ReleaseSlot { addr: *cell, offset: 0, ty: MirType::String })],
+            Holds::Handle(free) => {
+                let tmp = LocalId(next_local);
+                next_local += 1;
+                func.locals.push(crate::MirLocal { id: tmp, name: None, ty: MirType::Ptr, is_param: false, unerased: None });
+                vec![
+                    MirStmt::dummy(MirStmtKind::Assign { dst: tmp, rvalue: MirRValue::Deref(MirOperand::Local(*cell)) }),
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal(free.to_string()),
+                        args: vec![MirOperand::Local(tmp)],
+                    }),
+                ]
+            }
+        };
+        let slot = next_slot;
+        next_slot += 1;
+        func.blocks[bi].statements.insert(
+            si + 1,
+            MirStmt::dummy(MirStmtKind::UnwindArm {
+                slot,
+                value: *cell,
+                release: crate::UnwindRelease { placeholder: *cell, stmts },
+            }),
+        );
+        slots.insert(*cell, slot);
+    }
+    slots
 }
 
 /// Where a free belongs: the blocks that are the last thing to run before the

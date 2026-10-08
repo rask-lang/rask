@@ -43,7 +43,7 @@ pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
 pub use transform::inline::InlineRegion;
 pub use operand::{BinOp, FieldAccess, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
 pub use rask_ast::expr::ConvertKind;
-pub use stmt::{CaptureAccess, ClosureCapture, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span};
+pub use stmt::{CaptureAccess, ClosureCapture, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span, UnwindRelease};
 pub use lower::ComptimeGlobalMeta;
 pub use program::MirProgram;
 pub use types::{spawn_payload_is_boxed, ContainerKind, MirType, StructLayoutId, EnumLayoutId};

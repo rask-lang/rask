@@ -60,6 +60,7 @@ func observe() {
 | **U3: `with` release** | Unwinding through a `with` block releases what the block held: a `Shared` gives back whatever lock its strategy took, an element binding ends |
 | **U4: Inline access release** | Expression-scoped locks (`mutex.lock().f`, `shared.read().f` — `conc.sync/R5, MX3`) release when the expression is abandoned mid-unwind |
 | **U5: There is nothing to leak** | A linear value with no scheduled ensure would be leaked on panic — no destructor runs, ever. `mem.linear/L7` is why there is never one to lose: nothing may stand between an acquisition and its commitment, so the only code that can panic runs with cleanup already scheduled |
+| **U6: Owned memory released** | Unwinding releases what each abandoned frame owns (its vectors, maps, strings, closures, boxes) the way the frame's normal exit would have, after that frame's ensures run. Inner frames go before outer ones. A value handed to a callee is the callee's to release, not the caller's |
 
 Rask has no hidden destructors — that's the point of linear types + `ensure`.
 Panic-only drop glue would put invisible cleanup back to cover code that is, by
@@ -76,6 +77,14 @@ is static, and nothing fires at a scope exit during unwind: an ensure body is
 the only thing E3 has to contain. A runtime guard that comes back — a
 `Rack.take` handing a linear value out of a container would be one — has to
 say what it does mid-unwind, and get a test for it (rask-lang/rask#1296).
+
+U5 is about linear values; U6 is about memory, which U5 doesn't cover. A
+panicking task that keeps its heap forever turns every caught panic into a leak,
+and a skipped test is an unwind too. So a frame's memory is released on the way
+out just as it would have been at its end. That is not hidden cleanup in the
+sense above: it releases exactly what the frame's own scope ends release, never
+runs user code, and can't fail. Ensures go first so an ensure body still sees
+what its frame owns.
 
 Under `RASK_RUNTIME_CHECKS=1` the interpreter also panics if a linear value is
 still live when a function returns normally, as a debugging aid for holes in
@@ -225,6 +234,7 @@ The interpreter already implements most of this model; compiled code has the big
 - `thread.c` tasks: panic → `JoinError.Panicked` via setjmp/longjmp (matches P2/O1); `rask_panic` drains the hook stack before the longjmp, so ensures run there too.
 - `green.c` tasks: join of a panicked task *re-panics in the joiner* instead of returning `JoinError.Panicked` — still violates O1 (#288; needs a join ABI + codegen change to surface the message as a value, mirroring `thread.c`).
 - Locks release on unwind (U3/U4/LK1). Codegen emits the acquire and the release around a `with` block, but only the release is inline, so a panic in between jumped past it and left the lock held for the rest of the process — the next acquirer blocked forever, and the first one to ask is usually an ensure body running during that same unwind, which turned a panic into a hang with no output. Every `rask_mutex_acquire`/`rask_shared_{read,write}_acquire` registers its release on a per-thread held-access stack in `panic.c`; the matching release deregisters it; `rask_panic` drains what's left *before* the ensures, so a cleanup touching the same `Shared` can take the lock. `green.c` parks the stack per fiber alongside the ensure stack.
+- Owned memory is released on unwind (U6, rask-lang/rask#1422). The ensure hooks and frame unwind records share one per-thread LIFO list in `panic.c`. A frame that owns something pushes a record on entry and pops it on every return. The record holds one slot per value, armed where the value becomes the frame's and disarmed where it is handed over or released. The release passes do the arming from the same ownership plan that places their releases (`analysis::ownership::place_unwind`). Strings get theirs from the surviving `rc_dec`s (`transform::unwind`), which also builds `<fn>__unwind` to release each armed slot. Each handler's `setjmp` saves the list head, and `rask_panic` drains only down to it. A panic leaving `main` runs only the ensures. Structs and enums aren't armed yet, so a panic still leaks what one of them holds (rask-lang/rask#1518). The interpreter needs none of this: a panic is an `Err` returned through every frame, and the frames' values drop with them.
 - Backtrace is now gated behind `RASK_BACKTRACE` (F2). Panic messages still truncate at 512 bytes.
 - Panic messages hold F3 on both backends, and are pinned there. Native's checked-arithmetic messages used to be wholly static — "integer overflow: addition exceeds i32 range [...]" where the interpreter printed "2147483647 + 1 exceeds i32 range [...]" — so a user natively couldn't see which values overflowed. The operands now go to a runtime formatter (`rask_panic_overflow_binary`, and an i128 pair in `int128.c` since `snprintf` has no conversion that wide); the static half it splices behind them is the type and range codegen already registered. Two other messages named `unwrap`, a method Rask doesn't have: `x!` says whether the value was absent or an error (the operand's type decides, so MIR passes a flag), and a missing map key says so without naming a method.
 - Residual F3 gap: `r!` on an error branch doesn't print the error's own `message()`, which is the value the reader wants. Both backends have it at the panic point and neither uses it.

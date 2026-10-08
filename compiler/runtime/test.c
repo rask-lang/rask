@@ -215,8 +215,6 @@ static int test_run_one(test_fn fn, const char *name) {
     int64_t start = clock_ns();
     int failed = 0;
     char *error_msg = NULL;
-    RaskAllocStats before;
-    rask_alloc_stats(&before);
 
     if (setjmp(*jb) == 0) {
         rask_panic_activate();
@@ -225,18 +223,6 @@ static int test_run_one(test_fn fn, const char *name) {
         // Returned via longjmp from rask_panic
         failed = 1;
         error_msg = rask_panic_take_message();
-        // WORKAROUND (#1409): an unwind releases nothing the abandoned frames
-        // own — the longjmp goes straight past every free the compiler put at
-        // their scope ends. A skip is an unwind, so `sim.require(faults:
-        // [...])` outside sim left its list behind and the file failed
-        // RASK_LEAK_CHECK. What a test abandoned this way is the unwind's,
-        // not a leak in code that ran to its end, so the check doesn't count
-        // it. The real fix is an unwind that frees what the frames own
-        // (#1422).
-        RaskAllocStats after;
-        rask_alloc_stats(&after);
-        rask_leak_forgive_unwound((after.alloc_count - after.free_count)
-                                  - (before.alloc_count - before.free_count));
     }
 
     int64_t elapsed_ns = clock_ns() - start;

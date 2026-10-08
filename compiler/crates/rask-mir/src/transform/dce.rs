@@ -38,6 +38,17 @@ fn remove_dead_assignments_with_liveness(func: &mut MirFunction) -> usize {
     let dom = DominatorTree::build(func);
     let live = liveness::analyze(func, &dom);
 
+    // An unwind arm isn't a read (`uses`), but it stores the value.
+    let armed: std::collections::HashSet<crate::LocalId> = func
+        .blocks
+        .iter()
+        .flat_map(|b| b.statements.iter())
+        .filter_map(|s| match &s.kind {
+            MirStmtKind::UnwindArm { value, .. } => Some(*value),
+            _ => None,
+        })
+        .collect();
+
     let mut removed = 0;
     for block_idx in 0..func.blocks.len() {
         let block_id = func.blocks[block_idx].id;
@@ -52,6 +63,9 @@ fn remove_dead_assignments_with_liveness(func: &mut MirFunction) -> usize {
                 MirStmtKind::Phi { dst, .. } => *dst,
                 _ => continue,
             };
+            if armed.contains(&dst) {
+                continue;
+            }
 
             // Check if dst is used in remaining stmts or terminator
             let mut used_after = false;

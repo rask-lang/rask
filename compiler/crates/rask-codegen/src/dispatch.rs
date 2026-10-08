@@ -1399,6 +1399,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Ensure hooks ──────────────────────────────────────────
         StdlibEntry::simple("rask_ensure_push", "rask_ensure_push", &[types::I64, types::I64], None, false),
         StdlibEntry::simple("rask_ensure_pop", "rask_ensure_pop", &[], None, false),
+        StdlibEntry::simple("rask_unwind_push", "rask_unwind_push", &[types::I64], None, false),
+        StdlibEntry::simple("rask_unwind_pop", "rask_unwind_pop", &[types::I64], None, false),
 
         // ── Resource tracking (C1/C2 consumption cancellation) ───
         StdlibEntry::simple("rask_resource_is_consumed", "rask_resource_is_consumed", &[types::I64], Some(types::I64), false),

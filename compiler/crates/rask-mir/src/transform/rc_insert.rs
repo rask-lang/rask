@@ -1110,9 +1110,16 @@ fn insert_aggregate_release(
     // read that pulls its payload out, and the retain on that payload is the
     // next statement — releasing first frees the buffer the retain is about to
     // touch.
+    //
+    // `plan.unwind` is dropped: an aggregate is not armed, so a panic leaks
+    // what one holds. Its value is made at the first field store and lowering
+    // evaluates the next field after it, so a panic in that field's expression
+    // would walk a half-built aggregate whose other fields are whatever the
+    // stack held. Arming one needs its storage in a state every release reads
+    // as empty first (#1518).
     let mut by_block: HashMap<usize, Vec<(usize, LocalId)>> = HashMap::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
-    for r in plan {
+    for r in plan.releases {
         match r {
             ownership::Release::At { block, at, name, .. } => {
                 let stmts = &func.blocks[block].statements;

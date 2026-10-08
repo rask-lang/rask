@@ -810,12 +810,13 @@ fn insert_drops(
     let created = created_closures(func);
     let mut shared: Vec<(usize, usize, LocalId)> = shared.into_iter().collect();
     shared.sort_by(|a, b| b.cmp(a));
-    let mut shared_creates: HashSet<LocalId> = HashSet::new();
-    for (bi, si, closure) in shared {
-        let made = sole_origin(&aliases, &closure).filter(|c| created.contains_key(c));
-        shared_creates.extend(made);
-        func.blocks[bi].statements.insert(si, MirStmt::dummy(MirStmtKind::ClosureRetain { closure, made }));
-    }
+    let shared: Vec<(usize, usize, LocalId, Option<LocalId>)> = shared
+        .into_iter()
+        .map(|(bi, si, closure)| {
+            (bi, si, closure, sole_origin(&aliases, &closure).filter(|c| created.contains_key(c)))
+        })
+        .collect();
+    let shared_creates: HashSet<LocalId> = shared.iter().filter_map(|(_, _, _, made)| *made).collect();
     // Freeing an environment frees what only it captured, innermost first —
     // unless a keeper shares it, when the frame's free isn't the last one and
     // the environment's glue releases what it swallowed.
@@ -830,9 +831,18 @@ fn insert_drops(
         out.push(MirStmt::dummy(MirStmtKind::ClosureDrop { closure: name, made }));
         out
     };
+    let (shifted, unwind_edges) = crate::analysis::ownership::place_unwind(
+        func,
+        plan.unwind,
+        &mut |_: &mut MirFunction, name: LocalId, made: Option<LocalId>| drops_for(name, made),
+    );
+    for (bi, si, closure, made) in shared {
+        let at = shifted.at(bi, si);
+        func.blocks[bi].statements.insert(at, MirStmt::dummy(MirStmtKind::ClosureRetain { closure, made }));
+    }
     let mut at_end: Vec<(usize, LocalId, Option<LocalId>)> = Vec::new();
     let mut on_edges: Vec<(crate::BlockId, crate::BlockId, Vec<MirStmt>)> = Vec::new();
-    for r in plan {
+    for r in plan.releases {
         match r {
             crate::analysis::ownership::Release::At { block, name, made, .. } => {
                 at_end.push((block, name, made))
@@ -847,7 +857,10 @@ fn insert_drops(
         let drops = drops_for(name, made);
         func.blocks[block].statements.extend(drops);
     }
-    crate::analysis::ownership::insert_on_edges(func, on_edges);
+    crate::analysis::ownership::insert_on_edges(
+        func,
+        crate::analysis::ownership::merge_edges(unwind_edges, on_edges),
+    );
 }
 
 /// What each statement does to the closures this frame may hold.

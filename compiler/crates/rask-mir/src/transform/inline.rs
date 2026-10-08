@@ -842,6 +842,14 @@ fn remap_stmt(
                 .collect(),
         },
         MirStmtKind::EnsureHookPop => MirStmtKind::EnsureHookPop,
+        // Inlining runs before any release pass arms a slot, so these never
+        // reach here; copied, they'd keep the callee's slot numbers.
+        MirStmtKind::UnwindArm { slot, value, release } => MirStmtKind::UnwindArm {
+            slot: *slot,
+            value: local_map.get(value).copied().unwrap_or(*value),
+            release: release.clone(),
+        },
+        MirStmtKind::UnwindDisarm { slot } => MirStmtKind::UnwindDisarm { slot: *slot },
     };
 
     // IN4: preserve original spans from callee

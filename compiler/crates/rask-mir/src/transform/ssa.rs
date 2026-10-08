@@ -476,7 +476,10 @@ fn rename_stmt(
                 cap.local_id = current_version(cap.local_id, version_stack, num_orig_locals);
             }
         }
-        MirStmtKind::EnsureHookPop => {}
+        MirStmtKind::UnwindArm { value, .. } => {
+            *value = current_version(*value, version_stack, num_orig_locals);
+        }
+        MirStmtKind::EnsureHookPop | MirStmtKind::UnwindDisarm { .. } => {}
     }
     None
 }

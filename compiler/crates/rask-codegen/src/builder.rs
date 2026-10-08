@@ -221,6 +221,10 @@ struct CodegenCtx<'a> {
     /// How a C function's arguments cross the C ABI, for the ones with a struct
     /// parameter. Absent means every argument is a plain scalar (#948).
     c_abi_args: &'a HashMap<String, Vec<crate::c_abi::CArg>>,
+    /// The frame's unwind record (ctrl.panic/U6), when it owns anything a
+    /// panic would have to release: `[next | run | slot…]`, pushed on entry
+    /// and popped before every return.
+    unwind_rec: Option<StackSlot>,
 }
 
 /// How to compare one slot of an aggregate. Struct and enum-payload fields
@@ -670,6 +674,10 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
 
+        // ctrl.panic/U6: before anything else, so the frame's ensures, pushed
+        // later, run ahead of it on a panic and still see what it owns.
+        let unwind_rec = Self::push_unwind_record(&mut builder, self.mir_fn, self.func_refs);
+
         let mut ctx = CodegenCtx {
             var_map: &self.var_map,
             locals: &self.mir_fn.locals,
@@ -702,6 +710,7 @@ impl<'a> FunctionBuilder<'a> {
             is_extern_c: self.mir_fn.is_extern_c,
             adapt_table: &self.adapt_table,
             c_abi_args: self.c_abi_args,
+            unwind_rec,
         };
 
         // ctrl.panic/A1: an exported symbol is entered from C, so the frames
@@ -846,6 +855,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().jump(first_block, &[]);
             } else {
                 // Empty chain — just return
+                Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                 if let Some(val) = ret_param {
                     builder.ins().return_(&[val]);
                 } else {
@@ -918,9 +928,11 @@ impl<'a> FunctionBuilder<'a> {
                             }
                             None => match ret_param {
                                 Some(val) => {
+                                    Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                                     builder.ins().return_(&[val]);
                                 }
                                 None => {
+                                    Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                                     builder.ins().return_(&[]);
                                 }
                             },
@@ -929,6 +941,7 @@ impl<'a> FunctionBuilder<'a> {
                     // Leaving from inside a cleanup returns what the function
                     // was already returning.
                     MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => {
+                        Self::emit_unwind_pop(&mut builder, &cleanup_ctx);
                         match ret_param {
                             Some(val) => {
                                 builder.ins().return_(&[val]);
@@ -1098,6 +1111,35 @@ impl<'a> FunctionBuilder<'a> {
                 let push_ref = ctx.func_refs.get("rask_ensure_push")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_ensure_push".to_string()))?;
                 builder.ins().call(*push_ref, &[thunk_ptr, env_addr]);
+            }
+
+            // ctrl.panic/U6: one store each into the frame's record.
+            MirStmtKind::UnwindArm { slot, value, .. } => {
+                if let Some(rec) = ctx.unwind_rec {
+                    let var = ctx.var_map.get(value).ok_or_else(|| {
+                        CodegenError::UnsupportedFeature("UnwindArm value not found".to_string())
+                    })?;
+                    let val = builder.use_var(*var);
+                    let vty = builder.func.dfg.value_type(val);
+                    let val64 = if vty == types::I64 {
+                        val
+                    } else if vty.is_int() && vty.bytes() < 8 {
+                        builder.ins().uextend(types::I64, val)
+                    } else {
+                        return Err(CodegenError::UnsupportedFeature(format!(
+                            "UnwindArm of a {} value: a record slot holds one word", vty
+                        )));
+                    };
+                    let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
+                    builder.ins().stack_store(val64, rec, off as i32);
+                }
+            }
+            MirStmtKind::UnwindDisarm { slot } => {
+                if let Some(rec) = ctx.unwind_rec {
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
+                    builder.ins().stack_store(zero, rec, off as i32);
+                }
             }
 
             // Deregister the most recent hook (normal exit runs the inline path).
@@ -5986,10 +6028,13 @@ impl<'a> FunctionBuilder<'a> {
                 // though: exit 1, not the silent 0 it used to give (#345).
                 if ctx.is_main {
                     Self::emit_main_error_check(builder, value.as_ref(), ctx)?;
+                    Self::emit_unwind_pop(builder, ctx);
                     builder.ins().return_(&[]);
                 } else if let Some(val) = Self::exit_value(builder, value.as_ref(), ctx)? {
+                    Self::emit_unwind_pop(builder, ctx);
                     builder.ins().return_(&[val]);
                 } else {
+                    Self::emit_unwind_pop(builder, ctx);
                     builder.ins().return_(&[]);
                 }
             }
@@ -6800,14 +6845,63 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
         if ctx.is_main {
+            Self::emit_unwind_pop(builder, ctx);
             builder.ins().return_(&[]);
             return Ok(());
         }
-        match Self::exit_value(builder, value, ctx)? {
+        let val = Self::exit_value(builder, value, ctx)?;
+        Self::emit_unwind_pop(builder, ctx);
+        match val {
             Some(val) => builder.ins().return_(&[val]),
             None => builder.ins().return_(&[]),
         };
         Ok(())
+    }
+
+    /// Take the frame's unwind record off the thread's stack: the frame is
+    /// leaving normally, and released what it owned on the way.
+    fn emit_unwind_pop(builder: &mut ClifFunctionBuilder, ctx: &CodegenCtx) {
+        let (Some(rec), Some(pop)) = (ctx.unwind_rec, ctx.func_refs.get("rask_unwind_pop")) else {
+            return;
+        };
+        let addr = builder.ins().stack_addr(types::I64, rec, 0);
+        builder.ins().call(*pop, &[addr]);
+    }
+
+    /// The frame's unwind record, pushed: zeroed slots, the glue as its
+    /// `run`, linked onto the thread's unwind stack. `None` for a frame that
+    /// arms nothing (most of them), which pays nothing.
+    fn push_unwind_record(
+        builder: &mut ClifFunctionBuilder,
+        mir_fn: &MirFunction,
+        func_refs: &HashMap<String, FuncRef>,
+    ) -> Option<StackSlot> {
+        let slots = mir_fn
+            .blocks
+            .iter()
+            .flat_map(|b| b.statements.iter())
+            .filter_map(|s| match &s.kind {
+                MirStmtKind::UnwindArm { slot, .. } | MirStmtKind::UnwindDisarm { slot } => Some(*slot + 1),
+                _ => None,
+            })
+            .max()?;
+        let glue = format!("{}{}", mir_fn.name, rask_mir::transform::unwind::UNWIND_SUFFIX);
+        let run = func_refs.get(&glue)?;
+        let push = func_refs.get("rask_unwind_push")?;
+        let header = rask_mir::transform::unwind::RECORD_HEADER;
+        let size = header + 8 * slots;
+        let rec = builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, size, 3));
+        // Zeroed, not assumed zero: a slot nothing armed yet reads as empty
+        // only if something wrote it (RASK_POISON_STACK).
+        let zero = builder.ins().iconst(types::I64, 0);
+        for off in (header..size).step_by(8) {
+            builder.ins().stack_store(zero, rec, off as i32);
+        }
+        let run_ptr = builder.ins().func_addr(types::I64, *run);
+        builder.ins().stack_store(run_ptr, rec, 8);
+        let addr = builder.ins().stack_addr(types::I64, rec, 0);
+        builder.ins().call(*push, &[addr]);
+        Some(rec)
     }
 
     /// The address and size of a returned aggregate whose storage this frame

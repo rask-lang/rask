@@ -94,11 +94,17 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
         | MirStmtKind::RcDecContents { local }
         | MirStmtKind::RcIncContents { local } => f(*local),
         MirStmtKind::ReleaseSlot { addr, .. } => f(*addr),
+        // Bookkeeping: an arm copies the value into the frame's unwind record
+        // and nothing reads it there but a panic. Counted as a read, every
+        // analysis that treats an unknown reader as a keeper would stop
+        // owning what it just armed. `dce` keeps an armed value's def itself.
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop => {}
+        | MirStmtKind::EnsureHookPop
+        | MirStmtKind::UnwindArm { .. }
+        | MirStmtKind::UnwindDisarm { .. } => {}
     }
 }
 
@@ -200,7 +206,9 @@ pub fn visit_stmt_use_locals_mut(
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
-        | MirStmtKind::EnsureHookPop => {}
+        | MirStmtKind::EnsureHookPop
+        | MirStmtKind::UnwindArm { .. }
+        | MirStmtKind::UnwindDisarm { .. } => {}
     }
 }
 

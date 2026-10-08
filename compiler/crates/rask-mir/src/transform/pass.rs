@@ -140,6 +140,10 @@ impl PassManager {
         // above are what settle that (clone elision in particular).
         pm.add(ConstFreePass);
         pm.add(DeadCodeEliminationPass);
+        // After every release is placed and every string op that survives
+        // elision is settled: it arms the strings off the finished `rc_dec`s
+        // and builds the glue from all the arms (ctrl.panic/U6).
+        pm.add(UnwindRecordPass);
         // Again at the end: `container_drop` adds the closure environment glue,
         // whose calls no earlier sweep has seen.
         pm.add(UnmappedSpellingReportPass);
@@ -173,6 +177,17 @@ impl MirPass for ConstFreePass {
     fn name(&self) -> &str { "const_free" }
     fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::add_const_free(fns);
+    }
+}
+
+/// Give each frame that owns something an unwind record and the glue that
+/// releases it on a panic (#1422).
+pub struct UnwindRecordPass;
+
+impl MirPass for UnwindRecordPass {
+    fn name(&self) -> &str { "unwind_records" }
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+        crate::transform::unwind::build_unwind_records(fns);
     }
 }
 

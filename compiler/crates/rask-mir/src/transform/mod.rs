@@ -13,3 +13,4 @@ pub mod rc_elide;
 pub mod rc_insert;
 pub mod ssa;
 pub mod string_append;
+pub mod unwind;

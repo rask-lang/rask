@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// A panic or a skip releases what the frames it leaves own (ctrl.panic/U6).
+//
+// Both leave by longjmp, straight past every free the compiler put at the
+// frames' ends, so each of these used to leave its vectors and strings behind
+// natively (#1422). They pass either way; the leak gate runs this file under
+// RASK_LEAK_CHECK, and a count above zero is the failure.
+//
+// The functions recurse so the inliner can't fold them into one frame: each
+// frame here is a real frame with its own unwind record.
+
+test "a skip releases the test's own vector" {
+    let v: Vec<i64> = [1, 2, 3]
+    skip("not today")
+}
+
+func label(n: i64) -> string {
+    return "label number {n} of many"
+}
+
+func deepest(n: i64, depth: i64) -> i64 {
+    let v: Vec<i64> = [n, depth]
+    let s = label(depth)
+    if depth > 2 {
+        panic("deep")
+    }
+    let r = deepest(n, depth + 1)
+    return r + s.len().to<i64>()! + v.len().to<i64>()!
+}
+
+func middle(n: i64) -> i64 {
+    mut v: Vec<i64> = [n]
+    let s = label(n + 10)
+    // Runs before the frame's own vector is released, so it can still read it.
+    ensure println("middle's ensure sees {v.len()} items, first {v[0]}")
+    v.push(n)
+    let r = deepest(n, 0)
+    return r + s.len().to<i64>()!
+}
+
+func outer(n: i64) -> i64 {
+    let v: Vec<i64> = [n, n, n]
+    let s = label(n + 20)
+    let r = middle(n)
+    return r + s.len().to<i64>()! + v.len().to<i64>()!
+}
+
+test "a panic three frames deep releases every frame's vector and string" {
+    mut died = false
+    using Multitasking {
+        let h = spawn {
+            return outer(4)
+        }
+        match h.join() {
+            i64 as v => { died = false },
+            JoinError.Panicked(msg) => { died = true },
+        }
+    }
+    assert died
+}
+
+func takes(take v: Vec<i64>, depth: i64) -> i64 {
+    if depth > 1 {
+        panic("the callee owns it now")
+    }
+    return takes(v, depth + 1)
+}
+
+test "a vector handed to a callee that panics is released once" {
+    mut died = false
+    using Multitasking {
+        let h = spawn {
+            let v: Vec<i64> = [1, 2]
+            let s = label(7)
+            return takes(v, 0) + s.len().to<i64>()!
+        }
+        match h.join() {
+            i64 as v => { died = false },
+            JoinError.Panicked(msg) => { died = true },
+        }
+    }
+    assert died
+}
+
+// What a task block captured is the block's. Read and kept, it is released by
+// the block's frame; handed on, by the frame it went to.
+test "a panicking task releases what it captured" {
+    let v: Vec<i64> = [1, 2, 3]
+    let w: Vec<i64> = [4, 5]
+    let s = label(3)
+    mut died = 0
+    using Multitasking {
+        let h = spawn {
+            return v.len().to<i64>()! + s.len().to<i64>()! + deepest(0, 0)
+        }
+        match h.join() {
+            i64 as r => { died = 0 },
+            JoinError.Panicked(msg) => { died = 1 },
+        }
+        let g = spawn {
+            return takes(w, 0)
+        }
+        match g.join() {
+            i64 as r => { died = 0 },
+            JoinError.Panicked(msg) => { died += 1 },
+        }
+    }
+    assert died == 2
+}

@@ -364,9 +364,6 @@ extern int  rask_string_debug_enabled;
 // `rask_alloc`, not just strings — a clean program ends at exactly zero.
 extern int  rask_leak_check_enabled;
 void        rask_leak_check(void);
-// A test that ended by unwinding (a skip, or a panic) left `n` allocations
-// behind in the frames it abandoned. Not counted as leaked — see test.c.
-void        rask_leak_forgive_unwound(int64_t n);
 
 // Read-only accessors
 int64_t     rask_string_len(const RaskStr *s);
@@ -1404,15 +1401,27 @@ void   rask_thread_tls_swap(void *blob);
 size_t rask_random_tls_size(void);
 void   rask_random_tls_swap(void *blob);
 
-// ─── Ensure hooks (LIFO cleanup) ───────────────────────────
-// Per-task cleanup stack. Hooks run LIFO on cancel or panic.
+// ─── Unwind stack (ctrl.panic/U1, U6) ──────────────────────
+// Per-task LIFO list of what a panic runs on the way out: `ensure` hooks, and
+// the unwind records of frames that own something. A record lives in its
+// frame: this header, then one word per value the frame owns at the moment
+// (zero for none), which `run` releases.
+
+typedef struct RaskUnwindRec {
+    struct RaskUnwindRec *next;
+    void (*run)(struct RaskUnwindRec *self);
+} RaskUnwindRec;
 
 typedef void (*RaskEnsureFn)(void *ctx);
 
 void rask_ensure_push(RaskEnsureFn fn, void *ctx);
 void rask_ensure_pop(void);
 
-// Drain the stack LIFO during panic unwind (ctrl.panic/U1, E2, E3).
+// A frame's record, on entry and on every return.
+void rask_unwind_push(RaskUnwindRec *rec);
+void rask_unwind_pop(RaskUnwindRec *rec);
+
+// Drain the whole stack LIFO (ctrl.panic/U1, U6, E2, E3).
 void rask_ensure_run_all(void);
 
 // Park/resume the current thread's stack head (opaque; for fiber workers).

@@ -27,9 +27,10 @@
 // ─── Per-thread panic context ──────────────────────────────
 
 struct RaskPanicCtx {
-    jmp_buf buf;
-    int     active;       // handler installed?
-    char   *message;      // heap-allocated on panic
+    jmp_buf        buf;
+    int            active;   // handler installed?
+    char          *message;  // heap-allocated on panic
+    RaskUnwindRec *floor;    // the unwind stack's head when it was installed
 };
 
 static __thread struct RaskPanicCtx panic_ctx;
@@ -37,6 +38,7 @@ static __thread struct RaskPanicCtx panic_ctx;
 RaskPanicCtx *rask_panic_install(void) {
     panic_ctx.active  = 0;
     panic_ctx.message = NULL;
+    panic_ctx.floor   = NULL;
     return &panic_ctx;
 }
 
@@ -53,9 +55,13 @@ jmp_buf *rask_panic_jmpbuf(void) {
     return &panic_ctx.buf;
 }
 
-// Mark the handler as active (called after setjmp returns 0).
+// Mark the handler as active (called after setjmp returns 0). What is on the
+// unwind stack now belongs to the handler's callers, which the jump doesn't
+// leave, so a panic drains only what goes on above it.
+static __thread RaskUnwindRec *tl_unwind = NULL;
 void rask_panic_activate(void) {
     panic_ctx.active = 1;
+    panic_ctx.floor  = tl_unwind;
 }
 
 // ─── FFI boundary (ctrl.panic/A1) ──────────────────────────
@@ -123,79 +129,108 @@ void rask_panic_set_task_id(int64_t id) {
     tl_task_id = id;
 }
 
-// ─── Ensure hooks (LIFO cleanup stack) ─────────────────────
+// ─── Unwind stack (ctrl.panic/U1, U6) ──────────────────────
 //
-// Per-thread linked list of scheduled cleanups. Codegen pushes one per
-// `ensure` and pops it on normal scope exit; `rask_ensure_run_all` drains
-// what's left when the stack unwinds on panic (ctrl.panic/U1). Lives here,
-// in the always-linked TU, so both the main thread and every backend
-// (thread.c OS tasks, green.c fibers) share one stack. green.c reaches it
-// through the take/set accessors below instead of owning its own copy.
+// Per-thread LIFO list of what a panic has to do on the way out, two kinds of
+// record on one list. An `ensure` pushes a hook when it is registered and pops
+// it on normal scope exit. A frame that owns something a panic would leave
+// behind pushes its unwind record on entry and pops it on return; the record
+// lives in the frame and holds a slot per value the frame owns at the moment,
+// and its `run` releases each one still there.
+//
+// One list is what puts them in order: a frame's record goes on before any of
+// its ensures, so its ensures run first and still see what it owns, and inner
+// frames unwind before outer ones. Lives here, in the always-linked TU, so the
+// main thread and every backend (thread.c OS tasks, green.c fibers) share it.
+// green.c reaches it through the take/set accessors below.
 
 typedef struct EnsureHook {
+    RaskUnwindRec      rec;
     RaskEnsureFn       fn;
     void              *ctx;
-    struct EnsureHook *next;
 } EnsureHook;
 
-static __thread EnsureHook *tl_ensure_stack = NULL;
-
-// Set while draining hooks, so a panic raised by the unwind machinery
-// itself (A1) doesn't recursively re-drain the stack.
+// How deep in a drain this thread is. A preemption safe point leaves an
+// unwinding fiber alone.
 static __thread int tl_in_unwind = 0;
+
+static void ensure_run(RaskUnwindRec *rec) {
+    EnsureHook *hook = (EnsureHook *)rec;
+    RaskEnsureFn fn = hook->fn;
+    void *ctx = hook->ctx;
+    free(hook);
+    if (fn) fn(ctx);
+}
 
 void rask_ensure_push(RaskEnsureFn fn, void *ctx) {
     EnsureHook *hook = (EnsureHook *)malloc(sizeof(EnsureHook));
     if (!hook) return;
-    *hook = (EnsureHook){ .fn = fn, .ctx = ctx, .next = tl_ensure_stack };
-    tl_ensure_stack = hook;
+    *hook = (EnsureHook){ .rec = { .next = tl_unwind, .run = ensure_run }, .fn = fn, .ctx = ctx };
+    tl_unwind = &hook->rec;
 }
 
 void rask_ensure_pop(void) {
-    EnsureHook *hook = tl_ensure_stack;
-    if (!hook) return;
-    tl_ensure_stack = hook->next;
-    free(hook);
+    RaskUnwindRec *top = tl_unwind;
+    if (!top || top->run != ensure_run) return;
+    tl_unwind = top->next;
+    free(top);
+}
+
+void rask_unwind_push(RaskUnwindRec *rec) {
+    rec->next = tl_unwind;
+    tl_unwind = rec;
+}
+
+// The frame is returning. Anything still above its record is one of its own
+// ensure hooks that an early exit didn't pop, and goes with it.
+void rask_unwind_pop(RaskUnwindRec *rec) {
+    RaskUnwindRec *r = tl_unwind;
+    while (r && r != rec) r = r->next;
+    if (!r) return;
+    r = tl_unwind;
+    while (r != rec) {
+        RaskUnwindRec *next = r->next;
+        if (r->run == ensure_run) free(r);
+        r = next;
+    }
+    tl_unwind = rec->next;
 }
 
 // Save/restore the current thread's stack head. Lets a worker thread that
-// multiplexes fibers (green.c) park one task's hooks and resume another's
-// without knowing the EnsureHook layout.
+// multiplexes fibers (green.c) park one task's records and resume another's
+// without knowing their layout.
 void *rask_ensure_stack_take(void) {
-    void *head = tl_ensure_stack;
-    tl_ensure_stack = NULL;
+    void *head = tl_unwind;
+    tl_unwind = NULL;
     return head;
 }
 
 void rask_ensure_stack_set(void *head) {
-    tl_ensure_stack = (EnsureHook *)head;
+    tl_unwind = (RaskUnwindRec *)head;
 }
 
-// Run every scheduled ensure in LIFO order during unwind. Each body runs
-// even if an earlier one panicked (E2); the first panic is already the
-// task's panic, so a panic raised by a body here is contained and reported
-// to stderr as a secondary panic (E3).
-void rask_ensure_run_all(void) {
-    if (tl_in_unwind) {
-        // A1: panic inside the unwind machinery — don't recurse.
-        return;
-    }
-    tl_in_unwind = 1;
-    while (tl_ensure_stack) {
-        EnsureHook *hook = tl_ensure_stack;
-        tl_ensure_stack = hook->next;
-        RaskEnsureFn fn = hook->fn;
-        void *ctx = hook->ctx;
-        free(hook);
-        if (!fn) continue;
+// Run what is on the stack down to `floor`, LIFO: the records of the frames a
+// panic is about to jump past, and nothing below the handler it jumps to.
+// Without `frames` only the ensures run: a panic leaving `main` ends the
+// process, which takes the memory with it.
+//
+// Each record runs even if an earlier one panicked (E2); the first panic is
+// already the task's, so a panic raised by one here is contained, reported to
+// stderr as a secondary panic (E3), and unwinds only the frames it ran.
+static void unwind_to(RaskUnwindRec *floor, int frames) {
+    tl_in_unwind++;
+    while (tl_unwind && tl_unwind != floor) {
+        RaskUnwindRec *rec = tl_unwind;
+        tl_unwind = rec->next;
+        if (!frames && rec->run != ensure_run) continue;
+        RaskUnwindRec *resume = tl_unwind;
 
-        // Contain a panic thrown by this ensure body: install a local
-        // handler so rask_panic longjmps back here instead of escaping.
         struct RaskPanicCtx saved = panic_ctx;
         if (setjmp(panic_ctx.buf) == 0) {
             panic_ctx.active  = 1;
             panic_ctx.message = NULL;
-            fn(ctx);
+            panic_ctx.floor   = resume;
+            rec->run(rec);
         } else {
             char *m = panic_ctx.message;
             // F1: task id prefix when a runtime task is active.
@@ -207,10 +242,15 @@ void rask_ensure_run_all(void) {
                         m ? m : "(unknown panic)");
             }
             free(m);
+            tl_unwind = resume;
         }
         panic_ctx = saved;
     }
-    tl_in_unwind = 0;
+    tl_in_unwind--;
+}
+
+void rask_ensure_run_all(void) {
+    unwind_to(NULL, 1);
 }
 
 // ─── Held access (ctrl.panic/U3, U4) ───────────────────────
@@ -329,7 +369,7 @@ typedef struct TaskTls {
     struct RaskPanicCtx panic;
     int                 ffi_depth;
     int64_t             task_id;
-    EnsureHook         *ensure;
+    RaskUnwindRec      *ensure;
     int                 in_unwind;
     HeldAccess         *held;
     const char         *loc_file;
@@ -356,7 +396,7 @@ void rask_task_tls_swap(void *blob) {
     SWAP(panic_ctx, t->panic);
     SWAP(ffi_boundary_depth, t->ffi_depth);
     SWAP(tl_task_id, t->task_id);
-    SWAP(tl_ensure_stack, t->ensure);
+    SWAP(tl_unwind, t->ensure);
     SWAP(tl_in_unwind, t->in_unwind);
     SWAP(tl_held_access, t->held);
     SWAP(panic_loc_file, t->loc_file);
@@ -376,6 +416,16 @@ void rask_set_panic_location(const char *file, int32_t line, int32_t col) {
 }
 
 // ─── Panic entry points ────────────────────────────────────
+
+// Down to the handler the panic jumps to. With none, the panic ends the
+// process (P4): its ensures still run, and its memory goes with it.
+static void rask_unwind_for_panic(void) {
+    if (panic_ctx.active) {
+        unwind_to(panic_ctx.floor, 1);
+    } else {
+        unwind_to(NULL, 0);
+    }
+}
 
 _Noreturn void rask_panic(const char *msg) {
     // If codegen set a source location, use rask_panic_at instead
@@ -401,14 +451,21 @@ _Noreturn void rask_panic(const char *msg) {
     // codegen's print lock and deadlock every later print on other threads.
     rask_print_unlock_all();
 
+    // The unwind below releases what the dying frames own, and the message
+    // may live in one of them.
+    char own_msg[RASK_PANIC_MSG_MAX];
+    snprintf(own_msg, sizeof(own_msg), "%s", msg ? msg : "(unknown panic)");
+    msg = own_msg;
+
     // U3/U4: release the locks and borrows this task still holds. Before the
     // ensures, not after — a cleanup that touches the same box has to be able to
     // take the lock, and an ensure blocking on it is a hang, not a failure.
     rask_access_release_all();
 
-    // Unwind: run scheduled ensures for the dying task (U1/E2/E3). The primary
-    // panic message is set afterward, so it wins over any secondary.
-    rask_ensure_run_all();
+    // Unwind: run the dying frames' ensures and release what they own, down
+    // to the handler (U1/U6/E2/E3). The primary panic message is set
+    // afterward, so it wins over any secondary.
+    rask_unwind_for_panic();
 
     if (panic_ctx.active) {
         // Spawned task — store message and longjmp back to task entry
@@ -443,7 +500,7 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
 
     rask_print_unlock_all();
     rask_access_release_all();
-    rask_ensure_run_all();
+    rask_unwind_for_panic();
 
     if (panic_ctx.active) {
         panic_ctx.message = strdup(buf);
