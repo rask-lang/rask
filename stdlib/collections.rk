@@ -742,7 +742,6 @@ extend Wide<T> where T: Comparable {
         return self.to_vec().max()!
     }
 }
-}
 
 /// A set of unique values.
 ///
