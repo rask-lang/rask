@@ -3400,6 +3400,7 @@ impl<'a> MirLowerer<'a> {
                 len: elems.len() as u32,
             };
             let result_local = self.builder.alloc_temp(array_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: result_local }));
             for (i, elem_op) in lowered.into_iter().enumerate() {
                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                     addr: result_local,
@@ -3499,6 +3500,7 @@ impl<'a> MirLowerer<'a> {
                     MirOperand::Local(widened)
                 })
                 .collect();
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: result_local }));
             let mut offset = 0u32;
             for (elem_op, elem_ty) in lowered_elems.into_iter().zip(elem_types.iter()) {
                 let elem_size = elem_ty.size();
@@ -3586,6 +3588,9 @@ impl<'a> MirLowerer<'a> {
             };
 
             let result_local = self.builder.alloc_temp(result_ty.clone());
+            // Each field is stored as soon as it is evaluated, so the next
+            // field's expression runs with the value half built.
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate { local: result_local }));
 
             // For enum variants, store the tag first
             if let Some((tag_offset, tag, payload_offset, ref variant_fields)) = enum_variant_info {
@@ -5627,6 +5632,9 @@ impl<'a> MirLowerer<'a> {
                         {
                             let enum_ty = MirType::Enum(EnumLayoutId::new(idx, enum_size, enum_align));
                             let result_local = self.builder.alloc_temp(enum_ty.clone());
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ZeroAggregate {
+                                local: result_local,
+                            }));
 
                             // Store discriminant tag
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {

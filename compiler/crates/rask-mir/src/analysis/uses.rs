@@ -98,7 +98,11 @@ fn visit_stmt_uses(stmt: &MirStmt, f: &mut impl FnMut(LocalId)) {
         // and nothing reads it there but a panic. Counted as a read, every
         // analysis that treats an unknown reader as a keeper would stop
         // owning what it just armed. `dce` keeps an armed value's def itself.
+        // Zeroing a literal's storage is the same: only the unwind glue reads
+        // the zeroes, and counted as a read it made a struct built for a box
+        // look read by something else, so the box stopped owning it.
         MirStmtKind::ResourceRegister { .. }
+        | MirStmtKind::ZeroAggregate { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
         | MirStmtKind::EnsurePop
@@ -202,6 +206,9 @@ pub fn visit_stmt_use_locals_mut(
         // The same shape as a `Store`'s destination: the local holds an address
         // and the release reads through it.
         MirStmtKind::ReleaseSlot { addr, .. } => f(addr, UseKind::Value),
+        // Not a read (see `visit_stmt_uses`), but it names the storage, so a
+        // pass that moves the aggregate to another local moves this too.
+        MirStmtKind::ZeroAggregate { local } => f(local, UseKind::Value),
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }

@@ -998,6 +998,10 @@ fn insert_aggregate_release(
                 // `Heap<T>` releases the payload's contents before giving the
                 // block back.
                 MirStmtKind::RcDecContents { local } => hand_over(&mut ev, *local),
+                // A literal starts here, empty, and its field stores fill it.
+                MirStmtKind::ZeroAggregate { local } if aggregates.contains(local) => {
+                    ev.push(ownership::Event::Make(*local))
+                }
                 // Retained by lowering: from here on the name holds references
                 // of its own, and is ours to release.
                 MirStmtKind::RcIncContents { local } if owns_copy.contains(local) && is_tracked(local) => {
@@ -1043,9 +1047,10 @@ fn insert_aggregate_release(
                     }
                     // A store into a scratch slot writes it; one into an
                     // aggregate is a `Fill`, which the analysis decides.
-                    let writes = match store_into {
-                        Some((addr, _, _)) => addr == *name && !aggregates.contains(name),
-                        None => uses::stmt_def(stmt) == Some(*name),
+                    let writes = match (&stmt.kind, store_into) {
+                        (MirStmtKind::ZeroAggregate { local }, _) => local == name,
+                        (_, Some((addr, _, _))) => addr == *name && !aggregates.contains(name),
+                        (_, None) => uses::stmt_def(stmt) == Some(*name),
                     };
                     if writes {
                         k.push(*name);
@@ -1111,19 +1116,23 @@ fn insert_aggregate_release(
     // next statement — releasing first frees the buffer the retain is about to
     // touch.
     //
-    // `plan.unwind` is dropped: an aggregate is not armed, so a panic leaks
-    // what one holds. Its value is made at the first field store and lowering
-    // evaluates the next field after it, so a panic in that field's expression
-    // would walk a half-built aggregate whose other fields are whatever the
-    // stack held. Arming one needs its storage in a state every release reads
-    // as empty first (#1518).
+    // The unwind marks go in first, against the blocks as planned. A literal
+    // is armed from its `ZeroAggregate`, which leaves every field it hasn't
+    // stored yet reading as empty (#1518).
+    let (shifted, unwind_edges) = ownership::place_unwind(
+        func,
+        plan.unwind,
+        &mut |_: &mut MirFunction, name: LocalId, _| {
+            vec![MirStmt::dummy(MirStmtKind::RcDecContents { local: name })]
+        },
+    );
     let mut by_block: HashMap<usize, Vec<(usize, LocalId)>> = HashMap::new();
     let mut on_edges: Vec<(BlockId, BlockId, Vec<MirStmt>)> = Vec::new();
     for r in plan.releases {
         match r {
             ownership::Release::At { block, at, name, .. } => {
                 let stmts = &func.blocks[block].statements;
-                let mut at = at;
+                let mut at = shifted.at(block, at);
                 while at < stmts.len() && matches!(stmts[at].kind, MirStmtKind::RcInc { .. }) {
                     at += 1;
                 }
@@ -1153,7 +1162,7 @@ fn insert_aggregate_release(
         }
     }
     // After the in-block ones: those index into the blocks as they were.
-    ownership::insert_on_edges(func, on_edges);
+    ownership::insert_on_edges(func, ownership::merge_edges(unwind_edges, on_edges));
     sites.into_iter().map(|(_, s)| s).collect()
 }
 

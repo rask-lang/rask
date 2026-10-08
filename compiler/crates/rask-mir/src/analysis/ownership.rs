@@ -1107,6 +1107,15 @@ fn pick(st: &State, v: Value, touched: &[LocalId]) -> Option<LocalId> {
 // it, and disarmed where it stops being ours: handed over, released, or no
 // longer held by that name. Read off the same settled state the releases were,
 // so the two never disagree about whose a value is.
+//
+// A value made by a `Fill` is a field store whose siblings may not be written
+// yet. Armed while code that can panic runs before the rest are stored, a
+// panic would release whatever the unwritten fields held. So it is armed at
+// once only when its stores run with nothing that can panic between them
+// (`stored_quietly`), and otherwise waits until something reads it, which
+// nothing does to a value still being built. A struct literal evaluates each
+// field between stores and isn't made that way: lowering starts it with a
+// `ZeroAggregate`, and it is armed from there.
 
 /// Where an unwind mark goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1158,6 +1167,20 @@ fn unwind_marks(
     let mut marks: Vec<Mark> = Vec::new();
     let mut entry_arm: Vec<Option<BTreeMap<Value, LocalId>>> = vec![None; n];
     let mut exit_arm: Vec<BTreeMap<Value, LocalId>> = vec![BTreeMap::new(); n];
+    let read_in = read_since_made(func, facts, sh, live, entries, kills);
+    let mut half_built: BTreeSet<Value> = BTreeSet::new();
+    for (bi, block) in facts.events.iter().enumerate() {
+        for (si, evs) in block.iter().enumerate() {
+            for e in evs {
+                if let Event::Fill(m) = e {
+                    let v = Value { block: bi as u32, at: si as u32, name: *m };
+                    if !stored_quietly(func, facts, sh, v) {
+                        half_built.insert(v);
+                    }
+                }
+            }
+        }
+    }
 
     for &bi in &sh.rpo {
         let Some(entry) = &entries[bi] else { continue };
@@ -1165,11 +1188,13 @@ fn unwind_marks(
             entry_arm[bi] = Some(BTreeMap::new());
             continue;
         }
+        let mut read = read_in[bi].clone();
+        let armable = |v: Value, read: &BTreeSet<Value>| !half_built.contains(&v) || read.contains(&v);
         // Keep the name the way in armed it under, when every way in seen so
         // far agrees and it still holds the value; otherwise the usual pick.
         let mut arm: BTreeMap<Value, LocalId> = BTreeMap::new();
         for (v, owned) in &entry.own {
-            if !*owned {
+            if !*owned || !armable(*v, &read) {
                 continue;
             }
             let holders = entry.holders(*v);
@@ -1201,11 +1226,22 @@ fn unwind_marks(
             if is_phi(func, bi, si) {
                 continue;
             }
+            note_reads(&st, &mut read, &facts.reads[bi][si]);
+            let held_before: BTreeMap<Value, Vec<LocalId>> =
+                arm.keys().map(|v| (*v, st.holders(*v))).collect();
             apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+            forget_made(&mut read, &facts.events[bi][si], bi, si);
             // Handed over, or no longer held by the name it was armed under:
             // gone before the statement runs, because a callee that panics
             // with it is the one that owns it. A value made again here (a
             // loop's next turn) is a new one and is armed afresh below.
+            //
+            // Still ours but held by another name from here, one that already
+            // held it: re-armed under that one before the statement. A call
+            // given the address of a copy writes through the copy, so the copy
+            // is the value from the call on (`WriteThrough`), and leaving the
+            // slot empty for the call left a panic in the callee nothing to
+            // release.
             for (v, name) in arm.clone() {
                 let made_here = v.block as usize == bi && v.at as usize == si;
                 if made_here || !st.owned(v) || !st.holders(v).contains(&name) {
@@ -1214,6 +1250,18 @@ fn unwind_marks(
                         kind: MarkKind::Disarm { slot: slot(v, name) },
                     });
                     arm.remove(&v);
+                    if made_here || !st.owned(v) {
+                        continue;
+                    }
+                    let now = st.holders(v);
+                    let Some(next) = held_before[&v].iter().copied().filter(|m| now.contains(m)).min() else {
+                        continue;
+                    };
+                    marks.push(Mark {
+                        at: MarkAt::In { block: bi, at: si, late: true },
+                        kind: MarkKind::Arm { slot: slot(v, next), name: next, made: v.made() },
+                    });
+                    arm.insert(v, next);
                 }
             }
             // Released right after it.
@@ -1229,7 +1277,7 @@ fn unwind_marks(
             }
             let owned: Vec<Value> = st.own.iter().filter(|(_, o)| **o).map(|(v, _)| *v).collect();
             for v in owned {
-                if arm.contains_key(&v) {
+                if arm.contains_key(&v) || !armable(v, &read) {
                     continue;
                 }
                 if let Some(name) = pick(&st, v, &[]) {
@@ -1303,6 +1351,144 @@ fn unwind_marks(
         }
     }
     marks
+}
+
+/// The `Fill`-made values something has read since they were made, on every
+/// path into each block. Read means finished: nothing reads a value still
+/// being built.
+fn read_since_made(
+    func: &MirFunction,
+    facts: &Facts,
+    sh: &Shape,
+    live: &Live,
+    entries: &[Option<State>],
+    kills: &Kills,
+) -> Vec<BTreeSet<Value>> {
+    let n = func.blocks.len();
+    if !facts.events.iter().flatten().flatten().any(|e| matches!(e, Event::Fill(_))) {
+        return vec![BTreeSet::new(); n];
+    }
+    // `None` until a way in is seen: the meet is an intersection.
+    let mut read_in: Vec<Option<BTreeSet<Value>>> = vec![None; n];
+    let mut read_out: Vec<Option<BTreeSet<Value>>> = vec![None; n];
+    if n > 0 {
+        read_in[sh.rpo[0]] = Some(BTreeSet::new());
+    }
+    let mut changed = true;
+    let mut rounds = 0;
+    while changed && rounds < 200 {
+        changed = false;
+        rounds += 1;
+        for &bi in &sh.rpo {
+            let Some(entry) = &entries[bi] else { continue };
+            let mut meet: Option<BTreeSet<Value>> = read_in[bi].clone().filter(|_| bi == sh.rpo[0]);
+            for &p in &sh.preds[bi] {
+                if let Some(out) = &read_out[p] {
+                    meet = Some(match meet {
+                        None => out.clone(),
+                        Some(m) => m.intersection(out).copied().collect(),
+                    });
+                }
+            }
+            let Some(start) = meet else { continue };
+            read_in[bi] = Some(start.clone());
+            let mut read = start;
+            let mut st = entry.clone();
+            let len = func.blocks[bi].statements.len();
+            for si in 0..len {
+                if is_phi(func, bi, si) {
+                    continue;
+                }
+                note_reads(&st, &mut read, &facts.reads[bi][si]);
+                apply(&mut st, &facts.events[bi][si], bi, si, &live.at[bi][si + 1], &mut HashSet::new());
+                forget_made(&mut read, &facts.events[bi][si], bi, si);
+                killed_at(&mut st, kills, bi, si);
+            }
+            note_reads(&st, &mut read, &facts.terminator_reads[bi]);
+            if read_out[bi].as_ref() != Some(&read) {
+                read_out[bi] = Some(read);
+                changed = true;
+            }
+        }
+    }
+    // Unsettled, the sets may still claim reads some path lacks: claim none.
+    if changed {
+        return vec![BTreeSet::new(); n];
+    }
+    read_in.into_iter().map(Option::unwrap_or_default).collect()
+}
+
+/// Whether the value a `Fill` made gets the rest of its fields stored with
+/// nothing that can panic in between: a wrapper's tag and payload, a tuple
+/// whose elements were evaluated first. Followed through straight-line
+/// blocks until something reads the value; a branch or a join first and the
+/// answer is no.
+fn stored_quietly(func: &MirFunction, facts: &Facts, sh: &Shape, v: Value) -> bool {
+    let name = v.name;
+    let (mut bi, mut from) = (v.block as usize, v.at as usize + 1);
+    let mut loud = false;
+    let mut seen: BTreeSet<usize> = BTreeSet::new();
+    loop {
+        let block = &func.blocks[bi];
+        for si in from..block.statements.len() {
+            if facts.reads[bi][si].contains(&name) {
+                return true;
+            }
+            if facts.events[bi][si].iter().any(|e| matches!(e, Event::Fill(m) if *m == name)) {
+                if loud {
+                    return false;
+                }
+                continue;
+            }
+            loud |= !quiet(&block.statements[si]);
+        }
+        if facts.terminator_reads[bi].contains(&name) {
+            return true;
+        }
+        match block.terminator.kind {
+            MirTerminatorKind::Return { .. } | MirTerminatorKind::CleanupReturn { .. } => return true,
+            MirTerminatorKind::Goto { .. }
+                if sh.succs[bi].len() == 1 && sh.preds[sh.succs[bi][0]].len() == 1 && seen.insert(bi) =>
+            {
+                bi = sh.succs[bi][0];
+                from = 0;
+            }
+            _ => return false,
+        }
+    }
+}
+
+/// A statement that can't panic.
+fn quiet(stmt: &MirStmt) -> bool {
+    use crate::MirRValue;
+    match &stmt.kind {
+        MirStmtKind::Assign { rvalue, .. } => matches!(
+            rvalue,
+            MirRValue::Use(_) | MirRValue::Ref(_) | MirRValue::Field { .. } | MirRValue::EnumTag { .. }
+        ),
+        MirStmtKind::Store { .. }
+        | MirStmtKind::RcInc { .. }
+        | MirStmtKind::RcIncContents { .. }
+        | MirStmtKind::Phi { .. }
+        | MirStmtKind::ZeroAggregate { .. }
+        | MirStmtKind::UnwindArm { .. }
+        | MirStmtKind::UnwindDisarm { .. } => true,
+        _ => false,
+    }
+}
+
+/// Every value the names a statement reads might hold.
+fn note_reads(st: &State, read: &mut BTreeSet<Value>, names: &[LocalId]) {
+    for name in names {
+        read.extend(st.binds(*name).into_iter().filter_map(Bind::value));
+    }
+}
+
+/// A value made again (a loop's next turn) starts over unread.
+fn forget_made(read: &mut BTreeSet<Value>, events: &[Event], bi: usize, si: usize) {
+    for e in events {
+        read.remove(&Value { block: bi as u32, at: si as u32, name: e.name() });
+    }
 }
 
 /// Where each statement a pass planned against now sits, once unwind marks

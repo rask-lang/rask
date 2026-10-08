@@ -108,3 +108,164 @@ test "a panicking task releases what it captured" {
     }
     assert died == 2
 }
+
+// Aggregates (#1518): a struct, an enum, a `T?`, a `T or E` and a tuple are
+// released by a panic too. A struct literal stores each field as soon as it
+// is evaluated, so a panic in a later field's expression finds the value half
+// built; it starts zeroed, so the fields not stored yet hold nothing to
+// release. These also run under RASK_POISON_STACK, where an unzeroed field
+// would read as 0xAA… and crash the release.
+
+struct Held {
+    items: Vec<i64>
+}
+
+struct Rec {
+    name: string
+    items: Vec<i64>
+    n: i64
+}
+
+enum Slot {
+    Empty
+    Full(Vec<i64>)
+    Named(string)
+}
+
+func later(n: i64) -> i64 {
+    if n > 3 {
+        skip("not today")
+    }
+    return later(n + 1) + 1
+}
+
+func boom(n: i64) -> i64 {
+    if n > 2 {
+        panic("boom")
+    }
+    return boom(n + 1) + 1
+}
+
+func panics(f: func() -> i64) -> bool {
+    mut out = false
+    using Multitasking {
+        let h = spawn {
+            return f()
+        }
+        match h.join() {
+            i64 as v => { out = false },
+            JoinError.Panicked(msg) => { out = true },
+        }
+    }
+    return out
+}
+
+test "a skip releases what a struct holds" {
+    let h = Held { items: [1, 2, 3] }
+    let k = later(1)
+    assert h.items.len() == 3
+}
+
+func half_built(n: i64) -> i64 {
+    let r = Rec { name: label(n), items: [n, n], n: boom(n) }
+    return r.n + r.items.len().to<i64>()!
+}
+
+test "a panic while a later field is evaluated" {
+    assert panics(|| half_built(0))
+}
+
+func rebuild(turns: i64, k: i64) -> i64 {
+    mut total = 0
+    for i in 0..turns {
+        let r = Rec { name: label(i), items: [i, i, i], n: if i == k { boom(3) } else { i } }
+        total += r.n + r.name.len().to<i64>()! + r.items.len().to<i64>()!
+    }
+    return total
+}
+
+test "a panic on a later turn of a loop that rebuilds a struct" {
+    assert panics(|| rebuild(5, 3))
+    assert !panics(|| rebuild(3, 7))
+}
+
+func size(s: Slot) -> i64 {
+    match s {
+        Slot.Empty => { return 0 },
+        Slot.Full(v) => { return v.len().to<i64>()! },
+        Slot.Named(t) => { return t.len().to<i64>()! },
+    }
+}
+
+func held_enum(n: i64) -> i64 {
+    let a = Slot.Full([n, n])
+    let b = Slot.Named(label(n))
+    let k = boom(n)
+    return k + size(a) + size(b)
+}
+
+func held_option(n: i64) -> i64 {
+    let o: Vec<i64>? = [n, n]
+    let s: string? = label(n)
+    let k = boom(n)
+    return k + o!.len().to<i64>()! + s!.len().to<i64>()!
+}
+
+struct ParseFail {
+    text: string
+}
+
+extend ParseFail {
+    func message(self) -> string {
+        return self.text
+    }
+}
+
+func parse(n: i64) -> Vec<i64> or ParseFail {
+    if n > 100 {
+        return ParseFail { text: label(n) }
+    }
+    let v: Vec<i64> = [n]
+    return v
+}
+
+func width(r: Vec<i64> or ParseFail) -> i64 {
+    match r {
+        Vec<i64> as v => { return v.len().to<i64>()! },
+        ParseFail as f => { return f.text.len().to<i64>()! },
+    }
+}
+
+func held_result(n: i64) -> i64 {
+    let r = parse(n)
+    let e = parse(n + 200)
+    let k = boom(n)
+    return k + width(r) + width(e)
+}
+
+func held_tuple(n: i64) -> i64 {
+    let t = ([n, n], label(n))
+    let k = boom(n)
+    return k + t.0.len().to<i64>()! + t.1.len().to<i64>()!
+}
+
+test "a panic releases what an enum, an optional, a result and a tuple hold" {
+    assert panics(|| held_enum(0))
+    assert panics(|| held_option(0))
+    assert panics(|| held_result(0))
+    assert panics(|| held_tuple(0))
+}
+
+func takes_rec(take r: Rec, depth: i64) -> i64 {
+    if depth > 1 {
+        panic("deep in the callee")
+    }
+    return takes_rec(r, depth + 1)
+}
+
+test "a struct handed to a callee that panics is released once" {
+    assert panics(|| {
+        let r = Rec { name: label(1), items: [1, 2], n: 1 }
+        return takes_rec(r, 0)
+    })
+}

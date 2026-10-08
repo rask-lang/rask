@@ -218,6 +218,22 @@ pub enum MirStmtKind {
         offset: u32,
         ty: MirType,
     },
+    /// A new aggregate starts here in `local`'s storage, every byte zero; the
+    /// field stores that follow fill it in (ctrl.panic/U6).
+    ///
+    /// A struct literal stores each field right after evaluating it, so the
+    /// next field's expression runs while the value is half built. The value
+    /// is the frame's from here and armed from here, and a panic in that
+    /// expression releases it: the fields not stored yet read as empty
+    /// instead of whatever the stack held, or what the slot held on a loop's
+    /// last turn, already freed.
+    ///
+    /// Only the unwind glue reads the zeroes, so codegen leaves them out where
+    /// none can: a frame with no unwind record, or an aggregate that holds
+    /// nothing to release.
+    ZeroAggregate {
+        local: LocalId,
+    },
 }
 
 /// MIR statement — wraps a kind with source span.

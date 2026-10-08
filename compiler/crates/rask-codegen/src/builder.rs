@@ -674,10 +674,6 @@ impl<'a> FunctionBuilder<'a> {
             }
         }
 
-        // ctrl.panic/U6: before anything else, so the frame's ensures, pushed
-        // later, run ahead of it on a panic and still see what it owns.
-        let unwind_rec = Self::push_unwind_record(&mut builder, self.mir_fn, self.func_refs);
-
         let mut ctx = CodegenCtx {
             var_map: &self.var_map,
             locals: &self.mir_fn.locals,
@@ -710,8 +706,11 @@ impl<'a> FunctionBuilder<'a> {
             is_extern_c: self.mir_fn.is_extern_c,
             adapt_table: &self.adapt_table,
             c_abi_args: self.c_abi_args,
-            unwind_rec,
+            unwind_rec: None,
         };
+        // ctrl.panic/U6: before anything else, so the frame's ensures, pushed
+        // later, run ahead of it on a panic and still see what it owns.
+        ctx.unwind_rec = Self::push_unwind_record(&mut builder, self.mir_fn, &ctx);
 
         // ctrl.panic/A1: an exported symbol is entered from C, so the frames
         // between here and any panic handler belong to the C caller. Mark the
@@ -1139,6 +1138,33 @@ impl<'a> FunctionBuilder<'a> {
                     let zero = builder.ins().iconst(types::I64, 0);
                     let off = rask_mir::transform::unwind::RECORD_HEADER + 8 * slot;
                     builder.ins().stack_store(zero, rec, off as i32);
+                }
+            }
+            // Only the unwind glue reads these zeroes: none without a record,
+            // and nothing to read in an aggregate that holds nothing.
+            MirStmtKind::ZeroAggregate { local } => {
+                if ctx.unwind_rec.is_none() {
+                    return Ok(());
+                }
+                let Some(entry) = ctx.locals.iter().find(|l| l.id == *local) else {
+                    return Ok(());
+                };
+                let ty = entry.unerased.clone().unwrap_or_else(|| entry.ty.clone());
+                if !Self::holds_string_mir(&ty, ctx, 0) {
+                    return Ok(());
+                }
+                let base = Self::lower_operand(builder, &MirOperand::Local(*local), ctx)?;
+                let size = entry.ty.size() as i32;
+                let zero = builder.ins().iconst(types::I64, 0);
+                let mut off = 0;
+                while off + 8 <= size {
+                    builder.ins().store(MemFlags::new(), zero, base, off);
+                    off += 8;
+                }
+                let byte = builder.ins().iconst(types::I8, 0);
+                while off < size {
+                    builder.ins().store(MemFlags::new(), byte, base, off);
+                    off += 1;
                 }
             }
 
@@ -6836,11 +6862,36 @@ impl<'a> FunctionBuilder<'a> {
     /// The frame's unwind record, pushed: zeroed slots, the glue as its
     /// `run`, linked onto the thread's unwind stack. `None` for a frame that
     /// arms nothing (most of them), which pays nothing.
+    ///
+    /// A frame whose every arm releases an aggregate holding nothing (a
+    /// `Point`, an `i64?`) arms nothing either: MIR has no layouts and arms
+    /// every aggregate, and only here is it known that the release is empty.
     fn push_unwind_record(
         builder: &mut ClifFunctionBuilder,
         mir_fn: &MirFunction,
-        func_refs: &HashMap<String, FuncRef>,
+        ctx: &CodegenCtx,
     ) -> Option<StackSlot> {
+        let arms = || {
+            mir_fn.blocks.iter().flat_map(|b| b.statements.iter()).filter_map(|s| match &s.kind {
+                MirStmtKind::UnwindArm { release, .. } => Some(release),
+                _ => None,
+            })
+        };
+        let empty = |release: &rask_mir::UnwindRelease| {
+            release.stmts.iter().all(|s| match &s.kind {
+                MirStmtKind::RcDecContents { local } => ctx
+                    .locals
+                    .iter()
+                    .find(|l| l.id == *local)
+                    .map(|l| l.unerased.clone().unwrap_or_else(|| l.ty.clone()))
+                    .is_none_or(|ty| !Self::holds_string_mir(&ty, ctx, 0)),
+                _ => false,
+            })
+        };
+        if arms().all(empty) {
+            return None;
+        }
+        let func_refs = ctx.func_refs;
         let slots = mir_fn
             .blocks
             .iter()
@@ -7378,6 +7429,8 @@ impl<'a> FunctionBuilder<'a> {
             // The slot holds the block's address. What the block holds goes
             // first — after `rask_free` there is nothing left to walk — and
             // then the block. Same two steps `drop(b)` emits for a named one.
+            // A null block is a slot nothing was stored in yet: an aggregate
+            // a panic caught half built (`ZeroAggregate`).
             MirType::Heap(payload) => {
                 let block = builder.ins().load(
                     cranelift_codegen::ir::types::I64,
@@ -7385,12 +7438,20 @@ impl<'a> FunctionBuilder<'a> {
                     base,
                     offset,
                 );
+                let present = builder.create_block();
+                let done = builder.create_block();
+                builder.ins().brif(block, present, &[], done, &[]);
+                builder.switch_to_block(present);
+                builder.seal_block(present);
                 Self::release_strings_mir(builder, block, 0, payload, ctx, depth + 1)?;
                 let free_ref = ctx
                     .func_refs
                     .get("rask_free")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
                 builder.ins().call(*free_ref, &[block]);
+                builder.ins().jump(done, &[]);
+                builder.switch_to_block(done);
+                builder.seal_block(done);
                 Ok(())
             }
             // The slot *is* the `[data, vtable]` fat pointer. The runtime's own
