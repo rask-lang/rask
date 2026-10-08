@@ -1301,6 +1301,7 @@ mod tests {
             task_bound_closures: std::collections::HashSet::new(),
             generic_closure_captures: std::collections::HashMap::new(),
             try_chain_placement: std::collections::HashMap::new(),
+            else_binding_types: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
             span_types: std::collections::HashMap::new(),
             channel_send_sites: std::collections::HashSet::new(),

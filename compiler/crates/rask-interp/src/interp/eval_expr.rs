@@ -2234,13 +2234,13 @@ impl Interpreter {
             }
 
             ExprKind::IfLet {
-                expr,
+                expr: scrutinee,
                 pattern,
                 then_branch,
                 else_branch,
                 else_binding,
             } => {
-                let value = self.eval_expr(expr)?;
+                let value = self.eval_expr(scrutinee)?;
 
                 if let Some(bindings) = self.match_pattern(pattern, &value) {
                     self.env.push_scope();
@@ -2251,16 +2251,13 @@ impl Interpreter {
                     self.env.pop_scope();
                     result
                 } else if let Some(else_br) = else_branch {
-                    // ER22: `else as e` binds the branch the test ruled out.
+                    // ER22: `else as e` binds what the test ruled out.
                     self.env.push_scope();
                     if let Some(name) = else_binding {
-                        let payload = match &value {
-                            Value::Enum { fields, .. } => {
-                                fields.first().cloned().unwrap_or(Value::Unit)
-                            }
-                            other => other.clone(),
-                        };
-                        self.env.define(name.clone(), payload);
+                        let scrutinee_ty = self.node_types.get(&scrutinee.id);
+                        let rest_ty = self.else_binding_types.get(&expr.id);
+                        let rest = Self::else_binding_value(scrutinee_ty, value, rest_ty);
+                        self.env.define(name.clone(), rest);
                     }
                     let result = self.eval_expr(else_br);
                     self.env.pop_scope();

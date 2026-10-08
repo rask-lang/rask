@@ -390,6 +390,8 @@ pub struct TypeChecker {
     /// operand itself. Lowering reads this to put the branch in the same place
     /// the checker did.
     pub(super) try_chain_placement: HashMap<NodeId, NodeId>,
+    /// ER22: the type `else as e` binds, keyed by the `if … is` node.
+    pub(super) else_binding_types: HashMap<NodeId, Type>,
     /// `??` nodes whose left side is an index expression. `m[k]` panics on a
     /// miss instead of yielding a `T?`, so a `??` after it is the mistake
     /// people actually make, and the fix is `.get(k)` rather than anything
@@ -662,6 +664,7 @@ impl TypeChecker {
             try_chain_steps: std::collections::HashSet::new(),
             try_chain_unwrapped: None,
             try_chain_placement: HashMap::new(),
+            else_binding_types: HashMap::new(),
             coalesce_index_operands: std::collections::HashSet::new(),
             inferred_errors: Vec::new(),
             span_types: HashMap::new(),
@@ -1069,6 +1072,11 @@ impl TypeChecker {
         let error_wraps = self.error_wraps.clone();
         let fallback_keeps_shape = self.fallback_keeps_shape.clone();
         let try_chain_placement = self.try_chain_placement.clone();
+        let else_binding_types: HashMap<_, _> = self
+            .else_binding_types
+            .iter()
+            .map(|(node, ty)| (*node, self.ctx.apply(ty)))
+            .collect();
 
         let unsafe_ops = self.unsafe_ops;
 
@@ -1114,6 +1122,7 @@ impl TypeChecker {
             task_bound_closures: std::mem::take(&mut self.task_bound_closures),
             generic_closure_captures: std::mem::take(&mut self.generic_closure_captures),
             try_chain_placement,
+            else_binding_types,
             unsafe_ops,
             span_types,
             mutate_self_fns: self.mutate_self_fns,

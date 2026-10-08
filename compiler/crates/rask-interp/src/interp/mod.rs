@@ -255,6 +255,8 @@ pub struct Interpreter {
     /// isn't the operand itself. `try read_file(p).len()` propagates at the
     /// call and hands `.len()` the payload.
     pub(crate) try_chain_placement: HashMap<rask_ast::NodeId, rask_ast::NodeId>,
+    /// ER22: the type `else as e` binds, keyed by the `if … is` node.
+    pub(crate) else_binding_types: HashMap<rask_ast::NodeId, rask_types::Type>,
     /// ER16a: the `try` whose propagation is still owed, and the step it waits
     /// for. Armed when a `try` node is evaluated, discharged at that step.
     pub(crate) pending_try_step: Option<(rask_ast::NodeId, rask_ast::NodeId)>,
@@ -486,6 +488,7 @@ impl Interpreter {
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
+            else_binding_types: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             lent_args: None,
@@ -527,6 +530,7 @@ impl Interpreter {
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
+            else_binding_types: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             build_state: None,
@@ -574,6 +578,7 @@ impl Interpreter {
             call_depth: 0,
             error_wraps: HashMap::new(),
             try_chain_placement: HashMap::new(),
+            else_binding_types: HashMap::new(),
             pending_try_step: None,
             fallback_keeps_shape: std::collections::HashSet::new(),
             lent_args: None,
@@ -680,6 +685,7 @@ impl Interpreter {
         self.node_types = typed.node_types.clone();
         self.error_wraps = typed.error_wraps.clone();
         self.try_chain_placement = typed.try_chain_placement.clone();
+        self.else_binding_types = typed.else_binding_types.clone();
         self.fallback_keeps_shape = typed.fallback_keeps_shape.clone();
         self.operator_targets = typed.operator_targets.clone();
         self.escaping_closures = typed.escaping_closures.clone();
@@ -848,6 +854,7 @@ impl Interpreter {
         child.operator_targets = self.operator_targets.clone();
         child.error_wraps = self.error_wraps.clone();
         child.try_chain_placement = self.try_chain_placement.clone();
+        child.else_binding_types = self.else_binding_types.clone();
         child.fallback_keeps_shape = self.fallback_keeps_shape.clone();
         // A task that panics reports `file:line:col`, so the child needs the
         // source it's running (#748). Without this a spawned task's message

@@ -27,6 +27,54 @@ impl Interpreter {
             || matches!(base, "Vec" | "Map")
     }
 
+    /// ER22: what `else as e` holds after `if x is P` missed: `x` without
+    /// the leaf `P` named, shaped as the checker typed it (`rest_ty`).
+    ///
+    /// On a two-branch value that's the payload of the other side. A flat
+    /// `T? or E` keeps a layer: testing `T` or `E` leaves an optional (`E?`,
+    /// `T?`), testing `none` leaves `T or E`. A union error less one member
+    /// stays a result too (#1454).
+    pub(super) fn else_binding_value(
+        scrutinee_ty: Option<&rask_types::Type>,
+        value: Value,
+        rest_ty: Option<&rask_types::Type>,
+    ) -> Value {
+        use rask_types::Type;
+        let Value::Enum { name, variant, fields, .. } = &value else { return value };
+        if name != "Result" && name != "Option" {
+            return value;
+        }
+        let payload = fields.first().cloned().unwrap_or(Value::Unit);
+        let wrap = |name: &str, variant: &str, field: Value| Value::Enum {
+            name: name.to_string(),
+            variant: variant.to_string(),
+            fields: vec![field],
+            variant_index: 0,
+            origin: None,
+        };
+        match rest_ty {
+            // `E?` or `T?` out of a flat value: the error moves into an
+            // option; the success side already is one.
+            Some(rest) if rest.is_option() => {
+                if variant == "Err" { wrap("Option", "Some", payload) } else { payload }
+            }
+            Some(Type::Result { ok: rest_ok, .. }) => {
+                let had_option = matches!(scrutinee_ty, Some(Type::Result { ok, .. }) if ok.is_option());
+                if variant == "Ok" && had_option && !rest_ok.is_option() {
+                    // `none` was tested, so the option holds a value.
+                    let inner = match &payload {
+                        Value::Enum { fields, .. } => fields.first().cloned().unwrap_or(Value::Unit),
+                        other => other.clone(),
+                    };
+                    wrap("Result", "Ok", inner)
+                } else {
+                    value
+                }
+            }
+            _ => payload,
+        }
+    }
+
     /// The value a bare type test in a guard narrows to — `let p = x is
     /// Point else …` — read off its `as` form. `None` when the pattern isn't
     /// a type test against a two-branch value, or already binds.

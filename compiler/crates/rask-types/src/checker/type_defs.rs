@@ -686,6 +686,10 @@ pub struct TypedProgram {
     /// `read_file(p)` call, so lowering branches there and hands `.len()` the
     /// payload. A `try` absent from this map wraps its whole operand.
     pub try_chain_placement: HashMap<NodeId, NodeId>,
+    /// ER22: the type `else as e` binds, keyed by the `if … is` node. On a
+    /// flat `T? or E` that's a re-shaped value (`E?`, `T or E`, `T?`), not a
+    /// payload the scrutinee already holds, so a backend has to build it.
+    pub else_binding_types: HashMap<NodeId, Type>,
     /// Unsafe operations recorded during type checking (span + category).
     pub unsafe_ops: Vec<(rask_ast::Span, super::UnsafeCategory)>,
     /// Types for binding names and parameters, keyed by (span.start, span.end, file_id).

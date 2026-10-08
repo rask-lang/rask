@@ -3832,31 +3832,14 @@ impl<'a> MirLowerer<'a> {
             // Else block: evaluate else branch or default to zero-value
             self.builder.switch_to_block(else_block);
             if let Some(else_expr) = else_branch {
-                // ER22: `else as e` binds the branch the test ruled out —
-                // the other side of the same two-branch value.
+                // ER22: `else as e` binds what the test ruled out.
                 let mut shadowed = None;
                 if let Some(name) = else_binding {
-                    let other_ty = match &val_ty {
-                        MirType::Result { ok, err } => {
-                            let err_side = match pattern {
-                                rask_ast::expr::Pattern::TypePat { ty, .. } => {
-                                    self.pattern_is_err_side(&super::type_pat_name(ty), &val_ty)
-                                }
-                                _ => false,
-                            };
-                            if err_side { (**ok).clone() } else { (**err).clone() }
-                        }
-                        _ => MirType::I64,
-                    };
+                    let (rest, other_ty) = self.else_binding_value(&val, &val_ty, pattern);
                     let local = self.builder.alloc_local(name.to_string(), other_ty.clone());
                     self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: local,
-                        rvalue: MirRValue::Field {
-                            base: val.clone(),
-                            field_index: 0,
-                            byte_offset: self.payload_byte_offset(&other_ty),
-                            access: FieldAccess::Word,
-                        },
+                        rvalue: MirRValue::Use(rest),
                     }));
                     if let Some(prefix) = self.mir_type_name(&other_ty) {
                         self.meta_mut(name).type_prefix = Some(prefix);
@@ -3890,6 +3873,263 @@ impl<'a> MirLowerer<'a> {
             self.builder.switch_to_block(merge_block);
             Ok((MirOperand::Local(result_local), then_ty))
         }
+
+    /// ER22: what `else as e` holds after `if val is <pattern>` missed — the
+    /// value without the leaf the pattern named, and its type.
+    ///
+    /// On a two-branch value that's the other side's payload. A flat `T? or E`
+    /// has three leaves, so two are left and they make a new value: testing
+    /// `T` leaves `E?`, testing `none` leaves `T or E`. Neither is a payload
+    /// the scrutinee holds, so it's built here. Testing `E` leaves the `T?`
+    /// that is the success side's payload as it stands (#1454). A union error
+    /// less the member tested is still a result, over the members left.
+    fn else_binding_value(
+        &mut self,
+        val: &MirOperand,
+        val_ty: &MirType,
+        pattern: &rask_ast::expr::Pattern,
+    ) -> (MirOperand, MirType) {
+        if let (MirType::Result { ok, .. }, Some((union_ty, tested))) =
+            (val_ty, self.union_member_of_result(pattern, val_ty))
+        {
+            return self.union_rest_after_member(val, ok, &union_ty, tested as usize);
+        }
+        if let MirType::Result { ok, err } = val_ty {
+            if let MirType::Option(payload) = ok.as_ref() {
+                match self.flat_leaf_named(pattern, val_ty) {
+                    Some(0) => return self.flat_rest_after_payload(val, err),
+                    Some(1) => return self.flat_rest_after_none(val, ok, payload, err),
+                    _ => {}
+                }
+            }
+        }
+        let other_ty = match val_ty {
+            MirType::Result { ok, err } => {
+                let err_side = match pattern {
+                    rask_ast::expr::Pattern::TypePat { ty, .. } => {
+                        self.pattern_is_err_side(&super::type_pat_name(ty), val_ty)
+                    }
+                    _ => false,
+                };
+                if err_side { (**ok).clone() } else { (**err).clone() }
+            }
+            _ => MirType::I64,
+        };
+        let local = self.builder.alloc_temp(other_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: local,
+            rvalue: MirRValue::Field {
+                base: val.clone(),
+                field_index: 0,
+                byte_offset: self.payload_byte_offset(&other_ty),
+                access: FieldAccess::Word,
+            },
+        }));
+        (MirOperand::Local(local), other_ty)
+    }
+
+    /// `E?` out of a flat `T? or E` that isn't a `T`: the error as `Some`,
+    /// or `none` when the success side held none.
+    fn flat_rest_after_payload(&mut self, val: &MirOperand, err_ty: &MirType) -> (MirOperand, MirType) {
+        let rest_ty = MirType::Option(Box::new(err_ty.clone()));
+        let dst = self.builder.alloc_temp(rest_ty.clone());
+        let (err_blk, ok_blk, done_blk) = self.branch_on_err_tag(val);
+
+        self.builder.switch_to_block(err_blk);
+        let e = self.emit_option_payload(val.clone(), err_ty.clone(), false);
+        let some = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::AnnotatedBinding,
+            MirOperand::Local(e),
+            err_ty,
+            &rest_ty,
+        );
+        self.assign_and_goto(dst, some, done_blk);
+
+        self.builder.switch_to_block(ok_blk);
+        let none = self.builder.alloc_temp(rest_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+            addr: none,
+            offset: rask_mono::abi::OPTION_TAG_OFFSET,
+            value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: Some(8),
+        }));
+        self.assign_and_goto(dst, MirOperand::Local(none), done_blk);
+
+        self.builder.switch_to_block(done_blk);
+        (MirOperand::Local(dst), rest_ty)
+    }
+
+    /// `T or E` out of a flat `T? or E` that isn't `none`: the error stays
+    /// the error, with its origin; the success side's option holds a `T`,
+    /// which becomes the result's payload.
+    fn flat_rest_after_none(
+        &mut self,
+        val: &MirOperand,
+        opt_ty: &MirType,
+        payload_ty: &MirType,
+        err_ty: &MirType,
+    ) -> (MirOperand, MirType) {
+        let rest_ty = MirType::Result { ok: Box::new(payload_ty.clone()), err: Box::new(err_ty.clone()) };
+        let dst = self.builder.alloc_temp(rest_ty.clone());
+        let (err_blk, ok_blk, done_blk) = self.branch_on_err_tag(val);
+
+        self.builder.switch_to_block(err_blk);
+        let e = self.emit_option_payload(val.clone(), err_ty.clone(), false);
+        let failed = self.rewrap_err(val, MirOperand::Local(e), err_ty, &rest_ty);
+        self.assign_and_goto(dst, failed, done_blk);
+
+        self.builder.switch_to_block(ok_blk);
+        // The option sits inline in the payload slot: its address, not a load.
+        let inner = self.builder.alloc_temp(opt_ty.clone());
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: inner,
+            rvalue: MirRValue::Field {
+                base: val.clone(),
+                field_index: 0,
+                byte_offset: None,
+                access: FieldAccess::Word,
+            },
+        }));
+        let t = self.emit_option_payload(MirOperand::Local(inner), payload_ty.clone(), false);
+        let succeeded = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::AnnotatedBinding,
+            MirOperand::Local(t),
+            payload_ty,
+            &rest_ty,
+        );
+        self.assign_and_goto(dst, succeeded, done_blk);
+
+        self.builder.switch_to_block(done_blk);
+        (MirOperand::Local(dst), rest_ty)
+    }
+
+    /// `T or B` out of a `T or (A | B)` that isn't an `A`: the success side as
+    /// it was, and the error moved into the union of the members left, or
+    /// standing alone when one is left.
+    fn union_rest_after_member(
+        &mut self,
+        val: &MirOperand,
+        ok_ty: &MirType,
+        union_ty: &MirType,
+        tested: usize,
+    ) -> (MirOperand, MirType) {
+        let MirType::Union(members) = union_ty else { unreachable!("union_member_of_result") };
+        let rest: Vec<(usize, MirType)> =
+            members.iter().cloned().enumerate().filter(|(i, _)| *i != tested).collect();
+        let rest_err = match &rest[..] {
+            [(_, only)] => only.clone(),
+            _ => MirType::Union(rest.iter().map(|(_, m)| m.clone()).collect()),
+        };
+        let rest_ty = MirType::Result { ok: Box::new(ok_ty.clone()), err: Box::new(rest_err.clone()) };
+        let dst = self.builder.alloc_temp(rest_ty.clone());
+        let (err_blk, ok_blk, done_blk) = self.branch_on_err_tag(val);
+
+        // A union carries its member index ahead of the member's bytes.
+        self.builder.switch_to_block(err_blk);
+        let union_val = self.emit_option_payload(val.clone(), union_ty.clone(), false);
+        let index = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst: index,
+            rvalue: MirRValue::Field {
+                base: MirOperand::Local(union_val),
+                field_index: 0,
+                byte_offset: Some(crate::types::UNION_MEMBER_OFFSET),
+                access: FieldAccess::Sized(8),
+            },
+        }));
+        let blocks: Vec<crate::BlockId> = rest.iter().map(|_| self.builder.create_block()).collect();
+        let cases = rest.iter().zip(&blocks).map(|((i, _), b)| (*i as u64, *b)).collect();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
+            value: MirOperand::Local(index),
+            cases,
+            default: blocks[0],
+        }));
+        for ((_, member_ty), block) in rest.iter().zip(blocks) {
+            self.builder.switch_to_block(block);
+            let member = self.builder.alloc_temp(member_ty.clone());
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                dst: member,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(union_val),
+                    field_index: 0,
+                    byte_offset: Some(crate::types::UNION_PAYLOAD_OFFSET),
+                    access: FieldAccess::for_field(member_ty, member_ty.size()),
+                },
+            }));
+            let err_val = match &rest_err {
+                MirType::Union(_) => self
+                    .wrap_operand_into_union(&MirOperand::Local(member), member_ty, &rest_err)
+                    .expect("a member of the union it came from"),
+                _ => MirOperand::Local(member),
+            };
+            let failed = self.rewrap_err(val, err_val, &rest_err, &rest_ty);
+            self.assign_and_goto(dst, failed, done_blk);
+        }
+
+        self.builder.switch_to_block(ok_blk);
+        let t = self.emit_option_payload(val.clone(), ok_ty.clone(), false);
+        let succeeded = self.coerce_into_wrapper(
+            rask_ast::coercion::CoercionSite::AnnotatedBinding,
+            MirOperand::Local(t),
+            ok_ty,
+            &rest_ty,
+        );
+        self.assign_and_goto(dst, succeeded, done_blk);
+
+        self.builder.switch_to_block(done_blk);
+        (MirOperand::Local(dst), rest_ty)
+    }
+
+    /// `err` as the error side of `rest_ty`, keeping the origin `from` (a
+    /// failed result) recorded.
+    fn rewrap_err(&mut self, from: &MirOperand, err: MirOperand, err_ty: &MirType, rest_ty: &MirType) -> MirOperand {
+        let failed = self
+            .wrap_err_branch(&err, err_ty, rest_ty)
+            .expect("an error is the err side of its own result");
+        if let MirOperand::Local(slot) = &failed {
+            for offset in [crate::types::RESULT_ORIGIN_FILE_OFFSET, crate::types::RESULT_ORIGIN_LINE_OFFSET] {
+                let word = self.builder.alloc_temp(MirType::I64);
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                    dst: word,
+                    rvalue: MirRValue::Field {
+                        base: from.clone(),
+                        field_index: 0,
+                        byte_offset: Some(offset),
+                        access: FieldAccess::Sized(8),
+                    },
+                }));
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
+                    addr: *slot,
+                    offset,
+                    value: MirOperand::Local(word),
+                    store_size: Some(8),
+                }));
+            }
+        }
+        failed
+    }
+
+    /// Branch on a result's tag: (err block, ok block, the block both reach).
+    fn branch_on_err_tag(&mut self, val: &MirOperand) -> (crate::BlockId, crate::BlockId, crate::BlockId) {
+        let tag = self.emit_option_tag(val, None);
+        let err_blk = self.builder.create_block();
+        let ok_blk = self.builder.create_block();
+        let done_blk = self.builder.create_block();
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
+            cond: MirOperand::Local(tag),
+            then_block: err_blk,
+            else_block: ok_blk,
+        }));
+        (err_blk, ok_blk, done_blk)
+    }
+
+    fn assign_and_goto(&mut self, dst: crate::LocalId, value: MirOperand, target: crate::BlockId) {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+            dst,
+            rvalue: MirRValue::Use(value),
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target }));
+    }
 
     fn lower_take(&mut self, expr: &Expr, place: &Expr) -> Result<TypedOperand, LoweringError> {
             let (val, ty) = self.lower_expr(place)?;

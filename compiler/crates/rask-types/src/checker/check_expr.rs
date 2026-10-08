@@ -983,12 +983,13 @@ impl TypeChecker {
                 let then_ty = self.infer_expr(then_branch);
                 self.pop_scope();
                 if let Some(else_branch) = else_branch {
-                    // ER22: `else as e` binds the branch the test ruled out —
-                    // the complement of what the pattern named.
+                    // ER22: `else as e` binds what the test ruled out — the
+                    // scrutinee without the leaf the pattern named.
                     let complement = else_binding
                         .as_ref()
                         .and_then(|name| self.complement_branch(pattern, &value_ty).map(|t| (name.clone(), t)));
                     if let Some((name, ty)) = complement {
+                        self.else_binding_types.insert(expr.id, ty.clone());
                         self.push_scope();
                         self.define_local_bound(name, ty, super::BoundFrom::Payload);
                     } else if let Some(name) = else_binding {
@@ -5687,13 +5688,15 @@ impl TypeChecker {
         }
     }
 
-    /// Detect `opt is Some` (no bindings) in an if-condition and extract
-    /// the variable name and its narrowed inner type (OPT10 type narrowing).
-    /// Also handles `opt is Some` within `&&` chains.
-    /// ER22: what an `else as e` binds after `if r is T as v`. The scrutinee
-    /// has two branches; the pattern named one, so the else gets the other.
+    /// ER22: what an `else as e` binds after `if r is T as v`: the scrutinee
+    /// with the named leaf taken out, as the type the leftover leaves make.
+    /// On a two-branch `T or E` that's the other branch. On a flat `T? or E`
+    /// it keeps the layering: testing `T` leaves `E?`, `none` leaves `T or E`,
+    /// `E` leaves `T?`. A union with `none` in it would have no layout and
+    /// nothing could test it (#1454).
+    ///
     /// `None` when the scrutinee isn't two-branch, or the pattern didn't name
-    /// a branch of it.
+    /// a leaf of it.
     fn complement_branch(
         &mut self,
         pattern: &Pattern,
@@ -5708,12 +5711,44 @@ impl TypeChecker {
             &resolve_type_expr(ty, &self.types).ok()?,
             &self.types,
         );
-        let leaves = super::check_pattern::two_branch_leaves(&mut self.ctx, &self.types, &resolved);
-        let rest: Vec<Type> = leaves.into_iter().filter(|t| *t != named).collect();
-        match rest.len() {
-            0 => None,
-            1 => Some(rest.into_iter().next().unwrap()),
-            _ => Some(Type::Union(rest)),
+        let rest = self.without_leaf(&resolved, &named)?;
+        let unchanged = super::check_pattern::normalize_type(&rest, &self.types)
+            == super::check_pattern::normalize_type(&resolved, &self.types);
+        (!unchanged).then_some(rest)
+    }
+
+    /// `ty` with the leaf `named` removed, layers kept. `None` when nothing is
+    /// left. A pattern can also name a whole layer (`string?` on a flat
+    /// `string? or E`), which goes with everything in it. An optional whose
+    /// payload went is plain `none`, and `none or E` is spelled `E?`.
+    fn without_leaf(&mut self, ty: &Type, named: &Type) -> Option<Type> {
+        let resolved = self.ctx.apply(ty);
+        if super::check_pattern::normalize_type(&resolved, &self.types) == *named {
+            return None;
+        }
+        match &resolved {
+            Type::Result { ok, err } => {
+                let ok = self.without_leaf(ok, named);
+                let err = self.without_leaf(err, named);
+                match (ok, err) {
+                    (None, rest) | (rest, None) => rest,
+                    (Some(Type::None), Some(err)) => Some(Type::option(err)),
+                    (Some(ok), Some(err)) => Some(Type::Result { ok: Box::new(ok), err: Box::new(err) }),
+                }
+            }
+            Type::Union(members) => {
+                let rest: Vec<Type> = members
+                    .iter()
+                    .filter(|m| super::check_pattern::normalize_type(m, &self.types) != *named)
+                    .cloned()
+                    .collect();
+                match rest.len() {
+                    0 => None,
+                    1 => rest.into_iter().next(),
+                    _ => Some(Type::Union(rest)),
+                }
+            }
+            other => Some(other.clone()),
         }
     }
 
